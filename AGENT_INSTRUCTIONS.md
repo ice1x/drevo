@@ -15,6 +15,7 @@ At the start of every session you MUST read the following files (they may be att
 2. **`ARCHITECTURE.md`** — architecture, types, key schema, invariants
 3. **`CONVENTIONS.md`** — code style, testing rules, git conventions
 4. **`ROADMAP.md`** — full task list with numbers
+5. **`PYTHON_CLIENT_SPEC.md`** — Python client API contract (review for consistency)
 
 Do not start writing code without these files.
 
@@ -33,11 +34,20 @@ Do not start writing code without these files.
 3. After each logical block — suggest running `cargo check` / `cargo test`
 4. Do not write the entire project at once — work iteratively
 
+### After Each Task/Subtask
+
+1. **Review `PYTHON_CLIENT_SPEC.md`** — does the completed work affect the API contract?
+2. If yes — update the spec (models, endpoints, errors, examples) and add a changelog entry
+3. If no — note "no spec impact" in the session log
+
+> This is mandatory. See `CONVENTIONS.md` → "Python Client Spec Review Protocol" for details.
+
 ### Session End
 
 1. List what was done (task numbers)
 2. Update `CURRENT_STATUS.md`
-3. Indicate next steps
+3. Review and update `PYTHON_CLIENT_SPEC.md` if any API-impacting changes were made
+4. Indicate next steps
 
 ## Code Rules
 
@@ -98,9 +108,13 @@ grapevine/
 │   │   ├── parser.rs
 │   │   └── executor.rs
 │   └── api/
-│       └── cli.rs
+│       ├── cli.rs
+│       └── http.rs             # HTTP REST API (axum)
 ├── tests/
 ├── benches/
+├── Dockerfile
+├── docker-compose.yml
+├── PYTHON_CLIENT_SPEC.md       # Python client contract
 └── docs/
     └── context/
 ```

@@ -162,17 +162,22 @@ Types: `feat`, `fix`, `test`, `bench`, `docs`, `refactor`, `chore`
 ```toml
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 bincode = "1"
 redb = "2"
 ordered-float = "4"
 rand = "0.8"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 tempfile = "3"
+reqwest = { version = "0.12", features = ["json"] }
 ```
 
 ## Documentation
@@ -181,3 +186,27 @@ tempfile = "3"
 - Examples in doc-comments (`/// # Examples`)
 - `//` regular comments only for non-obvious logic
 - Do not comment obvious code
+
+## Python Client Spec Review Protocol
+
+> **MANDATORY after every task/subtask completion.**
+
+After completing any task (or meaningful subtask), the agent MUST:
+
+1. **Read** `PYTHON_CLIENT_SPEC.md`
+2. **Evaluate** whether the completed work affects the HTTP API contract:
+   - New types or changed fields → update Data Models (Section 5)
+   - New functionality exposed → update API Surface (Section 6) and HTTP Contract (Section 7)
+   - New error variants → update Error Handling (Section 8)
+   - Changed behavior → update relevant examples
+3. **Update** the spec if any changes are needed
+4. **Add a changelog entry** in Section 13 with the task number and what changed
+5. **Flag** any inconsistencies between the spec and the current implementation
+
+This ensures the Python client spec stays in sync with the server as it evolves.
+
+### When to skip
+
+- Pure refactoring that does not change public behavior
+- Benchmark-only or CI-only tasks
+- Documentation-only updates (unless they reveal API changes)

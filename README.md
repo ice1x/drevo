@@ -10,7 +10,7 @@ Existing solutions are split: Neo4j for graphs, Qdrant/Milvus for vectors. Combi
 
 ```
 ┌─────────────────────────────┐
-│   Query API (CLI / HTTP)    │
+│  HTTP API (axum) / CLI REPL │
 ├─────────────────────────────┤
 │   Query Engine              │
 ├─────────────────────────────┤
@@ -33,14 +33,27 @@ Each layer is isolated behind a trait and can be replaced independently.
 - **Combined queries** — embedding search scoped to graph neighbors
 - **Pluggable storage** — `StorageBackend` trait with in-memory and redb implementations
 - **CLI interface** — REPL for interactive use
+- **HTTP API** — JSON REST API (axum) for programmatic access
+- **Docker** — multi-stage build, single container deployment
 
 ## Quick Start
+
+### Native
 
 ```bash
 cargo build --release
 cargo run -- --storage memory    # in-memory mode
 cargo run -- --storage redb      # persistent mode (data.redb file)
 ```
+
+### Docker
+
+```bash
+docker compose up -d
+# GrapeVine HTTP API available at http://localhost:8080
+```
+
+### CLI (REPL)
 
 ```
 grapevine> INSERT NODE 1 labels=["server"] props={"name": "web-01"} embedding=[0.1, 0.2, 0.3]
@@ -51,13 +64,31 @@ grapevine> SIMILAR [0.11, 0.19, 0.31] LIMIT 5
 grapevine> SIMILAR_NEIGHBORS 1 DEPTH 2 VECTOR [0.11, 0.19, 0.31] LIMIT 3
 ```
 
+### HTTP API
+
+```bash
+# Insert node
+curl -X POST http://localhost:8080/nodes \
+  -H "Content-Type: application/json" \
+  -d '{"id": 1, "labels": ["server"], "properties": {"name": "web-01"}, "embedding": [0.1, 0.2, 0.3]}'
+
+# Vector search
+curl -X POST http://localhost:8080/search/similar \
+  -H "Content-Type: application/json" \
+  -d '{"vector": [0.11, 0.19, 0.31], "limit": 5}'
+```
+
 ## Project Structure
 
 ```
 grapevine/
 ├── Cargo.toml
+├── Dockerfile                   # Multi-stage build
+├── docker-compose.yml           # Local dev setup
+├── .dockerignore
+├── PYTHON_CLIENT_SPEC.md        # Python client contract specification
 ├── src/
-│   ├── main.rs                 # CLI entrypoint
+│   ├── main.rs                 # CLI + HTTP server entrypoint
 │   ├── lib.rs                  # public API
 │   ├── storage/
 │   │   ├── mod.rs              # StorageBackend trait
@@ -77,10 +108,12 @@ grapevine/
 │   │   ├── parser.rs           # CLI query parser
 │   │   └── executor.rs         # Query execution, combined queries
 │   └── api/
-│       └── cli.rs              # REPL interface
+│       ├── cli.rs              # REPL interface
+│       └── http.rs             # HTTP REST API (axum)
 ├── tests/
 │   ├── graph_tests.rs
 │   ├── vector_tests.rs
+│   ├── http_tests.rs           # HTTP API integration tests
 │   └── integration_tests.rs
 ├── benches/
 │   └── benchmarks.rs           # criterion benchmarks
@@ -104,6 +137,22 @@ grapevine/
 | `thiserror` | Typed errors |
 | `criterion` | Benchmarks |
 | `clap` | CLI argument parsing |
+| `axum` + `tokio` | HTTP API server |
+| `serde_json` | JSON serialization for HTTP |
+
+## Python Client
+
+The Python client is developed in a **separate repository** (`grapevine-py`). It communicates with GrapeVine via the HTTP REST API.
+
+The API contract is defined in [`PYTHON_CLIENT_SPEC.md`](PYTHON_CLIENT_SPEC.md) in this repository.
+
+```python
+from grapevine import GrapeVineClient
+
+db = GrapeVineClient("http://localhost:8080")
+db.insert_node(1, labels=["server"], props={"name": "web-01"}, embedding=[0.1, 0.2, 0.3])
+similar = db.similar([0.11, 0.19, 0.31], limit=5)
+```
 
 ## License
 

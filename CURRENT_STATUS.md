@@ -31,7 +31,10 @@ _None yet._
 
 > Record architectural decisions made during development that differ from the original plan.
 
-_None yet._
+- **2026-02-20**: HTTP API (axum) moved from Phase 8 (post-MVP) to Phase 6.5 (MVP). Rationale: Docker deployment requires a network API for programmatic access from Python client. CLI REPL alone is insufficient for inter-process communication.
+- **2026-02-20**: Docker support (Dockerfile, docker-compose) added as Phase 6.5 tasks (`0072`-`0076`). Rationale: the primary deployment target is a Docker container accessible from Python.
+- **2026-02-20**: Python client specification (`PYTHON_CLIENT_SPEC.md`) created. The Python client will be developed in a separate repository. The spec serves as the API contract and must be reviewed/updated after every task.
+- **2026-02-20**: Mandatory spec review protocol added to `CONVENTIONS.md` and `AGENT_INSTRUCTIONS.md` — after every task/subtask, the agent must check and update `PYTHON_CLIENT_SPEC.md`.
 
 ## Test Status
 

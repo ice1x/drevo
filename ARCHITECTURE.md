@@ -10,10 +10,14 @@ GrapeVine is an embedded graph+vector database in Rust. A single store for graph
 ## Layers
 
 ```
-Query API → Query Engine → Graph Engine + Vector Engine → Storage Engine → Backend
+HTTP API (axum) / CLI (REPL) → Query Engine → Graph Engine + Vector Engine → Storage Engine → Backend
 ```
 
 Each layer communicates with the one below **only through traits**. Concrete implementations are injected at initialization.
+
+The system has **two API surfaces**:
+- **CLI** — interactive REPL for development and debugging
+- **HTTP API** — JSON REST API for programmatic access (Python client, other services)
 
 ## Storage Engine
 
@@ -159,9 +163,90 @@ enum GrapeVineError {
 }
 ```
 
+## HTTP API Layer
+
+### Framework
+
+`axum` (on `tokio`) — lightweight, tower-based, first-class extractor pattern.
+
+### Architecture
+
+```rust
+// Shared state injected via axum State extractor
+struct AppState {
+    store: Arc<RwLock<GraphVectorStore<Box<dyn StorageBackend>>>>,
+}
+```
+
+The HTTP layer is a thin adapter — it deserializes JSON, calls `GraphVectorStore` methods, serializes the result. No business logic in handlers.
+
+### Endpoints
+
+See `PYTHON_CLIENT_SPEC.md` Section 7 for the full HTTP contract.
+
+Summary:
+- `POST/GET/PATCH/DELETE /nodes/{id}` — node CRUD
+- `POST/GET/DELETE /edges/...` — edge CRUD
+- `GET /nodes/{id}/neighbors`, `/paths/shortest`, `/nodes/{id}/subgraph` — graph traversal
+- `POST /search/similar`, `/search/similar_neighbors`, `/search/subgraph_similar` — vector search
+- `GET /health`, `GET /status` — admin
+
+### Error Format
+
+```json
+{
+    "error": "node_not_found",
+    "message": "Node 42 not found"
+}
+```
+
+`GrapeVineError` maps to HTTP status codes:
+- `NodeNotFound` / `EdgeNotFound` → 404
+- `InvalidEmbedding` / `QueryParse` → 400
+- `Storage` / `Serialization` → 500
+
+## Docker Deployment
+
+### Image Strategy
+
+Multi-stage build:
+1. **Builder stage**: `rust:slim` — compiles release binary
+2. **Runtime stage**: `debian:bookworm-slim` — minimal runtime (~80 MB total image)
+
+### Container Contract
+
+- **Port**: 8080 (HTTP API)
+- **Volume**: `/data` — persistent storage (redb database file)
+- **Env vars**: `GRAPEVINE_STORAGE` (`memory` | `redb`), `GRAPEVINE_DATA_PATH`, `GRAPEVINE_PORT`
+- **Health check**: `GET /health`
+
+### Docker Compose
+
+```yaml
+services:
+  grapevine:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - grapevine-data:/data
+    environment:
+      GRAPEVINE_STORAGE: redb
+      GRAPEVINE_DATA_PATH: /data/grapevine.redb
+volumes:
+  grapevine-data:
+```
+
+## Python Client (Separate Repository)
+
+The Python client specification lives in `PYTHON_CLIENT_SPEC.md` in this repository. The client is developed in a separate repo (`grapevine-py`) and communicates with GrapeVine exclusively via the HTTP API.
+
+The spec serves as the **contract** between server and client. Any change to the HTTP API MUST be reflected in the spec.
+
 ## Principles
 
 - **Trait-first**: every layer behind a trait
 - **No unsafe**: until SIMD is needed
 - **Fail explicitly**: Result<T, GrapeVineError> everywhere, no unwrap in lib code
 - **Test at boundaries**: integration tests at the trait level, not on specific implementations
+- **Spec-driven API**: HTTP endpoints are defined by `PYTHON_CLIENT_SPEC.md` contract

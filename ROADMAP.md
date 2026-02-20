@@ -105,6 +105,34 @@ Tasks are numbered in `XXXX` format. Statuses: `[ ]` — not started, `[~]` — 
 
 ---
 
+## Phase 6.5: HTTP API + Docker
+
+> Goal: expose GrapeVine over HTTP for programmatic access (Python client, etc.) and package as a Docker image.
+
+### HTTP API (axum)
+
+- `0063` [ ] Add `axum` + `tokio` dependencies, create `src/api/http.rs` module
+- `0064` [ ] Implement node CRUD endpoints: `POST /nodes`, `GET /nodes/{id}`, `PATCH /nodes/{id}`, `DELETE /nodes/{id}`
+- `0065` [ ] Implement edge endpoints: `POST /edges`, `GET /nodes/{id}/edges`, `DELETE /edges/{src}/{type}/{dst}`
+- `0066` [ ] Implement graph traversal endpoints: `GET /nodes/{id}/neighbors`, `GET /paths/shortest`, `GET /nodes/{id}/subgraph`
+- `0067` [ ] Implement vector search endpoints: `POST /search/similar`, `POST /search/similar_neighbors`, `POST /search/subgraph_similar`
+- `0068` [ ] Implement admin endpoints: `GET /health`, `GET /status`
+- `0069` [ ] JSON error handling — unified error responses with status codes
+- `0070` [ ] Integration tests: HTTP endpoints against in-memory backend
+- `0071` [ ] Benchmark: HTTP throughput (insert + search) via `criterion` or `wrk`
+
+### Docker
+
+- `0072` [ ] Create `Dockerfile` — multi-stage build (rust:slim → debian:bookworm-slim)
+- `0073` [ ] Create `.dockerignore` — exclude target/, .git/, docs/
+- `0074` [ ] Create `docker-compose.yml` — service with volume mount and port mapping
+- `0075` [ ] Test: build image, run container, verify HTTP endpoints respond
+- `0076` [ ] Document Docker usage in README.md
+
+**Definition of done:** `docker compose up` starts GrapeVine with HTTP API accessible on port 8080; all endpoints match `PYTHON_CLIENT_SPEC.md` contract.
+
+---
+
 ## Phase 7: Hardening
 
 > Goal: reliability, documentation, preparation for extension.
@@ -125,7 +153,7 @@ Tasks are numbered in `XXXX` format. Statuses: `[ ]` — not started, `[~]` — 
 
 > Not implemented as part of the learning project, but architecture must support it.
 
-- `0055` [ ] HTTP/gRPC API (axum + tonic)
+- `0055` [ ] gRPC API (tonic) — alternative to HTTP for high-throughput use
 - `0056` [ ] SIMD-accelerated distance functions (std::simd or packed_simd)
 - `0057` [ ] Product Quantization for vector compression
 - `0058` [ ] Graph sharding by partition key
@@ -149,9 +177,20 @@ Phase 3 (Traversal)  ←──── Phase 4 (HNSW) — in parallel
                     ↓
               Phase 6 (CLI)
                     ↓
+              Phase 6.5 (HTTP API + Docker)  ← Python client spec drives the API contract
+                    ↓
               Phase 7 (Hardening)
                     ↓
               Phase 8 (Future)
 ```
 
 Phase 3 and Phase 4 can be developed in parallel — they depend only on Phase 1/2 and not on each other.
+
+Phase 6.5 depends on Phase 5 (Integration) — HTTP API wraps the same `GraphVectorStore` that CLI uses.
+
+## Cross-Repository: Python Client
+
+> The Python client (`grapevine-py`) is developed in a **separate repository**.
+> Its specification lives in this repo: `PYTHON_CLIENT_SPEC.md`.
+> The spec serves as the **contract** between the Rust server and the Python client.
+> It MUST be reviewed and updated after every task/subtask that affects the public API.
