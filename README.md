@@ -338,94 +338,150 @@ getrandom = { version = "0.2", features = ["js"] }
 
 ## Phase Plan
 
-### Phase 1 — Core (Storage Engine)
+Development is split into two milestones:
 
-> Goal: storage abstraction + redb setup + Node/Edge CRUD + basic indexes.
+- **PoC** — a fully functional embedded graph DB that can power the notebook app on all platforms (desktop, mobile, WASM). After PoC, the notebook can be built and used.
+- **MVP** — a distributable product: Docker image, HTTP API, Kubernetes support. After MVP, GraphNote DB can be deployed as a standalone service (like PostgreSQL or Redis).
 
-- `0001` [x] Define `StorageBackend` trait (get, put, delete, scan_prefix, flush)
-- `0002` [x] Define error types (`StorageError`) via `thiserror`
-- `0003` [ ] Implement `MemoryBackend` backed by `BTreeMap<Vec<u8>, Vec<u8>>`
-- `0004` [ ] Add persist/load to `MemoryBackend` — serialize entire BTreeMap to disk on flush
-- `0005` [ ] Implement `RedbBackend` — wrapper over the `redb` crate
-- `0006` [ ] Write integration tests: same test suite runs against both backends
-- `0007` [ ] Benchmark: put/get/scan_prefix on 100K entries for both backends (criterion)
-- `0008` [ ] Define types: Node, Edge, NewNode, NodePatch, UUID v7
-- `0009` [ ] Implement `GraphNoteDb::open` / `open_in_memory` / `close`
-- `0010` [ ] Implement Node CRUD: create_node, get_node, update_node, delete_node
-- `0011` [ ] Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
-- `0012` [ ] Implement title_index and kind_index
-- `0013` [ ] Write tests: CRUD, cascading edge deletion on node removal
-- `0014` [ ] Benchmark: insert 100K nodes + 500K edges, read all neighbors
+```
+PoC: Phases 1-6    →  notebook can be built on top of GraphNote DB
+MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
+```
 
-**Definition of done:** `cargo test` passes, CRUD works, indexes are consistent.
+---
 
-### Phase 2 — Search
+### PoC — Proof of Concept
 
-- `0015` [ ] Implement trigram tokenizer (lowercase, strip punctuation, CJK)
-- `0016` [ ] Implement FTS index: trigram -> posting list storage
-- `0017` [ ] Implement `search_fts` with TF-IDF ranking
-- `0018` [ ] Implement `list_recent` and `list_nodes_by_kind`
-- `0019` [ ] Tests: FTS recall, edge cases (empty query, single char, CJK)
-- `0020` [ ] Benchmark: FTS on 10K nodes
+> After PoC completion, the graph notebook app can use GraphNote DB on all target platforms.
+
+#### Phase 1 — Storage Engine
+
+> Goal: storage abstraction that allows swapping backends without touching upper layers.
+
+- [x] `00001` Define `StorageBackend` trait (get, put, delete, scan_prefix, flush)
+- [x] `00002` Define error types (`StorageError`) via `thiserror`
+- [ ] `00003` Implement `MemoryBackend` backed by `BTreeMap<Vec<u8>, Vec<u8>>`
+- [ ] `00004` Add persist/load to `MemoryBackend` — serialize entire BTreeMap to disk on flush
+- [ ] `00005` Implement `RedbBackend` — wrapper over the `redb` crate
+- [ ] `00006` Write integration tests: same test suite runs against both backends
+- [ ] `00007` Benchmark: put/get/scan_prefix on 100K entries for both backends (criterion)
+
+**Definition of done:** `cargo test` passes on both backends, benchmark is reproducible.
+
+#### Phase 2 — Graph Store (CRUD + Indexes)
+
+> Goal: store nodes and edges on top of the KV store, efficiently retrieve neighbors.
+
+- [ ] `00008` Define types: Node, Edge, NewNode, NodePatch, UUID v7
+- [ ] `00009` Implement `GraphNoteDb::open` / `open_in_memory` / `close`
+- [ ] `00010` Implement Node CRUD: create_node, get_node, update_node, delete_node
+- [ ] `00011` Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
+- [ ] `00012` Implement title_index and kind_index
+- [ ] `00013` Write tests: CRUD, cascading edge deletion on node removal
+- [ ] `00014` Benchmark: insert 100K nodes + 500K edges, read all neighbors
+
+**Definition of done:** graph operations work, tests pass, indexes are consistent.
+
+#### Phase 3 — Full-Text Search
+
+> Goal: trigram-based FTS — WASM-safe, no external dependencies.
+
+- [ ] `00015` Implement trigram tokenizer (lowercase, strip punctuation, CJK)
+- [ ] `00016` Implement FTS index: trigram -> posting list storage
+- [ ] `00017` Implement `search_fts` with TF-IDF ranking
+- [ ] `00018` Implement `list_recent` and `list_nodes_by_kind`
+- [ ] `00019` Tests: FTS recall, edge cases (empty query, single char, CJK)
+- [ ] `00020` Benchmark: FTS on 10K nodes
 
 **Definition of done:** FTS returns relevant results, recall is measured.
 
-### Phase 3 — Traversal
+#### Phase 4 — Graph Traversal
 
-- `0021` [ ] Implement BFS with depth limit and optional edge kind filter
-- `0022` [ ] Implement DFS with depth limit
-- `0023` [ ] Implement shortest_path (Dijkstra, weighted by `edge.weight`)
-- `0024` [ ] Implement `subgraph(root, depth)` — return all nodes and edges within radius
-- `0025` [ ] Tests: cycles, disconnected graphs, empty graph, single node, depth 0
-- `0026` [ ] Benchmark: BFS on a 100K-node graph with average degree 10, depth 3
+> Goal: BFS, DFS, shortest path, subgraph extraction.
+
+- [ ] `00021` Implement BFS with depth limit and optional edge kind filter
+- [ ] `00022` Implement DFS with depth limit
+- [ ] `00023` Implement shortest_path (Dijkstra, weighted by `edge.weight`)
+- [ ] `00024` Implement `subgraph(root, depth)` — return all nodes and edges within radius
+- [ ] `00025` Tests: cycles, disconnected graphs, empty graph, single node, depth 0
+- [ ] `00026` Benchmark: BFS on a 100K-node graph with average degree 10, depth 3
 
 **Definition of done:** traversals are correct on all edge cases, performance is measured.
 
-### Phase 4 — Bindings & Server Mode
+#### Phase 5 — Platform Bindings
 
-- `0027` [ ] C FFI header (`graphnote.h`) for iOS/Android
-- `0028` [ ] WASM bindings via `wasm-bindgen`
-- `0029` [ ] HTTP API server (axum + tokio) — thin JSON adapter over GraphNoteDb
+> Goal: GraphNote DB works on every target platform — desktop, mobile, browser.
 
-### Phase 5 — Docker & Kubernetes
+- [ ] `00027` C FFI header (`graphnote.h`) — exposes GraphNoteDb API for iOS/Android native apps
+- [ ] `00028` WASM bindings via `wasm-bindgen` — exposes GraphNoteDb API for browser and Tauri v2 WASM
+- [ ] `00029` Verify redb works on WASM target; if not, implement fallback (IndexedDB adapter or memory-only)
+- [ ] `00030` Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown`
+- [ ] `00031` Smoke test on each platform: open DB, CRUD a node, search, close
+
+**Definition of done:** `graphnote.h` compiles on iOS/Android; WASM build loads in browser; all platforms pass smoke test.
+
+#### Phase 6 — Scenario Integration Tests
+
+> Goal: validate the DB against real-world use cases from the notebook app. After this phase, GraphNote DB is proven ready for the notebook.
+
+- [ ] `00032` CBT journal scenario: thought chains, distortion pattern search, reframing edges
+- [ ] `00033` Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
+- [ ] `00034` Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
+- [ ] `00035` ERP scenario: order→product→warehouse edges, transactional inventory updates
+- [ ] `00036` Bug tracker scenario: impact analysis traversal, release-blocking queries
+
+**Definition of done:** all 5 scenarios pass on both MemoryBackend and RedbBackend. The notebook app team can start building on top of GraphNote DB.
+
+---
+
+### MVP — Minimum Viable Product
+
+> After MVP, GraphNote DB is distributed as a standalone service with Docker image and HTTP API.
+
+#### Phase 7 — HTTP API (Server Mode)
+
+> Goal: expose GraphNote DB over HTTP for programmatic access and container deployment.
+
+- [ ] `00037` HTTP API server (axum + tokio) — thin JSON adapter over GraphNoteDb
+- [ ] `00038` Node CRUD endpoints: `POST/GET/PATCH/DELETE /nodes/{id}`
+- [ ] `00039` Edge endpoints: `POST/GET/DELETE /edges/...`
+- [ ] `00040` Traversal endpoints: `GET /nodes/{id}/neighbors`, `/paths/shortest`, `/nodes/{id}/subgraph`
+- [ ] `00041` Search endpoint: `POST /search/fts`
+- [ ] `00042` Admin endpoints: `GET /health`, `GET /status`
+- [ ] `00043` JSON error handling — unified error responses with status codes
+- [ ] `00044` Integration tests: HTTP endpoints against in-memory backend
+
+**Definition of done:** all endpoints respond correctly, tests pass.
+
+#### Phase 8 — Docker & Kubernetes
 
 > Goal: distribute GraphNote DB as an official container image, like PostgreSQL or Redis.
 
-- `0030` [ ] Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
-- `0031` [ ] `.dockerignore` — exclude target/, .git/
-- `0032` [ ] `docker-compose.yml` — volume mount `/data`, port 8080, env vars
-- `0033` [ ] Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM)
-- `0034` [ ] Kubernetes manifests: Deployment, Service, PersistentVolumeClaim
-- `0035` [ ] Helm chart (optional) or Kustomize overlay
-- `0036` [ ] CI: build + push Docker image to GitHub Container Registry (ghcr.io)
-- `0037` [ ] Integration test: spin up container, run CRUD via HTTP, verify persistence across restart
+- [ ] `00045` Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
+- [ ] `00046` `.dockerignore` — exclude target/, .git/
+- [ ] `00047` `docker-compose.yml` — volume mount `/data`, port 8080, env vars
+- [ ] `00048` Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM)
+- [ ] `00049` Kubernetes manifests: Deployment, Service, PersistentVolumeClaim
+- [ ] `00050` Helm chart (optional) or Kustomize overlay
+- [ ] `00051` CI: build + push Docker image to GitHub Container Registry (ghcr.io)
+- [ ] `00052` Integration test: spin up container, run CRUD via HTTP, verify persistence across restart
 
 **Definition of done:** `docker run ghcr.io/ice1x/graphnote-db` starts the DB with HTTP API on port 8080; K8s manifests deploy successfully.
 
-### Phase 6 — Scenario Integration Tests
+#### Phase 9 — Hardening
 
-> Goal: validate the DB against real-world use cases from the notebook app.
-
-- `0038` [ ] CBT journal scenario: thought chains, distortion pattern search, reframing edges
-- `0039` [ ] Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
-- `0040` [ ] Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
-- `0041` [ ] ERP scenario: order→product→warehouse edges, transactional inventory updates
-- `0042` [ ] Bug tracker scenario: impact analysis traversal, release-blocking queries
-
-**Definition of done:** all 5 scenarios pass on both MemoryBackend and RedbBackend.
-
-### Phase 7 — Hardening
-
-- `0043` [ ] WAL / crash recovery
-- `0044` [ ] Compaction
-- `0045` [ ] JSON import/export (`export_json`, `import_json`)
-- `0046` [ ] GraphML export (`export_graphml`)
-- `0047` [ ] Property-based tests (proptest) for graph invariants
-- `0048` [ ] Fuzz tests for FTS tokenizer
-- `0049` [~] CI: GitHub Actions (test, clippy, fmt — done; benchmarks — pending)
-- `0050` [ ] Rustdoc for all public APIs
+- [ ] `00053` WAL / crash recovery
+- [ ] `00054` Compaction
+- [ ] `00055` JSON import/export (`export_json`, `import_json`)
+- [ ] `00056` GraphML export (`export_graphml`)
+- [ ] `00057` Property-based tests (proptest) for graph invariants
+- [ ] `00058` Fuzz tests for FTS tokenizer
+- [x] `00059` CI: GitHub Actions — test, clippy, fmt (benchmarks pending)
+- [ ] `00060` Rustdoc for all public APIs
 
 **Definition of done:** CI is green, crash recovery works, documentation is complete.
+
+---
 
 ### Immediate subtasks
 
@@ -521,9 +577,9 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 **Completed:**
 
-- `0001` StorageBackend trait — done
-- `0002` StorageError types — done
-- `0049` (partial) GitHub Actions CI — test, clippy, fmt
+- [x] `00001` StorageBackend trait
+- [x] `00002` StorageError types
+- [x] `00059` GitHub Actions CI — test, clippy, fmt
 
 **Test status:**
 
