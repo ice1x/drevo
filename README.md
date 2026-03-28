@@ -1,160 +1,463 @@
-# GrapeVine — Graph + Vector Embedded Database in Rust
+# GraphNote DB — Embedded Graph Database for Knowledge Management
 
-> A learning project: an embedded database combining a graph store with vector search (HNSW).
+Build a lightweight, embeddable graph database in Rust, purpose-built for a cross-platform Obsidian-like knowledge base application. The database must run natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings or WASM), and in the browser (via WebAssembly). No server required — everything runs in-process.
 
-## Origin
+---
 
-GrapeVine evolved from the [GraphNote DB](graphnote-db-spec.md) specification — a design for an Obsidian-like knowledge base with an embedded graph engine. GrapeVine extends that idea with HNSW vector search and a server mode (HTTP API + Docker), while preserving core concepts: redb-backed storage, trait-based backend abstraction, and graph traversal.
+## Core Requirements
 
-## Why
+### Platform targets
 
-Existing solutions are split: Neo4j for graphs, Qdrant/Milvus for vectors. Combined queries ("find semantically similar nodes among graph neighbors at depth N") require gluing two systems together. GrapeVine is a single store where graph and vectors coexist.
+- `x86_64-unknown-linux-gnu`
+- `x86_64-apple-darwin` / `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
+- `aarch64-apple-ios` / `aarch64-linux-android`
+- `wasm32-unknown-unknown` (browser, Tauri v2 WASM)
 
-## Architecture
+### Non-goals
 
-```
-┌─────────────────────────────┐
-│  HTTP API (axum) / CLI REPL │
-├─────────────────────────────┤
-│   Query Engine              │
-├─────────────────────────────┤
-│   Graph Engine   │  Vector  │
-│   (traversal,    │  Engine  │
-│    pathfinding)  │  (HNSW)  │
-├──────────────────┴──────────┤
-│   Storage Engine (trait)    │
-├─────────────────────────────┤
-│   Backend: memory / redb    │
-└─────────────────────────────┘
-```
+- No network protocol, no server mode
+- No SQL compatibility layer
+- No distributed/cluster support
+- No ACID transactions across network
 
-Each layer is isolated behind a trait and can be replaced independently.
+---
 
-## Key Features (MVP)
+## Data Model
 
-- **Graph store** — nodes with labels and properties, typed edges, prefix scan for neighbors
-- **Vector search** — HNSW index, cosine similarity, approximate nearest neighbor
-- **Combined queries** — embedding search scoped to graph neighbors
-- **Pluggable storage** — `StorageBackend` trait with in-memory and redb implementations
-- **CLI interface** — REPL for interactive use
-- **HTTP API** — JSON REST API (axum) for programmatic access
-- **Docker** — multi-stage build, single container deployment
-
-## Quick Start
-
-### Native
-
-```bash
-cargo build --release
-cargo run -- --storage memory    # in-memory mode
-cargo run -- --storage redb      # persistent mode (data.redb file)
-```
-
-### Docker
-
-```bash
-docker compose up -d
-# GrapeVine HTTP API available at http://localhost:8080
-```
-
-### CLI (REPL)
+### Node
 
 ```
-grapevine> INSERT NODE 1 labels=["server"] props={"name": "web-01"} embedding=[0.1, 0.2, 0.3]
-grapevine> INSERT NODE 2 labels=["server"] props={"name": "db-01"} embedding=[0.4, 0.5, 0.6]
-grapevine> INSERT EDGE 1 DEPENDS_ON 2
-grapevine> NEIGHBORS 1 DEPTH 2
-grapevine> SIMILAR [0.11, 0.19, 0.31] LIMIT 5
-grapevine> SIMILAR_NEIGHBORS 1 DEPTH 2 VECTOR [0.11, 0.19, 0.31] LIMIT 3
+id:         u64            (auto-increment, unique)
+uuid:       [u8; 16]       (UUID v7, sortable, globally unique)
+kind:       String         (e.g. "note", "tag", "person", "concept")
+title:      String
+body:       String         (raw Markdown)
+body_html:  String         (rendered, cached)
+created_at: i64            (Unix ms)
+updated_at: i64            (Unix ms)
+properties: HashMap<String, Value>   (arbitrary JSON-compatible metadata)
 ```
 
-### HTTP API
-
-```bash
-# Insert node
-curl -X POST http://localhost:8080/nodes \
-  -H "Content-Type: application/json" \
-  -d '{"id": 1, "labels": ["server"], "properties": {"name": "web-01"}, "embedding": [0.1, 0.2, 0.3]}'
-
-# Vector search
-curl -X POST http://localhost:8080/search/similar \
-  -H "Content-Type: application/json" \
-  -d '{"vector": [0.11, 0.19, 0.31], "limit": 5}'
-```
-
-## Project Structure
+### Edge
 
 ```
-grapevine/
-├── Cargo.toml
-├── .github/workflows/ci.yml    # GitHub Actions CI (test, clippy, fmt)
-├── README.md
-├── ARCHITECTURE.md              # Architecture context for AI sessions
-├── CONVENTIONS.md               # Coding conventions
-├── ROADMAP.md                   # Full task list with phases
-├── CURRENT_STATUS.md            # Current development state
-├── AGENT_INSTRUCTIONS.md        # AI assistant workflow guide
-├── PYTHON_CLIENT_SPEC.md        # Python client contract specification
-├── graphnote-db-spec.md         # Original GraphNote DB spec (historical)
-├── src/
-│   ├── lib.rs                  # public API
-│   └── storage/
-│       ├── mod.rs              # StorageBackend trait
-│       ├── backend.rs          # Trait definition
-│       └── error.rs            # StorageError types
-├── tests/
-│   └── storage_tests.rs        # StorageBackend trait contract tests
-└── benches/                     # (planned) criterion benchmarks
+id:         u64
+uuid:       [u8; 16]
+from_id:    u64            (source node)
+to_id:      u64            (target node)
+kind:       String         (e.g. "links_to", "tagged_with", "derived_from", "alias_of")
+weight:     f32            (default 1.0, used for ranking/traversal)
+created_at: i64
+properties: HashMap<String, Value>
 ```
 
-### Planned structure (full MVP)
+### Index entries (internal)
+
+- `title_idx`:    `BTreeMap<String, u64>`
+- `kind_idx`:     `BTreeMap<String, Vec<u64>>`
+- `fts_idx`:      inverted index over `title + body` (trigram or BM25)
+- `updated_idx`:  `BTreeMap<i64, u64>` (for recent notes)
+
+---
+
+## Storage Engine
+
+### File layout
 
 ```
-src/
-├── main.rs                     # CLI + HTTP server entrypoint
-├── lib.rs
-├── storage/
-│   ├── mod.rs, backend.rs, error.rs   # (exists)
-│   ├── memory.rs               # In-memory backend
-│   └── redb_backend.rs         # redb backend
-├── graph/
-│   ├── mod.rs, types.rs, store.rs, traversal.rs
-├── vector/
-│   ├── mod.rs, hnsw.rs, distance.rs
-├── query/
-│   ├── mod.rs, parser.rs, executor.rs
-└── api/
-    ├── cli.rs                  # REPL interface
-    └── http.rs                 # HTTP REST API (axum)
+<vault_dir>/
+  graphnote.db          <- single binary file (redb)
+  graphnote.db.lock     <- advisory lock
+  graphnote.db.wal      <- write-ahead log (optional, for crash recovery)
 ```
+
+### Backend: redb
+
+[redb](https://github.com/cberner/redb) — pure Rust, no C dependencies, ACID transactions, WASM-compatible, actively maintained.
+
+Alternative if redb has WASM issues: [sled](https://github.com/spacejam/sled).
+
+### Storage abstraction trait
+
+```rust
+pub trait StorageBackend: Send + Sync {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<()>;
+    fn delete(&self, key: &[u8]) -> Result<()>;
+    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
+    fn flush(&self) -> Result<()>;
+}
+```
+
+Two backends planned: `MemoryBackend` (BTreeMap) and `RedbBackend` (ACID, B-tree).
+
+### Tables in redb
+
+```
+nodes:       u64 -> bincode(Node)
+edges:       u64 -> bincode(Edge)
+node_uuid:   [u8;16] -> u64
+edge_uuid:   [u8;16] -> u64
+out_edges:   u64 -> Vec<u64>      (adjacency list: from_id -> edge_ids)
+in_edges:    u64 -> Vec<u64>      (reverse: to_id -> edge_ids)
+kind_index:  String -> Vec<u64>
+title_index: String -> u64        (exact title lookup)
+fts_index:   String -> Vec<u64>   (trigram -> node_ids)
+meta:        String -> Vec<u8>    (schema version, stats)
+```
+
+---
+
+## API Surface (Rust)
+
+```rust
+pub struct GraphNoteDb { /* opaque */ }
+
+impl GraphNoteDb {
+    // Lifecycle
+    pub fn open(path: &Path) -> Result<Self>;
+    pub fn open_in_memory() -> Result<Self>;
+    pub fn close(self) -> Result<()>;
+    pub fn compact(&self) -> Result<()>;
+
+    // Node CRUD
+    pub fn create_node(&self, node: NewNode) -> Result<Node>;
+    pub fn get_node(&self, id: u64) -> Result<Option<Node>>;
+    pub fn get_node_by_uuid(&self, uuid: Uuid) -> Result<Option<Node>>;
+    pub fn get_node_by_title(&self, title: &str) -> Result<Option<Node>>;
+    pub fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node>;
+    pub fn delete_node(&self, id: u64) -> Result<()>;
+
+    // Edge CRUD
+    pub fn create_edge(&self, edge: NewEdge) -> Result<Edge>;
+    pub fn get_edge(&self, id: u64) -> Result<Option<Edge>>;
+    pub fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge>;
+    pub fn delete_edge(&self, id: u64) -> Result<()>;
+
+    // Graph traversal
+    pub fn neighbors(&self, node_id: u64, direction: Direction, kind: Option<&str>) -> Result<Vec<Node>>;
+    pub fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>>;
+    pub fn shortest_path(&self, from: u64, to: u64) -> Result<Option<Vec<u64>>>;
+    pub fn subgraph(&self, root: u64, depth: u8) -> Result<SubGraph>;
+
+    // Search
+    pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<ScoredNode>>;
+    pub fn list_nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>>;
+    pub fn list_recent(&self, limit: usize) -> Result<Vec<Node>>;
+
+    // Batch / transactions
+    pub fn transaction<F, T>(&self, f: F) -> Result<T>
+    where F: FnOnce(&mut Txn) -> Result<T>;
+
+    // Export / import
+    pub fn export_json(&self, writer: &mut dyn Write) -> Result<()>;
+    pub fn import_json(&self, reader: &mut dyn Read) -> Result<ImportStats>;
+    pub fn export_graphml(&self, writer: &mut dyn Write) -> Result<()>;
+}
+
+pub enum Direction { Outgoing, Incoming, Both }
+
+pub struct SubGraph {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
+pub struct ScoredNode {
+    pub node: Node,
+    pub score: f32,
+}
+```
+
+---
+
+## Full-Text Search
+
+Trigram index (simple, no external deps, WASM-safe):
+
+- On `create_node` / `update_node`: tokenize `title + body` into trigrams, store `trigram -> Vec<node_id>` in `fts_index`
+- On `search_fts(query)`: extract query trigrams, intersect posting lists, rank by TF-IDF or hit count
+- Normalize: lowercase, strip punctuation, CJK character support
+
+Optional phase 2: integrate [tantivy](https://github.com/quickwit-oss/tantivy) for BM25 scoring (desktop only, not WASM).
+
+---
+
+## Serialization
+
+**bincode v2** for all stored values — compact binary, fast encode/decode, deterministic, serde-compatible.
+
+`properties: HashMap<String, Value>` — use `serde_json::Value` to allow arbitrary metadata without schema migration.
+
+---
+
+## Error Handling
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum GraphNoteError {
+    #[error("storage error: {0}")]
+    Storage(#[from] redb::Error),
+    #[error("serialization error: {0}")]
+    Serialization(#[from] bincode::error::EncodeError),
+    #[error("node not found: {0}")]
+    NodeNotFound(u64),
+    #[error("edge not found: {0}")]
+    EdgeNotFound(u64),
+    #[error("duplicate title: {0}")]
+    DuplicateTitle(String),
+    #[error("database locked")]
+    Locked,
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, GraphNoteError>;
+```
+
+---
+
+## Performance Targets
+
+| Operation | Target |
+|---|---|
+| `create_node` | < 1ms |
+| `get_node` by id | < 0.1ms |
+| `search_fts` (10k nodes) | < 50ms |
+| `subgraph` depth=2 (100 neighbors) | < 5ms |
+| Cold open (50k nodes) | < 200ms |
+| Memory footprint (idle) | < 10MB |
+
+---
+
+## Crate Structure
+
+```
+graphnote-db/
+  Cargo.toml
+  src/
+    lib.rs
+    db.rs           <- GraphNoteDb impl
+    model.rs        <- Node, Edge, NewNode, NodePatch, etc.
+    storage.rs      <- redb table definitions and low-level ops
+    index/
+      mod.rs
+      title.rs
+      kind.rs
+      fts.rs        <- trigram index
+    traversal.rs    <- BFS/DFS, shortest path, subgraph
+    transaction.rs  <- Txn wrapper
+    export.rs       <- JSON / GraphML
+    error.rs        <- GraphNoteError enum
+    uuid.rs         <- UUID v7 generation
+  benches/
+    basic_ops.rs
+  tests/
+    crud.rs
+    traversal.rs
+    fts.rs
+    concurrent.rs
+```
+
+---
 
 ## Dependencies
 
-| Crate | Purpose |
-|-------|---------|
-| `serde` + `bincode` | Struct serialization to bytes |
-| `redb` | Embedded KV store (persistent backend) |
-| `ordered-float` | `f32` in sorted collections and BTreeMap |
-| `rand` | HNSW level selection |
-| `thiserror` | Typed errors |
-| `criterion` | Benchmarks |
-| `clap` | CLI argument parsing |
-| `axum` + `tokio` | HTTP API server |
-| `serde_json` | JSON serialization for HTTP |
+```toml
+[dependencies]
+redb        = "2"
+bincode     = "2"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+uuid        = { version = "1", features = ["v7"] }
+thiserror   = "2"
 
-## Python Client
+[dev-dependencies]
+criterion   = "0.5"
+tempfile    = "3"
 
-The Python client is developed in a **separate repository** (`grapevine-py`). It communicates with GrapeVine via the HTTP REST API.
+[features]
+default   = ["redb-storage"]
+wasm      = ["getrandom/js"]   # UUID entropy for WASM
 
-The API contract is defined in [`PYTHON_CLIENT_SPEC.md`](PYTHON_CLIENT_SPEC.md) in this repository.
-
-```python
-from grapevine import GrapeVineClient
-
-db = GrapeVineClient("http://localhost:8080")
-db.insert_node(1, labels=["server"], props={"name": "web-01"}, embedding=[0.1, 0.2, 0.3])
-similar = db.similar([0.11, 0.19, 0.31], limit=5)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
 ```
+
+---
+
+## Phase Plan
+
+### Phase 1 — Core (Storage Engine)
+
+> Goal: storage abstraction + redb setup + Node/Edge CRUD + basic indexes.
+
+- `0001` [x] Define `StorageBackend` trait (get, put, delete, scan_prefix, flush)
+- `0002` [x] Define error types (`StorageError`) via `thiserror`
+- `0003` [ ] Implement `MemoryBackend` backed by `BTreeMap<Vec<u8>, Vec<u8>>`
+- `0004` [ ] Add persist/load to `MemoryBackend` — serialize entire BTreeMap to disk on flush
+- `0005` [ ] Implement `RedbBackend` — wrapper over the `redb` crate
+- `0006` [ ] Write integration tests: same test suite runs against both backends
+- `0007` [ ] Benchmark: put/get/scan_prefix on 100K entries for both backends (criterion)
+- `0008` [ ] Define types: Node, Edge, NewNode, NodePatch, UUID v7
+- `0009` [ ] Implement `GraphNoteDb::open` / `open_in_memory` / `close`
+- `0010` [ ] Implement Node CRUD: create_node, get_node, update_node, delete_node
+- `0011` [ ] Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
+- `0012` [ ] Implement title_index and kind_index
+- `0013` [ ] Write tests: CRUD, cascading edge deletion on node removal
+- `0014` [ ] Benchmark: insert 100K nodes + 500K edges, read all neighbors
+
+**Definition of done:** `cargo test` passes, CRUD works, indexes are consistent.
+
+### Phase 2 — Search
+
+- `0015` [ ] Implement trigram tokenizer (lowercase, strip punctuation, CJK)
+- `0016` [ ] Implement FTS index: trigram -> posting list storage
+- `0017` [ ] Implement `search_fts` with TF-IDF ranking
+- `0018` [ ] Implement `list_recent` and `list_nodes_by_kind`
+- `0019` [ ] Tests: FTS recall, edge cases (empty query, single char, CJK)
+- `0020` [ ] Benchmark: FTS on 10K nodes
+
+**Definition of done:** FTS returns relevant results, recall is measured.
+
+### Phase 3 — Traversal
+
+- `0021` [ ] Implement BFS with depth limit and optional edge kind filter
+- `0022` [ ] Implement DFS with depth limit
+- `0023` [ ] Implement shortest_path (Dijkstra, weighted by `edge.weight`)
+- `0024` [ ] Implement `subgraph(root, depth)` — return all nodes and edges within radius
+- `0025` [ ] Tests: cycles, disconnected graphs, empty graph, single node, depth 0
+- `0026` [ ] Benchmark: BFS on a 100K-node graph with average degree 10, depth 3
+
+**Definition of done:** traversals are correct on all edge cases, performance is measured.
+
+### Phase 4 — Bindings
+
+- `0027` [ ] C FFI header (`graphnote.h`) for iOS/Android
+- `0028` [ ] WASM bindings via `wasm-bindgen`
+- `0029` [ ] Optional: Python bindings via PyO3
+
+### Phase 5 — Hardening
+
+- `0030` [ ] WAL / crash recovery
+- `0031` [ ] Compaction
+- `0032` [ ] JSON import/export (`export_json`, `import_json`)
+- `0033` [ ] GraphML export (`export_graphml`)
+- `0034` [ ] Property-based tests (proptest) for graph invariants
+- `0035` [ ] Fuzz tests for FTS tokenizer
+- `0036` [~] CI: GitHub Actions (test, clippy, fmt — done; benchmarks — pending)
+- `0037` [ ] Rustdoc for all public APIs
+
+**Definition of done:** CI is green, crash recovery works, documentation is complete.
+
+### Immediate subtasks
+
+> Tasks that require code changes to align with this spec but are not yet reflected in the implementation.
+
+- [ ] Rename crate from `grapevine` to `graphnote-db` (Cargo.toml, lib.rs)
+- [ ] Rename `StorageError` to `GraphNoteError` or reconcile error hierarchy
+- [ ] Add `serde`, `bincode`, `uuid`, `redb` to Cargo.toml dependencies
+- [ ] Create `src/model.rs` with Node, Edge, NewNode, NodePatch structs per spec
+- [ ] Create `src/db.rs` with `GraphNoteDb` struct skeleton
+
+---
+
+## Coding Conventions
+
+### Rust style
+
+- Edition 2021, MSRV latest stable
+- `cargo fmt` before every commit
+- `cargo clippy -- -W clippy::all` with zero warnings
+- No `unwrap()` / `expect()` in library code — `Result` only
+- `unwrap()` allowed only in tests and benchmarks
+- No `unsafe` without explicit justification
+
+### Naming
+
+- Modules: `snake_case` — Files: `snake_case.rs`
+- Structs/traits: `PascalCase` — Functions: `snake_case`
+- Constants: `SCREAMING_SNAKE_CASE` — Type aliases: `PascalCase`
+
+### Errors
+
+Use `thiserror` for all error definitions. `Result<T>` type alias everywhere.
+
+### Serialization
+
+- Internal data (KV store): `bincode` — compact, fast
+- Configs and dumps: `serde_json` — human-readable
+- All persistable structs: `#[derive(Serialize, Deserialize)]`
+
+### Testing
+
+- Every public method — at least 1 test
+- Edge cases mandatory: empty graph, single node, cycles
+- Storage tests parameterized by backend (MemoryBackend, RedbBackend)
+- Benchmarks with `criterion`
+
+### Git
+
+- Format: `type(scope): description [task_id]`
+- Types: `feat`, `fix`, `test`, `bench`, `docs`, `refactor`, `chore`
+
+---
+
+## Agent Instructions
+
+### Role
+
+Senior Rust developer working on GraphNote DB. The project is educational, but the architecture must be production-grade.
+
+### Session start
+
+1. Read this README — it is the single source of truth
+2. Check "Current Status" section below for the current task
+3. Ask the user if they want to continue or switch tasks
+
+### Working on a task
+
+1. Before writing code — briefly describe the plan
+2. Write code incrementally — one file/function at a time
+3. After each logical block — run `cargo check` / `cargo test`
+4. Do not write the entire project at once
+
+### Code rules
+
+- `Result<T, GraphNoteError>` on every public function
+- Tests for every public method
+- `#[derive(Debug, Clone, Serialize, Deserialize)]` where applicable
+- Doc-comments on pub API
+- No `unwrap()` in lib code, no `unsafe` without justification
+
+---
+
+## Current Status
+
+**Phase:** 1 — Core (Storage Engine)
+
+**Completed:**
+
+- `0001` StorageBackend trait — done
+- `0002` StorageError types — done
+- `0036` (partial) GitHub Actions CI — test, clippy, fmt
+
+**Test status:**
+
+```
+cargo test: 14 passed, 0 failed
+cargo clippy: 0 warnings
+CI: GitHub Actions — check, test, clippy, fmt (all green)
+```
+
+**Next steps:**
+
+1. Rename crate from `grapevine` to `graphnote-db`
+2. `0003` — Implement `MemoryBackend` backed by `BTreeMap`
+3. `0004` — Add persist/load to `MemoryBackend`
+4. `0005` — Implement `RedbBackend`
+
+---
 
 ## License
 
