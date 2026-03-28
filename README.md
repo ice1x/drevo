@@ -50,9 +50,16 @@ Nodes: `bug`, `feature`, `release`, `test_case`, `assignee`. Edges: `reported_in
 - `aarch64-apple-ios` / `aarch64-linux-android`
 - `wasm32-unknown-unknown` (browser, Tauri v2 WASM)
 
+### Deployment targets
+
+- **Embedded (in-process)**: Tauri desktop, iOS/Android via C FFI, browser via WASM
+- **Containerized (server mode)**: Docker image with HTTP API, Kubernetes-ready
+  - Official Docker image published to registry (like PostgreSQL, Redis, Neo4j)
+  - Helm chart / K8s manifests for orchestrated deployments
+  - Volume-based persistence (`/data`), health checks, graceful shutdown
+
 ### Non-goals
 
-- No network protocol, no server mode
 - No SQL compatibility layer
 - No distributed/cluster support
 - No ACID transactions across network
@@ -374,34 +381,49 @@ getrandom = { version = "0.2", features = ["js"] }
 
 **Definition of done:** traversals are correct on all edge cases, performance is measured.
 
-### Phase 4 — Bindings
+### Phase 4 — Bindings & Server Mode
 
 - `0027` [ ] C FFI header (`graphnote.h`) for iOS/Android
 - `0028` [ ] WASM bindings via `wasm-bindgen`
-- `0029` [ ] Optional: Python bindings via PyO3
+- `0029` [ ] HTTP API server (axum + tokio) — thin JSON adapter over GraphNoteDb
 
-### Phase 5 — Scenario Integration Tests
+### Phase 5 — Docker & Kubernetes
+
+> Goal: distribute GraphNote DB as an official container image, like PostgreSQL or Redis.
+
+- `0030` [ ] Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
+- `0031` [ ] `.dockerignore` — exclude target/, .git/
+- `0032` [ ] `docker-compose.yml` — volume mount `/data`, port 8080, env vars
+- `0033` [ ] Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM)
+- `0034` [ ] Kubernetes manifests: Deployment, Service, PersistentVolumeClaim
+- `0035` [ ] Helm chart (optional) or Kustomize overlay
+- `0036` [ ] CI: build + push Docker image to GitHub Container Registry (ghcr.io)
+- `0037` [ ] Integration test: spin up container, run CRUD via HTTP, verify persistence across restart
+
+**Definition of done:** `docker run ghcr.io/ice1x/graphnote-db` starts the DB with HTTP API on port 8080; K8s manifests deploy successfully.
+
+### Phase 6 — Scenario Integration Tests
 
 > Goal: validate the DB against real-world use cases from the notebook app.
 
-- `0030` [ ] CBT journal scenario: thought chains, distortion pattern search, reframing edges
-- `0031` [ ] Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
-- `0032` [ ] Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
-- `0033` [ ] ERP scenario: order→product→warehouse edges, transactional inventory updates
-- `0034` [ ] Bug tracker scenario: impact analysis traversal, release-blocking queries
+- `0038` [ ] CBT journal scenario: thought chains, distortion pattern search, reframing edges
+- `0039` [ ] Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
+- `0040` [ ] Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
+- `0041` [ ] ERP scenario: order→product→warehouse edges, transactional inventory updates
+- `0042` [ ] Bug tracker scenario: impact analysis traversal, release-blocking queries
 
 **Definition of done:** all 5 scenarios pass on both MemoryBackend and RedbBackend.
 
-### Phase 6 — Hardening
+### Phase 7 — Hardening
 
-- `0035` [ ] WAL / crash recovery
-- `0036` [ ] Compaction
-- `0037` [ ] JSON import/export (`export_json`, `import_json`)
-- `0038` [ ] GraphML export (`export_graphml`)
-- `0039` [ ] Property-based tests (proptest) for graph invariants
-- `0040` [ ] Fuzz tests for FTS tokenizer
-- `0041` [~] CI: GitHub Actions (test, clippy, fmt — done; benchmarks — pending)
-- `0042` [ ] Rustdoc for all public APIs
+- `0043` [ ] WAL / crash recovery
+- `0044` [ ] Compaction
+- `0045` [ ] JSON import/export (`export_json`, `import_json`)
+- `0046` [ ] GraphML export (`export_graphml`)
+- `0047` [ ] Property-based tests (proptest) for graph invariants
+- `0048` [ ] Fuzz tests for FTS tokenizer
+- `0049` [~] CI: GitHub Actions (test, clippy, fmt — done; benchmarks — pending)
+- `0050` [ ] Rustdoc for all public APIs
 
 **Definition of done:** CI is green, crash recovery works, documentation is complete.
 
@@ -501,7 +523,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 - `0001` StorageBackend trait — done
 - `0002` StorageError types — done
-- `0041` (partial) GitHub Actions CI — test, clippy, fmt
+- `0049` (partial) GitHub Actions CI — test, clippy, fmt
 
 **Test status:**
 
