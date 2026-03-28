@@ -4,6 +4,42 @@ Build a lightweight, embeddable graph database in Rust, purpose-built for a cros
 
 ---
 
+## Use Cases
+
+GraphNote DB is the storage engine for a cross-platform graph notebook. Target scenarios:
+
+### CBT Journal (Cognitive Behavioral Therapy)
+
+Nodes: `thought`, `emotion`, `situation`, `cognitive_distortion`, `rational_response`. Edges: `triggered_by`, `leads_to`, `challenges`, `reframed_as`. The graph enables tracing chains of thoughts and finding recurring distortion patterns via traversal.
+
+### Scenario / Book / Story Editor
+
+Tree-structured narratives: nodes are `chapter`, `scene`, `character`, `location`, `plot_point`. Edges: `contains`, `follows`, `involves`, `takes_place_in`. Subgraph extraction gives a complete context for a scene. MCP integration allows AI agents to read/write the graph for co-authoring.
+
+### IT Task Manager
+
+Nodes: `task`, `epic`, `sprint`, `developer`, `component`. Edges: `assigned_to`, `blocks`, `part_of`, `depends_on`. BFS from a blocked task reveals the full dependency chain. Kind index enables board views (all tasks in a sprint).
+
+### ERP System
+
+Nodes: `order`, `product`, `customer`, `warehouse`, `invoice`. Edges: `ordered_by`, `contains`, `stored_in`, `billed_to`. Transactions ensure consistency when updating order status and inventory simultaneously.
+
+### Bug Tracker / Control System
+
+Nodes: `bug`, `feature`, `release`, `test_case`, `assignee`. Edges: `reported_in`, `fixed_by`, `verified_by`, `blocks_release`. FTS over bug descriptions, traversal for impact analysis.
+
+### Common patterns across all scenarios
+
+- **Node kinds** define domain entities — the `kind` field + `kind_index` provide filtered views
+- **Edge kinds** define relationships — `scan_prefix` retrieves all edges of a given type
+- **Properties** (HashMap) store domain-specific metadata without schema migration
+- **FTS** enables search across all content (titles, bodies, properties)
+- **Subgraph** extraction provides bounded context for AI agents (MCP)
+- **Transactions** ensure consistency for multi-step operations
+- **Cross-platform**: all scenarios must work identically on desktop, mobile (iOS/Android), and WASM
+
+---
+
 ## Core Requirements
 
 ### Platform targets
@@ -253,10 +289,17 @@ graphnote-db/
   benches/
     basic_ops.rs
   tests/
-    crud.rs
-    traversal.rs
-    fts.rs
-    concurrent.rs
+    storage_tests.rs          <- StorageBackend trait contract tests
+    crud.rs                   <- Node/Edge CRUD
+    traversal.rs              <- BFS, DFS, shortest path
+    fts.rs                    <- full-text search
+    concurrent.rs             <- concurrent access
+    scenarios/
+      cbt_journal.rs          <- CBT thought chains, distortion patterns
+      story_editor.rs         <- tree-structured narratives, scene subgraphs
+      task_manager.rs         <- task dependencies, blocking chains
+      erp.rs                  <- orders, inventory, transactional consistency
+      bug_tracker.rs          <- bug impact analysis, release blocking
 ```
 
 ---
@@ -337,16 +380,28 @@ getrandom = { version = "0.2", features = ["js"] }
 - `0028` [ ] WASM bindings via `wasm-bindgen`
 - `0029` [ ] Optional: Python bindings via PyO3
 
-### Phase 5 — Hardening
+### Phase 5 — Scenario Integration Tests
 
-- `0030` [ ] WAL / crash recovery
-- `0031` [ ] Compaction
-- `0032` [ ] JSON import/export (`export_json`, `import_json`)
-- `0033` [ ] GraphML export (`export_graphml`)
-- `0034` [ ] Property-based tests (proptest) for graph invariants
-- `0035` [ ] Fuzz tests for FTS tokenizer
-- `0036` [~] CI: GitHub Actions (test, clippy, fmt — done; benchmarks — pending)
-- `0037` [ ] Rustdoc for all public APIs
+> Goal: validate the DB against real-world use cases from the notebook app.
+
+- `0030` [ ] CBT journal scenario: thought chains, distortion pattern search, reframing edges
+- `0031` [ ] Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
+- `0032` [ ] Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
+- `0033` [ ] ERP scenario: order→product→warehouse edges, transactional inventory updates
+- `0034` [ ] Bug tracker scenario: impact analysis traversal, release-blocking queries
+
+**Definition of done:** all 5 scenarios pass on both MemoryBackend and RedbBackend.
+
+### Phase 6 — Hardening
+
+- `0035` [ ] WAL / crash recovery
+- `0036` [ ] Compaction
+- `0037` [ ] JSON import/export (`export_json`, `import_json`)
+- `0038` [ ] GraphML export (`export_graphml`)
+- `0039` [ ] Property-based tests (proptest) for graph invariants
+- `0040` [ ] Fuzz tests for FTS tokenizer
+- `0041` [~] CI: GitHub Actions (test, clippy, fmt — done; benchmarks — pending)
+- `0042` [ ] Rustdoc for all public APIs
 
 **Definition of done:** CI is green, crash recovery works, documentation is complete.
 
@@ -363,6 +418,10 @@ getrandom = { version = "0.2", features = ["js"] }
 ---
 
 ## Coding Conventions
+
+### Language
+
+- **All code comments, documentation, README, and commit messages — English only**
 
 ### Rust style
 
@@ -395,6 +454,8 @@ Use `thiserror` for all error definitions. `Result<T>` type alias everywhere.
 - Edge cases mandatory: empty graph, single node, cycles
 - Storage tests parameterized by backend (MemoryBackend, RedbBackend)
 - Benchmarks with `criterion`
+- **Scenario integration tests**: each use case (CBT, story editor, task manager, ERP, bug tracker) gets a dedicated test file that exercises the full API through realistic workflows
+- Scenario tests validate that `kind`/`properties`/`edges` patterns work end-to-end for each domain
 
 ### Git
 
@@ -440,7 +501,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 - `0001` StorageBackend trait — done
 - `0002` StorageError types — done
-- `0036` (partial) GitHub Actions CI — test, clippy, fmt
+- `0041` (partial) GitHub Actions CI — test, clippy, fmt
 
 **Test status:**
 
