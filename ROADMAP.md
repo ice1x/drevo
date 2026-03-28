@@ -8,8 +8,8 @@ Tasks are numbered in `XXXX` format. Statuses: `[ ]` — not started, `[~]` — 
 
 > Goal: storage abstraction that allows swapping backends without touching upper layers.
 
-- `0001` [ ] Define `StorageBackend` trait (get, put, delete, scan_prefix, flush)
-- `0002` [ ] Define error types (`StorageError`) via `thiserror`
+- `0001` [x] Define `StorageBackend` trait (get, put, delete, scan_prefix, flush)
+- `0002` [x] Define error types (`StorageError`) via `thiserror`
 - `0003` [ ] Implement `MemoryBackend` backed by `BTreeMap<Vec<u8>, Vec<u8>>`
 - `0004` [ ] Add persist/load to `MemoryBackend` — serialize entire BTreeMap to disk on flush
 - `0005` [ ] Implement `RedbBackend` — wrapper over the `redb` crate

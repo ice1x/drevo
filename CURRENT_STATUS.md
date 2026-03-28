@@ -9,11 +9,12 @@ Phase 1: Foundation — Storage Engine
 
 ## Last Completed Task
 
-Project has not started yet. Next task: `0001`.
+`0001` — Define `StorageBackend` trait (get, put, delete, scan_prefix, flush)
 
 ## Completed
 
-_Nothing yet._
+- `0001` Define `StorageBackend` trait — done
+- `0002` Define error types (`StorageError`) via `thiserror` — done (implemented alongside 0001)
 
 ## In Progress
 
@@ -39,15 +40,15 @@ _None yet._
 ## Test Status
 
 ```
-cargo test: N/A
-cargo clippy: N/A
+cargo test: 14 passed, 0 failed
+cargo clippy: 0 warnings
 ```
 
 ## Next Steps
 
-1. `0001` — Define `StorageBackend` trait
-2. `0002` — Define error types
-3. `0003` — Implement `MemoryBackend`
+1. `0003` — Implement `MemoryBackend` backed by `BTreeMap`
+2. `0004` — Add persist/load to `MemoryBackend`
+3. `0005` — Implement `RedbBackend`
 
 ---
 
