@@ -7,6 +7,15 @@
 
 GrapeVine is an embedded graph+vector database in Rust. A single store for graph data (nodes, edges, traversal) and vector search (HNSW ANN). The key feature is combined queries: "find semantically similar nodes among graph neighbors."
 
+## Origin
+
+GrapeVine evolved from the [GraphNote DB spec](graphnote-db-spec.md) — a design for an Obsidian-like embedded graph database targeting desktop, mobile, and WASM. GrapeVine inherits the core graph concepts (redb storage, node/edge CRUD, BFS/DFS traversal) and extends them with:
+
+- **HNSW vector search** — approximate nearest neighbor on node embeddings
+- **Combined queries** — vector search scoped to graph neighborhoods
+- **Server mode** — HTTP API (axum) + Docker deployment + Python client
+- **Simplified data model** — labels + properties instead of GraphNote's kind/title/body/Markdown fields
+
 ## Layers
 
 ```

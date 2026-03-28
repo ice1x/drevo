@@ -142,7 +142,7 @@ Tasks are numbered in `XXXX` format. Statuses: `[ ]` — not started, `[~]` — 
 - `0050` [ ] Add property-based tests (proptest) for graph invariants
 - `0051` [ ] Add fuzz tests for the query parser
 - `0052` [ ] Write rustdoc for all public APIs
-- `0053` [ ] CI: GitHub Actions (test, clippy, fmt, benchmark comparison)
+- `0053` [~] CI: GitHub Actions (test, clippy, fmt — done; benchmark comparison — pending benchmarks)
 - `0054` [ ] Write ARCHITECTURE.md with diagrams and rationale
 
 **Definition of done:** CI is green, documentation is complete, crash recovery works.

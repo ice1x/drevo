@@ -2,6 +2,10 @@
 
 > A learning project: an embedded database combining a graph store with vector search (HNSW).
 
+## Origin
+
+GrapeVine evolved from the [GraphNote DB](graphnote-db-spec.md) specification — a design for an Obsidian-like knowledge base with an embedded graph engine. GrapeVine extends that idea with HNSW vector search and a server mode (HTTP API + Docker), while preserving core concepts: redb-backed storage, trait-based backend abstraction, and graph traversal.
+
 ## Why
 
 Existing solutions are split: Neo4j for graphs, Qdrant/Milvus for vectors. Combined queries ("find semantically similar nodes among graph neighbors at depth N") require gluing two systems together. GrapeVine is a single store where graph and vectors coexist.
@@ -83,47 +87,45 @@ curl -X POST http://localhost:8080/search/similar \
 ```
 grapevine/
 ├── Cargo.toml
-├── Dockerfile                   # Multi-stage build
-├── docker-compose.yml           # Local dev setup
-├── .dockerignore
+├── .github/workflows/ci.yml    # GitHub Actions CI (test, clippy, fmt)
+├── README.md
+├── ARCHITECTURE.md              # Architecture context for AI sessions
+├── CONVENTIONS.md               # Coding conventions
+├── ROADMAP.md                   # Full task list with phases
+├── CURRENT_STATUS.md            # Current development state
+├── AGENT_INSTRUCTIONS.md        # AI assistant workflow guide
 ├── PYTHON_CLIENT_SPEC.md        # Python client contract specification
+├── graphnote-db-spec.md         # Original GraphNote DB spec (historical)
 ├── src/
-│   ├── main.rs                 # CLI + HTTP server entrypoint
 │   ├── lib.rs                  # public API
-│   ├── storage/
-│   │   ├── mod.rs              # StorageBackend trait
-│   │   ├── memory.rs           # In-memory + optional persist
-│   │   └── redb_backend.rs     # redb implementation
-│   ├── graph/
-│   │   ├── mod.rs              # Graph engine public API
-│   │   ├── types.rs            # Node, Edge, NodeId, Value
-│   │   ├── store.rs            # Graph CRUD over StorageBackend
-│   │   └── traversal.rs        # BFS, DFS, shortest path
-│   ├── vector/
-│   │   ├── mod.rs              # Vector engine public API
-│   │   ├── hnsw.rs             # HNSW index implementation
-│   │   └── distance.rs         # Cosine similarity, L2, dot product
-│   ├── query/
-│   │   ├── mod.rs              # Query engine
-│   │   ├── parser.rs           # CLI query parser
-│   │   └── executor.rs         # Query execution, combined queries
-│   └── api/
-│       ├── cli.rs              # REPL interface
-│       └── http.rs             # HTTP REST API (axum)
+│   └── storage/
+│       ├── mod.rs              # StorageBackend trait
+│       ├── backend.rs          # Trait definition
+│       └── error.rs            # StorageError types
 ├── tests/
-│   ├── graph_tests.rs
-│   ├── vector_tests.rs
-│   ├── http_tests.rs           # HTTP API integration tests
-│   └── integration_tests.rs
-├── benches/
-│   └── benchmarks.rs           # criterion benchmarks
-├── docs/
-│   ├── ROADMAP.md
-│   └── context/                # Context files for AI sessions
-│       ├── ARCHITECTURE.md
-│       ├── CONVENTIONS.md
-│       └── CURRENT_STATUS.md
-└── README.md
+│   └── storage_tests.rs        # StorageBackend trait contract tests
+└── benches/                     # (planned) criterion benchmarks
+```
+
+### Planned structure (full MVP)
+
+```
+src/
+├── main.rs                     # CLI + HTTP server entrypoint
+├── lib.rs
+├── storage/
+│   ├── mod.rs, backend.rs, error.rs   # (exists)
+│   ├── memory.rs               # In-memory backend
+│   └── redb_backend.rs         # redb backend
+├── graph/
+│   ├── mod.rs, types.rs, store.rs, traversal.rs
+├── vector/
+│   ├── mod.rs, hnsw.rs, distance.rs
+├── query/
+│   ├── mod.rs, parser.rs, executor.rs
+└── api/
+    ├── cli.rs                  # REPL interface
+    └── http.rs                 # HTTP REST API (axum)
 ```
 
 ## Dependencies

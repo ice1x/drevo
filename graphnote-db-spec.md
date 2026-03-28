@@ -1,5 +1,10 @@
 # GraphNote DB — Embedded Graph Database for Knowledge Management
 
+> **Status**: Historical specification. This document was the original design for an Obsidian-like knowledge base DB.
+> The project evolved into **GrapeVine** — which adds vector search (HNSW) and a server mode (HTTP API + Docker)
+> on top of the graph engine concepts described here. Key ideas preserved: redb storage, trait-based backend,
+> BFS/DFS traversal, node/edge CRUD. See `ARCHITECTURE.md` for the current GrapeVine design.
+
 ## Project Goal
 
 Build a lightweight, embeddable graph database in Rust, purpose-built for a cross-platform Obsidian-like knowledge base application. The database must run natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings or WASM), and in the browser (via WebAssembly). No server required — everything runs in-process.
@@ -208,7 +213,7 @@ bincode     = "2"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 uuid        = { version = "1", features = ["v7"] }
-thiserror   = "1"
+thiserror   = "2"
 
 [dev-dependencies]
 criterion   = "0.5"
