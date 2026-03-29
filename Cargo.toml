@@ -6,6 +6,8 @@ description = "Embedded graph database for cross-platform knowledge management"
 
 [dependencies]
 thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"
