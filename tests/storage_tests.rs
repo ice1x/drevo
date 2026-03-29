@@ -2,6 +2,89 @@ use std::sync::Arc;
 
 use graphnote_db::storage::{MemoryBackend, StorageBackend, StorageError};
 
+// --- Persist / load integration tests ---
+
+#[test]
+fn test_persist_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("roundtrip.db");
+
+    {
+        let backend = MemoryBackend::open(&db_path).unwrap();
+        backend.put(b"n:1", b"node1").unwrap();
+        backend.put(b"n:2", b"node2").unwrap();
+        backend.put(b"e:1:likes:2", b"edge_data").unwrap();
+        backend.flush().unwrap();
+    }
+
+    let backend = MemoryBackend::open(&db_path).unwrap();
+    assert_eq!(backend.get(b"n:1").unwrap(), Some(b"node1".to_vec()));
+    assert_eq!(backend.get(b"n:2").unwrap(), Some(b"node2".to_vec()));
+    assert_eq!(
+        backend.get(b"e:1:likes:2").unwrap(),
+        Some(b"edge_data".to_vec())
+    );
+    assert_eq!(backend.get(b"n:999").unwrap(), None);
+}
+
+#[test]
+fn test_persist_scan_prefix_after_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("scan.db");
+
+    {
+        let backend = MemoryBackend::open(&db_path).unwrap();
+        backend.put(b"e:42:likes:1", b"d1").unwrap();
+        backend.put(b"e:42:likes:2", b"d2").unwrap();
+        backend.put(b"e:42:knows:3", b"d3").unwrap();
+        backend.put(b"e:99:likes:1", b"other").unwrap();
+        backend.flush().unwrap();
+    }
+
+    let backend = MemoryBackend::open(&db_path).unwrap();
+    let results = backend.scan_prefix(b"e:42:").unwrap();
+    assert_eq!(results.len(), 3);
+    for (k, _) in &results {
+        assert!(k.starts_with(b"e:42:"));
+    }
+}
+
+#[test]
+fn test_persist_via_trait_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("trait.db");
+
+    {
+        let backend: Arc<dyn StorageBackend> = Arc::new(MemoryBackend::open(&db_path).unwrap());
+        backend.put(b"key", b"value").unwrap();
+        backend.flush().unwrap();
+    }
+
+    let backend = MemoryBackend::open(&db_path).unwrap();
+    assert_eq!(backend.get(b"key").unwrap(), Some(b"value".to_vec()));
+}
+
+#[test]
+fn test_persist_multiple_flush_cycles() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("multi.db");
+
+    let backend = MemoryBackend::open(&db_path).unwrap();
+
+    backend.put(b"k1", b"v1").unwrap();
+    backend.flush().unwrap();
+
+    backend.put(b"k2", b"v2").unwrap();
+    backend.delete(b"k1").unwrap();
+    backend.flush().unwrap();
+
+    drop(backend);
+
+    let backend = MemoryBackend::open(&db_path).unwrap();
+    assert_eq!(backend.get(b"k1").unwrap(), None);
+    assert_eq!(backend.get(b"k2").unwrap(), Some(b"v2".to_vec()));
+}
+
 /// Verify that MemoryBackend can be used as a trait object behind Arc.
 fn backend_as_trait_object() -> Arc<dyn StorageBackend> {
     Arc::new(MemoryBackend::new())
