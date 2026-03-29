@@ -1,8 +1,8 @@
 [package]
-name = "grapevine"
+name = "graphnote-db"
 version = "0.1.0"
 edition = "2021"
-description = "Embedded graph+vector database combining graph data structures with HNSW ANN search"
+description = "Embedded graph database for cross-platform knowledge management"
 
 [dependencies]
 thiserror = "2"
