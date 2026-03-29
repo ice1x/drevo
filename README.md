@@ -360,7 +360,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 - [x] `00001` Define `StorageBackend` trait (get, put, delete, scan_prefix, flush)
 - [x] `00002` Define error types (`StorageError`) via `thiserror`
-- [ ] `00003` Implement `MemoryBackend` backed by `BTreeMap<Vec<u8>, Vec<u8>>`
+- [x] `00003` Implement `MemoryBackend` backed by `BTreeMap<Vec<u8>, Vec<u8>>`
 - [ ] `00004` Add persist/load to `MemoryBackend` — serialize entire BTreeMap to disk on flush
 - [ ] `00005` Implement `RedbBackend` — wrapper over the `redb` crate
 - [ ] `00006` Write integration tests: same test suite runs against both backends
@@ -487,7 +487,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 > Tasks that require code changes to align with this spec but are not yet reflected in the implementation.
 
-- [ ] Rename crate from `grapevine` to `graphnote-db` (Cargo.toml, lib.rs)
+- [x] Rename crate from `grapevine` to `graphnote-db` (Cargo.toml, lib.rs)
 - [ ] Rename `StorageError` to `GraphNoteError` or reconcile error hierarchy
 - [ ] Add `serde`, `bincode`, `uuid`, `redb` to Cargo.toml dependencies
 - [ ] Create `src/model.rs` with Node, Edge, NewNode, NodePatch structs per spec
@@ -579,22 +579,24 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 - [x] `00001` StorageBackend trait
 - [x] `00002` StorageError types
+- [x] `00003` MemoryBackend (BTreeMap)
 - [x] `00059` GitHub Actions CI — test, clippy, fmt
+- [x] Rename crate from `grapevine` to `graphnote-db`
 
 **Test status:**
 
 ```
-cargo test: 14 passed, 0 failed
+cargo test: 23 passed, 0 failed
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
 
 **Next steps:**
 
-1. Rename crate from `grapevine` to `graphnote-db`
-2. `0003` — Implement `MemoryBackend` backed by `BTreeMap`
-3. `0004` — Add persist/load to `MemoryBackend`
-4. `0005` — Implement `RedbBackend`
+1. `00004` — Add persist/load to `MemoryBackend`
+2. `00005` — Implement `RedbBackend`
+3. `00006` — Integration tests: same suite against both backends
+4. `00007` — Benchmark: put/get/scan_prefix on 100K entries
 
 ---
 

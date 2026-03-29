@@ -1,0 +1,152 @@
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
+use crate::storage::error::{Result, StorageError};
+use crate::storage::StorageBackend;
+
+/// In-memory storage backend backed by a `BTreeMap`.
+///
+/// All data lives in memory and is lost when the backend is dropped.
+/// Thread-safe via interior `Mutex`.
+///
+/// This backend is useful for:
+/// - Tests and benchmarks (fast, no I/O)
+/// - Ephemeral / scratch databases
+/// - WASM environments where disk access is unavailable
+#[derive(Debug)]
+pub struct MemoryBackend {
+    data: Mutex<BTreeMap<Vec<u8>, Vec<u8>>>,
+}
+
+impl MemoryBackend {
+    /// Create a new empty in-memory backend.
+    pub fn new() -> Self {
+        Self {
+            data: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl Default for MemoryBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StorageBackend for MemoryBackend {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let data = self
+            .data
+            .lock()
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        Ok(data.get(key).cloned())
+    }
+
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        let mut data = self
+            .data
+            .lock()
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        data.insert(key.to_vec(), value.to_vec());
+        Ok(())
+    }
+
+    fn delete(&self, key: &[u8]) -> Result<()> {
+        let mut data = self
+            .data
+            .lock()
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        data.remove(key);
+        Ok(())
+    }
+
+    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let data = self
+            .data
+            .lock()
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        let results: Vec<(Vec<u8>, Vec<u8>)> = data
+            .range(prefix.to_vec()..)
+            .take_while(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Ok(results)
+    }
+
+    fn flush(&self) -> Result<()> {
+        // No-op for pure in-memory backend.
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_backend_is_empty() {
+        let backend = MemoryBackend::new();
+        assert_eq!(backend.get(b"any").unwrap(), None);
+    }
+
+    #[test]
+    fn default_is_same_as_new() {
+        let backend = MemoryBackend::default();
+        assert_eq!(backend.get(b"any").unwrap(), None);
+    }
+
+    #[test]
+    fn put_and_get() {
+        let backend = MemoryBackend::new();
+        backend.put(b"k", b"v").unwrap();
+        assert_eq!(backend.get(b"k").unwrap(), Some(b"v".to_vec()));
+    }
+
+    #[test]
+    fn put_overwrites() {
+        let backend = MemoryBackend::new();
+        backend.put(b"k", b"v1").unwrap();
+        backend.put(b"k", b"v2").unwrap();
+        assert_eq!(backend.get(b"k").unwrap(), Some(b"v2".to_vec()));
+    }
+
+    #[test]
+    fn delete_existing() {
+        let backend = MemoryBackend::new();
+        backend.put(b"k", b"v").unwrap();
+        backend.delete(b"k").unwrap();
+        assert_eq!(backend.get(b"k").unwrap(), None);
+    }
+
+    #[test]
+    fn delete_nonexistent_is_noop() {
+        let backend = MemoryBackend::new();
+        backend.delete(b"nope").unwrap();
+    }
+
+    #[test]
+    fn scan_prefix_filters_and_sorts() {
+        let backend = MemoryBackend::new();
+        backend.put(b"a:1", b"v1").unwrap();
+        backend.put(b"a:2", b"v2").unwrap();
+        backend.put(b"b:1", b"v3").unwrap();
+
+        let results = backend.scan_prefix(b"a:").unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, b"a:1");
+        assert_eq!(results[1].0, b"a:2");
+    }
+
+    #[test]
+    fn scan_prefix_empty_result() {
+        let backend = MemoryBackend::new();
+        backend.put(b"abc", b"v").unwrap();
+        assert!(backend.scan_prefix(b"xyz").unwrap().is_empty());
+    }
+
+    #[test]
+    fn flush_does_not_error() {
+        let backend = MemoryBackend::new();
+        backend.flush().unwrap();
+    }
+}
