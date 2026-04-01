@@ -363,7 +363,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00003` Implement `MemoryBackend` backed by `BTreeMap<Vec<u8>, Vec<u8>>`
 - [x] `00004` Add persist/load to `MemoryBackend` — serialize entire BTreeMap to disk on flush
 - [x] `00005` Implement `RedbBackend` — wrapper over the `redb` crate
-- [ ] `00006` Write integration tests: same test suite runs against both backends
+- [x] `00006` Write integration tests: same test suite runs against both backends
 - [ ] `00007` Benchmark: put/get/scan_prefix on 100K entries for both backends (criterion)
 
 **Definition of done:** `cargo test` passes on both backends, benchmark is reproducible.
@@ -584,19 +584,19 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00005` RedbBackend (ACID, B-tree, persistent)
 - [x] `00059` GitHub Actions CI — test, clippy, fmt
 - [x] Rename crate from `grapevine` to `graphnote-db`
+- [x] `00006` Shared integration test suite for both backends (macro-parameterized)
 
 **Test status:**
 
 ```
-cargo test: 51 passed, 0 failed (32 unit + 18 integration + 1 doctest)
+cargo test: 73 passed, 0 failed (32 unit + 41 integration)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
 
 **Next steps:**
 
-1. `00006` — Integration tests: same suite against both backends
-2. `00007` — Benchmark: put/get/scan_prefix on 100K entries
+1. `00007` — Benchmark: put/get/scan_prefix on 100K entries
 
 ---
 
