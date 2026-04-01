@@ -555,7 +555,7 @@ mod tests {
         props.insert("tags".to_string(), json!(["rust", "graph", "db"]));
         props.insert("nested".to_string(), json!({"a": {"b": 42}}));
         props.insert("flag".to_string(), json!(true));
-        props.insert("score".to_string(), json!(3.14));
+        props.insert("score".to_string(), json!(2.71));
         props.insert("empty".to_string(), json!(null));
 
         let node = NewNode {
