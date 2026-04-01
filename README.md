@@ -294,7 +294,7 @@ graphnote-db/
     error.rs        <- GraphNoteError enum
     uuid.rs         <- UUID v7 generation
   benches/
-    basic_ops.rs
+    storage_bench.rs      <- put/get/scan_prefix benchmarks (criterion)
   tests/
     storage_tests.rs          <- StorageBackend trait contract tests
     crud.rs                   <- Node/Edge CRUD
@@ -364,7 +364,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00004` Add persist/load to `MemoryBackend` — serialize entire BTreeMap to disk on flush
 - [x] `00005` Implement `RedbBackend` — wrapper over the `redb` crate
 - [x] `00006` Write integration tests: same test suite runs against both backends
-- [ ] `00007` Benchmark: put/get/scan_prefix on 100K entries for both backends (criterion)
+- [x] `00007` Benchmark: put/get/scan_prefix on 100K entries for both backends (criterion)
 
 **Definition of done:** `cargo test` passes on both backends, benchmark is reproducible.
 
@@ -585,6 +585,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00059` GitHub Actions CI — test, clippy, fmt
 - [x] Rename crate from `grapevine` to `graphnote-db`
 - [x] `00006` Shared integration test suite for both backends (macro-parameterized)
+- [x] `00007` Benchmark: put/get/scan_prefix on 100K entries (criterion)
 
 **Test status:**
 
@@ -594,9 +595,20 @@ cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
 
+**Benchmark results (Apple Silicon, criterion):**
+
+| Benchmark | MemoryBackend | RedbBackend |
+|---|---|---|
+| put (1K ops) | ~329 µs | ~5.26 s |
+| get (single, from 100K) | ~570 ns | ~1.38 µs |
+| scan_prefix (1K results, from 100K) | ~120 µs | ~163 µs |
+| bulk_put 100K | ~43 ms | ~530 s (per-txn) |
+
+> RedbBackend put is slow because each operation opens a separate ACID transaction. The graph layer will batch writes in transactions for production use.
+
 **Next steps:**
 
-1. `00007` — Benchmark: put/get/scan_prefix on 100K entries
+1. `00008` — Define types: Node, Edge, NewNode, NodePatch, UUID v7
 
 ---
 
