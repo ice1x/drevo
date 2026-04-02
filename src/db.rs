@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{GraphNoteError, Result};
+use crate::model::{NewNode, Node, NodePatch};
 use crate::storage::{MemoryBackend, RedbBackend, StorageBackend};
 
 /// Meta key for the next node ID counter.
@@ -15,6 +16,18 @@ const META_NEXT_NODE_ID: &[u8] = b"meta:next_node_id";
 
 /// Meta key for the next edge ID counter.
 const META_NEXT_EDGE_ID: &[u8] = b"meta:next_edge_id";
+
+/// Key prefix for node data: `node:{id}` -> bincode(Node).
+const PREFIX_NODE: &[u8] = b"node:";
+
+/// Key prefix for UUID-to-id index: `node_uuid:{uuid}` -> u64 (le bytes).
+const PREFIX_NODE_UUID: &[u8] = b"node_uuid:";
+
+/// Key prefix for title-to-id index: `node_title:{title}` -> u64 (le bytes).
+const PREFIX_NODE_TITLE: &[u8] = b"node_title:";
+
+/// Bincode configuration used for all serialization.
+const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
 /// The main GraphNote DB handle.
 ///
@@ -102,9 +115,184 @@ impl GraphNoteDb {
     }
 
     /// Return a reference to the underlying storage backend.
-    #[allow(dead_code)] // Will be used by CRUD methods in task 00010
+    #[allow(dead_code)] // Will be used by Edge CRUD in task 00011
     pub(crate) fn backend(&self) -> &dyn StorageBackend {
         &*self.backend
+    }
+
+    // ---------------------------------------------------------------
+    // Node CRUD
+    // ---------------------------------------------------------------
+
+    /// Create a new node in the database.
+    ///
+    /// Allocates a unique ID, generates a UUID v7 and timestamps,
+    /// stores the node, and updates the title and UUID indexes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphNoteError::DuplicateTitle`] if a node with the
+    /// same title already exists.
+    pub fn create_node(&self, new_node: NewNode) -> Result<Node> {
+        // Check title uniqueness
+        let title_key = node_title_key(&new_node.title);
+        if self
+            .backend
+            .get(&title_key)
+            .map_err(GraphNoteError::Storage)?
+            .is_some()
+        {
+            return Err(GraphNoteError::DuplicateTitle(new_node.title));
+        }
+
+        let id = self.alloc_node_id();
+        let node = new_node.into_node(id);
+
+        // Store node data
+        let data = serialize_node(&node)?;
+        self.backend
+            .put(&node_key(id), &data)
+            .map_err(GraphNoteError::Storage)?;
+
+        // UUID index
+        self.backend
+            .put(&node_uuid_key(&node.uuid), &id.to_le_bytes())
+            .map_err(GraphNoteError::Storage)?;
+
+        // Title index
+        self.backend
+            .put(&title_key, &id.to_le_bytes())
+            .map_err(GraphNoteError::Storage)?;
+
+        Ok(node)
+    }
+
+    /// Retrieve a node by its auto-increment ID.
+    ///
+    /// Returns `None` if the node does not exist.
+    pub fn get_node(&self, id: u64) -> Result<Option<Node>> {
+        match self
+            .backend
+            .get(&node_key(id))
+            .map_err(GraphNoteError::Storage)?
+        {
+            Some(bytes) => Ok(Some(deserialize_node(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Retrieve a node by its UUID v7.
+    ///
+    /// Returns `None` if no node has the given UUID.
+    pub fn get_node_by_uuid(&self, uuid: &[u8; 16]) -> Result<Option<Node>> {
+        match self
+            .backend
+            .get(&node_uuid_key(uuid))
+            .map_err(GraphNoteError::Storage)?
+        {
+            Some(id_bytes) => {
+                let id = u64_from_bytes(&id_bytes);
+                self.get_node(id)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Retrieve a node by its title (exact match).
+    ///
+    /// Returns `None` if no node has the given title.
+    pub fn get_node_by_title(&self, title: &str) -> Result<Option<Node>> {
+        match self
+            .backend
+            .get(&node_title_key(title))
+            .map_err(GraphNoteError::Storage)?
+        {
+            Some(id_bytes) => {
+                let id = u64_from_bytes(&id_bytes);
+                self.get_node(id)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Update an existing node with a partial patch.
+    ///
+    /// Only `Some` fields in the patch are applied. The `updated_at`
+    /// timestamp is always refreshed.
+    ///
+    /// # Errors
+    ///
+    /// - [`GraphNoteError::NodeNotFound`] if the node does not exist.
+    /// - [`GraphNoteError::DuplicateTitle`] if the new title collides
+    ///   with another node.
+    pub fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
+        let mut node = self.get_node(id)?.ok_or(GraphNoteError::NodeNotFound(id))?;
+
+        let old_title = node.title.clone();
+
+        // Check title uniqueness before applying patch
+        if let Some(ref new_title) = patch.title {
+            if *new_title != old_title {
+                let title_key = node_title_key(new_title);
+                if self
+                    .backend
+                    .get(&title_key)
+                    .map_err(GraphNoteError::Storage)?
+                    .is_some()
+                {
+                    return Err(GraphNoteError::DuplicateTitle(new_title.clone()));
+                }
+            }
+        }
+
+        node.apply_patch(patch);
+
+        // Store updated node
+        let data = serialize_node(&node)?;
+        self.backend
+            .put(&node_key(id), &data)
+            .map_err(GraphNoteError::Storage)?;
+
+        // Update title index if title changed
+        if node.title != old_title {
+            self.backend
+                .delete(&node_title_key(&old_title))
+                .map_err(GraphNoteError::Storage)?;
+            self.backend
+                .put(&node_title_key(&node.title), &id.to_le_bytes())
+                .map_err(GraphNoteError::Storage)?;
+        }
+
+        Ok(node)
+    }
+
+    /// Delete a node by ID.
+    ///
+    /// Removes the node data and all associated index entries
+    /// (UUID index, title index).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphNoteError::NodeNotFound`] if the node does not exist.
+    pub fn delete_node(&self, id: u64) -> Result<()> {
+        let node = self.get_node(id)?.ok_or(GraphNoteError::NodeNotFound(id))?;
+
+        // Remove node data
+        self.backend
+            .delete(&node_key(id))
+            .map_err(GraphNoteError::Storage)?;
+
+        // Remove UUID index
+        self.backend
+            .delete(&node_uuid_key(&node.uuid))
+            .map_err(GraphNoteError::Storage)?;
+
+        // Remove title index
+        self.backend
+            .delete(&node_title_key(&node.title))
+            .map_err(GraphNoteError::Storage)?;
+
+        Ok(())
     }
 
     /// Load auto-increment counters from storage metadata.
@@ -149,6 +337,40 @@ fn u64_from_bytes(bytes: &[u8]) -> u64 {
     } else {
         1
     }
+}
+
+/// Build the storage key for a node: `node:{id}`.
+fn node_key(id: u64) -> Vec<u8> {
+    let mut key = PREFIX_NODE.to_vec();
+    key.extend_from_slice(&id.to_le_bytes());
+    key
+}
+
+/// Build the UUID index key: `node_uuid:{uuid}`.
+fn node_uuid_key(uuid: &[u8; 16]) -> Vec<u8> {
+    let mut key = PREFIX_NODE_UUID.to_vec();
+    key.extend_from_slice(uuid);
+    key
+}
+
+/// Build the title index key: `node_title:{title}`.
+fn node_title_key(title: &str) -> Vec<u8> {
+    let mut key = PREFIX_NODE_TITLE.to_vec();
+    key.extend_from_slice(title.as_bytes());
+    key
+}
+
+/// Serialize a node to bincode bytes.
+fn serialize_node(node: &Node) -> Result<Vec<u8>> {
+    bincode::serde::encode_to_vec(node, BINCODE_CONFIG)
+        .map_err(|e| GraphNoteError::Serialization(e.to_string()))
+}
+
+/// Deserialize a node from bincode bytes.
+fn deserialize_node(bytes: &[u8]) -> Result<Node> {
+    let (node, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)
+        .map_err(|e| GraphNoteError::Serialization(e.to_string()))?;
+    Ok(node)
 }
 
 impl std::fmt::Debug for GraphNoteDb {
@@ -313,5 +535,91 @@ mod tests {
     fn u64_from_bytes_max() {
         let val = u64::MAX;
         assert_eq!(u64_from_bytes(&val.to_le_bytes()), u64::MAX);
+    }
+
+    // --- Key helpers ---
+
+    #[test]
+    fn node_key_format() {
+        let key = node_key(42);
+        assert!(key.starts_with(PREFIX_NODE));
+        assert_eq!(&key[PREFIX_NODE.len()..], &42u64.to_le_bytes());
+    }
+
+    #[test]
+    fn node_uuid_key_format() {
+        let uuid = [1u8; 16];
+        let key = node_uuid_key(&uuid);
+        assert!(key.starts_with(PREFIX_NODE_UUID));
+        assert_eq!(&key[PREFIX_NODE_UUID.len()..], &uuid);
+    }
+
+    #[test]
+    fn node_title_key_format() {
+        let key = node_title_key("hello");
+        assert!(key.starts_with(PREFIX_NODE_TITLE));
+        assert_eq!(&key[PREFIX_NODE_TITLE.len()..], b"hello");
+    }
+
+    // --- Serialization helpers ---
+
+    #[test]
+    fn serialize_deserialize_node_roundtrip() {
+        use crate::model::{NewNode, Properties};
+        let node = NewNode {
+            kind: "note".to_string(),
+            title: "Test".to_string(),
+            body: "body".to_string(),
+            body_html: "<p>body</p>".to_string(),
+            properties: Properties::default(),
+        }
+        .into_node(1);
+
+        let bytes = serialize_node(&node).unwrap();
+        let decoded = deserialize_node(&bytes).unwrap();
+        assert_eq!(decoded, node);
+    }
+
+    // --- Node CRUD (unit-level) ---
+
+    #[test]
+    fn create_and_get_node() {
+        use crate::model::{NewNode, Properties};
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let node = db
+            .create_node(NewNode {
+                kind: "note".to_string(),
+                title: "Unit".to_string(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        assert_eq!(node.id, 1);
+        let fetched = db.get_node(1).unwrap().unwrap();
+        assert_eq!(fetched, node);
+    }
+
+    #[test]
+    fn get_node_missing_returns_none() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        assert!(db.get_node(100).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_node_then_get_returns_none() {
+        use crate::model::{NewNode, Properties};
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let node = db
+            .create_node(NewNode {
+                kind: "note".to_string(),
+                title: "Del".to_string(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        db.delete_node(node.id).unwrap();
+        assert!(db.get_node(node.id).unwrap().is_none());
     }
 }
