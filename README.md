@@ -372,8 +372,8 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 > Goal: store nodes and edges on top of the KV store, efficiently retrieve neighbors.
 
-- [ ] `00008` Define types: Node, Edge, NewNode, NodePatch, UUID v7
-- [ ] `00009` Implement `GraphNoteDb::open` / `open_in_memory` / `close`
+- [x] `00008` Define types: Node, Edge, NewNode, NodePatch, UUID v7
+- [x] `00009` Implement `GraphNoteDb::open` / `open_in_memory` / `close`
 - [ ] `00010` Implement Node CRUD: create_node, get_node, update_node, delete_node
 - [ ] `00011` Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
 - [ ] `00012` Implement title_index and kind_index
@@ -490,8 +490,9 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] Rename crate from `grapevine` to `graphnote-db` (Cargo.toml, lib.rs)
 - [ ] Rename `StorageError` to `GraphNoteError` or reconcile error hierarchy
 - [ ] Add `serde`, `bincode`, `uuid`, `redb` to Cargo.toml dependencies
-- [ ] Create `src/model.rs` with Node, Edge, NewNode, NodePatch structs per spec
-- [ ] Create `src/db.rs` with `GraphNoteDb` struct skeleton
+- [x] Create `src/model.rs` with Node, Edge, NewNode, NodePatch structs per spec
+- [x] Create `src/db.rs` with `GraphNoteDb` struct skeleton
+- [x] Create `src/error.rs` with `GraphNoteError` enum
 
 ---
 
@@ -573,7 +574,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 ## Current Status
 
-**Phase:** 1 — Core (Storage Engine)
+**Phase:** 2 — Graph Store (CRUD + Indexes)
 
 **Completed:**
 
@@ -586,11 +587,13 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] Rename crate from `grapevine` to `graphnote-db`
 - [x] `00006` Shared integration test suite for both backends (macro-parameterized)
 - [x] `00007` Benchmark: put/get/scan_prefix on 100K entries (criterion)
+- [x] `00008` Define types: Node, Edge, NewNode, NodePatch, UUID v7
+- [x] `00009` GraphNoteDb::open / open_in_memory / close / compact
 
 **Test status:**
 
 ```
-cargo test: 73 passed, 0 failed (32 unit + 41 integration)
+cargo test: 123 passed, 0 failed (73 unit + 49 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -608,7 +611,7 @@ CI: GitHub Actions — check, test, clippy, fmt (all green)
 
 **Next steps:**
 
-1. `00008` — Define types: Node, Edge, NewNode, NodePatch, UUID v7
+1. `00010` — Implement Node CRUD: create_node, get_node, update_node, delete_node
 
 ---
 
