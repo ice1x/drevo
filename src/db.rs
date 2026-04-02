@@ -38,6 +38,12 @@ const PREFIX_OUT: &[u8] = b"out:";
 /// Key prefix for incoming adjacency: `in:{to_id}:{edge_id}` -> empty.
 const PREFIX_IN: &[u8] = b"in:";
 
+/// Key prefix for node kind index: `node_kind:{kind}:{node_id}` -> empty.
+const PREFIX_NODE_KIND: &[u8] = b"node_kind:";
+
+/// Key prefix for edge kind index: `edge_kind:{kind}:{edge_id}` -> empty.
+const PREFIX_EDGE_KIND: &[u8] = b"edge_kind:";
+
 /// Bincode configuration used for all serialization.
 const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
@@ -176,6 +182,11 @@ impl GraphNoteDb {
             .put(&title_key, &id.to_le_bytes())
             .map_err(GraphNoteError::Storage)?;
 
+        // Kind index
+        self.backend
+            .put(&node_kind_key(&node.kind, id), &[])
+            .map_err(GraphNoteError::Storage)?;
+
         Ok(node)
     }
 
@@ -241,6 +252,7 @@ impl GraphNoteDb {
         let mut node = self.get_node(id)?.ok_or(GraphNoteError::NodeNotFound(id))?;
 
         let old_title = node.title.clone();
+        let old_kind = node.kind.clone();
 
         // Check title uniqueness before applying patch
         if let Some(ref new_title) = patch.title {
@@ -275,6 +287,16 @@ impl GraphNoteDb {
                 .map_err(GraphNoteError::Storage)?;
         }
 
+        // Update kind index if kind changed
+        if node.kind != old_kind {
+            self.backend
+                .delete(&node_kind_key(&old_kind, id))
+                .map_err(GraphNoteError::Storage)?;
+            self.backend
+                .put(&node_kind_key(&node.kind, id), &[])
+                .map_err(GraphNoteError::Storage)?;
+        }
+
         Ok(node)
     }
 
@@ -302,6 +324,11 @@ impl GraphNoteDb {
         // Remove title index
         self.backend
             .delete(&node_title_key(&node.title))
+            .map_err(GraphNoteError::Storage)?;
+
+        // Remove kind index
+        self.backend
+            .delete(&node_kind_key(&node.kind, id))
             .map_err(GraphNoteError::Storage)?;
 
         Ok(())
@@ -351,6 +378,11 @@ impl GraphNoteDb {
         // Incoming adjacency: in:{to_id}:{edge_id}
         self.backend
             .put(&in_edge_key(edge.to_id, id), &[])
+            .map_err(GraphNoteError::Storage)?;
+
+        // Edge kind index
+        self.backend
+            .put(&edge_kind_key(&edge.kind, id), &[])
             .map_err(GraphNoteError::Storage)?;
 
         Ok(edge)
@@ -438,6 +470,11 @@ impl GraphNoteDb {
             .delete(&in_edge_key(edge.to_id, id))
             .map_err(GraphNoteError::Storage)?;
 
+        // Remove edge kind index
+        self.backend
+            .delete(&edge_kind_key(&edge.kind, id))
+            .map_err(GraphNoteError::Storage)?;
+
         Ok(())
     }
 
@@ -463,6 +500,68 @@ impl GraphNoteDb {
             }
         }
     }
+
+    // ---------------------------------------------------------------
+    // Index queries
+    // ---------------------------------------------------------------
+
+    /// List all nodes with the given kind, with pagination.
+    ///
+    /// Scans the `node_kind:{kind}:` prefix to find matching node IDs,
+    /// then retrieves each node. Results are ordered by node ID (insertion order).
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` — the node kind to filter by (e.g. "note", "task")
+    /// * `limit` — maximum number of nodes to return
+    /// * `offset` — number of matching nodes to skip
+    pub fn list_nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>> {
+        let prefix = node_kind_prefix(kind);
+        let entries = self
+            .backend
+            .scan_prefix(&prefix)
+            .map_err(GraphNoteError::Storage)?;
+
+        let mut nodes = Vec::new();
+        for (key, _) in entries.into_iter().skip(offset).take(limit) {
+            let id = id_from_kind_key(&key, &prefix);
+            if let Some(node) = self.get_node(id)? {
+                nodes.push(node);
+            }
+        }
+        Ok(nodes)
+    }
+
+    /// List all edges with the given kind, with pagination.
+    ///
+    /// Scans the `edge_kind:{kind}:` prefix to find matching edge IDs,
+    /// then retrieves each edge. Results are ordered by edge ID (insertion order).
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` — the edge kind to filter by (e.g. "links_to", "tagged_with")
+    /// * `limit` — maximum number of edges to return
+    /// * `offset` — number of matching edges to skip
+    pub fn list_edges_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Edge>> {
+        let prefix = edge_kind_prefix(kind);
+        let entries = self
+            .backend
+            .scan_prefix(&prefix)
+            .map_err(GraphNoteError::Storage)?;
+
+        let mut edges = Vec::new();
+        for (key, _) in entries.into_iter().skip(offset).take(limit) {
+            let id = id_from_kind_key(&key, &prefix);
+            if let Some(edge) = self.get_edge(id)? {
+                edges.push(edge);
+            }
+        }
+        Ok(edges)
+    }
+
+    // ---------------------------------------------------------------
+    // Internal helpers
+    // ---------------------------------------------------------------
 
     /// Collect outgoing edges for a node by scanning the `out:` prefix.
     fn outgoing_edges(&self, node_id: u64) -> Result<Vec<Edge>> {
@@ -613,6 +712,50 @@ fn in_prefix(node_id: u64) -> Vec<u8> {
 
 /// Extract the edge ID from an adjacency key by stripping the prefix.
 fn edge_id_from_adjacency_key(key: &[u8], prefix: &[u8]) -> u64 {
+    let suffix = &key[prefix.len()..];
+    if suffix.len() == 8 {
+        u64::from_le_bytes(suffix.try_into().unwrap())
+    } else {
+        0
+    }
+}
+
+/// Build a node kind index key: `node_kind:{kind}:{node_id}`.
+fn node_kind_key(kind: &str, node_id: u64) -> Vec<u8> {
+    let mut key = PREFIX_NODE_KIND.to_vec();
+    key.extend_from_slice(kind.as_bytes());
+    key.push(b':');
+    key.extend_from_slice(&node_id.to_le_bytes());
+    key
+}
+
+/// Build the scan prefix for a node kind: `node_kind:{kind}:`.
+fn node_kind_prefix(kind: &str) -> Vec<u8> {
+    let mut key = PREFIX_NODE_KIND.to_vec();
+    key.extend_from_slice(kind.as_bytes());
+    key.push(b':');
+    key
+}
+
+/// Build an edge kind index key: `edge_kind:{kind}:{edge_id}`.
+fn edge_kind_key(kind: &str, edge_id: u64) -> Vec<u8> {
+    let mut key = PREFIX_EDGE_KIND.to_vec();
+    key.extend_from_slice(kind.as_bytes());
+    key.push(b':');
+    key.extend_from_slice(&edge_id.to_le_bytes());
+    key
+}
+
+/// Build the scan prefix for an edge kind: `edge_kind:{kind}:`.
+fn edge_kind_prefix(kind: &str) -> Vec<u8> {
+    let mut key = PREFIX_EDGE_KIND.to_vec();
+    key.extend_from_slice(kind.as_bytes());
+    key.push(b':');
+    key
+}
+
+/// Extract the ID (u64) from a kind index key by stripping the prefix.
+fn id_from_kind_key(key: &[u8], prefix: &[u8]) -> u64 {
     let suffix = &key[prefix.len()..];
     if suffix.len() == 8 {
         u64::from_le_bytes(suffix.try_into().unwrap())
@@ -961,6 +1104,126 @@ mod tests {
         let prefix = b"out:";
         let key = b"out:short";
         assert_eq!(edge_id_from_adjacency_key(key, prefix), 0);
+    }
+
+    // --- Node kind index key helpers ---
+
+    #[test]
+    fn node_kind_key_format() {
+        let key = node_kind_key("note", 42);
+        assert!(key.starts_with(PREFIX_NODE_KIND));
+        let rest = &key[PREFIX_NODE_KIND.len()..];
+        assert!(rest.starts_with(b"note:"));
+        assert_eq!(&rest[5..], &42u64.to_le_bytes());
+    }
+
+    #[test]
+    fn node_kind_prefix_matches_key() {
+        let prefix = node_kind_prefix("task");
+        let key = node_kind_key("task", 99);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn node_kind_prefix_does_not_match_different_kind() {
+        let prefix = node_kind_prefix("note");
+        let key = node_kind_key("note2", 1);
+        // "note2" should NOT match "note:" prefix — because the prefix
+        // ends with "note:" and the key has "note2:"
+        assert!(!key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn id_from_kind_key_extracts_id() {
+        let prefix = node_kind_prefix("note");
+        let key = node_kind_key("note", 77);
+        assert_eq!(id_from_kind_key(&key, &prefix), 77);
+    }
+
+    // --- Edge kind index key helpers ---
+
+    #[test]
+    fn edge_kind_key_format() {
+        let key = edge_kind_key("links_to", 5);
+        assert!(key.starts_with(PREFIX_EDGE_KIND));
+        let rest = &key[PREFIX_EDGE_KIND.len()..];
+        assert!(rest.starts_with(b"links_to:"));
+        assert_eq!(&rest[9..], &5u64.to_le_bytes());
+    }
+
+    #[test]
+    fn edge_kind_prefix_matches_key() {
+        let prefix = edge_kind_prefix("tagged_with");
+        let key = edge_kind_key("tagged_with", 10);
+        assert!(key.starts_with(&prefix));
+    }
+
+    // --- list_nodes_by_kind (unit-level) ---
+
+    #[test]
+    fn list_nodes_by_kind_basic() {
+        use crate::model::{NewNode, Properties};
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        db.create_node(NewNode {
+            kind: "note".to_string(),
+            title: "A".to_string(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .unwrap();
+        db.create_node(NewNode {
+            kind: "task".to_string(),
+            title: "B".to_string(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .unwrap();
+
+        let notes = db.list_nodes_by_kind("note", 10, 0).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].title, "A");
+    }
+
+    // --- list_edges_by_kind (unit-level) ---
+
+    #[test]
+    fn list_edges_by_kind_basic() {
+        use crate::model::{NewEdge, NewNode, Properties};
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let n1 = db
+            .create_node(NewNode {
+                kind: "note".to_string(),
+                title: "A".to_string(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        let n2 = db
+            .create_node(NewNode {
+                kind: "note".to_string(),
+                title: "B".to_string(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        db.create_edge(NewEdge {
+            from_id: n1.id,
+            to_id: n2.id,
+            kind: "links_to".to_string(),
+            weight: 1.0,
+            properties: Properties::default(),
+        })
+        .unwrap();
+
+        let links = db.list_edges_by_kind("links_to", 10, 0).unwrap();
+        assert_eq!(links.len(), 1);
+
+        let empty = db.list_edges_by_kind("nonexistent", 10, 0).unwrap();
+        assert!(empty.is_empty());
     }
 
     // --- Edge serialization ---
