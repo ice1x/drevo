@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{GraphNoteError, Result};
-use crate::model::{NewNode, Node, NodePatch};
+use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 use crate::storage::{MemoryBackend, RedbBackend, StorageBackend};
 
 /// Meta key for the next node ID counter.
@@ -25,6 +25,18 @@ const PREFIX_NODE_UUID: &[u8] = b"node_uuid:";
 
 /// Key prefix for title-to-id index: `node_title:{title}` -> u64 (le bytes).
 const PREFIX_NODE_TITLE: &[u8] = b"node_title:";
+
+/// Key prefix for edge data: `edge:{id}` -> bincode(Edge).
+const PREFIX_EDGE: &[u8] = b"edge:";
+
+/// Key prefix for edge UUID index: `edge_uuid:{uuid}` -> u64 (le bytes).
+const PREFIX_EDGE_UUID: &[u8] = b"edge_uuid:";
+
+/// Key prefix for outgoing adjacency: `out:{from_id}:{edge_id}` -> empty.
+const PREFIX_OUT: &[u8] = b"out:";
+
+/// Key prefix for incoming adjacency: `in:{to_id}:{edge_id}` -> empty.
+const PREFIX_IN: &[u8] = b"in:";
 
 /// Bincode configuration used for all serialization.
 const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
@@ -115,7 +127,7 @@ impl GraphNoteDb {
     }
 
     /// Return a reference to the underlying storage backend.
-    #[allow(dead_code)] // Will be used by Edge CRUD in task 00011
+    #[allow(dead_code)] // Reserved for future use (e.g. traversal, search)
     pub(crate) fn backend(&self) -> &dyn StorageBackend {
         &*self.backend
     }
@@ -295,6 +307,197 @@ impl GraphNoteDb {
         Ok(())
     }
 
+    // ---------------------------------------------------------------
+    // Edge CRUD
+    // ---------------------------------------------------------------
+
+    /// Create a new edge between two existing nodes.
+    ///
+    /// Allocates a unique ID, generates a UUID v7 and timestamp,
+    /// stores the edge, updates UUID index and adjacency lists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphNoteError::NodeNotFound`] if either `from_id` or
+    /// `to_id` does not refer to an existing node.
+    pub fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
+        // Validate that both endpoints exist
+        if self.get_node(new_edge.from_id)?.is_none() {
+            return Err(GraphNoteError::NodeNotFound(new_edge.from_id));
+        }
+        if self.get_node(new_edge.to_id)?.is_none() {
+            return Err(GraphNoteError::NodeNotFound(new_edge.to_id));
+        }
+
+        let id = self.alloc_edge_id();
+        let edge = new_edge.into_edge(id);
+
+        // Store edge data
+        let data = serialize_edge(&edge)?;
+        self.backend
+            .put(&edge_key(id), &data)
+            .map_err(GraphNoteError::Storage)?;
+
+        // UUID index
+        self.backend
+            .put(&edge_uuid_key(&edge.uuid), &id.to_le_bytes())
+            .map_err(GraphNoteError::Storage)?;
+
+        // Outgoing adjacency: out:{from_id}:{edge_id}
+        self.backend
+            .put(&out_edge_key(edge.from_id, id), &[])
+            .map_err(GraphNoteError::Storage)?;
+
+        // Incoming adjacency: in:{to_id}:{edge_id}
+        self.backend
+            .put(&in_edge_key(edge.to_id, id), &[])
+            .map_err(GraphNoteError::Storage)?;
+
+        Ok(edge)
+    }
+
+    /// Retrieve an edge by its auto-increment ID.
+    ///
+    /// Returns `None` if the edge does not exist.
+    pub fn get_edge(&self, id: u64) -> Result<Option<Edge>> {
+        match self
+            .backend
+            .get(&edge_key(id))
+            .map_err(GraphNoteError::Storage)?
+        {
+            Some(bytes) => Ok(Some(deserialize_edge(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Retrieve an edge by its UUID v7.
+    ///
+    /// Returns `None` if no edge has the given UUID.
+    pub fn get_edge_by_uuid(&self, uuid: &[u8; 16]) -> Result<Option<Edge>> {
+        match self
+            .backend
+            .get(&edge_uuid_key(uuid))
+            .map_err(GraphNoteError::Storage)?
+        {
+            Some(id_bytes) => {
+                let id = u64_from_bytes(&id_bytes);
+                self.get_edge(id)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Update an existing edge with a partial patch.
+    ///
+    /// Only `Some` fields in the patch are applied (kind, weight, properties).
+    /// The edge endpoints (`from_id`, `to_id`) cannot be changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphNoteError::EdgeNotFound`] if the edge does not exist.
+    pub fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
+        let mut edge = self.get_edge(id)?.ok_or(GraphNoteError::EdgeNotFound(id))?;
+
+        edge.apply_patch(patch);
+
+        let data = serialize_edge(&edge)?;
+        self.backend
+            .put(&edge_key(id), &data)
+            .map_err(GraphNoteError::Storage)?;
+
+        Ok(edge)
+    }
+
+    /// Delete an edge by ID.
+    ///
+    /// Removes the edge data, UUID index, and adjacency list entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphNoteError::EdgeNotFound`] if the edge does not exist.
+    pub fn delete_edge(&self, id: u64) -> Result<()> {
+        let edge = self.get_edge(id)?.ok_or(GraphNoteError::EdgeNotFound(id))?;
+
+        // Remove edge data
+        self.backend
+            .delete(&edge_key(id))
+            .map_err(GraphNoteError::Storage)?;
+
+        // Remove UUID index
+        self.backend
+            .delete(&edge_uuid_key(&edge.uuid))
+            .map_err(GraphNoteError::Storage)?;
+
+        // Remove outgoing adjacency entry
+        self.backend
+            .delete(&out_edge_key(edge.from_id, id))
+            .map_err(GraphNoteError::Storage)?;
+
+        // Remove incoming adjacency entry
+        self.backend
+            .delete(&in_edge_key(edge.to_id, id))
+            .map_err(GraphNoteError::Storage)?;
+
+        Ok(())
+    }
+
+    /// Retrieve all edges connected to a node in the given direction.
+    ///
+    /// - `Outgoing`: edges where `from_id == node_id`
+    /// - `Incoming`: edges where `to_id == node_id`
+    /// - `Both`: union of outgoing and incoming (deduplicated for self-loops)
+    pub fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>> {
+        match direction {
+            Direction::Outgoing => self.outgoing_edges(node_id),
+            Direction::Incoming => self.incoming_edges(node_id),
+            Direction::Both => {
+                let mut edges = self.outgoing_edges(node_id)?;
+                let incoming = self.incoming_edges(node_id)?;
+                // Deduplicate self-loop edges that appear in both lists
+                for edge in incoming {
+                    if !edges.iter().any(|e| e.id == edge.id) {
+                        edges.push(edge);
+                    }
+                }
+                Ok(edges)
+            }
+        }
+    }
+
+    /// Collect outgoing edges for a node by scanning the `out:` prefix.
+    fn outgoing_edges(&self, node_id: u64) -> Result<Vec<Edge>> {
+        let prefix = out_prefix(node_id);
+        let entries = self
+            .backend
+            .scan_prefix(&prefix)
+            .map_err(GraphNoteError::Storage)?;
+        let mut edges = Vec::with_capacity(entries.len());
+        for (key, _) in entries {
+            let edge_id = edge_id_from_adjacency_key(&key, &prefix);
+            if let Some(edge) = self.get_edge(edge_id)? {
+                edges.push(edge);
+            }
+        }
+        Ok(edges)
+    }
+
+    /// Collect incoming edges for a node by scanning the `in:` prefix.
+    fn incoming_edges(&self, node_id: u64) -> Result<Vec<Edge>> {
+        let prefix = in_prefix(node_id);
+        let entries = self
+            .backend
+            .scan_prefix(&prefix)
+            .map_err(GraphNoteError::Storage)?;
+        let mut edges = Vec::with_capacity(entries.len());
+        for (key, _) in entries {
+            let edge_id = edge_id_from_adjacency_key(&key, &prefix);
+            if let Some(edge) = self.get_edge(edge_id)? {
+                edges.push(edge);
+            }
+        }
+        Ok(edges)
+    }
+
     /// Load auto-increment counters from storage metadata.
     ///
     /// Returns (next_node_id, next_edge_id). Defaults to 1 if not found.
@@ -358,6 +561,77 @@ fn node_title_key(title: &str) -> Vec<u8> {
     let mut key = PREFIX_NODE_TITLE.to_vec();
     key.extend_from_slice(title.as_bytes());
     key
+}
+
+/// Build the storage key for an edge: `edge:{id}`.
+fn edge_key(id: u64) -> Vec<u8> {
+    let mut key = PREFIX_EDGE.to_vec();
+    key.extend_from_slice(&id.to_le_bytes());
+    key
+}
+
+/// Build the UUID index key for an edge: `edge_uuid:{uuid}`.
+fn edge_uuid_key(uuid: &[u8; 16]) -> Vec<u8> {
+    let mut key = PREFIX_EDGE_UUID.to_vec();
+    key.extend_from_slice(uuid);
+    key
+}
+
+/// Build an outgoing adjacency key: `out:{from_id}:{edge_id}`.
+fn out_edge_key(from_id: u64, edge_id: u64) -> Vec<u8> {
+    let mut key = PREFIX_OUT.to_vec();
+    key.extend_from_slice(&from_id.to_le_bytes());
+    key.push(b':');
+    key.extend_from_slice(&edge_id.to_le_bytes());
+    key
+}
+
+/// Build an incoming adjacency key: `in:{to_id}:{edge_id}`.
+fn in_edge_key(to_id: u64, edge_id: u64) -> Vec<u8> {
+    let mut key = PREFIX_IN.to_vec();
+    key.extend_from_slice(&to_id.to_le_bytes());
+    key.push(b':');
+    key.extend_from_slice(&edge_id.to_le_bytes());
+    key
+}
+
+/// Build the scan prefix for outgoing edges of a node: `out:{node_id}:`.
+fn out_prefix(node_id: u64) -> Vec<u8> {
+    let mut key = PREFIX_OUT.to_vec();
+    key.extend_from_slice(&node_id.to_le_bytes());
+    key.push(b':');
+    key
+}
+
+/// Build the scan prefix for incoming edges of a node: `in:{node_id}:`.
+fn in_prefix(node_id: u64) -> Vec<u8> {
+    let mut key = PREFIX_IN.to_vec();
+    key.extend_from_slice(&node_id.to_le_bytes());
+    key.push(b':');
+    key
+}
+
+/// Extract the edge ID from an adjacency key by stripping the prefix.
+fn edge_id_from_adjacency_key(key: &[u8], prefix: &[u8]) -> u64 {
+    let suffix = &key[prefix.len()..];
+    if suffix.len() == 8 {
+        u64::from_le_bytes(suffix.try_into().unwrap())
+    } else {
+        0
+    }
+}
+
+/// Serialize an edge to bincode bytes.
+fn serialize_edge(edge: &Edge) -> Result<Vec<u8>> {
+    bincode::serde::encode_to_vec(edge, BINCODE_CONFIG)
+        .map_err(|e| GraphNoteError::Serialization(e.to_string()))
+}
+
+/// Deserialize an edge from bincode bytes.
+fn deserialize_edge(bytes: &[u8]) -> Result<Edge> {
+    let (edge, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)
+        .map_err(|e| GraphNoteError::Serialization(e.to_string()))?;
+    Ok(edge)
 }
 
 /// Serialize a node to bincode bytes.
@@ -621,5 +895,169 @@ mod tests {
             .unwrap();
         db.delete_node(node.id).unwrap();
         assert!(db.get_node(node.id).unwrap().is_none());
+    }
+
+    // --- Edge key helpers ---
+
+    #[test]
+    fn edge_key_format() {
+        let key = edge_key(7);
+        assert!(key.starts_with(PREFIX_EDGE));
+        assert_eq!(&key[PREFIX_EDGE.len()..], &7u64.to_le_bytes());
+    }
+
+    #[test]
+    fn edge_uuid_key_format() {
+        let uuid = [2u8; 16];
+        let key = edge_uuid_key(&uuid);
+        assert!(key.starts_with(PREFIX_EDGE_UUID));
+        assert_eq!(&key[PREFIX_EDGE_UUID.len()..], &uuid);
+    }
+
+    #[test]
+    fn out_edge_key_format() {
+        let key = out_edge_key(1, 5);
+        assert!(key.starts_with(PREFIX_OUT));
+        // Format: out:{from_id_8bytes}:{edge_id_8bytes}
+        let rest = &key[PREFIX_OUT.len()..];
+        assert_eq!(&rest[..8], &1u64.to_le_bytes());
+        assert_eq!(rest[8], b':');
+        assert_eq!(&rest[9..], &5u64.to_le_bytes());
+    }
+
+    #[test]
+    fn in_edge_key_format() {
+        let key = in_edge_key(2, 10);
+        assert!(key.starts_with(PREFIX_IN));
+        let rest = &key[PREFIX_IN.len()..];
+        assert_eq!(&rest[..8], &2u64.to_le_bytes());
+        assert_eq!(rest[8], b':');
+        assert_eq!(&rest[9..], &10u64.to_le_bytes());
+    }
+
+    #[test]
+    fn out_prefix_format() {
+        let prefix = out_prefix(3);
+        let key = out_edge_key(3, 99);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn in_prefix_format() {
+        let prefix = in_prefix(4);
+        let key = in_edge_key(4, 88);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn edge_id_from_adjacency_key_valid() {
+        let prefix = out_prefix(1);
+        let key = out_edge_key(1, 42);
+        assert_eq!(edge_id_from_adjacency_key(&key, &prefix), 42);
+    }
+
+    #[test]
+    fn edge_id_from_adjacency_key_invalid_returns_zero() {
+        let prefix = b"out:";
+        let key = b"out:short";
+        assert_eq!(edge_id_from_adjacency_key(key, prefix), 0);
+    }
+
+    // --- Edge serialization ---
+
+    #[test]
+    fn serialize_deserialize_edge_roundtrip() {
+        use crate::model::{NewEdge, Properties};
+        let edge = NewEdge {
+            from_id: 1,
+            to_id: 2,
+            kind: "links_to".to_string(),
+            weight: 1.5,
+            properties: Properties::default(),
+        }
+        .into_edge(1);
+
+        let bytes = serialize_edge(&edge).unwrap();
+        let decoded = deserialize_edge(&bytes).unwrap();
+        assert_eq!(decoded, edge);
+    }
+
+    // --- Edge CRUD (unit-level) ---
+
+    #[test]
+    fn create_and_get_edge() {
+        use crate::model::{NewEdge, NewNode, Properties};
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let n1 = db
+            .create_node(NewNode {
+                kind: "note".to_string(),
+                title: "A".to_string(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        let n2 = db
+            .create_node(NewNode {
+                kind: "note".to_string(),
+                title: "B".to_string(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        let edge = db
+            .create_edge(NewEdge {
+                from_id: n1.id,
+                to_id: n2.id,
+                kind: "links_to".to_string(),
+                weight: 1.0,
+                properties: Properties::default(),
+            })
+            .unwrap();
+        assert_eq!(edge.id, 1);
+        let fetched = db.get_edge(1).unwrap().unwrap();
+        assert_eq!(fetched, edge);
+    }
+
+    #[test]
+    fn get_edge_missing_returns_none() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        assert!(db.get_edge(100).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_edge_then_get_returns_none() {
+        use crate::model::{NewEdge, NewNode, Properties};
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let n1 = db
+            .create_node(NewNode {
+                kind: "note".to_string(),
+                title: "A".to_string(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        let n2 = db
+            .create_node(NewNode {
+                kind: "note".to_string(),
+                title: "B".to_string(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        let edge = db
+            .create_edge(NewEdge {
+                from_id: n1.id,
+                to_id: n2.id,
+                kind: "links_to".to_string(),
+                weight: 1.0,
+                properties: Properties::default(),
+            })
+            .unwrap();
+        db.delete_edge(edge.id).unwrap();
+        assert!(db.get_edge(edge.id).unwrap().is_none());
     }
 }

@@ -374,8 +374,8 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 - [x] `00008` Define types: Node, Edge, NewNode, NodePatch, UUID v7
 - [x] `00009` Implement `GraphNoteDb::open` / `open_in_memory` / `close`
-- [ ] `00010` Implement Node CRUD: create_node, get_node, update_node, delete_node
-- [ ] `00011` Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
+- [x] `00010` Implement Node CRUD: create_node, get_node, update_node, delete_node
+- [x] `00011` Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
 - [ ] `00012` Implement title_index and kind_index
 - [ ] `00013` Write tests: CRUD, cascading edge deletion on node removal
 - [ ] `00014` Benchmark: insert 100K nodes + 500K edges, read all neighbors
@@ -589,11 +589,13 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00007` Benchmark: put/get/scan_prefix on 100K entries (criterion)
 - [x] `00008` Define types: Node, Edge, NewNode, NodePatch, UUID v7
 - [x] `00009` GraphNoteDb::open / open_in_memory / close / compact
+- [x] `00010` Node CRUD: create_node, get_node, get_node_by_uuid, get_node_by_title, update_node, delete_node
+- [x] `00011` Edge CRUD: create_edge, get_edge, get_edge_by_uuid, update_edge, delete_edge, edges_of
 
 **Test status:**
 
 ```
-cargo test: 123 passed, 0 failed (73 unit + 49 integration + 1 doctest)
+cargo test: 192 passed, 0 failed (92 unit + 99 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -611,7 +613,7 @@ CI: GitHub Actions — check, test, clippy, fmt (all green)
 
 **Next steps:**
 
-1. `00010` — Implement Node CRUD: create_node, get_node, update_node, delete_node
+1. `00012` — Implement title_index and kind_index
 
 ---
 
