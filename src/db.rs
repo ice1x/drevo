@@ -311,6 +311,13 @@ impl GraphNoteDb {
     pub fn delete_node(&self, id: u64) -> Result<()> {
         let node = self.get_node(id)?.ok_or(GraphNoteError::NodeNotFound(id))?;
 
+        // Cascade-delete all edges connected to this node (both directions).
+        // Using Direction::Both deduplicates self-loop edges automatically.
+        let connected_edges = self.edges_of(id, Direction::Both)?;
+        for edge in &connected_edges {
+            self.delete_edge(edge.id)?;
+        }
+
         // Remove node data
         self.backend
             .delete(&node_key(id))
