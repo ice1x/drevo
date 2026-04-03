@@ -378,7 +378,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00011` Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
 - [x] `00012` Implement title_index and kind_index
 - [x] `00013` Write tests: CRUD, cascading edge deletion on node removal
-- [ ] `00014` Benchmark: insert 100K nodes + 500K edges, read all neighbors
+- [x] `00014` Benchmark: insert 100K nodes + 500K edges, read all neighbors
 
 **Definition of done:** graph operations work, tests pass, indexes are consistent.
 
@@ -593,16 +593,19 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00011` Edge CRUD: create_edge, get_edge, get_edge_by_uuid, update_edge, delete_edge, edges_of
 - [x] `00012` Kind index: list_nodes_by_kind, list_edges_by_kind with pagination
 - [x] `00013` Cascading edge deletion on node removal + tests
+- [x] `00014` Benchmark: insert 100K nodes + 500K edges, read all neighbors
 
 **Test status:**
 
 ```
-cargo test: 228 passed, 0 failed (100 unit + 127 integration + 1 doctest)
+cargo test: 232 passed, 0 failed (100 unit + 131 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
 
 **Benchmark results (Apple Silicon, criterion):**
+
+Storage layer (KV operations):
 
 | Benchmark | MemoryBackend | RedbBackend |
 |---|---|---|
@@ -611,11 +614,25 @@ CI: GitHub Actions — check, test, clippy, fmt (all green)
 | scan_prefix (1K results, from 100K) | ~120 µs | ~163 µs |
 | bulk_put 100K | ~43 ms | ~530 s (per-txn) |
 
-> RedbBackend put is slow because each operation opens a separate ACID transaction. The graph layer will batch writes in transactions for production use.
+Graph layer (MemoryBackend, 100K nodes + 500K edges):
+
+| Benchmark | Time |
+|---|---|
+| insert 100K nodes | ~347 ms |
+| insert 500K edges (into 100K nodes) | ~2.85 s |
+| get_node (random, from 100K) | ~1.0 µs |
+| edges_of outgoing (random node, 5 edges) | ~6.7 µs |
+| edges_of both (random node, ~10 edges) | ~14.2 µs |
+| list_nodes_by_kind (limit 100, 10K per kind) | ~697 µs |
+| list_nodes_by_kind (limit 1000, 10K per kind) | ~1.26 ms |
+
+> RedbBackend graph benchmarks skipped — per-operation ACID transactions make 100K+ inserts impractical (~8+ min). The graph layer will batch writes in transactions for production use.
+
+**Phase 2 complete.** All graph CRUD, indexes, cascading deletes, and benchmarks done.
 
 **Next steps:**
 
-1. `00014` — Benchmark: insert 100K nodes + 500K edges, read all neighbors
+1. `00015` — Implement trigram tokenizer (Phase 3 — Full-Text Search)
 
 ---
 
