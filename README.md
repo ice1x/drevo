@@ -386,7 +386,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 > Goal: trigram-based FTS — WASM-safe, no external dependencies.
 
-- [ ] `00015` Implement trigram tokenizer (lowercase, strip punctuation, CJK)
+- [x] `00015` Implement trigram tokenizer (lowercase, strip punctuation, CJK)
 - [ ] `00016` Implement FTS index: trigram -> posting list storage
 - [ ] `00017` Implement `search_fts` with TF-IDF ranking
 - [ ] `00018` Implement `list_recent` and `list_nodes_by_kind`
@@ -574,7 +574,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 ## Current Status
 
-**Phase:** 2 — Graph Store (CRUD + Indexes)
+**Phase:** 3 — Full-Text Search
 
 **Completed:**
 
@@ -594,11 +594,12 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00012` Kind index: list_nodes_by_kind, list_edges_by_kind with pagination
 - [x] `00013` Cascading edge deletion on node removal + tests
 - [x] `00014` Benchmark: insert 100K nodes + 500K edges, read all neighbors
+- [x] `00015` Trigram tokenizer: normalize, trigrams, extract_trigrams (CJK bigrams, dedup, WASM-safe)
 
 **Test status:**
 
 ```
-cargo test: 232 passed, 0 failed (100 unit + 131 integration + 1 doctest)
+cargo test: 278 passed, 0 failed (128 unit + 149 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -628,11 +629,11 @@ Graph layer (MemoryBackend, 100K nodes + 500K edges):
 
 > RedbBackend graph benchmarks skipped — per-operation ACID transactions make 100K+ inserts impractical (~8+ min). The graph layer will batch writes in transactions for production use.
 
-**Phase 2 complete.** All graph CRUD, indexes, cascading deletes, and benchmarks done.
+**Phase 3 in progress.** Trigram tokenizer done. Next: FTS index storage.
 
 **Next steps:**
 
-1. `00015` — Implement trigram tokenizer (Phase 3 — Full-Text Search)
+1. `00016` — Implement FTS index: trigram -> posting list storage
 
 ---
 
