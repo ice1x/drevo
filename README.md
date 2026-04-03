@@ -376,8 +376,8 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00009` Implement `GraphNoteDb::open` / `open_in_memory` / `close`
 - [x] `00010` Implement Node CRUD: create_node, get_node, update_node, delete_node
 - [x] `00011` Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
-- [ ] `00012` Implement title_index and kind_index
-- [ ] `00013` Write tests: CRUD, cascading edge deletion on node removal
+- [x] `00012` Implement title_index and kind_index
+- [x] `00013` Write tests: CRUD, cascading edge deletion on node removal
 - [ ] `00014` Benchmark: insert 100K nodes + 500K edges, read all neighbors
 
 **Definition of done:** graph operations work, tests pass, indexes are consistent.
@@ -591,11 +591,13 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00009` GraphNoteDb::open / open_in_memory / close / compact
 - [x] `00010` Node CRUD: create_node, get_node, get_node_by_uuid, get_node_by_title, update_node, delete_node
 - [x] `00011` Edge CRUD: create_edge, get_edge, get_edge_by_uuid, update_edge, delete_edge, edges_of
+- [x] `00012` Kind index: list_nodes_by_kind, list_edges_by_kind with pagination
+- [x] `00013` Cascading edge deletion on node removal + tests
 
 **Test status:**
 
 ```
-cargo test: 192 passed, 0 failed (92 unit + 99 integration + 1 doctest)
+cargo test: 228 passed, 0 failed (100 unit + 127 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -613,7 +615,7 @@ CI: GitHub Actions — check, test, clippy, fmt (all green)
 
 **Next steps:**
 
-1. `00012` — Implement title_index and kind_index
+1. `00014` — Benchmark: insert 100K nodes + 500K edges, read all neighbors
 
 ---
 
