@@ -94,6 +94,15 @@ pub(crate) fn node_ids_for_trigram(
     Ok(ids)
 }
 
+/// Count how many nodes contain a given trigram (document frequency).
+pub(crate) fn posting_list_len(backend: &dyn StorageBackend, trigram: &str) -> Result<usize> {
+    let prefix = fts_trigram_prefix(trigram);
+    let entries = backend
+        .scan_prefix(&prefix)
+        .map_err(GraphNoteError::Storage)?;
+    Ok(entries.len())
+}
+
 /// Intersect posting lists for multiple trigrams.
 ///
 /// Returns node IDs that appear in ALL posting lists.
