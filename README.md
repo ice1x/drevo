@@ -388,7 +388,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 - [x] `00015` Implement trigram tokenizer (lowercase, strip punctuation, CJK)
 - [x] `00016` Implement FTS index: trigram -> posting list storage
-- [ ] `00017` Implement `search_fts` with TF-IDF ranking
+- [x] `00017` Implement `search_fts` with TF-IDF ranking
 - [ ] `00018` Implement `list_recent` and `list_nodes_by_kind`
 - [ ] `00019` Tests: FTS recall, edge cases (empty query, single char, CJK)
 - [ ] `00020` Benchmark: FTS on 10K nodes
@@ -596,11 +596,12 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00014` Benchmark: insert 100K nodes + 500K edges, read all neighbors
 - [x] `00015` Trigram tokenizer: normalize, trigrams, extract_trigrams (CJK bigrams, dedup, WASM-safe)
 - [x] `00016` FTS index: trigram -> posting list storage (index/deindex on CRUD, intersect query)
+- [x] `00017` search_fts with TF-IDF ranking (ScoredNode, smoothed IDF, limit, sorted results)
 
 **Test status:**
 
 ```
-cargo test: 307 passed, 0 failed (140 unit + 166 integration + 1 doctest)
+cargo test: 332 passed, 0 failed (146 unit + 185 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -630,11 +631,13 @@ Graph layer (MemoryBackend, 100K nodes + 500K edges):
 
 > RedbBackend graph benchmarks skipped — per-operation ACID transactions make 100K+ inserts impractical (~8+ min). The graph layer will batch writes in transactions for production use.
 
-**Phase 3 in progress.** Trigram tokenizer and FTS index done. Next: search_fts with TF-IDF ranking.
+**Phase 3 in progress.** Trigram tokenizer, FTS index, and search_fts with TF-IDF ranking done. Next: list_recent and list_nodes_by_kind (already partially done — verify and extend).
 
 **Next steps:**
 
-1. `00017` — Implement `search_fts` with TF-IDF ranking
+1. `00018` — Implement `list_recent` and `list_nodes_by_kind` (list_nodes_by_kind exists, add list_recent)
+2. `00019` — Tests: FTS recall, edge cases (empty query, single char, CJK)
+3. `00020` — Benchmark: FTS on 10K nodes
 
 ---
 

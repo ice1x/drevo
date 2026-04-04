@@ -176,6 +176,17 @@ pub enum Direction {
     Both,
 }
 
+/// A search result with a relevance score.
+///
+/// Returned by [`GraphNoteDb::search_fts`] — nodes are ranked by TF-IDF score.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredNode {
+    /// The matching node.
+    pub node: Node,
+    /// Relevance score (higher = more relevant).
+    pub score: f32,
+}
+
 /// Generate a new UUID v7 as a 16-byte array.
 pub fn new_uuid_v7() -> [u8; 16] {
     *uuid::Uuid::now_v7().as_bytes()

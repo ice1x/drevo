@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{GraphNoteError, Result};
 use crate::fts::index as fts_index;
-use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
+use crate::fts::tokenizer::extract_trigrams;
+use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode};
 use crate::storage::{MemoryBackend, RedbBackend, StorageBackend};
 
 /// Meta key for the next node ID counter.
@@ -598,6 +599,102 @@ impl GraphNoteDb {
     /// Returns empty if trigrams is empty or no nodes match all trigrams.
     pub fn fts_intersect_trigrams(&self, trigrams: &[String]) -> Result<Vec<u64>> {
         fts_index::intersect_trigrams(&*self.backend, trigrams)
+    }
+
+    /// Full-text search with TF-IDF ranking.
+    ///
+    /// Extracts trigrams from the query, finds candidate nodes via posting
+    /// list intersection, scores each candidate using TF-IDF, and returns
+    /// up to `limit` results sorted by descending score.
+    ///
+    /// **TF-IDF formula:**
+    /// - TF (term frequency): number of query trigrams present in the
+    ///   node's trigram set, divided by the total number of node trigrams.
+    /// - IDF (inverse document frequency): `ln(N / df)` where `N` is the
+    ///   total number of nodes and `df` is the number of nodes containing
+    ///   the trigram.
+    /// - Score = sum of `tf * idf` for each query trigram.
+    ///
+    /// Returns an empty list if the query produces no trigrams or no
+    /// nodes match.
+    pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<ScoredNode>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let query_trigrams = extract_trigrams(query, "");
+        if query_trigrams.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Find candidate nodes (intersection of all query trigram posting lists)
+        let candidate_ids = fts_index::intersect_trigrams(&*self.backend, &query_trigrams)?;
+        if candidate_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Total number of indexed nodes (approximate: count node: prefix entries)
+        let all_nodes = self
+            .backend
+            .scan_prefix(PREFIX_NODE)
+            .map_err(GraphNoteError::Storage)?;
+        let total_nodes = all_nodes.len() as f32;
+
+        // Precompute IDF for each query trigram
+        let mut idf_values: Vec<f32> = Vec::with_capacity(query_trigrams.len());
+        for trigram in &query_trigrams {
+            let df = fts_index::posting_list_len(&*self.backend, trigram)? as f32;
+            // Smoothed IDF: ln(1 + N / df) — avoids zero when df == N
+            let idf = if df > 0.0 {
+                (1.0 + total_nodes / df).ln()
+            } else {
+                0.0
+            };
+            idf_values.push(idf);
+        }
+
+        // Score each candidate
+        let mut scored: Vec<ScoredNode> = Vec::with_capacity(candidate_ids.len());
+        for node_id in &candidate_ids {
+            let node = match self.get_node(*node_id)? {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Extract the node's own trigrams to compute TF
+            let node_trigrams = extract_trigrams(&node.title, &node.body);
+            let node_trigram_count = node_trigrams.len() as f32;
+            if node_trigram_count == 0.0 {
+                continue;
+            }
+
+            let mut score: f32 = 0.0;
+            for (i, qt) in query_trigrams.iter().enumerate() {
+                // TF: count how many times this query trigram appears in node trigrams
+                // Since trigrams are deduplicated, tf is 0 or 1
+                let tf = if node_trigrams.iter().any(|nt| nt == qt) {
+                    1.0 / node_trigram_count
+                } else {
+                    0.0
+                };
+                score += tf * idf_values[i];
+            }
+
+            if score > 0.0 {
+                scored.push(ScoredNode { node, score });
+            }
+        }
+
+        // Sort by score descending, then by node id ascending for stability
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.node.id.cmp(&b.node.id))
+        });
+
+        scored.truncate(limit);
+        Ok(scored)
     }
 
     // ---------------------------------------------------------------
@@ -1363,5 +1460,84 @@ mod tests {
             .unwrap();
         db.delete_edge(edge.id).unwrap();
         assert!(db.get_edge(edge.id).unwrap().is_none());
+    }
+
+    // --- search_fts ---
+
+    fn test_node(kind: &str, title: &str, body: &str) -> NewNode {
+        use crate::model::Properties;
+        NewNode {
+            kind: kind.to_string(),
+            title: title.to_string(),
+            body: body.to_string(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        }
+    }
+
+    #[test]
+    fn search_fts_empty_query() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        db.create_node(test_node("note", "Rust", "")).unwrap();
+        let results = db.search_fts("", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_fts_basic_match() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        db.create_node(test_node("note", "Rust programming", ""))
+            .unwrap();
+        let results = db.search_fts("rust", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].node.title, "Rust programming");
+        assert!(results[0].score > 0.0);
+    }
+
+    #[test]
+    fn search_fts_no_match() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        db.create_node(test_node("note", "Hello", "")).unwrap();
+        let results = db.search_fts("zzzzz", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_fts_limit_works() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        for i in 0..10 {
+            db.create_node(test_node("note", &format!("Rust item {}", i), ""))
+                .unwrap();
+        }
+        let results = db.search_fts("rust", 3).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn search_fts_results_sorted_by_score_desc() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        db.create_node(test_node("note", "Rust", "")).unwrap();
+        db.create_node(test_node(
+            "note",
+            "Rust programming language",
+            "Rust is a systems programming language",
+        ))
+        .unwrap();
+        let results = db.search_fts("rust programming", 10).unwrap();
+        if results.len() >= 2 {
+            assert!(results[0].score >= results[1].score);
+        }
+    }
+
+    #[test]
+    fn search_fts_scored_node_fields() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let node = db
+            .create_node(test_node("note", "Rust language", ""))
+            .unwrap();
+        let results = db.search_fts("rust", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].node.id, node.id);
+        assert_eq!(results[0].node.uuid, node.uuid);
     }
 }
