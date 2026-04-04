@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{GraphNoteError, Result};
+use crate::fts::index as fts_index;
 use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 use crate::storage::{MemoryBackend, RedbBackend, StorageBackend};
 
@@ -187,6 +188,9 @@ impl GraphNoteDb {
             .put(&node_kind_key(&node.kind, id), &[])
             .map_err(GraphNoteError::Storage)?;
 
+        // FTS index
+        fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
+
         Ok(node)
     }
 
@@ -252,6 +256,7 @@ impl GraphNoteDb {
         let mut node = self.get_node(id)?.ok_or(GraphNoteError::NodeNotFound(id))?;
 
         let old_title = node.title.clone();
+        let old_body = node.body.clone();
         let old_kind = node.kind.clone();
 
         // Check title uniqueness before applying patch
@@ -297,6 +302,12 @@ impl GraphNoteDb {
                 .map_err(GraphNoteError::Storage)?;
         }
 
+        // Update FTS index if title or body changed
+        if node.title != old_title || node.body != old_body {
+            fts_index::deindex_node(&*self.backend, id, &old_title, &old_body)?;
+            fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
+        }
+
         Ok(node)
     }
 
@@ -337,6 +348,9 @@ impl GraphNoteDb {
         self.backend
             .delete(&node_kind_key(&node.kind, id))
             .map_err(GraphNoteError::Storage)?;
+
+        // Remove FTS index
+        fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
 
         Ok(())
     }
@@ -564,6 +578,26 @@ impl GraphNoteDb {
             }
         }
         Ok(edges)
+    }
+
+    // ---------------------------------------------------------------
+    // FTS index queries
+    // ---------------------------------------------------------------
+
+    /// Retrieve all node IDs from the posting list of a single trigram.
+    ///
+    /// Returns an empty list if no nodes match. Useful for inspecting
+    /// the FTS index directly in tests.
+    pub fn fts_node_ids_for_trigram(&self, trigram: &str) -> Result<Vec<u64>> {
+        fts_index::node_ids_for_trigram(&*self.backend, trigram)
+    }
+
+    /// Intersect posting lists for multiple trigrams.
+    ///
+    /// Returns node IDs that appear in ALL posting lists (AND semantics).
+    /// Returns empty if trigrams is empty or no nodes match all trigrams.
+    pub fn fts_intersect_trigrams(&self, trigrams: &[String]) -> Result<Vec<u64>> {
+        fts_index::intersect_trigrams(&*self.backend, trigrams)
     }
 
     // ---------------------------------------------------------------
