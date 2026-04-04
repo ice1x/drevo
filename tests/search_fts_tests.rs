@@ -70,7 +70,7 @@ fn search_fts_multiple_matches_ranked() {
         .unwrap();
 
     let results = db.search_fts("rust", 10).unwrap();
-    assert!(results.len() >= 1);
+    assert!(!results.is_empty());
     // All results should contain "rust"-related trigrams
     for r in &results {
         let lower = format!("{} {}", r.node.title, r.node.body).to_lowercase();
