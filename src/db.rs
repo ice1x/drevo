@@ -46,6 +46,11 @@ const PREFIX_NODE_KIND: &[u8] = b"node_kind:";
 /// Key prefix for edge kind index: `edge_kind:{kind}:{edge_id}` -> empty.
 const PREFIX_EDGE_KIND: &[u8] = b"edge_kind:";
 
+/// Key prefix for updated_at index: `updated:{inverted_ts_be}:{node_id_le}` -> empty.
+/// Inverted timestamp (`i64::MAX - updated_at`) stored as big-endian so that
+/// scanning in natural byte order yields newest nodes first.
+const PREFIX_UPDATED: &[u8] = b"updated:";
+
 /// Bincode configuration used for all serialization.
 const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
@@ -192,6 +197,11 @@ impl GraphNoteDb {
         // FTS index
         fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
 
+        // Updated-at index (newest-first ordering)
+        self.backend
+            .put(&updated_key(node.updated_at, id), &[])
+            .map_err(GraphNoteError::Storage)?;
+
         Ok(node)
     }
 
@@ -259,6 +269,7 @@ impl GraphNoteDb {
         let old_title = node.title.clone();
         let old_body = node.body.clone();
         let old_kind = node.kind.clone();
+        let old_updated_at = node.updated_at;
 
         // Check title uniqueness before applying patch
         if let Some(ref new_title) = patch.title {
@@ -309,6 +320,14 @@ impl GraphNoteDb {
             fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
         }
 
+        // Update updated-at index: remove old entry, add new one
+        self.backend
+            .delete(&updated_key(old_updated_at, id))
+            .map_err(GraphNoteError::Storage)?;
+        self.backend
+            .put(&updated_key(node.updated_at, id), &[])
+            .map_err(GraphNoteError::Storage)?;
+
         Ok(node)
     }
 
@@ -352,6 +371,11 @@ impl GraphNoteDb {
 
         // Remove FTS index
         fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
+
+        // Remove updated-at index
+        self.backend
+            .delete(&updated_key(node.updated_at, id))
+            .map_err(GraphNoteError::Storage)?;
 
         Ok(())
     }
@@ -579,6 +603,30 @@ impl GraphNoteDb {
             }
         }
         Ok(edges)
+    }
+
+    /// List the most recently updated nodes.
+    ///
+    /// Scans the `updated:` index which is sorted by descending `updated_at`
+    /// timestamp (newest first). Returns at most `limit` nodes.
+    pub fn list_recent(&self, limit: usize) -> Result<Vec<Node>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let entries = self
+            .backend
+            .scan_prefix(PREFIX_UPDATED)
+            .map_err(GraphNoteError::Storage)?;
+
+        let mut nodes = Vec::new();
+        for (key, _) in entries.into_iter().take(limit) {
+            let id = node_id_from_updated_key(&key);
+            if let Some(node) = self.get_node(id)? {
+                nodes.push(node);
+            }
+        }
+        Ok(nodes)
     }
 
     // ---------------------------------------------------------------
@@ -890,6 +938,32 @@ fn edge_kind_prefix(kind: &str) -> Vec<u8> {
     key.extend_from_slice(kind.as_bytes());
     key.push(b':');
     key
+}
+
+/// Build an updated_at index key: `updated:{inverted_ts_be}:{node_id_le}`.
+///
+/// The timestamp is inverted (`i64::MAX - ts`) and stored as big-endian
+/// so that scanning the `updated:` prefix returns the most recently
+/// updated nodes first.
+fn updated_key(updated_at: i64, node_id: u64) -> Vec<u8> {
+    let inverted = i64::MAX - updated_at;
+    let mut key = PREFIX_UPDATED.to_vec();
+    key.extend_from_slice(&inverted.to_be_bytes());
+    key.push(b':');
+    key.extend_from_slice(&node_id.to_le_bytes());
+    key
+}
+
+/// Extract the node ID from an updated_at index key.
+fn node_id_from_updated_key(key: &[u8]) -> u64 {
+    // Format: PREFIX_UPDATED (8) + inverted_ts (8) + ':' (1) + node_id (8)
+    let offset = PREFIX_UPDATED.len() + 8 + 1;
+    let suffix = &key[offset..];
+    if suffix.len() == 8 {
+        u64::from_le_bytes(suffix.try_into().unwrap())
+    } else {
+        0
+    }
 }
 
 /// Extract the ID (u64) from a kind index key by stripping the prefix.
@@ -1539,5 +1613,105 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].node.id, node.id);
         assert_eq!(results[0].node.uuid, node.uuid);
+    }
+
+    // --- list_recent ---
+
+    #[test]
+    fn list_recent_empty_db() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let nodes = db.list_recent(10).unwrap();
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn list_recent_returns_nodes_newest_first() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let n1 = db.create_node(test_node("note", "First", "")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let n2 = db.create_node(test_node("note", "Second", "")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let n3 = db.create_node(test_node("note", "Third", "")).unwrap();
+
+        let nodes = db.list_recent(10).unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].id, n3.id);
+        assert_eq!(nodes[1].id, n2.id);
+        assert_eq!(nodes[2].id, n1.id);
+    }
+
+    #[test]
+    fn list_recent_respects_limit() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        for i in 0..5 {
+            db.create_node(test_node("note", &format!("N{}", i), ""))
+                .unwrap();
+        }
+        let nodes = db.list_recent(3).unwrap();
+        assert_eq!(nodes.len(), 3);
+    }
+
+    #[test]
+    fn list_recent_zero_limit() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        db.create_node(test_node("note", "A", "")).unwrap();
+        let nodes = db.list_recent(0).unwrap();
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn list_recent_updated_node_moves_to_top() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let n1 = db.create_node(test_node("note", "First", "")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let _n2 = db.create_node(test_node("note", "Second", "")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // Update the first node — it should move to the top
+        db.update_node(
+            n1.id,
+            NodePatch {
+                body: Some("updated body".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let nodes = db.list_recent(10).unwrap();
+        assert_eq!(nodes[0].id, n1.id);
+    }
+
+    #[test]
+    fn list_recent_deleted_node_is_excluded() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let n1 = db.create_node(test_node("note", "Stay", "")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let n2 = db.create_node(test_node("note", "Gone", "")).unwrap();
+
+        db.delete_node(n2.id).unwrap();
+
+        let nodes = db.list_recent(10).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, n1.id);
+    }
+
+    // --- updated_at index key helpers ---
+
+    #[test]
+    fn updated_key_format() {
+        let key = updated_key(1000, 42);
+        assert!(key.starts_with(PREFIX_UPDATED));
+        let rest = &key[PREFIX_UPDATED.len()..];
+        // inverted timestamp (8 bytes) + ':' + node_id (8 bytes)
+        assert_eq!(rest.len(), 8 + 1 + 8);
+        assert_eq!(rest[8], b':');
+    }
+
+    #[test]
+    fn updated_key_newer_timestamp_sorts_first() {
+        let old_key = updated_key(1000, 1);
+        let new_key = updated_key(2000, 2);
+        // Newer timestamp should produce a smaller key (lower inverted value)
+        assert!(new_key < old_key);
     }
 }
