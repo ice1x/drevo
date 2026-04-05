@@ -23,3 +23,7 @@ harness = false
 [[bench]]
 name = "graph_bench"
 harness = false
+
+[[bench]]
+name = "fts_bench"
+harness = false
