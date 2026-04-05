@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use crate::error::Result;
-use crate::model::{Direction, Edge, Node};
+use crate::model::{Direction, Edge, Node, SubGraph};
 
 /// Perform a breadth-first search starting from `start_id`.
 ///
@@ -288,6 +288,84 @@ where
     }
 
     Ok(None)
+}
+
+/// Extract a subgraph of all nodes and edges within `depth` hops of `root`.
+///
+/// Uses BFS (both directions) to discover nodes within the radius,
+/// then collects all edges whose **both** endpoints are in the
+/// discovered node set. The root node is **included** in the result.
+///
+/// Returns `Err(NodeNotFound)` if the root node does not exist.
+///
+/// # Arguments
+///
+/// * `root` — the node ID to start from
+/// * `depth` — maximum number of hops (0 returns only the root, no edges)
+/// * `get_node` — closure to retrieve a node by ID
+/// * `edges_of` — closure to retrieve edges of a node (both directions)
+pub fn subgraph<F, G>(root: u64, depth: u8, get_node: &F, edges_of: &G) -> Result<SubGraph>
+where
+    F: Fn(u64) -> Result<Option<Node>>,
+    G: Fn(u64, Direction) -> Result<Vec<Edge>>,
+{
+    use crate::error::GraphNoteError;
+
+    // Verify root exists.
+    let root_node = get_node(root)?.ok_or(GraphNoteError::NodeNotFound(root))?;
+
+    let mut visited: HashSet<u64> = HashSet::new();
+    visited.insert(root);
+
+    let mut nodes: Vec<Node> = vec![root_node];
+
+    // BFS to discover all reachable nodes within depth.
+    let mut queue: VecDeque<(u64, u8)> = VecDeque::new();
+    queue.push_back((root, 0));
+
+    while let Some((current_id, d)) = queue.pop_front() {
+        if d >= depth {
+            continue;
+        }
+
+        let edges = edges_of(current_id, Direction::Both)?;
+
+        for edge in &edges {
+            let neighbor_id = if edge.from_id == current_id {
+                edge.to_id
+            } else {
+                edge.from_id
+            };
+
+            if visited.contains(&neighbor_id) {
+                continue;
+            }
+            visited.insert(neighbor_id);
+
+            if let Some(node) = get_node(neighbor_id)? {
+                nodes.push(node);
+                queue.push_back((neighbor_id, d + 1));
+            }
+        }
+    }
+
+    // Collect all edges where both endpoints are in the visited set.
+    let mut edge_ids: HashSet<u64> = HashSet::new();
+    let mut edges: Vec<Edge> = Vec::new();
+
+    for &node_id in &visited {
+        let node_edges = edges_of(node_id, Direction::Both)?;
+        for edge in node_edges {
+            if visited.contains(&edge.from_id)
+                && visited.contains(&edge.to_id)
+                && edge_ids.insert(edge.id)
+            {
+                edges.push(edge);
+            }
+        }
+    }
+
+    Ok(SubGraph { nodes, edges })
 }
 
 #[cfg(test)]
@@ -863,5 +941,167 @@ mod tests {
             .unwrap();
         let path = db.shortest_path(a.id, b.id).unwrap();
         assert_eq!(path, Some(vec![a.id, b.id]));
+    }
+
+    // ---------------------------------------------------------------
+    // subgraph tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn subgraph_depth_zero_returns_root_only() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+
+        let sg = db.subgraph(a.id, 0).unwrap();
+        assert_eq!(sg.nodes.len(), 1);
+        assert_eq!(sg.nodes[0].id, a.id);
+        assert!(sg.edges.is_empty());
+    }
+
+    #[test]
+    fn subgraph_nonexistent_root_returns_error() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let result = db.subgraph(999, 2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn subgraph_single_hop_includes_root_neighbor_and_edge() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let e = db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+
+        let sg = db.subgraph(a.id, 1).unwrap();
+        assert_eq!(sg.nodes.len(), 2);
+        let node_ids: Vec<u64> = sg.nodes.iter().map(|n| n.id).collect();
+        assert!(node_ids.contains(&a.id));
+        assert!(node_ids.contains(&b.id));
+        assert_eq!(sg.edges.len(), 1);
+        assert_eq!(sg.edges[0].id, e.id);
+    }
+
+    #[test]
+    fn subgraph_follows_both_directions() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(c.id, a.id, "links_to")).unwrap();
+
+        let sg = db.subgraph(a.id, 1).unwrap();
+        assert_eq!(sg.nodes.len(), 3);
+        assert_eq!(sg.edges.len(), 2);
+    }
+
+    #[test]
+    fn subgraph_multi_hop() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(b.id, c.id, "links_to")).unwrap();
+
+        // depth 1: A, B + edge A->B
+        let sg = db.subgraph(a.id, 1).unwrap();
+        assert_eq!(sg.nodes.len(), 2);
+        assert_eq!(sg.edges.len(), 1);
+
+        // depth 2: A, B, C + edges A->B and B->C
+        let sg = db.subgraph(a.id, 2).unwrap();
+        assert_eq!(sg.nodes.len(), 3);
+        assert_eq!(sg.edges.len(), 2);
+    }
+
+    #[test]
+    fn subgraph_handles_cycle() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(b.id, c.id, "links_to")).unwrap();
+        db.create_edge(make_edge(c.id, a.id, "links_to")).unwrap();
+
+        let sg = db.subgraph(a.id, 10).unwrap();
+        assert_eq!(sg.nodes.len(), 3);
+        assert_eq!(sg.edges.len(), 3);
+    }
+
+    #[test]
+    fn subgraph_diamond_no_duplicates() {
+        // A -> B, A -> C, B -> D, C -> D
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        let d = db.create_node(make_node("note", "D")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(a.id, c.id, "links_to")).unwrap();
+        db.create_edge(make_edge(b.id, d.id, "links_to")).unwrap();
+        db.create_edge(make_edge(c.id, d.id, "links_to")).unwrap();
+
+        let sg = db.subgraph(a.id, 2).unwrap();
+        assert_eq!(sg.nodes.len(), 4);
+        assert_eq!(sg.edges.len(), 4);
+        // No duplicate nodes
+        let mut ids: Vec<u64> = sg.nodes.iter().map(|n| n.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 4);
+    }
+
+    #[test]
+    fn subgraph_self_loop() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let e = db.create_edge(make_edge(a.id, a.id, "self_ref")).unwrap();
+
+        let sg = db.subgraph(a.id, 3).unwrap();
+        assert_eq!(sg.nodes.len(), 1);
+        assert_eq!(sg.edges.len(), 1);
+        assert_eq!(sg.edges[0].id, e.id);
+    }
+
+    #[test]
+    fn subgraph_isolated_node() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "Isolated")).unwrap();
+
+        let sg = db.subgraph(a.id, 5).unwrap();
+        assert_eq!(sg.nodes.len(), 1);
+        assert_eq!(sg.nodes[0].id, a.id);
+        assert!(sg.edges.is_empty());
+    }
+
+    #[test]
+    fn subgraph_only_includes_edges_between_subgraph_nodes() {
+        // A -> B -> C -> D, with an edge D -> E (outside radius)
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        let d = db.create_node(make_node("note", "D")).unwrap();
+        let _e = db.create_node(make_node("note", "E")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(b.id, c.id, "links_to")).unwrap();
+        db.create_edge(make_edge(c.id, d.id, "links_to")).unwrap();
+        db.create_edge(make_edge(d.id, _e.id, "links_to")).unwrap();
+
+        // depth 2 from A: nodes A, B, C
+        let sg = db.subgraph(a.id, 2).unwrap();
+        assert_eq!(sg.nodes.len(), 3);
+        // Only edges A->B and B->C (not C->D or D->E)
+        assert_eq!(sg.edges.len(), 2);
+        let edge_ids: HashSet<u64> = sg.edges.iter().map(|e| e.id).collect();
+        // No edge should reference D or E
+        for edge in &sg.edges {
+            assert!(edge.from_id != d.id && edge.to_id != d.id);
+        }
+        let _ = edge_ids; // suppress warning
     }
 }

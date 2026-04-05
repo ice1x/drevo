@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::error::{GraphNoteError, Result};
 use crate::fts::index as fts_index;
 use crate::fts::tokenizer::extract_trigrams;
-use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode};
+use crate::model::{
+    Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
+};
 use crate::storage::{MemoryBackend, RedbBackend, StorageBackend};
 
 /// Meta key for the next node ID counter.
@@ -815,6 +817,19 @@ impl GraphNoteDb {
     /// If `from == to`, returns `Some(vec![from])`.
     pub fn shortest_path(&self, from: u64, to: u64) -> Result<Option<Vec<u64>>> {
         crate::traversal::shortest_path(from, to, &|id| self.get_node(id), &|id, dir| {
+            self.edges_of(id, dir)
+        })
+    }
+
+    /// Extract a subgraph of all nodes and edges within `depth` hops
+    /// of the root node. Follows edges in **both** directions.
+    ///
+    /// The root node is included in the result. All edges whose both
+    /// endpoints are within the discovered node set are returned.
+    ///
+    /// Returns `Err(NodeNotFound)` if the root node does not exist.
+    pub fn subgraph(&self, root: u64, depth: u8) -> Result<SubGraph> {
+        crate::traversal::subgraph(root, depth, &|id| self.get_node(id), &|id, dir| {
             self.edges_of(id, dir)
         })
     }
