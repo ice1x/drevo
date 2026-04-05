@@ -400,8 +400,8 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 > Goal: BFS, DFS, shortest path, subgraph extraction.
 
 - [x] `00021` Implement BFS with depth limit and optional edge kind filter
-- [ ] `00022` Implement DFS with depth limit
-- [ ] `00023` Implement shortest_path (Dijkstra, weighted by `edge.weight`)
+- [x] `00022` Implement DFS with depth limit
+- [x] `00023` Implement shortest_path (Dijkstra, weighted by `edge.weight`)
 - [ ] `00024` Implement `subgraph(root, depth)` — return all nodes and edges within radius
 - [ ] `00025` Tests: cycles, disconnected graphs, empty graph, single node, depth 0
 - [ ] `00026` Benchmark: BFS on a 100K-node graph with average degree 10, depth 3

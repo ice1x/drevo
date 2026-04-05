@@ -807,6 +807,18 @@ impl GraphNoteDb {
         )
     }
 
+    /// Find the shortest (lowest total weight) path between two nodes
+    /// using Dijkstra's algorithm. Follows **outgoing** edges only.
+    ///
+    /// Returns `Some(vec![from, ..., to])` with the node IDs along the
+    /// shortest path, or `None` if `to` is unreachable from `from`.
+    /// If `from == to`, returns `Some(vec![from])`.
+    pub fn shortest_path(&self, from: u64, to: u64) -> Result<Option<Vec<u64>>> {
+        crate::traversal::shortest_path(from, to, &|id| self.get_node(id), &|id, dir| {
+            self.edges_of(id, dir)
+        })
+    }
+
     /// Return immediate neighbors of a node (BFS depth=1).
     ///
     /// Convenience wrapper over [`bfs`] with `max_depth=1`.
