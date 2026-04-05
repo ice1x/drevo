@@ -1,7 +1,7 @@
 //! Integration tests for shortest_path (Dijkstra).
 
 use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
+use graphnote_db::model::{NewEdge, NewNode, Properties};
 
 fn make_node(kind: &str, title: &str) -> NewNode {
     NewNode {
