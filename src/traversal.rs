@@ -1,10 +1,12 @@
 //! Graph traversal algorithms.
 //!
-//! Provides BFS (breadth-first search) and DFS (depth-first search) with
-//! depth limit and optional edge kind filtering. Used by [`GraphNoteDb`]
+//! Provides BFS (breadth-first search), DFS (depth-first search) with
+//! depth limit and optional edge kind filtering, and shortest path
+//! (Dijkstra) weighted by edge weight. Used by [`GraphNoteDb`]
 //! traversal methods.
 
-use std::collections::{HashSet, VecDeque};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use crate::error::Result;
 use crate::model::{Direction, Edge, Node};
@@ -172,6 +174,120 @@ where
     }
 
     Ok(result)
+}
+
+/// A state entry for Dijkstra's priority queue.
+///
+/// Ordered by cost ascending (min-heap via `Reverse`-style `Ord` impl).
+#[derive(Debug, PartialEq)]
+struct DijkstraState {
+    cost: f32,
+    node_id: u64,
+}
+
+impl Eq for DijkstraState {}
+
+impl PartialOrd for DijkstraState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DijkstraState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse ordering so BinaryHeap (max-heap) becomes a min-heap.
+        // Use total_cmp for NaN safety.
+        other
+            .cost
+            .total_cmp(&self.cost)
+            .then_with(|| self.node_id.cmp(&other.node_id))
+    }
+}
+
+/// Find the shortest (lowest total weight) path between two nodes using
+/// Dijkstra's algorithm. Follows **outgoing** edges only.
+///
+/// Returns `Some(vec![from, ..., to])` with the node IDs along the
+/// shortest path, or `None` if `to` is not reachable from `from`.
+/// If `from == to`, returns `Some(vec![from])`.
+///
+/// Edge weights must be non-negative (the `weight` field on [`Edge`]).
+///
+/// # Arguments
+///
+/// * `from` — source node ID
+/// * `to` — target node ID
+/// * `get_node` — closure to verify a node exists (returns `Option<Node>`)
+/// * `edges_of` — closure to retrieve outgoing edges of a node
+pub fn shortest_path<F, G>(
+    from: u64,
+    to: u64,
+    get_node: &F,
+    edges_of: &G,
+) -> Result<Option<Vec<u64>>>
+where
+    F: Fn(u64) -> Result<Option<Node>>,
+    G: Fn(u64, Direction) -> Result<Vec<Edge>>,
+{
+    // Verify source exists.
+    if get_node(from)?.is_none() {
+        return Ok(None);
+    }
+
+    // Trivial case: source == target.
+    if from == to {
+        return Ok(Some(vec![from]));
+    }
+
+    // Dijkstra's algorithm.
+    let mut dist: HashMap<u64, f32> = HashMap::new();
+    let mut prev: HashMap<u64, u64> = HashMap::new();
+    let mut heap: BinaryHeap<DijkstraState> = BinaryHeap::new();
+
+    dist.insert(from, 0.0);
+    heap.push(DijkstraState {
+        cost: 0.0,
+        node_id: from,
+    });
+
+    while let Some(DijkstraState { cost, node_id }) = heap.pop() {
+        // Found the target — reconstruct path.
+        if node_id == to {
+            let mut path = Vec::new();
+            let mut cur = to;
+            while cur != from {
+                path.push(cur);
+                cur = prev[&cur];
+            }
+            path.push(from);
+            path.reverse();
+            return Ok(Some(path));
+        }
+
+        // Skip if we already found a shorter path to this node.
+        if cost > *dist.get(&node_id).unwrap_or(&f32::INFINITY) {
+            continue;
+        }
+
+        let edges = edges_of(node_id, Direction::Outgoing)?;
+
+        for edge in &edges {
+            let neighbor_id = edge.to_id;
+            let next_cost = cost + edge.weight;
+            let current_best = *dist.get(&neighbor_id).unwrap_or(&f32::INFINITY);
+
+            if next_cost < current_best {
+                dist.insert(neighbor_id, next_cost);
+                prev.insert(neighbor_id, node_id);
+                heap.push(DijkstraState {
+                    cost: next_cost,
+                    node_id: neighbor_id,
+                });
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -640,5 +756,112 @@ mod tests {
         // first (LIFO). But the key DFS property is that when B is popped,
         // C is discovered before any other branch is resumed at the same level.
         // We verify that C appears in results (depth explored) and all 3 nodes found.
+    }
+
+    // ---------------------------------------------------------------
+    // shortest_path (Dijkstra) tests
+    // ---------------------------------------------------------------
+
+    fn make_weighted_edge(from: u64, to: u64, kind: &str, weight: f32) -> NewEdge {
+        NewEdge {
+            from_id: from,
+            to_id: to,
+            kind: kind.to_string(),
+            weight,
+            properties: Properties::default(),
+        }
+    }
+
+    #[test]
+    fn sp_same_node() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let path = db.shortest_path(a.id, a.id).unwrap();
+        assert_eq!(path, Some(vec![a.id]));
+    }
+
+    #[test]
+    fn sp_direct_edge() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_weighted_edge(a.id, b.id, "links_to", 1.0))
+            .unwrap();
+        let path = db.shortest_path(a.id, b.id).unwrap();
+        assert_eq!(path, Some(vec![a.id, b.id]));
+    }
+
+    #[test]
+    fn sp_no_connection() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let path = db.shortest_path(a.id, b.id).unwrap();
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn sp_prefers_lower_weight() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        // Direct A->B costs 10, via C costs 1+1=2
+        db.create_edge(make_weighted_edge(a.id, b.id, "links_to", 10.0))
+            .unwrap();
+        db.create_edge(make_weighted_edge(a.id, c.id, "links_to", 1.0))
+            .unwrap();
+        db.create_edge(make_weighted_edge(c.id, b.id, "links_to", 1.0))
+            .unwrap();
+        let path = db.shortest_path(a.id, b.id).unwrap();
+        assert_eq!(path, Some(vec![a.id, c.id, b.id]));
+    }
+
+    #[test]
+    fn sp_handles_cycle() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        db.create_edge(make_weighted_edge(a.id, b.id, "links_to", 1.0))
+            .unwrap();
+        db.create_edge(make_weighted_edge(b.id, c.id, "links_to", 1.0))
+            .unwrap();
+        db.create_edge(make_weighted_edge(c.id, a.id, "links_to", 1.0))
+            .unwrap();
+        let path = db.shortest_path(a.id, c.id).unwrap();
+        assert_eq!(path, Some(vec![a.id, b.id, c.id]));
+    }
+
+    #[test]
+    fn sp_nonexistent_source() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let path = db.shortest_path(999, b.id).unwrap();
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn sp_wrong_direction() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_weighted_edge(b.id, a.id, "links_to", 1.0))
+            .unwrap();
+        let path = db.shortest_path(a.id, b.id).unwrap();
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn sp_self_loop_ignored() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_weighted_edge(a.id, a.id, "self_ref", 0.1))
+            .unwrap();
+        db.create_edge(make_weighted_edge(a.id, b.id, "links_to", 1.0))
+            .unwrap();
+        let path = db.shortest_path(a.id, b.id).unwrap();
+        assert_eq!(path, Some(vec![a.id, b.id]));
     }
 }
