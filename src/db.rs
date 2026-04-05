@@ -746,6 +746,57 @@ impl GraphNoteDb {
     }
 
     // ---------------------------------------------------------------
+    // Graph Traversal
+    // ---------------------------------------------------------------
+
+    /// Breadth-first search from a start node with depth limit.
+    ///
+    /// Returns all nodes reachable within `max_depth` hops. The start
+    /// node is **not** included in the result. Edges can be filtered
+    /// by kind.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_id` — the node ID to start from
+    /// * `max_depth` — maximum number of hops (0 returns empty)
+    /// * `direction` — which edges to follow
+    /// * `edge_kind` — if `Some`, only follow edges with this kind
+    pub fn bfs(
+        &self,
+        start_id: u64,
+        max_depth: u8,
+        direction: Direction,
+        edge_kind: Option<&str>,
+    ) -> Result<Vec<Node>> {
+        crate::traversal::bfs(
+            start_id,
+            max_depth,
+            direction,
+            edge_kind,
+            &|id| self.get_node(id),
+            &|id, dir| self.edges_of(id, dir),
+        )
+    }
+
+    /// Return immediate neighbors of a node (BFS depth=1).
+    ///
+    /// Convenience wrapper over [`bfs`] with `max_depth=1`.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` — the node to query
+    /// * `direction` — which edges to follow
+    /// * `kind` — if `Some`, only follow edges with this kind
+    pub fn neighbors(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind: Option<&str>,
+    ) -> Result<Vec<Node>> {
+        self.bfs(node_id, 1, direction, kind)
+    }
+
+    // ---------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------
 
