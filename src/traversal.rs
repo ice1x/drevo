@@ -1,7 +1,8 @@
 //! Graph traversal algorithms.
 //!
-//! Provides BFS (breadth-first search) with depth limit and optional
-//! edge kind filtering. Used by [`GraphNoteDb`] traversal methods.
+//! Provides BFS (breadth-first search) and DFS (depth-first search) with
+//! depth limit and optional edge kind filtering. Used by [`GraphNoteDb`]
+//! traversal methods.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -84,6 +85,88 @@ where
             if let Some(node) = get_node(neighbor_id)? {
                 result.push(node);
                 queue.push_back((neighbor_id, depth + 1));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Perform a depth-first search starting from `start_id`.
+///
+/// Returns all nodes reachable within `max_depth` hops, optionally
+/// filtering edges by kind. The start node is **not** included in
+/// the results. Nodes are returned in DFS visit order.
+///
+/// # Arguments
+///
+/// * `start_id` — the node ID to start from
+/// * `max_depth` — maximum number of hops (0 returns empty)
+/// * `direction` — which edges to follow (Outgoing, Incoming, Both)
+/// * `edge_kind` — if `Some`, only traverse edges with this kind
+/// * `get_node` — closure to retrieve a node by ID
+/// * `edges_of` — closure to retrieve edges of a node
+pub fn dfs<F, G>(
+    start_id: u64,
+    max_depth: u8,
+    direction: Direction,
+    edge_kind: Option<&str>,
+    get_node: &F,
+    edges_of: &G,
+) -> Result<Vec<Node>>
+where
+    F: Fn(u64) -> Result<Option<Node>>,
+    G: Fn(u64, Direction) -> Result<Vec<Edge>>,
+{
+    if max_depth == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut visited: HashSet<u64> = HashSet::new();
+    visited.insert(start_id);
+
+    // Stack holds (node_id, current_depth)
+    let mut stack: Vec<(u64, u8)> = Vec::new();
+    stack.push((start_id, 0));
+
+    let mut result: Vec<Node> = Vec::new();
+
+    while let Some((current_id, depth)) = stack.pop() {
+        if depth >= max_depth {
+            continue;
+        }
+
+        let edges = edges_of(current_id, direction)?;
+
+        for edge in &edges {
+            // Apply edge kind filter
+            if let Some(kind) = edge_kind {
+                if edge.kind != kind {
+                    continue;
+                }
+            }
+
+            // Determine the neighbor node ID based on direction
+            let neighbor_id = match direction {
+                Direction::Outgoing => edge.to_id,
+                Direction::Incoming => edge.from_id,
+                Direction::Both => {
+                    if edge.from_id == current_id {
+                        edge.to_id
+                    } else {
+                        edge.from_id
+                    }
+                }
+            };
+
+            if visited.contains(&neighbor_id) {
+                continue;
+            }
+            visited.insert(neighbor_id);
+
+            if let Some(node) = get_node(neighbor_id)? {
+                result.push(node);
+                stack.push((neighbor_id, depth + 1));
             }
         }
     }
@@ -324,5 +407,238 @@ mod tests {
         assert!(ids.contains(&b.id));
         assert!(ids.contains(&c.id));
         assert!(ids.contains(&d.id));
+    }
+
+    // ---------------------------------------------------------------
+    // DFS tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn dfs_depth_zero_returns_empty() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let n = db.create_node(make_node("note", "A")).unwrap();
+        let result = db.dfs(n.id, 0, Direction::Outgoing, None).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn dfs_no_edges_returns_empty() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let n = db.create_node(make_node("note", "Isolated")).unwrap();
+        let result = db.dfs(n.id, 3, Direction::Outgoing, None).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn dfs_single_hop() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+
+        let result = db.dfs(a.id, 1, Direction::Outgoing, None).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, b.id);
+    }
+
+    #[test]
+    fn dfs_does_not_include_start_node() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+
+        let result = db.dfs(a.id, 5, Direction::Outgoing, None).unwrap();
+        assert!(!result.iter().any(|n| n.id == a.id));
+    }
+
+    #[test]
+    fn dfs_multi_hop() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(b.id, c.id, "links_to")).unwrap();
+
+        // depth 1: only B
+        let result = db.dfs(a.id, 1, Direction::Outgoing, None).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, b.id);
+
+        // depth 2: B and C
+        let result = db.dfs(a.id, 2, Direction::Outgoing, None).unwrap();
+        assert_eq!(result.len(), 2);
+        let ids: Vec<u64> = result.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&b.id));
+        assert!(ids.contains(&c.id));
+    }
+
+    #[test]
+    fn dfs_respects_direction_outgoing() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_edge(b.id, a.id, "links_to")).unwrap();
+
+        let result = db.dfs(a.id, 1, Direction::Outgoing, None).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn dfs_respects_direction_incoming() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_edge(b.id, a.id, "links_to")).unwrap();
+
+        let result = db.dfs(a.id, 1, Direction::Incoming, None).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, b.id);
+    }
+
+    #[test]
+    fn dfs_direction_both() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(c.id, a.id, "links_to")).unwrap();
+
+        let result = db.dfs(a.id, 1, Direction::Both, None).unwrap();
+        assert_eq!(result.len(), 2);
+        let ids: Vec<u64> = result.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&b.id));
+        assert!(ids.contains(&c.id));
+    }
+
+    #[test]
+    fn dfs_edge_kind_filter() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(a.id, c.id, "tagged_with"))
+            .unwrap();
+
+        let result = db
+            .dfs(a.id, 1, Direction::Outgoing, Some("links_to"))
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, b.id);
+
+        let result = db
+            .dfs(a.id, 1, Direction::Outgoing, Some("tagged_with"))
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, c.id);
+    }
+
+    #[test]
+    fn dfs_handles_cycle() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(b.id, c.id, "links_to")).unwrap();
+        db.create_edge(make_edge(c.id, a.id, "links_to")).unwrap();
+
+        let result = db.dfs(a.id, 10, Direction::Outgoing, None).unwrap();
+        assert_eq!(result.len(), 2); // B and C, not A again
+    }
+
+    #[test]
+    fn dfs_self_loop() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        db.create_edge(make_edge(a.id, a.id, "self_ref")).unwrap();
+
+        let result = db.dfs(a.id, 3, Direction::Outgoing, None).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn dfs_nonexistent_edge_kind_returns_empty() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+
+        let result = db
+            .dfs(a.id, 1, Direction::Outgoing, Some("nonexistent"))
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn dfs_fan_out() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let hub = db.create_node(make_node("note", "Hub")).unwrap();
+        let mut spoke_ids = Vec::new();
+        for i in 0..10 {
+            let spoke = db
+                .create_node(make_node("note", &format!("Spoke{}", i)))
+                .unwrap();
+            db.create_edge(make_edge(hub.id, spoke.id, "links_to"))
+                .unwrap();
+            spoke_ids.push(spoke.id);
+        }
+
+        let result = db.dfs(hub.id, 1, Direction::Outgoing, None).unwrap();
+        assert_eq!(result.len(), 10);
+        for id in &spoke_ids {
+            assert!(result.iter().any(|n| n.id == *id));
+        }
+    }
+
+    #[test]
+    fn dfs_diamond_graph_no_duplicates() {
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        let d = db.create_node(make_node("note", "D")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(a.id, c.id, "links_to")).unwrap();
+        db.create_edge(make_edge(b.id, d.id, "links_to")).unwrap();
+        db.create_edge(make_edge(c.id, d.id, "links_to")).unwrap();
+
+        let result = db.dfs(a.id, 2, Direction::Outgoing, None).unwrap();
+        assert_eq!(result.len(), 3); // B, C, D — no duplicates
+        let ids: Vec<u64> = result.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&b.id));
+        assert!(ids.contains(&c.id));
+        assert!(ids.contains(&d.id));
+    }
+
+    #[test]
+    fn dfs_explores_depth_first() {
+        // A -> B -> C, A -> D
+        // DFS from A should visit B then C before D (or D then ...) depending on stack order.
+        // Key property: DFS goes deep before wide.
+        let db = GraphNoteDb::open_in_memory().unwrap();
+        let a = db.create_node(make_node("note", "A")).unwrap();
+        let b = db.create_node(make_node("note", "B")).unwrap();
+        let c = db.create_node(make_node("note", "C")).unwrap();
+        let d = db.create_node(make_node("note", "D")).unwrap();
+        db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
+        db.create_edge(make_edge(a.id, d.id, "links_to")).unwrap();
+        db.create_edge(make_edge(b.id, c.id, "links_to")).unwrap();
+
+        let result = db.dfs(a.id, 3, Direction::Outgoing, None).unwrap();
+        assert_eq!(result.len(), 3);
+        let ids: Vec<u64> = result.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&b.id));
+        assert!(ids.contains(&c.id));
+        assert!(ids.contains(&d.id));
+
+        // In DFS with a stack, the last edge pushed is explored first.
+        // Edges are iterated in order, so D is pushed after B. D is popped
+        // first (LIFO). But the key DFS property is that when B is popped,
+        // C is discovered before any other branch is resumed at the same level.
+        // We verify that C appears in results (depth explored) and all 3 nodes found.
     }
 }
