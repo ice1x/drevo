@@ -402,8 +402,8 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00021` Implement BFS with depth limit and optional edge kind filter
 - [x] `00022` Implement DFS with depth limit
 - [x] `00023` Implement shortest_path (Dijkstra, weighted by `edge.weight`)
-- [ ] `00024` Implement `subgraph(root, depth)` — return all nodes and edges within radius
-- [ ] `00025` Tests: cycles, disconnected graphs, empty graph, single node, depth 0
+- [x] `00024` Implement `subgraph(root, depth)` — return all nodes and edges within radius
+- [x] `00025` Tests: cycles, disconnected graphs, empty graph, single node, depth 0
 - [ ] `00026` Benchmark: BFS on a 100K-node graph with average degree 10, depth 3
 
 **Definition of done:** traversals are correct on all edge cases, performance is measured.
@@ -601,11 +601,15 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00019` FTS recall and edge-case tests (35 tests: query edge cases, IDF corners, Unicode, recall measurement)
 - [x] `00020` FTS benchmark on 10K nodes (criterion: search, index insert, list_recent)
 - [x] `00021` BFS with depth limit and optional edge kind filter (bfs, neighbors methods)
+- [x] `00022` DFS with depth limit (dfs method, stack-based LIFO)
+- [x] `00023` shortest_path via Dijkstra with edge weights
+- [x] `00024` subgraph(root, depth) — BFS in Both directions, SubGraph struct
+- [x] `00025` Cross-algorithm traversal edge-case tests (28 tests: cycles, disconnected, empty, single node, depth 0, self-loops, diamonds, long chains, direction filtering, edge kind filtering, parallel edges, max depth, 5 use-case scenarios)
 
 **Test status:**
 
 ```
-cargo test: 441 passed, 0 failed (168 unit + 272 integration + 1 doctest)
+cargo test: 562 passed, 0 failed (201 unit + 360 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -655,11 +659,11 @@ FTS layer (MemoryBackend, 10K nodes):
 
 > **Note:** search_fts on broad queries (single/two/three words) exceeds the 50ms target due to scan_prefix overhead on large posting lists. Selective queries (few matching trigrams) meet the target. Optimization opportunities: cached posting list lengths, batch scan, or inverted-index compaction. The limit parameter has negligible effect — bottleneck is posting list retrieval, not sorting/truncation.
 
-**Phase 4 in progress.** BFS traversal complete. Next: DFS.
+**Phase 4 in progress.** BFS, DFS, shortest_path, subgraph, and edge-case tests complete. Next: traversal benchmark.
 
 **Next steps:**
 
-1. `00022` — Implement DFS with depth limit
+1. `00026` — Benchmark: BFS on a 100K-node graph with average degree 10, depth 3
 
 ---
 
