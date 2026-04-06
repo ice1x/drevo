@@ -187,6 +187,19 @@ pub struct ScoredNode {
     pub score: f32,
 }
 
+/// A subgraph extracted by bounded traversal from a root node.
+///
+/// Contains all nodes and edges within a given radius (depth) of
+/// the root. Useful for providing bounded context to AI agents
+/// (e.g. via MCP) or exporting a local neighborhood of the graph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubGraph {
+    /// All nodes within the traversal radius, including the root node.
+    pub nodes: Vec<Node>,
+    /// All edges that connect nodes within the subgraph.
+    pub edges: Vec<Edge>,
+}
+
 /// Generate a new UUID v7 as a 16-byte array.
 pub fn new_uuid_v7() -> [u8; 16] {
     *uuid::Uuid::now_v7().as_bytes()
