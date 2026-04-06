@@ -27,3 +27,7 @@ harness = false
 [[bench]]
 name = "fts_bench"
 harness = false
+
+[[bench]]
+name = "traversal_bench"
+harness = false

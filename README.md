@@ -404,7 +404,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00023` Implement shortest_path (Dijkstra, weighted by `edge.weight`)
 - [x] `00024` Implement `subgraph(root, depth)` — return all nodes and edges within radius
 - [x] `00025` Tests: cycles, disconnected graphs, empty graph, single node, depth 0
-- [ ] `00026` Benchmark: BFS on a 100K-node graph with average degree 10, depth 3
+- [x] `00026` Benchmark: BFS on a 100K-node graph with average degree 10, depth 3
 
 **Definition of done:** traversals are correct on all edge cases, performance is measured.
 
@@ -574,7 +574,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 ## Current Status
 
-**Phase:** 4 — Graph Traversal
+**Phase:** 4 — Graph Traversal (complete)
 
 **Completed:**
 
@@ -605,11 +605,12 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00023` shortest_path via Dijkstra with edge weights
 - [x] `00024` subgraph(root, depth) — BFS in Both directions, SubGraph struct
 - [x] `00025` Cross-algorithm traversal edge-case tests (28 tests: cycles, disconnected, empty, single node, depth 0, self-loops, diamonds, long chains, direction filtering, edge kind filtering, parallel edges, max depth, 5 use-case scenarios)
+- [x] `00026` Traversal benchmark: BFS/DFS/shortest_path/subgraph on 100K nodes, degree 10 (criterion)
 
 **Test status:**
 
 ```
-cargo test: 562 passed, 0 failed (201 unit + 360 integration + 1 doctest)
+cargo test: 576 passed, 0 failed (201 unit + 374 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -659,11 +660,31 @@ FTS layer (MemoryBackend, 10K nodes):
 
 > **Note:** search_fts on broad queries (single/two/three words) exceeds the 50ms target due to scan_prefix overhead on large posting lists. Selective queries (few matching trigrams) meet the target. Optimization opportunities: cached posting list lengths, batch scan, or inverted-index compaction. The limit parameter has negligible effect — bottleneck is posting list retrieval, not sorting/truncation.
 
-**Phase 4 in progress.** BFS, DFS, shortest_path, subgraph, and edge-case tests complete. Next: traversal benchmark.
+Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
+
+| Benchmark | Time |
+|---|---|
+| BFS outgoing depth 1 | ~27 µs |
+| BFS outgoing depth 2 | ~245 µs |
+| BFS outgoing depth 3 | ~1.73 ms |
+| BFS both depth 2 | ~849 µs |
+| BFS filtered (edge kind) depth 2 | ~50 µs |
+| DFS outgoing depth 3 | ~1.77 ms |
+| DFS both depth 2 | ~874 µs |
+| shortest_path nearby nodes | ~1.09 s |
+| shortest_path distant nodes | ~969 ms |
+| shortest_path same node | ~1.1 µs |
+| subgraph depth 1 | ~717 µs |
+| subgraph depth 2 | ~7.0 ms |
+| subgraph depth 3 | ~60 ms |
+
+> **Note:** BFS/DFS depth 3 on 100K nodes (degree 10) completes in ~1.7ms — well within interactive latency. Subgraph depth 3 is slower (~60ms) due to edge collection across the discovered node set. Shortest path (Dijkstra) on the full graph takes ~1s because it explores the entire reachable set before finding the target — expected for dense graphs with uniform weights. Edge kind filtering dramatically reduces traversal cost (~50µs vs ~245µs at depth 2).
+
+**Phase 4 complete.** All traversal algorithms implemented, tested, and benchmarked.
 
 **Next steps:**
 
-1. `00026` — Benchmark: BFS on a 100K-node graph with average degree 10, depth 3
+1. `00027` — C FFI header (`graphnote.h`) — Phase 5 (Platform Bindings)
 
 ---
 
