@@ -179,7 +179,7 @@ pub enum Direction {
 /// A search result with a relevance score.
 ///
 /// Returned by [`GraphNoteDb::search_fts`] — nodes are ranked by TF-IDF score.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScoredNode {
     /// The matching node.
     pub node: Node,
@@ -192,7 +192,7 @@ pub struct ScoredNode {
 /// Contains all nodes and edges within a given radius (depth) of
 /// the root. Useful for providing bounded context to AI agents
 /// (e.g. via MCP) or exporting a local neighborhood of the graph.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SubGraph {
     /// All nodes within the traversal radius, including the root node.
     pub nodes: Vec<Node>,
