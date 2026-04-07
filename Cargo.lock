@@ -323,12 +323,14 @@ dependencies = [
  "bincode",
  "cbindgen",
  "criterion",
+ "js-sys",
  "redb",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "uuid",
+ "wasm-bindgen",
 ]
 
 [[package]]
