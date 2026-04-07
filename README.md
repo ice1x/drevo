@@ -412,7 +412,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 > Goal: GraphNote DB works on every target platform — desktop, mobile, browser.
 
-- [ ] `00027` C FFI header (`graphnote.h`) — exposes GraphNoteDb API for iOS/Android native apps
+- [x] `00027` C FFI header (`graphnote.h`) — exposes GraphNoteDb API for iOS/Android native apps
 - [ ] `00028` WASM bindings via `wasm-bindgen` — exposes GraphNoteDb API for browser and Tauri v2 WASM
 - [ ] `00029` Verify redb works on WASM target; if not, implement fallback (IndexedDB adapter or memory-only)
 - [ ] `00030` Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown`
@@ -574,7 +574,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 ## Current Status
 
-**Phase:** 4 — Graph Traversal (complete)
+**Phase:** 5 — Platform Bindings (in progress)
 
 **Completed:**
 
@@ -606,11 +606,12 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00024` subgraph(root, depth) — BFS in Both directions, SubGraph struct
 - [x] `00025` Cross-algorithm traversal edge-case tests (28 tests: cycles, disconnected, empty, single node, depth 0, self-loops, diamonds, long chains, direction filtering, edge kind filtering, parallel edges, max depth, 5 use-case scenarios)
 - [x] `00026` Traversal benchmark: BFS/DFS/shortest_path/subgraph on 100K nodes, degree 10 (criterion)
+- [x] `00027` C FFI header (`graphnote.h`) — opaque handle, JSON serialization, thread-local error, cbindgen auto-generation
 
 **Test status:**
 
 ```
-cargo test: 576 passed, 0 failed (201 unit + 374 integration + 1 doctest)
+cargo test: 597 passed, 0 failed (201 unit + 395 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -680,11 +681,19 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 > **Note:** BFS/DFS depth 3 on 100K nodes (degree 10) completes in ~1.7ms — well within interactive latency. Subgraph depth 3 is slower (~60ms) due to edge collection across the discovered node set. Shortest path (Dijkstra) on the full graph takes ~1s because it explores the entire reachable set before finding the target — expected for dense graphs with uniform weights. Edge kind filtering dramatically reduces traversal cost (~50µs vs ~245µs at depth 2).
 
-**Phase 4 complete.** All traversal algorithms implemented, tested, and benchmarked.
+**Phase 5 in progress.** C FFI header generated, tested, and integrated.
+
+**FFI layer design:**
+- Opaque handle pattern: C consumers receive `graphnote_db_t*` — an opaque pointer
+- JSON serialization: complex types (Node, Edge, SubGraph, ScoredNode) cross FFI as JSON C strings
+- Thread-local error: `graphnote_last_error()` returns last error, cleared on success
+- Memory ownership: caller frees returned strings via `graphnote_free_string()`
+- Auto-generated header: `cbindgen` produces `graphnote.h` at build time
+- 21 FFI functions: lifecycle (3), node CRUD (4), edge CRUD (4), traversal (5), search (3), utility (2)
 
 **Next steps:**
 
-1. `00027` — C FFI header (`graphnote.h`) — Phase 5 (Platform Bindings)
+1. `00028` — WASM bindings via `wasm-bindgen` — Phase 5 (Platform Bindings)
 
 ---
 
