@@ -413,7 +413,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 > Goal: GraphNote DB works on every target platform — desktop, mobile, browser.
 
 - [x] `00027` C FFI header (`graphnote.h`) — exposes GraphNoteDb API for iOS/Android native apps
-- [ ] `00028` WASM bindings via `wasm-bindgen` — exposes GraphNoteDb API for browser and Tauri v2 WASM
+- [x] `00028` WASM bindings via `wasm-bindgen` — exposes GraphNoteDb API for browser and Tauri v2 WASM
 - [ ] `00029` Verify redb works on WASM target; if not, implement fallback (IndexedDB adapter or memory-only)
 - [ ] `00030` Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown`
 - [ ] `00031` Smoke test on each platform: open DB, CRUD a node, search, close
@@ -607,11 +607,12 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00025` Cross-algorithm traversal edge-case tests (28 tests: cycles, disconnected, empty, single node, depth 0, self-loops, diamonds, long chains, direction filtering, edge kind filtering, parallel edges, max depth, 5 use-case scenarios)
 - [x] `00026` Traversal benchmark: BFS/DFS/shortest_path/subgraph on 100K nodes, degree 10 (criterion)
 - [x] `00027` C FFI header (`graphnote.h`) — opaque handle, JSON serialization, thread-local error, cbindgen auto-generation
+- [x] `00028` WASM bindings (`wasm-bindgen`) — WasmGraphNoteDb JS class, JSON serialization, memory-only backend, 30 integration tests
 
 **Test status:**
 
 ```
-cargo test: 597 passed, 0 failed (201 unit + 395 integration + 1 doctest)
+cargo test: 627 passed, 0 failed (201 unit + 425 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -681,7 +682,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 > **Note:** BFS/DFS depth 3 on 100K nodes (degree 10) completes in ~1.7ms — well within interactive latency. Subgraph depth 3 is slower (~60ms) due to edge collection across the discovered node set. Shortest path (Dijkstra) on the full graph takes ~1s because it explores the entire reachable set before finding the target — expected for dense graphs with uniform weights. Edge kind filtering dramatically reduces traversal cost (~50µs vs ~245µs at depth 2).
 
-**Phase 5 in progress.** C FFI header generated, tested, and integrated.
+**Phase 5 in progress.** C FFI and WASM bindings implemented.
 
 **FFI layer design:**
 - Opaque handle pattern: C consumers receive `graphnote_db_t*` — an opaque pointer
@@ -691,9 +692,17 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 - Auto-generated header: `cbindgen` produces `graphnote.h` at build time
 - 21 FFI functions: lifecycle (3), node CRUD (4), edge CRUD (4), traversal (5), search (3), utility (2)
 
+**WASM bindings design:**
+- Wrapper class: `WasmGraphNoteDb` exported as JS class via `wasm-bindgen`
+- JSON serialization: complex types cross WASM boundary as JS objects via `serde_json` + `js_sys::JSON`
+- Error handling: Rust errors converted to JS exceptions via `JsValue::from_str`
+- Memory-only: WASM targets use `MemoryBackend` exclusively (no filesystem in browser)
+- Feature-gated: `cargo build --features wasm` to include WASM bindings
+- 17 WASM methods: lifecycle (2), node CRUD (4), edge CRUD (4), traversal (5), search (3)
+
 **Next steps:**
 
-1. `00028` — WASM bindings via `wasm-bindgen` — Phase 5 (Platform Bindings)
+1. `00029` — Verify redb works on WASM target; if not, implement fallback — Phase 5 (Platform Bindings)
 
 ---
 
