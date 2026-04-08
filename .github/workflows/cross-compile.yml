@@ -1,0 +1,196 @@
+name: Cross-Compilation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # -------------------------------------------------------------------------
+  # WASM target: wasm32-unknown-unknown
+  # -------------------------------------------------------------------------
+  wasm:
+    name: "WASM (wasm32-unknown-unknown)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32
+
+      # Check: compile for WASM (no default features, wasm feature enabled)
+      - name: cargo check (WASM)
+        run: >
+          cargo check
+          --target wasm32-unknown-unknown
+          --no-default-features
+          --features wasm
+          --lib
+
+      # Build: produce cdylib for WASM consumers
+      - name: cargo build (WASM)
+        run: >
+          cargo build
+          --target wasm32-unknown-unknown
+          --no-default-features
+          --features wasm
+          --lib
+
+      # Verify the .wasm artifact exists
+      - name: Verify WASM artifact
+        run: |
+          WASM_FILE="target/wasm32-unknown-unknown/debug/graphnote_db.wasm"
+          if [ ! -f "$WASM_FILE" ]; then
+            echo "ERROR: WASM artifact not found at $WASM_FILE"
+            ls -la target/wasm32-unknown-unknown/debug/ || true
+            exit 1
+          fi
+          echo "WASM artifact size: $(du -h "$WASM_FILE" | cut -f1)"
+
+  # -------------------------------------------------------------------------
+  # iOS target: aarch64-apple-ios
+  # -------------------------------------------------------------------------
+  ios:
+    name: "iOS (aarch64-apple-ios)"
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+
+      # Check: compile for iOS with default features (redb + cbindgen)
+      - name: cargo check (iOS)
+        run: >
+          cargo check
+          --target aarch64-apple-ios
+          --lib
+
+      # Build: produce staticlib for iOS embedding
+      - name: cargo build (iOS)
+        run: >
+          cargo build
+          --target aarch64-apple-ios
+          --lib
+
+      # Verify the static library artifact exists
+      - name: Verify iOS artifact
+        run: |
+          LIB_FILE="target/aarch64-apple-ios/debug/libgraphnote_db.a"
+          if [ ! -f "$LIB_FILE" ]; then
+            echo "ERROR: iOS static library not found at $LIB_FILE"
+            ls -la target/aarch64-apple-ios/debug/ || true
+            exit 1
+          fi
+          echo "iOS static library size: $(du -h "$LIB_FILE" | cut -f1)"
+
+      # Verify the C header is generated
+      - name: Verify C header
+        run: |
+          if [ ! -f "graphnote.h" ]; then
+            echo "ERROR: graphnote.h not generated"
+            exit 1
+          fi
+          echo "graphnote.h generated successfully"
+          head -20 graphnote.h
+
+  # -------------------------------------------------------------------------
+  # Android target: aarch64-linux-android
+  # -------------------------------------------------------------------------
+  android:
+    name: "Android (aarch64-linux-android)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+
+      # Install Android NDK linker
+      - name: Install Android NDK
+        run: |
+          ANDROID_NDK_VERSION="r27c"
+          wget -q "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip" -O ndk.zip
+          unzip -q ndk.zip
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+
+      # Configure cargo to use Android NDK linker
+      - name: Configure Android linker
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << 'EOF'
+          [target.aarch64-linux-android]
+          linker = "aarch64-linux-android35-clang"
+          EOF
+          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          echo "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      # Check: compile for Android (no cbindgen in cross-compile, redb enabled)
+      - name: cargo check (Android)
+        run: >
+          cargo check
+          --target aarch64-linux-android
+          --no-default-features
+          --features redb-backend
+          --lib
+
+      # Build: produce shared library for Android
+      - name: cargo build (Android)
+        run: >
+          cargo build
+          --target aarch64-linux-android
+          --no-default-features
+          --features redb-backend
+          --lib
+
+      # Verify the shared library artifact exists
+      - name: Verify Android artifact
+        run: |
+          SO_FILE="target/aarch64-linux-android/debug/libgraphnote_db.so"
+          STATIC_FILE="target/aarch64-linux-android/debug/libgraphnote_db.a"
+          if [ -f "$SO_FILE" ]; then
+            echo "Android shared library size: $(du -h "$SO_FILE" | cut -f1)"
+          elif [ -f "$STATIC_FILE" ]; then
+            echo "Android static library size: $(du -h "$STATIC_FILE" | cut -f1)"
+          else
+            echo "WARNING: No library artifact found, listing debug dir:"
+            ls -la target/aarch64-linux-android/debug/libgraphnote* 2>/dev/null || echo "No libgraphnote* files"
+            ls -la target/aarch64-linux-android/debug/ | head -20
+          fi
+
+  # -------------------------------------------------------------------------
+  # Native host tests (verify cross-compilation test suite)
+  # -------------------------------------------------------------------------
+  cross-compile-tests:
+    name: "Cross-compilation tests (host)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cross-tests
+
+      - name: Run cross-compilation tests
+        run: cargo test --test cross_compilation_tests -- --nocapture
