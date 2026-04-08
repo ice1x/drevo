@@ -194,3 +194,39 @@ jobs:
 
       - name: Run cross-compilation tests
         run: cargo test --test cross_compilation_tests -- --nocapture
+
+  # -------------------------------------------------------------------------
+  # Platform smoke tests (host — validates full workflow on all backends)
+  # -------------------------------------------------------------------------
+  smoke-tests:
+    name: "Platform smoke tests (host)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-tests
+
+      - name: Run platform smoke tests
+        run: cargo test --test smoke_tests -- --nocapture
+
+  # -------------------------------------------------------------------------
+  # macOS smoke tests (validates on Apple Silicon host)
+  # -------------------------------------------------------------------------
+  smoke-tests-macos:
+    name: "Platform smoke tests (macOS)"
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-macos
+
+      - name: Run platform smoke tests (macOS)
+        run: cargo test --test smoke_tests -- --nocapture
