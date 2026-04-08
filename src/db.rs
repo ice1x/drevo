@@ -4,6 +4,7 @@
 //! It wraps a [`StorageBackend`] and manages auto-increment counters,
 //! indexes, and the graph data model.
 
+#[cfg(feature = "redb-backend")]
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,7 +14,9 @@ use crate::fts::tokenizer::extract_trigrams;
 use crate::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
 };
-use crate::storage::{MemoryBackend, RedbBackend, StorageBackend};
+#[cfg(feature = "redb-backend")]
+use crate::storage::RedbBackend;
+use crate::storage::{MemoryBackend, StorageBackend};
 
 /// Meta key for the next node ID counter.
 const META_NEXT_NODE_ID: &[u8] = b"meta:next_node_id";
@@ -79,6 +82,12 @@ impl GraphNoteDb {
     /// # Errors
     ///
     /// Returns [`GraphNoteError::Storage`] if the backend cannot be opened.
+    ///
+    /// # Availability
+    ///
+    /// This method requires the `redb-backend` feature and is not available
+    /// on `wasm32` targets. Use [`open_in_memory`](Self::open_in_memory) instead.
+    #[cfg(feature = "redb-backend")]
     pub fn open(path: &Path) -> Result<Self> {
         let backend = RedbBackend::open(path).map_err(GraphNoteError::Storage)?;
         let backend = Box::new(backend);
@@ -893,6 +902,7 @@ impl GraphNoteDb {
     /// Load auto-increment counters from storage metadata.
     ///
     /// Returns (next_node_id, next_edge_id). Defaults to 1 if not found.
+    #[cfg(feature = "redb-backend")]
     fn load_counters(backend: &dyn StorageBackend) -> Result<(u64, u64)> {
         let node_id = match backend
             .get(META_NEXT_NODE_ID)

@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -11,8 +14,10 @@ use crate::storage::StorageBackend;
 ///
 /// Supports two modes:
 /// - **Ephemeral** (`new()`): all data lives in memory and is lost on drop.
+///   Available on all platforms including WASM.
 /// - **Persistent** (`open(path)`): loads existing data from a file on
 ///   creation and writes a snapshot back on [`flush()`](StorageBackend::flush).
+///   Not available on WASM targets (no filesystem access).
 ///
 /// Thread-safe via interior `Mutex`.
 ///
@@ -27,6 +32,7 @@ use crate::storage::StorageBackend;
 #[derive(Debug)]
 pub struct MemoryBackend {
     data: Mutex<BTreeMap<Vec<u8>, Vec<u8>>>,
+    #[cfg(not(target_arch = "wasm32"))]
     path: Option<PathBuf>,
 }
 
@@ -35,6 +41,7 @@ impl MemoryBackend {
     pub fn new() -> Self {
         Self {
             data: Mutex::new(BTreeMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
             path: None,
         }
     }
@@ -45,10 +52,15 @@ impl MemoryBackend {
     /// If the file does not exist, an empty backend is created and the file
     /// will be written on the first [`flush()`](StorageBackend::flush).
     ///
+    /// # Availability
+    ///
+    /// Not available on `wasm32` targets. Use [`new()`](Self::new) instead.
+    ///
     /// # Errors
     ///
     /// Returns [`StorageError::Io`] if the file exists but cannot be read,
     /// or [`StorageError::Serialization`] if the file contents are corrupt.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let data = if path.exists() {
@@ -63,11 +75,13 @@ impl MemoryBackend {
     }
 
     /// Returns the file path if this backend is persistent, `None` if ephemeral.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
 
     /// Load a BTreeMap from a bincode-encoded file.
+    #[cfg(not(target_arch = "wasm32"))]
     fn load_from_file(path: &Path) -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
         let bytes = fs::read(path)?;
         let entries: Vec<(Vec<u8>, Vec<u8>)> =
@@ -78,6 +92,7 @@ impl MemoryBackend {
     }
 
     /// Write the BTreeMap to a file atomically (temp file + rename).
+    #[cfg(not(target_arch = "wasm32"))]
     fn save_to_file(data: &BTreeMap<Vec<u8>, Vec<u8>>, path: &Path) -> Result<()> {
         let entries: Vec<(&Vec<u8>, &Vec<u8>)> = data.iter().collect();
         let bytes = bincode::serde::encode_to_vec(&entries, bincode::config::standard())
@@ -141,14 +156,18 @@ impl StorageBackend for MemoryBackend {
     }
 
     fn flush(&self) -> Result<()> {
-        let Some(ref path) = self.path else {
-            return Ok(());
-        };
-        let data = self
-            .data
-            .lock()
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
-        Self::save_to_file(&data, path)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(ref path) = self.path else {
+                return Ok(());
+            };
+            let data = self
+                .data
+                .lock()
+                .map_err(|e| StorageError::Backend(e.to_string()))?;
+            Self::save_to_file(&data, path)?;
+        }
+        Ok(())
     }
 }
 
@@ -157,12 +176,14 @@ impl StorageBackend for MemoryBackend {
 // ---------------------------------------------------------------------------
 
 /// A temporary file that deletes itself on drop unless defused.
+#[cfg(not(target_arch = "wasm32"))]
 struct TempFile {
     file: fs::File,
     path: PathBuf,
     defused: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for TempFile {
     fn drop(&mut self) {
         if !self.defused {
@@ -172,6 +193,7 @@ impl Drop for TempFile {
 }
 
 /// Create a temporary file in `dir` with a unique name.
+#[cfg(not(target_arch = "wasm32"))]
 fn tempfile_in(dir: &Path) -> Result<TempFile> {
     use std::time::SystemTime;
 
@@ -261,12 +283,14 @@ mod tests {
         backend.flush().unwrap();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn new_backend_has_no_path() {
         let backend = MemoryBackend::new();
         assert!(backend.path().is_none());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn open_nonexistent_creates_empty() {
         let dir = tempfile::tempdir().unwrap();
@@ -276,6 +300,7 @@ mod tests {
         assert_eq!(backend.path(), Some(db_path.as_path()));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn flush_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -286,6 +311,7 @@ mod tests {
         assert!(db_path.exists());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn persist_and_reload() {
         let dir = tempfile::tempdir().unwrap();
@@ -313,6 +339,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn persist_overwrite_and_reload() {
         let dir = tempfile::tempdir().unwrap();
@@ -344,6 +371,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn persist_empty_database() {
         let dir = tempfile::tempdir().unwrap();
@@ -360,6 +388,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn persist_binary_keys_and_values() {
         let dir = tempfile::tempdir().unwrap();
@@ -380,6 +409,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn open_corrupt_file_returns_error() {
         let dir = tempfile::tempdir().unwrap();

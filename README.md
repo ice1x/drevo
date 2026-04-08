@@ -414,7 +414,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 - [x] `00027` C FFI header (`graphnote.h`) — exposes GraphNoteDb API for iOS/Android native apps
 - [x] `00028` WASM bindings via `wasm-bindgen` — exposes GraphNoteDb API for browser and Tauri v2 WASM
-- [ ] `00029` Verify redb works on WASM target; if not, implement fallback (IndexedDB adapter or memory-only)
+- [x] `00029` Verify redb works on WASM target; if not, implement fallback (IndexedDB adapter or memory-only)
 - [ ] `00030` Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown`
 - [ ] `00031` Smoke test on each platform: open DB, CRUD a node, search, close
 
@@ -608,11 +608,12 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00026` Traversal benchmark: BFS/DFS/shortest_path/subgraph on 100K nodes, degree 10 (criterion)
 - [x] `00027` C FFI header (`graphnote.h`) — opaque handle, JSON serialization, thread-local error, cbindgen auto-generation
 - [x] `00028` WASM bindings (`wasm-bindgen`) — WasmGraphNoteDb JS class, JSON serialization, memory-only backend, 30 integration tests
+- [x] `00029` WASM redb verification + fallback — redb excluded on WASM via compile-time cfg, MemoryBackend as fallback, feature-gated Cargo.toml
 
 **Test status:**
 
 ```
-cargo test: 627 passed, 0 failed (201 unit + 425 integration + 1 doctest)
+cargo test: 637 passed, 0 failed (201 unit + 435 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -682,7 +683,16 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 > **Note:** BFS/DFS depth 3 on 100K nodes (degree 10) completes in ~1.7ms — well within interactive latency. Subgraph depth 3 is slower (~60ms) due to edge collection across the discovered node set. Shortest path (Dijkstra) on the full graph takes ~1s because it explores the entire reachable set before finding the target — expected for dense graphs with uniform weights. Edge kind filtering dramatically reduces traversal cost (~50µs vs ~245µs at depth 2).
 
-**Phase 5 in progress.** C FFI and WASM bindings implemented.
+**Phase 5 in progress.** C FFI, WASM bindings, and WASM redb verification implemented.
+
+**WASM platform strategy:**
+- **redb does not compile for `wasm32-unknown-unknown`** — it depends on filesystem I/O (`std::fs`, `std::path`) unavailable in browser environments
+- **Fallback: `MemoryBackend` exclusively** — compile-time `#[cfg]` gates ensure `RedbBackend` and disk-backed `GraphNoteDb::open()` are excluded on WASM
+- **Feature-gated Cargo.toml**: `redb-backend` (default) enables redb on native; `wasm` enables `wasm-bindgen`, `js-sys`, `getrandom/wasm_js` for browser
+- **`MemoryBackend` persistence methods** (`open(path)`, `flush()` to disk) are gated behind `#[cfg(not(target_arch = "wasm32"))]`
+- **`cbindgen` build step** is feature-gated — skipped on WASM builds
+- **UUID v7 entropy** uses `getrandom` with `wasm_js` feature for browser-compatible RNG
+- **Verified**: `cargo check --target wasm32-unknown-unknown --no-default-features --features wasm` compiles cleanly
 
 **FFI layer design:**
 - Opaque handle pattern: C consumers receive `graphnote_db_t*` — an opaque pointer
@@ -702,7 +712,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps:**
 
-1. `00029` — Verify redb works on WASM target; if not, implement fallback — Phase 5 (Platform Bindings)
+1. `00030` — Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown` — Phase 5 (Platform Bindings)
 
 ---
 
