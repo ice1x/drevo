@@ -415,7 +415,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00027` C FFI header (`graphnote.h`) — exposes GraphNoteDb API for iOS/Android native apps
 - [x] `00028` WASM bindings via `wasm-bindgen` — exposes GraphNoteDb API for browser and Tauri v2 WASM
 - [x] `00029` Verify redb works on WASM target; if not, implement fallback (IndexedDB adapter or memory-only)
-- [ ] `00030` Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown`
+- [x] `00030` Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown`
 - [ ] `00031` Smoke test on each platform: open DB, CRUD a node, search, close
 
 **Definition of done:** `graphnote.h` compiles on iOS/Android; WASM build loads in browser; all platforms pass smoke test.
@@ -609,11 +609,12 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00027` C FFI header (`graphnote.h`) — opaque handle, JSON serialization, thread-local error, cbindgen auto-generation
 - [x] `00028` WASM bindings (`wasm-bindgen`) — WasmGraphNoteDb JS class, JSON serialization, memory-only backend, 30 integration tests
 - [x] `00029` WASM redb verification + fallback — redb excluded on WASM via compile-time cfg, MemoryBackend as fallback, feature-gated Cargo.toml
+- [x] `00030` Cross-compilation CI — GitHub Actions workflow for iOS (aarch64-apple-ios), Android (aarch64-linux-android), WASM (wasm32-unknown-unknown), plus 10 cross-compilation validation tests
 
 **Test status:**
 
 ```
-cargo test: 637 passed, 0 failed (201 unit + 435 integration + 1 doctest)
+cargo test: 647 passed, 0 failed (201 unit + 445 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -683,7 +684,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 > **Note:** BFS/DFS depth 3 on 100K nodes (degree 10) completes in ~1.7ms — well within interactive latency. Subgraph depth 3 is slower (~60ms) due to edge collection across the discovered node set. Shortest path (Dijkstra) on the full graph takes ~1s because it explores the entire reachable set before finding the target — expected for dense graphs with uniform weights. Edge kind filtering dramatically reduces traversal cost (~50µs vs ~245µs at depth 2).
 
-**Phase 5 in progress.** C FFI, WASM bindings, and WASM redb verification implemented.
+**Phase 5 in progress.** C FFI, WASM bindings, WASM redb verification, and cross-compilation CI implemented.
 
 **WASM platform strategy:**
 - **redb does not compile for `wasm32-unknown-unknown`** — it depends on filesystem I/O (`std::fs`, `std::path`) unavailable in browser environments
@@ -710,9 +711,16 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 - Feature-gated: `cargo build --features wasm` to include WASM bindings
 - 17 WASM methods: lifecycle (2), node CRUD (4), edge CRUD (4), traversal (5), search (3)
 
+**Cross-compilation CI design:**
+- Separate workflow (`cross-compile.yml`) to avoid slowing down the main CI
+- **WASM job** (ubuntu): `cargo check` + `cargo build` with `--no-default-features --features wasm`, verifies `.wasm` artifact
+- **iOS job** (macos): `cargo check` + `cargo build` with default features, verifies `.a` static library and `graphnote.h` header
+- **Android job** (ubuntu): installs Android NDK, configures linker, `cargo check` + `cargo build` with `--no-default-features --features redb-backend`
+- **Host tests job**: runs `cross_compilation_tests.rs` (10 tests: feature gates, API surface, portability)
+
 **Next steps:**
 
-1. `00030` — Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown` — Phase 5 (Platform Bindings)
+1. `00031` — Smoke test on each platform: open DB, CRUD a node, search, close — Phase 5 (Platform Bindings)
 
 ---
 
