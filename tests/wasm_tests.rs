@@ -10,7 +10,7 @@
 
 use graphnote_db::db::GraphNoteDb;
 use graphnote_db::model::{
-    Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, Properties, ScoredNode, SubGraph,
+    Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, Properties, SubGraph,
 };
 use std::collections::HashMap;
 
