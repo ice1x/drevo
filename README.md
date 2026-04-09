@@ -425,7 +425,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 > Goal: validate the DB against real-world use cases from the notebook app. After this phase, GraphNote DB is proven ready for the notebook.
 
 - [x] `00032` CBT journal scenario: thought chains, distortion pattern search, reframing edges
-- [ ] `00033` Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
+- [x] `00033` Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
 - [ ] `00034` Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
 - [ ] `00035` ERP scenario: order→product→warehouse edges, transactional inventory updates
 - [ ] `00036` Bug tracker scenario: impact analysis traversal, release-blocking queries
@@ -611,11 +611,13 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00029` WASM redb verification + fallback — redb excluded on WASM via compile-time cfg, MemoryBackend as fallback, feature-gated Cargo.toml
 - [x] `00030` Cross-compilation CI — GitHub Actions workflow for iOS (aarch64-apple-ios), Android (aarch64-linux-android), WASM (wasm32-unknown-unknown), plus 10 cross-compilation validation tests
 - [x] `00031` Platform smoke tests — 6 tests: MemoryBackend full workflow, RedbBackend full workflow with persistence verification, FFI C API roundtrip, WASM-compatible API surface with JSON roundtrip, disk persistence, Unicode/i18n (CJK, emoji, Cyrillic)
+- [x] `00032` CBT journal scenario — 42 tests: thought chains, distortion pattern search, reframing edges, BFS/DFS/shortest_path/subgraph, kind index, FTS, properties, multi-entry journal, weighted edges, update/delete workflows
+- [x] `00033` Story editor scenario — 53 tests: tree structure (book→chapter→scene), character graph, scene ordering via follows edges, subgraph for AI context extraction, FTS across narrative content, kind index board views, location sharing, plot points, update/delete workflows
 
 **Test status:**
 
 ```
-cargo test: 653 passed, 0 failed (201 unit + 451 integration + 1 doctest)
+cargo test: 706 passed, 0 failed (201 unit + 504 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -731,7 +733,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps:**
 
-1. `00032` — CBT journal scenario: thought chains, distortion pattern search, reframing edges — Phase 6 (Scenario Integration Tests)
+1. `00034` — Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index — Phase 6 (Scenario Integration Tests)
 
 ---
 
