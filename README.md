@@ -424,7 +424,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 > Goal: validate the DB against real-world use cases from the notebook app. After this phase, GraphNote DB is proven ready for the notebook.
 
-- [ ] `00032` CBT journal scenario: thought chains, distortion pattern search, reframing edges
+- [x] `00032` CBT journal scenario: thought chains, distortion pattern search, reframing edges
 - [ ] `00033` Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
 - [ ] `00034` Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
 - [ ] `00035` ERP scenario: order→product→warehouse edges, transactional inventory updates
