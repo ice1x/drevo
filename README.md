@@ -426,7 +426,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 - [x] `00032` CBT journal scenario: thought chains, distortion pattern search, reframing edges
 - [x] `00033` Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
-- [ ] `00034` Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
+- [x] `00034` Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
 - [ ] `00035` ERP scenario: order→product→warehouse edges, transactional inventory updates
 - [ ] `00036` Bug tracker scenario: impact analysis traversal, release-blocking queries
 
@@ -733,7 +733,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps:**
 
-1. `00034` — Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index — Phase 6 (Scenario Integration Tests)
+1. `00035` — ERP scenario: order→product→warehouse edges, transactional inventory updates — Phase 6 (Scenario Integration Tests)
 
 ---
 
