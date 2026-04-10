@@ -427,7 +427,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00032` CBT journal scenario: thought chains, distortion pattern search, reframing edges
 - [x] `00033` Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
 - [x] `00034` Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
-- [ ] `00035` ERP scenario: order→product→warehouse edges, transactional inventory updates
+- [x] `00035` ERP scenario: order→product→warehouse edges, transactional inventory updates
 - [ ] `00036` Bug tracker scenario: impact analysis traversal, release-blocking queries
 
 **Definition of done:** all 5 scenarios pass on both MemoryBackend and RedbBackend. The notebook app team can start building on top of GraphNote DB.
@@ -613,11 +613,13 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00031` Platform smoke tests — 6 tests: MemoryBackend full workflow, RedbBackend full workflow with persistence verification, FFI C API roundtrip, WASM-compatible API surface with JSON roundtrip, disk persistence, Unicode/i18n (CJK, emoji, Cyrillic)
 - [x] `00032` CBT journal scenario — 42 tests: thought chains, distortion pattern search, reframing edges, BFS/DFS/shortest_path/subgraph, kind index, FTS, properties, multi-entry journal, weighted edges, update/delete workflows
 - [x] `00033` Story editor scenario — 53 tests: tree structure (book→chapter→scene), character graph, scene ordering via follows edges, subgraph for AI context extraction, FTS across narrative content, kind index board views, location sharing, plot points, update/delete workflows
+- [x] `00034` Task manager scenario — 64 tests: epic/sprint/task/developer/component graph, dependency chains, blocking BFS, reverse blocking chain, shortest path through blocking chain, sprint board via kind_index, developer workload, component ownership, FTS, subgraph, edge kind index, CRUD lifecycle, weight/property updates
+- [x] `00035` ERP scenario — 76 tests: customer/warehouse/product/order/invoice graph, order → customer (ordered_by), order → product line items with qty/line_total edge properties, product → warehouse inventory with stock edge properties, invoice → order → customer billing chain, kind index board views, FTS across domain content, subgraph for order context, shortest path invoice→warehouse, transactional status updates, inventory restocking, order cancellation via edge deletion, cascade delete of products/orders, total stock and inventory value aggregations
 
 **Test status:**
 
 ```
-cargo test: 706 passed, 0 failed (201 unit + 504 integration + 1 doctest)
+cargo test: 888 passed, 0 failed (201 unit + 686 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -733,7 +735,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps:**
 
-1. `00035` — ERP scenario: order→product→warehouse edges, transactional inventory updates — Phase 6 (Scenario Integration Tests)
+1. `00036` — Bug tracker scenario: impact analysis traversal, release-blocking queries — Phase 6 (Scenario Integration Tests)
 
 ---
 
