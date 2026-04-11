@@ -1,11 +1,12 @@
-//! Integration tests for the HTTP API (tasks 00037, 00038, 00039, 00040).
+//! Integration tests for the HTTP API (tasks 00037, 00038, 00039, 00040, 00041).
 //!
 //! Covers the scaffold (task 00037: router, state, error mapping),
 //! the node CRUD endpoints (task 00038: POST/GET/PATCH/DELETE /nodes
 //! plus the list-by-kind query), the edge endpoints (task 00039:
-//! POST/GET/DELETE /edges, list-by-kind, and edges-of-node), and the
+//! POST/GET/DELETE /edges, list-by-kind, and edges-of-node), the
 //! traversal endpoints (task 00040: /nodes/{id}/neighbors,
-//! /paths/shortest, /nodes/{id}/subgraph).
+//! /paths/shortest, /nodes/{id}/subgraph), and the full-text search
+//! endpoint (task 00041: POST /search/fts).
 
 #![cfg(feature = "http")]
 
@@ -838,4 +839,181 @@ async fn get_node_subgraph_missing_returns_404() {
     let (status, value) = send(&app, "GET", "/nodes/9999/subgraph", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(value["error"].is_string());
+}
+
+// ---------------------------------------------------------------------
+// Search endpoint (task 00041) — POST /search/fts
+// ---------------------------------------------------------------------
+
+async fn seed_search_corpus(app: &axum::Router) -> (u64, u64, u64) {
+    let (_, a) = send(
+        app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "note",
+            "Rust programming language",
+            "Rust is a systems programming language focused on safety and performance.",
+        )),
+    )
+    .await;
+    let (_, b) = send(
+        app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "note",
+            "Python tutorial",
+            "Python is a high-level interpreted programming language.",
+        )),
+    )
+    .await;
+    let (_, c) = send(
+        app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "note",
+            "Cooking recipes",
+            "Delicious pasta and pizza recipes from Italy.",
+        )),
+    )
+    .await;
+    (
+        a["id"].as_u64().unwrap(),
+        b["id"].as_u64().unwrap(),
+        c["id"].as_u64().unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn search_fts_returns_scored_results() {
+    let app = make_app();
+    let (rust_id, _py_id, _cook_id) = seed_search_corpus(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "Rust programming", "limit": 10 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let results = value["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "expected at least one result");
+
+    // First result should be the "Rust programming language" node since it
+    // matches both query tokens most strongly.
+    let top = &results[0];
+    assert_eq!(top["node"]["id"].as_u64().unwrap(), rust_id);
+    assert!(
+        top["score"].as_f64().unwrap() > 0.0,
+        "expected positive score"
+    );
+}
+
+#[tokio::test]
+async fn search_fts_respects_limit() {
+    let app = make_app();
+    let _ = seed_search_corpus(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "programming", "limit": 1 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let results = value["results"].as_array().unwrap();
+    assert!(results.len() <= 1);
+}
+
+#[tokio::test]
+async fn search_fts_default_limit_when_omitted() {
+    let app = make_app();
+    let _ = seed_search_corpus(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "programming" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let results = value["results"].as_array().unwrap();
+    // Default limit is non-zero; expect at least one match.
+    assert!(!results.is_empty());
+}
+
+#[tokio::test]
+async fn search_fts_no_match_returns_empty_results() {
+    let app = make_app();
+    let _ = seed_search_corpus(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "zzzzz_nothing_matches", "limit": 10 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let results = value["results"].as_array().unwrap();
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn search_fts_missing_query_returns_400() {
+    let app = make_app();
+    let (status, value) = send(&app, "POST", "/search/fts", Some(json!({ "limit": 10 }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(value["error"].is_string());
+}
+
+#[tokio::test]
+async fn search_fts_empty_query_returns_empty_results() {
+    let app = make_app();
+    let _ = seed_search_corpus(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "", "limit": 10 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["results"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn search_fts_malformed_body_returns_400() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/search/fts")
+        .header("content-type", "application/json")
+        .body(Body::from("not-json"))
+        .expect("build request");
+    let response = app.oneshot(req).await.expect("router response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn search_fts_limit_zero_returns_empty() {
+    let app = make_app();
+    let _ = seed_search_corpus(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "programming", "limit": 0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["results"].as_array().unwrap().is_empty());
 }
