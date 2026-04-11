@@ -35,11 +35,20 @@
 //! - `POST /search/fts` — JSON body `{query, limit?}`, returns
 //!   `{results: [ScoredNode]}` ranked by TF-IDF
 //!
-//! Admin endpoints arrive in task 00042. The whole module is gated
-//! behind the `http` feature so that WebAssembly builds
-//! (`--no-default-features --features wasm`) are unaffected.
+//! Task 00042 added the admin endpoints used by container liveness
+//! probes and operators:
+//!
+//! - `GET /health` — cheap liveness probe, always returns
+//!   `{"status": "ok"}` as long as the process can serve HTTP.
+//! - `GET /status` — server metadata including crate name, version,
+//!   and process uptime in seconds since the [`ApiState`] was built.
+//!
+//! The whole module is gated behind the `http` feature so that
+//! WebAssembly builds (`--no-default-features --features wasm`) are
+//! unaffected.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -64,12 +73,22 @@ use crate::model::{Direction, Edge, NewEdge, NewNode, Node, NodePatch, ScoredNod
 pub struct ApiState {
     /// The shared database handle.
     pub db: Arc<GraphNoteDb>,
+    /// Wall-clock instant at which this state was constructed. Used by
+    /// `GET /status` to compute the process uptime without pulling in
+    /// a system-time crate.
+    pub started_at: Instant,
 }
 
 impl ApiState {
-    /// Create a new [`ApiState`] from an existing database handle.
+    /// Create a new [`ApiState`] from an existing database handle. The
+    /// `started_at` timestamp is captured at construction time so that
+    /// `GET /status` can report how long this API instance has been
+    /// serving traffic.
     pub fn new(db: Arc<GraphNoteDb>) -> Self {
-        Self { db }
+        Self {
+            db,
+            started_at: Instant::now(),
+        }
     }
 }
 
@@ -514,6 +533,59 @@ async fn search_fts(
     Ok(Json(SearchFtsResponse { results }))
 }
 
+// ---------------------------------------------------------------------
+// Admin endpoints (task 00042)
+// ---------------------------------------------------------------------
+
+/// JSON body returned by `GET /health`.
+///
+/// Intentionally minimal: container orchestrators (Kubernetes,
+/// Docker, Nomad) only need a cheap 200-or-not signal. The `status`
+/// field is always the literal string `"ok"` when the HTTP task can
+/// serve the request — if the process is unhealthy enough to fail
+/// this endpoint, the runtime will never see the response anyway.
+#[derive(Debug, Serialize)]
+pub struct HealthResponse {
+    /// Static health marker. Always `"ok"` in the current
+    /// implementation.
+    pub status: &'static str,
+}
+
+/// JSON body returned by `GET /status`.
+///
+/// Carries the same `name`/`version` pair as `GET /` plus an
+/// `uptime_seconds` field that reports how long the current
+/// [`ApiState`] has been alive. Clients can use this for basic
+/// observability and sanity checks after a restart.
+#[derive(Debug, Serialize)]
+pub struct StatusResponse {
+    /// Crate name — same value as [`ServerInfo::name`].
+    pub name: &'static str,
+    /// Crate version — same value as [`ServerInfo::version`].
+    pub version: &'static str,
+    /// Seconds elapsed since the [`ApiState`] was constructed.
+    pub uptime_seconds: u64,
+}
+
+/// Handler for `GET /health`. Returns a fixed `{"status": "ok"}`
+/// payload. Must stay dependency-free (no DB call, no allocation on
+/// the hot path) so that a busy or locked database does not cause
+/// liveness probes to fail.
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse { status: "ok" })
+}
+
+/// Handler for `GET /status`. Returns server metadata and the current
+/// process uptime derived from [`ApiState::started_at`].
+async fn status(State(state): State<ApiState>) -> Json<StatusResponse> {
+    let uptime_seconds = state.started_at.elapsed().as_secs();
+    Json(StatusResponse {
+        name: "graphnote-db",
+        version: env!("CARGO_PKG_VERSION"),
+        uptime_seconds,
+    })
+}
+
 /// Parse the `direction` query parameter into a [`Direction`].
 ///
 /// Accepts `outgoing`, `incoming`, `both` (case-insensitive). `None`
@@ -550,5 +622,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/edges/{id}", get(get_edge).delete(delete_edge))
         .route("/paths/shortest", get(get_shortest_path))
         .route("/search/fts", axum::routing::post(search_fts))
+        .route("/health", get(health))
+        .route("/status", get(status))
         .with_state(state)
 }

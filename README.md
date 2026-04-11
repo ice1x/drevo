@@ -447,7 +447,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00039` Edge endpoints: `POST/GET/DELETE /edges/...`
 - [x] `00040` Traversal endpoints: `GET /nodes/{id}/neighbors`, `/paths/shortest`, `/nodes/{id}/subgraph`
 - [x] `00041` Search endpoint: `POST /search/fts`
-- [ ] `00042` Admin endpoints: `GET /health`, `GET /status`
+- [x] `00042` Admin endpoints: `GET /health`, `GET /status`
 - [ ] `00043` JSON error handling — unified error responses with status codes
 - [ ] `00044` Integration tests: HTTP endpoints against in-memory backend
 
@@ -735,7 +735,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps:**
 
-1. `00042` — Admin endpoints: `GET /health`, `GET /status` — Phase 7 (HTTP API)
+1. `00043` — JSON error handling — unified error responses with status codes — Phase 7 (HTTP API)
 
 ---
 
