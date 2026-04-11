@@ -1,8 +1,9 @@
-//! Integration tests for the HTTP API (tasks 00037, 00038).
+//! Integration tests for the HTTP API (tasks 00037, 00038, 00039).
 //!
-//! Covers the scaffold (task 00037: router, state, error mapping) and
+//! Covers the scaffold (task 00037: router, state, error mapping),
 //! the node CRUD endpoints (task 00038: POST/GET/PATCH/DELETE /nodes
-//! plus the list-by-kind query).
+//! plus the list-by-kind query), and the edge endpoints (task 00039:
+//! POST/GET/DELETE /edges, list-by-kind, and edges-of-node).
 
 #![cfg(feature = "http")]
 
@@ -63,6 +64,25 @@ fn new_node_body(kind: &str, title: &str, body: &str) -> Value {
         "body_html": "",
         "properties": {}
     })
+}
+
+fn new_edge_body(from_id: u64, to_id: u64, kind: &str) -> Value {
+    json!({
+        "from_id": from_id,
+        "to_id": to_id,
+        "kind": kind,
+        "weight": 1.0,
+        "properties": {}
+    })
+}
+
+async fn create_two_nodes(app: &axum::Router) -> (u64, u64) {
+    let (_, a) = send(app, "POST", "/nodes", Some(new_node_body("note", "A", ""))).await;
+    let (_, b) = send(app, "POST", "/nodes", Some(new_node_body("note", "B", ""))).await;
+    (
+        a["id"].as_u64().expect("node a id"),
+        b["id"].as_u64().expect("node b id"),
+    )
 }
 
 #[tokio::test]
@@ -321,4 +341,233 @@ async fn list_nodes_by_kind_paginates() {
     // kind is required for list endpoint.
     let (status, _) = send(&app, "GET", "/nodes", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------
+// Task 00039 — Edge endpoints
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn post_edges_creates_edge_and_returns_201() {
+    let app = make_app();
+    let (from, to) = create_two_nodes(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(from, to, "links_to")),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(value["id"].as_u64().unwrap() >= 1);
+    assert_eq!(value["from_id"].as_u64().unwrap(), from);
+    assert_eq!(value["to_id"].as_u64().unwrap(), to);
+    assert_eq!(value["kind"], "links_to");
+    assert!((value["weight"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+    assert!(value["created_at"].is_number());
+}
+
+#[tokio::test]
+async fn post_edges_missing_endpoint_returns_404() {
+    let app = make_app();
+    let (from, _) = create_two_nodes(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(from, 9999, "links_to")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(value["error"].is_string());
+}
+
+#[tokio::test]
+async fn post_edges_rejects_invalid_json_with_400() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/edges")
+        .header("content-type", "application/json")
+        .body(Body::from("{broken"))
+        .unwrap();
+    let response = app.oneshot(req).await.expect("router response");
+    assert!(response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn get_edges_id_returns_existing_edge() {
+    let app = make_app();
+    let (from, to) = create_two_nodes(&app).await;
+    let (_, created) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(from, to, "links_to")),
+    )
+    .await;
+    let id = created["id"].as_u64().unwrap();
+
+    let (status, value) = send(&app, "GET", &format!("/edges/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["id"].as_u64().unwrap(), id);
+    assert_eq!(value["from_id"].as_u64().unwrap(), from);
+    assert_eq!(value["to_id"].as_u64().unwrap(), to);
+    assert_eq!(value["kind"], "links_to");
+}
+
+#[tokio::test]
+async fn get_edges_missing_returns_404() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/edges/9999", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(value["error"].is_string());
+}
+
+#[tokio::test]
+async fn delete_edges_removes_edge_and_returns_204() {
+    let app = make_app();
+    let (from, to) = create_two_nodes(&app).await;
+    let (_, created) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(from, to, "links_to")),
+    )
+    .await;
+    let id = created["id"].as_u64().unwrap();
+
+    let (status, _) = send(&app, "DELETE", &format!("/edges/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _) = send(&app, "GET", &format!("/edges/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_edges_missing_returns_404() {
+    let app = make_app();
+    let (status, _) = send(&app, "DELETE", "/edges/404", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn list_edges_by_kind_paginates() {
+    let app = make_app();
+    let (from, to) = create_two_nodes(&app).await;
+    for _ in 0..5 {
+        let (status, _) = send(
+            &app,
+            "POST",
+            "/edges",
+            Some(new_edge_body(from, to, "links_to")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    // Different kind to ensure filtering works.
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(from, to, "tagged_with")),
+    )
+    .await;
+
+    let (status, value) = send(&app, "GET", "/edges?kind=links_to&limit=3&offset=0", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let edges = value["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 3);
+    for edge in edges {
+        assert_eq!(edge["kind"], "links_to");
+    }
+
+    let (status, value) = send(&app, "GET", "/edges?kind=links_to&limit=10&offset=3", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["edges"].as_array().unwrap().len(), 2);
+
+    // kind is required.
+    let (status, _) = send(&app, "GET", "/edges", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn get_node_edges_returns_directional_edges() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+    // a -> b (outgoing for a, incoming for b)
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(a, b, "links_to")),
+    )
+    .await;
+    // b -> a (incoming for a, outgoing for b)
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(b, a, "replies_to")),
+    )
+    .await;
+
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/edges?direction=outgoing"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let edges = value["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["from_id"].as_u64().unwrap(), a);
+    assert_eq!(edges[0]["kind"], "links_to");
+
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/edges?direction=incoming"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let edges = value["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["to_id"].as_u64().unwrap(), a);
+    assert_eq!(edges[0]["kind"], "replies_to");
+
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/edges?direction=both"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["edges"].as_array().unwrap().len(), 2);
+
+    // Default direction = both
+    let (status, value) = send(&app, "GET", &format!("/nodes/{a}/edges"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["edges"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn get_node_edges_invalid_direction_returns_400() {
+    let app = make_app();
+    let (a, _) = create_two_nodes(&app).await;
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/edges?direction=sideways"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(value["error"].is_string());
 }

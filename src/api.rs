@@ -12,8 +12,17 @@
 //! - `PATCH /nodes/{id}` — partial update
 //! - `DELETE /nodes/{id}` — delete a node
 //!
-//! Edge, traversal, search, and admin endpoints arrive in tasks
-//! 00039–00042. The whole module is gated behind the `http` feature
+//! Task 00039 added edge endpoints:
+//!
+//! - `POST /edges` — create an edge
+//! - `GET /edges?kind=&limit=&offset=` — list edges filtered by kind
+//! - `GET /edges/{id}` — fetch an edge by id
+//! - `DELETE /edges/{id}` — delete an edge
+//! - `GET /nodes/{id}/edges?direction=outgoing|incoming|both` —
+//!   edges incident to a node (default: both)
+//!
+//! Traversal, search, and admin endpoints arrive in tasks
+//! 00040–00042. The whole module is gated behind the `http` feature
 //! so that WebAssembly builds (`--no-default-features --features wasm`)
 //! are unaffected.
 
@@ -30,7 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::GraphNoteDb;
 use crate::error::GraphNoteError;
-use crate::model::{NewNode, Node, NodePatch};
+use crate::model::{Direction, Edge, NewEdge, NewNode, Node, NodePatch};
 
 /// Shared application state passed to every HTTP handler.
 ///
@@ -210,6 +219,126 @@ async fn list_nodes(
     Ok(Json(NodeListResponse { nodes }))
 }
 
+// ---------------------------------------------------------------------
+// Edge endpoints (task 00039)
+// ---------------------------------------------------------------------
+
+/// Query parameters accepted by `GET /edges`.
+///
+/// Mirrors [`ListNodesQuery`]: `kind` is mandatory, `limit`/`offset`
+/// are optional with the same defaults and cap.
+#[derive(Debug, Deserialize)]
+pub struct ListEdgesQuery {
+    /// Edge kind to filter by (required).
+    pub kind: Option<String>,
+    /// Maximum number of edges to return. Defaults to 50, max 1000.
+    pub limit: Option<usize>,
+    /// Number of matching edges to skip for pagination. Defaults to 0.
+    pub offset: Option<usize>,
+}
+
+/// Query parameters accepted by `GET /nodes/{id}/edges`.
+///
+/// `direction` is optional — when absent, the handler defaults to
+/// [`Direction::Both`]. Accepted values (case-insensitive): `outgoing`,
+/// `incoming`, `both`.
+#[derive(Debug, Deserialize)]
+pub struct NodeEdgesQuery {
+    /// Traversal direction relative to the node. Optional.
+    pub direction: Option<String>,
+}
+
+/// JSON envelope for edge list responses.
+#[derive(Debug, Serialize)]
+pub struct EdgeListResponse {
+    /// The matched edges.
+    pub edges: Vec<Edge>,
+}
+
+/// Handler for `POST /edges`. Creates a new edge from a JSON
+/// [`NewEdge`] body and returns the stored edge. Returns 404 if either
+/// endpoint node does not exist.
+async fn create_edge(
+    State(state): State<ApiState>,
+    body: Result<Json<NewEdge>, JsonRejection>,
+) -> Result<(StatusCode, Json<Edge>), ApiError> {
+    let Json(new_edge) = body?;
+    let edge = state.db.create_edge(new_edge)?;
+    Ok((StatusCode::CREATED, Json(edge)))
+}
+
+/// Handler for `GET /edges/{id}`. Returns the edge or 404 if missing.
+async fn get_edge(
+    State(state): State<ApiState>,
+    Path(id): Path<u64>,
+) -> Result<Json<Edge>, ApiError> {
+    let edge = state
+        .db
+        .get_edge(id)?
+        .ok_or(GraphNoteError::EdgeNotFound(id))?;
+    Ok(Json(edge))
+}
+
+/// Handler for `DELETE /edges/{id}`. Returns 204 on success or 404
+/// if the edge does not exist.
+async fn delete_edge(
+    State(state): State<ApiState>,
+    Path(id): Path<u64>,
+) -> Result<StatusCode, ApiError> {
+    state.db.delete_edge(id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Handler for `GET /edges`. Lists edges filtered by `kind` with
+/// pagination. A missing `kind` parameter yields 400 Bad Request.
+async fn list_edges(
+    State(state): State<ApiState>,
+    query: Result<Query<ListEdgesQuery>, QueryRejection>,
+) -> Result<Json<EdgeListResponse>, ApiError> {
+    let Query(ListEdgesQuery {
+        kind,
+        limit,
+        offset,
+    }) = query?;
+    let kind =
+        kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
+    let limit = limit.unwrap_or(50).min(1000);
+    let offset = offset.unwrap_or(0);
+    let edges = state.db.list_edges_by_kind(&kind, limit, offset)?;
+    Ok(Json(EdgeListResponse { edges }))
+}
+
+/// Handler for `GET /nodes/{id}/edges`. Returns all edges incident to
+/// the node in the given direction (default: both). Unknown direction
+/// values yield 400 Bad Request.
+async fn get_node_edges(
+    State(state): State<ApiState>,
+    Path(id): Path<u64>,
+    query: Result<Query<NodeEdgesQuery>, QueryRejection>,
+) -> Result<Json<EdgeListResponse>, ApiError> {
+    let Query(NodeEdgesQuery { direction }) = query?;
+    let direction = parse_direction(direction.as_deref())?;
+    let edges = state.db.edges_of(id, direction)?;
+    Ok(Json(EdgeListResponse { edges }))
+}
+
+/// Parse the `direction` query parameter into a [`Direction`].
+///
+/// Accepts `outgoing`, `incoming`, `both` (case-insensitive). `None`
+/// defaults to [`Direction::Both`]. Any other value yields a
+/// [`ApiError::BadRequest`].
+fn parse_direction(value: Option<&str>) -> Result<Direction, ApiError> {
+    let lowered = value.map(str::to_ascii_lowercase);
+    match lowered.as_deref() {
+        None | Some("both") => Ok(Direction::Both),
+        Some("outgoing") => Ok(Direction::Outgoing),
+        Some("incoming") => Ok(Direction::Incoming),
+        Some(other) => Err(ApiError::BadRequest(format!(
+            "invalid direction '{other}', expected one of: outgoing, incoming, both"
+        ))),
+    }
+}
+
 /// Build the HTTP [`Router`] for a given [`ApiState`].
 ///
 /// Returned router can be served with `axum::serve` on a TCP listener
@@ -222,5 +351,8 @@ pub fn build_router(state: ApiState) -> Router {
             "/nodes/{id}",
             get(get_node).patch(update_node).delete(delete_node),
         )
+        .route("/nodes/{id}/edges", get(get_node_edges))
+        .route("/edges", get(list_edges).post(create_edge))
+        .route("/edges/{id}", get(get_edge).delete(delete_edge))
         .with_state(state)
 }
