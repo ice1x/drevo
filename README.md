@@ -443,8 +443,8 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 > Goal: expose GraphNote DB over HTTP for programmatic access and container deployment.
 
 - [x] `00037` HTTP API server (axum + tokio) — thin JSON adapter over GraphNoteDb
-- [ ] `00038` Node CRUD endpoints: `POST/GET/PATCH/DELETE /nodes/{id}`
-- [ ] `00039` Edge endpoints: `POST/GET/DELETE /edges/...`
+- [x] `00038` Node CRUD endpoints: `POST/GET/PATCH/DELETE /nodes/{id}`
+- [x] `00039` Edge endpoints: `POST/GET/DELETE /edges/...`
 - [ ] `00040` Traversal endpoints: `GET /nodes/{id}/neighbors`, `/paths/shortest`, `/nodes/{id}/subgraph`
 - [ ] `00041` Search endpoint: `POST /search/fts`
 - [ ] `00042` Admin endpoints: `GET /health`, `GET /status`
