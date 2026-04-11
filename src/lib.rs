@@ -1,3 +1,5 @@
+#[cfg(feature = "http")]
+pub mod api;
 pub mod db;
 pub mod error;
 #[cfg(not(target_arch = "wasm32"))]

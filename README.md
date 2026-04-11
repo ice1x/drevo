@@ -428,7 +428,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00033` Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
 - [x] `00034` Task manager scenario: dependency chains, blocking BFS, sprint board via kind_index
 - [x] `00035` ERP scenario: order→product→warehouse edges, transactional inventory updates
-- [ ] `00036` Bug tracker scenario: impact analysis traversal, release-blocking queries
+- [x] `00036` Bug tracker scenario: impact analysis traversal, release-blocking queries
 
 **Definition of done:** all 5 scenarios pass on both MemoryBackend and RedbBackend. The notebook app team can start building on top of GraphNote DB.
 
@@ -442,7 +442,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 > Goal: expose GraphNote DB over HTTP for programmatic access and container deployment.
 
-- [ ] `00037` HTTP API server (axum + tokio) — thin JSON adapter over GraphNoteDb
+- [x] `00037` HTTP API server (axum + tokio) — thin JSON adapter over GraphNoteDb
 - [ ] `00038` Node CRUD endpoints: `POST/GET/PATCH/DELETE /nodes/{id}`
 - [ ] `00039` Edge endpoints: `POST/GET/DELETE /edges/...`
 - [ ] `00040` Traversal endpoints: `GET /nodes/{id}/neighbors`, `/paths/shortest`, `/nodes/{id}/subgraph`
@@ -735,7 +735,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps:**
 
-1. `00036` — Bug tracker scenario: impact analysis traversal, release-blocking queries — Phase 6 (Scenario Integration Tests)
+1. `00038` — Node CRUD endpoints: `POST/GET/PATCH/DELETE /nodes/{id}` — Phase 7 (HTTP API)
 
 ---
 
