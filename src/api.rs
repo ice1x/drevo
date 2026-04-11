@@ -30,8 +30,13 @@
 //! - `GET /nodes/{id}/subgraph?depth=` — bounded subgraph extraction
 //!   (default depth 1)
 //!
-//! Search and admin endpoints arrive in tasks 00041–00042. The whole
-//! module is gated behind the `http` feature so that WebAssembly builds
+//! Task 00041 added the full-text search endpoint:
+//!
+//! - `POST /search/fts` — JSON body `{query, limit?}`, returns
+//!   `{results: [ScoredNode]}` ranked by TF-IDF
+//!
+//! Admin endpoints arrive in task 00042. The whole module is gated
+//! behind the `http` feature so that WebAssembly builds
 //! (`--no-default-features --features wasm`) are unaffected.
 
 use std::sync::Arc;
@@ -47,7 +52,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::GraphNoteDb;
 use crate::error::GraphNoteError;
-use crate::model::{Direction, Edge, NewEdge, NewNode, Node, NodePatch, SubGraph};
+use crate::model::{Direction, Edge, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph};
 
 /// Shared application state passed to every HTTP handler.
 ///
@@ -459,6 +464,56 @@ async fn get_node_subgraph(
     Ok(Json(sub))
 }
 
+// ---------------------------------------------------------------------
+// Search endpoint (task 00041)
+// ---------------------------------------------------------------------
+
+/// Default `limit` applied to `POST /search/fts` when the client omits
+/// it. Matches the node/edge list defaults to keep the API consistent.
+const DEFAULT_SEARCH_LIMIT: usize = 10;
+
+/// Maximum `limit` accepted by `POST /search/fts`. Requests above this
+/// cap are silently clamped so that a pathological client cannot force
+/// a huge scoring pass.
+const MAX_SEARCH_LIMIT: usize = 1000;
+
+/// JSON body for `POST /search/fts`.
+///
+/// `query` is required — a missing field yields 400 Bad Request. An
+/// empty string is accepted but produces no results, mirroring the
+/// underlying [`GraphNoteDb::search_fts`] behaviour. `limit` is
+/// optional and defaults to [`DEFAULT_SEARCH_LIMIT`].
+#[derive(Debug, Deserialize)]
+pub struct SearchFtsRequest {
+    /// Raw query text (required).
+    pub query: Option<String>,
+    /// Maximum number of results to return. Defaults to 10, capped at
+    /// [`MAX_SEARCH_LIMIT`].
+    pub limit: Option<usize>,
+}
+
+/// JSON envelope for `POST /search/fts` responses.
+#[derive(Debug, Serialize)]
+pub struct SearchFtsResponse {
+    /// Scored nodes ranked by descending TF-IDF score.
+    pub results: Vec<ScoredNode>,
+}
+
+/// Handler for `POST /search/fts`. Runs TF-IDF ranked full-text search
+/// over the node title/body trigram index and returns up to `limit`
+/// scored matches. A missing `query` field is rejected with 400.
+async fn search_fts(
+    State(state): State<ApiState>,
+    body: Result<Json<SearchFtsRequest>, JsonRejection>,
+) -> Result<Json<SearchFtsResponse>, ApiError> {
+    let Json(SearchFtsRequest { query, limit }) = body?;
+    let query =
+        query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
+    let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT).min(MAX_SEARCH_LIMIT);
+    let results = state.db.search_fts(&query, limit)?;
+    Ok(Json(SearchFtsResponse { results }))
+}
+
 /// Parse the `direction` query parameter into a [`Direction`].
 ///
 /// Accepts `outgoing`, `incoming`, `both` (case-insensitive). `None`
@@ -494,5 +549,6 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/edges", get(list_edges).post(create_edge))
         .route("/edges/{id}", get(get_edge).delete(delete_edge))
         .route("/paths/shortest", get(get_shortest_path))
+        .route("/search/fts", axum::routing::post(search_fts))
         .with_state(state)
 }
