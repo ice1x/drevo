@@ -21,10 +21,18 @@
 //! - `GET /nodes/{id}/edges?direction=outgoing|incoming|both` —
 //!   edges incident to a node (default: both)
 //!
-//! Traversal, search, and admin endpoints arrive in tasks
-//! 00040–00042. The whole module is gated behind the `http` feature
-//! so that WebAssembly builds (`--no-default-features --features wasm`)
-//! are unaffected.
+//! Task 00040 added graph traversal endpoints:
+//!
+//! - `GET /nodes/{id}/neighbors?direction=&kind=&depth=` — BFS-based
+//!   neighbor discovery (default depth 1, direction both)
+//! - `GET /paths/shortest?from=&to=` — Dijkstra shortest path as an
+//!   ordered list of node ids
+//! - `GET /nodes/{id}/subgraph?depth=` — bounded subgraph extraction
+//!   (default depth 1)
+//!
+//! Search and admin endpoints arrive in tasks 00041–00042. The whole
+//! module is gated behind the `http` feature so that WebAssembly builds
+//! (`--no-default-features --features wasm`) are unaffected.
 
 use std::sync::Arc;
 
@@ -39,7 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::GraphNoteDb;
 use crate::error::GraphNoteError;
-use crate::model::{Direction, Edge, NewEdge, NewNode, Node, NodePatch};
+use crate::model::{Direction, Edge, NewEdge, NewNode, Node, NodePatch, SubGraph};
 
 /// Shared application state passed to every HTTP handler.
 ///
@@ -322,6 +330,135 @@ async fn get_node_edges(
     Ok(Json(EdgeListResponse { edges }))
 }
 
+// ---------------------------------------------------------------------
+// Traversal endpoints (task 00040)
+// ---------------------------------------------------------------------
+
+/// Default depth used when `GET /nodes/{id}/neighbors` omits the
+/// `depth` query parameter.
+const DEFAULT_NEIGHBORS_DEPTH: u8 = 1;
+
+/// Default depth used when `GET /nodes/{id}/subgraph` omits the
+/// `depth` query parameter.
+const DEFAULT_SUBGRAPH_DEPTH: u8 = 1;
+
+/// Query parameters accepted by `GET /nodes/{id}/neighbors`.
+///
+/// All parameters are optional. `direction` defaults to
+/// [`Direction::Both`], `depth` defaults to
+/// [`DEFAULT_NEIGHBORS_DEPTH`], and `kind` is an optional edge kind
+/// filter passed straight through to the traversal layer.
+#[derive(Debug, Deserialize)]
+pub struct NeighborsQuery {
+    /// Traversal direction relative to the start node.
+    pub direction: Option<String>,
+    /// Optional edge kind filter.
+    pub kind: Option<String>,
+    /// BFS depth. Defaults to 1.
+    pub depth: Option<u8>,
+}
+
+/// Query parameters accepted by `GET /paths/shortest`.
+///
+/// Both `from` and `to` are required node ids. A missing parameter
+/// yields a 400 response.
+#[derive(Debug, Deserialize)]
+pub struct ShortestPathQuery {
+    /// Source node id (required).
+    pub from: Option<u64>,
+    /// Target node id (required).
+    pub to: Option<u64>,
+}
+
+/// Query parameters accepted by `GET /nodes/{id}/subgraph`.
+///
+/// Only `depth` is configurable. Defaults to
+/// [`DEFAULT_SUBGRAPH_DEPTH`].
+#[derive(Debug, Deserialize)]
+pub struct SubgraphQuery {
+    /// Traversal depth. Defaults to 1.
+    pub depth: Option<u8>,
+}
+
+/// JSON envelope for the shortest-path endpoint. `path` is `null` when
+/// the target is unreachable from the source.
+#[derive(Debug, Serialize)]
+pub struct ShortestPathResponse {
+    /// The sequence of node ids from source to target, or `null` if
+    /// unreachable.
+    pub path: Option<Vec<u64>>,
+}
+
+/// Handler for `GET /nodes/{id}/neighbors`. Returns nodes reachable
+/// from `id` via BFS with a configurable direction, edge-kind filter,
+/// and depth. Returns 404 if the start node does not exist so that
+/// callers can distinguish "node has no neighbors" from "node doesn't
+/// exist".
+async fn get_node_neighbors(
+    State(state): State<ApiState>,
+    Path(id): Path<u64>,
+    query: Result<Query<NeighborsQuery>, QueryRejection>,
+) -> Result<Json<NodeListResponse>, ApiError> {
+    let Query(NeighborsQuery {
+        direction,
+        kind,
+        depth,
+    }) = query?;
+    let direction = parse_direction(direction.as_deref())?;
+    let depth = depth.unwrap_or(DEFAULT_NEIGHBORS_DEPTH);
+
+    // Explicitly surface missing nodes as 404 — the underlying `bfs`
+    // would otherwise silently return an empty list.
+    if state.db.get_node(id)?.is_none() {
+        return Err(GraphNoteError::NodeNotFound(id).into());
+    }
+
+    let nodes = state.db.bfs(id, depth, direction, kind.as_deref())?;
+    Ok(Json(NodeListResponse { nodes }))
+}
+
+/// Handler for `GET /paths/shortest`. Runs Dijkstra over outgoing
+/// edges. Both endpoints must exist — missing nodes yield 404. An
+/// unreachable target produces a 200 response with `{"path": null}`
+/// so that clients can distinguish "no such node" from "no route".
+async fn get_shortest_path(
+    State(state): State<ApiState>,
+    query: Result<Query<ShortestPathQuery>, QueryRejection>,
+) -> Result<Json<ShortestPathResponse>, ApiError> {
+    let Query(ShortestPathQuery { from, to }) = query?;
+    let from =
+        from.ok_or_else(|| ApiError::BadRequest("query parameter 'from' is required".to_string()))?;
+    let to =
+        to.ok_or_else(|| ApiError::BadRequest("query parameter 'to' is required".to_string()))?;
+
+    // Validate both endpoints up front so we can return 404 instead
+    // of silently returning `None` (which means "unreachable").
+    if state.db.get_node(from)?.is_none() {
+        return Err(GraphNoteError::NodeNotFound(from).into());
+    }
+    if state.db.get_node(to)?.is_none() {
+        return Err(GraphNoteError::NodeNotFound(to).into());
+    }
+
+    let path = state.db.shortest_path(from, to)?;
+    Ok(Json(ShortestPathResponse { path }))
+}
+
+/// Handler for `GET /nodes/{id}/subgraph`. Extracts the subgraph of
+/// all nodes and edges within `depth` hops of the root. Returns 404
+/// if the root does not exist (the underlying traversal already maps
+/// that case to `NodeNotFound`).
+async fn get_node_subgraph(
+    State(state): State<ApiState>,
+    Path(id): Path<u64>,
+    query: Result<Query<SubgraphQuery>, QueryRejection>,
+) -> Result<Json<SubGraph>, ApiError> {
+    let Query(SubgraphQuery { depth }) = query?;
+    let depth = depth.unwrap_or(DEFAULT_SUBGRAPH_DEPTH);
+    let sub = state.db.subgraph(id, depth)?;
+    Ok(Json(sub))
+}
+
 /// Parse the `direction` query parameter into a [`Direction`].
 ///
 /// Accepts `outgoing`, `incoming`, `both` (case-insensitive). `None`
@@ -352,7 +489,10 @@ pub fn build_router(state: ApiState) -> Router {
             get(get_node).patch(update_node).delete(delete_node),
         )
         .route("/nodes/{id}/edges", get(get_node_edges))
+        .route("/nodes/{id}/neighbors", get(get_node_neighbors))
+        .route("/nodes/{id}/subgraph", get(get_node_subgraph))
         .route("/edges", get(list_edges).post(create_edge))
         .route("/edges/{id}", get(get_edge).delete(delete_edge))
+        .route("/paths/shortest", get(get_shortest_path))
         .with_state(state)
 }

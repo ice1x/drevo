@@ -1,9 +1,11 @@
-//! Integration tests for the HTTP API (tasks 00037, 00038, 00039).
+//! Integration tests for the HTTP API (tasks 00037, 00038, 00039, 00040).
 //!
 //! Covers the scaffold (task 00037: router, state, error mapping),
 //! the node CRUD endpoints (task 00038: POST/GET/PATCH/DELETE /nodes
-//! plus the list-by-kind query), and the edge endpoints (task 00039:
-//! POST/GET/DELETE /edges, list-by-kind, and edges-of-node).
+//! plus the list-by-kind query), the edge endpoints (task 00039:
+//! POST/GET/DELETE /edges, list-by-kind, and edges-of-node), and the
+//! traversal endpoints (task 00040: /nodes/{id}/neighbors,
+//! /paths/shortest, /nodes/{id}/subgraph).
 
 #![cfg(feature = "http")]
 
@@ -569,5 +571,271 @@ async fn get_node_edges_invalid_direction_returns_400() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(value["error"].is_string());
+}
+
+// ---------------------------------------------------------------------
+// Task 00040 — Traversal endpoints
+// ---------------------------------------------------------------------
+
+/// Build a small chain of nodes `a -> b -> c -> d` connected by
+/// `links_to` edges. Returns the four node ids in order.
+async fn build_chain(app: &axum::Router) -> (u64, u64, u64, u64) {
+    let (_, a) = send(app, "POST", "/nodes", Some(new_node_body("note", "A", ""))).await;
+    let (_, b) = send(app, "POST", "/nodes", Some(new_node_body("note", "B", ""))).await;
+    let (_, c) = send(app, "POST", "/nodes", Some(new_node_body("note", "C", ""))).await;
+    let (_, d) = send(app, "POST", "/nodes", Some(new_node_body("note", "D", ""))).await;
+    let a = a["id"].as_u64().unwrap();
+    let b = b["id"].as_u64().unwrap();
+    let c = c["id"].as_u64().unwrap();
+    let d = d["id"].as_u64().unwrap();
+    for (from, to) in [(a, b), (b, c), (c, d)] {
+        let (status, _) = send(
+            app,
+            "POST",
+            "/edges",
+            Some(new_edge_body(from, to, "links_to")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    (a, b, c, d)
+}
+
+#[tokio::test]
+async fn get_node_neighbors_default_outgoing_depth_one() {
+    let app = make_app();
+    let (a, b, _c, _d) = build_chain(&app).await;
+
+    let (status, value) = send(&app, "GET", &format!("/nodes/{a}/neighbors"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = value["nodes"].as_array().expect("nodes array");
+    // Default depth=1 returns only direct neighbor `b`.
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["id"].as_u64().unwrap(), b);
+}
+
+#[tokio::test]
+async fn get_node_neighbors_with_depth_follows_chain() {
+    let app = make_app();
+    let (a, b, c, _d) = build_chain(&app).await;
+
+    let (status, value) = send(&app, "GET", &format!("/nodes/{a}/neighbors?depth=2"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = value["nodes"].as_array().unwrap();
+    let ids: std::collections::HashSet<u64> =
+        nodes.iter().map(|n| n["id"].as_u64().unwrap()).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&b));
+    assert!(ids.contains(&c));
+}
+
+#[tokio::test]
+async fn get_node_neighbors_respects_direction_and_kind() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+    // a -> b via links_to
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(a, b, "links_to")),
+    )
+    .await;
+    // b -> a via replies_to
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(b, a, "replies_to")),
+    )
+    .await;
+
+    // Outgoing from a → only b (via links_to).
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/neighbors?direction=outgoing"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = value["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["id"].as_u64().unwrap(), b);
+
+    // Incoming to a → only b (via replies_to).
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/neighbors?direction=incoming"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["nodes"].as_array().unwrap().len(), 1);
+
+    // Both directions filtered by edge kind=replies_to → only the incoming neighbor.
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/neighbors?direction=both&kind=replies_to"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = value["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["id"].as_u64().unwrap(), b);
+
+    // Filter on a non-existent kind → empty.
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/neighbors?kind=missing"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["nodes"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn get_node_neighbors_missing_returns_404() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/nodes/9999/neighbors", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(value["error"].is_string());
+}
+
+#[tokio::test]
+async fn get_node_neighbors_invalid_direction_returns_400() {
+    let app = make_app();
+    let (a, _) = create_two_nodes(&app).await;
+    let (status, _) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/neighbors?direction=up"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn get_paths_shortest_returns_path_ids() {
+    let app = make_app();
+    let (a, b, c, d) = build_chain(&app).await;
+
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/paths/shortest?from={a}&to={d}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let path = value["path"].as_array().expect("path array");
+    let ids: Vec<u64> = path.iter().map(|v| v.as_u64().unwrap()).collect();
+    assert_eq!(ids, vec![a, b, c, d]);
+}
+
+#[tokio::test]
+async fn get_paths_shortest_unreachable_returns_null_path() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+    // No edges; b is not reachable from a.
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/paths/shortest?from={a}&to={b}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["path"].is_null());
+}
+
+#[tokio::test]
+async fn get_paths_shortest_missing_source_returns_404() {
+    let app = make_app();
+    let (_, b) = create_two_nodes(&app).await;
+    let (status, value) = send(
+        &app,
+        "GET",
+        &format!("/paths/shortest?from=9999&to={b}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(value["error"].is_string());
+}
+
+#[tokio::test]
+async fn get_paths_shortest_missing_target_returns_404() {
+    let app = make_app();
+    let (a, _) = create_two_nodes(&app).await;
+    let (status, _) = send(
+        &app,
+        "GET",
+        &format!("/paths/shortest?from={a}&to=9999"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_paths_shortest_missing_params_returns_400() {
+    let app = make_app();
+    let (status, _) = send(&app, "GET", "/paths/shortest", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _) = send(&app, "GET", "/paths/shortest?from=1", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn get_node_subgraph_returns_nodes_and_edges() {
+    let app = make_app();
+    let (a, b, c, _d) = build_chain(&app).await;
+
+    // depth=2 from a discovers a, b, c; edges between them (a->b, b->c).
+    let (status, value) = send(&app, "GET", &format!("/nodes/{a}/subgraph?depth=2"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = value["nodes"].as_array().unwrap();
+    let ids: std::collections::HashSet<u64> =
+        nodes.iter().map(|n| n["id"].as_u64().unwrap()).collect();
+    assert!(ids.contains(&a));
+    assert!(ids.contains(&b));
+    assert!(ids.contains(&c));
+    assert_eq!(ids.len(), 3);
+
+    let edges = value["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 2);
+}
+
+#[tokio::test]
+async fn get_node_subgraph_default_depth_one() {
+    let app = make_app();
+    let (a, b, _c, _d) = build_chain(&app).await;
+
+    let (status, value) = send(&app, "GET", &format!("/nodes/{a}/subgraph"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = value["nodes"].as_array().unwrap();
+    let ids: std::collections::HashSet<u64> =
+        nodes.iter().map(|n| n["id"].as_u64().unwrap()).collect();
+    // Depth=1 discovers only a and b; a->b edge is included.
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&a));
+    assert!(ids.contains(&b));
+    assert_eq!(value["edges"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn get_node_subgraph_missing_returns_404() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/nodes/9999/subgraph", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(value["error"].is_string());
 }
