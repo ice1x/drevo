@@ -137,9 +137,21 @@ impl IntoResponse for ApiError {
             },
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
         };
-        let body = Json(serde_json::json!({ "error": message }));
-        (status, body).into_response()
+        json_error(status, &message)
     }
+}
+
+/// Build a unified JSON error response with both `error` (message) and
+/// `status` (numeric HTTP status code) fields.  Every error response
+/// produced by the API goes through this helper so that clients can
+/// programmatically inspect the body without relying on HTTP status
+/// alone.
+fn json_error(status: StatusCode, message: &str) -> Response {
+    let body = Json(serde_json::json!({
+        "error": message,
+        "status": status.as_u16(),
+    }));
+    (status, body).into_response()
 }
 
 /// Server metadata returned by `GET /`.
@@ -603,26 +615,54 @@ fn parse_direction(value: Option<&str>) -> Result<Direction, ApiError> {
     }
 }
 
+/// Handler for unknown routes — returns a JSON 404 so that API
+/// consumers always receive structured error responses rather than
+/// axum's default empty body.
+async fn fallback() -> Response {
+    json_error(StatusCode::NOT_FOUND, "not found")
+}
+
+/// Method-not-allowed fallback for known paths. Axum invokes this
+/// when a request reaches a registered path but uses an unregistered
+/// HTTP method (e.g. `PUT /nodes`).
+async fn method_not_allowed() -> Response {
+    json_error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")
+}
+
+/// Helper macro to attach the 405 JSON fallback to a
+/// [`MethodRouter`]. Each known path needs this so that unsupported
+/// methods return a JSON body instead of axum's default empty 405.
+fn with_405<S: Clone + Send + Sync + 'static>(
+    mr: axum::routing::MethodRouter<S>,
+) -> axum::routing::MethodRouter<S> {
+    mr.fallback(method_not_allowed)
+}
+
 /// Build the HTTP [`Router`] for a given [`ApiState`].
 ///
 /// Returned router can be served with `axum::serve` on a TCP listener
 /// or driven directly in tests via [`tower::ServiceExt::oneshot`].
+///
+/// Unknown paths produce a JSON 404 via the fallback handler.
+/// Unregistered methods on known paths produce a JSON 405 via per-route
+/// fallbacks.
 pub fn build_router(state: ApiState) -> Router {
     Router::new()
-        .route("/", get(root))
-        .route("/nodes", get(list_nodes).post(create_node))
+        .route("/", with_405(get(root)))
+        .route("/nodes", with_405(get(list_nodes).post(create_node)))
         .route(
             "/nodes/{id}",
-            get(get_node).patch(update_node).delete(delete_node),
+            with_405(get(get_node).patch(update_node).delete(delete_node)),
         )
-        .route("/nodes/{id}/edges", get(get_node_edges))
-        .route("/nodes/{id}/neighbors", get(get_node_neighbors))
-        .route("/nodes/{id}/subgraph", get(get_node_subgraph))
-        .route("/edges", get(list_edges).post(create_edge))
-        .route("/edges/{id}", get(get_edge).delete(delete_edge))
-        .route("/paths/shortest", get(get_shortest_path))
-        .route("/search/fts", axum::routing::post(search_fts))
-        .route("/health", get(health))
-        .route("/status", get(status))
+        .route("/nodes/{id}/edges", with_405(get(get_node_edges)))
+        .route("/nodes/{id}/neighbors", with_405(get(get_node_neighbors)))
+        .route("/nodes/{id}/subgraph", with_405(get(get_node_subgraph)))
+        .route("/edges", with_405(get(list_edges).post(create_edge)))
+        .route("/edges/{id}", with_405(get(get_edge).delete(delete_edge)))
+        .route("/paths/shortest", with_405(get(get_shortest_path)))
+        .route("/search/fts", with_405(axum::routing::post(search_fts)))
+        .route("/health", with_405(get(health)))
+        .route("/status", with_405(get(status)))
+        .fallback(fallback)
         .with_state(state)
 }
