@@ -1,4 +1,4 @@
-//! Integration tests for the HTTP API (tasks 00037–00043).
+//! Integration tests for the HTTP API (tasks 00037–00044).
 //!
 //! Covers the scaffold (task 00037: router, state, error mapping),
 //! the node CRUD endpoints (task 00038: POST/GET/PATCH/DELETE /nodes
@@ -7,8 +7,9 @@
 //! traversal endpoints (task 00040: /nodes/{id}/neighbors,
 //! /paths/shortest, /nodes/{id}/subgraph), the full-text search
 //! endpoint (task 00041: POST /search/fts), the admin endpoints
-//! (task 00042: GET /health, GET /status), and the unified JSON
-//! error handling (task 00043).
+//! (task 00042: GET /health, GET /status), the unified JSON
+//! error handling (task 00043), and end-to-end integration tests
+//! exercising full workflows through the HTTP API (task 00044).
 
 #![cfg(feature = "http")]
 
@@ -1201,4 +1202,979 @@ async fn shortest_path_missing_params_includes_status_400() {
     let (status, value) = send(&app, "GET", "/paths/shortest", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(value["status"].as_u64().unwrap(), 400);
+}
+
+// =====================================================================
+// Task 00044 — End-to-end integration tests
+//
+// These tests exercise full workflows through the HTTP API, combining
+// multiple endpoints in realistic sequences that mirror how a real
+// client would interact with GraphNote DB. Each test verifies
+// cross-endpoint consistency and data integrity.
+// =====================================================================
+
+// ---------------------------------------------------------------------
+// Lifecycle: node + edge CRUD through HTTP
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_full_node_lifecycle() {
+    let app = make_app();
+
+    // Create
+    let (status, node) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "Lifecycle Test", "initial body")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = node["id"].as_u64().unwrap();
+
+    // Read back
+    let (status, fetched) = send(&app, "GET", &format!("/nodes/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["title"], "Lifecycle Test");
+    assert_eq!(fetched["body"], "initial body");
+
+    // Update
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let (status, updated) = send(
+        &app,
+        "PATCH",
+        &format!("/nodes/{id}"),
+        Some(json!({ "title": "Updated Title", "body": "updated body" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["title"], "Updated Title");
+    assert_eq!(updated["body"], "updated body");
+    assert!(updated["updated_at"].as_i64().unwrap() >= node["updated_at"].as_i64().unwrap());
+
+    // Verify via list endpoint
+    let (status, list) = send(&app, "GET", "/nodes?kind=note&limit=10", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = list["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["title"], "Updated Title");
+
+    // Delete
+    let (status, _) = send(&app, "DELETE", &format!("/nodes/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Verify gone
+    let (status, _) = send(&app, "GET", &format!("/nodes/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // List should be empty now
+    let (status, list) = send(&app, "GET", "/nodes?kind=note&limit=10", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list["nodes"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn integration_full_edge_lifecycle() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+
+    // Create edge
+    let (status, edge) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(a, b, "links_to")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let edge_id = edge["id"].as_u64().unwrap();
+
+    // Read back
+    let (status, fetched) = send(&app, "GET", &format!("/edges/{edge_id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["from_id"].as_u64().unwrap(), a);
+    assert_eq!(fetched["to_id"].as_u64().unwrap(), b);
+
+    // Visible via node edges endpoint
+    let (status, resp) = send(&app, "GET", &format!("/nodes/{a}/edges"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resp["edges"].as_array().unwrap().len(), 1);
+
+    // Visible via list edges by kind
+    let (status, resp) = send(&app, "GET", "/edges?kind=links_to&limit=10", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resp["edges"].as_array().unwrap().len(), 1);
+
+    // Delete edge
+    let (status, _) = send(&app, "DELETE", &format!("/edges/{edge_id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Verify gone from all endpoints
+    let (status, _) = send(&app, "GET", &format!("/edges/{edge_id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, resp) = send(&app, "GET", &format!("/nodes/{a}/edges"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(resp["edges"].as_array().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Cascade: deleting a node removes its edges
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_node_deletion_cascades_to_edges() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+
+    // Create edges in both directions
+    let (_, e1) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(a, b, "links_to")),
+    )
+    .await;
+    let (_, e2) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(b, a, "replies_to")),
+    )
+    .await;
+    let e1_id = e1["id"].as_u64().unwrap();
+    let e2_id = e2["id"].as_u64().unwrap();
+
+    // Delete node a — both edges should be removed
+    let (status, _) = send(&app, "DELETE", &format!("/nodes/{a}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Edges should be gone
+    let (status, _) = send(&app, "GET", &format!("/edges/{e1_id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&app, "GET", &format!("/edges/{e2_id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Node b should have no edges
+    let (status, resp) = send(&app, "GET", &format!("/nodes/{b}/edges"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(resp["edges"].as_array().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------
+// FTS consistency: search reflects mutations
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_fts_reflects_node_creation_and_update() {
+    let app = make_app();
+
+    // Create a node with searchable content
+    let (_, node) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "note",
+            "Quantum computing basics",
+            "Qubits and superposition in quantum mechanics",
+        )),
+    )
+    .await;
+    let id = node["id"].as_u64().unwrap();
+
+    // Search should find it
+    let (status, resp) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "quantum", "limit": 10 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let results = resp["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    assert_eq!(results[0]["node"]["id"].as_u64().unwrap(), id);
+
+    // Update body to completely different topic
+    let (status, _) = send(
+        &app,
+        "PATCH",
+        &format!("/nodes/{id}"),
+        Some(json!({
+            "title": "Gardening tips",
+            "body": "How to grow tomatoes and basil in your backyard"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Searching for new content should find it
+    let (_, resp) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "tomatoes", "limit": 10 })),
+    )
+    .await;
+    let results = resp["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    assert_eq!(results[0]["node"]["id"].as_u64().unwrap(), id);
+}
+
+#[tokio::test]
+async fn integration_fts_reflects_node_deletion() {
+    let app = make_app();
+
+    let (_, node) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "note",
+            "Ephemeral content for deletion test",
+            "This unique xylophone content will be deleted",
+        )),
+    )
+    .await;
+    let id = node["id"].as_u64().unwrap();
+
+    // Verify it is searchable
+    let (_, resp) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "xylophone", "limit": 10 })),
+    )
+    .await;
+    assert!(!resp["results"].as_array().unwrap().is_empty());
+
+    // Delete the node
+    let (status, _) = send(&app, "DELETE", &format!("/nodes/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // FTS should no longer return it
+    let (_, resp) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "xylophone", "limit": 10 })),
+    )
+    .await;
+    assert!(resp["results"].as_array().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Traversal through HTTP: multi-hop graph exploration
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_traversal_full_graph_exploration() {
+    let app = make_app();
+
+    // Build a diamond graph: a -> b, a -> c, b -> d, c -> d
+    let (_, a) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "Root", "")),
+    )
+    .await;
+    let (_, b) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "Left", "")),
+    )
+    .await;
+    let (_, c) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "Right", "")),
+    )
+    .await;
+    let (_, d) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "Sink", "")),
+    )
+    .await;
+    let a = a["id"].as_u64().unwrap();
+    let b = b["id"].as_u64().unwrap();
+    let c = c["id"].as_u64().unwrap();
+    let d = d["id"].as_u64().unwrap();
+
+    for (from, to) in [(a, b), (a, c), (b, d), (c, d)] {
+        let (status, _) = send(
+            &app,
+            "POST",
+            "/edges",
+            Some(new_edge_body(from, to, "links_to")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // Neighbors from a at depth 1: b, c
+    let (_, resp) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/neighbors?depth=1&direction=outgoing"),
+        None,
+    )
+    .await;
+    let ids: std::collections::HashSet<u64> = resp["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&b));
+    assert!(ids.contains(&c));
+
+    // Neighbors from a at depth 2: b, c, d
+    let (_, resp) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a}/neighbors?depth=2&direction=outgoing"),
+        None,
+    )
+    .await;
+    let ids: std::collections::HashSet<u64> = resp["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.contains(&d));
+
+    // Shortest path a -> d
+    let (_, resp) = send(
+        &app,
+        "GET",
+        &format!("/paths/shortest?from={a}&to={d}"),
+        None,
+    )
+    .await;
+    let path: Vec<u64> = resp["path"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    assert_eq!(*path.first().unwrap(), a);
+    assert_eq!(*path.last().unwrap(), d);
+    // Should be 3 hops (a -> b/c -> d)
+    assert_eq!(path.len(), 3);
+
+    // Subgraph from a at depth 2: all 4 nodes, 4 edges
+    let (_, resp) = send(&app, "GET", &format!("/nodes/{a}/subgraph?depth=2"), None).await;
+    assert_eq!(resp["nodes"].as_array().unwrap().len(), 4);
+    assert_eq!(resp["edges"].as_array().unwrap().len(), 4);
+}
+
+// ---------------------------------------------------------------------
+// Scenario: CBT journal workflow through HTTP
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_scenario_cbt_journal() {
+    let app = make_app();
+
+    // Create CBT entities
+    let (_, thought) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "thought",
+            "I always fail",
+            "Automatic negative thought about failure",
+        )),
+    )
+    .await;
+    let (_, emotion) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "emotion",
+            "Anxiety",
+            "Feeling anxious and worried",
+        )),
+    )
+    .await;
+    let (_, distortion) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "cognitive_distortion",
+            "Overgeneralization",
+            "Drawing broad conclusions from single events",
+        )),
+    )
+    .await;
+    let (_, rational) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "rational_response",
+            "Evidence-based reframe",
+            "I have succeeded many times before; one failure does not define me",
+        )),
+    )
+    .await;
+
+    let thought_id = thought["id"].as_u64().unwrap();
+    let emotion_id = emotion["id"].as_u64().unwrap();
+    let distortion_id = distortion["id"].as_u64().unwrap();
+    let rational_id = rational["id"].as_u64().unwrap();
+
+    // Create CBT relationship edges
+    for (from, to, kind) in [
+        (thought_id, emotion_id, "triggers"),
+        (thought_id, distortion_id, "exhibits"),
+        (distortion_id, rational_id, "challenged_by"),
+    ] {
+        let (status, _) = send(&app, "POST", "/edges", Some(new_edge_body(from, to, kind))).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // Query: list all thoughts
+    let (status, resp) = send(&app, "GET", "/nodes?kind=thought&limit=10", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resp["nodes"].as_array().unwrap().len(), 1);
+
+    // Query: neighbors of the thought (emotion + distortion)
+    let (_, resp) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{thought_id}/neighbors?direction=outgoing"),
+        None,
+    )
+    .await;
+    let neighbor_ids: std::collections::HashSet<u64> = resp["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(neighbor_ids.len(), 2);
+    assert!(neighbor_ids.contains(&emotion_id));
+    assert!(neighbor_ids.contains(&distortion_id));
+
+    // Query: subgraph from thought at depth 2 reaches the rational response
+    let (_, resp) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{thought_id}/subgraph?depth=2"),
+        None,
+    )
+    .await;
+    let sub_ids: std::collections::HashSet<u64> = resp["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_u64().unwrap())
+        .collect();
+    assert!(sub_ids.contains(&rational_id));
+
+    // FTS: search for distortion content
+    let (_, resp) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "overgeneralization", "limit": 10 })),
+    )
+    .await;
+    let results = resp["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    assert_eq!(results[0]["node"]["id"].as_u64().unwrap(), distortion_id);
+}
+
+// ---------------------------------------------------------------------
+// Scenario: task dependency chain through HTTP
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_scenario_task_dependency_chain() {
+    let app = make_app();
+
+    // Create tasks with dependencies
+    let (_, deploy) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "task",
+            "Deploy to production",
+            "Final deployment step",
+        )),
+    )
+    .await;
+    let (_, test) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "task",
+            "Run integration tests",
+            "Must pass before deploy",
+        )),
+    )
+    .await;
+    let (_, build) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "task",
+            "Build artifacts",
+            "Compile and package",
+        )),
+    )
+    .await;
+    let (_, review) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("task", "Code review", "Peer review required")),
+    )
+    .await;
+
+    let deploy_id = deploy["id"].as_u64().unwrap();
+    let test_id = test["id"].as_u64().unwrap();
+    let build_id = build["id"].as_u64().unwrap();
+    let review_id = review["id"].as_u64().unwrap();
+
+    // Dependency chain: review -> build -> test -> deploy
+    for (from, to) in [
+        (deploy_id, test_id),
+        (test_id, build_id),
+        (build_id, review_id),
+    ] {
+        let (status, _) = send(
+            &app,
+            "POST",
+            "/edges",
+            Some(new_edge_body(from, to, "depends_on")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // Shortest path from deploy to review reveals full dependency chain
+    let (_, resp) = send(
+        &app,
+        "GET",
+        &format!("/paths/shortest?from={deploy_id}&to={review_id}"),
+        None,
+    )
+    .await;
+    let path: Vec<u64> = resp["path"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    assert_eq!(path, vec![deploy_id, test_id, build_id, review_id]);
+
+    // List all tasks via kind index
+    let (_, resp) = send(&app, "GET", "/nodes?kind=task&limit=10", None).await;
+    assert_eq!(resp["nodes"].as_array().unwrap().len(), 4);
+
+    // Search tasks by title content
+    let (_, resp) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "production", "limit": 5 })),
+    )
+    .await;
+    let results = resp["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    let found_ids: Vec<u64> = results
+        .iter()
+        .map(|r| r["node"]["id"].as_u64().unwrap())
+        .collect();
+    assert!(
+        found_ids.contains(&deploy_id),
+        "expected deploy node in FTS results, got {found_ids:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Scenario: story editor graph through HTTP
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_scenario_story_editor() {
+    let app = make_app();
+
+    // Create story structure
+    let (_, book) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "book",
+            "The Great Adventure",
+            "A tale of courage",
+        )),
+    )
+    .await;
+    let (_, ch1) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "chapter",
+            "Chapter 1: The Beginning",
+            "It all started...",
+        )),
+    )
+    .await;
+    let (_, ch2) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "chapter",
+            "Chapter 2: The Journey",
+            "They set off...",
+        )),
+    )
+    .await;
+    let (_, hero) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body(
+            "character",
+            "Hero",
+            "The protagonist of the story",
+        )),
+    )
+    .await;
+
+    let book_id = book["id"].as_u64().unwrap();
+    let ch1_id = ch1["id"].as_u64().unwrap();
+    let ch2_id = ch2["id"].as_u64().unwrap();
+    let hero_id = hero["id"].as_u64().unwrap();
+
+    // Build structure edges
+    for (from, to, kind) in [
+        (book_id, ch1_id, "contains"),
+        (book_id, ch2_id, "contains"),
+        (ch1_id, ch2_id, "followed_by"),
+        (ch1_id, hero_id, "involves"),
+        (ch2_id, hero_id, "involves"),
+    ] {
+        let (status, _) = send(&app, "POST", "/edges", Some(new_edge_body(from, to, kind))).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // Subgraph from book at depth 2 captures the whole story structure
+    let (_, resp) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{book_id}/subgraph?depth=2"),
+        None,
+    )
+    .await;
+    let sub_nodes = resp["nodes"].as_array().unwrap();
+    assert_eq!(sub_nodes.len(), 4);
+    let sub_edges = resp["edges"].as_array().unwrap();
+    assert_eq!(sub_edges.len(), 5);
+
+    // Outgoing edges of book are the "contains" edges
+    let (_, resp) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{book_id}/edges?direction=outgoing"),
+        None,
+    )
+    .await;
+    let edges = resp["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 2);
+    for e in edges {
+        assert_eq!(e["kind"], "contains");
+    }
+
+    // Search for a chapter by content
+    let (_, resp) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "journey", "limit": 5 })),
+    )
+    .await;
+    assert!(!resp["results"].as_array().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Cross-endpoint consistency: properties roundtrip
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_properties_roundtrip_through_http() {
+    let app = make_app();
+
+    let body = json!({
+        "kind": "task",
+        "title": "Task with props",
+        "body": "",
+        "body_html": "",
+        "properties": {
+            "priority": "high",
+            "estimate_hours": 8,
+            "tags": ["backend", "urgent"]
+        }
+    });
+
+    let (status, node) = send(&app, "POST", "/nodes", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = node["id"].as_u64().unwrap();
+
+    // Read back and verify properties survived the roundtrip
+    let (_, fetched) = send(&app, "GET", &format!("/nodes/{id}"), None).await;
+    assert_eq!(fetched["properties"]["priority"], "high");
+    assert_eq!(fetched["properties"]["estimate_hours"], 8);
+    let tags = fetched["properties"]["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 2);
+    assert_eq!(tags[0], "backend");
+    assert_eq!(tags[1], "urgent");
+
+    // Update properties via patch
+    let (status, updated) = send(
+        &app,
+        "PATCH",
+        &format!("/nodes/{id}"),
+        Some(json!({
+            "properties": {
+                "priority": "low",
+                "estimate_hours": 2
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["properties"]["priority"], "low");
+    assert_eq!(updated["properties"]["estimate_hours"], 2);
+}
+
+// ---------------------------------------------------------------------
+// Edge properties roundtrip
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_edge_properties_roundtrip() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+
+    let body = json!({
+        "from_id": a,
+        "to_id": b,
+        "kind": "weighted_link",
+        "weight": 0.75,
+        "properties": {
+            "label": "important",
+            "confidence": 0.95
+        }
+    });
+
+    let (status, edge) = send(&app, "POST", "/edges", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let edge_id = edge["id"].as_u64().unwrap();
+
+    // Read back
+    let (_, fetched) = send(&app, "GET", &format!("/edges/{edge_id}"), None).await;
+    assert!((fetched["weight"].as_f64().unwrap() - 0.75).abs() < 1e-6);
+    assert_eq!(fetched["properties"]["label"], "important");
+    assert!((fetched["properties"]["confidence"].as_f64().unwrap() - 0.95).abs() < 1e-6);
+}
+
+// ---------------------------------------------------------------------
+// Admin endpoints in workflow context
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_health_and_status_during_operations() {
+    let app = make_app();
+
+    // Health works before any data operations
+    let (status, _) = send(&app, "GET", "/health", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Create some data
+    for i in 0..10 {
+        let (status, _) = send(
+            &app,
+            "POST",
+            "/nodes",
+            Some(new_node_body("note", &format!("Note {i}"), "")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // Health and status still work after data operations
+    let (status, health) = send(&app, "GET", "/health", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(health["status"], "ok");
+
+    let (status, st) = send(&app, "GET", "/status", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(st["name"], "graphnote-db");
+    assert!(st["uptime_seconds"].is_u64());
+}
+
+// ---------------------------------------------------------------------
+// Multiple kinds: verify kind isolation
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_kind_isolation() {
+    let app = make_app();
+
+    // Create nodes of different kinds
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "My Note", "")),
+    )
+    .await;
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("task", "My Task", "")),
+    )
+    .await;
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("bug", "My Bug", "")),
+    )
+    .await;
+
+    // Each kind list should contain exactly 1
+    for kind in ["note", "task", "bug"] {
+        let (status, resp) = send(&app, "GET", &format!("/nodes?kind={kind}&limit=10"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let nodes = resp["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1, "expected 1 node of kind '{kind}'");
+        assert_eq!(nodes[0]["kind"], kind);
+    }
+
+    // Non-existent kind returns empty
+    let (status, resp) = send(&app, "GET", "/nodes?kind=nonexistent&limit=10", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(resp["nodes"].as_array().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Pagination consistency across operations
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_pagination_consistency() {
+    let app = make_app();
+
+    // Create 10 nodes
+    for i in 0..10 {
+        let (status, _) = send(
+            &app,
+            "POST",
+            "/nodes",
+            Some(new_node_body("page_test", &format!("Page Node {i}"), "")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // Paginate through all nodes in pages of 3
+    let mut all_ids = std::collections::HashSet::new();
+    for offset in (0..10).step_by(3) {
+        let (status, resp) = send(
+            &app,
+            "GET",
+            &format!("/nodes?kind=page_test&limit=3&offset={offset}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let nodes = resp["nodes"].as_array().unwrap();
+        for n in nodes {
+            all_ids.insert(n["id"].as_u64().unwrap());
+        }
+    }
+    // All 10 unique nodes should have been seen
+    assert_eq!(all_ids.len(), 10);
+}
+
+// ---------------------------------------------------------------------
+// Error consistency: all error endpoints return JSON with status field
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_all_error_paths_return_structured_json() {
+    let app = make_app();
+
+    // 404 — unknown route
+    let (status, val) = send(&app, "GET", "/nope", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(val["error"].is_string());
+    assert_eq!(val["status"].as_u64().unwrap(), 404);
+
+    // 404 — missing node
+    let (status, val) = send(&app, "GET", "/nodes/99999", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(val["error"].is_string());
+    assert_eq!(val["status"].as_u64().unwrap(), 404);
+
+    // 404 — missing edge
+    let (status, val) = send(&app, "GET", "/edges/99999", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(val["error"].is_string());
+    assert_eq!(val["status"].as_u64().unwrap(), 404);
+
+    // 400 — missing required params
+    let (status, val) = send(&app, "GET", "/nodes", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(val["error"].is_string());
+    assert_eq!(val["status"].as_u64().unwrap(), 400);
+
+    // 405 — wrong method
+    let (status, val) = send(&app, "PUT", "/health", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert!(val["error"].is_string());
+    assert_eq!(val["status"].as_u64().unwrap(), 405);
+
+    // 409 — duplicate title
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "UniqueTitle", "")),
+    )
+    .await;
+    let (status, val) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "UniqueTitle", "")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(val["error"].is_string());
+    assert_eq!(val["status"].as_u64().unwrap(), 409);
 }
