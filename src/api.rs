@@ -17,6 +17,7 @@
 //! - `POST /edges` — create an edge
 //! - `GET /edges?kind=&limit=&offset=` — list edges filtered by kind
 //! - `GET /edges/{id}` — fetch an edge by id
+//! - `PATCH /edges/{id}` — partial update (task 00046)
 //! - `DELETE /edges/{id}` — delete an edge
 //! - `GET /nodes/{id}/edges?direction=outgoing|incoming|both` —
 //!   edges incident to a node (default: both)
@@ -61,7 +62,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::GraphNoteDb;
 use crate::error::GraphNoteError;
-use crate::model::{Direction, Edge, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph};
+use crate::model::{
+    Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
+};
 
 /// Shared application state passed to every HTTP handler.
 ///
@@ -320,6 +323,18 @@ async fn get_edge(
         .db
         .get_edge(id)?
         .ok_or(GraphNoteError::EdgeNotFound(id))?;
+    Ok(Json(edge))
+}
+
+/// Handler for `PATCH /edges/{id}`. Applies a partial update via
+/// [`EdgePatch`] and returns the updated edge.
+async fn update_edge(
+    State(state): State<ApiState>,
+    Path(id): Path<u64>,
+    body: Result<Json<EdgePatch>, JsonRejection>,
+) -> Result<Json<Edge>, ApiError> {
+    let Json(patch) = body?;
+    let edge = state.db.update_edge(id, patch)?;
     Ok(Json(edge))
 }
 
@@ -658,7 +673,10 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/nodes/{id}/neighbors", with_405(get(get_node_neighbors)))
         .route("/nodes/{id}/subgraph", with_405(get(get_node_subgraph)))
         .route("/edges", with_405(get(list_edges).post(create_edge)))
-        .route("/edges/{id}", with_405(get(get_edge).delete(delete_edge)))
+        .route(
+            "/edges/{id}",
+            with_405(get(get_edge).patch(update_edge).delete(delete_edge)),
+        )
         .route("/paths/shortest", with_405(get(get_shortest_path)))
         .route("/search/fts", with_405(axum::routing::post(search_fts)))
         .route("/health", with_405(get(health)))
