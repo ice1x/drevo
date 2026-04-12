@@ -1,12 +1,13 @@
-//! Integration tests for the HTTP API (tasks 00037, 00038, 00039, 00040, 00041).
+//! Integration tests for the HTTP API (tasks 00037, 00038, 00039, 00040, 00041, 00042).
 //!
 //! Covers the scaffold (task 00037: router, state, error mapping),
 //! the node CRUD endpoints (task 00038: POST/GET/PATCH/DELETE /nodes
 //! plus the list-by-kind query), the edge endpoints (task 00039:
 //! POST/GET/DELETE /edges, list-by-kind, and edges-of-node), the
 //! traversal endpoints (task 00040: /nodes/{id}/neighbors,
-//! /paths/shortest, /nodes/{id}/subgraph), and the full-text search
-//! endpoint (task 00041: POST /search/fts).
+//! /paths/shortest, /nodes/{id}/subgraph), the full-text search
+//! endpoint (task 00041: POST /search/fts), and the admin endpoints
+//! (task 00042: GET /health, GET /status).
 
 #![cfg(feature = "http")]
 
@@ -1016,4 +1017,66 @@ async fn search_fts_limit_zero_returns_empty() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(value["results"].as_array().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Task 00042 — Admin endpoints (GET /health, GET /status)
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_health_returns_ok_status() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/health", None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["status"], "ok");
+}
+
+#[tokio::test]
+async fn get_health_is_cheap_and_does_not_touch_state() {
+    // /health must work even before any database activity; it is meant
+    // to be called by Kubernetes liveness probes on a fresh pod.
+    let app = make_app();
+    for _ in 0..5 {
+        let (status, value) = send(&app, "GET", "/health", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["status"], "ok");
+    }
+}
+
+#[tokio::test]
+async fn get_status_returns_server_metadata() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/status", None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["name"], "graphnote-db");
+    assert!(value["version"].is_string());
+    let version = value["version"].as_str().unwrap();
+    assert!(!version.is_empty());
+    assert!(
+        value["uptime_seconds"].is_u64(),
+        "uptime_seconds should be a non-negative integer, got {value:?}"
+    );
+}
+
+#[tokio::test]
+async fn get_status_uptime_is_monotonic() {
+    // Two successive /status calls with a sleep between them must
+    // report a non-decreasing uptime (either same second or higher).
+    let app = make_app();
+    let (_, first) = send(&app, "GET", "/status", None).await;
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let (_, second) = send(&app, "GET", "/status", None).await;
+
+    let a = first["uptime_seconds"].as_u64().unwrap();
+    let b = second["uptime_seconds"].as_u64().unwrap();
+    assert!(
+        b >= a,
+        "uptime must be monotonically non-decreasing: {a} then {b}"
+    );
+    assert!(
+        b >= 1,
+        "after a ~1s sleep uptime_seconds should be >= 1, got {b}"
+    );
 }
