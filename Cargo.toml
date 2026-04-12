@@ -36,6 +36,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 
+[[bin]]
+name = "graphnote-server"
+path = "src/bin/server.rs"
+required-features = ["http", "redb-backend"]
+
 [[bench]]
 name = "storage_bench"
 harness = false

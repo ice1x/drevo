@@ -457,8 +457,8 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 > Goal: distribute GraphNote DB as an official container image, like PostgreSQL or Redis.
 
-- [ ] `00045` Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
-- [ ] `00046` `.dockerignore` — exclude target/, .git/
+- [x] `00045` Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
+- [x] `00046` `.dockerignore` — exclude target/, .git/
 - [ ] `00047` `docker-compose.yml` — volume mount `/data`, port 8080, env vars
 - [ ] `00048` Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM)
 - [ ] `00049` Kubernetes manifests: Deployment, Service, PersistentVolumeClaim
