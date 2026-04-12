@@ -449,7 +449,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00041` Search endpoint: `POST /search/fts`
 - [x] `00042` Admin endpoints: `GET /health`, `GET /status`
 - [x] `00043` JSON error handling — unified error responses with status codes
-- [ ] `00044` Integration tests: HTTP endpoints against in-memory backend
+- [x] `00044` Integration tests: HTTP endpoints against in-memory backend
 
 **Definition of done:** all endpoints respond correctly, tests pass.
 
