@@ -1,4 +1,4 @@
-//! Integration tests for the HTTP API (tasks 00037, 00038, 00039, 00040, 00041, 00042).
+//! Integration tests for the HTTP API (tasks 00037–00043).
 //!
 //! Covers the scaffold (task 00037: router, state, error mapping),
 //! the node CRUD endpoints (task 00038: POST/GET/PATCH/DELETE /nodes
@@ -6,8 +6,9 @@
 //! POST/GET/DELETE /edges, list-by-kind, and edges-of-node), the
 //! traversal endpoints (task 00040: /nodes/{id}/neighbors,
 //! /paths/shortest, /nodes/{id}/subgraph), the full-text search
-//! endpoint (task 00041: POST /search/fts), and the admin endpoints
-//! (task 00042: GET /health, GET /status).
+//! endpoint (task 00041: POST /search/fts), the admin endpoints
+//! (task 00042: GET /health, GET /status), and the unified JSON
+//! error handling (task 00043).
 
 #![cfg(feature = "http")]
 
@@ -1079,4 +1080,125 @@ async fn get_status_uptime_is_monotonic() {
         b >= 1,
         "after a ~1s sleep uptime_seconds should be >= 1, got {b}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Task 00043 — Unified JSON error handling
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn unknown_route_returns_json_404_with_status_field() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/does-not-exist", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(value["error"].is_string(), "error field must be a string");
+    assert_eq!(
+        value["status"].as_u64().unwrap(),
+        404,
+        "body must include numeric status code"
+    );
+}
+
+#[tokio::test]
+async fn method_not_allowed_returns_json_405() {
+    let app = make_app();
+    // PUT is not defined on /nodes — should yield 405.
+    let (status, value) = send(&app, "PUT", "/nodes", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert!(value["error"].is_string());
+    assert_eq!(value["status"].as_u64().unwrap(), 405);
+}
+
+#[tokio::test]
+async fn db_error_responses_include_status_field() {
+    let app = make_app();
+    // Node not found → 404 with status field.
+    let (status, value) = send(&app, "GET", "/nodes/9999", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(value["error"].is_string());
+    assert_eq!(value["status"].as_u64().unwrap(), 404);
+}
+
+#[tokio::test]
+async fn bad_request_responses_include_status_field() {
+    let app = make_app();
+    // Missing required 'kind' parameter → 400 with status field.
+    let (status, value) = send(&app, "GET", "/nodes", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(value["error"].is_string());
+    assert_eq!(value["status"].as_u64().unwrap(), 400);
+}
+
+#[tokio::test]
+async fn conflict_responses_include_status_field() {
+    let app = make_app();
+    let body = new_node_body("note", "ConflictTest", "");
+    let (first, _) = send(&app, "POST", "/nodes", Some(body.clone())).await;
+    assert_eq!(first, StatusCode::CREATED);
+
+    let (status, value) = send(&app, "POST", "/nodes", Some(body)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(value["error"].is_string());
+    assert_eq!(value["status"].as_u64().unwrap(), 409);
+}
+
+#[tokio::test]
+async fn error_response_content_type_is_json() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("GET")
+        .uri("/does-not-exist")
+        .body(Body::empty())
+        .expect("build request");
+    let response = app.oneshot(req).await.expect("router response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .expect("content-type header")
+        .to_str()
+        .unwrap();
+    assert!(
+        content_type.contains("application/json"),
+        "expected application/json, got {content_type}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_json_body_returns_400_with_status_field() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/nodes")
+        .header("content-type", "application/json")
+        .body(Body::from("{not-json"))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.expect("router response");
+    let status = response.status();
+    assert!(status.is_client_error());
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).expect("json body");
+    assert!(value["error"].is_string());
+    assert_eq!(value["status"].as_u64().unwrap(), status.as_u16() as u64);
+}
+
+#[tokio::test]
+async fn search_fts_missing_query_includes_status_400() {
+    let app = make_app();
+    let (status, value) = send(&app, "POST", "/search/fts", Some(json!({ "limit": 10 }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["status"].as_u64().unwrap(), 400);
+}
+
+#[tokio::test]
+async fn shortest_path_missing_params_includes_status_400() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/paths/shortest", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["status"].as_u64().unwrap(), 400);
 }

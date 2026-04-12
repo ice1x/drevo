@@ -1,6 +1,6 @@
 # GraphNote DB — Embedded Graph Database for Knowledge Management
 
-Build a lightweight, embeddable graph database in Rust, purpose-built for a cross-platform Obsidian-like knowledge base application. The database must run natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings or WASM), and in the browser (via WebAssembly). No server required — everything runs in-process.
+A lightweight, embeddable graph database written in Rust. Designed as the storage engine for cross-platform knowledge-base applications (similar to Obsidian), GraphNote DB runs natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings), and in the browser (via WebAssembly). It also ships as a standalone HTTP server for containerised deployments.
 
 ---
 
@@ -448,7 +448,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00040` Traversal endpoints: `GET /nodes/{id}/neighbors`, `/paths/shortest`, `/nodes/{id}/subgraph`
 - [x] `00041` Search endpoint: `POST /search/fts`
 - [x] `00042` Admin endpoints: `GET /health`, `GET /status`
-- [ ] `00043` JSON error handling — unified error responses with status codes
+- [x] `00043` JSON error handling — unified error responses with status codes
 - [ ] `00044` Integration tests: HTTP endpoints against in-memory backend
 
 **Definition of done:** all endpoints respond correctly, tests pass.
@@ -574,7 +574,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 ## Current Status
 
-**Phase:** 5 — Platform Bindings (complete) / Phase 6 — Scenario Integration Tests (next)
+**Phase:** 7 — HTTP API (Server Mode)
 
 **Completed:**
 
@@ -619,7 +619,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 **Test status:**
 
 ```
-cargo test: 888 passed, 0 failed (201 unit + 686 integration + 1 doctest)
+cargo test: 1025 passed, 0 failed (201 unit + 823 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
@@ -735,7 +735,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps:**
 
-1. `00043` — JSON error handling — unified error responses with status codes — Phase 7 (HTTP API)
+1. `00044` — Integration tests: HTTP endpoints against in-memory backend — Phase 7 (HTTP API)
 
 ---
 
