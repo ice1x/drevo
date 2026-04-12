@@ -487,12 +487,24 @@ impl GraphNoteDb {
     pub fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
         let mut edge = self.get_edge(id)?.ok_or(GraphNoteError::EdgeNotFound(id))?;
 
+        let old_kind = edge.kind.clone();
+
         edge.apply_patch(patch);
 
         let data = serialize_edge(&edge)?;
         self.backend
             .put(&edge_key(id), &data)
             .map_err(GraphNoteError::Storage)?;
+
+        // Update edge_kind index if kind changed
+        if edge.kind != old_kind {
+            self.backend
+                .delete(&edge_kind_key(&old_kind, id))
+                .map_err(GraphNoteError::Storage)?;
+            self.backend
+                .put(&edge_kind_key(&edge.kind, id), &[])
+                .map_err(GraphNoteError::Storage)?;
+        }
 
         Ok(edge)
     }

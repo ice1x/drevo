@@ -461,6 +461,109 @@ async fn delete_edges_missing_returns_404() {
 }
 
 #[tokio::test]
+async fn patch_edges_updates_kind_and_weight() {
+    let app = make_app();
+    let (from, to) = create_two_nodes(&app).await;
+    let (_, created) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(from, to, "links_to")),
+    )
+    .await;
+    let id = created["id"].as_u64().unwrap();
+    assert_eq!(created["kind"].as_str().unwrap(), "links_to");
+    assert_eq!(created["weight"].as_f64().unwrap(), 1.0);
+
+    let (status, updated) = send(
+        &app,
+        "PATCH",
+        &format!("/edges/{id}"),
+        Some(json!({ "kind": "depends_on", "weight": 2.5 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["id"].as_u64().unwrap(), id);
+    assert_eq!(updated["kind"].as_str().unwrap(), "depends_on");
+    assert_eq!(updated["weight"].as_f64().unwrap(), 2.5);
+    // Endpoints unchanged.
+    assert_eq!(updated["from_id"].as_u64().unwrap(), from);
+    assert_eq!(updated["to_id"].as_u64().unwrap(), to);
+}
+
+#[tokio::test]
+async fn patch_edges_partial_update_preserves_other_fields() {
+    let app = make_app();
+    let (from, to) = create_two_nodes(&app).await;
+    let (_, created) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(from, to, "links_to")),
+    )
+    .await;
+    let id = created["id"].as_u64().unwrap();
+
+    // Only update weight, kind should stay "links_to".
+    let (status, updated) = send(
+        &app,
+        "PATCH",
+        &format!("/edges/{id}"),
+        Some(json!({ "weight": 5.0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["kind"].as_str().unwrap(), "links_to");
+    assert_eq!(updated["weight"].as_f64().unwrap(), 5.0);
+}
+
+#[tokio::test]
+async fn patch_edges_updates_properties() {
+    let app = make_app();
+    let (from, to) = create_two_nodes(&app).await;
+    let (_, created) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(from, to, "links_to")),
+    )
+    .await;
+    let id = created["id"].as_u64().unwrap();
+
+    let (status, updated) = send(
+        &app,
+        "PATCH",
+        &format!("/edges/{id}"),
+        Some(json!({ "properties": { "label": "important" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["properties"]["label"], "important");
+}
+
+#[tokio::test]
+async fn patch_edges_missing_returns_404() {
+    let app = make_app();
+    let (status, value) = send(&app, "PATCH", "/edges/9999", Some(json!({ "weight": 1.0 }))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(value["error"].is_string());
+    assert_eq!(value["status"].as_u64().unwrap(), 404);
+}
+
+#[tokio::test]
+async fn patch_edges_rejects_invalid_json_with_400() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/edges/1")
+        .header("content-type", "application/json")
+        .body(Body::from(b"not json".to_vec()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn list_edges_by_kind_paginates() {
     let app = make_app();
     let (from, to) = create_two_nodes(&app).await;
@@ -1302,6 +1405,34 @@ async fn integration_full_edge_lifecycle() {
 
     // Visible via list edges by kind
     let (status, resp) = send(&app, "GET", "/edges?kind=links_to&limit=10", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resp["edges"].as_array().unwrap().len(), 1);
+
+    // Update edge (task 00046)
+    let (status, updated) = send(
+        &app,
+        "PATCH",
+        &format!("/edges/{edge_id}"),
+        Some(json!({ "kind": "depends_on", "weight": 3.0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["kind"].as_str().unwrap(), "depends_on");
+    assert_eq!(updated["weight"].as_f64().unwrap(), 3.0);
+    assert_eq!(updated["from_id"].as_u64().unwrap(), a);
+    assert_eq!(updated["to_id"].as_u64().unwrap(), b);
+
+    // Verify update persists on re-read
+    let (status, re_read) = send(&app, "GET", &format!("/edges/{edge_id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(re_read["kind"].as_str().unwrap(), "depends_on");
+    assert_eq!(re_read["weight"].as_f64().unwrap(), 3.0);
+
+    // Edge should now appear under new kind, not old
+    let (status, resp) = send(&app, "GET", "/edges?kind=links_to&limit=10", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(resp["edges"].as_array().unwrap().is_empty());
+    let (status, resp) = send(&app, "GET", "/edges?kind=depends_on&limit=10", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(resp["edges"].as_array().unwrap().len(), 1);
 
