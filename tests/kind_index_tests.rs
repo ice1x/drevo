@@ -1,7 +1,7 @@
 //! Integration tests for kind_index and list_nodes_by_kind (task 00012).
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{NewNode, NodePatch, Properties};
+use drevo::db::Drevo;
+use drevo::model::{NewNode, NodePatch, Properties};
 
 fn node(kind: &str, title: &str) -> NewNode {
     NewNode {
@@ -17,14 +17,14 @@ fn node(kind: &str, title: &str) -> NewNode {
 
 #[test]
 fn list_nodes_by_kind_empty_db_returns_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let result = db.list_nodes_by_kind("note", 10, 0).unwrap();
     assert!(result.is_empty());
 }
 
 #[test]
 fn list_nodes_by_kind_returns_matching_nodes() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(node("note", "A")).unwrap();
     db.create_node(node("task", "B")).unwrap();
     db.create_node(node("note", "C")).unwrap();
@@ -38,7 +38,7 @@ fn list_nodes_by_kind_returns_matching_nodes() {
 
 #[test]
 fn list_nodes_by_kind_does_not_return_other_kinds() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(node("note", "A")).unwrap();
     db.create_node(node("task", "B")).unwrap();
 
@@ -49,7 +49,7 @@ fn list_nodes_by_kind_does_not_return_other_kinds() {
 
 #[test]
 fn list_nodes_by_kind_respects_limit() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..5 {
         db.create_node(node("note", &format!("N{}", i))).unwrap();
     }
@@ -60,7 +60,7 @@ fn list_nodes_by_kind_respects_limit() {
 
 #[test]
 fn list_nodes_by_kind_respects_offset() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..5 {
         db.create_node(node("note", &format!("N{}", i))).unwrap();
     }
@@ -71,7 +71,7 @@ fn list_nodes_by_kind_respects_offset() {
 
 #[test]
 fn list_nodes_by_kind_offset_beyond_count_returns_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(node("note", "A")).unwrap();
 
     let result = db.list_nodes_by_kind("note", 10, 100).unwrap();
@@ -80,7 +80,7 @@ fn list_nodes_by_kind_offset_beyond_count_returns_empty() {
 
 #[test]
 fn list_nodes_by_kind_nonexistent_kind_returns_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(node("note", "A")).unwrap();
 
     let result = db.list_nodes_by_kind("nonexistent", 10, 0).unwrap();
@@ -91,7 +91,7 @@ fn list_nodes_by_kind_nonexistent_kind_returns_empty() {
 
 #[test]
 fn update_node_kind_moves_to_new_kind_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n = db.create_node(node("note", "A")).unwrap();
 
     db.update_node(
@@ -113,7 +113,7 @@ fn update_node_kind_moves_to_new_kind_index() {
 
 #[test]
 fn update_node_kind_unchanged_keeps_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n = db.create_node(node("note", "A")).unwrap();
 
     db.update_node(
@@ -134,7 +134,7 @@ fn update_node_kind_unchanged_keeps_index() {
 
 #[test]
 fn delete_node_removes_from_kind_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n = db.create_node(node("note", "A")).unwrap();
 
     db.delete_node(n.id).unwrap();
@@ -145,7 +145,7 @@ fn delete_node_removes_from_kind_index() {
 
 #[test]
 fn delete_one_node_keeps_others_in_kind_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(node("note", "A")).unwrap();
     db.create_node(node("note", "B")).unwrap();
 
@@ -160,12 +160,12 @@ fn delete_one_node_keeps_others_in_kind_index() {
 
 #[test]
 fn list_edges_by_kind_returns_matching_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(node("note", "A")).unwrap();
     let n2 = db.create_node(node("note", "B")).unwrap();
     let n3 = db.create_node(node("note", "C")).unwrap();
 
-    use graphnote_db::model::{NewEdge, Properties as P};
+    use drevo::model::{NewEdge, Properties as P};
     db.create_edge(NewEdge {
         from_id: n1.id,
         to_id: n2.id,
@@ -200,11 +200,11 @@ fn list_edges_by_kind_returns_matching_edges() {
 
 #[test]
 fn list_edges_by_kind_respects_limit_and_offset() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(node("note", "A")).unwrap();
     let n2 = db.create_node(node("note", "B")).unwrap();
 
-    use graphnote_db::model::{NewEdge, Properties as P};
+    use drevo::model::{NewEdge, Properties as P};
     for i in 0..5 {
         db.create_edge(NewEdge {
             from_id: n1.id,
@@ -222,11 +222,11 @@ fn list_edges_by_kind_respects_limit_and_offset() {
 
 #[test]
 fn delete_edge_removes_from_edge_kind_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(node("note", "A")).unwrap();
     let n2 = db.create_node(node("note", "B")).unwrap();
 
-    use graphnote_db::model::{NewEdge, Properties as P};
+    use drevo::model::{NewEdge, Properties as P};
     let edge = db
         .create_edge(NewEdge {
             from_id: n1.id,
@@ -251,7 +251,7 @@ fn kind_index_persists_across_reopen() {
     let path = dir.path().join("test.db");
 
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         db.create_node(node("note", "A")).unwrap();
         db.create_node(node("task", "B")).unwrap();
         db.create_node(node("note", "C")).unwrap();
@@ -259,7 +259,7 @@ fn kind_index_persists_across_reopen() {
     }
 
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         let notes = db.list_nodes_by_kind("note", 10, 0).unwrap();
         assert_eq!(notes.len(), 2);
         let tasks = db.list_nodes_by_kind("task", 10, 0).unwrap();

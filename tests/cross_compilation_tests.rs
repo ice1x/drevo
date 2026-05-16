@@ -12,12 +12,12 @@
 //! - `RedbBackend` is available when `redb-backend` feature is enabled
 //! - FFI module is excluded on `wasm32` (verified structurally)
 //! - WASM module requires `wasm` feature (verified structurally)
-//! - `GraphNoteDb` core API surface is identical regardless of backend
+//! - `Drevo` core API surface is identical regardless of backend
 //! - `crate-type` includes `cdylib` and `staticlib` for FFI consumers
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
-use graphnote_db::storage::{MemoryBackend, StorageBackend};
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::storage::{MemoryBackend, StorageBackend};
 
 // ---------------------------------------------------------------------------
 // Feature gate correctness
@@ -29,7 +29,7 @@ use graphnote_db::storage::{MemoryBackend, StorageBackend};
 #[cfg(feature = "redb-backend")]
 #[test]
 fn redb_backend_available_with_feature() {
-    use graphnote_db::storage::RedbBackend;
+    use drevo::storage::RedbBackend;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cross_compile_test.db");
     let backend = RedbBackend::open(&path).unwrap();
@@ -60,7 +60,7 @@ fn memory_backend_flush_noop_is_portable() {
 }
 
 // ---------------------------------------------------------------------------
-// GraphNoteDb API surface consistency
+// Drevo API surface consistency
 // ---------------------------------------------------------------------------
 
 /// The full public API must work identically on `open_in_memory()`.
@@ -68,7 +68,7 @@ fn memory_backend_flush_noop_is_portable() {
 /// must be reachable through it.
 #[test]
 fn full_api_surface_via_open_in_memory() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     // Node CRUD
     let n1 = db
@@ -195,7 +195,7 @@ fn full_api_surface_via_open_in_memory() {
 // Disk-backed path (native only, excluded on WASM)
 // ---------------------------------------------------------------------------
 
-/// `GraphNoteDb::open(path)` must work on native targets. This constructor
+/// `Drevo::open(path)` must work on native targets. This constructor
 /// is excluded on WASM (no filesystem), but iOS and Android have filesystem
 /// access and must use the persistent path.
 #[cfg(not(target_arch = "wasm32"))]
@@ -203,7 +203,7 @@ fn full_api_surface_via_open_in_memory() {
 fn open_disk_backed_on_native() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("native_test.db");
-    let db = GraphNoteDb::open(&path).unwrap();
+    let db = Drevo::open(&path).unwrap();
 
     let node = db
         .create_node(NewNode {
@@ -257,7 +257,7 @@ fn crate_metadata_sanity() {
     // If this test compiles and runs, the crate's lib types are correct.
     // The actual crate-type verification happens at build time in CI
     // via `cargo build --target <platform>`.
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     assert!(db.get_node(9999).unwrap().is_none());
     db.close().unwrap();
 }
@@ -270,7 +270,7 @@ fn crate_metadata_sanity() {
 /// `getrandom/wasm_js`). Verify that created nodes get unique UUIDs.
 #[test]
 fn uuid_generation_is_portable() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let mut uuids = Vec::new();
     for i in 0..10 {
@@ -297,7 +297,7 @@ fn uuid_generation_is_portable() {
 /// portable. This exercises bincode + serde_json interop across platforms.
 #[test]
 fn properties_serialization_is_portable() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let mut props = Properties::default();
     props.insert("string".to_string(), serde_json::json!("hello"));
@@ -340,7 +340,7 @@ fn properties_serialization_is_portable() {
 /// CJK, emoji, RTL — all must round-trip through bincode serialization.
 #[test]
 fn unicode_portability() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let test_cases = vec![
         ("CJK", "量子計算", "量子力学の基礎"),

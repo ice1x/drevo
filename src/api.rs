@@ -1,6 +1,6 @@
-//! HTTP API for GraphNote DB.
+//! HTTP API for drevo.
 //!
-//! This module exposes a thin JSON adapter over [`GraphNoteDb`] built on
+//! This module exposes a thin JSON adapter over [`Drevo`] built on
 //! [`axum`] and [`tokio`]. Task 00037 introduced the server skeleton
 //! (shared state, unified error type, root endpoint) and task 00038
 //! added node CRUD endpoints:
@@ -60,22 +60,22 @@ use axum::Json;
 use axum::Router;
 use serde::{Deserialize, Serialize};
 
-use crate::db::GraphNoteDb;
-use crate::error::GraphNoteError;
+use crate::db::Drevo;
+use crate::error::DrevoError;
 use crate::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
 };
 
 /// Shared application state passed to every HTTP handler.
 ///
-/// Wraps a reference-counted [`GraphNoteDb`] so the same database
+/// Wraps a reference-counted [`Drevo`] so the same database
 /// instance is shared across all requests without locking at the
 /// router level. The database itself is `Send + Sync` because the
 /// underlying `StorageBackend` is.
 #[derive(Clone)]
 pub struct ApiState {
     /// The shared database handle.
-    pub db: Arc<GraphNoteDb>,
+    pub db: Arc<Drevo>,
     /// Wall-clock instant at which this state was constructed. Used by
     /// `GET /status` to compute the process uptime without pulling in
     /// a system-time crate.
@@ -87,7 +87,7 @@ impl ApiState {
     /// `started_at` timestamp is captured at construction time so that
     /// `GET /status` can report how long this API instance has been
     /// serving traffic.
-    pub fn new(db: Arc<GraphNoteDb>) -> Self {
+    pub fn new(db: Arc<Drevo>) -> Self {
         Self {
             db,
             started_at: Instant::now(),
@@ -97,18 +97,18 @@ impl ApiState {
 
 /// Unified error type returned by every HTTP handler.
 ///
-/// Wraps either a [`GraphNoteError`] (producing a status code based on
+/// Wraps either a [`DrevoError`] (producing a status code based on
 /// the underlying database error) or a bad-request variant for client
 /// input problems (malformed JSON body, missing query parameter).
 pub enum ApiError {
     /// A database operation failed.
-    Db(GraphNoteError),
+    Db(DrevoError),
     /// The client sent an invalid request (400 Bad Request).
     BadRequest(String),
 }
 
-impl From<GraphNoteError> for ApiError {
-    fn from(err: GraphNoteError) -> Self {
+impl From<DrevoError> for ApiError {
+    fn from(err: DrevoError) -> Self {
         Self::Db(err)
     }
 }
@@ -129,14 +129,14 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ApiError::Db(err) => match &err {
-                GraphNoteError::NodeNotFound(_) | GraphNoteError::EdgeNotFound(_) => {
+                DrevoError::NodeNotFound(_) | DrevoError::EdgeNotFound(_) => {
                     (StatusCode::NOT_FOUND, err.to_string())
                 }
-                GraphNoteError::DuplicateTitle(_) => (StatusCode::CONFLICT, err.to_string()),
-                GraphNoteError::Locked => (StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
-                GraphNoteError::Storage(_)
-                | GraphNoteError::Serialization(_)
-                | GraphNoteError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+                DrevoError::DuplicateTitle(_) => (StatusCode::CONFLICT, err.to_string()),
+                DrevoError::Locked => (StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+                DrevoError::Storage(_) | DrevoError::Serialization(_) | DrevoError::Io(_) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+                }
             },
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
         };
@@ -171,7 +171,7 @@ pub struct ServerInfo {
 /// a default landing page for clients that hit the root URL.
 async fn root(State(_state): State<ApiState>) -> Json<ServerInfo> {
     Json(ServerInfo {
-        name: "graphnote-db",
+        name: "drevo",
         version: env!("CARGO_PKG_VERSION"),
     })
 }
@@ -218,10 +218,7 @@ async fn get_node(
     State(state): State<ApiState>,
     Path(id): Path<u64>,
 ) -> Result<Json<Node>, ApiError> {
-    let node = state
-        .db
-        .get_node(id)?
-        .ok_or(GraphNoteError::NodeNotFound(id))?;
+    let node = state.db.get_node(id)?.ok_or(DrevoError::NodeNotFound(id))?;
     Ok(Json(node))
 }
 
@@ -319,10 +316,7 @@ async fn get_edge(
     State(state): State<ApiState>,
     Path(id): Path<u64>,
 ) -> Result<Json<Edge>, ApiError> {
-    let edge = state
-        .db
-        .get_edge(id)?
-        .ok_or(GraphNoteError::EdgeNotFound(id))?;
+    let edge = state.db.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
     Ok(Json(edge))
 }
 
@@ -461,7 +455,7 @@ async fn get_node_neighbors(
     // Explicitly surface missing nodes as 404 — the underlying `bfs`
     // would otherwise silently return an empty list.
     if state.db.get_node(id)?.is_none() {
-        return Err(GraphNoteError::NodeNotFound(id).into());
+        return Err(DrevoError::NodeNotFound(id).into());
     }
 
     let nodes = state.db.bfs(id, depth, direction, kind.as_deref())?;
@@ -485,10 +479,10 @@ async fn get_shortest_path(
     // Validate both endpoints up front so we can return 404 instead
     // of silently returning `None` (which means "unreachable").
     if state.db.get_node(from)?.is_none() {
-        return Err(GraphNoteError::NodeNotFound(from).into());
+        return Err(DrevoError::NodeNotFound(from).into());
     }
     if state.db.get_node(to)?.is_none() {
-        return Err(GraphNoteError::NodeNotFound(to).into());
+        return Err(DrevoError::NodeNotFound(to).into());
     }
 
     let path = state.db.shortest_path(from, to)?;
@@ -527,7 +521,7 @@ const MAX_SEARCH_LIMIT: usize = 1000;
 ///
 /// `query` is required — a missing field yields 400 Bad Request. An
 /// empty string is accepted but produces no results, mirroring the
-/// underlying [`GraphNoteDb::search_fts`] behaviour. `limit` is
+/// underlying [`Drevo::search_fts`] behaviour. `limit` is
 /// optional and defaults to [`DEFAULT_SEARCH_LIMIT`].
 #[derive(Debug, Deserialize)]
 pub struct SearchFtsRequest {
@@ -607,7 +601,7 @@ async fn health() -> Json<HealthResponse> {
 async fn status(State(state): State<ApiState>) -> Json<StatusResponse> {
     let uptime_seconds = state.started_at.elapsed().as_secs();
     Json(StatusResponse {
-        name: "graphnote-db",
+        name: "drevo",
         version: env!("CARGO_PKG_VERSION"),
         uptime_seconds,
     })

@@ -1,8 +1,8 @@
 //! Integration tests for Node CRUD operations (task 00010).
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::error::GraphNoteError;
-use graphnote_db::model::{NewNode, NodePatch, Properties};
+use drevo::db::Drevo;
+use drevo::error::DrevoError;
+use drevo::model::{NewNode, NodePatch, Properties};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -33,7 +33,7 @@ fn sample_node_with_props(title: &str) -> NewNode {
 
 #[test]
 fn create_node_returns_node_with_id() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node("First")).unwrap();
     assert_eq!(node.id, 1);
     assert_eq!(node.title, "First");
@@ -42,7 +42,7 @@ fn create_node_returns_node_with_id() {
 
 #[test]
 fn create_node_assigns_sequential_ids() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("A")).unwrap();
     let n2 = db.create_node(sample_node("B")).unwrap();
     let n3 = db.create_node(sample_node("C")).unwrap();
@@ -53,7 +53,7 @@ fn create_node_assigns_sequential_ids() {
 
 #[test]
 fn create_node_generates_uuid_v7() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node("UUID test")).unwrap();
     let uuid = uuid::Uuid::from_bytes(node.uuid);
     assert_eq!(uuid.get_version(), Some(uuid::Version::SortRand));
@@ -61,7 +61,7 @@ fn create_node_generates_uuid_v7() {
 
 #[test]
 fn create_node_preserves_properties() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node_with_props("Props")).unwrap();
     assert_eq!(node.properties.get("priority"), Some(&json!(1)));
     assert_eq!(node.properties.get("tags"), Some(&json!(["rust", "graph"])));
@@ -69,17 +69,17 @@ fn create_node_preserves_properties() {
 
 #[test]
 fn create_node_duplicate_title_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(sample_node("Dup")).unwrap();
     let err = db.create_node(sample_node("Dup")).unwrap_err();
-    assert!(matches!(err, GraphNoteError::DuplicateTitle(t) if t == "Dup"));
+    assert!(matches!(err, DrevoError::DuplicateTitle(t) if t == "Dup"));
 }
 
 // --- get_node ---
 
 #[test]
 fn get_node_existing() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let created = db.create_node(sample_node("Get me")).unwrap();
     let fetched = db.get_node(created.id).unwrap();
     assert_eq!(fetched, Some(created));
@@ -87,7 +87,7 @@ fn get_node_existing() {
 
 #[test]
 fn get_node_nonexistent_returns_none() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     assert_eq!(db.get_node(999).unwrap(), None);
 }
 
@@ -95,7 +95,7 @@ fn get_node_nonexistent_returns_none() {
 
 #[test]
 fn get_node_by_uuid_existing() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let created = db.create_node(sample_node("UUID lookup")).unwrap();
     let fetched = db.get_node_by_uuid(&created.uuid).unwrap();
     assert_eq!(fetched, Some(created));
@@ -103,7 +103,7 @@ fn get_node_by_uuid_existing() {
 
 #[test]
 fn get_node_by_uuid_nonexistent_returns_none() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let fake_uuid = [0u8; 16];
     assert_eq!(db.get_node_by_uuid(&fake_uuid).unwrap(), None);
 }
@@ -112,7 +112,7 @@ fn get_node_by_uuid_nonexistent_returns_none() {
 
 #[test]
 fn get_node_by_title_existing() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let created = db.create_node(sample_node("Title lookup")).unwrap();
     let fetched = db.get_node_by_title("Title lookup").unwrap();
     assert_eq!(fetched, Some(created));
@@ -120,7 +120,7 @@ fn get_node_by_title_existing() {
 
 #[test]
 fn get_node_by_title_nonexistent_returns_none() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     assert_eq!(db.get_node_by_title("no such title").unwrap(), None);
 }
 
@@ -128,7 +128,7 @@ fn get_node_by_title_nonexistent_returns_none() {
 
 #[test]
 fn update_node_changes_title() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node("Old Title")).unwrap();
 
     let updated = db
@@ -151,7 +151,7 @@ fn update_node_changes_title() {
 
 #[test]
 fn update_node_partial_patch() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node("Partial")).unwrap();
 
     let updated = db
@@ -171,7 +171,7 @@ fn update_node_partial_patch() {
 
 #[test]
 fn update_node_updates_timestamp() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node("Timestamp")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
 
@@ -190,7 +190,7 @@ fn update_node_updates_timestamp() {
 
 #[test]
 fn update_node_nonexistent_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let err = db
         .update_node(
             999,
@@ -200,12 +200,12 @@ fn update_node_nonexistent_fails() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, GraphNoteError::NodeNotFound(999)));
+    assert!(matches!(err, DrevoError::NodeNotFound(999)));
 }
 
 #[test]
 fn update_node_duplicate_title_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(sample_node("Existing")).unwrap();
     let node2 = db.create_node(sample_node("Other")).unwrap();
 
@@ -218,12 +218,12 @@ fn update_node_duplicate_title_fails() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, GraphNoteError::DuplicateTitle(t) if t == "Existing"));
+    assert!(matches!(err, DrevoError::DuplicateTitle(t) if t == "Existing"));
 }
 
 #[test]
 fn update_node_same_title_is_ok() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node("Keep")).unwrap();
 
     // Updating to the same title should succeed
@@ -246,7 +246,7 @@ fn update_node_same_title_is_ok() {
 
 #[test]
 fn delete_node_removes_from_storage() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node("Delete me")).unwrap();
 
     db.delete_node(node.id).unwrap();
@@ -256,7 +256,7 @@ fn delete_node_removes_from_storage() {
 
 #[test]
 fn delete_node_removes_indexes() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(sample_node("Indexed")).unwrap();
     let uuid = node.uuid;
 
@@ -268,9 +268,9 @@ fn delete_node_removes_indexes() {
 
 #[test]
 fn delete_node_nonexistent_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let err = db.delete_node(999).unwrap_err();
-    assert!(matches!(err, GraphNoteError::NodeNotFound(999)));
+    assert!(matches!(err, DrevoError::NodeNotFound(999)));
 }
 
 // --- Persistence across close/reopen ---
@@ -283,7 +283,7 @@ fn nodes_persist_across_close_reopen() {
     // Create a node, close
     let uuid;
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         let node = db.create_node(sample_node("Persistent")).unwrap();
         uuid = node.uuid;
         db.close().unwrap();
@@ -291,7 +291,7 @@ fn nodes_persist_across_close_reopen() {
 
     // Reopen and verify
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         let node = db.get_node(1).unwrap().expect("node should persist");
         assert_eq!(node.title, "Persistent");
         assert_eq!(node.uuid, uuid);
@@ -318,7 +318,7 @@ fn nodes_persist_across_close_reopen() {
 
 #[test]
 fn create_node_with_empty_title() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db
         .create_node(NewNode {
             kind: "note".to_string(),
@@ -338,7 +338,7 @@ fn create_node_with_empty_title() {
 
 #[test]
 fn crud_workflow() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     // Create
     let node = db.create_node(sample_node("Workflow")).unwrap();

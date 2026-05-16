@@ -3,8 +3,8 @@
 //! Task 00020 — measures full-text search performance on a realistic dataset.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::NewNode;
+use drevo::db::Drevo;
+use drevo::model::NewNode;
 use std::hint::black_box;
 
 const NUM_NODES: usize = 10_000;
@@ -33,8 +33,8 @@ fn make_fts_node(i: usize) -> NewNode {
 }
 
 /// Build a fully populated in-memory DB with 10K nodes for FTS benchmarking.
-fn populated_fts_db() -> GraphNoteDb {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+fn populated_fts_db() -> Drevo {
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..NUM_NODES {
         db.create_node(make_fts_node(i)).unwrap();
     }
@@ -105,7 +105,7 @@ fn bench_fts_index_insert(c: &mut Criterion) {
 
     group.bench_function("1000_nodes", |b| {
         b.iter(|| {
-            let db = GraphNoteDb::open_in_memory().unwrap();
+            let db = Drevo::open_in_memory().unwrap();
             for i in 0..1_000 {
                 db.create_node(make_fts_node(i)).unwrap();
             }

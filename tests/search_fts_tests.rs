@@ -1,10 +1,10 @@
 //! Integration tests for `search_fts` with TF-IDF ranking.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::NewNode;
+use drevo::db::Drevo;
+use drevo::model::NewNode;
 
-fn db() -> GraphNoteDb {
-    GraphNoteDb::open_in_memory().unwrap()
+fn db() -> Drevo {
+    Drevo::open_in_memory().unwrap()
 }
 
 fn new_node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -148,7 +148,7 @@ fn search_fts_after_update() {
 
     db.update_node(
         node.id,
-        graphnote_db::model::NodePatch {
+        drevo::model::NodePatch {
             title: Some("Python".to_string()),
             ..Default::default()
         },

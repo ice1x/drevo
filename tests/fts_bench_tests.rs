@@ -3,8 +3,8 @@
 //! Task 00020 — ensures the benchmark setup and queries are correct before
 //! running the full 10K-node criterion benchmark.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::NewNode;
+use drevo::db::Drevo;
+use drevo::model::NewNode;
 
 /// Helper: create a node with realistic content for FTS benchmarking.
 fn make_fts_node(i: usize) -> NewNode {
@@ -28,7 +28,7 @@ fn make_fts_node(i: usize) -> NewNode {
 
 #[test]
 fn fts_bench_setup_creates_nodes() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let count = 100usize;
     for i in 0..count {
         db.create_node(make_fts_node(i)).unwrap();
@@ -42,7 +42,7 @@ fn fts_bench_setup_creates_nodes() {
 
 #[test]
 fn fts_bench_search_returns_results_on_populated_db() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..200 {
         db.create_node(make_fts_node(i)).unwrap();
     }
@@ -61,7 +61,7 @@ fn fts_bench_search_returns_results_on_populated_db() {
 
 #[test]
 fn fts_bench_search_short_query() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..200 {
         db.create_node(make_fts_node(i)).unwrap();
     }
@@ -72,7 +72,7 @@ fn fts_bench_search_short_query() {
 
 #[test]
 fn fts_bench_search_kind_specific() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..200 {
         db.create_node(make_fts_node(i)).unwrap();
     }
@@ -84,7 +84,7 @@ fn fts_bench_search_kind_specific() {
 
 #[test]
 fn fts_bench_search_no_results_for_absent_term() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..100 {
         db.create_node(make_fts_node(i)).unwrap();
     }
@@ -97,7 +97,7 @@ fn fts_bench_search_no_results_for_absent_term() {
 
 #[test]
 fn fts_bench_search_limit_respected() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..500 {
         db.create_node(make_fts_node(i)).unwrap();
     }
@@ -114,7 +114,7 @@ fn fts_bench_search_limit_respected() {
 
 #[test]
 fn fts_bench_list_recent_on_populated_db() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..200 {
         db.create_node(make_fts_node(i)).unwrap();
     }
@@ -129,7 +129,7 @@ fn fts_bench_list_recent_on_populated_db() {
 
 #[test]
 fn fts_bench_varied_queries_all_succeed() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..300 {
         db.create_node(make_fts_node(i)).unwrap();
     }

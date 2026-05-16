@@ -48,7 +48,7 @@ jobs:
       # Verify the .wasm artifact exists
       - name: Verify WASM artifact
         run: |
-          WASM_FILE="target/wasm32-unknown-unknown/debug/graphnote_db.wasm"
+          WASM_FILE="target/wasm32-unknown-unknown/debug/drevo.wasm"
           if [ ! -f "$WASM_FILE" ]; then
             echo "ERROR: WASM artifact not found at $WASM_FILE"
             ls -la target/wasm32-unknown-unknown/debug/ || true
@@ -90,7 +90,7 @@ jobs:
       # Verify the static library artifact exists
       - name: Verify iOS artifact
         run: |
-          LIB_FILE="target/aarch64-apple-ios/debug/libgraphnote_db.a"
+          LIB_FILE="target/aarch64-apple-ios/debug/libdrevo.a"
           if [ ! -f "$LIB_FILE" ]; then
             echo "ERROR: iOS static library not found at $LIB_FILE"
             ls -la target/aarch64-apple-ios/debug/ || true
@@ -101,12 +101,12 @@ jobs:
       # Verify the C header is generated
       - name: Verify C header
         run: |
-          if [ ! -f "graphnote.h" ]; then
-            echo "ERROR: graphnote.h not generated"
+          if [ ! -f "drevo.h" ]; then
+            echo "ERROR: drevo.h not generated"
             exit 1
           fi
-          echo "graphnote.h generated successfully"
-          head -20 graphnote.h
+          echo "drevo.h generated successfully"
+          head -20 drevo.h
 
   # -------------------------------------------------------------------------
   # Android target: aarch64-linux-android
@@ -165,15 +165,15 @@ jobs:
       # Verify the shared library artifact exists
       - name: Verify Android artifact
         run: |
-          SO_FILE="target/aarch64-linux-android/debug/libgraphnote_db.so"
-          STATIC_FILE="target/aarch64-linux-android/debug/libgraphnote_db.a"
+          SO_FILE="target/aarch64-linux-android/debug/libdrevo.so"
+          STATIC_FILE="target/aarch64-linux-android/debug/libdrevo.a"
           if [ -f "$SO_FILE" ]; then
             echo "Android shared library size: $(du -h "$SO_FILE" | cut -f1)"
           elif [ -f "$STATIC_FILE" ]; then
             echo "Android static library size: $(du -h "$STATIC_FILE" | cut -f1)"
           else
             echo "WARNING: No library artifact found, listing debug dir:"
-            ls -la target/aarch64-linux-android/debug/libgraphnote* 2>/dev/null || echo "No libgraphnote* files"
+            ls -la target/aarch64-linux-android/debug/libdrevo* 2>/dev/null || echo "No libdrevo* files"
             ls -la target/aarch64-linux-android/debug/ | head -20
           fi
 

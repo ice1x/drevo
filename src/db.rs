@@ -1,6 +1,6 @@
 //! Core database struct and lifecycle methods.
 //!
-//! [`GraphNoteDb`] is the main entry point for all database operations.
+//! [`Drevo`] is the main entry point for all database operations.
 //! It wraps a [`StorageBackend`] and manages auto-increment counters,
 //! indexes, and the graph data model.
 
@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::error::{GraphNoteError, Result};
+use crate::error::{DrevoError, Result};
 use crate::fts::index as fts_index;
 use crate::fts::tokenizer::extract_trigrams;
 use crate::model::{
@@ -59,12 +59,12 @@ const PREFIX_UPDATED: &[u8] = b"updated:";
 /// Bincode configuration used for all serialization.
 const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
-/// The main GraphNote DB handle.
+/// The main drevo handle.
 ///
-/// Created via [`GraphNoteDb::open`] (disk-backed) or
-/// [`GraphNoteDb::open_in_memory`] (ephemeral). All graph operations
+/// Created via [`Drevo::open`] (disk-backed) or
+/// [`Drevo::open_in_memory`] (ephemeral). All graph operations
 /// are methods on this struct.
-pub struct GraphNoteDb {
+pub struct Drevo {
     /// The underlying key-value storage backend.
     backend: Box<dyn StorageBackend>,
     /// Auto-increment counter for node IDs.
@@ -73,7 +73,7 @@ pub struct GraphNoteDb {
     next_edge_id: AtomicU64,
 }
 
-impl GraphNoteDb {
+impl Drevo {
     /// Open a disk-backed database at the given path.
     ///
     /// Creates the database file if it does not exist.
@@ -81,7 +81,7 @@ impl GraphNoteDb {
     ///
     /// # Errors
     ///
-    /// Returns [`GraphNoteError::Storage`] if the backend cannot be opened.
+    /// Returns [`DrevoError::Storage`] if the backend cannot be opened.
     ///
     /// # Availability
     ///
@@ -89,7 +89,7 @@ impl GraphNoteDb {
     /// on `wasm32` targets. Use [`open_in_memory`](Self::open_in_memory) instead.
     #[cfg(feature = "redb-backend")]
     pub fn open(path: &Path) -> Result<Self> {
-        let backend = RedbBackend::open(path).map_err(GraphNoteError::Storage)?;
+        let backend = RedbBackend::open(path).map_err(DrevoError::Storage)?;
         let backend = Box::new(backend);
         let (next_node_id, next_edge_id) = Self::load_counters(&*backend)?;
         Ok(Self {
@@ -118,10 +118,10 @@ impl GraphNoteDb {
     ///
     /// # Errors
     ///
-    /// Returns [`GraphNoteError::Storage`] if flush fails.
+    /// Returns [`DrevoError::Storage`] if flush fails.
     pub fn close(self) -> Result<()> {
         self.persist_counters()?;
-        self.backend.flush().map_err(GraphNoteError::Storage)?;
+        self.backend.flush().map_err(DrevoError::Storage)?;
         Ok(())
     }
 
@@ -130,7 +130,7 @@ impl GraphNoteDb {
     /// For redb this is a no-op (redb manages its own compaction).
     /// For the memory backend this flushes to disk if a path is configured.
     pub fn compact(&self) -> Result<()> {
-        self.backend.flush().map_err(GraphNoteError::Storage)?;
+        self.backend.flush().map_err(DrevoError::Storage)?;
         Ok(())
     }
 
@@ -167,7 +167,7 @@ impl GraphNoteDb {
     ///
     /// # Errors
     ///
-    /// Returns [`GraphNoteError::DuplicateTitle`] if a node with the
+    /// Returns [`DrevoError::DuplicateTitle`] if a node with the
     /// same title already exists.
     pub fn create_node(&self, new_node: NewNode) -> Result<Node> {
         // Check title uniqueness
@@ -175,10 +175,10 @@ impl GraphNoteDb {
         if self
             .backend
             .get(&title_key)
-            .map_err(GraphNoteError::Storage)?
+            .map_err(DrevoError::Storage)?
             .is_some()
         {
-            return Err(GraphNoteError::DuplicateTitle(new_node.title));
+            return Err(DrevoError::DuplicateTitle(new_node.title));
         }
 
         let id = self.alloc_node_id();
@@ -188,22 +188,22 @@ impl GraphNoteDb {
         let data = serialize_node(&node)?;
         self.backend
             .put(&node_key(id), &data)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // UUID index
         self.backend
             .put(&node_uuid_key(&node.uuid), &id.to_le_bytes())
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Title index
         self.backend
             .put(&title_key, &id.to_le_bytes())
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Kind index
         self.backend
             .put(&node_kind_key(&node.kind, id), &[])
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // FTS index
         fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
@@ -211,7 +211,7 @@ impl GraphNoteDb {
         // Updated-at index (newest-first ordering)
         self.backend
             .put(&updated_key(node.updated_at, id), &[])
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         Ok(node)
     }
@@ -223,7 +223,7 @@ impl GraphNoteDb {
         match self
             .backend
             .get(&node_key(id))
-            .map_err(GraphNoteError::Storage)?
+            .map_err(DrevoError::Storage)?
         {
             Some(bytes) => Ok(Some(deserialize_node(&bytes)?)),
             None => Ok(None),
@@ -237,7 +237,7 @@ impl GraphNoteDb {
         match self
             .backend
             .get(&node_uuid_key(uuid))
-            .map_err(GraphNoteError::Storage)?
+            .map_err(DrevoError::Storage)?
         {
             Some(id_bytes) => {
                 let id = u64_from_bytes(&id_bytes);
@@ -254,7 +254,7 @@ impl GraphNoteDb {
         match self
             .backend
             .get(&node_title_key(title))
-            .map_err(GraphNoteError::Storage)?
+            .map_err(DrevoError::Storage)?
         {
             Some(id_bytes) => {
                 let id = u64_from_bytes(&id_bytes);
@@ -271,11 +271,11 @@ impl GraphNoteDb {
     ///
     /// # Errors
     ///
-    /// - [`GraphNoteError::NodeNotFound`] if the node does not exist.
-    /// - [`GraphNoteError::DuplicateTitle`] if the new title collides
+    /// - [`DrevoError::NodeNotFound`] if the node does not exist.
+    /// - [`DrevoError::DuplicateTitle`] if the new title collides
     ///   with another node.
     pub fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
-        let mut node = self.get_node(id)?.ok_or(GraphNoteError::NodeNotFound(id))?;
+        let mut node = self.get_node(id)?.ok_or(DrevoError::NodeNotFound(id))?;
 
         let old_title = node.title.clone();
         let old_body = node.body.clone();
@@ -289,10 +289,10 @@ impl GraphNoteDb {
                 if self
                     .backend
                     .get(&title_key)
-                    .map_err(GraphNoteError::Storage)?
+                    .map_err(DrevoError::Storage)?
                     .is_some()
                 {
-                    return Err(GraphNoteError::DuplicateTitle(new_title.clone()));
+                    return Err(DrevoError::DuplicateTitle(new_title.clone()));
                 }
             }
         }
@@ -303,26 +303,26 @@ impl GraphNoteDb {
         let data = serialize_node(&node)?;
         self.backend
             .put(&node_key(id), &data)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Update title index if title changed
         if node.title != old_title {
             self.backend
                 .delete(&node_title_key(&old_title))
-                .map_err(GraphNoteError::Storage)?;
+                .map_err(DrevoError::Storage)?;
             self.backend
                 .put(&node_title_key(&node.title), &id.to_le_bytes())
-                .map_err(GraphNoteError::Storage)?;
+                .map_err(DrevoError::Storage)?;
         }
 
         // Update kind index if kind changed
         if node.kind != old_kind {
             self.backend
                 .delete(&node_kind_key(&old_kind, id))
-                .map_err(GraphNoteError::Storage)?;
+                .map_err(DrevoError::Storage)?;
             self.backend
                 .put(&node_kind_key(&node.kind, id), &[])
-                .map_err(GraphNoteError::Storage)?;
+                .map_err(DrevoError::Storage)?;
         }
 
         // Update FTS index if title or body changed
@@ -334,10 +334,10 @@ impl GraphNoteDb {
         // Update updated-at index: remove old entry, add new one
         self.backend
             .delete(&updated_key(old_updated_at, id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
         self.backend
             .put(&updated_key(node.updated_at, id), &[])
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         Ok(node)
     }
@@ -349,9 +349,9 @@ impl GraphNoteDb {
     ///
     /// # Errors
     ///
-    /// Returns [`GraphNoteError::NodeNotFound`] if the node does not exist.
+    /// Returns [`DrevoError::NodeNotFound`] if the node does not exist.
     pub fn delete_node(&self, id: u64) -> Result<()> {
-        let node = self.get_node(id)?.ok_or(GraphNoteError::NodeNotFound(id))?;
+        let node = self.get_node(id)?.ok_or(DrevoError::NodeNotFound(id))?;
 
         // Cascade-delete all edges connected to this node (both directions).
         // Using Direction::Both deduplicates self-loop edges automatically.
@@ -363,22 +363,22 @@ impl GraphNoteDb {
         // Remove node data
         self.backend
             .delete(&node_key(id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Remove UUID index
         self.backend
             .delete(&node_uuid_key(&node.uuid))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Remove title index
         self.backend
             .delete(&node_title_key(&node.title))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Remove kind index
         self.backend
             .delete(&node_kind_key(&node.kind, id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Remove FTS index
         fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
@@ -386,7 +386,7 @@ impl GraphNoteDb {
         // Remove updated-at index
         self.backend
             .delete(&updated_key(node.updated_at, id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         Ok(())
     }
@@ -402,15 +402,15 @@ impl GraphNoteDb {
     ///
     /// # Errors
     ///
-    /// Returns [`GraphNoteError::NodeNotFound`] if either `from_id` or
+    /// Returns [`DrevoError::NodeNotFound`] if either `from_id` or
     /// `to_id` does not refer to an existing node.
     pub fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
         // Validate that both endpoints exist
         if self.get_node(new_edge.from_id)?.is_none() {
-            return Err(GraphNoteError::NodeNotFound(new_edge.from_id));
+            return Err(DrevoError::NodeNotFound(new_edge.from_id));
         }
         if self.get_node(new_edge.to_id)?.is_none() {
-            return Err(GraphNoteError::NodeNotFound(new_edge.to_id));
+            return Err(DrevoError::NodeNotFound(new_edge.to_id));
         }
 
         let id = self.alloc_edge_id();
@@ -420,27 +420,27 @@ impl GraphNoteDb {
         let data = serialize_edge(&edge)?;
         self.backend
             .put(&edge_key(id), &data)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // UUID index
         self.backend
             .put(&edge_uuid_key(&edge.uuid), &id.to_le_bytes())
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Outgoing adjacency: out:{from_id}:{edge_id}
         self.backend
             .put(&out_edge_key(edge.from_id, id), &[])
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Incoming adjacency: in:{to_id}:{edge_id}
         self.backend
             .put(&in_edge_key(edge.to_id, id), &[])
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Edge kind index
         self.backend
             .put(&edge_kind_key(&edge.kind, id), &[])
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         Ok(edge)
     }
@@ -452,7 +452,7 @@ impl GraphNoteDb {
         match self
             .backend
             .get(&edge_key(id))
-            .map_err(GraphNoteError::Storage)?
+            .map_err(DrevoError::Storage)?
         {
             Some(bytes) => Ok(Some(deserialize_edge(&bytes)?)),
             None => Ok(None),
@@ -466,7 +466,7 @@ impl GraphNoteDb {
         match self
             .backend
             .get(&edge_uuid_key(uuid))
-            .map_err(GraphNoteError::Storage)?
+            .map_err(DrevoError::Storage)?
         {
             Some(id_bytes) => {
                 let id = u64_from_bytes(&id_bytes);
@@ -483,9 +483,9 @@ impl GraphNoteDb {
     ///
     /// # Errors
     ///
-    /// Returns [`GraphNoteError::EdgeNotFound`] if the edge does not exist.
+    /// Returns [`DrevoError::EdgeNotFound`] if the edge does not exist.
     pub fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
-        let mut edge = self.get_edge(id)?.ok_or(GraphNoteError::EdgeNotFound(id))?;
+        let mut edge = self.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
 
         let old_kind = edge.kind.clone();
 
@@ -494,16 +494,16 @@ impl GraphNoteDb {
         let data = serialize_edge(&edge)?;
         self.backend
             .put(&edge_key(id), &data)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Update edge_kind index if kind changed
         if edge.kind != old_kind {
             self.backend
                 .delete(&edge_kind_key(&old_kind, id))
-                .map_err(GraphNoteError::Storage)?;
+                .map_err(DrevoError::Storage)?;
             self.backend
                 .put(&edge_kind_key(&edge.kind, id), &[])
-                .map_err(GraphNoteError::Storage)?;
+                .map_err(DrevoError::Storage)?;
         }
 
         Ok(edge)
@@ -515,34 +515,34 @@ impl GraphNoteDb {
     ///
     /// # Errors
     ///
-    /// Returns [`GraphNoteError::EdgeNotFound`] if the edge does not exist.
+    /// Returns [`DrevoError::EdgeNotFound`] if the edge does not exist.
     pub fn delete_edge(&self, id: u64) -> Result<()> {
-        let edge = self.get_edge(id)?.ok_or(GraphNoteError::EdgeNotFound(id))?;
+        let edge = self.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
 
         // Remove edge data
         self.backend
             .delete(&edge_key(id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Remove UUID index
         self.backend
             .delete(&edge_uuid_key(&edge.uuid))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Remove outgoing adjacency entry
         self.backend
             .delete(&out_edge_key(edge.from_id, id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Remove incoming adjacency entry
         self.backend
             .delete(&in_edge_key(edge.to_id, id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         // Remove edge kind index
         self.backend
             .delete(&edge_kind_key(&edge.kind, id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         Ok(())
     }
@@ -589,7 +589,7 @@ impl GraphNoteDb {
         let entries = self
             .backend
             .scan_prefix(&prefix)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         let mut nodes = Vec::new();
         for (key, _) in entries.into_iter().skip(offset).take(limit) {
@@ -616,7 +616,7 @@ impl GraphNoteDb {
         let entries = self
             .backend
             .scan_prefix(&prefix)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         let mut edges = Vec::new();
         for (key, _) in entries.into_iter().skip(offset).take(limit) {
@@ -640,7 +640,7 @@ impl GraphNoteDb {
         let entries = self
             .backend
             .scan_prefix(PREFIX_UPDATED)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
 
         let mut nodes = Vec::new();
         for (key, _) in entries.into_iter().take(limit) {
@@ -708,7 +708,7 @@ impl GraphNoteDb {
         let all_nodes = self
             .backend
             .scan_prefix(PREFIX_NODE)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
         let total_nodes = all_nodes.len() as f32;
 
         // Precompute IDF for each query trigram
@@ -883,7 +883,7 @@ impl GraphNoteDb {
         let entries = self
             .backend
             .scan_prefix(&prefix)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
         let mut edges = Vec::with_capacity(entries.len());
         for (key, _) in entries {
             let edge_id = edge_id_from_adjacency_key(&key, &prefix);
@@ -900,7 +900,7 @@ impl GraphNoteDb {
         let entries = self
             .backend
             .scan_prefix(&prefix)
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
         let mut edges = Vec::with_capacity(entries.len());
         for (key, _) in entries {
             let edge_id = edge_id_from_adjacency_key(&key, &prefix);
@@ -918,14 +918,14 @@ impl GraphNoteDb {
     fn load_counters(backend: &dyn StorageBackend) -> Result<(u64, u64)> {
         let node_id = match backend
             .get(META_NEXT_NODE_ID)
-            .map_err(GraphNoteError::Storage)?
+            .map_err(DrevoError::Storage)?
         {
             Some(bytes) => u64_from_bytes(&bytes),
             None => 1,
         };
         let edge_id = match backend
             .get(META_NEXT_EDGE_ID)
-            .map_err(GraphNoteError::Storage)?
+            .map_err(DrevoError::Storage)?
         {
             Some(bytes) => u64_from_bytes(&bytes),
             None => 1,
@@ -939,10 +939,10 @@ impl GraphNoteDb {
         let edge_id = self.next_edge_id.load(Ordering::Relaxed);
         self.backend
             .put(META_NEXT_NODE_ID, &node_id.to_le_bytes())
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
         self.backend
             .put(META_NEXT_EDGE_ID, &edge_id.to_le_bytes())
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
         Ok(())
     }
 }
@@ -1108,32 +1108,32 @@ fn id_from_kind_key(key: &[u8], prefix: &[u8]) -> u64 {
 /// Serialize an edge to bincode bytes.
 fn serialize_edge(edge: &Edge) -> Result<Vec<u8>> {
     bincode::serde::encode_to_vec(edge, BINCODE_CONFIG)
-        .map_err(|e| GraphNoteError::Serialization(e.to_string()))
+        .map_err(|e| DrevoError::Serialization(e.to_string()))
 }
 
 /// Deserialize an edge from bincode bytes.
 fn deserialize_edge(bytes: &[u8]) -> Result<Edge> {
     let (edge, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)
-        .map_err(|e| GraphNoteError::Serialization(e.to_string()))?;
+        .map_err(|e| DrevoError::Serialization(e.to_string()))?;
     Ok(edge)
 }
 
 /// Serialize a node to bincode bytes.
 fn serialize_node(node: &Node) -> Result<Vec<u8>> {
     bincode::serde::encode_to_vec(node, BINCODE_CONFIG)
-        .map_err(|e| GraphNoteError::Serialization(e.to_string()))
+        .map_err(|e| DrevoError::Serialization(e.to_string()))
 }
 
 /// Deserialize a node from bincode bytes.
 fn deserialize_node(bytes: &[u8]) -> Result<Node> {
     let (node, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)
-        .map_err(|e| GraphNoteError::Serialization(e.to_string()))?;
+        .map_err(|e| DrevoError::Serialization(e.to_string()))?;
     Ok(node)
 }
 
-impl std::fmt::Debug for GraphNoteDb {
+impl std::fmt::Debug for Drevo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GraphNoteDb")
+        f.debug_struct("Drevo")
             .field("next_node_id", &self.next_node_id.load(Ordering::Relaxed))
             .field("next_edge_id", &self.next_edge_id.load(Ordering::Relaxed))
             .finish()
@@ -1148,14 +1148,14 @@ mod tests {
 
     #[test]
     fn open_in_memory_creates_db() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         assert_eq!(db.next_node_id.load(Ordering::Relaxed), 1);
         assert_eq!(db.next_edge_id.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn open_in_memory_alloc_node_ids_are_sequential() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         assert_eq!(db.alloc_node_id(), 1);
         assert_eq!(db.alloc_node_id(), 2);
         assert_eq!(db.alloc_node_id(), 3);
@@ -1163,7 +1163,7 @@ mod tests {
 
     #[test]
     fn open_in_memory_alloc_edge_ids_are_sequential() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         assert_eq!(db.alloc_edge_id(), 1);
         assert_eq!(db.alloc_edge_id(), 2);
         assert_eq!(db.alloc_edge_id(), 3);
@@ -1171,7 +1171,7 @@ mod tests {
 
     #[test]
     fn open_in_memory_node_and_edge_ids_are_independent() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         assert_eq!(db.alloc_node_id(), 1);
         assert_eq!(db.alloc_edge_id(), 1);
         assert_eq!(db.alloc_node_id(), 2);
@@ -1180,13 +1180,13 @@ mod tests {
 
     #[test]
     fn open_in_memory_close_succeeds() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         db.close().unwrap();
     }
 
     #[test]
     fn open_in_memory_compact_succeeds() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         db.compact().unwrap();
     }
 
@@ -1196,7 +1196,7 @@ mod tests {
     fn open_creates_new_db() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         assert_eq!(db.next_node_id.load(Ordering::Relaxed), 1);
         assert_eq!(db.next_edge_id.load(Ordering::Relaxed), 1);
         db.close().unwrap();
@@ -1209,7 +1209,7 @@ mod tests {
 
         // Open, allocate some IDs, close
         {
-            let db = GraphNoteDb::open(&path).unwrap();
+            let db = Drevo::open(&path).unwrap();
             assert_eq!(db.alloc_node_id(), 1);
             assert_eq!(db.alloc_node_id(), 2);
             assert_eq!(db.alloc_node_id(), 3);
@@ -1220,7 +1220,7 @@ mod tests {
 
         // Reopen and verify counters continue
         {
-            let db = GraphNoteDb::open(&path).unwrap();
+            let db = Drevo::open(&path).unwrap();
             assert_eq!(db.next_node_id.load(Ordering::Relaxed), 4);
             assert_eq!(db.next_edge_id.load(Ordering::Relaxed), 3);
             assert_eq!(db.alloc_node_id(), 4);
@@ -1236,7 +1236,7 @@ mod tests {
 
         // Open and allocate without closing properly
         {
-            let db = GraphNoteDb::open(&path).unwrap();
+            let db = Drevo::open(&path).unwrap();
             let _ = db.alloc_node_id();
             let _ = db.alloc_node_id();
             // Drop without close — counters not persisted
@@ -1244,7 +1244,7 @@ mod tests {
 
         // Reopen — counters should be back at 1
         {
-            let db = GraphNoteDb::open(&path).unwrap();
+            let db = Drevo::open(&path).unwrap();
             assert_eq!(db.next_node_id.load(Ordering::Relaxed), 1);
             db.close().unwrap();
         }
@@ -1254,7 +1254,7 @@ mod tests {
     fn compact_persists_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         db.compact().unwrap();
         db.close().unwrap();
     }
@@ -1263,9 +1263,9 @@ mod tests {
 
     #[test]
     fn debug_format_works() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let debug = format!("{:?}", db);
-        assert!(debug.contains("GraphNoteDb"));
+        assert!(debug.contains("Drevo"));
         assert!(debug.contains("next_node_id"));
     }
 
@@ -1343,7 +1343,7 @@ mod tests {
     #[test]
     fn create_and_get_node() {
         use crate::model::{NewNode, Properties};
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let node = db
             .create_node(NewNode {
                 kind: "note".to_string(),
@@ -1360,14 +1360,14 @@ mod tests {
 
     #[test]
     fn get_node_missing_returns_none() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         assert!(db.get_node(100).unwrap().is_none());
     }
 
     #[test]
     fn delete_node_then_get_returns_none() {
         use crate::model::{NewNode, Properties};
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let node = db
             .create_node(NewNode {
                 kind: "note".to_string(),
@@ -1504,7 +1504,7 @@ mod tests {
     #[test]
     fn list_nodes_by_kind_basic() {
         use crate::model::{NewNode, Properties};
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         db.create_node(NewNode {
             kind: "note".to_string(),
             title: "A".to_string(),
@@ -1532,7 +1532,7 @@ mod tests {
     #[test]
     fn list_edges_by_kind_basic() {
         use crate::model::{NewEdge, NewNode, Properties};
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let n1 = db
             .create_node(NewNode {
                 kind: "note".to_string(),
@@ -1591,7 +1591,7 @@ mod tests {
     #[test]
     fn create_and_get_edge() {
         use crate::model::{NewEdge, NewNode, Properties};
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let n1 = db
             .create_node(NewNode {
                 kind: "note".to_string(),
@@ -1626,14 +1626,14 @@ mod tests {
 
     #[test]
     fn get_edge_missing_returns_none() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         assert!(db.get_edge(100).unwrap().is_none());
     }
 
     #[test]
     fn delete_edge_then_get_returns_none() {
         use crate::model::{NewEdge, NewNode, Properties};
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let n1 = db
             .create_node(NewNode {
                 kind: "note".to_string(),
@@ -1680,7 +1680,7 @@ mod tests {
 
     #[test]
     fn search_fts_empty_query() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         db.create_node(test_node("note", "Rust", "")).unwrap();
         let results = db.search_fts("", 10).unwrap();
         assert!(results.is_empty());
@@ -1688,7 +1688,7 @@ mod tests {
 
     #[test]
     fn search_fts_basic_match() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         db.create_node(test_node("note", "Rust programming", ""))
             .unwrap();
         let results = db.search_fts("rust", 10).unwrap();
@@ -1699,7 +1699,7 @@ mod tests {
 
     #[test]
     fn search_fts_no_match() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         db.create_node(test_node("note", "Hello", "")).unwrap();
         let results = db.search_fts("zzzzz", 10).unwrap();
         assert!(results.is_empty());
@@ -1707,7 +1707,7 @@ mod tests {
 
     #[test]
     fn search_fts_limit_works() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         for i in 0..10 {
             db.create_node(test_node("note", &format!("Rust item {}", i), ""))
                 .unwrap();
@@ -1718,7 +1718,7 @@ mod tests {
 
     #[test]
     fn search_fts_results_sorted_by_score_desc() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         db.create_node(test_node("note", "Rust", "")).unwrap();
         db.create_node(test_node(
             "note",
@@ -1734,7 +1734,7 @@ mod tests {
 
     #[test]
     fn search_fts_scored_node_fields() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let node = db
             .create_node(test_node("note", "Rust language", ""))
             .unwrap();
@@ -1748,14 +1748,14 @@ mod tests {
 
     #[test]
     fn list_recent_empty_db() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let nodes = db.list_recent(10).unwrap();
         assert!(nodes.is_empty());
     }
 
     #[test]
     fn list_recent_returns_nodes_newest_first() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let n1 = db.create_node(test_node("note", "First", "")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
         let n2 = db.create_node(test_node("note", "Second", "")).unwrap();
@@ -1771,7 +1771,7 @@ mod tests {
 
     #[test]
     fn list_recent_respects_limit() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         for i in 0..5 {
             db.create_node(test_node("note", &format!("N{}", i), ""))
                 .unwrap();
@@ -1782,7 +1782,7 @@ mod tests {
 
     #[test]
     fn list_recent_zero_limit() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         db.create_node(test_node("note", "A", "")).unwrap();
         let nodes = db.list_recent(0).unwrap();
         assert!(nodes.is_empty());
@@ -1790,7 +1790,7 @@ mod tests {
 
     #[test]
     fn list_recent_updated_node_moves_to_top() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let n1 = db.create_node(test_node("note", "First", "")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
         let _n2 = db.create_node(test_node("note", "Second", "")).unwrap();
@@ -1812,7 +1812,7 @@ mod tests {
 
     #[test]
     fn list_recent_deleted_node_is_excluded() {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let n1 = db.create_node(test_node("note", "Stay", "")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
         let n2 = db.create_node(test_node("note", "Gone", "")).unwrap();

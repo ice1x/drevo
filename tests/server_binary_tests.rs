@@ -1,4 +1,4 @@
-//! Tests for the `graphnote-server` binary entry point.
+//! Tests for the `drevo-server` binary entry point.
 //!
 //! Task 00045: verify the server binary can be built, the router works
 //! end-to-end, and the default configuration is correct.
@@ -13,12 +13,12 @@ mod server_tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use graphnote_db::api::{build_router, ApiState};
-    use graphnote_db::db::GraphNoteDb;
+    use drevo::api::{build_router, ApiState};
+    use drevo::db::Drevo;
     use std::sync::Arc;
 
     fn test_router() -> axum::Router {
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let state = ApiState::new(Arc::new(db));
         build_router(state)
     }
@@ -61,7 +61,7 @@ mod server_tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["name"], "graphnote-db");
+        assert_eq!(json["name"], "drevo");
         assert!(json["version"].is_string());
         assert!(json["uptime_seconds"].is_number());
     }
@@ -76,7 +76,7 @@ mod server_tests {
         let addr = listener.local_addr().unwrap();
         drop(listener);
 
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let state = ApiState::new(Arc::new(db));
         let router = build_router(state);
 
@@ -110,7 +110,7 @@ mod server_tests {
         let addr = listener.local_addr().unwrap();
         drop(listener);
 
-        let db = GraphNoteDb::open_in_memory().unwrap();
+        let db = Drevo::open_in_memory().unwrap();
         let state = ApiState::new(Arc::new(db));
         let router = build_router(state);
 
@@ -159,7 +159,7 @@ mod server_tests {
 
     #[test]
     fn env_var_overrides_port() {
-        // GRAPHNOTE_PORT env var should override the default port.
+        // DREVO_PORT env var should override the default port.
         // Here we test the parsing logic.
         let port_str = "9090";
         let port: u16 = port_str.parse().unwrap();
@@ -168,7 +168,7 @@ mod server_tests {
 
     #[test]
     fn env_var_overrides_data_dir() {
-        // GRAPHNOTE_DATA_DIR env var should override the default path.
+        // DREVO_DATA_DIR env var should override the default path.
         let custom = "/custom/path";
         let path = std::path::Path::new(custom);
         assert!(path.is_absolute());

@@ -110,16 +110,16 @@ fn dockerfile_sets_env_defaults() {
         .collect();
     let env_str = envs.join("\n");
     assert!(
-        env_str.contains("GRAPHNOTE_PORT"),
-        "Dockerfile must set GRAPHNOTE_PORT env default"
+        env_str.contains("DREVO_PORT"),
+        "Dockerfile must set DREVO_PORT env default"
     );
     assert!(
-        env_str.contains("GRAPHNOTE_DATA_DIR"),
-        "Dockerfile must set GRAPHNOTE_DATA_DIR env default"
+        env_str.contains("DREVO_DATA_DIR"),
+        "Dockerfile must set DREVO_DATA_DIR env default"
     );
     assert!(
-        env_str.contains("GRAPHNOTE_HOST"),
-        "Dockerfile must set GRAPHNOTE_HOST env default"
+        env_str.contains("DREVO_HOST"),
+        "Dockerfile must set DREVO_HOST env default"
     );
 }
 
@@ -128,10 +128,10 @@ fn dockerfile_copies_binary_from_builder() {
     let content = read_dockerfile();
     let has_copy = content
         .lines()
-        .any(|l| l.contains("COPY --from=builder") && l.contains("graphnote-server"));
+        .any(|l| l.contains("COPY --from=builder") && l.contains("drevo-server"));
     assert!(
         has_copy,
-        "Dockerfile must COPY --from=builder the graphnote-server binary"
+        "Dockerfile must COPY --from=builder the drevo-server binary"
     );
 }
 

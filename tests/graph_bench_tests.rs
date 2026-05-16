@@ -3,8 +3,8 @@
 //! Validates the benchmark pattern at small scale: insert nodes,
 //! create edges between them, then read all neighbors for each node.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
 
 fn make_node(i: usize) -> NewNode {
     NewNode {
@@ -28,7 +28,7 @@ fn make_edge(from_id: u64, to_id: u64, i: usize) -> NewEdge {
 
 #[test]
 fn small_scale_insert_nodes_and_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let num_nodes = 100;
     let mut node_ids = Vec::with_capacity(num_nodes);
@@ -63,7 +63,7 @@ fn small_scale_insert_nodes_and_edges() {
 
 #[test]
 fn small_scale_read_neighbors_both_directions() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     // Create 20 nodes
     let mut node_ids = Vec::new();
@@ -95,7 +95,7 @@ fn small_scale_read_neighbors_both_directions() {
 
 #[test]
 fn small_scale_kind_index_after_bulk_insert() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let num_nodes = 100;
     let mut node_ids = Vec::new();
@@ -114,7 +114,7 @@ fn small_scale_kind_index_after_bulk_insert() {
 
 #[test]
 fn small_scale_edge_kind_index_after_bulk_insert() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let num_nodes = 50;
     let mut node_ids = Vec::new();

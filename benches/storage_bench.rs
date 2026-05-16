@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use graphnote_db::storage::{MemoryBackend, RedbBackend, StorageBackend};
+use drevo::storage::{MemoryBackend, RedbBackend, StorageBackend};
 use std::hint::black_box;
 use tempfile::TempDir;
 

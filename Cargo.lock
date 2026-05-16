@@ -334,6 +334,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "drevo"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bincode",
+ "cbindgen",
+ "criterion",
+ "getrandom",
+ "http-body-util",
+ "js-sys",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "uuid",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -421,28 +443,6 @@ dependencies = [
  "r-efi",
  "wasip2",
  "wasip3",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "graphnote-db"
-version = "0.1.0"
-dependencies = [
- "axum",
- "bincode",
- "cbindgen",
- "criterion",
- "getrandom",
- "http-body-util",
- "js-sys",
- "redb",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tower",
- "uuid",
  "wasm-bindgen",
 ]
 

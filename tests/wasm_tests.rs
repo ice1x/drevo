@@ -1,15 +1,15 @@
 //! Integration tests for WASM bindings.
 //!
 //! These tests validate the WASM binding logic by exercising the same
-//! GraphNoteDb API surface that [`WasmGraphNoteDb`] delegates to.
+//! Drevo API surface that [`WasmDrevo`] delegates to.
 //! They run natively (not in a WASM runtime) to test correctness of
 //! the binding layer's data flow: create → serialize → deserialize roundtrip.
 //!
 //! The actual `#[wasm_bindgen]` methods require a JS runtime (wasm-pack test),
 //! so these tests verify the Rust-side logic without that dependency.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{
+use drevo::db::Drevo;
+use drevo::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, Properties, SubGraph,
 };
 use std::collections::HashMap;
@@ -18,11 +18,11 @@ use std::collections::HashMap;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_db() -> GraphNoteDb {
-    GraphNoteDb::open_in_memory().unwrap()
+fn make_db() -> Drevo {
+    Drevo::open_in_memory().unwrap()
 }
 
-fn make_node(db: &GraphNoteDb, kind: &str, title: &str) -> Node {
+fn make_node(db: &Drevo, kind: &str, title: &str) -> Node {
     db.create_node(NewNode {
         kind: kind.to_string(),
         title: title.to_string(),
@@ -33,7 +33,7 @@ fn make_node(db: &GraphNoteDb, kind: &str, title: &str) -> Node {
     .unwrap()
 }
 
-fn make_edge(db: &GraphNoteDb, from: u64, to: u64, kind: &str) -> Edge {
+fn make_edge(db: &Drevo, from: u64, to: u64, kind: &str) -> Edge {
     db.create_edge(NewEdge {
         from_id: from,
         to_id: to,
@@ -218,7 +218,7 @@ fn wasm_edge_cascading_delete() {
 // Traversal — JSON roundtrip
 // ---------------------------------------------------------------------------
 
-fn setup_chain(db: &GraphNoteDb) -> Vec<Node> {
+fn setup_chain(db: &Drevo) -> Vec<Node> {
     // A -> B -> C
     let a = make_node(db, "note", "Chain_A");
     let b = make_node(db, "note", "Chain_B");

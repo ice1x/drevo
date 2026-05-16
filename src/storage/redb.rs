@@ -20,10 +20,10 @@ const DATA_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("data");
 /// # Example
 ///
 /// ```no_run
-/// use graphnote_db::storage::RedbBackend;
-/// use graphnote_db::storage::StorageBackend;
+/// use drevo::storage::RedbBackend;
+/// use drevo::storage::StorageBackend;
 ///
-/// let backend = RedbBackend::open("/tmp/graphnote.db").unwrap();
+/// let backend = RedbBackend::open("/tmp/drevo.db").unwrap();
 /// backend.put(b"key", b"value").unwrap();
 /// assert_eq!(backend.get(b"key").unwrap(), Some(b"value".to_vec()));
 /// ```

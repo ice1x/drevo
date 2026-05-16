@@ -11,7 +11,7 @@ COPY src/ src/
 
 # Build only the server binary in release mode.
 # cbindgen feature is excluded — no C header needed in the container.
-RUN cargo build --release --bin graphnote-server \
+RUN cargo build --release --bin drevo-server \
         --no-default-features --features "http,redb-backend"
 
 # Stage 2: Runtime — minimal Debian image with just the binary
@@ -22,22 +22,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user for the server process
-RUN groupadd --system graphnote && \
-    useradd --system --gid graphnote --create-home graphnote
+RUN groupadd --system drevo && \
+    useradd --system --gid drevo --create-home drevo
 
 # Data directory for the redb database file
-RUN mkdir -p /data && chown graphnote:graphnote /data
+RUN mkdir -p /data && chown drevo:drevo /data
 VOLUME ["/data"]
 
-COPY --from=builder /build/target/release/graphnote-server /usr/local/bin/graphnote-server
+COPY --from=builder /build/target/release/drevo-server /usr/local/bin/drevo-server
 
-USER graphnote
+USER drevo
 
-ENV GRAPHNOTE_HOST=0.0.0.0
-ENV GRAPHNOTE_PORT=8080
-ENV GRAPHNOTE_DATA_DIR=/data
+ENV DREVO_HOST=0.0.0.0
+ENV DREVO_PORT=8080
+ENV DREVO_DATA_DIR=/data
 
 EXPOSE 8080
 
 # Use exec form so the binary receives SIGTERM directly from Docker
-ENTRYPOINT ["graphnote-server"]
+ENTRYPOINT ["drevo-server"]

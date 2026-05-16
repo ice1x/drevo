@@ -1,7 +1,7 @@
 //! Integration tests for shortest_path (Dijkstra).
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::model::{NewEdge, NewNode, Properties};
 
 fn make_node(kind: &str, title: &str) -> NewNode {
     NewNode {
@@ -29,7 +29,7 @@ fn make_edge(from: u64, to: u64, kind: &str, weight: f32) -> NewEdge {
 
 #[test]
 fn shortest_path_same_node() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
 
     let path = db.shortest_path(a.id, a.id).unwrap();
@@ -38,7 +38,7 @@ fn shortest_path_same_node() {
 
 #[test]
 fn shortest_path_direct_edge() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "links_to", 1.0))
@@ -50,7 +50,7 @@ fn shortest_path_direct_edge() {
 
 #[test]
 fn shortest_path_no_connection() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
 
@@ -60,7 +60,7 @@ fn shortest_path_no_connection() {
 
 #[test]
 fn shortest_path_wrong_direction() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     // Edge from B to A, not from A to B
@@ -73,7 +73,7 @@ fn shortest_path_wrong_direction() {
 
 #[test]
 fn shortest_path_two_hops() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -93,7 +93,7 @@ fn shortest_path_two_hops() {
 #[test]
 fn shortest_path_prefers_lower_weight() {
     // A -> B (weight 10), A -> C -> B (weight 1 + 1 = 2)
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -112,7 +112,7 @@ fn shortest_path_prefers_lower_weight() {
 fn shortest_path_diamond_lower_path() {
     // A -> B (1), A -> C (1), B -> D (1), C -> D (10)
     // Shortest: A -> B -> D (cost 2) vs A -> C -> D (cost 11)
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -133,7 +133,7 @@ fn shortest_path_diamond_lower_path() {
 #[test]
 fn shortest_path_equal_weights_finds_a_path() {
     // Multiple paths with equal weight — any valid shortest path is acceptable
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -162,7 +162,7 @@ fn shortest_path_equal_weights_finds_a_path() {
 #[test]
 fn shortest_path_with_cycle() {
     // A -> B -> C -> A (cycle), B -> D
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -182,7 +182,7 @@ fn shortest_path_with_cycle() {
 
 #[test]
 fn shortest_path_self_loop_ignored() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, a.id, "self_ref", 0.1))
@@ -200,7 +200,7 @@ fn shortest_path_self_loop_ignored() {
 
 #[test]
 fn shortest_path_nonexistent_source() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
 
     let path = db.shortest_path(999, b.id).unwrap();
@@ -209,7 +209,7 @@ fn shortest_path_nonexistent_source() {
 
 #[test]
 fn shortest_path_nonexistent_target() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
 
     let path = db.shortest_path(a.id, 999).unwrap();
@@ -218,7 +218,7 @@ fn shortest_path_nonexistent_target() {
 
 #[test]
 fn shortest_path_long_chain() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let mut nodes = Vec::new();
     for i in 0..10 {
         nodes.push(
@@ -241,7 +241,7 @@ fn shortest_path_long_chain_vs_shortcut() {
     // Chain: N0 -> N1 -> N2 -> ... -> N9 (each weight 1.0)
     // Shortcut: N0 -> N9 (weight 5.0)
     // Chain cost = 9, shortcut cost = 5 => shortcut wins
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let mut nodes = Vec::new();
     for i in 0..10 {
         nodes.push(
@@ -267,7 +267,7 @@ fn shortest_path_long_chain_vs_shortcut() {
 #[test]
 fn scenario_cbt_journal_thought_chain() {
     // Trace shortest path from a trigger situation to a rational response
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let situation = db
         .create_node(make_node("situation", "Argument with coworker"))
         .unwrap();
@@ -298,7 +298,7 @@ fn scenario_cbt_journal_thought_chain() {
 #[test]
 fn scenario_story_editor_narrative_path() {
     // Shortest path from Chapter 1 to the climax scene
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let ch1 = db.create_node(make_node("chapter", "Chapter 1")).unwrap();
     let scene_a = db.create_node(make_node("scene", "Opening")).unwrap();
     let scene_b = db
@@ -324,7 +324,7 @@ fn scenario_story_editor_narrative_path() {
 #[test]
 fn scenario_task_manager_dependency_chain() {
     // Find shortest dependency path from a blocked task to the root blocker
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let deploy = db.create_node(make_node("task", "Deploy to prod")).unwrap();
     let test = db
         .create_node(make_node("task", "Run integration tests"))
@@ -346,7 +346,7 @@ fn scenario_task_manager_dependency_chain() {
 #[test]
 fn scenario_erp_order_to_warehouse() {
     // Find cheapest logistics path from order to warehouse
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let order = db.create_node(make_node("order", "Order #1001")).unwrap();
     let product = db.create_node(make_node("product", "Widget A")).unwrap();
     let wh_local = db.create_node(make_node("warehouse", "Local WH")).unwrap();
@@ -368,7 +368,7 @@ fn scenario_erp_order_to_warehouse() {
 #[test]
 fn scenario_bug_tracker_impact_path() {
     // Find shortest impact path from a bug to a release
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let bug = db.create_node(make_node("bug", "Login crash")).unwrap();
     let feature = db.create_node(make_node("feature", "Auth module")).unwrap();
     let release = db.create_node(make_node("release", "v2.0")).unwrap();

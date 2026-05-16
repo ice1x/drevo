@@ -6,7 +6,7 @@
 //! This allows efficient posting list retrieval via `scan_prefix("fts:{trigram}:")`,
 //! and efficient add/remove of individual node entries without touching other nodes.
 
-use crate::error::{GraphNoteError, Result};
+use crate::error::{DrevoError, Result};
 use crate::fts::tokenizer::extract_trigrams;
 use crate::storage::StorageBackend;
 
@@ -48,7 +48,7 @@ pub(crate) fn index_node(
     for trigram in &trigrams {
         backend
             .put(&fts_key(trigram, node_id), &[])
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
     }
     Ok(())
 }
@@ -67,7 +67,7 @@ pub(crate) fn deindex_node(
     for trigram in &trigrams {
         backend
             .delete(&fts_key(trigram, node_id))
-            .map_err(GraphNoteError::Storage)?;
+            .map_err(DrevoError::Storage)?;
     }
     Ok(())
 }
@@ -80,9 +80,7 @@ pub(crate) fn node_ids_for_trigram(
     trigram: &str,
 ) -> Result<Vec<u64>> {
     let prefix = fts_trigram_prefix(trigram);
-    let entries = backend
-        .scan_prefix(&prefix)
-        .map_err(GraphNoteError::Storage)?;
+    let entries = backend.scan_prefix(&prefix).map_err(DrevoError::Storage)?;
 
     let mut ids = Vec::with_capacity(entries.len());
     for (key, _) in entries {
@@ -97,9 +95,7 @@ pub(crate) fn node_ids_for_trigram(
 /// Count how many nodes contain a given trigram (document frequency).
 pub(crate) fn posting_list_len(backend: &dyn StorageBackend, trigram: &str) -> Result<usize> {
     let prefix = fts_trigram_prefix(trigram);
-    let entries = backend
-        .scan_prefix(&prefix)
-        .map_err(GraphNoteError::Storage)?;
+    let entries = backend.scan_prefix(&prefix).map_err(DrevoError::Storage)?;
     Ok(entries.len())
 }
 

@@ -1,6 +1,6 @@
 //! Scenario integration test: ERP System
 //!
-//! This test validates GraphNote DB against a real-world ERP use case.
+//! This test validates drevo against a real-world ERP use case.
 //!
 //! Domain model:
 //! - Node kinds: `order`, `product`, `customer`, `warehouse`, `invoice`
@@ -20,22 +20,22 @@
 //! - Transactional updates: order status transitions, inventory changes
 //! - Cascade delete: removing a product cleans up all contains/stored_in edges
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::*;
+use drevo::db::Drevo;
+use drevo::model::*;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> GraphNoteDb {
-    GraphNoteDb::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> Drevo {
+    Drevo::open_in_memory().expect("open in-memory DB")
 }
 
 #[cfg(feature = "redb-backend")]
-fn redb_db(dir: &tempfile::TempDir) -> GraphNoteDb {
+fn redb_db(dir: &tempfile::TempDir) -> Drevo {
     let path = dir.path().join("erp_test.db");
-    GraphNoteDb::open(&path).expect("open redb DB")
+    Drevo::open(&path).expect("open redb DB")
 }
 
 fn make_node_with_props(
@@ -187,7 +187,7 @@ struct ErpGraph {
     invoice_3: u64,
 }
 
-fn build_erp_graph(db: &GraphNoteDb) -> ErpGraph {
+fn build_erp_graph(db: &Drevo) -> ErpGraph {
     // --- Customers ---
     let cust_acme = db
         .create_node(make_node_with_props(
@@ -1599,7 +1599,7 @@ mod redb {
                 use super::*;
                 use tempfile::TempDir;
 
-                fn setup() -> (TempDir, GraphNoteDb) {
+                fn setup() -> (TempDir, Drevo) {
                     let dir = TempDir::new().expect("create temp dir");
                     let db = redb_db(&dir);
                     (dir, db)
