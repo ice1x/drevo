@@ -504,7 +504,7 @@ MVP: Phases 7-9    →  drevo ships as a Docker/K8s product
 
 - [x] `00045` Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
 - [x] `00046` `.dockerignore` — exclude target/, .git/
-- [ ] `00047` `docker-compose.yml` — volume mount `/data`, port 8080, env vars
+- [x] `00047` `docker-compose.yml` — volume mount `/data`, port 8080, env vars
 - [ ] `00048` Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM)
 - [ ] `00049` Kubernetes manifests: Deployment, Service, PersistentVolumeClaim
 - [ ] `00050` Helm chart (optional) or Kustomize overlay
@@ -776,7 +776,7 @@ Senior Rust developer working on drevo. The project is educational, but the arch
 **Test status:**
 
 ```
-cargo test: 1025 passed, 0 failed (201 unit + 823 integration + 1 doctest)
+cargo test: 1077 passed, 0 failed (201 unit + 875 integration + 1 doctest)
 cargo clippy: 0 warnings
 CI: GitHub Actions — check, test, clippy, fmt (all green)
 ```
