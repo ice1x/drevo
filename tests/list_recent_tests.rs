@@ -1,11 +1,11 @@
-//! Integration tests for `GraphNoteDb::list_recent`.
+//! Integration tests for `Drevo::list_recent`.
 //!
 //! Verifies the updated_at index is correctly maintained across
 //! create, update, and delete operations, and that `list_recent`
 //! returns nodes ordered by most recently updated first.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{NewNode, NodePatch, Properties};
+use drevo::db::Drevo;
+use drevo::model::{NewNode, NodePatch, Properties};
 
 fn make_node(title: &str) -> NewNode {
     NewNode {
@@ -31,14 +31,14 @@ fn make_typed_node(kind: &str, title: &str) -> NewNode {
 
 #[test]
 fn list_recent_empty_db_returns_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let nodes = db.list_recent(10).unwrap();
     assert!(nodes.is_empty());
 }
 
 #[test]
 fn list_recent_single_node() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n = db.create_node(make_node("Only")).unwrap();
     let nodes = db.list_recent(10).unwrap();
     assert_eq!(nodes.len(), 1);
@@ -47,7 +47,7 @@ fn list_recent_single_node() {
 
 #[test]
 fn list_recent_newest_first_ordering() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("First")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let n2 = db.create_node(make_node("Second")).unwrap();
@@ -65,7 +65,7 @@ fn list_recent_newest_first_ordering() {
 
 #[test]
 fn list_recent_limit_truncates_results() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     for i in 0..10 {
         db.create_node(make_node(&format!("Node {}", i))).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -79,7 +79,7 @@ fn list_recent_limit_truncates_results() {
 
 #[test]
 fn list_recent_limit_larger_than_count() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(make_node("A")).unwrap();
     db.create_node(make_node("B")).unwrap();
 
@@ -89,7 +89,7 @@ fn list_recent_limit_larger_than_count() {
 
 #[test]
 fn list_recent_zero_limit_returns_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(make_node("A")).unwrap();
     let nodes = db.list_recent(0).unwrap();
     assert!(nodes.is_empty());
@@ -99,7 +99,7 @@ fn list_recent_zero_limit_returns_empty() {
 
 #[test]
 fn list_recent_update_node_moves_to_top() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("Old")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let n2 = db.create_node(make_node("New")).unwrap();
@@ -127,7 +127,7 @@ fn list_recent_update_node_moves_to_top() {
 
 #[test]
 fn list_recent_multiple_updates_same_node() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("Target")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let _n2 = db.create_node(make_node("Other")).unwrap();
@@ -155,7 +155,7 @@ fn list_recent_multiple_updates_same_node() {
 
 #[test]
 fn list_recent_delete_node_removes_from_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("Keeper")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let n2 = db.create_node(make_node("Deleted")).unwrap();
@@ -172,7 +172,7 @@ fn list_recent_delete_node_removes_from_index() {
 
 #[test]
 fn list_recent_delete_all_nodes_returns_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("A")).unwrap();
     let n2 = db.create_node(make_node("B")).unwrap();
 
@@ -187,7 +187,7 @@ fn list_recent_delete_all_nodes_returns_empty() {
 
 #[test]
 fn list_recent_returns_all_kinds() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.create_node(make_typed_node("note", "Note A")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     db.create_node(make_typed_node("task", "Task B")).unwrap();
@@ -206,12 +206,12 @@ fn list_recent_returns_all_kinds() {
 
 #[test]
 fn list_recent_cascade_delete_cleans_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("Parent")).unwrap();
     let n2 = db.create_node(make_node("Child")).unwrap();
 
     // Create an edge between them
-    db.create_edge(graphnote_db::model::NewEdge {
+    db.create_edge(drevo::model::NewEdge {
         from_id: n1.id,
         to_id: n2.id,
         kind: "links_to".to_string(),
@@ -232,7 +232,7 @@ fn list_recent_cascade_delete_cleans_index() {
 
 #[test]
 fn list_recent_cbt_journal_scenario() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     // Patient creates several thoughts over time
     let t1 = db
@@ -276,7 +276,7 @@ fn list_recent_cbt_journal_scenario() {
 
 #[test]
 fn list_recent_task_manager_scenario() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let task1 = db
         .create_node(make_typed_node("task", "Fix login bug"))
@@ -330,7 +330,7 @@ fn list_recent_persists_across_reopen() {
 
     // Create nodes and close
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         db.create_node(make_node("First")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
         db.create_node(make_node("Second")).unwrap();
@@ -339,7 +339,7 @@ fn list_recent_persists_across_reopen() {
 
     // Reopen and verify list_recent works
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         let nodes = db.list_recent(10).unwrap();
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].title, "Second");
@@ -356,7 +356,7 @@ fn list_recent_update_persists_across_reopen() {
     let n1_id;
     // Create, update, close
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         let n1 = db.create_node(make_node("First")).unwrap();
         n1_id = n1.id;
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -375,7 +375,7 @@ fn list_recent_update_persists_across_reopen() {
 
     // Reopen and verify updated node is first
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         let nodes = db.list_recent(10).unwrap();
         assert_eq!(nodes[0].id, n1_id);
         db.close().unwrap();

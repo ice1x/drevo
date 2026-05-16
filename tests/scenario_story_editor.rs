@@ -1,6 +1,6 @@
 //! Scenario integration test: Story / Book / Scenario Editor
 //!
-//! This test validates GraphNote DB against a real-world story editor use case.
+//! This test validates drevo against a real-world story editor use case.
 //!
 //! Domain model:
 //! - Node kinds: `book`, `chapter`, `scene`, `character`, `location`, `plot_point`
@@ -15,22 +15,22 @@
 //! - Kind index: board views (all characters, all scenes, etc.)
 //! - Scene ordering via edge weights and `follows` edges
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::*;
+use drevo::db::Drevo;
+use drevo::model::*;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> GraphNoteDb {
-    GraphNoteDb::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> Drevo {
+    Drevo::open_in_memory().expect("open in-memory DB")
 }
 
 #[cfg(feature = "redb-backend")]
-fn redb_db(dir: &tempfile::TempDir) -> GraphNoteDb {
+fn redb_db(dir: &tempfile::TempDir) -> Drevo {
     let path = dir.path().join("story_test.db");
-    GraphNoteDb::open(&path).expect("open redb DB")
+    Drevo::open(&path).expect("open redb DB")
 }
 
 fn make_node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -134,7 +134,7 @@ struct StoryData {
     plot_meet_guardian: u64,
 }
 
-fn build_story(db: &GraphNoteDb) -> StoryData {
+fn build_story(db: &Drevo) -> StoryData {
     // --- Book ---
     let book = db
         .create_node(make_node(
@@ -1171,7 +1171,7 @@ mod redb {
                 use super::*;
                 use tempfile::TempDir;
 
-                fn setup() -> (TempDir, GraphNoteDb) {
+                fn setup() -> (TempDir, Drevo) {
                     let dir = TempDir::new().expect("create temp dir");
                     let db = redb_db(&dir);
                     (dir, db)

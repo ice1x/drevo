@@ -5,13 +5,13 @@
 //! These tests verify:
 //! - `MemoryBackend` is always available (including WASM target)
 //! - `RedbBackend` is excluded on WASM via compile-time cfg
-//! - `GraphNoteDb::open_in_memory()` works as the WASM fallback
-//! - `GraphNoteDb::open()` (disk-backed) is unavailable on WASM
+//! - `Drevo::open_in_memory()` works as the WASM fallback
+//! - `Drevo::open()` (disk-backed) is unavailable on WASM
 //! - Full CRUD + traversal + FTS workflow works on MemoryBackend alone
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
-use graphnote_db::storage::MemoryBackend;
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::storage::MemoryBackend;
 
 // ---------------------------------------------------------------------------
 // MemoryBackend availability (WASM fallback storage)
@@ -21,7 +21,7 @@ use graphnote_db::storage::MemoryBackend;
 fn memory_backend_is_always_available() {
     // MemoryBackend must compile and work on all targets, including WASM.
     let backend = MemoryBackend::new();
-    use graphnote_db::storage::StorageBackend;
+    use drevo::storage::StorageBackend;
     backend.put(b"k1", b"v1").unwrap();
     let val = backend.get(b"k1").unwrap();
     assert_eq!(val, Some(b"v1".to_vec()));
@@ -30,7 +30,7 @@ fn memory_backend_is_always_available() {
 #[test]
 fn memory_backend_scan_prefix_works() {
     let backend = MemoryBackend::new();
-    use graphnote_db::storage::StorageBackend;
+    use drevo::storage::StorageBackend;
     backend.put(b"prefix:a", b"1").unwrap();
     backend.put(b"prefix:b", b"2").unwrap();
     backend.put(b"other:c", b"3").unwrap();
@@ -46,29 +46,29 @@ fn memory_backend_scan_prefix_works() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn redb_backend_available_on_native() {
-    use graphnote_db::storage::RedbBackend;
+    use drevo::storage::RedbBackend;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
     let _backend = RedbBackend::open(&path).unwrap();
 }
 
-/// On native targets, `GraphNoteDb::open()` (disk-backed) should work.
+/// On native targets, `Drevo::open()` (disk-backed) should work.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn graphnotedb_open_available_on_native() {
+fn drevodb_open_available_on_native() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
-    let db = GraphNoteDb::open(&path).unwrap();
+    let db = Drevo::open(&path).unwrap();
     db.close().unwrap();
 }
 
 // ---------------------------------------------------------------------------
-// GraphNoteDb::open_in_memory() — the WASM fallback path
+// Drevo::open_in_memory() — the WASM fallback path
 // ---------------------------------------------------------------------------
 
 #[test]
 fn open_in_memory_is_always_available() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.close().unwrap();
 }
 
@@ -78,7 +78,7 @@ fn open_in_memory_is_always_available() {
 
 #[test]
 fn full_crud_workflow_on_memory_backend() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     // Create nodes
     let n1 = db
@@ -132,7 +132,7 @@ fn full_crud_workflow_on_memory_backend() {
 
 #[test]
 fn fts_works_on_memory_backend() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     db.create_node(NewNode {
         kind: "note".to_string(),
@@ -159,7 +159,7 @@ fn fts_works_on_memory_backend() {
 
 #[test]
 fn traversal_works_on_memory_backend() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let n1 = db
         .create_node(NewNode {
@@ -229,7 +229,7 @@ fn traversal_works_on_memory_backend() {
 
 #[test]
 fn list_by_kind_works_on_memory_backend() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     for i in 0..5 {
         db.create_node(NewNode {
@@ -262,7 +262,7 @@ fn list_by_kind_works_on_memory_backend() {
 
 #[test]
 fn list_recent_works_on_memory_backend() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     for i in 0..10 {
         db.create_node(NewNode {

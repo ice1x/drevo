@@ -1,6 +1,6 @@
 //! Scenario integration test: CBT Journal (Cognitive Behavioral Therapy)
 //!
-//! This test validates GraphNote DB against a real-world CBT journal use case.
+//! This test validates drevo against a real-world CBT journal use case.
 //!
 //! Domain model:
 //! - Node kinds: `thought`, `emotion`, `situation`, `cognitive_distortion`, `rational_response`
@@ -14,22 +14,22 @@
 //! - FTS: searching for recurring distortion patterns
 //! - Subgraph: extracting the full context of a single CBT entry
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::*;
+use drevo::db::Drevo;
+use drevo::model::*;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> GraphNoteDb {
-    GraphNoteDb::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> Drevo {
+    Drevo::open_in_memory().expect("open in-memory DB")
 }
 
 #[cfg(feature = "redb-backend")]
-fn redb_db(dir: &tempfile::TempDir) -> GraphNoteDb {
+fn redb_db(dir: &tempfile::TempDir) -> Drevo {
     let path = dir.path().join("cbt_test.db");
-    GraphNoteDb::open(&path).expect("open redb DB")
+    Drevo::open(&path).expect("open redb DB")
 }
 
 fn make_node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -102,7 +102,7 @@ struct CbtEntry {
     calm: u64,
 }
 
-fn build_cbt_entry(db: &GraphNoteDb) -> CbtEntry {
+fn build_cbt_entry(db: &Drevo) -> CbtEntry {
     // Situation
     let situation = db
         .create_node(make_node(
@@ -868,7 +868,7 @@ mod redb {
                 use super::*;
                 use tempfile::TempDir;
 
-                fn setup() -> (TempDir, GraphNoteDb) {
+                fn setup() -> (TempDir, Drevo) {
                     let dir = TempDir::new().expect("create temp dir");
                     let db = redb_db(&dir);
                     (dir, db)

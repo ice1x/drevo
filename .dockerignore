@@ -5,4 +5,4 @@ target/
 *.md
 benches/
 tests/
-graphnote.h
+drevo.h

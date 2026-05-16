@@ -4,8 +4,8 @@
 //! disconnected graphs, empty graph, self-loops, diamond/fan patterns,
 //! and use-case scenarios (CBT, story editor, task manager, ERP, bug tracker).
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
 
 fn make_node(kind: &str, title: &str) -> NewNode {
     NewNode {
@@ -33,7 +33,7 @@ fn make_edge(from: u64, to: u64, kind: &str) -> NewEdge {
 
 #[test]
 fn dfs_empty_graph_node_with_no_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let result = db.dfs(a.id, 5, Direction::Outgoing, None).unwrap();
     assert!(result.is_empty());
@@ -41,7 +41,7 @@ fn dfs_empty_graph_node_with_no_edges() {
 
 #[test]
 fn dfs_depth_zero() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -51,7 +51,7 @@ fn dfs_depth_zero() {
 
 #[test]
 fn dfs_depth_one_outgoing() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -65,7 +65,7 @@ fn dfs_depth_one_outgoing() {
 
 #[test]
 fn dfs_depth_two_reaches_grandchildren() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -85,7 +85,7 @@ fn dfs_depth_two_reaches_grandchildren() {
 
 #[test]
 fn dfs_outgoing_only() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(b.id, a.id, "links_to")).unwrap();
@@ -96,7 +96,7 @@ fn dfs_outgoing_only() {
 
 #[test]
 fn dfs_incoming_only() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(b.id, a.id, "links_to")).unwrap();
@@ -108,7 +108,7 @@ fn dfs_incoming_only() {
 
 #[test]
 fn dfs_both_directions() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -128,7 +128,7 @@ fn dfs_both_directions() {
 
 #[test]
 fn dfs_edge_kind_filter_includes() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -145,7 +145,7 @@ fn dfs_edge_kind_filter_includes() {
 
 #[test]
 fn dfs_edge_kind_filter_excludes() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -158,7 +158,7 @@ fn dfs_edge_kind_filter_excludes() {
 
 #[test]
 fn dfs_edge_kind_filter_multi_hop() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -185,7 +185,7 @@ fn dfs_edge_kind_filter_multi_hop() {
 
 #[test]
 fn dfs_handles_cycle() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -199,7 +199,7 @@ fn dfs_handles_cycle() {
 
 #[test]
 fn dfs_self_loop() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     db.create_edge(make_edge(a.id, a.id, "self_ref")).unwrap();
 
@@ -209,7 +209,7 @@ fn dfs_self_loop() {
 
 #[test]
 fn dfs_diamond_graph_no_duplicates() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -229,7 +229,7 @@ fn dfs_diamond_graph_no_duplicates() {
 
 #[test]
 fn dfs_disconnected_components() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -243,7 +243,7 @@ fn dfs_disconnected_components() {
 
 #[test]
 fn dfs_single_node_graph() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let result = db.dfs(a.id, 5, Direction::Both, None).unwrap();
     assert!(result.is_empty());
@@ -251,7 +251,7 @@ fn dfs_single_node_graph() {
 
 #[test]
 fn dfs_fan_out_10_spokes() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let hub = db.create_node(make_node("note", "Hub")).unwrap();
     for i in 0..10 {
         let spoke = db
@@ -267,7 +267,7 @@ fn dfs_fan_out_10_spokes() {
 
 #[test]
 fn dfs_long_chain_depth_limited() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let mut prev = db.create_node(make_node("note", "Node0")).unwrap();
     for i in 1..20 {
         let next = db
@@ -289,7 +289,7 @@ fn dfs_long_chain_depth_limited() {
 
 #[test]
 fn dfs_max_depth_255() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -300,7 +300,7 @@ fn dfs_max_depth_255() {
 
 #[test]
 fn dfs_multiple_edges_same_pair() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -314,7 +314,7 @@ fn dfs_multiple_edges_same_pair() {
 
 #[test]
 fn dfs_bidirectional_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -331,7 +331,7 @@ fn dfs_bidirectional_edges() {
 /// CBT Journal: trace a thought chain via DFS — goes deep along one path first.
 #[test]
 fn scenario_cbt_thought_chain_dfs() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let situation = db
         .create_node(make_node("situation", "Presentation at work"))
         .unwrap();
@@ -368,7 +368,7 @@ fn scenario_cbt_thought_chain_dfs() {
 /// Story Editor: DFS navigates deep into the story tree.
 #[test]
 fn scenario_story_editor_tree_dfs() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let book = db
         .create_node(make_node("book", "The Great Novel"))
         .unwrap();
@@ -403,7 +403,7 @@ fn scenario_story_editor_tree_dfs() {
 /// IT Task Manager: find blocking chain via DFS.
 #[test]
 fn scenario_task_dependency_chain_dfs() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let deploy = db.create_node(make_node("task", "Deploy v2.0")).unwrap();
     let tests = db
         .create_node(make_node("task", "Run integration tests"))
@@ -431,7 +431,7 @@ fn scenario_task_dependency_chain_dfs() {
 /// ERP: navigate order relationships via DFS.
 #[test]
 fn scenario_erp_order_graph_dfs() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let order = db.create_node(make_node("order", "ORD-001")).unwrap();
     let product1 = db.create_node(make_node("product", "Widget A")).unwrap();
     let product2 = db.create_node(make_node("product", "Widget B")).unwrap();
@@ -457,7 +457,7 @@ fn scenario_erp_order_graph_dfs() {
 /// Bug Tracker: impact analysis via DFS.
 #[test]
 fn scenario_bug_tracker_impact_dfs() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let bug = db
         .create_node(make_node("bug", "Memory leak in parser"))
         .unwrap();

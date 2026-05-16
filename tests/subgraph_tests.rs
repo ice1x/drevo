@@ -2,8 +2,8 @@
 //!
 //! Tests cover edge cases, graph topologies, and all 5 use-case scenarios.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::model::{NewEdge, NewNode, Properties};
 use std::collections::HashSet;
 
 fn make_node(kind: &str, title: &str) -> NewNode {
@@ -32,13 +32,13 @@ fn make_edge(from: u64, to: u64, kind: &str) -> NewEdge {
 
 #[test]
 fn subgraph_empty_graph_nonexistent_root() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     assert!(db.subgraph(1, 3).is_err());
 }
 
 #[test]
 fn subgraph_single_node_no_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "Alone")).unwrap();
     let sg = db.subgraph(a.id, 5).unwrap();
     assert_eq!(sg.nodes.len(), 1);
@@ -47,7 +47,7 @@ fn subgraph_single_node_no_edges() {
 
 #[test]
 fn subgraph_depth_zero() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -60,7 +60,7 @@ fn subgraph_depth_zero() {
 
 #[test]
 fn subgraph_bidirectional_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let e1 = db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -76,7 +76,7 @@ fn subgraph_bidirectional_edges() {
 
 #[test]
 fn subgraph_self_loop_counted_once() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     db.create_edge(make_edge(a.id, a.id, "self")).unwrap();
 
@@ -87,7 +87,7 @@ fn subgraph_self_loop_counted_once() {
 
 #[test]
 fn subgraph_linear_chain_bounded_by_depth() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let mut ids = Vec::new();
     for i in 0..10 {
         let n = db
@@ -108,7 +108,7 @@ fn subgraph_linear_chain_bounded_by_depth() {
 
 #[test]
 fn subgraph_disconnected_nodes_not_included() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "Disconnected")).unwrap();
@@ -122,7 +122,7 @@ fn subgraph_disconnected_nodes_not_included() {
 
 #[test]
 fn subgraph_hub_spoke_topology() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let hub = db.create_node(make_node("note", "Hub")).unwrap();
     let mut spoke_ids = Vec::new();
     for i in 0..20 {
@@ -141,7 +141,7 @@ fn subgraph_hub_spoke_topology() {
 #[test]
 fn subgraph_edges_between_non_root_nodes_included() {
     // A -> B, A -> C, B -> C
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -158,7 +158,7 @@ fn subgraph_edges_between_non_root_nodes_included() {
 #[test]
 fn subgraph_incoming_edge_discovered() {
     // B -> A (root), depth 1 should find B via incoming edge
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(b.id, a.id, "links_to")).unwrap();
@@ -170,7 +170,7 @@ fn subgraph_incoming_edge_discovered() {
 
 #[test]
 fn subgraph_mixed_edge_kinds() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -190,7 +190,7 @@ fn subgraph_mixed_edge_kinds() {
 
 #[test]
 fn subgraph_cbt_journal_thought_chain() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let situation = db
         .create_node(make_node("situation", "Meeting with boss"))
@@ -236,7 +236,7 @@ fn subgraph_cbt_journal_thought_chain() {
 
 #[test]
 fn subgraph_story_editor_scene_context() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let book = db.create_node(make_node("book", "My Novel")).unwrap();
     let ch1 = db.create_node(make_node("chapter", "Chapter 1")).unwrap();
@@ -283,7 +283,7 @@ fn subgraph_story_editor_scene_context() {
 
 #[test]
 fn subgraph_task_manager_dependency_chain() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let epic = db.create_node(make_node("epic", "Auth System")).unwrap();
     let task1 = db
@@ -329,7 +329,7 @@ fn subgraph_task_manager_dependency_chain() {
 
 #[test]
 fn subgraph_erp_order_context() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let order = db.create_node(make_node("order", "ORD-001")).unwrap();
     let product1 = db.create_node(make_node("product", "Widget A")).unwrap();
@@ -377,7 +377,7 @@ fn subgraph_erp_order_context() {
 
 #[test]
 fn subgraph_bug_tracker_impact_analysis() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let bug = db
         .create_node(make_node("bug", "Login fails on Safari"))

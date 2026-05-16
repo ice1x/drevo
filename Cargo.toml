@@ -1,5 +1,5 @@
 [package]
-name = "graphnote-db"
+name = "drevo"
 version = "0.1.0"
 edition = "2021"
 description = "Embedded graph database for cross-platform knowledge management"
@@ -37,7 +37,7 @@ http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 
 [[bin]]
-name = "graphnote-server"
+name = "drevo-server"
 path = "src/bin/server.rs"
 required-features = ["http", "redb-backend"]
 

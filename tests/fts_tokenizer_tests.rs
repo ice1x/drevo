@@ -1,4 +1,4 @@
-use graphnote_db::fts::{extract_trigrams, normalize, trigrams};
+use drevo::fts::{extract_trigrams, normalize, trigrams};
 
 // --- Realistic use-case texts ---
 

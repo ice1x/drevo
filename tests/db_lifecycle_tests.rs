@@ -1,19 +1,19 @@
-//! Integration tests for GraphNoteDb lifecycle: open, open_in_memory, close, compact.
+//! Integration tests for Drevo lifecycle: open, open_in_memory, close, compact.
 
-use graphnote_db::db::GraphNoteDb;
+use drevo::db::Drevo;
 use tempfile::TempDir;
 
 // --- open_in_memory ---
 
 #[test]
 fn in_memory_db_opens_and_closes() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.close().unwrap();
 }
 
 #[test]
 fn in_memory_db_compact_is_noop() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     db.compact().unwrap();
     db.close().unwrap();
 }
@@ -23,8 +23,8 @@ fn in_memory_db_compact_is_noop() {
 #[test]
 fn disk_db_opens_new_file() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("graphnote.db");
-    let db = GraphNoteDb::open(&path).unwrap();
+    let path = dir.path().join("drevo.db");
+    let db = Drevo::open(&path).unwrap();
     assert!(path.exists());
     db.close().unwrap();
 }
@@ -32,26 +32,26 @@ fn disk_db_opens_new_file() {
 #[test]
 fn disk_db_reopens_existing_file() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("graphnote.db");
+    let path = dir.path().join("drevo.db");
 
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         db.close().unwrap();
     }
 
     // Reopen the same file
-    let db = GraphNoteDb::open(&path).unwrap();
+    let db = Drevo::open(&path).unwrap();
     db.close().unwrap();
 }
 
 #[test]
 fn disk_db_counters_persist_through_close_reopen_cycle() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("graphnote.db");
+    let path = dir.path().join("drevo.db");
 
     // First session: allocate IDs 1..5 for nodes, 1..3 for edges
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         for _ in 0..5 {
             db.alloc_node_id();
         }
@@ -63,7 +63,7 @@ fn disk_db_counters_persist_through_close_reopen_cycle() {
 
     // Second session: counters should continue from 6 and 4
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         assert_eq!(db.alloc_node_id(), 6);
         assert_eq!(db.alloc_edge_id(), 4);
         db.close().unwrap();
@@ -71,7 +71,7 @@ fn disk_db_counters_persist_through_close_reopen_cycle() {
 
     // Third session: counters should continue from 7 and 5
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         assert_eq!(db.alloc_node_id(), 7);
         assert_eq!(db.alloc_edge_id(), 5);
         db.close().unwrap();
@@ -81,8 +81,8 @@ fn disk_db_counters_persist_through_close_reopen_cycle() {
 #[test]
 fn disk_db_compact_flushes_backend() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("graphnote.db");
-    let db = GraphNoteDb::open(&path).unwrap();
+    let path = dir.path().join("drevo.db");
+    let db = Drevo::open(&path).unwrap();
     db.compact().unwrap();
     db.close().unwrap();
 }
@@ -95,7 +95,7 @@ fn concurrent_id_allocation_no_duplicates() {
     use std::sync::Arc;
     use std::thread;
 
-    let db = Arc::new(GraphNoteDb::open_in_memory().unwrap());
+    let db = Arc::new(Drevo::open_in_memory().unwrap());
     let num_threads = 4;
     let ids_per_thread = 100;
 
@@ -127,7 +127,7 @@ fn concurrent_id_allocation_no_duplicates() {
 
 #[test]
 fn debug_display_shows_counters() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let _ = db.alloc_node_id(); // now next=2
     let debug = format!("{:?}", db);
     assert!(debug.contains("next_node_id: 2"));

@@ -1,12 +1,12 @@
-# GraphNote DB — Embedded Graph Database for Knowledge Management
+# drevo — Embedded Graph Database for Knowledge Management
 
-A lightweight, embeddable graph database written in Rust. Designed as the storage engine for cross-platform knowledge-base applications (similar to Obsidian), GraphNote DB runs natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings), and in the browser (via WebAssembly). It also ships as a standalone HTTP server for containerised deployments.
+A lightweight, embeddable graph database written in Rust. Designed as the storage engine for cross-platform knowledge-base applications (similar to Obsidian), drevo runs natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings), and in the browser (via WebAssembly). It also ships as a standalone HTTP server for containerised deployments.
 
 ---
 
 ## Use Cases
 
-GraphNote DB is the storage engine for a cross-platform graph notebook. Target scenarios:
+drevo is the storage engine for a cross-platform graph notebook. Target scenarios:
 
 ### CBT Journal (Cognitive Behavioral Therapy)
 
@@ -37,6 +37,34 @@ Nodes: `bug`, `feature`, `release`, `test_case`, `assignee`. Edges: `reported_in
 - **Subgraph** extraction provides bounded context for AI agents (MCP)
 - **Transactions** ensure consistency for multi-step operations
 - **Cross-platform**: all scenarios must work identically on desktop, mobile (iOS/Android), and WASM
+
+---
+
+## Long-term Vision: Graph-Vector Database
+
+Beyond the embedded knowledge-base use case described above, drevo is on a multi-phase trajectory toward becoming a full graph-vector database with capabilities equivalent to Neo4j and Memgraph:
+
+- **Cypher query language** — full support for CREATE / MATCH / MERGE / SET / DELETE / WHERE / RETURN / WITH / aggregations / variable-length paths (Phase 10)
+- **Bolt wire protocol** — Neo4j-compatible, so `cypher-shell`, `neo4j-python-driver`, and `neo4j-javascript-driver` connect out of the box (Phase 11)
+- **Native vector search** — `Value::Vector` type, HNSW index, joint graph+vector queries for RAG and semantic search (Phase 12)
+- **MVCC concurrency** — readers never block writers, multiple configurable isolation levels (Phase 13)
+- **Cost-based query planner** — statistics, cardinality estimates, plan caching, supernode handling (Phase 14)
+- **Production ecosystem** — MCP server, web UI, Python SDK, replication, streaming ingestion, CDC, RBAC (Phase 15)
+
+Phases 1-9 (embedded DB + HTTP API + Docker) form the foundation. Phases 10-15 layer the query language, protocol, vector engine, concurrency, optimizer, and ecosystem on top of the existing storage and traversal engine — without rewriting it.
+
+---
+
+## Inspirations
+
+drevo borrows architectural ideas from two existing graph databases. Their licenses prevent direct reuse, but we adopt their proven designs:
+
+| Database | What we borrow | Why we cannot use it directly |
+|----------|---------------|-------------------------------|
+| **[HelixDB](https://github.com/HelixDB/helix-db)** | graph+vector native engine, compiled query plans, MCP tooling, memory-mapped storage, built-in embeddings | BSL (Business Source License) — incompatible with MIT |
+| **[Memgraph](https://github.com/memgraph/memgraph)** | full Cypher support, Bolt protocol, MVCC, in-memory + WAL/snapshots, MAGE plugin system, Python query modules, streaming ingestion | AGPL / proprietary enterprise — incompatible with MIT |
+
+drevo ships under MIT (see License section).
 
 ---
 
@@ -110,9 +138,9 @@ properties: HashMap<String, Value>
 
 ```
 <vault_dir>/
-  graphnote.db          <- single binary file (redb)
-  graphnote.db.lock     <- advisory lock
-  graphnote.db.wal      <- write-ahead log (optional, for crash recovery)
+  drevo.db          <- single binary file (redb)
+  drevo.db.lock     <- advisory lock
+  drevo.db.wal      <- write-ahead log (optional, for crash recovery)
 ```
 
 ### Backend: redb
@@ -155,9 +183,9 @@ meta:        String -> Vec<u8>    (schema version, stats)
 ## API Surface (Rust)
 
 ```rust
-pub struct GraphNoteDb { /* opaque */ }
+pub struct Drevo { /* opaque */ }
 
-impl GraphNoteDb {
+impl Drevo {
     // Lifecycle
     pub fn open(path: &Path) -> Result<Self>;
     pub fn open_in_memory() -> Result<Self>;
@@ -238,7 +266,7 @@ Optional phase 2: integrate [tantivy](https://github.com/quickwit-oss/tantivy) f
 
 ```rust
 #[derive(thiserror::Error, Debug)]
-pub enum GraphNoteError {
+pub enum DrevoError {
     #[error("storage error: {0}")]
     Storage(#[from] redb::Error),
     #[error("serialization error: {0}")]
@@ -255,7 +283,7 @@ pub enum GraphNoteError {
     Io(#[from] std::io::Error),
 }
 
-pub type Result<T> = std::result::Result<T, GraphNoteError>;
+pub type Result<T> = std::result::Result<T, DrevoError>;
 ```
 
 ---
@@ -271,16 +299,33 @@ pub type Result<T> = std::result::Result<T, GraphNoteError>;
 | Cold open (50k nodes) | < 200ms |
 | Memory footprint (idle) | < 10MB |
 
+### Performance Comparison vs Other Graph DBs
+
+Target numbers vs published competitor benchmarks. CI tracks measured drevo metrics continuously; any regression > 5% fails the build.
+
+| Metric | drevo (target) | HelixDB | Memgraph | Neo4j | FalkorDB |
+|--------|----------------|---------|----------|-------|----------|
+| Single-hop traversal | < 0.1 ms | ~0.1 ms | ~0.1 ms | ~1 ms | ~0.2 ms |
+| 3-hop neighborhood (1K nodes) | < 1 ms | ~1 ms | ~1 ms | ~5 ms | ~2 ms |
+| Deep traversal (6 hops) | < 10 ms | ~5 ms | ~8 ms | ~50 ms | ~15 ms |
+| Node create (single) | < 0.05 ms | ~0.05 ms | ~0.1 ms | ~1 ms | ~0.1 ms |
+| Bulk insert (100K nodes) | < 2 s | ~2 s | ~3 s | ~15 s | ~5 s |
+| Vector similarity search (1M vectors) | < 5 ms | ~2 ms | N/A | N/A | N/A |
+| Concurrent reads (100 threads) | > 500K ops/s | ~300K ops/s | ~400K ops/s | ~50K ops/s | ~200K ops/s |
+| Memory per 1M nodes | < 500 MB | ~400 MB | ~600 MB | ~2 GB | ~800 MB |
+
+> Competitor numbers are approximate, derived from published benchmarks and vendor claims. Replace with measured values as Phase 15 task `00101` (benchmark vs competitors) lands.
+
 ---
 
 ## Crate Structure
 
 ```
-graphnote-db/
+drevo/
   Cargo.toml
   src/
     lib.rs
-    db.rs           <- GraphNoteDb impl
+    db.rs           <- Drevo impl
     model.rs        <- Node, Edge, NewNode, NodePatch, etc.
     storage.rs      <- redb table definitions and low-level ops
     index/
@@ -291,7 +336,7 @@ graphnote-db/
     traversal.rs    <- BFS/DFS, shortest path, subgraph
     transaction.rs  <- Txn wrapper
     export.rs       <- JSON / GraphML
-    error.rs        <- GraphNoteError enum
+    error.rs        <- DrevoError enum
     uuid.rs         <- UUID v7 generation
   benches/
     storage_bench.rs      <- put/get/scan_prefix benchmarks (criterion)
@@ -341,18 +386,18 @@ getrandom = { version = "0.2", features = ["js"] }
 Development is split into two milestones:
 
 - **PoC** — a fully functional embedded graph DB that can power the notebook app on all platforms (desktop, mobile, WASM). After PoC, the notebook can be built and used.
-- **MVP** — a distributable product: Docker image, HTTP API, Kubernetes support. After MVP, GraphNote DB can be deployed as a standalone service (like PostgreSQL or Redis).
+- **MVP** — a distributable product: Docker image, HTTP API, Kubernetes support. After MVP, drevo can be deployed as a standalone service (like PostgreSQL or Redis).
 
 ```
-PoC: Phases 1-6    →  notebook can be built on top of GraphNote DB
-MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
+PoC: Phases 1-6    →  notebook can be built on top of drevo
+MVP: Phases 7-9    →  drevo ships as a Docker/K8s product
 ```
 
 ---
 
 ### PoC — Proof of Concept
 
-> After PoC completion, the graph notebook app can use GraphNote DB on all target platforms.
+> After PoC completion, the graph notebook app can use drevo on all target platforms.
 
 #### Phase 1 — Storage Engine
 
@@ -373,7 +418,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 > Goal: store nodes and edges on top of the KV store, efficiently retrieve neighbors.
 
 - [x] `00008` Define types: Node, Edge, NewNode, NodePatch, UUID v7
-- [x] `00009` Implement `GraphNoteDb::open` / `open_in_memory` / `close`
+- [x] `00009` Implement `Drevo::open` / `open_in_memory` / `close`
 - [x] `00010` Implement Node CRUD: create_node, get_node, update_node, delete_node
 - [x] `00011` Implement Edge CRUD with adjacency list maintenance (out_edges, in_edges)
 - [x] `00012` Implement title_index and kind_index
@@ -410,19 +455,19 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 #### Phase 5 — Platform Bindings
 
-> Goal: GraphNote DB works on every target platform — desktop, mobile, browser.
+> Goal: drevo works on every target platform — desktop, mobile, browser.
 
-- [x] `00027` C FFI header (`graphnote.h`) — exposes GraphNoteDb API for iOS/Android native apps
-- [x] `00028` WASM bindings via `wasm-bindgen` — exposes GraphNoteDb API for browser and Tauri v2 WASM
+- [x] `00027` C FFI header (`drevo.h`) — exposes Drevo API for iOS/Android native apps
+- [x] `00028` WASM bindings via `wasm-bindgen` — exposes Drevo API for browser and Tauri v2 WASM
 - [x] `00029` Verify redb works on WASM target; if not, implement fallback (IndexedDB adapter or memory-only)
 - [x] `00030` Cross-compilation CI: build for `aarch64-apple-ios`, `aarch64-linux-android`, `wasm32-unknown-unknown`
 - [x] `00031` Smoke test on each platform: open DB, CRUD a node, search, close
 
-**Definition of done:** `graphnote.h` compiles on iOS/Android; WASM build loads in browser; all platforms pass smoke test. **DONE** — all 5 tasks complete.
+**Definition of done:** `drevo.h` compiles on iOS/Android; WASM build loads in browser; all platforms pass smoke test. **DONE** — all 5 tasks complete.
 
 #### Phase 6 — Scenario Integration Tests
 
-> Goal: validate the DB against real-world use cases from the notebook app. After this phase, GraphNote DB is proven ready for the notebook.
+> Goal: validate the DB against real-world use cases from the notebook app. After this phase, drevo is proven ready for the notebook.
 
 - [x] `00032` CBT journal scenario: thought chains, distortion pattern search, reframing edges
 - [x] `00033` Story editor scenario: tree structure (book→chapter→scene), character graph, subgraph for AI context
@@ -430,19 +475,19 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [x] `00035` ERP scenario: order→product→warehouse edges, transactional inventory updates
 - [x] `00036` Bug tracker scenario: impact analysis traversal, release-blocking queries
 
-**Definition of done:** all 5 scenarios pass on both MemoryBackend and RedbBackend. The notebook app team can start building on top of GraphNote DB.
+**Definition of done:** all 5 scenarios pass on both MemoryBackend and RedbBackend. The notebook app team can start building on top of drevo.
 
 ---
 
 ### MVP — Minimum Viable Product
 
-> After MVP, GraphNote DB is distributed as a standalone service with Docker image and HTTP API.
+> After MVP, drevo is distributed as a standalone service with Docker image and HTTP API.
 
 #### Phase 7 — HTTP API (Server Mode)
 
-> Goal: expose GraphNote DB over HTTP for programmatic access and container deployment.
+> Goal: expose drevo over HTTP for programmatic access and container deployment.
 
-- [x] `00037` HTTP API server (axum + tokio) — thin JSON adapter over GraphNoteDb
+- [x] `00037` HTTP API server (axum + tokio) — thin JSON adapter over Drevo
 - [x] `00038` Node CRUD endpoints: `POST/GET/PATCH/DELETE /nodes/{id}`
 - [x] `00039` Edge endpoints: `POST/GET/DELETE /edges/...`
 - [x] `00040` Traversal endpoints: `GET /nodes/{id}/neighbors`, `/paths/shortest`, `/nodes/{id}/subgraph`
@@ -455,7 +500,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 #### Phase 8 — Docker & Kubernetes
 
-> Goal: distribute GraphNote DB as an official container image, like PostgreSQL or Redis.
+> Goal: distribute drevo as an official container image, like PostgreSQL or Redis.
 
 - [x] `00045` Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
 - [x] `00046` `.dockerignore` — exclude target/, .git/
@@ -466,7 +511,7 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 - [ ] `00051` CI: build + push Docker image to GitHub Container Registry (ghcr.io)
 - [ ] `00052` Integration test: spin up container, run CRUD via HTTP, verify persistence across restart
 
-**Definition of done:** `docker run ghcr.io/ice1x/graphnote-db` starts the DB with HTTP API on port 8080; K8s manifests deploy successfully.
+**Definition of done:** `docker run ghcr.io/ice1x/drevo` starts the DB with HTTP API on port 8080; K8s manifests deploy successfully.
 
 #### Phase 9 — Hardening
 
@@ -483,16 +528,128 @@ MVP: Phases 7-9    →  GraphNote DB ships as a Docker/K8s product
 
 ---
 
+### Phase 10 — Cypher Query Language
+
+> Goal: full Cypher subset equivalent to the Neo4j core. Existing graph storage and traversal are reused; Cypher is a thin query layer over the current `Drevo` API.
+
+Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations (SET/DELETE/MERGE) → predicates (WHERE) → aggregations → OPTIONAL MATCH → WITH → variable-length paths.
+
+- [ ] `00061` Cypher lexer — tokens for keywords, literals, identifiers, operators, parameters, comments
+- [ ] `00062` Cypher parser — AST construction, error recovery, keyword-as-identifier support
+- [ ] `00063` Executor — pattern matching, expression evaluation, CREATE / MATCH / RETURN
+- [ ] `00064` Mutations — SET, DELETE, MERGE, MATCH...MERGE (idempotent relationship creation between bound variables)
+- [ ] `00065` WHERE — boolean expressions, comparison operators, IN, EXISTS, IS NULL
+- [ ] `00066` Aggregations — COUNT, SUM, AVG, MIN, MAX, COLLECT, GROUP BY, DISTINCT
+- [ ] `00067` OPTIONAL MATCH — left-join semantics, null propagation for unmatched variables
+- [ ] `00068` WITH clause — query pipelining, intermediate projection, aggregation-before-filter
+- [ ] `00069` Variable-length paths — `(a)-[*1..3]->(b)` BFS traversals leveraging existing `traversal.rs`
+
+**Definition of done:** all five scenario test suites (CBT, story, task manager, ERP, bug tracker) pass when expressed in Cypher — same workflows yield identical results via Cypher and the existing Rust API.
+
+---
+
+### Phase 11 — Bolt Protocol
+
+> Goal: Neo4j-compatible wire protocol so existing official drivers (`cypher-shell`, `neo4j-python-driver`, `neo4j-javascript-driver`) connect without code changes. Requires Phase 10 — Bolt has nothing to execute without a working Cypher engine.
+
+- [ ] `00070` Bolt v4 wire protocol — PackStream codec, TCP listener, message framing
+- [ ] `00071` Bolt session — HELLO, RUN, PULL, DISCARD, RESET, GOODBYE handshake
+- [ ] `00072` Bolt transaction integration — BEGIN / COMMIT / ROLLBACK over Bolt
+- [ ] `00073` TLS for Bolt — `rustls` integration, certificate management
+- [ ] `00074` Authentication — basic auth, session tokens, user table
+
+**Definition of done:** `cypher-shell bolt://localhost:7687` connects, authenticates, runs queries; transactions complete end-to-end.
+
+---
+
+### Phase 12 — Vector Storage & Search
+
+> Goal: native graph + vector hybrid queries (traverse AND similarity in one query) — enables RAG and semantic search over the knowledge graph. Independent of Phase 11; can run in parallel with Bolt work.
+
+- [ ] `00075` `Value::Vector` variant — cosine, euclidean, dot product distance functions (SIMD-accelerated)
+- [ ] `00076` HNSW vector index — built on top of redb adjacency storage
+- [ ] `00077` Joint graph+vector queries — `MATCH (n) WHERE similar(n.embedding, $q, 0.85) RETURN n` (Cypher extension)
+- [ ] `00078` Vector persistence — redb tables, batch insert API
+- [ ] `00079` Embedding integration helpers — callable from Python SDK / FastMCP
+
+**Definition of done:** 1M-vector search < 5 ms on Apple Silicon; recall@10 ≥ 0.95 vs brute-force ground truth.
+
+---
+
+### Phase 13 — Concurrency & MVCC
+
+> Goal: production-grade concurrent reads and writes. Today drevo uses single-writer locking; this phase introduces MVCC so readers never block writers. Highest-risk phase — touches every storage path.
+
+- [ ] `00080` Read-write separation — `RwLock` replacing `Mutex`, concurrent redb read transactions
+- [ ] `00081` MVCC — tuple versioning (xmin/xmax), transaction snapshots, visibility checks
+- [ ] `00082` Garbage collection — vacuum dead tuple versions, background GC thread
+- [ ] `00083` Optimistic concurrency control — write-write conflict detection, retry semantics
+- [ ] `00084` Isolation levels — Read Committed, Snapshot Isolation, Serializable (configurable)
+
+**Definition of done:** 100 concurrent reader threads + 10 writer threads sustain > 500K ops/s on a 1M-node graph without deadlocks or anomalies.
+
+---
+
+### Phase 14 — Query Optimization
+
+> Goal: keep Cypher queries fast on large graphs (1M+ nodes). Requires Phase 10 (Cypher) and Phase 13 (concurrency). Replaces O(N) full scans with O(1) index lookups; adds cost-based planning.
+
+- [ ] `00085` Cost-based query planner — statistics collector, cardinality estimates, plan caching
+- [ ] `00086` Traversal optimization — pattern reordering, index selection, join strategies
+- [ ] `00087` Supernode handling — lazy edge iteration, cursor-based pagination, degree-aware planning
+- [ ] `00088` Persistent property index — spill in-memory HashMap to redb B-tree at threshold (> 10M entries)
+- [ ] `00089` Memory budget & backpressure — OOM guard, memory-limited query execution
+
+**Definition of done:** query plan visible via `EXPLAIN`; representative queries on a 1M-node graph stay within current single-hop latency targets.
+
+---
+
+### Phase 15 — Ecosystem & Production Ops
+
+> Goal: production deployment and ecosystem (MCP, Web UI, Python SDK, CDC, replication, fuzz testing, algorithms). Many tasks are parallelizable; order below is by user-visible value, not technical dependency.
+
+- [ ] `00090` MCP server — `drevo-mcp` stdio binary for Cline / Claude Code, embedded storage, no Docker required
+- [ ] `00091` MCP validation E2E suite — count, labels, rels, traversal, properties
+- [ ] `00092` Web UI — `axum` + Cytoscape.js graph explorer (port 7474), query bar, node inspector
+- [ ] `00093` Web UI kinetics — fcose physics layout, double-click expand, dynamic colors, tooltips
+- [ ] `00094` Authorization & RBAC — role-based access control, scoped permissions
+- [ ] `00095` Replication MAIN/REPLICA — WAL-based sync, read scaling
+- [ ] `00096` Streaming ingestion — Kafka/NATS consumer for real-time graph updates
+- [ ] `00097` CDC PostgreSQL sync — change data capture pipeline, schema mapping
+- [ ] `00098` Built-in graph algorithms — PageRank, Dijkstra (already implemented — port to Cypher procedures), community detection (Louvain)
+- [ ] `00099` Fuzz testing — grammar-aware Cypher fuzzer, multiple targets, regression corpus
+- [ ] `00100` Python SDK — separate repository, PyO3 / FFI bindings, FastMCP tool wrappers, pip-installable
+- [ ] `00101` Benchmark vs competitors — KuzuDB, Memgraph, Neo4j comparison runs in CI
+- [ ] `00102` Comprehensive docs — user guide, admin guide, SDK reference, Cypher reference, migration guide
+
+**Definition of done:** `docker run ghcr.io/ice1x/drevo` ships with Bolt + HTTP + Web UI + MCP integrated; Python SDK is published to PyPI; the comparison table above is updated with measured numbers from task `00101`.
+
+---
+
+### Re-ranking Rationale (Senior PM Lens)
+
+Why phases 10-15 are ordered this way, rather than appended in `ex/`-source order:
+
+1. **Preserve real progress.** Phases 1-9 (tasks `00001`–`00060`) are real, tested, merged code. New work continues numbering from `00061` — no rewrites of history.
+2. **Critical path first.** Cypher (Phase 10) blocks Bolt (Phase 11) — Bolt has nothing to execute without a working Cypher engine.
+3. **Parallelizable work next.** Vector storage (Phase 12) is independent of Cypher and Bolt; a second engineer can deliver it in parallel with Phases 10-11.
+4. **Foundational concurrency before optimization.** MVCC (Phase 13) is touched by every read/write path and must land before the query optimizer (Phase 14) reasons about concurrent plans.
+5. **Optimization once usage exists.** The query planner (Phase 14) only pays off after real Cypher queries run on real workloads — explicit dependency on Phase 10.
+6. **Production / ecosystem last but parallelizable.** Phase 15 items (MCP, Web UI, replication, SDK, fuzz, algorithms, docs, CDC) run independently and concurrently. MCP and Web UI deliver visible value early.
+7. **Risk weighting.** Phase 13 (MVCC) carries highest risk — schedule with buffer. Phase 12 (vector) is novel but isolated — failure mode is contained. Phase 11 (Bolt) is a well-documented protocol — low implementation risk once Cypher works.
+
+---
+
 ### Immediate subtasks
 
 > Tasks that require code changes to align with this spec but are not yet reflected in the implementation.
 
-- [x] Rename crate from `grapevine` to `graphnote-db` (Cargo.toml, lib.rs)
-- [ ] Rename `StorageError` to `GraphNoteError` or reconcile error hierarchy
+- [x] Rename crate from `grapevine` to `drevo` (Cargo.toml, lib.rs)
+- [ ] Rename `StorageError` to `DrevoError` or reconcile error hierarchy
 - [ ] Add `serde`, `bincode`, `uuid`, `redb` to Cargo.toml dependencies
 - [x] Create `src/model.rs` with Node, Edge, NewNode, NodePatch structs per spec
-- [x] Create `src/db.rs` with `GraphNoteDb` struct skeleton
-- [x] Create `src/error.rs` with `GraphNoteError` enum
+- [x] Create `src/db.rs` with `Drevo` struct skeleton
+- [x] Create `src/error.rs` with `DrevoError` enum
 
 ---
 
@@ -547,7 +704,7 @@ Use `thiserror` for all error definitions. `Result<T>` type alias everywhere.
 
 ### Role
 
-Senior Rust developer working on GraphNote DB. The project is educational, but the architecture must be production-grade.
+Senior Rust developer working on drevo. The project is educational, but the architecture must be production-grade.
 
 ### Session start
 
@@ -564,7 +721,7 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 
 ### Code rules
 
-- `Result<T, GraphNoteError>` on every public function
+- `Result<T, DrevoError>` on every public function
 - Tests for every public method
 - `#[derive(Debug, Clone, Serialize, Deserialize)]` where applicable
 - Doc-comments on pub API
@@ -584,11 +741,11 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00004` MemoryBackend persist/load (bincode snapshot to disk)
 - [x] `00005` RedbBackend (ACID, B-tree, persistent)
 - [x] `00059` GitHub Actions CI — test, clippy, fmt
-- [x] Rename crate from `grapevine` to `graphnote-db`
+- [x] Rename crate from `grapevine` to `drevo`
 - [x] `00006` Shared integration test suite for both backends (macro-parameterized)
 - [x] `00007` Benchmark: put/get/scan_prefix on 100K entries (criterion)
 - [x] `00008` Define types: Node, Edge, NewNode, NodePatch, UUID v7
-- [x] `00009` GraphNoteDb::open / open_in_memory / close / compact
+- [x] `00009` Drevo::open / open_in_memory / close / compact
 - [x] `00010` Node CRUD: create_node, get_node, get_node_by_uuid, get_node_by_title, update_node, delete_node
 - [x] `00011` Edge CRUD: create_edge, get_edge, get_edge_by_uuid, update_edge, delete_edge, edges_of
 - [x] `00012` Kind index: list_nodes_by_kind, list_edges_by_kind with pagination
@@ -606,8 +763,8 @@ Senior Rust developer working on GraphNote DB. The project is educational, but t
 - [x] `00024` subgraph(root, depth) — BFS in Both directions, SubGraph struct
 - [x] `00025` Cross-algorithm traversal edge-case tests (28 tests: cycles, disconnected, empty, single node, depth 0, self-loops, diamonds, long chains, direction filtering, edge kind filtering, parallel edges, max depth, 5 use-case scenarios)
 - [x] `00026` Traversal benchmark: BFS/DFS/shortest_path/subgraph on 100K nodes, degree 10 (criterion)
-- [x] `00027` C FFI header (`graphnote.h`) — opaque handle, JSON serialization, thread-local error, cbindgen auto-generation
-- [x] `00028` WASM bindings (`wasm-bindgen`) — WasmGraphNoteDb JS class, JSON serialization, memory-only backend, 30 integration tests
+- [x] `00027` C FFI header (`drevo.h`) — opaque handle, JSON serialization, thread-local error, cbindgen auto-generation
+- [x] `00028` WASM bindings (`wasm-bindgen`) — WasmDrevo JS class, JSON serialization, memory-only backend, 30 integration tests
 - [x] `00029` WASM redb verification + fallback — redb excluded on WASM via compile-time cfg, MemoryBackend as fallback, feature-gated Cargo.toml
 - [x] `00030` Cross-compilation CI — GitHub Actions workflow for iOS (aarch64-apple-ios), Android (aarch64-linux-android), WASM (wasm32-unknown-unknown), plus 10 cross-compilation validation tests
 - [x] `00031` Platform smoke tests — 6 tests: MemoryBackend full workflow, RedbBackend full workflow with persistence verification, FFI C API roundtrip, WASM-compatible API surface with JSON roundtrip, disk persistence, Unicode/i18n (CJK, emoji, Cyrillic)
@@ -693,7 +850,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **WASM platform strategy:**
 - **redb does not compile for `wasm32-unknown-unknown`** — it depends on filesystem I/O (`std::fs`, `std::path`) unavailable in browser environments
-- **Fallback: `MemoryBackend` exclusively** — compile-time `#[cfg]` gates ensure `RedbBackend` and disk-backed `GraphNoteDb::open()` are excluded on WASM
+- **Fallback: `MemoryBackend` exclusively** — compile-time `#[cfg]` gates ensure `RedbBackend` and disk-backed `Drevo::open()` are excluded on WASM
 - **Feature-gated Cargo.toml**: `redb-backend` (default) enables redb on native; `wasm` enables `wasm-bindgen`, `js-sys`, `getrandom/wasm_js` for browser
 - **`MemoryBackend` persistence methods** (`open(path)`, `flush()` to disk) are gated behind `#[cfg(not(target_arch = "wasm32"))]`
 - **`cbindgen` build step** is feature-gated — skipped on WASM builds
@@ -701,15 +858,15 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 - **Verified**: `cargo check --target wasm32-unknown-unknown --no-default-features --features wasm` compiles cleanly
 
 **FFI layer design:**
-- Opaque handle pattern: C consumers receive `graphnote_db_t*` — an opaque pointer
+- Opaque handle pattern: C consumers receive `drevo_t*` — an opaque pointer
 - JSON serialization: complex types (Node, Edge, SubGraph, ScoredNode) cross FFI as JSON C strings
-- Thread-local error: `graphnote_last_error()` returns last error, cleared on success
-- Memory ownership: caller frees returned strings via `graphnote_free_string()`
-- Auto-generated header: `cbindgen` produces `graphnote.h` at build time
+- Thread-local error: `drevo_last_error()` returns last error, cleared on success
+- Memory ownership: caller frees returned strings via `drevo_free_string()`
+- Auto-generated header: `cbindgen` produces `drevo.h` at build time
 - 21 FFI functions: lifecycle (3), node CRUD (4), edge CRUD (4), traversal (5), search (3), utility (2)
 
 **WASM bindings design:**
-- Wrapper class: `WasmGraphNoteDb` exported as JS class via `wasm-bindgen`
+- Wrapper class: `WasmDrevo` exported as JS class via `wasm-bindgen`
 - JSON serialization: complex types cross WASM boundary as JS objects via `serde_json` + `js_sys::JSON`
 - Error handling: Rust errors converted to JS exceptions via `JsValue::from_str`
 - Memory-only: WASM targets use `MemoryBackend` exclusively (no filesystem in browser)
@@ -719,7 +876,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 **Cross-compilation CI design:**
 - Separate workflow (`cross-compile.yml`) to avoid slowing down the main CI
 - **WASM job** (ubuntu): `cargo check` + `cargo build` with `--no-default-features --features wasm`, verifies `.wasm` artifact
-- **iOS job** (macos): `cargo check` + `cargo build` with default features, verifies `.a` static library and `graphnote.h` header
+- **iOS job** (macos): `cargo check` + `cargo build` with default features, verifies `.a` static library and `drevo.h` header
 - **Android job** (ubuntu): installs Android NDK, configures linker, `cargo check` + `cargo build` with `--no-default-features --features redb-backend`
 - **Host tests job**: runs `cross_compilation_tests.rs` (10 tests: feature gates, API surface, portability)
 
@@ -733,9 +890,34 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 - **Unicode/i18n**: CJK, emoji, Cyrillic content roundtrip + FTS search
 - CI: smoke tests run on Ubuntu and macOS hosts; WASM/iOS/Android verified via compilation checks
 
-**Next steps:**
+**Next steps (re-ranked per the long-term roadmap):**
 
-1. `00044` — Integration tests: HTTP endpoints against in-memory backend — Phase 7 (HTTP API)
+1. **Finish Phase 8** (`00047`–`00052`): `docker-compose.yml`, K8s manifests, health check + graceful shutdown, CI image publish to ghcr.io, container persistence integration test
+2. **Finish Phase 9** (`00053`–`00060`): WAL / crash recovery, compaction, JSON & GraphML import/export, property-based tests, FTS tokenizer fuzz, rustdoc on public APIs
+3. **Begin Phase 10** (`00061`–`00069`): Cypher query language — start with the lexer (`00061`), then parser, then executor for CREATE / MATCH / RETURN
+4. **Parallel track**: Phase 12 (`00075`–`00079`) — vector storage and HNSW index — can start independently as soon as Phase 10 is underway
+5. **Phase 15 early-value items**: `00090` MCP server and `00092` Web UI deliver visible value early and can run alongside Phases 10-12
+
+---
+
+## MCP Server (Planned)
+
+A planned `drevo-mcp` stdio binary will expose drevo as a [Model Context Protocol](https://modelcontextprotocol.io) server for Cline, Claude Code, and other MCP-compatible AI clients. The binary uses embedded storage (no Docker required) and is configured via the host's MCP settings file:
+
+```json
+{
+  "mcpServers": {
+    "drevo": {
+      "command": "/path/to/drevo-mcp",
+      "env": { "DREVO_DATA_DIR": "~/.drevo/data" }
+    }
+  }
+}
+```
+
+The MCP server will expose node CRUD, edge CRUD, traversal, FTS, and (after Phase 10) Cypher query tools — enabling an AI agent to read and write the knowledge graph as part of a conversation.
+
+Tracked as task `00090` (Phase 15).
 
 ---
 

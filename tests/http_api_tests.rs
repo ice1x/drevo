@@ -17,14 +17,14 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use graphnote_db::api::{build_router, ApiState};
-use graphnote_db::db::GraphNoteDb;
+use drevo::api::{build_router, ApiState};
+use drevo::db::Drevo;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 fn make_app() -> axum::Router {
-    let db = Arc::new(GraphNoteDb::open_in_memory().expect("open in-memory db"));
+    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
     let state = ApiState::new(db);
     build_router(state)
 }
@@ -115,7 +115,7 @@ async fn root_returns_server_info() {
         .to_bytes();
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
 
-    assert_eq!(value["name"], "graphnote-db");
+    assert_eq!(value["name"], "drevo");
     assert!(
         value["version"].is_string(),
         "version should be a string, got {value:?}"
@@ -145,8 +145,8 @@ async fn unknown_route_returns_404() {
 async fn api_state_is_cloneable_and_shares_db() {
     // The state must be `Clone` so axum can hand it to every request
     // without recreating the database. Both clones must observe the
-    // same underlying `GraphNoteDb`.
-    let db = Arc::new(GraphNoteDb::open_in_memory().expect("open in-memory db"));
+    // same underlying `Drevo`.
+    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
     let state_a = ApiState::new(Arc::clone(&db));
     let state_b = state_a.clone();
 
@@ -1155,7 +1155,7 @@ async fn get_status_returns_server_metadata() {
     let (status, value) = send(&app, "GET", "/status", None).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["name"], "graphnote-db");
+    assert_eq!(value["name"], "drevo");
     assert!(value["version"].is_string());
     let version = value["version"].as_str().unwrap();
     assert!(!version.is_empty());
@@ -1312,7 +1312,7 @@ async fn shortest_path_missing_params_includes_status_400() {
 //
 // These tests exercise full workflows through the HTTP API, combining
 // multiple endpoints in realistic sequences that mirror how a real
-// client would interact with GraphNote DB. Each test verifies
+// client would interact with drevo. Each test verifies
 // cross-endpoint consistency and data integrity.
 // =====================================================================
 
@@ -2162,7 +2162,7 @@ async fn integration_health_and_status_during_operations() {
 
     let (status, st) = send(&app, "GET", "/status", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(st["name"], "graphnote-db");
+    assert_eq!(st["name"], "drevo");
     assert!(st["uptime_seconds"].is_u64());
 }
 

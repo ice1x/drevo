@@ -1,11 +1,11 @@
-//! WebAssembly bindings for GraphNote DB via `wasm-bindgen`.
+//! WebAssembly bindings for drevo via `wasm-bindgen`.
 //!
-//! Exposes the [`GraphNoteDb`] API to JavaScript/TypeScript through
+//! Exposes the [`Drevo`] API to JavaScript/TypeScript through
 //! `wasm-bindgen`, enabling browser and Tauri v2 WASM usage.
 //!
 //! ## Design
 //!
-//! - **Wrapper struct**: [`WasmGraphNoteDb`] wraps the Rust [`GraphNoteDb`]
+//! - **Wrapper struct**: [`WasmDrevo`] wraps the Rust [`Drevo`]
 //!   and is exported as a JS class.
 //! - **JSON serialization**: complex types (Node, Edge, SubGraph, ScoredNode)
 //!   cross the WASM boundary as `JsValue` (parsed from JSON via serde).
@@ -25,14 +25,14 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::db::GraphNoteDb;
+use crate::db::Drevo;
 use crate::model::{Direction, EdgePatch, NewEdge, NewNode, NodePatch, Properties};
 
 // ---------------------------------------------------------------------------
 // Error conversion
 // ---------------------------------------------------------------------------
 
-/// Convert a GraphNoteError into a JsValue for throwing as a JS exception.
+/// Convert a DrevoError into a JsValue for throwing as a JS exception.
 fn to_js_err(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
@@ -72,29 +72,29 @@ fn parse_properties(val: &JsValue) -> Result<Properties, JsValue> {
 }
 
 // ---------------------------------------------------------------------------
-// WasmGraphNoteDb
+// WasmDrevo
 // ---------------------------------------------------------------------------
 
-/// GraphNote DB handle for WebAssembly.
+/// drevo handle for WebAssembly.
 ///
-/// Use `WasmGraphNoteDb.new()` to create an in-memory database.
+/// Use `WasmDrevo.new()` to create an in-memory database.
 /// All complex values (Node, Edge, etc.) are passed as JS objects.
 #[wasm_bindgen]
-pub struct WasmGraphNoteDb {
-    db: Option<GraphNoteDb>,
+pub struct WasmDrevo {
+    db: Option<Drevo>,
 }
 
 #[wasm_bindgen]
-impl WasmGraphNoteDb {
+impl WasmDrevo {
     // ----- Lifecycle -----
 
-    /// Create a new in-memory GraphNote database.
+    /// Create a new in-memory Drevo database.
     ///
     /// WASM targets always use in-memory storage (no filesystem).
     #[wasm_bindgen(constructor)]
-    pub fn new() -> Result<WasmGraphNoteDb, JsValue> {
-        let db = GraphNoteDb::open_in_memory().map_err(to_js_err)?;
-        Ok(WasmGraphNoteDb { db: Some(db) })
+    pub fn new() -> Result<WasmDrevo, JsValue> {
+        let db = Drevo::open_in_memory().map_err(to_js_err)?;
+        Ok(WasmDrevo { db: Some(db) })
     }
 
     /// Close the database and release resources.
@@ -428,5 +428,5 @@ impl WasmGraphNoteDb {
 
 // Unit tests for wasm bindings require a JS runtime (wasm-pack test).
 // Native integration tests are in tests/wasm_tests.rs — they exercise the
-// same GraphNoteDb API surface that WasmGraphNoteDb delegates to, validating
+// same Drevo API surface that WasmDrevo delegates to, validating
 // correctness of JSON roundtrips and error handling without a WASM runtime.

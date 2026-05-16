@@ -1,6 +1,6 @@
 //! Scenario integration test: IT Task Manager
 //!
-//! This test validates GraphNote DB against a real-world IT task manager use case.
+//! This test validates drevo against a real-world IT task manager use case.
 //!
 //! Domain model:
 //! - Node kinds: `task`, `epic`, `sprint`, `developer`, `component`
@@ -18,22 +18,22 @@
 //! - Shortest path: find the critical dependency path between two tasks
 //! - Edge weight priorities and task status via properties
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::*;
+use drevo::db::Drevo;
+use drevo::model::*;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> GraphNoteDb {
-    GraphNoteDb::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> Drevo {
+    Drevo::open_in_memory().expect("open in-memory DB")
 }
 
 #[cfg(feature = "redb-backend")]
-fn redb_db(dir: &tempfile::TempDir) -> GraphNoteDb {
+fn redb_db(dir: &tempfile::TempDir) -> Drevo {
     let path = dir.path().join("task_manager_test.db");
-    GraphNoteDb::open(&path).expect("open redb DB")
+    Drevo::open(&path).expect("open redb DB")
 }
 
 fn make_node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -167,7 +167,7 @@ fn task_props(
     props
 }
 
-fn build_sprint_board(db: &GraphNoteDb) -> SprintBoard {
+fn build_sprint_board(db: &Drevo) -> SprintBoard {
     // --- Sprints ---
     let sprint_1 = db
         .create_node(make_node(
@@ -1518,7 +1518,7 @@ mod redb {
                 use super::*;
                 use tempfile::TempDir;
 
-                fn setup() -> (TempDir, GraphNoteDb) {
+                fn setup() -> (TempDir, Drevo) {
                     let dir = TempDir::new().expect("create temp dir");
                     let db = redb_db(&dir);
                     (dir, db)

@@ -4,8 +4,8 @@
 //! Task 00026 — measures traversal performance on MemoryBackend.
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
 use std::hint::black_box;
 
 const NUM_NODES: usize = 100_000;
@@ -13,8 +13,8 @@ const DEGREE: usize = 10; // average outgoing degree → 1M edges total
 
 /// Build a graph with NUM_NODES nodes, each with DEGREE outgoing edges
 /// to deterministic pseudo-random targets.
-fn populated_db() -> (GraphNoteDb, Vec<u64>) {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+fn populated_db() -> (Drevo, Vec<u64>) {
+    let db = Drevo::open_in_memory().unwrap();
     let mut ids = Vec::with_capacity(NUM_NODES);
 
     for i in 0..NUM_NODES {

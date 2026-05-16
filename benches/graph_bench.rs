@@ -3,8 +3,8 @@
 //! Task 00014 — measures graph-layer performance on both backends.
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
 use std::hint::black_box;
 
 const NUM_NODES: usize = 100_000;
@@ -31,8 +31,8 @@ fn make_edge(from_id: u64, to_id: u64, i: usize) -> NewEdge {
 }
 
 /// Build a fully populated in-memory graph: 100K nodes + 500K edges.
-fn populated_memory_db() -> (GraphNoteDb, Vec<u64>) {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+fn populated_memory_db() -> (Drevo, Vec<u64>) {
+    let db = Drevo::open_in_memory().unwrap();
     let mut node_ids = Vec::with_capacity(NUM_NODES);
 
     for i in 0..NUM_NODES {
@@ -67,7 +67,7 @@ fn bench_insert_nodes(c: &mut Criterion) {
     // layer will batch writes in transactions for production use.
     group.bench_function("MemoryBackend", |b| {
         b.iter(|| {
-            let db = GraphNoteDb::open_in_memory().unwrap();
+            let db = Drevo::open_in_memory().unwrap();
             for i in 0..NUM_NODES {
                 db.create_node(make_node(i)).unwrap();
             }
@@ -88,7 +88,7 @@ fn bench_insert_edges(c: &mut Criterion) {
     group.bench_function("MemoryBackend", |b| {
         b.iter_batched(
             || {
-                let db = GraphNoteDb::open_in_memory().unwrap();
+                let db = Drevo::open_in_memory().unwrap();
                 let mut ids = Vec::with_capacity(NUM_NODES);
                 for i in 0..NUM_NODES {
                     ids.push(db.create_node(make_node(i)).unwrap().id);

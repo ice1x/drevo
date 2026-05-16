@@ -202,7 +202,7 @@ fn tempfile_in(dir: &Path) -> Result<TempFile> {
         .unwrap_or_default()
         .as_nanos();
     let pid = std::process::id();
-    let name = format!(".graphnote-tmp-{pid}-{stamp}");
+    let name = format!(".drevo-tmp-{pid}-{stamp}");
     let path = dir.join(name);
     let file = fs::File::create(&path)?;
     Ok(TempFile {

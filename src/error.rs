@@ -1,10 +1,10 @@
-//! Top-level error types for GraphNote DB.
+//! Top-level error types for drevo.
 
 use crate::storage::StorageError;
 
-/// Errors that can occur during GraphNote DB operations.
+/// Errors that can occur during drevo operations.
 #[derive(Debug, thiserror::Error)]
-pub enum GraphNoteError {
+pub enum DrevoError {
     /// An error from the underlying storage layer.
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
@@ -34,5 +34,5 @@ pub enum GraphNoteError {
     Io(#[from] std::io::Error),
 }
 
-/// Convenience type alias for GraphNote DB operations.
-pub type Result<T> = std::result::Result<T, GraphNoteError>;
+/// Convenience type alias for drevo operations.
+pub type Result<T> = std::result::Result<T, DrevoError>;

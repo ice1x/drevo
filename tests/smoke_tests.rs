@@ -13,8 +13,8 @@
 //! - WASM: memory variant only (via wasm target compilation check)
 //! - iOS/Android: compiled as part of the static library
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, NodePatch, Properties};
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, NodePatch, Properties};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -29,9 +29,9 @@ fn props(pairs: &[(&str, serde_json::Value)]) -> Properties {
     Properties(map)
 }
 
-/// The core smoke test workflow exercised against a GraphNoteDb instance.
+/// The core smoke test workflow exercised against a Drevo instance.
 /// Returns Ok(()) if all steps pass.
-fn run_smoke_workflow(db: &GraphNoteDb) -> Result<(), String> {
+fn run_smoke_workflow(db: &Drevo) -> Result<(), String> {
     // --- Step 1: Create nodes ---
     let node_a = db
         .create_node(NewNode {
@@ -269,7 +269,7 @@ fn run_smoke_workflow(db: &GraphNoteDb) -> Result<(), String> {
 
 #[test]
 fn smoke_memory_backend_full_workflow() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     run_smoke_workflow(&db).unwrap();
     db.close().unwrap();
 }
@@ -283,12 +283,12 @@ fn smoke_memory_backend_full_workflow() {
 fn smoke_redb_backend_full_workflow() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("smoke_test.db");
-    let db = GraphNoteDb::open(&db_path).unwrap();
+    let db = Drevo::open(&db_path).unwrap();
     run_smoke_workflow(&db).unwrap();
     db.close().unwrap();
 
     // Verify persistence: reopen and check data survived
-    let db2 = GraphNoteDb::open(&db_path).unwrap();
+    let db2 = Drevo::open(&db_path).unwrap();
     let recent = db2.list_recent(10).unwrap();
     // After workflow: 3 created, 1 deleted = 2 remaining
     assert_eq!(
@@ -316,18 +316,18 @@ fn smoke_redb_backend_full_workflow() {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod ffi_smoke {
-    use graphnote_db::ffi::*;
+    use drevo::ffi::*;
     use std::ffi::{CStr, CString};
 
     unsafe fn read_and_free(ptr: *mut std::os::raw::c_char) -> String {
         assert!(!ptr.is_null(), "FFI returned null string");
         let s = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        graphnote_free_string(ptr);
+        drevo_free_string(ptr);
         s
     }
 
     unsafe fn last_error() -> Option<String> {
-        let ptr = graphnote_last_error();
+        let ptr = drevo_last_error();
         if ptr.is_null() {
             None
         } else {
@@ -339,7 +339,7 @@ mod ffi_smoke {
     fn smoke_ffi_full_workflow() {
         unsafe {
             // --- Open ---
-            let db = graphnote_open_in_memory();
+            let db = drevo_open_in_memory();
             assert!(!db.is_null(), "FFI open failed: {:?}", last_error());
 
             // --- Create node ---
@@ -349,7 +349,7 @@ mod ffi_smoke {
             let body_html = CString::new("<p>Body</p>").unwrap();
 
             let empty_props = CString::new("{}").unwrap();
-            let json = graphnote_create_node(
+            let json = drevo_create_node(
                 db,
                 kind.as_ptr(),
                 title.as_ptr(),
@@ -365,14 +365,14 @@ mod ffi_smoke {
             let node_id = node["id"].as_u64().unwrap();
 
             // --- Get node ---
-            let get_json = graphnote_get_node(db, node_id);
+            let get_json = drevo_get_node(db, node_id);
             assert!(!get_json.is_null(), "get_node failed: {:?}", last_error());
             let got: serde_json::Value = serde_json::from_str(&read_and_free(get_json)).unwrap();
             assert_eq!(got["title"].as_str().unwrap(), "FFI Smoke Node");
 
             // --- Update node ---
             let patch = CString::new(r#"{"title":"FFI Smoke Node Updated"}"#).unwrap();
-            let upd_json = graphnote_update_node(db, node_id, patch.as_ptr());
+            let upd_json = drevo_update_node(db, node_id, patch.as_ptr());
             assert!(
                 !upd_json.is_null(),
                 "update_node failed: {:?}",
@@ -387,7 +387,7 @@ mod ffi_smoke {
             let body2 = CString::new("Tag for FFI smoke").unwrap();
             let html2 = CString::new("<p>Tag</p>").unwrap();
 
-            let json2 = graphnote_create_node(
+            let json2 = drevo_create_node(
                 db,
                 kind2.as_ptr(),
                 title2.as_ptr(),
@@ -400,7 +400,7 @@ mod ffi_smoke {
             let node2_id = node2["id"].as_u64().unwrap();
 
             let edge_kind = CString::new("tagged_with").unwrap();
-            let edge_json = graphnote_create_edge(
+            let edge_json = drevo_create_edge(
                 db,
                 node_id,
                 node2_id,
@@ -417,7 +417,7 @@ mod ffi_smoke {
 
             // --- Search FTS ---
             let query = CString::new("smoke").unwrap();
-            let search_json = graphnote_search_fts(db, query.as_ptr(), 10);
+            let search_json = drevo_search_fts(db, query.as_ptr(), 10);
             assert!(
                 !search_json.is_null(),
                 "search_fts failed: {:?}",
@@ -429,7 +429,7 @@ mod ffi_smoke {
             assert!(!arr.is_empty(), "FFI search_fts returned no results");
 
             // --- Neighbors ---
-            let neighbors_json = graphnote_neighbors(db, node_id, 0, std::ptr::null()); // 0 = Outgoing
+            let neighbors_json = drevo_neighbors(db, node_id, 0, std::ptr::null()); // 0 = Outgoing
             assert!(
                 !neighbors_json.is_null(),
                 "neighbors failed: {:?}",
@@ -441,7 +441,7 @@ mod ffi_smoke {
             assert_eq!(n_arr.len(), 1, "expected 1 neighbor via FFI");
 
             // --- BFS ---
-            let bfs_json = graphnote_bfs(db, node_id, 2, 0, std::ptr::null());
+            let bfs_json = drevo_bfs(db, node_id, 2, 0, std::ptr::null());
             assert!(!bfs_json.is_null(), "bfs failed: {:?}", last_error());
             let bfs: serde_json::Value = serde_json::from_str(&read_and_free(bfs_json)).unwrap();
             assert!(
@@ -450,7 +450,7 @@ mod ffi_smoke {
             );
 
             // --- Subgraph ---
-            let sg_json = graphnote_subgraph(db, node_id, 1);
+            let sg_json = drevo_subgraph(db, node_id, 1);
             assert!(!sg_json.is_null(), "subgraph failed: {:?}", last_error());
             let sg: serde_json::Value = serde_json::from_str(&read_and_free(sg_json)).unwrap();
             assert!(
@@ -459,15 +459,15 @@ mod ffi_smoke {
             );
 
             // --- Delete node ---
-            let rc = graphnote_delete_node(db, node2_id);
+            let rc = drevo_delete_node(db, node2_id);
             assert_eq!(rc, 0, "delete_node failed: {:?}", last_error());
 
             // Verify deleted
-            let gone = graphnote_get_node(db, node2_id);
+            let gone = drevo_get_node(db, node2_id);
             assert!(gone.is_null(), "deleted node should return null");
 
             // --- Close ---
-            let rc = graphnote_close(db);
+            let rc = drevo_close(db);
             assert_eq!(rc, 0, "close failed: {:?}", last_error());
         }
     }
@@ -477,12 +477,12 @@ mod ffi_smoke {
 // Smoke test 4: WASM-compatible API surface (compile-time verification)
 // ===========================================================================
 
-/// This test verifies that the entire API surface used by WasmGraphNoteDb
+/// This test verifies that the entire API surface used by WasmDrevo
 /// works correctly through the Rust API with MemoryBackend.
 /// On WASM targets, this is the only available path.
 #[test]
 fn smoke_wasm_compatible_api_surface() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     // Create
     let node = db
@@ -497,7 +497,7 @@ fn smoke_wasm_compatible_api_surface() {
 
     // JSON roundtrip (simulates WASM boundary crossing)
     let json = serde_json::to_string(&node).unwrap();
-    let deserialized: graphnote_db::model::Node = serde_json::from_str(&json).unwrap();
+    let deserialized: drevo::model::Node = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.id, node.id);
     assert_eq!(deserialized.title, node.title);
     assert_eq!(deserialized.uuid, node.uuid);
@@ -539,22 +539,21 @@ fn smoke_wasm_compatible_api_surface() {
         .unwrap();
 
     let edge_json = serde_json::to_string(&edge).unwrap();
-    let edge_back: graphnote_db::model::Edge = serde_json::from_str(&edge_json).unwrap();
+    let edge_back: drevo::model::Edge = serde_json::from_str(&edge_json).unwrap();
     assert_eq!(edge_back.from_id, node.id);
     assert_eq!(edge_back.to_id, node_with_props.id);
 
     // Subgraph via JSON roundtrip
     let sg = db.subgraph(node.id, 1).unwrap();
     let sg_json = serde_json::to_string(&sg).unwrap();
-    let sg_back: graphnote_db::model::SubGraph = serde_json::from_str(&sg_json).unwrap();
+    let sg_back: drevo::model::SubGraph = serde_json::from_str(&sg_json).unwrap();
     assert!(sg_back.nodes.len() >= 2);
 
     // ScoredNode via JSON roundtrip
     let results = db.search_fts("WASM verification", 10).unwrap();
     if !results.is_empty() {
         let scored_json = serde_json::to_string(&results[0]).unwrap();
-        let scored_back: graphnote_db::model::ScoredNode =
-            serde_json::from_str(&scored_json).unwrap();
+        let scored_back: drevo::model::ScoredNode = serde_json::from_str(&scored_json).unwrap();
         assert!(scored_back.score > 0.0);
     }
 
@@ -568,7 +567,7 @@ fn smoke_wasm_compatible_api_surface() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn smoke_memory_backend_disk_persistence() {
-    use graphnote_db::storage::{MemoryBackend, StorageBackend};
+    use drevo::storage::{MemoryBackend, StorageBackend};
 
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("memory_smoke.db");
@@ -594,7 +593,7 @@ fn smoke_memory_backend_disk_persistence() {
 
 #[test]
 fn smoke_unicode_cross_platform() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     // CJK content
     let cjk_node = db

@@ -1,8 +1,8 @@
 //! Integration tests for Edge CRUD operations (task 00011).
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::error::GraphNoteError;
-use graphnote_db::model::{Direction, EdgePatch, NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::error::DrevoError;
+use drevo::model::{Direction, EdgePatch, NewEdge, NewNode, Properties};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -40,8 +40,8 @@ fn sample_edge_with_props(from_id: u64, to_id: u64) -> NewEdge {
 }
 
 /// Helper: create a DB with two nodes and return (db, node1_id, node2_id).
-fn db_with_two_nodes() -> (GraphNoteDb, u64, u64) {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+fn db_with_two_nodes() -> (Drevo, u64, u64) {
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("Node A")).unwrap();
     let n2 = db.create_node(sample_node("Node B")).unwrap();
     (db, n1.id, n2.id)
@@ -89,23 +89,23 @@ fn create_edge_preserves_properties() {
 
 #[test]
 fn create_edge_from_nonexistent_node_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("Only")).unwrap();
     let err = db.create_edge(sample_edge(999, n1.id)).unwrap_err();
-    assert!(matches!(err, GraphNoteError::NodeNotFound(999)));
+    assert!(matches!(err, DrevoError::NodeNotFound(999)));
 }
 
 #[test]
 fn create_edge_to_nonexistent_node_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("Only")).unwrap();
     let err = db.create_edge(sample_edge(n1.id, 999)).unwrap_err();
-    assert!(matches!(err, GraphNoteError::NodeNotFound(999)));
+    assert!(matches!(err, DrevoError::NodeNotFound(999)));
 }
 
 #[test]
 fn create_self_loop_edge() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("Self")).unwrap();
     let edge = db.create_edge(sample_edge(n1.id, n1.id)).unwrap();
     assert_eq!(edge.from_id, n1.id);
@@ -142,7 +142,7 @@ fn get_edge_existing() {
 
 #[test]
 fn get_edge_nonexistent_returns_none() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     assert_eq!(db.get_edge(999).unwrap(), None);
 }
 
@@ -158,7 +158,7 @@ fn get_edge_by_uuid_existing() {
 
 #[test]
 fn get_edge_by_uuid_nonexistent_returns_none() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let fake_uuid = [0u8; 16];
     assert_eq!(db.get_edge_by_uuid(&fake_uuid).unwrap(), None);
 }
@@ -225,7 +225,7 @@ fn update_edge_changes_properties() {
 
 #[test]
 fn update_edge_nonexistent_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let err = db
         .update_edge(
             999,
@@ -235,7 +235,7 @@ fn update_edge_nonexistent_fails() {
             },
         )
         .unwrap_err();
-    assert!(matches!(err, GraphNoteError::EdgeNotFound(999)));
+    assert!(matches!(err, DrevoError::EdgeNotFound(999)));
 }
 
 // --- delete_edge ---
@@ -278,16 +278,16 @@ fn delete_edge_removes_from_adjacency_lists() {
 
 #[test]
 fn delete_edge_nonexistent_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let err = db.delete_edge(999).unwrap_err();
-    assert!(matches!(err, GraphNoteError::EdgeNotFound(999)));
+    assert!(matches!(err, DrevoError::EdgeNotFound(999)));
 }
 
 // --- edges_of ---
 
 #[test]
 fn edges_of_outgoing() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("A")).unwrap();
     let n2 = db.create_node(sample_node("B")).unwrap();
     let n3 = db.create_node(sample_node("C")).unwrap();
@@ -305,7 +305,7 @@ fn edges_of_outgoing() {
 
 #[test]
 fn edges_of_incoming() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("A")).unwrap();
     let n2 = db.create_node(sample_node("B")).unwrap();
     let n3 = db.create_node(sample_node("C")).unwrap();
@@ -320,7 +320,7 @@ fn edges_of_incoming() {
 
 #[test]
 fn edges_of_both() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("A")).unwrap();
     let n2 = db.create_node(sample_node("B")).unwrap();
     let n3 = db.create_node(sample_node("C")).unwrap();
@@ -337,7 +337,7 @@ fn edges_of_both() {
 
 #[test]
 fn edges_of_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("Lonely")).unwrap();
     let out = db.edges_of(n1.id, Direction::Outgoing).unwrap();
     assert!(out.is_empty());
@@ -345,7 +345,7 @@ fn edges_of_empty() {
 
 #[test]
 fn edges_of_self_loop() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(sample_node("Self")).unwrap();
     let edge = db.create_edge(sample_edge(n1.id, n1.id)).unwrap();
 
@@ -372,7 +372,7 @@ fn edges_persist_across_close_reopen() {
 
     let edge_uuid;
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         let n1 = db.create_node(sample_node("A")).unwrap();
         let n2 = db.create_node(sample_node("B")).unwrap();
         let edge = db.create_edge(sample_edge(n1.id, n2.id)).unwrap();
@@ -381,7 +381,7 @@ fn edges_persist_across_close_reopen() {
     }
 
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         // Edge data persists
         let edge = db.get_edge(1).unwrap().expect("edge should persist");
         assert_eq!(edge.kind, "links_to");

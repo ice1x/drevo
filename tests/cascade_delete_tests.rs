@@ -4,8 +4,8 @@
 //! outgoing) must be automatically deleted. This includes cleaning up
 //! adjacency lists, UUID indexes, and kind indexes for each removed edge.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
 
 fn node(kind: &str, title: &str) -> NewNode {
     NewNode {
@@ -31,7 +31,7 @@ fn edge(from_id: u64, to_id: u64, kind: &str) -> NewEdge {
 
 #[test]
 fn delete_node_removes_outgoing_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
     let e = db.create_edge(edge(a.id, b.id, "links_to")).unwrap();
@@ -46,7 +46,7 @@ fn delete_node_removes_outgoing_edges() {
 
 #[test]
 fn delete_node_removes_incoming_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
     let e = db.create_edge(edge(a.id, b.id, "links_to")).unwrap();
@@ -61,7 +61,7 @@ fn delete_node_removes_incoming_edges() {
 
 #[test]
 fn delete_node_removes_multiple_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
     let c = db.create_node(node("note", "C")).unwrap();
@@ -86,7 +86,7 @@ fn delete_node_removes_multiple_edges() {
 
 #[test]
 fn delete_node_removes_self_loop_edge() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let e = db.create_edge(edge(a.id, a.id, "self_ref")).unwrap();
 
@@ -99,7 +99,7 @@ fn delete_node_removes_self_loop_edge() {
 
 #[test]
 fn delete_node_cleans_edge_uuid_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
     let e = db.create_edge(edge(a.id, b.id, "links_to")).unwrap();
@@ -115,7 +115,7 @@ fn delete_node_cleans_edge_uuid_index() {
 
 #[test]
 fn delete_node_cleans_edge_kind_index() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
     db.create_edge(edge(a.id, b.id, "links_to")).unwrap();
@@ -133,7 +133,7 @@ fn delete_node_cleans_edge_kind_index() {
 
 #[test]
 fn delete_node_does_not_affect_unrelated_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
     let c = db.create_node(node("note", "C")).unwrap();
@@ -158,7 +158,7 @@ fn delete_node_does_not_affect_unrelated_edges() {
 
 #[test]
 fn delete_node_does_not_affect_other_nodes() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
     db.create_edge(edge(a.id, b.id, "links_to")).unwrap();
@@ -175,7 +175,7 @@ fn delete_node_does_not_affect_other_nodes() {
 
 #[test]
 fn delete_node_without_edges_succeeds() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
 
     // Should succeed even without any edges
@@ -187,7 +187,7 @@ fn delete_node_without_edges_succeeds() {
 
 #[test]
 fn delete_hub_node_cascades_all_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let hub = db.create_node(node("hub", "Hub")).unwrap();
 
     let mut edge_ids = Vec::new();
@@ -215,7 +215,7 @@ fn delete_hub_node_cascades_all_edges() {
 
 #[test]
 fn delete_node_with_bidirectional_edges() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
 
@@ -236,7 +236,7 @@ fn delete_node_with_bidirectional_edges() {
 
 #[test]
 fn create_edge_to_deleted_node_fails() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let a = db.create_node(node("note", "A")).unwrap();
     let b = db.create_node(node("note", "B")).unwrap();
 
@@ -246,7 +246,7 @@ fn create_edge_to_deleted_node_fails() {
     let err = db.create_edge(edge(a.id, b.id, "links_to")).unwrap_err();
     assert!(matches!(
         err,
-        graphnote_db::error::GraphNoteError::NodeNotFound(id) if id == a.id
+        drevo::error::DrevoError::NodeNotFound(id) if id == a.id
     ));
 }
 
@@ -258,7 +258,7 @@ fn cascade_delete_persists_across_reopen() {
     let path = dir.path().join("cascade.db");
 
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         let a = db.create_node(node("note", "A")).unwrap();
         let b = db.create_node(node("note", "B")).unwrap();
         let _e = db.create_edge(edge(a.id, b.id, "links_to")).unwrap();
@@ -268,7 +268,7 @@ fn cascade_delete_persists_across_reopen() {
     }
 
     {
-        let db = GraphNoteDb::open(&path).unwrap();
+        let db = Drevo::open(&path).unwrap();
         // Node A and its edge should be gone
         assert!(db.get_node(1).unwrap().is_none());
         // Edge 1 should be gone

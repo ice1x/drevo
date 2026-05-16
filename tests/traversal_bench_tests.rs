@@ -4,13 +4,13 @@
 //! average degree 10) works correctly with BFS, DFS, shortest_path,
 //! and subgraph at small scale before running full 100K-node benchmarks.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::db::Drevo;
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
 
 /// Build a graph with `n` nodes, each connected to `degree` random
 /// successors (deterministic pseudo-random via modular arithmetic).
-fn build_graph(n: usize, degree: usize) -> (GraphNoteDb, Vec<u64>) {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+fn build_graph(n: usize, degree: usize) -> (Drevo, Vec<u64>) {
+    let db = Drevo::open_in_memory().unwrap();
     let mut ids = Vec::with_capacity(n);
 
     for i in 0..n {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use graphnote_db::storage::{MemoryBackend, RedbBackend, StorageBackend, StorageError};
+use drevo::storage::{MemoryBackend, RedbBackend, StorageBackend, StorageError};
 
 // --- Macro to generate the StorageBackend contract tests for any backend ---
 

@@ -3,11 +3,11 @@
 //! Tests cover: edge-case queries, IDF corner cases, score stability,
 //! special Unicode, recall measurement, and sequential-update consistency.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::{NewNode, NodePatch, Properties};
+use drevo::db::Drevo;
+use drevo::model::{NewNode, NodePatch, Properties};
 
-fn db() -> GraphNoteDb {
-    GraphNoteDb::open_in_memory().unwrap()
+fn db() -> Drevo {
+    Drevo::open_in_memory().unwrap()
 }
 
 fn node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -273,11 +273,11 @@ fn search_fts_emoji_query() {
 #[test]
 fn search_fts_mixed_cjk_latin_query() {
     let db = db();
-    db.create_node(node("note", "GraphNote 数据库", "graph database"))
+    db.create_node(node("note", "Drevo 数据库", "graph database"))
         .unwrap();
-    let results = db.search_fts("GraphNote 数据", 10).unwrap();
+    let results = db.search_fts("Drevo 数据", 10).unwrap();
     // Mixed query: latin trigrams + CJK bigrams, intersection requires all
-    // Likely matches since the node contains both "graphnote" and "数据库"
+    // Likely matches since the node contains both "drevo" and "数据库"
     assert!(results.len() <= 1);
 }
 

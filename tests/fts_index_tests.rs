@@ -3,8 +3,8 @@
 //! Tests that the FTS index is maintained during node CRUD operations
 //! and that posting list queries return correct results.
 
-use graphnote_db::db::GraphNoteDb;
-use graphnote_db::model::NewNode;
+use drevo::db::Drevo;
+use drevo::model::NewNode;
 
 /// Helper to create a node with given title and body.
 fn make_node(title: &str, body: &str) -> NewNode {
@@ -23,7 +23,7 @@ fn make_node(title: &str, body: &str) -> NewNode {
 
 #[test]
 fn fts_index_created_on_node_create() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(make_node("Hello World", "")).unwrap();
 
     // "hello world" -> trigrams include "hel", "ell", "llo", etc.
@@ -42,7 +42,7 @@ fn fts_index_created_on_node_create() {
 
 #[test]
 fn fts_index_includes_body() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db
         .create_node(make_node("Title", "This is the body text"))
         .unwrap();
@@ -56,7 +56,7 @@ fn fts_index_includes_body() {
 
 #[test]
 fn fts_index_multiple_nodes_same_trigram() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("Hello Alice", "")).unwrap();
     let n2 = db.create_node(make_node("Hello Bob", "")).unwrap();
 
@@ -67,7 +67,7 @@ fn fts_index_multiple_nodes_same_trigram() {
 
 #[test]
 fn fts_index_removed_on_node_delete() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(make_node("Hello World", "")).unwrap();
     let node_id = node.id;
 
@@ -82,12 +82,12 @@ fn fts_index_removed_on_node_delete() {
 
 #[test]
 fn fts_index_updated_on_node_update_title() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(make_node("Hello World", "")).unwrap();
     let node_id = node.id;
 
     // Update title from "Hello World" to "Goodbye World"
-    let patch = graphnote_db::model::NodePatch {
+    let patch = drevo::model::NodePatch {
         title: Some("Goodbye World".to_string()),
         ..Default::default()
     };
@@ -110,11 +110,11 @@ fn fts_index_updated_on_node_update_title() {
 
 #[test]
 fn fts_index_updated_on_node_update_body() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(make_node("Title", "original body")).unwrap();
     let node_id = node.id;
 
-    let patch = graphnote_db::model::NodePatch {
+    let patch = drevo::model::NodePatch {
         body: Some("updated content".to_string()),
         ..Default::default()
     };
@@ -137,14 +137,14 @@ fn fts_index_updated_on_node_update_body() {
 
 #[test]
 fn fts_index_unchanged_fields_not_reindexed_unnecessarily() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db
         .create_node(make_node("Hello World", "some body"))
         .unwrap();
     let node_id = node.id;
 
     // Update only kind — title/body unchanged, FTS index should survive
-    let patch = graphnote_db::model::NodePatch {
+    let patch = drevo::model::NodePatch {
         kind: Some("article".to_string()),
         ..Default::default()
     };
@@ -163,7 +163,7 @@ fn fts_index_unchanged_fields_not_reindexed_unnecessarily() {
 
 #[test]
 fn fts_search_single_trigram() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("Hello", "")).unwrap();
     let _n2 = db.create_node(make_node("World", "")).unwrap();
 
@@ -173,7 +173,7 @@ fn fts_search_single_trigram() {
 
 #[test]
 fn fts_search_intersect_trigrams() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("Rust programming", "")).unwrap();
     let _n2 = db.create_node(make_node("Rust language", "")).unwrap();
     let _n3 = db.create_node(make_node("Python programming", "")).unwrap();
@@ -190,7 +190,7 @@ fn fts_search_intersect_trigrams() {
 
 #[test]
 fn fts_intersect_empty_trigrams_returns_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let _n1 = db.create_node(make_node("Hello", "")).unwrap();
 
     let ids = db.fts_intersect_trigrams(&[]).unwrap();
@@ -199,7 +199,7 @@ fn fts_intersect_empty_trigrams_returns_empty() {
 
 #[test]
 fn fts_intersect_no_match_returns_empty() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let _n1 = db.create_node(make_node("Hello", "")).unwrap();
 
     let ids = db.fts_intersect_trigrams(&["zzz".to_string()]).unwrap();
@@ -212,7 +212,7 @@ fn fts_intersect_no_match_returns_empty() {
 
 #[test]
 fn fts_index_cjk_bigrams() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let node = db.create_node(make_node("你好世界", "")).unwrap();
 
     let results = db.fts_node_ids_for_trigram("你好").unwrap();
@@ -228,7 +228,7 @@ fn fts_index_cjk_bigrams() {
 
 #[test]
 fn fts_index_empty_title_and_body() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     // Node with very short title, no body — no trigrams produced
     let _node = db.create_node(make_node("Hi", "")).unwrap();
     // Should not crash, just no FTS entries
@@ -236,7 +236,7 @@ fn fts_index_empty_title_and_body() {
 
 #[test]
 fn fts_index_survives_delete_of_other_node() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
     let n1 = db.create_node(make_node("Hello Alice", "")).unwrap();
     let n2 = db.create_node(make_node("Hello Bob", "")).unwrap();
 
@@ -254,7 +254,7 @@ fn fts_index_survives_delete_of_other_node() {
 
 #[test]
 fn fts_index_cbt_journal_scenario() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let thought = db
         .create_node(make_node(
@@ -283,7 +283,7 @@ fn fts_index_cbt_journal_scenario() {
 
 #[test]
 fn fts_index_story_editor_scenario() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let chapter = db
         .create_node(make_node(
@@ -308,7 +308,7 @@ fn fts_index_story_editor_scenario() {
 
 #[test]
 fn fts_index_bug_tracker_scenario() {
-    let db = GraphNoteDb::open_in_memory().unwrap();
+    let db = Drevo::open_in_memory().unwrap();
 
     let bug = db
         .create_node(make_node(

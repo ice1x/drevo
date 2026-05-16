@@ -1,0 +1,228 @@
+---
+name: drevo-rust
+description: Rust best practices for drevo — error handling, lifetimes, async, redb transactions, FFI safety, WASM gating, Cargo workspace conventions
+---
+
+# drevo — Rust Best Practices
+
+## When to Use
+Whenever writing or modifying Rust code in this project.
+
+---
+
+## Error Handling
+
+### Use `thiserror` + a single error enum per crate
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum DrevoError {
+    #[error("storage error: {0}")]
+    Storage(#[from] redb::Error),
+    #[error("serialization error: {0}")]
+    Serialization(#[from] bincode::error::EncodeError),
+    #[error("node not found: {0}")]
+    NodeNotFound(u64),
+    #[error("edge not found: {0}")]
+    EdgeNotFound(u64),
+    #[error("duplicate title: {0}")]
+    DuplicateTitle(String),
+    #[error("database locked")]
+    Locked,
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, DrevoError>;
+```
+
+### Rules
+- Every `pub fn` returning anything fallible returns `Result<T, DrevoError>`
+- Never `unwrap()` / `expect()` in library code — only in tests and benchmarks
+- Use `?` for propagation, not `match` with manual conversion
+- New error variants get added at the crate level — don't introduce ad-hoc `Box<dyn Error>` in deep paths
+
+### Error layering across boundaries
+
+```
+Storage Error → DrevoError → HTTP/JSON error → 5xx response
+```
+
+The HTTP layer (`api.rs`) translates `DrevoError` to the right status code and JSON body. Never let internal redb errors leak directly into HTTP responses.
+
+---
+
+## Ownership Patterns
+
+### Use IDs, not references
+The graph is stored by ID, not by reference. Self-referential structures with lifetimes are a code smell:
+
+```rust
+// BAD
+struct Node<'a> { neighbors: Vec<&'a Node<'a>> }
+
+// GOOD (what drevo does)
+struct Node { id: u64 }
+fn out_edges(node_id: u64) -> Result<Vec<Edge>>;
+```
+
+### Avoid `.clone()` reflexes
+Cloning to escape borrow-checker errors is a sign of a wrong ownership design. Restructure with:
+- `&str` / `&[u8]` for read-only refs
+- `Cow<'_, str>` when you need owned-or-borrowed
+- `Arc<T>` for shared immutable ownership across threads
+- Clone is fine for: small Copy types (u64, bool), error messages, rare control paths
+
+### Prefer `&self` over `&mut self` where possible
+Read paths (`get_node`, `search_fts`) must be `&self` so they're callable behind a shared reference. Write paths (`create_node`) take `&mut self` or use interior mutability (`RwLock`).
+
+---
+
+## redb Transaction Patterns
+
+### Read transactions are cheap; write transactions serialize
+
+```rust
+let read_txn = db.begin_read()?;
+let table = read_txn.open_table(NODES_TABLE)?;
+let value = table.get(&id)?;
+```
+
+### Always commit explicitly on write paths
+
+```rust
+let write_txn = db.begin_write()?;
+{
+    let mut table = write_txn.open_table(NODES_TABLE)?;
+    table.insert(&id, &bytes)?;
+}
+write_txn.commit()?;
+```
+
+### Batch writes — don't open a transaction per node
+
+For bulk inserts (migrations, scenario test setup), open one write transaction and insert many entries before committing. Per-operation ACID transactions on 100K+ inserts are measured at ~530s on this machine — unusable.
+
+### WASM doesn't support redb
+
+`redb` requires `std::fs` / `std::path`, which are unavailable in `wasm32-unknown-unknown`. WASM builds use `MemoryBackend` exclusively. The `RedbBackend` and `Drevo::open(path)` are gated behind `#[cfg(not(target_arch = "wasm32"))]`.
+
+---
+
+## Serialization
+
+- Internal data (KV store): `bincode v2` — compact, fast, deterministic
+- Configs and dumps: `serde_json` — human-readable
+- All persistable structs: `#[derive(Serialize, Deserialize)]`
+- `properties: HashMap<String, serde_json::Value>` — arbitrary metadata without schema migration
+
+---
+
+## Async / Tokio
+
+- HTTP server uses `axum` + `tokio` (multi-thread runtime)
+- Storage layer is synchronous (redb is blocking) — wrap blocking calls in `tokio::task::spawn_blocking` if called from async handlers and the operation is expensive
+- Don't make the public API async unless it actually awaits something — `async fn` that doesn't await is a worse signature
+- Future Bolt protocol (Phase 11) will be fully async via `tokio::net::TcpListener`
+
+---
+
+## FFI Safety
+
+### Opaque handle pattern
+C consumers receive `drevo_t*` — an opaque pointer. The Rust side owns the allocation; the C side never dereferences it.
+
+### JSON over the boundary
+Complex types (Node, Edge, SubGraph, ScoredNode) cross the FFI boundary as JSON C strings. This avoids ABI compatibility issues and keeps the C surface small.
+
+### Thread-local error
+`drevo_last_error()` returns the last error from the current thread. Cleared on success.
+
+### Memory ownership rules
+- Returned strings must be freed by the caller via `drevo_free_string()`
+- Returned handles must be freed by `drevo_close()`
+- Documented in `drevo.h` (auto-generated by `cbindgen`)
+
+### No panics across FFI
+Panics across the FFI boundary are undefined behavior. Wrap every `extern "C"` function in `std::panic::catch_unwind` and convert panics to error codes.
+
+---
+
+## WASM Bindings
+
+### `wasm-bindgen` exports
+```rust
+#[wasm_bindgen]
+pub struct WasmDrevo { inner: Drevo }
+
+#[wasm_bindgen]
+impl WasmDrevo {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Result<WasmDrevo, JsValue> { ... }
+}
+```
+
+### JSON over the boundary
+JS objects ↔ Rust types via `serde_json` + `js_sys::JSON`. Avoid exposing raw Rust types directly to JS.
+
+### Errors become JS exceptions
+Rust `DrevoError` is converted to `JsValue::from_str(...)` and propagated as a JS exception.
+
+### `getrandom` for UUID v7
+WASM needs the `wasm_js` feature on `getrandom` (or `js` on the older v0.2 series) for browser-compatible RNG.
+
+---
+
+## Cargo Features
+
+```toml
+[features]
+default       = ["redb-backend", "cbindgen", "http"]
+redb-backend  = ["redb"]
+wasm          = ["wasm-bindgen", "js-sys", "getrandom/wasm_js"]
+http          = ["axum", "tokio", "tower"]
+```
+
+- `default` includes everything for native server builds
+- `wasm` is exclusive: `cargo check --target wasm32-unknown-unknown --no-default-features --features wasm`
+- Adding a new feature: gate the code with `#[cfg(feature = "...")]`, add a CI matrix entry, document in README
+
+---
+
+## Benchmarking with `criterion`
+
+- Always benchmark before optimizing — measure, don't guess
+- Bench files live in `benches/`
+- One `criterion_group!` per benchmark file; multiple `bench_function` per group
+- Warm-up + measurement separated; criterion handles it automatically
+- A benchmark is NOT a test — write both for performance-critical code
+
+---
+
+## Code Style
+
+- **Edition 2021**, MSRV latest stable
+- **All comments / docs / commit messages in English** (per `CLAUDE.md`)
+- `cargo fmt` before every commit (CI enforces)
+- `cargo clippy -- -W clippy::all` with zero warnings
+- Max 3 levels of indentation in any function — refactor with early returns or helpers
+- Doc-comments on every `pub` item; runnable examples in doc-comments where useful
+- Naming: `snake_case` files & functions, `PascalCase` types, `SCREAMING_SNAKE_CASE` constants
+
+---
+
+## When to Reach for Generics vs Trait Objects
+
+- **Generics (`impl Trait`, `<T: Trait>`)**: closed set of types known at compile time, performance matters → monomorphization, no vtable
+- **Trait objects (`Box<dyn Trait>`, `&dyn Trait`)**: open set of types, runtime polymorphism, ABI stability → dynamic dispatch, fits behind FFI boundary
+- Default to generics; reach for trait objects only when there's a reason (heterogeneous collections, plugin systems)
+
+---
+
+## Common Pitfalls in This Codebase
+
+1. **Forgetting to update both `out_edges` and `in_edges`** when creating/deleting an edge — they must stay consistent. Tests cover this via cascading deletion.
+2. **Forgetting to update FTS index** on `update_node` — the index must be deindexed-then-reindexed when title or body changes.
+3. **Forgetting `#[cfg(not(target_arch = "wasm32"))]` gates** on filesystem code — breaks WASM builds. Always verify with `cargo check --target wasm32-unknown-unknown --no-default-features --features wasm`.
+4. **Per-operation redb transactions in loops** — write performance collapses. Use one transaction per logical batch.
+5. **Holding a read transaction across an `.await`** — redb transactions are `!Send` in some configs; design carefully.
