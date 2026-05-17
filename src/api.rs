@@ -123,13 +123,17 @@ impl ApiState {
     /// before SIGKILL lands. Idempotent — multiple signals that land
     /// in quick succession are safe.
     pub fn signal_shutdown(&self) {
-        self.shutting_down.store(true, Ordering::SeqCst);
+        // Release pairs with Acquire in `is_shutting_down` — that is
+        // all we need: a single boolean transition that becomes
+        // visible to every reader. No total order across other atomics
+        // is required.
+        self.shutting_down.store(true, Ordering::Release);
     }
 
     /// Returns `true` after [`signal_shutdown`](Self::signal_shutdown)
     /// has been called on this state (or any clone of it).
     pub fn is_shutting_down(&self) -> bool {
-        self.shutting_down.load(Ordering::SeqCst)
+        self.shutting_down.load(Ordering::Acquire)
     }
 }
 
@@ -596,19 +600,27 @@ async fn search_fts(
 // Admin endpoints (task 00042)
 // ---------------------------------------------------------------------
 
-/// JSON body returned by `GET /health` and `GET /ready`.
-///
-/// Container orchestrators (Kubernetes, Docker, Nomad) only need a
-/// cheap 200-or-not signal. The `status` field carries one of:
-/// `"ok"` (liveness — process can serve HTTP), `"ready"` (readiness —
-/// process *and* underlying database are responsive), or
-/// `"shutting_down"` (the process has received SIGTERM/Ctrl+C and is
-/// draining). The numeric HTTP status code communicates the overall
-/// outcome — 200 for the first two, 503 for the third.
+/// Status values reported by `GET /health` and `GET /ready`. Serialized
+/// as a lowercase string so the JSON payload stays the same as before
+/// (`"ok"`, `"ready"`, `"shutting_down"`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    /// Liveness — the HTTP task is serving requests.
+    Ok,
+    /// Readiness — the HTTP task and the storage backend are both
+    /// responsive.
+    Ready,
+    /// The process has received SIGTERM/Ctrl+C and is draining.
+    ShuttingDown,
+}
+
+/// JSON body returned by `GET /health` and `GET /ready`. The numeric
+/// HTTP status code conveys success (200) vs. drained/unhealthy (503).
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
-    /// Status marker — `"ok"`, `"ready"`, or `"shutting_down"`.
-    pub status: &'static str,
+    /// Status marker — see [`HealthStatus`].
+    pub status: HealthStatus,
 }
 
 /// JSON body returned by `GET /status`.
@@ -627,49 +639,43 @@ pub struct StatusResponse {
     pub uptime_seconds: u64,
 }
 
-/// Handler for `GET /health` — Kubernetes-style liveness probe.
-///
-/// Stays dependency-free (no DB call, no allocation on the hot path)
-/// so that a busy or locked database does not cause liveness probes
-/// to fail and trigger an unnecessary pod restart. The only state it
-/// consults is the shared `shutting_down` flag: once SIGTERM has been
-/// observed the response flips to `503` with body
-/// `{"status": "shutting_down"}` so that the load balancer drains
-/// traffic before SIGKILL lands.
+/// 503 response emitted by both `/health` and `/ready` during
+/// graceful shutdown.
+fn shutting_down_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(HealthResponse {
+            status: HealthStatus::ShuttingDown,
+        }),
+    )
+        .into_response()
+}
+
+/// Handler for `GET /health` — Kubernetes-style liveness probe. Stays
+/// dependency-free so DB contention does not trigger a pod restart.
 async fn health(State(state): State<ApiState>) -> Response {
     if state.is_shutting_down() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(HealthResponse {
-                status: "shutting_down",
-            }),
-        )
-            .into_response();
+        return shutting_down_response();
     }
-    Json(HealthResponse { status: "ok" }).into_response()
+    Json(HealthResponse {
+        status: HealthStatus::Ok,
+    })
+    .into_response()
 }
 
 /// Handler for `GET /ready` — Kubernetes-style readiness probe.
-///
-/// Unlike `/health`, this probe actively exercises the storage
-/// backend via [`Drevo::health_check`]. If the database mutex is
-/// poisoned, the redb file is missing, or the underlying disk is
-/// unreachable, this endpoint returns 503 so that the orchestrator
-/// stops sending application traffic to the pod. Also flips to 503
-/// during graceful shutdown — a draining pod is by definition not
-/// "ready" for new traffic, even if its DB is still answering.
+/// Actively exercises the storage backend via
+/// [`Drevo::health_check`]; returns 503 if the probe fails or the
+/// process is draining.
 async fn ready(State(state): State<ApiState>) -> Response {
     if state.is_shutting_down() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(HealthResponse {
-                status: "shutting_down",
-            }),
-        )
-            .into_response();
+        return shutting_down_response();
     }
     match state.db.health_check() {
-        Ok(()) => Json(HealthResponse { status: "ready" }).into_response(),
+        Ok(()) => Json(HealthResponse {
+            status: HealthStatus::Ready,
+        })
+        .into_response(),
         Err(err) => json_error(StatusCode::SERVICE_UNAVAILABLE, &err.to_string()),
     }
 }
