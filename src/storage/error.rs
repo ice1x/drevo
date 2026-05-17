@@ -1,6 +1,17 @@
 use std::fmt;
 
 /// Errors that can occur during storage operations.
+///
+/// This enum is intentionally **closed** — every distinct failure mode the
+/// storage layer can produce is a typed variant. Stringly-typed catch-alls
+/// (`Backend(String)`, `Serialization(String)`) were removed in audit
+/// task `00104` so that callers (and the HTTP layer in particular) can
+/// programmatically distinguish backend, encode, decode, and lock failures.
+///
+/// Sub-types of [`redb::Error`] (`redb::TableError`, `redb::CommitError`,
+/// `redb::StorageError`, `redb::TransactionError`, `redb::DatabaseError`)
+/// all convert to [`StorageError::Redb`] via the `?` operator — see the
+/// explicit `From` impls below.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     /// The requested key was not found.
@@ -11,23 +22,81 @@ pub enum StorageError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A serialization or deserialization error occurred.
-    #[error("serialization error: {0}")]
-    Serialization(String),
+    /// A bincode encode (serialization) error occurred while writing a
+    /// snapshot to disk or producing on-the-wire bytes.
+    #[error("encode error: {0}")]
+    Encode(#[from] bincode::error::EncodeError),
 
-    /// A backend-specific error that doesn't fit other categories.
-    #[error("backend error: {0}")]
-    Backend(String),
+    /// A bincode decode (deserialization) error occurred while loading a
+    /// snapshot or parsing on-the-wire bytes.
+    #[error("decode error: {0}")]
+    Decode(#[from] bincode::error::DecodeError),
+
+    /// A redb-backed storage operation failed.
+    ///
+    /// Wraps the upstream [`redb::Error`] directly so callers can match on
+    /// the exact failure mode (table missing, txn aborted, I/O, etc.)
+    /// instead of parsing a string. Boxed because [`redb::Error`] is a
+    /// large enum (~160 bytes) and inflating every `StorageError` to that
+    /// size triggers clippy's `result_large_err` lint at every `?` site.
+    #[cfg(feature = "redb-backend")]
+    #[error("redb error: {0}")]
+    Redb(Box<redb::Error>),
 
     /// A `Mutex` or `RwLock` protecting backend state was poisoned by a
     /// previous panic.
     ///
     /// The backend is in an unrecoverable state — the only sane response
     /// is to log and discard the backend handle. Distinguished from
-    /// [`StorageError::Backend`] because a poisoned lock is structural,
+    /// [`StorageError::Redb`] because a poisoned lock is structural,
     /// not a backend-internal I/O or transaction failure.
     #[error("lock poisoned")]
     LockPoisoned,
+}
+
+// Lift redb sub-error types into `StorageError::Redb` so `?` works at every
+// redb call site without an intermediate `.map_err(...)`. Each redb sub-type
+// already implements `From<X> for redb::Error` upstream; we box the result.
+#[cfg(feature = "redb-backend")]
+impl From<redb::Error> for StorageError {
+    fn from(e: redb::Error) -> Self {
+        Self::Redb(Box::new(e))
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+impl From<redb::TableError> for StorageError {
+    fn from(e: redb::TableError) -> Self {
+        Self::Redb(Box::new(e.into()))
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+impl From<redb::CommitError> for StorageError {
+    fn from(e: redb::CommitError) -> Self {
+        Self::Redb(Box::new(e.into()))
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+impl From<redb::TransactionError> for StorageError {
+    fn from(e: redb::TransactionError) -> Self {
+        Self::Redb(Box::new(e.into()))
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+impl From<redb::DatabaseError> for StorageError {
+    fn from(e: redb::DatabaseError) -> Self {
+        Self::Redb(Box::new(e.into()))
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+impl From<redb::StorageError> for StorageError {
+    fn from(e: redb::StorageError) -> Self {
+        Self::Redb(Box::new(e.into()))
+    }
 }
 
 /// Helper to display byte slices in error messages.

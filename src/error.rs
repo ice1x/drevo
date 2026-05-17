@@ -3,15 +3,32 @@
 use crate::storage::StorageError;
 
 /// Errors that can occur during drevo operations.
+///
+/// Two-layer architecture (per `drevo-architecture` §"Error Propagation"):
+/// `StorageError → DrevoError → ApiError → HTTP 5xx`. Each variant either
+/// wraps a lower-layer error (`Storage`, `Encode`, `Decode`, `Io`) or
+/// describes a database-level semantic failure (`NodeNotFound`,
+/// `EdgeNotFound`, `DuplicateTitle`, `Locked`).
+///
+/// The pre-`00104` stringly-typed `Serialization(String)` was split into
+/// structured `Encode(EncodeError)` / `Decode(DecodeError)` variants so
+/// the HTTP layer can distinguish encode failures (programmer bug) from
+/// decode failures (corrupt persisted bytes) programmatically.
 #[derive(Debug, thiserror::Error)]
 pub enum DrevoError {
     /// An error from the underlying storage layer.
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
 
-    /// A serialization or deserialization error.
-    #[error("serialization error: {0}")]
-    Serialization(String),
+    /// A bincode encode (serialization) error occurred while writing a
+    /// node or edge to the backend.
+    #[error("encode error: {0}")]
+    Encode(#[from] bincode::error::EncodeError),
+
+    /// A bincode decode (deserialization) error occurred while reading a
+    /// node or edge from the backend.
+    #[error("decode error: {0}")]
+    Decode(#[from] bincode::error::DecodeError),
 
     /// The requested node was not found.
     #[error("node not found: {0}")]

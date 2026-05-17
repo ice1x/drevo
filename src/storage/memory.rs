@@ -59,7 +59,7 @@ impl MemoryBackend {
     /// # Errors
     ///
     /// Returns [`StorageError::Io`] if the file exists but cannot be read,
-    /// or [`StorageError::Serialization`] if the file contents are corrupt.
+    /// or [`StorageError::Decode`] if the file contents are corrupt.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -84,10 +84,8 @@ impl MemoryBackend {
     #[cfg(not(target_arch = "wasm32"))]
     fn load_from_file(path: &Path) -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
         let bytes = fs::read(path)?;
-        let entries: Vec<(Vec<u8>, Vec<u8>)> =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                .map_err(|e| StorageError::Serialization(e.to_string()))?
-                .0;
+        let (entries, _): (Vec<(Vec<u8>, Vec<u8>)>, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())?;
         Ok(entries.into_iter().collect())
     }
 
@@ -95,8 +93,7 @@ impl MemoryBackend {
     #[cfg(not(target_arch = "wasm32"))]
     fn save_to_file(data: &BTreeMap<Vec<u8>, Vec<u8>>, path: &Path) -> Result<()> {
         let entries: Vec<(&Vec<u8>, &Vec<u8>)> = data.iter().collect();
-        let bytes = bincode::serde::encode_to_vec(&entries, bincode::config::standard())
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let bytes = bincode::serde::encode_to_vec(&entries, bincode::config::standard())?;
 
         // Atomic write: write to temp file in the same directory, then rename.
         let parent = path.parent().unwrap_or(Path::new("."));
@@ -404,10 +401,8 @@ mod tests {
         let result = MemoryBackend::open(&db_path);
         assert!(result.is_err());
         match result.unwrap_err() {
-            StorageError::Serialization(msg) => {
-                assert!(!msg.is_empty());
-            }
-            other => panic!("expected Serialization error, got: {other:?}"),
+            StorageError::Decode(_) => {}
+            other => panic!("expected Decode error, got: {other:?}"),
         }
     }
 
