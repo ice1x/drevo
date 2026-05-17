@@ -626,17 +626,44 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
 ---
 
+### Phase 8.5 — Codebase Audit & Refactor
+
+> **Re-ranked as the immediate next priority** (before remaining Phase 8/9 tasks). 9.5k LOC of production code accumulated across phases 1–8; some seams (error hierarchy, FFI panic safety, API handler structure) deserve a deliberate pass before Phase 10 (Cypher) puts a heavy new layer on top. Each task below is scoped to a single domain so it fits in a focused context window and can be parallelised. Output of every task: an `AUDIT-{domain}.md` report plus targeted refactor PRs that close the gaps. **No behaviour changes without tests** — refactors must preserve the existing test suite, all `cargo clippy -- -D warnings` invariants, and the JSON / FFI / WASM wire contracts.
+>
+> Cross-cutting acceptance criteria for every task in this phase:
+>
+> - Report identifies: dead code, leaky abstractions, duplicated logic, missing doc-comments, panics in lib code, inconsistent error mapping, hot-path allocations, missing edge-case tests.
+> - Refactor PR(s) keep the existing 1092-test baseline green and clippy `-D warnings` clean.
+> - No public API breakage without an explicit `BREAKING` note in the commit body.
+
+- [ ] `00103` **Storage layer audit** (`src/storage/*`, ~820 LOC). Backend trait contract (Send + Sync invariants, error mapping consistency between `MemoryBackend` and `RedbBackend`), `scan_prefix` return ordering guarantees, `flush` semantics divergence, mutex poisoning paths in `MemoryBackend`. Refactor target: align both backends to identical observable semantics; add a property-test that runs an arbitrary sequence of operations against both and compares results.
+- [ ] `00104` **Error hierarchy audit** (`src/error.rs`, `src/storage/error.rs`, ~75 LOC + every `?` site). Reconcile `DrevoError` ↔ `StorageError` (currently `DrevoError::Storage(StorageError)` — verify every variant is reachable, no dead variants, no `Backend(String)` stringly-typed errors). Refactor target: replace `StorageError::Backend(String)` with structured variants (`Redb(redb::Error)`, `Io(io::Error)`), audit every call site of `.map_err(DrevoError::Storage)` for correct mapping, ensure HTTP error mapping in `src/api.rs` covers every variant.
+- [ ] `00105` **Model layer audit** (`src/model.rs`, ~615 LOC). UUID v7 generation correctness (entropy source, monotonicity), `Properties: HashMap<String, serde_json::Value>` serde round-trip on all platforms (native, WASM), `NodePatch`/`EdgePatch` partial-update semantics (which fields are mutually exclusive?), `Direction` / `SubGraph` / `ScoredNode` invariants. Refactor target: add proptest for serde round-trip on every public struct; document the patch-field semantics in rustdoc.
+- [ ] `00106` **DB core audit** (`src/db.rs`, ~1897 LOC — split into 4 sub-passes if needed: lifecycle/CRUD/indexes/queries). Index consistency on every mutation path (`update_node` updates `kind_index` + `title_index` + `updated_index` + `fts_index` — verify with property test), atomic counter persistence on crash, cascade-delete edge-case coverage (self-loops, parallel edges, orphaned indexes), `bincode::config::standard()` version pinning. Refactor target: extract index maintenance into a dedicated module so mutation paths cannot forget to update an index; introduce `Drevo::verify_indexes()` for tests and `/admin/verify`.
+- [ ] `00107` **Traversal audit** (`src/traversal.rs`, ~1107 LOC). BFS/DFS depth limit off-by-one checks, `shortest_path` with zero-weight / negative-weight edges (Dijkstra precondition), `subgraph` edge-collection completeness, edge-kind filter consistency across all four algorithms, behaviour on supernodes (high-degree hubs). Refactor target: unify the four algorithms behind a common cursor/iterator abstraction so the edge-kind filter and direction handling are implemented once.
+- [ ] `00108` **FTS audit** (`src/fts/*`, ~535 LOC). Trigram tokenizer correctness on CJK / RTL / emoji / combining diacritics, posting-list intersection vs union semantics, TF-IDF smoothing parameters, `list_recent` index update on `delete_node` (already tested — verify no race with concurrent inserts). Refactor target: extract scoring into a strategy trait so BM25 (planned Phase 2) can swap in cleanly; harden tokenizer with grammar-aware fuzz.
+- [ ] `00109` **HTTP API audit** (`src/api.rs`, ~765 LOC). Handler duplication (CRUD handlers across nodes/edges share structure), error-mapping completeness (every `DrevoError` variant → HTTP status), JSON contract regression risk (field renames break clients), query-parameter validation (`limit` cap, `offset` overflow, `depth` u8 saturation). Refactor target: introduce a generic CRUD handler trait or macro so node/edge handlers stop drifting; add a JSON-schema export for client SDKs.
+- [ ] `00110` **FFI audit** (`src/ffi.rs`, ~822 LOC). C ABI safety (`extern "C"` panic catching via `catch_unwind` on every entry, thread-local error correctness across reentrant calls), opaque-handle lifecycle (`drevo_open`/`drevo_close` pairing, double-free safety), string ownership invariants (`drevo_free_string` contract), pointer-to-CStr UTF-8 validation. Refactor target: wrap every FFI entry in a `with_panic_guard!` macro; add `cargo miri` smoke tests for the C surface.
+- [ ] `00111` **WASM audit** (`src/wasm.rs`, ~432 LOC). JS interop (`wasm_bindgen` error conversion completeness, JSON serialization parity with native), `getrandom/wasm_js` UUID v7 entropy on browser, memory-only persistence story for IndexedDB fallback (planned). Refactor target: parameterise the WASM test suite over both Node.js and a real browser via `wasm-pack test --headless`.
+- [ ] `00112` **Server binary + ops audit** (`src/bin/server.rs`, ~93 LOC). Env-var parsing (`DREVO_PORT` bounds, `DREVO_DATA_DIR` path validation), logging story (replace `eprintln!` with `tracing` if a project-wide story exists), signal handling on Windows (currently `cfg(unix)` only — document or implement). Refactor target: introduce `tracing` + `tracing-subscriber` for structured logs; add `--config-file` CLI flag for non-env configuration.
+- [ ] `00113` **Cross-cutting audit** — test coverage gaps (which `pub fn` has zero direct tests?), dead code (search for unused `pub` items), doc coverage (`cargo doc --no-deps -D missing_docs` should pass), strict clippy (`-W clippy::pedantic`, `-W clippy::nursery` — triage findings), `cargo udeps` for unused dependencies, MSRV documentation. Refactor target: add a `make audit` target that runs the strict check matrix, document the MSRV, prune unused deps.
+
+**Definition of done:** `AUDIT-storage.md`–`AUDIT-crosscut.md` exist; every refactor task has a follow-up PR (or "no refactor needed" decision recorded in the audit doc); the 1092-test baseline grows with the new property/proptest/fuzz cases; clippy `-D warnings` stays clean across native + WASM.
+
+---
+
 ### Re-ranking Rationale (Senior PM Lens)
 
 Why phases 10-15 are ordered this way, rather than appended in `ex/`-source order:
 
 1. **Preserve real progress.** Phases 1-9 (tasks `00001`–`00060`) are real, tested, merged code. New work continues numbering from `00061` — no rewrites of history.
-2. **Critical path first.** Cypher (Phase 10) blocks Bolt (Phase 11) — Bolt has nothing to execute without a working Cypher engine.
-3. **Parallelizable work next.** Vector storage (Phase 12) is independent of Cypher and Bolt; a second engineer can deliver it in parallel with Phases 10-11.
-4. **Foundational concurrency before optimization.** MVCC (Phase 13) is touched by every read/write path and must land before the query optimizer (Phase 14) reasons about concurrent plans.
-5. **Optimization once usage exists.** The query planner (Phase 14) only pays off after real Cypher queries run on real workloads — explicit dependency on Phase 10.
-6. **Production / ecosystem last but parallelizable.** Phase 15 items (MCP, Web UI, replication, SDK, fuzz, algorithms, docs, CDC) run independently and concurrently. MCP and Web UI deliver visible value early.
-7. **Risk weighting.** Phase 13 (MVCC) carries highest risk — schedule with buffer. Phase 12 (vector) is novel but isolated — failure mode is contained. Phase 11 (Bolt) is a well-documented protocol — low implementation risk once Cypher works.
+2. **Audit before extending.** Phase 8.5 (`00103`–`00113`) is re-ranked as the **immediate next priority** — 9.5k LOC of production code has accumulated across phases 1–8 and the weakest seams (error hierarchy, FFI panic safety, API handler structure, index-maintenance discipline in `db.rs`) deserve a focused audit pass before Phase 10's Cypher engine and Phase 13's MVCC rewrite land on top of them. Each domain task is independently scoped so a second engineer can take a parallel slice. Audit findings → refactor PRs → continue Phase 8/9 → Phase 10.
+3. **Critical path first.** Cypher (Phase 10) blocks Bolt (Phase 11) — Bolt has nothing to execute without a working Cypher engine.
+4. **Parallelizable work next.** Vector storage (Phase 12) is independent of Cypher and Bolt; a second engineer can deliver it in parallel with Phases 10-11.
+5. **Foundational concurrency before optimization.** MVCC (Phase 13) is touched by every read/write path and must land before the query optimizer (Phase 14) reasons about concurrent plans.
+6. **Optimization once usage exists.** The query planner (Phase 14) only pays off after real Cypher queries run on real workloads — explicit dependency on Phase 10.
+7. **Production / ecosystem last but parallelizable.** Phase 15 items (MCP, Web UI, replication, SDK, fuzz, algorithms, docs, CDC) run independently and concurrently. MCP and Web UI deliver visible value early.
+8. **Risk weighting.** Phase 13 (MVCC) carries highest risk — schedule with buffer. Phase 12 (vector) is novel but isolated — failure mode is contained. Phase 11 (Bolt) is a well-documented protocol — low implementation risk once Cypher works.
 
 ---
 
@@ -892,11 +919,12 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps (re-ranked per the long-term roadmap):**
 
-1. **Finish Phase 8** (`00047`–`00052`): `docker-compose.yml`, K8s manifests, health check + graceful shutdown, CI image publish to ghcr.io, container persistence integration test
-2. **Finish Phase 9** (`00053`–`00060`): WAL / crash recovery, compaction, JSON & GraphML import/export, property-based tests, FTS tokenizer fuzz, rustdoc on public APIs
-3. **Begin Phase 10** (`00061`–`00069`): Cypher query language — start with the lexer (`00061`), then parser, then executor for CREATE / MATCH / RETURN
-4. **Parallel track**: Phase 12 (`00075`–`00079`) — vector storage and HNSW index — can start independently as soon as Phase 10 is underway
-5. **Phase 15 early-value items**: `00090` MCP server and `00092` Web UI deliver visible value early and can run alongside Phases 10-12
+1. **🔍 Audit & Refactor — Phase 8.5** (`00103`–`00113`, **immediate next priority**): per-domain audit + targeted refactor pass on 9.5k LOC accumulated through phases 1–8. Each task is independently scoped so domains can be picked up in parallel. Run the audit BEFORE the remaining Phase 8/9 tasks because the same refactor surface (`db.rs` index-maintenance, `error.rs` hierarchy, FFI panic safety) is going to be touched repeatedly by Phase 10 (Cypher) and Phase 13 (MVCC) — cheaper to clean it up now than to refactor through three layers.
+2. **Finish Phase 8** (`00049`–`00052`): K8s manifests, Helm/Kustomize, CI image publish to ghcr.io, container persistence integration test. (`00045`–`00048` complete.)
+3. **Finish Phase 9** (`00053`–`00060`): WAL / crash recovery, compaction, JSON & GraphML import/export, property-based tests, FTS tokenizer fuzz, rustdoc on public APIs.
+4. **Begin Phase 10** (`00061`–`00069`): Cypher query language — start with the lexer (`00061`), then parser, then executor for CREATE / MATCH / RETURN.
+5. **Parallel track**: Phase 12 (`00075`–`00079`) — vector storage and HNSW index — can start independently as soon as Phase 10 is underway.
+6. **Phase 15 early-value items**: `00090` MCP server and `00092` Web UI deliver visible value early and can run alongside Phases 10-12.
 
 ---
 
