@@ -117,36 +117,24 @@ impl Default for MemoryBackend {
 
 impl StorageBackend for MemoryBackend {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let data = self
-            .data
-            .lock()
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        let data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
         Ok(data.get(key).cloned())
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let mut data = self
-            .data
-            .lock()
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        let mut data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
         data.insert(key.to_vec(), value.to_vec());
         Ok(())
     }
 
     fn delete(&self, key: &[u8]) -> Result<()> {
-        let mut data = self
-            .data
-            .lock()
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        let mut data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
         data.remove(key);
         Ok(())
     }
 
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let data = self
-            .data
-            .lock()
-            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        let data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
         let results: Vec<(Vec<u8>, Vec<u8>)> = data
             .range(prefix.to_vec()..)
             .take_while(|(k, _)| k.starts_with(prefix))
@@ -161,10 +149,7 @@ impl StorageBackend for MemoryBackend {
             let Some(ref path) = self.path else {
                 return Ok(());
             };
-            let data = self
-                .data
-                .lock()
-                .map_err(|e| StorageError::Backend(e.to_string()))?;
+            let data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
             Self::save_to_file(&data, path)?;
         }
         Ok(())
@@ -423,6 +408,65 @@ mod tests {
                 assert!(!msg.is_empty());
             }
             other => panic!("expected Serialization error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutex_poisoning_maps_to_lock_poisoned() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let backend = Arc::new(MemoryBackend::new());
+        backend.put(b"k", b"v").unwrap();
+
+        // Spawn a thread that takes the lock and panics, poisoning it.
+        let poisoner = Arc::clone(&backend);
+        let handle = thread::spawn(move || {
+            let _guard = poisoner.data.lock().expect("first lock must succeed");
+            panic!("poisoning the mutex on purpose");
+        });
+        let _ = handle.join();
+        assert!(backend.data.is_poisoned(), "mutex must be poisoned");
+
+        // Every data accessor must surface LockPoisoned, not Backend(_).
+        // `flush()` short-circuits on an ephemeral backend before taking the
+        // lock, so it is covered separately by the persistent path below.
+        for result in [
+            backend.get(b"k").map(|_| ()),
+            backend.put(b"k", b"v2"),
+            backend.delete(b"k"),
+            backend.scan_prefix(b"").map(|_| ()),
+        ] {
+            match result {
+                Err(StorageError::LockPoisoned) => {}
+                Err(other) => panic!("expected LockPoisoned, got: {other:?}"),
+                Ok(()) => panic!("expected LockPoisoned, got Ok"),
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn mutex_poisoning_maps_to_lock_poisoned_on_flush() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("poison.db");
+        let backend = Arc::new(MemoryBackend::open(&db_path).unwrap());
+        backend.put(b"k", b"v").unwrap();
+
+        let poisoner = Arc::clone(&backend);
+        let handle = thread::spawn(move || {
+            let _guard = poisoner.data.lock().expect("first lock must succeed");
+            panic!("poisoning the mutex on purpose");
+        });
+        let _ = handle.join();
+
+        match backend.flush() {
+            Err(StorageError::LockPoisoned) => {}
+            Err(other) => panic!("expected LockPoisoned, got: {other:?}"),
+            Ok(()) => panic!("expected LockPoisoned, got Ok"),
         }
     }
 }
