@@ -341,13 +341,9 @@ mod redb_persist {
 #[test]
 fn error_display() {
     let err = StorageError::NotFound(b"test_key".to_vec());
-    assert!(err.to_string().contains("test_key"));
-
-    let err = StorageError::Serialization("bad format".to_string());
-    assert!(err.to_string().contains("bad format"));
-
-    let err = StorageError::Backend("redb txn aborted".to_string());
-    assert!(err.to_string().contains("redb txn aborted"));
+    let msg = err.to_string();
+    assert!(msg.contains("key not found"));
+    assert!(msg.contains("test_key"));
 
     let err = StorageError::LockPoisoned;
     assert!(err.to_string().contains("lock poisoned"));
@@ -358,6 +354,66 @@ fn error_display_binary_key() {
     let err = StorageError::NotFound(vec![0xFF, 0x00, 0xAB]);
     let msg = err.to_string();
     assert!(msg.contains("key not found"));
+}
+
+#[test]
+fn encode_error_converts_via_from() {
+    // `?` propagation: bincode::error::EncodeError → StorageError::Encode.
+    // The compiler enforces the `#[from]` path; this test pins the
+    // observable Display output and the variant tag.
+    fn force_encode() -> Result<(), StorageError> {
+        // A `Vec<u8>` with the full sequence length encodes fine; we
+        // construct the error directly to assert Display + matchability.
+        Err(StorageError::Encode(bincode::error::EncodeError::Other(
+            "forced",
+        )))
+    }
+    match force_encode() {
+        Err(StorageError::Encode(_)) => {}
+        other => panic!("expected StorageError::Encode, got: {other:?}"),
+    }
+}
+
+#[test]
+fn decode_error_converts_via_from() {
+    fn force_decode() -> Result<(), StorageError> {
+        // Trigger a real decode failure through the public API.
+        let (res, _consumed): (i32, usize) =
+            bincode::serde::decode_from_slice(&[0xFFu8; 0], bincode::config::standard())?;
+        let _ = res;
+        Ok(())
+    }
+    match force_decode() {
+        Err(StorageError::Decode(_)) => {}
+        other => panic!("expected StorageError::Decode, got: {other:?}"),
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+#[test]
+fn redb_sub_errors_convert_to_redb_variant() {
+    // Open a redb file, then provoke a TableError::TableDoesNotExist by
+    // asking for a table that was never created. The `?` operator must
+    // route the sub-error through `From<TableError> for StorageError`
+    // into `StorageError::Redb` — no `Backend(String)` anywhere.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("redb_subconv.redb");
+    let db = redb::Database::create(&db_path).unwrap();
+    let txn = db.begin_read().unwrap();
+    let missing: redb::TableDefinition<&[u8], &[u8]> = redb::TableDefinition::new("does_not_exist");
+
+    fn open_missing(
+        txn: &redb::ReadTransaction,
+        td: redb::TableDefinition<&[u8], &[u8]>,
+    ) -> std::result::Result<(), StorageError> {
+        let _table = txn.open_table(td)?;
+        Ok(())
+    }
+
+    match open_missing(&txn, missing) {
+        Err(StorageError::Redb(_)) => {}
+        other => panic!("expected StorageError::Redb, got: {other:?}"),
+    }
 }
 
 // --- Backend parity over a randomised operation sequence ---

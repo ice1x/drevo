@@ -1123,27 +1123,23 @@ fn id_from_kind_key(key: &[u8], prefix: &[u8]) -> u64 {
 
 /// Serialize an edge to bincode bytes.
 fn serialize_edge(edge: &Edge) -> Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(edge, BINCODE_CONFIG)
-        .map_err(|e| DrevoError::Serialization(e.to_string()))
+    Ok(bincode::serde::encode_to_vec(edge, BINCODE_CONFIG)?)
 }
 
 /// Deserialize an edge from bincode bytes.
 fn deserialize_edge(bytes: &[u8]) -> Result<Edge> {
-    let (edge, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)
-        .map_err(|e| DrevoError::Serialization(e.to_string()))?;
+    let (edge, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)?;
     Ok(edge)
 }
 
 /// Serialize a node to bincode bytes.
 fn serialize_node(node: &Node) -> Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(node, BINCODE_CONFIG)
-        .map_err(|e| DrevoError::Serialization(e.to_string()))
+    Ok(bincode::serde::encode_to_vec(node, BINCODE_CONFIG)?)
 }
 
 /// Deserialize a node from bincode bytes.
 fn deserialize_node(bytes: &[u8]) -> Result<Node> {
-    let (node, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)
-        .map_err(|e| DrevoError::Serialization(e.to_string()))?;
+    let (node, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)?;
     Ok(node)
 }
 

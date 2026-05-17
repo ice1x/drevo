@@ -176,9 +176,10 @@ impl IntoResponse for ApiError {
                 }
                 DrevoError::DuplicateTitle(_) => (StatusCode::CONFLICT, err.to_string()),
                 DrevoError::Locked => (StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
-                DrevoError::Storage(_) | DrevoError::Serialization(_) | DrevoError::Io(_) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
-                }
+                DrevoError::Storage(_)
+                | DrevoError::Encode(_)
+                | DrevoError::Decode(_)
+                | DrevoError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             },
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
         };

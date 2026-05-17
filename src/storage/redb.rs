@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use redb::{Database, TableDefinition};
 
-use crate::storage::error::{Result, StorageError};
+use crate::storage::error::Result;
 use crate::storage::StorageBackend;
 
 /// Table definition for the single key-value table.
@@ -40,39 +40,40 @@ impl RedbBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::Backend`] if redb cannot open or create the file.
+    /// Returns [`crate::storage::StorageError::Redb`] if redb cannot open or
+    /// create the file.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let db = Database::create(path.as_ref()).map_err(map_redb_err)?;
+        let db = Database::create(path.as_ref())?;
         Ok(Self { db: Arc::new(db) })
     }
 }
 
 impl StorageBackend for RedbBackend {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let read_txn = self.db.begin_read().map_err(map_redb_err)?;
+        let read_txn = self.db.begin_read()?;
         let table = match read_txn.open_table(DATA_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-            Err(e) => return Err(StorageError::Backend(e.to_string())),
+            Err(e) => return Err(e.into()),
         };
-        match table.get(key).map_err(map_redb_err)? {
+        match table.get(key)? {
             Some(value) => Ok(Some(value.value().to_vec())),
             None => Ok(None),
         }
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let write_txn = self.db.begin_write().map_err(map_redb_err)?;
+        let write_txn = self.db.begin_write()?;
         {
-            let mut table = write_txn.open_table(DATA_TABLE).map_err(map_redb_err)?;
-            table.insert(key, value).map_err(map_redb_err)?;
+            let mut table = write_txn.open_table(DATA_TABLE)?;
+            table.insert(key, value)?;
         }
-        write_txn.commit().map_err(map_redb_err)?;
+        write_txn.commit()?;
         Ok(())
     }
 
     fn delete(&self, key: &[u8]) -> Result<()> {
-        let write_txn = self.db.begin_write().map_err(map_redb_err)?;
+        let write_txn = self.db.begin_write()?;
         {
             let mut table = match write_txn.open_table(DATA_TABLE) {
                 Ok(t) => t,
@@ -80,26 +81,26 @@ impl StorageBackend for RedbBackend {
                     // Table doesn't exist yet — nothing to delete.
                     return Ok(());
                 }
-                Err(e) => return Err(StorageError::Backend(e.to_string())),
+                Err(e) => return Err(e.into()),
             };
-            table.remove(key).map_err(map_redb_err)?;
+            table.remove(key)?;
         }
-        write_txn.commit().map_err(map_redb_err)?;
+        write_txn.commit()?;
         Ok(())
     }
 
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let read_txn = self.db.begin_read().map_err(map_redb_err)?;
+        let read_txn = self.db.begin_read()?;
         let table = match read_txn.open_table(DATA_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(e) => return Err(StorageError::Backend(e.to_string())),
+            Err(e) => return Err(e.into()),
         };
 
         let mut results = Vec::new();
-        let range = table.range(prefix..).map_err(map_redb_err)?;
+        let range = table.range(prefix..)?;
         for entry in range {
-            let entry = entry.map_err(map_redb_err)?;
+            let entry = entry?;
             let key = entry.0.value().to_vec();
             if !key.starts_with(prefix) {
                 break;
@@ -115,11 +116,6 @@ impl StorageBackend for RedbBackend {
         // compact() is available but expensive; flush is a no-op.
         Ok(())
     }
-}
-
-/// Map any redb error into a `StorageError::Backend`.
-fn map_redb_err(e: impl std::fmt::Display) -> StorageError {
-    StorageError::Backend(e.to_string())
 }
 
 #[cfg(test)]
