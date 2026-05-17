@@ -134,6 +134,22 @@ impl Drevo {
         Ok(())
     }
 
+    /// Cheap readiness probe used by the HTTP `/ready` endpoint.
+    ///
+    /// Exercises the storage backend with a tiny `get` against the
+    /// meta-counter key so that probe traffic does not stay in the
+    /// abstraction layer — if the underlying redb file is corrupted,
+    /// missing, or its mutex is poisoned, the failure surfaces here
+    /// instead of waiting for a real CRUD call. The probe deliberately
+    /// avoids any write so it is safe to call from a read-only replica
+    /// once Phase 13 lands.
+    pub fn health_check(&self) -> Result<()> {
+        self.backend
+            .get(META_NEXT_NODE_ID)
+            .map_err(DrevoError::Storage)?;
+        Ok(())
+    }
+
     /// Allocate the next node ID (thread-safe).
     ///
     /// Returns a unique, monotonically increasing ID starting from 1.
@@ -1256,6 +1272,41 @@ mod tests {
         let path = dir.path().join("test.db");
         let db = Drevo::open(&path).unwrap();
         db.compact().unwrap();
+        db.close().unwrap();
+    }
+
+    // --- health_check (task 00048) ---
+
+    #[test]
+    fn health_check_succeeds_on_empty_in_memory_db() {
+        let db = Drevo::open_in_memory().unwrap();
+        db.health_check()
+            .expect("health_check on fresh DB must succeed");
+    }
+
+    #[test]
+    fn health_check_succeeds_after_crud_activity() {
+        let db = Drevo::open_in_memory().unwrap();
+        let _node = db
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "hc".into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Default::default(),
+            })
+            .unwrap();
+        db.health_check()
+            .expect("health_check after node creation must succeed");
+    }
+
+    #[test]
+    fn health_check_succeeds_on_redb_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hc.db");
+        let db = Drevo::open(&path).unwrap();
+        db.health_check()
+            .expect("health_check on redb-backed DB must succeed");
         db.close().unwrap();
     }
 

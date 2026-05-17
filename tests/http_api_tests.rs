@@ -1187,6 +1187,76 @@ async fn get_status_uptime_is_monotonic() {
 }
 
 // ---------------------------------------------------------------------
+// Task 00048 — Readiness probe + shutdown-aware liveness probe
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_ready_returns_ready_status_when_db_is_open() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/ready", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["status"], "ready");
+}
+
+#[tokio::test]
+async fn get_ready_works_after_real_db_activity() {
+    // After CRUD activity the underlying storage still has to answer a
+    // readiness probe — this guards against accidental coupling between
+    // /ready and any per-request mutable state.
+    let app = make_app();
+    let (_, a) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "ready-a", "")),
+    )
+    .await;
+    let id = a["id"].as_u64().unwrap();
+    let (_, _) = send(
+        &app,
+        "PATCH",
+        &format!("/nodes/{id}"),
+        Some(json!({"title": "ready-a-2"})),
+    )
+    .await;
+
+    let (status, value) = send(&app, "GET", "/ready", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["status"], "ready");
+}
+
+#[tokio::test]
+async fn get_health_flips_to_503_after_signal_shutdown() {
+    // Build an ApiState manually so we can call signal_shutdown.
+    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
+    let state = ApiState::new(db);
+    let app = build_router(state.clone());
+
+    let (status, value) = send(&app, "GET", "/health", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["status"], "ok");
+
+    state.signal_shutdown();
+
+    let (status, value) = send(&app, "GET", "/health", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(value["status"], "shutting_down");
+}
+
+#[tokio::test]
+async fn get_ready_flips_to_503_after_signal_shutdown() {
+    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
+    let state = ApiState::new(db);
+    let app = build_router(state.clone());
+
+    state.signal_shutdown();
+
+    let (status, value) = send(&app, "GET", "/ready", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(value["status"], "shutting_down");
+}
+
+// ---------------------------------------------------------------------
 // Task 00043 — Unified JSON error handling
 // ---------------------------------------------------------------------
 

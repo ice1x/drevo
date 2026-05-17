@@ -505,7 +505,7 @@ MVP: Phases 7-9    →  drevo ships as a Docker/K8s product
 - [x] `00045` Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
 - [x] `00046` `.dockerignore` — exclude target/, .git/
 - [x] `00047` `docker-compose.yml` — volume mount `/data`, port 8080, env vars
-- [ ] `00048` Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM)
+- [x] `00048` Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM) — `/health` (liveness, cheap, no DB) and `/ready` (readiness, probes redb) flip to 503 once SIGTERM/Ctrl+C drains the server, so Kubernetes Endpoints controllers withdraw traffic before SIGKILL.
 - [ ] `00049` Kubernetes manifests: Deployment, Service, PersistentVolumeClaim
 - [ ] `00050` Helm chart (optional) or Kustomize overlay
 - [ ] `00051` CI: build + push Docker image to GitHub Container Registry (ghcr.io)
@@ -626,17 +626,138 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
 ---
 
+### Phase 8.5 — Codebase Audit & Refactor (skill-anchored)
+
+> **Re-ranked as the immediate next priority** (before remaining Phase 8/9 tasks). The 9.5k LOC of production code in this repo were written **before the project's four skill specs existed** (`drevo-tdd`, `drevo-rust`, `drevo-architecture`, `drevo-database` — under `.claude/skills/`). Phase 8.5 audits the existing code against those skill rules and refactors where it has drifted, BEFORE Phase 10 (Cypher) and Phase 13 (MVCC) put heavy new layers on top of the same surfaces.
+>
+> Each task below cites the exact skill rules it must verify against — auditors should load the relevant skill before starting and compare the code under audit line-by-line against the cited rules.
+>
+> **Cross-cutting acceptance criteria for every Phase 8.5 task:**
+>
+> - Output: a domain audit report `audit/AUDIT-{domain}.md` listing every divergence from a cited skill rule, with file:line references.
+> - Each rule violation is either fixed by a follow-up refactor PR (cited in the report) or explicitly accepted ("no refactor — reason: …").
+> - Test baseline must not regress: `cargo test --all-features` keeps producing ≥ 1092 passing tests; new property / proptest / fuzz cases added by the audit may grow the count.
+> - `cargo clippy --all-targets --all-features -- -D warnings` clean.
+> - `cargo clippy --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings` clean.
+> - No public API breakage without an explicit `BREAKING:` line in the commit body.
+> - `cargo fmt --check` clean.
+
+#### Universal rules verified by every task (from `drevo-tdd` + `drevo-rust`)
+
+- [ ] No `unwrap()` / `expect()` in library code (allowed only in `#[cfg(test)]` blocks and `benches/`). Cited: `drevo-rust` §"Error Handling"; `drevo-architecture` anti-pattern #5.
+- [ ] No `unsafe` without an explicit justification comment. Cited: `drevo-rust` §"Code Style".
+- [ ] Every `pub` item has a rustdoc comment. Cited: `drevo-rust` §"Code Style".
+- [ ] Max 3 levels of indentation per function. Cited: `drevo-rust` §"Code Style"; `drevo-architecture` anti-pattern #6.
+- [ ] Every `pub fn` returning a fallible result uses `Result<T, DrevoError>` — no ad-hoc `Box<dyn Error>`. Cited: `drevo-rust` §"Error Handling".
+- [ ] All test data in English (per `CLAUDE.md`). Cited: `drevo-tdd` §"Project-Specific Conventions".
+
+---
+
+#### Per-domain audit tasks
+
+- [ ] `00103` **Storage layer audit** — `src/storage/*` (~820 LOC). Verify against `drevo-database` §"Storage Backend Abstraction" + §"Indexes":
+  - LSP — `MemoryBackend` and `RedbBackend` are observationally identical (`drevo-architecture` §SOLID "L"). Run the existing macro-parameterised test suite (`drevo-tdd` §"Storage tests parameterized by backend") and add a proptest that compares an arbitrary operation sequence between the two backends.
+  - `scan_prefix` MUST return lexicographically-ordered keys on both backends (`drevo-database` "storage abstraction" doc-contract).
+  - `flush()` semantics are documented and divergent paths are gated correctly (memory backend may snapshot to disk; redb is a no-op).
+  - Mutex poisoning on `MemoryBackend` (`RwLock`) is mapped to a typed error variant, not a panic (`drevo-rust` §"Error Handling").
+  - `#[cfg(not(target_arch = "wasm32"))]` gates correctly on FS-touching paths (`drevo-rust` §"WASM Bindings"; common pitfall #3).
+  - **Refactor targets**: backend parity proptest; structured mutex-poisoning error; document `scan_prefix` ordering on the trait.
+
+- [ ] `00104` **Error hierarchy audit** — `src/error.rs`, `src/storage/error.rs` + every `?` site in the codebase (~75 LOC of types + ~hundreds of call sites). Verify against `drevo-rust` §"Error Handling" + `drevo-architecture` §"Error Propagation Architecture":
+  - Single error enum per crate via `thiserror` (`drevo-rust`). Currently the codebase has `DrevoError` AND `StorageError`. Decide: keep two-layer (Storage → DrevoError → HTTP) per the layered diagram, or collapse to one — and align with the *Immediate subtasks* item "Rename `StorageError` to `DrevoError` or reconcile error hierarchy" that has been open since phase 1.
+  - No `StorageError::Backend(String)` stringly-typed errors (`drevo-architecture` anti-pattern #3): replace with `Redb(redb::Error)` / `Io(io::Error)` structured variants.
+  - Every `?` site uses propagation, not manual `match` conversion (`drevo-rust`).
+  - HTTP layer (`api.rs`) maps every `DrevoError` variant to a status code — no variant falls through to a default 500 (`drevo-rust` §"Error layering across boundaries").
+  - **Refactor targets**: structured `StorageError` variants; close the open *immediate subtask*; exhaustive `ApiError::Db(_) → status` match (clippy `-W non_exhaustive_omitted_patterns`).
+
+- [ ] `00105` **Model layer audit** — `src/model.rs` (~615 LOC). Verify against `drevo-database` §"Data Model" + `drevo-rust` §"Serialization":
+  - Invariant: UUID immutability (`drevo-database` invariant #4) — proptest a `create → update → get` cycle and assert UUID unchanged.
+  - `properties: HashMap<String, serde_json::Value>` serde round-trip on native + WASM (`drevo-database` "data model"; `drevo-rust` §"Serialization").
+  - `NewNode` / `NodePatch` / `NewEdge` / `EdgePatch` patch semantics documented per field; partial-update edge cases (None vs Some(empty)) covered by tests.
+  - Bincode v2 used for KV; serde_json for configs/dumps (`drevo-rust`). Verify `bincode::config::standard()` is the only config in use.
+  - `Direction` enum is closed (`drevo-architecture` §SOLID "O" — `Value` enum is closed; the analogous reasoning applies).
+  - **Refactor targets**: proptest serde round-trip on every `pub` struct in the module; field-level patch-semantics rustdoc.
+
+- [ ] `00106` **DB core audit** — `src/db.rs` (~1897 LOC; **split into 4 sub-passes if a single context is too tight**: 106a lifecycle, 106b node CRUD + indexes, 106c edge CRUD + adjacency, 106d query/scan paths). Verify against `drevo-database` §"Invariants" + `drevo-architecture` §"Anti-Patterns" + `drevo-tdd` §"Edge cases mandatory":
+  - **Invariant #1 — Adjacency consistency** (`drevo-database`): every edge in `out_edges[from_id]` mirrored in `in_edges[to_id]`. Add a `Drevo::verify_invariants()` test-only helper and an end-to-end proptest that does N random mutations and asserts the invariant after each.
+  - **Invariant #2 — Cascading delete**: deleting a node removes incident edges + adjacency entries + FTS entries (`drevo-database`; `drevo-rust` common pitfall #1).
+  - **Invariant #3 — FTS reindex on update**: changing `title` or `body` deindexes the old text and indexes the new (`drevo-rust` common pitfall #2). Already partially tested — verify exhaustive coverage.
+  - **Invariant #4 — UUID immutability**: cross-link with task `00105`.
+  - God object signal (`drevo-architecture` anti-pattern #1) — 1897 LOC in one file is over the threshold; consider splitting into `db/{lifecycle, node_crud, edge_crud, indexes, query}.rs` once the audit confirms cohesion can be improved.
+  - Per-operation redb txn pitfall (`drevo-rust` common pitfall #4) — confirm bulk paths batch writes.
+  - **Refactor targets**: extract index maintenance into a dedicated module so mutation paths cannot forget an index update; introduce `verify_invariants()`; consider the `db/` split.
+
+- [ ] `00107` **Traversal audit** — `src/traversal.rs` (~1107 LOC). Verify against `drevo-database` §"Graph Traversal" + `drevo-architecture` §"Algorithm Design Principles" + `drevo-tdd` §"Edge cases mandatory":
+  - BFS / DFS / Dijkstra / subgraph each hit the documented complexity bound (BFS/DFS O(V+E); Dijkstra O((V+E) log V)).
+  - Edge-kind filter is pushed into the traversal (`drevo-database` §"edge-kind filtering at the traversal level is dramatic — 50µs vs 245µs"). Verify all four algorithms support it consistently.
+  - Mandatory edge cases (`drevo-tdd`): empty graph, single node, cycles, disconnected components, depth 0, max depth, self-loops, parallel edges. Spot-check coverage in `tests/traversal_edge_case_tests.rs`.
+  - Dijkstra preconditions: non-negative weights. Document and add a test that asserts behaviour on negative weights (panic? error? silent corruption?).
+  - **Refactor targets**: unify edge-kind filter + direction handling behind a common cursor abstraction (`drevo-architecture` §"Strategy Pattern"); document weight preconditions in rustdoc.
+
+- [ ] `00108` **FTS audit** — `src/fts/*` (~535 LOC). Verify against `drevo-database` §"FTS index" + `drevo-tdd` §"Property-based tests for invariants":
+  - Tokenizer: lowercase + strip punctuation; CJK → bigrams (`drevo-database`). Property-test on Unicode classes (CJK / Cyrillic / emoji / combining diacritics / RTL).
+  - Posting-list intersection semantics (`drevo-database` "intersect posting lists, rank by TF-IDF").
+  - Performance watch (`drevo-database` §"Performance Watch List"): `search_fts` on broad queries ~800ms vs 50ms target — document the gap and propose mitigation (cached posting-list lengths, batch scan, inverted-index compaction); landing the fix is out of scope for the audit task — flag for a separate refactor.
+  - `list_recent` updates `updated_idx` on every node mutation (`drevo-database` §"updated_idx").
+  - **Refactor targets**: tokenizer fuzz target (overlaps with Phase 9 task `00058` — clarify division of labour); extract scoring into a strategy trait so BM25 (`drevo-database` "Optional Phase 2") can swap in.
+
+- [ ] `00109` **HTTP API audit** — `src/api.rs` (~765 LOC). Verify against `drevo-database` §"HTTP API" + `drevo-architecture` §"Anti-Patterns" + `drevo-rust` §"FFI / WASM error layering" (the JSON boundary is conceptually the same):
+  - Handler duplication across node/edge CRUD (`drevo-architecture` anti-pattern #2 "Premature Abstraction" vs anti-pattern #10 "Mixing Concerns in Match Arms" — there's now enough duplication that the "Three strikes and you refactor" rule applies).
+  - Error mapping: every `DrevoError` variant → HTTP status (`drevo-rust` §"Error layering"). Use `#[deny(non_exhaustive_omitted_patterns)]` to prove it.
+  - Query-parameter validation: `limit` cap, `offset` overflow, `depth: u8` saturation. Fuzz the query-string parser.
+  - JSON contract regression: every wire-format field is documented in rustdoc on its struct.
+  - Pre-existing `eprintln!` calls in handler error paths (if any) → structured logging (cross-link with `00112`).
+  - **Refactor targets**: extract a generic CRUD handler trait (`drevo-architecture` §SOLID "I" — small focused traits); add `#[deny(non_exhaustive_omitted_patterns)]` on the `ApiError` match.
+
+- [ ] `00110` **FFI audit** — `src/ffi.rs` (~822 LOC). Verify against `drevo-rust` §"FFI Safety" + `drevo-database` §"FFI Boundary":
+  - **CRITICAL — No panics across FFI** (`drevo-rust` §"No panics across FFI" — "Panics across the FFI boundary are undefined behavior"). Wrap every `extern "C"` function in `std::panic::catch_unwind`. Convert panics to error codes via the thread-local error mechanism.
+  - Opaque handle pattern: `drevo_t*` is opaque; `drevo_open` / `drevo_close` are paired; double-free is detected (returns an error, never UB).
+  - String ownership: returned strings freed via `drevo_free_string()` (`drevo-rust`).
+  - UTF-8 validation on every `*const c_char` input.
+  - Thread-local error correctness across reentrant calls.
+  - `cbindgen` header generation is in sync with the Rust signatures.
+  - **Refactor targets**: `with_panic_guard!` macro wrapping every entry; `cargo miri` smoke tests for the C surface; document the double-free behaviour.
+
+- [ ] `00111` **WASM audit** — `src/wasm.rs` (~432 LOC). Verify against `drevo-rust` §"WASM Bindings" + `drevo-database` §"WASM Boundary":
+  - JSON parity with native: every type that crosses the boundary serialises identically (`drevo-rust` §"JSON over the boundary"). Add a parity proptest that round-trips the same JSON through both code paths.
+  - Errors become JS exceptions via `JsValue::from_str` (`drevo-rust`). No `panic!` in the WASM path.
+  - `getrandom/wasm_js` feature is enabled and UUID v7 entropy works in browser (`drevo-rust` §"`getrandom` for UUID v7").
+  - Memory-only persistence: no FS code paths leak into the WASM build. Verify with `cargo clippy --target wasm32-unknown-unknown --no-default-features --features wasm`.
+  - **Refactor targets**: parameterise the WASM test suite to also run under `wasm-pack test --headless` against a real browser (currently only Node.js); document the IndexedDB-fallback story.
+
+- [ ] `00112` **Server binary + ops audit** — `src/bin/server.rs` (~93 LOC). Verify against `drevo-rust` §"Async / Tokio" + `drevo-database` §"HTTP API":
+  - Env-var parsing: `DREVO_PORT` bounds (u16, 1024+ recommended in container); `DREVO_DATA_DIR` path validation.
+  - Replace `eprintln!` with `tracing` + `tracing-subscriber` (the project doesn't have a logging story yet; introducing one here also unblocks `00109`).
+  - Signal handling on Windows (currently `cfg(unix)` only) — either document the limitation or implement `Ctrl-Break` for Windows.
+  - The newly-added `signal_shutdown()` flow from task `00048` is correct — cross-link with that task's PR.
+  - **Refactor targets**: `tracing` integration; `--config-file` CLI flag; document Windows signal behaviour.
+
+- [ ] `00113` **Cross-cutting audit**. Verify against `drevo-tdd` §"Coverage Targets" + `drevo-rust` §"Code Style":
+  - Test coverage by module — every `pub fn` has at least one direct test (`drevo-tdd` "every public method — at least 1 test"). Run `cargo llvm-cov` (or `cargo tarpaulin`) and produce a per-module heatmap.
+  - Dead code: `cargo +nightly udeps`, `cargo machete`, `#[warn(dead_code)]` review for `pub` items with zero callers.
+  - Doc coverage: `cargo doc --no-deps -- -D missing_docs`.
+  - Strict clippy: triage `-W clippy::pedantic` and `-W clippy::nursery`. Adopt what fits the style.
+  - MSRV: declare in `Cargo.toml` and CI matrix.
+  - Bench parity: every performance-critical path (CRUD, traversal, FTS) has a criterion bench (`drevo-tdd` §"Benchmarks"). Identify gaps.
+  - Scenario-test coverage of all five domains (CBT, story, task, ERP, bug tracker) is current; spot-check for new gaps post Phase 7/8.
+  - **Refactor targets**: `make audit` Makefile target that runs the strict matrix; MSRV declaration; close any test-coverage gap below ~90% per module.
+
+**Definition of done for Phase 8.5:** `audit/AUDIT-storage.md`–`audit/AUDIT-crosscut.md` exist, each citing the skill rules it verified; every cited rule is either ✅ compliant or has a follow-up refactor PR / accepted exception recorded; the 1092-test baseline grows with new property / proptest / fuzz cases added during the audit; clippy `-D warnings` stays clean across native + WASM; `cargo doc -D missing_docs` passes.
+
+---
+
 ### Re-ranking Rationale (Senior PM Lens)
 
 Why phases 10-15 are ordered this way, rather than appended in `ex/`-source order:
 
 1. **Preserve real progress.** Phases 1-9 (tasks `00001`–`00060`) are real, tested, merged code. New work continues numbering from `00061` — no rewrites of history.
-2. **Critical path first.** Cypher (Phase 10) blocks Bolt (Phase 11) — Bolt has nothing to execute without a working Cypher engine.
-3. **Parallelizable work next.** Vector storage (Phase 12) is independent of Cypher and Bolt; a second engineer can deliver it in parallel with Phases 10-11.
-4. **Foundational concurrency before optimization.** MVCC (Phase 13) is touched by every read/write path and must land before the query optimizer (Phase 14) reasons about concurrent plans.
-5. **Optimization once usage exists.** The query planner (Phase 14) only pays off after real Cypher queries run on real workloads — explicit dependency on Phase 10.
-6. **Production / ecosystem last but parallelizable.** Phase 15 items (MCP, Web UI, replication, SDK, fuzz, algorithms, docs, CDC) run independently and concurrently. MCP and Web UI deliver visible value early.
-7. **Risk weighting.** Phase 13 (MVCC) carries highest risk — schedule with buffer. Phase 12 (vector) is novel but isolated — failure mode is contained. Phase 11 (Bolt) is a well-documented protocol — low implementation risk once Cypher works.
+2. **Audit before extending — and against the skill specs.** Phase 8.5 (`00103`–`00113`) is re-ranked as the **immediate next priority**. The 9.5k LOC of production code in this repo was written **before the four project skill specs existed** (`.claude/skills/drevo-{tdd,rust,architecture,database}/SKILL.md`). Those specs now codify the project's TDD workflow, error handling, ownership patterns, redb transaction rules, FFI panic safety, SOLID + anti-patterns, and storage-layer invariants — so the audit is a compliance check of existing code against the skill rules, not a vague "look for issues" pass. Each task cites the exact skill rules it verifies. Audit findings → refactor PRs → continue Phase 8/9 → Phase 10.
+3. **Critical path first.** Cypher (Phase 10) blocks Bolt (Phase 11) — Bolt has nothing to execute without a working Cypher engine.
+4. **Parallelizable work next.** Vector storage (Phase 12) is independent of Cypher and Bolt; a second engineer can deliver it in parallel with Phases 10-11.
+5. **Foundational concurrency before optimization.** MVCC (Phase 13) is touched by every read/write path and must land before the query optimizer (Phase 14) reasons about concurrent plans.
+6. **Optimization once usage exists.** The query planner (Phase 14) only pays off after real Cypher queries run on real workloads — explicit dependency on Phase 10.
+7. **Production / ecosystem last but parallelizable.** Phase 15 items (MCP, Web UI, replication, SDK, fuzz, algorithms, docs, CDC) run independently and concurrently. MCP and Web UI deliver visible value early.
+8. **Risk weighting.** Phase 13 (MVCC) carries highest risk — schedule with buffer. Phase 12 (vector) is novel but isolated — failure mode is contained. Phase 11 (Bolt) is a well-documented protocol — low implementation risk once Cypher works.
 
 ---
 
@@ -892,11 +1013,12 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 **Next steps (re-ranked per the long-term roadmap):**
 
-1. **Finish Phase 8** (`00047`–`00052`): `docker-compose.yml`, K8s manifests, health check + graceful shutdown, CI image publish to ghcr.io, container persistence integration test
-2. **Finish Phase 9** (`00053`–`00060`): WAL / crash recovery, compaction, JSON & GraphML import/export, property-based tests, FTS tokenizer fuzz, rustdoc on public APIs
-3. **Begin Phase 10** (`00061`–`00069`): Cypher query language — start with the lexer (`00061`), then parser, then executor for CREATE / MATCH / RETURN
-4. **Parallel track**: Phase 12 (`00075`–`00079`) — vector storage and HNSW index — can start independently as soon as Phase 10 is underway
-5. **Phase 15 early-value items**: `00090` MCP server and `00092` Web UI deliver visible value early and can run alongside Phases 10-12
+1. **🔍 Audit & Refactor — Phase 8.5** (`00103`–`00113`, **immediate next priority**): per-domain compliance audit of the existing 9.5k LOC against the four `.claude/skills/drevo-*/SKILL.md` specifications (which were written AFTER the code). Each task cites the exact skill rules it verifies (TDD test-layer + edge-case rules, Rust error-handling / ownership / FFI safety, SOLID + anti-patterns, storage-layer invariants), produces an `audit/AUDIT-{domain}.md` report, and lands a targeted refactor PR for every rule violation found. Domains are independently scoped so they can be picked up in parallel. Run BEFORE the remaining Phase 8/9 tasks because the same refactor surface (`db.rs` index-maintenance, `error.rs` hierarchy, FFI panic safety) will be touched repeatedly by Phase 10 (Cypher) and Phase 13 (MVCC) — cheaper to clean it up now than refactor through three layers.
+2. **Finish Phase 8** (`00049`–`00052`): K8s manifests, Helm/Kustomize, CI image publish to ghcr.io, container persistence integration test. (`00045`–`00048` complete.)
+3. **Finish Phase 9** (`00053`–`00060`): WAL / crash recovery, compaction, JSON & GraphML import/export, property-based tests, FTS tokenizer fuzz, rustdoc on public APIs.
+4. **Begin Phase 10** (`00061`–`00069`): Cypher query language — start with the lexer (`00061`), then parser, then executor for CREATE / MATCH / RETURN.
+5. **Parallel track**: Phase 12 (`00075`–`00079`) — vector storage and HNSW index — can start independently as soon as Phase 10 is underway.
+6. **Phase 15 early-value items**: `00090` MCP server and `00092` Web UI deliver visible value early and can run alongside Phases 10-12.
 
 ---
 
