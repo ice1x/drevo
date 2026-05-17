@@ -39,15 +39,27 @@
 //! Task 00042 added the admin endpoints used by container liveness
 //! probes and operators:
 //!
-//! - `GET /health` — cheap liveness probe, always returns
-//!   `{"status": "ok"}` as long as the process can serve HTTP.
+//! - `GET /health` — cheap liveness probe, returns `{"status": "ok"}`
+//!   while the process is serving and `{"status": "shutting_down"}`
+//!   with HTTP 503 once graceful shutdown has been signalled (task
+//!   00048).
 //! - `GET /status` — server metadata including crate name, version,
 //!   and process uptime in seconds since the [`ApiState`] was built.
+//!
+//! Task 00048 added the readiness probe and made liveness shutdown-
+//! aware so the standalone server binary cooperates correctly with
+//! Kubernetes-style rolling restarts:
+//!
+//! - `GET /ready` — readiness probe that actively exercises the
+//!   storage backend via [`Drevo::health_check`]. Returns 200 with
+//!   `{"status": "ready"}` while the DB is responsive and 503
+//!   otherwise.
 //!
 //! The whole module is gated behind the `http` feature so that
 //! WebAssembly builds (`--no-default-features --features wasm`) are
 //! unaffected.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -80,6 +92,12 @@ pub struct ApiState {
     /// `GET /status` to compute the process uptime without pulling in
     /// a system-time crate.
     pub started_at: Instant,
+    /// Shared "graceful shutdown in progress" flag. Cloned `ApiState`
+    /// instances (axum hands one per handler invocation) point at the
+    /// same atomic so that flipping the flag from any task is visible
+    /// to every other handler. `/health` and `/ready` consult it to
+    /// return 503 once the process enters draining.
+    shutting_down: Arc<AtomicBool>,
 }
 
 impl ApiState {
@@ -91,7 +109,27 @@ impl ApiState {
         Self {
             db,
             started_at: Instant::now(),
+            shutting_down: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Mark the API as draining.
+    ///
+    /// Called once by the server entry point as soon as SIGTERM or
+    /// Ctrl+C is observed, before `axum::serve` finishes the
+    /// in-flight requests. Subsequent calls to `/health` and `/ready`
+    /// return 503 so that the orchestrator (Kubernetes, Docker Swarm,
+    /// Nomad) removes this pod from the load-balancer rotation
+    /// before SIGKILL lands. Idempotent — multiple signals that land
+    /// in quick succession are safe.
+    pub fn signal_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+    }
+
+    /// Returns `true` after [`signal_shutdown`](Self::signal_shutdown)
+    /// has been called on this state (or any clone of it).
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
     }
 }
 
@@ -558,17 +596,18 @@ async fn search_fts(
 // Admin endpoints (task 00042)
 // ---------------------------------------------------------------------
 
-/// JSON body returned by `GET /health`.
+/// JSON body returned by `GET /health` and `GET /ready`.
 ///
-/// Intentionally minimal: container orchestrators (Kubernetes,
-/// Docker, Nomad) only need a cheap 200-or-not signal. The `status`
-/// field is always the literal string `"ok"` when the HTTP task can
-/// serve the request — if the process is unhealthy enough to fail
-/// this endpoint, the runtime will never see the response anyway.
+/// Container orchestrators (Kubernetes, Docker, Nomad) only need a
+/// cheap 200-or-not signal. The `status` field carries one of:
+/// `"ok"` (liveness — process can serve HTTP), `"ready"` (readiness —
+/// process *and* underlying database are responsive), or
+/// `"shutting_down"` (the process has received SIGTERM/Ctrl+C and is
+/// draining). The numeric HTTP status code communicates the overall
+/// outcome — 200 for the first two, 503 for the third.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
-    /// Static health marker. Always `"ok"` in the current
-    /// implementation.
+    /// Status marker — `"ok"`, `"ready"`, or `"shutting_down"`.
     pub status: &'static str,
 }
 
@@ -588,12 +627,51 @@ pub struct StatusResponse {
     pub uptime_seconds: u64,
 }
 
-/// Handler for `GET /health`. Returns a fixed `{"status": "ok"}`
-/// payload. Must stay dependency-free (no DB call, no allocation on
-/// the hot path) so that a busy or locked database does not cause
-/// liveness probes to fail.
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
+/// Handler for `GET /health` — Kubernetes-style liveness probe.
+///
+/// Stays dependency-free (no DB call, no allocation on the hot path)
+/// so that a busy or locked database does not cause liveness probes
+/// to fail and trigger an unnecessary pod restart. The only state it
+/// consults is the shared `shutting_down` flag: once SIGTERM has been
+/// observed the response flips to `503` with body
+/// `{"status": "shutting_down"}` so that the load balancer drains
+/// traffic before SIGKILL lands.
+async fn health(State(state): State<ApiState>) -> Response {
+    if state.is_shutting_down() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: "shutting_down",
+            }),
+        )
+            .into_response();
+    }
+    Json(HealthResponse { status: "ok" }).into_response()
+}
+
+/// Handler for `GET /ready` — Kubernetes-style readiness probe.
+///
+/// Unlike `/health`, this probe actively exercises the storage
+/// backend via [`Drevo::health_check`]. If the database mutex is
+/// poisoned, the redb file is missing, or the underlying disk is
+/// unreachable, this endpoint returns 503 so that the orchestrator
+/// stops sending application traffic to the pod. Also flips to 503
+/// during graceful shutdown — a draining pod is by definition not
+/// "ready" for new traffic, even if its DB is still answering.
+async fn ready(State(state): State<ApiState>) -> Response {
+    if state.is_shutting_down() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: "shutting_down",
+            }),
+        )
+            .into_response();
+    }
+    match state.db.health_check() {
+        Ok(()) => Json(HealthResponse { status: "ready" }).into_response(),
+        Err(err) => json_error(StatusCode::SERVICE_UNAVAILABLE, &err.to_string()),
+    }
 }
 
 /// Handler for `GET /status`. Returns server metadata and the current
@@ -674,6 +752,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/paths/shortest", with_405(get(get_shortest_path)))
         .route("/search/fts", with_405(axum::routing::post(search_fts)))
         .route("/health", with_405(get(health)))
+        .route("/ready", with_405(get(ready)))
         .route("/status", with_405(get(status)))
         .fallback(fallback)
         .with_state(state)

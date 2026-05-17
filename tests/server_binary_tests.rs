@@ -2,6 +2,11 @@
 //!
 //! Task 00045: verify the server binary can be built, the router works
 //! end-to-end, and the default configuration is correct.
+//!
+//! Task 00048: validate the production health-check contract — separate
+//! liveness (`/health`) and readiness (`/ready`) probes, with `/health`
+//! flipping to 503 once the process enters graceful shutdown so that
+//! Kubernetes Endpoints controllers drain traffic before SIGKILL.
 
 #[cfg(feature = "http")]
 mod server_tests {
@@ -172,5 +177,151 @@ mod server_tests {
         let custom = "/custom/path";
         let path = std::path::Path::new(custom);
         assert!(path.is_absolute());
+    }
+
+    // -----------------------------------------------------------------
+    // Task 00048 — /ready (readiness probe) + shutdown-aware /health
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn ready_returns_ok_when_db_is_healthy() {
+        let app = test_router();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ready");
+    }
+
+    #[tokio::test]
+    async fn health_returns_ok_when_not_shutting_down() {
+        let app = test_router();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn health_returns_503_after_signal_shutdown() {
+        // After the operator signals graceful shutdown the process must
+        // continue serving in-flight requests but `/health` must flip to
+        // 503 so the Kubernetes Endpoints controller stops sending new
+        // traffic before SIGKILL lands.
+        let db = Drevo::open_in_memory().unwrap();
+        let state = ApiState::new(Arc::new(db));
+        let router = build_router(state.clone());
+
+        state.signal_shutdown();
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "shutting_down");
+    }
+
+    #[tokio::test]
+    async fn ready_returns_503_after_signal_shutdown() {
+        // /ready must also flip to 503 during graceful shutdown — once
+        // the process is draining, it is by definition not "ready to
+        // serve new traffic" even if the DB is still answering.
+        let db = Drevo::open_in_memory().unwrap();
+        let state = ApiState::new(Arc::new(db));
+        let router = build_router(state.clone());
+
+        state.signal_shutdown();
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "shutting_down");
+    }
+
+    #[tokio::test]
+    async fn is_shutting_down_starts_false() {
+        let db = Drevo::open_in_memory().unwrap();
+        let state = ApiState::new(Arc::new(db));
+        assert!(!state.is_shutting_down());
+    }
+
+    #[tokio::test]
+    async fn signal_shutdown_flips_flag_and_is_idempotent() {
+        let db = Drevo::open_in_memory().unwrap();
+        let state = ApiState::new(Arc::new(db));
+        state.signal_shutdown();
+        assert!(state.is_shutting_down());
+        // Calling twice must remain true (idempotent — multiple signals
+        // arriving in quick succession must not panic or flip back).
+        state.signal_shutdown();
+        assert!(state.is_shutting_down());
+    }
+
+    #[tokio::test]
+    async fn shutdown_flag_is_shared_between_clones() {
+        // ApiState is cloned per-handler by axum. A shutdown signalled
+        // on one clone must be visible on every other clone — otherwise
+        // graceful shutdown is silently broken.
+        let db = Drevo::open_in_memory().unwrap();
+        let state = ApiState::new(Arc::new(db));
+        let clone = state.clone();
+        assert!(!clone.is_shutting_down());
+        state.signal_shutdown();
+        assert!(clone.is_shutting_down());
+    }
+
+    #[tokio::test]
+    async fn ready_method_not_allowed_returns_json_405() {
+        // Same JSON-405 contract enforced everywhere else in the API.
+        let app = test_router();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "method not allowed");
+        assert_eq!(json["status"], 405);
     }
 }

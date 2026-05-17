@@ -505,7 +505,7 @@ MVP: Phases 7-9    →  drevo ships as a Docker/K8s product
 - [x] `00045` Dockerfile — multi-stage build (rust:slim builder → debian:bookworm-slim runtime, ~80MB)
 - [x] `00046` `.dockerignore` — exclude target/, .git/
 - [x] `00047` `docker-compose.yml` — volume mount `/data`, port 8080, env vars
-- [ ] `00048` Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM)
+- [x] `00048` Health check endpoint (`GET /health`) and graceful shutdown (SIGTERM) — `/health` (liveness, cheap, no DB) and `/ready` (readiness, probes redb) flip to 503 once SIGTERM/Ctrl+C drains the server, so Kubernetes Endpoints controllers withdraw traffic before SIGKILL.
 - [ ] `00049` Kubernetes manifests: Deployment, Service, PersistentVolumeClaim
 - [ ] `00050` Helm chart (optional) or Kustomize overlay
 - [ ] `00051` CI: build + push Docker image to GitHub Container Registry (ghcr.io)
