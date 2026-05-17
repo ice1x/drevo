@@ -18,6 +18,16 @@ pub enum StorageError {
     /// A backend-specific error that doesn't fit other categories.
     #[error("backend error: {0}")]
     Backend(String),
+
+    /// A `Mutex` or `RwLock` protecting backend state was poisoned by a
+    /// previous panic.
+    ///
+    /// The backend is in an unrecoverable state — the only sane response
+    /// is to log and discard the backend handle. Distinguished from
+    /// [`StorageError::Backend`] because a poisoned lock is structural,
+    /// not a backend-internal I/O or transaction failure.
+    #[error("lock poisoned")]
+    LockPoisoned,
 }
 
 /// Helper to display byte slices in error messages.

@@ -346,7 +346,10 @@ fn error_display() {
     let err = StorageError::Serialization("bad format".to_string());
     assert!(err.to_string().contains("bad format"));
 
-    let err = StorageError::Backend("lock poisoned".to_string());
+    let err = StorageError::Backend("redb txn aborted".to_string());
+    assert!(err.to_string().contains("redb txn aborted"));
+
+    let err = StorageError::LockPoisoned;
     assert!(err.to_string().contains("lock poisoned"));
 }
 
@@ -355,4 +358,116 @@ fn error_display_binary_key() {
     let err = StorageError::NotFound(vec![0xFF, 0x00, 0xAB]);
     let msg = err.to_string();
     assert!(msg.contains("key not found"));
+}
+
+// --- Backend parity over a randomised operation sequence ---
+//
+// Audit task 00103, finding F8: assert that `MemoryBackend` and `RedbBackend`
+// agree on the observable state after a long, mixed-operation trace. Two
+// backends that pass every per-operation contract test can still diverge on
+// interleaved sequences (ordering, prefix-scan windowing, reinsert behaviour).
+//
+// Determinism: a tiny xorshift32 RNG with a fixed seed produces the operation
+// stream so any failure is bit-for-bit reproducible. When `proptest` becomes
+// a project dependency (Phase 9 task 00057), this test will be ported.
+
+struct XorShift32 {
+    state: u32,
+}
+
+impl XorShift32 {
+    fn new(seed: u32) -> Self {
+        Self {
+            state: if seed == 0 { 0x9E37_79B9 } else { seed },
+        }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.state = x;
+        x
+    }
+
+    fn next_in(&mut self, max: u32) -> u32 {
+        self.next_u32() % max
+    }
+}
+
+#[test]
+fn random_operation_sequence_parity() {
+    // Use both backends behind the trait so the call sites are identical.
+    let mem: Arc<dyn StorageBackend> = Arc::new(MemoryBackend::new());
+    let dir = tempfile::tempdir().unwrap();
+    let redb: Arc<dyn StorageBackend> =
+        Arc::new(RedbBackend::open(dir.path().join("parity.redb")).unwrap());
+
+    // 32 keys with mixed prefixes — enough variety for non-trivial scan_prefix
+    // intersections without slowing the test down.
+    let keys: Vec<Vec<u8>> = (0..32u32)
+        .map(|i| {
+            let prefix = match i % 4 {
+                0 => "n:",
+                1 => "e:",
+                2 => "k:",
+                _ => "x:",
+            };
+            format!("{prefix}{i:04}").into_bytes()
+        })
+        .collect();
+    let prefixes: [&[u8]; 5] = [b"n:", b"e:", b"k:", b"x:", b""];
+
+    let mut rng = XorShift32::new(0xDEAD_BEEF);
+    for step in 0..1000 {
+        let op = rng.next_in(4);
+        let key = keys[rng.next_in(keys.len() as u32) as usize].as_slice();
+        match op {
+            0 => {
+                // put
+                let value_len = (rng.next_in(16) + 1) as usize;
+                let value: Vec<u8> = (0..value_len)
+                    .map(|_| (rng.next_in(256) & 0xFF) as u8)
+                    .collect();
+                mem.put(key, &value).unwrap();
+                redb.put(key, &value).unwrap();
+            }
+            1 => {
+                // get — observations must match
+                let mv = mem.get(key).unwrap();
+                let rv = redb.get(key).unwrap();
+                assert_eq!(mv, rv, "step {step}: get({key:?}) diverged");
+            }
+            2 => {
+                // delete
+                mem.delete(key).unwrap();
+                redb.delete(key).unwrap();
+            }
+            _ => {
+                // scan_prefix — full key/value list AND sort order must match
+                let prefix = prefixes[rng.next_in(prefixes.len() as u32) as usize];
+                let mp = mem.scan_prefix(prefix).unwrap();
+                let rp = redb.scan_prefix(prefix).unwrap();
+                assert_eq!(mp, rp, "step {step}: scan_prefix({prefix:?}) diverged");
+                // Order contract: keys must be lex-sorted.
+                for window in mp.windows(2) {
+                    assert!(
+                        window[0].0 < window[1].0,
+                        "step {step}: scan_prefix returned unsorted keys"
+                    );
+                }
+            }
+        }
+    }
+
+    // Final coarse parity check: every key visible on one backend is visible
+    // on the other.
+    for key in &keys {
+        assert_eq!(
+            mem.get(key).unwrap(),
+            redb.get(key).unwrap(),
+            "final get({key:?}) diverged"
+        );
+    }
 }
