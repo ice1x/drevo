@@ -621,19 +621,37 @@ impl Drevo {
     /// Full-text search with TF-IDF ranking.
     ///
     /// Extracts trigrams from the query, finds candidate nodes via posting
-    /// list intersection, scores each candidate using TF-IDF, and returns
-    /// up to `limit` results sorted by descending score.
+    /// list intersection (AND semantics), scores each candidate using
+    /// TF-IDF, and returns up to `limit` results sorted by descending
+    /// score, then by ascending node id for stability.
     ///
-    /// **TF-IDF formula:**
-    /// - TF (term frequency): number of query trigrams present in the
-    ///   node's trigram set, divided by the total number of node trigrams.
-    /// - IDF (inverse document frequency): `ln(N / df)` where `N` is the
-    ///   total number of nodes and `df` is the number of nodes containing
-    ///   the trigram.
+    /// **TF-IDF formula (as implemented):**
+    /// - TF (term frequency): the trigram set per node is deduplicated, so
+    ///   per-trigram TF is `1 / |node_trigrams|` when the trigram is
+    ///   present, otherwise `0`. (Binary presence normalised by node
+    ///   trigram cardinality — a length-penalty that down-weights long
+    ///   bodies.)
+    /// - IDF (smoothed inverse document frequency):
+    ///   `ln(1 + N / df)` where `N` is the total number of indexed
+    ///   nodes and `df` is the number of nodes containing the trigram.
+    ///   The `+ 1` smoothing keeps the IDF strictly positive when
+    ///   `df == N`, preventing trigrams that appear in *every* node
+    ///   from collapsing to a zero score.
     /// - Score = sum of `tf * idf` for each query trigram.
     ///
     /// Returns an empty list if the query produces no trigrams or no
     /// nodes match.
+    ///
+    /// # Performance
+    ///
+    /// `audit/AUDIT-fts.md` documents a measured ~800 ms vs 50 ms-target
+    /// gap on broad single-token queries against ~10k nodes. The
+    /// bottleneck is the per-candidate `extract_trigrams` call here
+    /// combined with `scan_prefix(PREFIX_NODE)` to count `N`. Mitigations
+    /// (cached posting-list lengths, persisted node-count meta key,
+    /// inverted-index compaction) are tracked as a separate follow-up
+    /// refactor in the audit report — out of scope for the audit task
+    /// itself.
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<ScoredNode>> {
         if limit == 0 {
             return Ok(Vec::new());
