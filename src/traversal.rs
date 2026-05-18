@@ -11,6 +11,33 @@ use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use crate::error::Result;
 use crate::model::{Direction, Edge, Node, SubGraph};
 
+/// Resolve the neighbor node id of `edge` relative to `current_id` under
+/// the given traversal `direction`.
+///
+/// `Direction::Outgoing` always returns `edge.to_id`, `Direction::Incoming`
+/// always returns `edge.from_id`. For `Direction::Both` the endpoint
+/// opposite of `current_id` is returned; if both endpoints equal
+/// `current_id` (a self-loop) the function returns `current_id` itself,
+/// which the visited-set check in each algorithm uses to ignore it.
+///
+/// Extracted to remove the three near-identical match arms previously
+/// duplicated across `bfs`, `dfs`, and `subgraph` (drevo-architecture
+/// "Three strikes and you refactor").
+#[inline]
+fn neighbor_id_for_edge(edge: &Edge, current_id: u64, direction: Direction) -> u64 {
+    match direction {
+        Direction::Outgoing => edge.to_id,
+        Direction::Incoming => edge.from_id,
+        Direction::Both => {
+            if edge.from_id == current_id {
+                edge.to_id
+            } else {
+                edge.from_id
+            }
+        }
+    }
+}
+
 /// Perform a breadth-first search starting from `start_id`.
 ///
 /// Returns all nodes reachable within `max_depth` hops, optionally
@@ -59,25 +86,13 @@ where
         let edges = edges_of(current_id, direction)?;
 
         for edge in &edges {
-            // Apply edge kind filter
             if let Some(kind) = edge_kind {
                 if edge.kind != kind {
                     continue;
                 }
             }
 
-            // Determine the neighbor node ID based on direction
-            let neighbor_id = match direction {
-                Direction::Outgoing => edge.to_id,
-                Direction::Incoming => edge.from_id,
-                Direction::Both => {
-                    if edge.from_id == current_id {
-                        edge.to_id
-                    } else {
-                        edge.from_id
-                    }
-                }
-            };
+            let neighbor_id = neighbor_id_for_edge(edge, current_id, direction);
 
             if visited.contains(&neighbor_id) {
                 continue;
@@ -141,25 +156,13 @@ where
         let edges = edges_of(current_id, direction)?;
 
         for edge in &edges {
-            // Apply edge kind filter
             if let Some(kind) = edge_kind {
                 if edge.kind != kind {
                     continue;
                 }
             }
 
-            // Determine the neighbor node ID based on direction
-            let neighbor_id = match direction {
-                Direction::Outgoing => edge.to_id,
-                Direction::Incoming => edge.from_id,
-                Direction::Both => {
-                    if edge.from_id == current_id {
-                        edge.to_id
-                    } else {
-                        edge.from_id
-                    }
-                }
-            };
+            let neighbor_id = neighbor_id_for_edge(edge, current_id, direction);
 
             if visited.contains(&neighbor_id) {
                 continue;
@@ -205,23 +208,44 @@ impl Ord for DijkstraState {
 }
 
 /// Find the shortest (lowest total weight) path between two nodes using
-/// Dijkstra's algorithm. Follows **outgoing** edges only.
+/// Dijkstra's algorithm. Follows **outgoing** edges only. Complexity
+/// `O((V + E) log V)` (binary-heap variant).
 ///
 /// Returns `Some(vec![from, ..., to])` with the node IDs along the
 /// shortest path, or `None` if `to` is not reachable from `from`.
-/// If `from == to`, returns `Some(vec![from])`.
+/// If `from == to`, returns `Some(vec![from])`. Returns `None` if
+/// `from` itself does not exist.
 ///
-/// Edge weights must be non-negative (the `weight` field on [`Edge`]).
+/// # Preconditions
+///
+/// **Edge weights must be non-negative and finite.** The model layer
+/// guarantees finiteness (`DrevoError::InvalidWeight` rejects NaN /
+/// ±∞ at `create_edge` / `update_edge` time — see `AUDIT-db.md` F1).
+/// Negative weights are admitted by the storage layer but violate
+/// Dijkstra's correctness precondition: this implementation may
+/// return a non-optimal path because a node is treated as
+/// "settled" the first time it pops from the heap. If a graph
+/// contains negative-weight edges and you need true shortest
+/// paths, use a different algorithm (Bellman-Ford; not yet
+/// implemented in drevo). Negative cycles are not detected and
+/// will *not* cause a panic — the lazy-update relaxation may
+/// loop until the heap is empty, but it does terminate (`prev`
+/// only updates when the cost strictly decreases, so progress
+/// is bounded by the finite f32 precision lattice).
 ///
 /// # Arguments
 ///
 /// * `from` — source node ID
 /// * `to` — target node ID
+/// * `edge_kind` — if `Some`, only edges with this kind contribute to
+///   the path (parity with `bfs` / `dfs`; previously
+///   shortest_path silently considered every edge regardless of kind)
 /// * `get_node` — closure to verify a node exists (returns `Option<Node>`)
 /// * `edges_of` — closure to retrieve outgoing edges of a node
 pub fn shortest_path<F, G>(
     from: u64,
     to: u64,
+    edge_kind: Option<&str>,
     get_node: &F,
     edges_of: &G,
 ) -> Result<Option<Vec<u64>>>
@@ -229,17 +253,14 @@ where
     F: Fn(u64) -> Result<Option<Node>>,
     G: Fn(u64, Direction) -> Result<Vec<Edge>>,
 {
-    // Verify source exists.
     if get_node(from)?.is_none() {
         return Ok(None);
     }
 
-    // Trivial case: source == target.
     if from == to {
         return Ok(Some(vec![from]));
     }
 
-    // Dijkstra's algorithm.
     let mut dist: HashMap<u64, f32> = HashMap::new();
     let mut prev: HashMap<u64, u64> = HashMap::new();
     let mut heap: BinaryHeap<DijkstraState> = BinaryHeap::new();
@@ -251,7 +272,6 @@ where
     });
 
     while let Some(DijkstraState { cost, node_id }) = heap.pop() {
-        // Found the target — reconstruct path.
         if node_id == to {
             let mut path = Vec::new();
             let mut cur = to;
@@ -264,7 +284,6 @@ where
             return Ok(Some(path));
         }
 
-        // Skip if we already found a shorter path to this node.
         if cost > *dist.get(&node_id).unwrap_or(&f32::INFINITY) {
             continue;
         }
@@ -272,6 +291,11 @@ where
         let edges = edges_of(node_id, Direction::Outgoing)?;
 
         for edge in &edges {
+            if let Some(kind) = edge_kind {
+                if edge.kind != kind {
+                    continue;
+                }
+            }
             let neighbor_id = edge.to_id;
             let next_cost = cost + edge.weight;
             let current_best = *dist.get(&neighbor_id).unwrap_or(&f32::INFINITY);
@@ -302,16 +326,25 @@ where
 ///
 /// * `root` — the node ID to start from
 /// * `depth` — maximum number of hops (0 returns only the root, no edges)
+/// * `edge_kind` — if `Some`, both the BFS-discovery phase and the
+///   edge-collection phase skip edges whose `kind` does not match.
+///   Nodes only reachable through filtered-out edges are not
+///   discovered. `None` preserves the prior all-edges behavior.
 /// * `get_node` — closure to retrieve a node by ID
 /// * `edges_of` — closure to retrieve edges of a node (both directions)
-pub fn subgraph<F, G>(root: u64, depth: u8, get_node: &F, edges_of: &G) -> Result<SubGraph>
+pub fn subgraph<F, G>(
+    root: u64,
+    depth: u8,
+    edge_kind: Option<&str>,
+    get_node: &F,
+    edges_of: &G,
+) -> Result<SubGraph>
 where
     F: Fn(u64) -> Result<Option<Node>>,
     G: Fn(u64, Direction) -> Result<Vec<Edge>>,
 {
     use crate::error::DrevoError;
 
-    // Verify root exists.
     let root_node = get_node(root)?.ok_or(DrevoError::NodeNotFound(root))?;
 
     let mut visited: HashSet<u64> = HashSet::new();
@@ -319,7 +352,6 @@ where
 
     let mut nodes: Vec<Node> = vec![root_node];
 
-    // BFS to discover all reachable nodes within depth.
     let mut queue: VecDeque<(u64, u8)> = VecDeque::new();
     queue.push_back((root, 0));
 
@@ -331,11 +363,13 @@ where
         let edges = edges_of(current_id, Direction::Both)?;
 
         for edge in &edges {
-            let neighbor_id = if edge.from_id == current_id {
-                edge.to_id
-            } else {
-                edge.from_id
-            };
+            if let Some(kind) = edge_kind {
+                if edge.kind != kind {
+                    continue;
+                }
+            }
+
+            let neighbor_id = neighbor_id_for_edge(edge, current_id, Direction::Both);
 
             if visited.contains(&neighbor_id) {
                 continue;
@@ -349,13 +383,17 @@ where
         }
     }
 
-    // Collect all edges where both endpoints are in the visited set.
     let mut edge_ids: HashSet<u64> = HashSet::new();
     let mut edges: Vec<Edge> = Vec::new();
 
     for &node_id in &visited {
         let node_edges = edges_of(node_id, Direction::Both)?;
         for edge in node_edges {
+            if let Some(kind) = edge_kind {
+                if edge.kind != kind {
+                    continue;
+                }
+            }
             if visited.contains(&edge.from_id)
                 && visited.contains(&edge.to_id)
                 && edge_ids.insert(edge.id)

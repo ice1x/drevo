@@ -779,8 +779,27 @@ impl Drevo {
     /// Returns `Some(vec![from, ..., to])` with the node IDs along the
     /// shortest path, or `None` if `to` is unreachable from `from`.
     /// If `from == to`, returns `Some(vec![from])`.
+    ///
+    /// Edge weights must be non-negative; the model layer guarantees
+    /// finiteness (NaN / ±∞ rejected at write time), but negative
+    /// finite weights are admitted by storage and may cause this
+    /// implementation to return a non-optimal path. See
+    /// `traversal::shortest_path` rustdoc for the full precondition.
     pub fn shortest_path(&self, from: u64, to: u64) -> Result<Option<Vec<u64>>> {
-        crate::traversal::shortest_path(from, to, &|id| self.get_node(id), &|id, dir| {
+        self.shortest_path_filtered(from, to, None)
+    }
+
+    /// Variant of [`Self::shortest_path`] that only considers edges with
+    /// `kind == edge_kind` when `edge_kind` is `Some`. Passing `None`
+    /// is equivalent to [`Self::shortest_path`]. Parity addition with
+    /// `bfs` / `dfs`, audited under task `00107`.
+    pub fn shortest_path_filtered(
+        &self,
+        from: u64,
+        to: u64,
+        edge_kind: Option<&str>,
+    ) -> Result<Option<Vec<u64>>> {
+        crate::traversal::shortest_path(from, to, edge_kind, &|id| self.get_node(id), &|id, dir| {
             self.edges_of(id, dir)
         })
     }
@@ -793,9 +812,29 @@ impl Drevo {
     ///
     /// Returns `Err(NodeNotFound)` if the root node does not exist.
     pub fn subgraph(&self, root: u64, depth: u8) -> Result<SubGraph> {
-        crate::traversal::subgraph(root, depth, &|id| self.get_node(id), &|id, dir| {
-            self.edges_of(id, dir)
-        })
+        self.subgraph_filtered(root, depth, None)
+    }
+
+    /// Variant of [`Self::subgraph`] that restricts both the discovery
+    /// BFS and the edge-collection phase to edges with
+    /// `kind == edge_kind` when `edge_kind` is `Some`. Nodes only
+    /// reachable through filtered-out edges are not included in the
+    /// returned subgraph. Passing `None` is equivalent to
+    /// [`Self::subgraph`]. Parity addition with `bfs` / `dfs`,
+    /// audited under task `00107`.
+    pub fn subgraph_filtered(
+        &self,
+        root: u64,
+        depth: u8,
+        edge_kind: Option<&str>,
+    ) -> Result<SubGraph> {
+        crate::traversal::subgraph(
+            root,
+            depth,
+            edge_kind,
+            &|id| self.get_node(id),
+            &|id, dir| self.edges_of(id, dir),
+        )
     }
 
     /// Return immediate neighbors of a node (BFS depth=1).
