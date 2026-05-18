@@ -221,6 +221,22 @@ async fn root(State(_state): State<ApiState>) -> Json<ServerInfo> {
 }
 
 // ---------------------------------------------------------------------
+// Shared list-handler defaults (task 00109 audit fix — F3)
+// ---------------------------------------------------------------------
+
+/// Default `limit` applied to `GET /nodes` and `GET /edges` when the
+/// client omits the query parameter. Kept in lockstep with
+/// [`DEFAULT_SEARCH_LIMIT`] for predictable client behaviour across
+/// endpoints.
+const DEFAULT_LIST_LIMIT: usize = 50;
+
+/// Maximum `limit` accepted by `GET /nodes` and `GET /edges`. Requests
+/// above this cap are silently clamped so that a pathological client
+/// cannot force an unbounded scan over the kind index — the same
+/// rationale as [`MAX_SEARCH_LIMIT`] for the FTS endpoint.
+const MAX_LIST_LIMIT: usize = 1000;
+
+// ---------------------------------------------------------------------
 // Node CRUD handlers (task 00038)
 // ---------------------------------------------------------------------
 
@@ -232,7 +248,8 @@ async fn root(State(_state): State<ApiState>) -> Json<ServerInfo> {
 pub struct ListNodesQuery {
     /// Node kind to filter by (required).
     pub kind: Option<String>,
-    /// Maximum number of nodes to return. Defaults to 50, max 1000.
+    /// Maximum number of nodes to return. Defaults to
+    /// [`DEFAULT_LIST_LIMIT`], clamped at [`MAX_LIST_LIMIT`].
     pub limit: Option<usize>,
     /// Number of matching nodes to skip for pagination. Defaults to 0.
     pub offset: Option<usize>,
@@ -301,7 +318,7 @@ async fn list_nodes(
     }) = query?;
     let kind =
         kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
-    let limit = limit.unwrap_or(50).min(1000);
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
     let offset = offset.unwrap_or(0);
     let nodes = state.db.list_nodes_by_kind(&kind, limit, offset)?;
     Ok(Json(NodeListResponse { nodes }))
@@ -319,7 +336,8 @@ async fn list_nodes(
 pub struct ListEdgesQuery {
     /// Edge kind to filter by (required).
     pub kind: Option<String>,
-    /// Maximum number of edges to return. Defaults to 50, max 1000.
+    /// Maximum number of edges to return. Defaults to
+    /// [`DEFAULT_LIST_LIMIT`], clamped at [`MAX_LIST_LIMIT`].
     pub limit: Option<usize>,
     /// Number of matching edges to skip for pagination. Defaults to 0.
     pub offset: Option<usize>,
@@ -399,7 +417,7 @@ async fn list_edges(
     }) = query?;
     let kind =
         kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
-    let limit = limit.unwrap_or(50).min(1000);
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
     let offset = offset.unwrap_or(0);
     let edges = state.db.list_edges_by_kind(&kind, limit, offset)?;
     Ok(Json(EdgeListResponse { edges }))
@@ -764,4 +782,89 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/status", with_405(get(status)))
         .fallback(fallback)
         .with_state(state)
+}
+
+/// Regression test that locks in the `DrevoError → HTTP status` mapping
+/// audited under task `00109`. Constructing the variants directly here
+/// guarantees that adding a new [`DrevoError`] variant breaks **both** the
+/// production match arm in [`ApiError::into_response`] **and** this test
+/// at compile time — making the mapping a deliberate decision rather than
+/// an accidental default.
+#[cfg(test)]
+mod error_mapping_tests {
+    use super::*;
+    use crate::storage::StorageError;
+
+    fn status_of(err: DrevoError) -> StatusCode {
+        let response = ApiError::Db(err).into_response();
+        response.status()
+    }
+
+    #[test]
+    fn apierror_maps_every_drevoerror_variant_to_expected_status() {
+        assert_eq!(
+            status_of(DrevoError::NodeNotFound(7)),
+            StatusCode::NOT_FOUND,
+            "NodeNotFound → 404",
+        );
+        assert_eq!(
+            status_of(DrevoError::EdgeNotFound(7)),
+            StatusCode::NOT_FOUND,
+            "EdgeNotFound → 404",
+        );
+        assert_eq!(
+            status_of(DrevoError::DuplicateTitle("dup".into())),
+            StatusCode::CONFLICT,
+            "DuplicateTitle → 409",
+        );
+        assert_eq!(
+            status_of(DrevoError::InvalidWeight(f32::NAN)),
+            StatusCode::BAD_REQUEST,
+            "InvalidWeight → 400",
+        );
+        assert_eq!(
+            status_of(DrevoError::Locked),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Locked → 503",
+        );
+        assert_eq!(
+            status_of(DrevoError::Storage(StorageError::NotFound(b"k".to_vec()))),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Storage → 500",
+        );
+        assert_eq!(
+            status_of(DrevoError::Io(std::io::Error::other("boom"))),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Io → 500",
+        );
+        // The `Encode` and `Decode` variants of `DrevoError` wrap bincode
+        // error types that cannot be constructed outside the bincode
+        // crate. They share the `Storage / Io` 500 arm in `api.rs`, so
+        // the regression coverage above already exercises that arm — but
+        // we still need a compile-time fence that fails when those
+        // variants are removed or renamed. The `#[allow(dead_code)]`
+        // match below is that fence: it has to mention each variant by
+        // name, so adding/removing a variant breaks compilation here
+        // **and** in `ApiError::into_response`.
+        #[allow(dead_code)]
+        fn variant_fence(err: &DrevoError) -> &'static str {
+            match err {
+                DrevoError::NodeNotFound(_) => "NodeNotFound",
+                DrevoError::EdgeNotFound(_) => "EdgeNotFound",
+                DrevoError::DuplicateTitle(_) => "DuplicateTitle",
+                DrevoError::InvalidWeight(_) => "InvalidWeight",
+                DrevoError::Locked => "Locked",
+                DrevoError::Storage(_) => "Storage",
+                DrevoError::Encode(_) => "Encode",
+                DrevoError::Decode(_) => "Decode",
+                DrevoError::Io(_) => "Io",
+            }
+        }
+    }
+
+    #[test]
+    fn apierror_badrequest_returns_400_with_message() {
+        let response = ApiError::BadRequest("missing query parameter".into()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }

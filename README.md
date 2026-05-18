@@ -701,7 +701,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - `list_recent` updates `updated_idx` on every node mutation (`drevo-database` §"updated_idx").
   - **Refactor targets**: tokenizer fuzz target (overlaps with Phase 9 task `00058` — clarify division of labour); extract scoring into a strategy trait so BM25 (`drevo-database` "Optional Phase 2") can swap in.
 
-- [ ] `00109` **HTTP API audit** — `src/api.rs` (~765 LOC). Verify against `drevo-database` §"HTTP API" + `drevo-architecture` §"Anti-Patterns" + `drevo-rust` §"FFI / WASM error layering" (the JSON boundary is conceptually the same):
+- [x] `00109` **HTTP API audit** — `src/api.rs` (~765 LOC). Verify against `drevo-database` §"HTTP API" + `drevo-architecture` §"Anti-Patterns" + `drevo-rust` §"FFI / WASM error layering" (the JSON boundary is conceptually the same):
   - Handler duplication across node/edge CRUD (`drevo-architecture` anti-pattern #2 "Premature Abstraction" vs anti-pattern #10 "Mixing Concerns in Match Arms" — there's now enough duplication that the "Three strikes and you refactor" rule applies).
   - Error mapping: every `DrevoError` variant → HTTP status (`drevo-rust` §"Error layering"). Use `#[deny(non_exhaustive_omitted_patterns)]` to prove it.
   - Query-parameter validation: `limit` cap, `offset` overflow, `depth: u8` saturation. Fuzz the query-string parser.

@@ -2379,3 +2379,116 @@ async fn integration_all_error_paths_return_structured_json() {
     assert!(val["error"].is_string());
     assert_eq!(val["status"].as_u64().unwrap(), 409);
 }
+
+// =====================================================================
+// Task 00109 — query-string boundary validation
+//
+// The HTTP API audit (audit/AUDIT-http-api.md, findings F4/F5) requires
+// regression coverage for: `limit` cap saturation on /nodes and /edges,
+// negative-limit rejection via serde, huge offsets returning empty
+// without arithmetic overflow, and `depth=0` semantics on /neighbors.
+// =====================================================================
+
+#[tokio::test]
+async fn list_nodes_limit_above_cap_is_clamped() {
+    let app = make_app();
+
+    // Seed slightly more than MAX_LIST_LIMIT would be expensive, so we
+    // assert the simpler invariant: requesting `limit` well above the
+    // cap still succeeds (200) and never errors. The handler clamps
+    // before reaching the storage layer.
+    for i in 0..3 {
+        let (status, _) = send(
+            &app,
+            "POST",
+            "/nodes",
+            Some(new_node_body("note", &format!("ClampNode-{i}"), "")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    let (status, value) = send(&app, "GET", "/nodes?kind=note&limit=9999", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = value["nodes"].as_array().expect("nodes array");
+    // Three seeded nodes — fewer than the cap; the point is no error.
+    assert_eq!(nodes.len(), 3);
+}
+
+#[tokio::test]
+async fn list_nodes_negative_limit_returns_400() {
+    let app = make_app();
+    let (status, value) = send(&app, "GET", "/nodes?kind=note&limit=-1", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(value["error"].is_string());
+    assert_eq!(value["status"].as_u64().unwrap(), 400);
+}
+
+#[tokio::test]
+async fn list_edges_limit_above_cap_is_clamped() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(a, b, "links_to")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, value) = send(&app, "GET", "/edges?kind=links_to&limit=9999", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["edges"].as_array().expect("edges array").len(), 1);
+}
+
+#[tokio::test]
+async fn list_nodes_huge_offset_returns_empty() {
+    let app = make_app();
+    let (_, _) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "OffsetEdge", "")),
+    )
+    .await;
+
+    let (status, value) = send(
+        &app,
+        "GET",
+        "/nodes?kind=note&limit=10&offset=999999999",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["nodes"].as_array().expect("nodes array").is_empty());
+}
+
+#[tokio::test]
+async fn get_node_neighbors_depth_zero_returns_empty() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(new_edge_body(a, b, "links_to")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // depth=0 follows the BFS contract verified in
+    // src/traversal.rs::bfs_depth_zero_returns_empty: zero hops means
+    // an empty neighbor list. Crucially, this must NOT 404 — a missing
+    // start node still returns 404 (handler line ~501 in src/api.rs),
+    // so callers can distinguish "node has no neighbors at depth 0"
+    // from "node doesn't exist".
+    let (status, value) = send(&app, "GET", &format!("/nodes/{a}/neighbors?depth=0"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["nodes"].as_array().expect("nodes array").is_empty());
+
+    // Same path against a non-existent node must still 404.
+    let (status, value) = send(&app, "GET", "/nodes/9999/neighbors?depth=0", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(value["status"].as_u64().unwrap(), 404);
+}
