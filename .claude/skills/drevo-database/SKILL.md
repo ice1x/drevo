@@ -147,15 +147,17 @@ Future: MVCC (Phase 13) replaces single-writer locking with multi-version concur
 
 ## FFI Boundary (`ffi.rs`, `drevo.h`)
 
-21 FFI functions:
+20 FFI functions:
 - Lifecycle (3): `drevo_open`, `drevo_open_in_memory`, `drevo_close`
 - Node CRUD (4): create / get / update / delete
 - Edge CRUD (4): create / get / update / delete
-- Traversal (5): neighbors, edges_of, BFS, DFS, shortest_path, subgraph
-- Search (3): FTS, list_by_kind, list_recent
+- Traversal (5): `drevo_neighbors`, `drevo_bfs`, `drevo_dfs`, `drevo_shortest_path`, `drevo_subgraph` (`Drevo::edges_of` is reachable via `drevo_neighbors`; no dedicated FFI entry)
+- Search (3): `drevo_search_fts`, `drevo_list_nodes_by_kind`, `drevo_list_recent`
 - Utility (2): `drevo_last_error`, `drevo_free_string`
 
 JSON over the boundary — see `drevo-rust` skill for details.
+
+Every entry is wrapped in `std::panic::catch_unwind` via the `ffi_guard_ptr!` / `ffi_guard_int!` macros (see audit task `00110`). A panic across the boundary is caught, recorded as a thread-local error, and the function returns its error sentinel (`NULL` or `-1`) — never UB.
 
 ---
 

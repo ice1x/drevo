@@ -706,6 +706,113 @@ fn test_free_null_string_is_safe() {
 }
 
 // ---------------------------------------------------------------------------
+// Task 00110 — input validation across the C boundary
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_null_db_handle_returns_null_with_descriptive_error() {
+    // Every FFI function that takes `*mut DrevoHandle` must report
+    // "null db handle" without dereferencing the null pointer.
+    unsafe {
+        let json = drevo_get_node(ptr::null_mut(), 1);
+        assert!(json.is_null(), "get_node with null db must return null");
+        let err = last_error().expect("LAST_ERROR must be set");
+        assert!(err.contains("null db handle"), "got: {err}");
+
+        let rc = drevo_delete_node(ptr::null_mut(), 1);
+        assert_eq!(rc, -1, "delete_node with null db must return -1");
+        let err = last_error().expect("LAST_ERROR must be set");
+        assert!(err.contains("null db handle"), "got: {err}");
+    }
+}
+
+#[test]
+fn test_invalid_utf8_in_kind_is_rejected_via_thread_local_error() {
+    // Pass a deliberately invalid UTF-8 sequence as `kind`. The FFI layer
+    // must reject it via `read_c_str` rather than letting it reach the
+    // model layer where the assumption is UTF-8.
+    unsafe {
+        let db = open_memory_db();
+        // ISO-8859-1 byte sequence (0xff, 0xfe) is not valid UTF-8.
+        let bad_bytes: [u8; 3] = [0xff, 0xfe, 0x00]; // NUL-terminated
+        let bad_ptr = bad_bytes.as_ptr() as *const std::os::raw::c_char;
+        let title = CString::new("title").unwrap();
+        let body = CString::new("").unwrap();
+        let props = CString::new("{}").unwrap();
+        let json = drevo_create_node(
+            db,
+            bad_ptr,
+            title.as_ptr(),
+            body.as_ptr(),
+            body.as_ptr(),
+            props.as_ptr(),
+        );
+        assert!(
+            json.is_null(),
+            "create_node with non-UTF-8 kind must return null"
+        );
+        let err = last_error().expect("LAST_ERROR must be set");
+        assert!(
+            err.contains("not valid UTF-8"),
+            "expected UTF-8 error message, got: {err}"
+        );
+        drevo_close(db);
+    }
+}
+
+#[test]
+fn test_invalid_direction_is_rejected_with_specific_error() {
+    unsafe {
+        let db = open_memory_db();
+        let kind = CString::new("note").unwrap();
+        let title = CString::new("dir").unwrap();
+        let body = CString::new("").unwrap();
+        let props = CString::new("{}").unwrap();
+        let j = drevo_create_node(
+            db,
+            kind.as_ptr(),
+            title.as_ptr(),
+            body.as_ptr(),
+            body.as_ptr(),
+            props.as_ptr(),
+        );
+        let n: serde_json::Value = serde_json::from_str(&read_and_free(j)).unwrap();
+        let id = n["id"].as_u64().unwrap();
+
+        // direction code 99 is invalid.
+        let result = drevo_neighbors(db, id, 99, ptr::null());
+        assert!(result.is_null());
+        let err = last_error().expect("LAST_ERROR must be set");
+        assert!(err.contains("invalid direction"), "got: {err}");
+
+        drevo_close(db);
+    }
+}
+
+#[test]
+fn test_invalid_properties_json_is_rejected() {
+    unsafe {
+        let db = open_memory_db();
+        let kind = CString::new("note").unwrap();
+        let title = CString::new("bad-json").unwrap();
+        let body = CString::new("").unwrap();
+        let bad_json = CString::new("{not json}").unwrap();
+        let j = drevo_create_node(
+            db,
+            kind.as_ptr(),
+            title.as_ptr(),
+            body.as_ptr(),
+            body.as_ptr(),
+            bad_json.as_ptr(),
+        );
+        assert!(j.is_null(), "create_node with bad JSON props must fail");
+        let err = last_error().expect("LAST_ERROR must be set");
+        assert!(err.contains("invalid properties JSON"), "got: {err}");
+        drevo_close(db);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Edge update
 // ---------------------------------------------------------------------------
 

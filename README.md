@@ -709,7 +709,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - Pre-existing `eprintln!` calls in handler error paths (if any) → structured logging (cross-link with `00112`).
   - **Refactor targets**: extract a generic CRUD handler trait (`drevo-architecture` §SOLID "I" — small focused traits); add `#[deny(non_exhaustive_omitted_patterns)]` on the `ApiError` match.
 
-- [ ] `00110` **FFI audit** — `src/ffi.rs` (~822 LOC). Verify against `drevo-rust` §"FFI Safety" + `drevo-database` §"FFI Boundary":
+- [x] `00110` **FFI audit** — `src/ffi.rs` (~822 LOC). Verify against `drevo-rust` §"FFI Safety" + `drevo-database` §"FFI Boundary":
   - **CRITICAL — No panics across FFI** (`drevo-rust` §"No panics across FFI" — "Panics across the FFI boundary are undefined behavior"). Wrap every `extern "C"` function in `std::panic::catch_unwind`. Convert panics to error codes via the thread-local error mechanism.
   - Opaque handle pattern: `drevo_t*` is opaque; `drevo_open` / `drevo_close` are paired; double-free is detected (returns an error, never UB).
   - String ownership: returned strings freed via `drevo_free_string()` (`drevo-rust`).
