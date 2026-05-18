@@ -694,7 +694,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - Dijkstra preconditions: non-negative weights. Document and add a test that asserts behaviour on negative weights (panic? error? silent corruption?).
   - **Refactor targets**: unify edge-kind filter + direction handling behind a common cursor abstraction (`drevo-architecture` §"Strategy Pattern"); document weight preconditions in rustdoc.
 
-- [ ] `00108` **FTS audit** — `src/fts/*` (~535 LOC). Verify against `drevo-database` §"FTS index" + `drevo-tdd` §"Property-based tests for invariants":
+- [x] `00108` **FTS audit** — `src/fts/*` (~535 LOC). Verify against `drevo-database` §"FTS index" + `drevo-tdd` §"Property-based tests for invariants":
   - Tokenizer: lowercase + strip punctuation; CJK → bigrams (`drevo-database`). Property-test on Unicode classes (CJK / Cyrillic / emoji / combining diacritics / RTL).
   - Posting-list intersection semantics (`drevo-database` "intersect posting lists, rank by TF-IDF").
   - Performance watch (`drevo-database` §"Performance Watch List"): `search_fts` on broad queries ~800ms vs 50ms target — document the gap and propose mitigation (cached posting-list lengths, batch scan, inverted-index compaction); landing the fix is out of scope for the audit task — flag for a separate refactor.
