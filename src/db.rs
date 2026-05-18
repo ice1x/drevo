@@ -89,7 +89,7 @@ impl Drevo {
     /// on `wasm32` targets. Use [`open_in_memory`](Self::open_in_memory) instead.
     #[cfg(feature = "redb-backend")]
     pub fn open(path: &Path) -> Result<Self> {
-        let backend = RedbBackend::open(path).map_err(DrevoError::Storage)?;
+        let backend = RedbBackend::open(path)?;
         let backend = Box::new(backend);
         let (next_node_id, next_edge_id) = Self::load_counters(&*backend)?;
         Ok(Self {
@@ -121,7 +121,7 @@ impl Drevo {
     /// Returns [`DrevoError::Storage`] if flush fails.
     pub fn close(self) -> Result<()> {
         self.persist_counters()?;
-        self.backend.flush().map_err(DrevoError::Storage)?;
+        self.backend.flush()?;
         Ok(())
     }
 
@@ -130,7 +130,7 @@ impl Drevo {
     /// For redb this is a no-op (redb manages its own compaction).
     /// For the memory backend this flushes to disk if a path is configured.
     pub fn compact(&self) -> Result<()> {
-        self.backend.flush().map_err(DrevoError::Storage)?;
+        self.backend.flush()?;
         Ok(())
     }
 
@@ -144,9 +144,7 @@ impl Drevo {
     /// avoids any write so it is safe to call from a read-only replica
     /// once Phase 13 lands.
     pub fn health_check(&self) -> Result<()> {
-        self.backend
-            .get(META_NEXT_NODE_ID)
-            .map_err(DrevoError::Storage)?;
+        self.backend.get(META_NEXT_NODE_ID)?;
         Ok(())
     }
 
@@ -188,12 +186,7 @@ impl Drevo {
     pub fn create_node(&self, new_node: NewNode) -> Result<Node> {
         // Check title uniqueness
         let title_key = node_title_key(&new_node.title);
-        if self
-            .backend
-            .get(&title_key)
-            .map_err(DrevoError::Storage)?
-            .is_some()
-        {
+        if self.backend.get(&title_key)?.is_some() {
             return Err(DrevoError::DuplicateTitle(new_node.title));
         }
 
@@ -202,32 +195,23 @@ impl Drevo {
 
         // Store node data
         let data = serialize_node(&node)?;
-        self.backend
-            .put(&node_key(id), &data)
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&node_key(id), &data)?;
 
         // UUID index
         self.backend
-            .put(&node_uuid_key(&node.uuid), &id.to_le_bytes())
-            .map_err(DrevoError::Storage)?;
+            .put(&node_uuid_key(&node.uuid), &id.to_le_bytes())?;
 
         // Title index
-        self.backend
-            .put(&title_key, &id.to_le_bytes())
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&title_key, &id.to_le_bytes())?;
 
         // Kind index
-        self.backend
-            .put(&node_kind_key(&node.kind, id), &[])
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&node_kind_key(&node.kind, id), &[])?;
 
         // FTS index
         fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
 
         // Updated-at index (newest-first ordering)
-        self.backend
-            .put(&updated_key(node.updated_at, id), &[])
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&updated_key(node.updated_at, id), &[])?;
 
         Ok(node)
     }
@@ -236,11 +220,7 @@ impl Drevo {
     ///
     /// Returns `None` if the node does not exist.
     pub fn get_node(&self, id: u64) -> Result<Option<Node>> {
-        match self
-            .backend
-            .get(&node_key(id))
-            .map_err(DrevoError::Storage)?
-        {
+        match self.backend.get(&node_key(id))? {
             Some(bytes) => Ok(Some(deserialize_node(&bytes)?)),
             None => Ok(None),
         }
@@ -250,11 +230,7 @@ impl Drevo {
     ///
     /// Returns `None` if no node has the given UUID.
     pub fn get_node_by_uuid(&self, uuid: &[u8; 16]) -> Result<Option<Node>> {
-        match self
-            .backend
-            .get(&node_uuid_key(uuid))
-            .map_err(DrevoError::Storage)?
-        {
+        match self.backend.get(&node_uuid_key(uuid))? {
             Some(id_bytes) => {
                 let id = u64_from_bytes(&id_bytes);
                 self.get_node(id)
@@ -267,11 +243,7 @@ impl Drevo {
     ///
     /// Returns `None` if no node has the given title.
     pub fn get_node_by_title(&self, title: &str) -> Result<Option<Node>> {
-        match self
-            .backend
-            .get(&node_title_key(title))
-            .map_err(DrevoError::Storage)?
-        {
+        match self.backend.get(&node_title_key(title))? {
             Some(id_bytes) => {
                 let id = u64_from_bytes(&id_bytes);
                 self.get_node(id)
@@ -302,12 +274,7 @@ impl Drevo {
         if let Some(ref new_title) = patch.title {
             if *new_title != old_title {
                 let title_key = node_title_key(new_title);
-                if self
-                    .backend
-                    .get(&title_key)
-                    .map_err(DrevoError::Storage)?
-                    .is_some()
-                {
+                if self.backend.get(&title_key)?.is_some() {
                     return Err(DrevoError::DuplicateTitle(new_title.clone()));
                 }
             }
@@ -317,28 +284,19 @@ impl Drevo {
 
         // Store updated node
         let data = serialize_node(&node)?;
-        self.backend
-            .put(&node_key(id), &data)
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&node_key(id), &data)?;
 
         // Update title index if title changed
         if node.title != old_title {
+            self.backend.delete(&node_title_key(&old_title))?;
             self.backend
-                .delete(&node_title_key(&old_title))
-                .map_err(DrevoError::Storage)?;
-            self.backend
-                .put(&node_title_key(&node.title), &id.to_le_bytes())
-                .map_err(DrevoError::Storage)?;
+                .put(&node_title_key(&node.title), &id.to_le_bytes())?;
         }
 
         // Update kind index if kind changed
         if node.kind != old_kind {
-            self.backend
-                .delete(&node_kind_key(&old_kind, id))
-                .map_err(DrevoError::Storage)?;
-            self.backend
-                .put(&node_kind_key(&node.kind, id), &[])
-                .map_err(DrevoError::Storage)?;
+            self.backend.delete(&node_kind_key(&old_kind, id))?;
+            self.backend.put(&node_kind_key(&node.kind, id), &[])?;
         }
 
         // Update FTS index if title or body changed
@@ -348,12 +306,8 @@ impl Drevo {
         }
 
         // Update updated-at index: remove old entry, add new one
-        self.backend
-            .delete(&updated_key(old_updated_at, id))
-            .map_err(DrevoError::Storage)?;
-        self.backend
-            .put(&updated_key(node.updated_at, id), &[])
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&updated_key(old_updated_at, id))?;
+        self.backend.put(&updated_key(node.updated_at, id), &[])?;
 
         Ok(node)
     }
@@ -377,32 +331,22 @@ impl Drevo {
         }
 
         // Remove node data
-        self.backend
-            .delete(&node_key(id))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&node_key(id))?;
 
         // Remove UUID index
-        self.backend
-            .delete(&node_uuid_key(&node.uuid))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&node_uuid_key(&node.uuid))?;
 
         // Remove title index
-        self.backend
-            .delete(&node_title_key(&node.title))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&node_title_key(&node.title))?;
 
         // Remove kind index
-        self.backend
-            .delete(&node_kind_key(&node.kind, id))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&node_kind_key(&node.kind, id))?;
 
         // Remove FTS index
         fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
 
         // Remove updated-at index
-        self.backend
-            .delete(&updated_key(node.updated_at, id))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&updated_key(node.updated_at, id))?;
 
         Ok(())
     }
@@ -416,11 +360,24 @@ impl Drevo {
     /// Allocates a unique ID, generates a UUID v7 and timestamp,
     /// stores the edge, updates UUID index and adjacency lists.
     ///
+    /// # Preconditions
+    ///
+    /// - `weight` MUST be a finite `f32` — NaN, +Inf, and -Inf are
+    ///   rejected with [`DrevoError::InvalidWeight`]. Required because
+    ///   `Edge` derives `PartialEq` (NaN ≠ NaN breaks the contract) and
+    ///   Dijkstra in [`crate::traversal`] assumes finite weights.
+    ///
     /// # Errors
     ///
-    /// Returns [`DrevoError::NodeNotFound`] if either `from_id` or
-    /// `to_id` does not refer to an existing node.
+    /// - [`DrevoError::NodeNotFound`] if either `from_id` or
+    ///   `to_id` does not refer to an existing node.
+    /// - [`DrevoError::InvalidWeight`] if `weight` is not finite.
     pub fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
+        // Validate weight finiteness — see `audit/AUDIT-model.md` F4
+        if !new_edge.weight.is_finite() {
+            return Err(DrevoError::InvalidWeight(new_edge.weight));
+        }
+
         // Validate that both endpoints exist
         if self.get_node(new_edge.from_id)?.is_none() {
             return Err(DrevoError::NodeNotFound(new_edge.from_id));
@@ -434,29 +391,20 @@ impl Drevo {
 
         // Store edge data
         let data = serialize_edge(&edge)?;
-        self.backend
-            .put(&edge_key(id), &data)
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&edge_key(id), &data)?;
 
         // UUID index
         self.backend
-            .put(&edge_uuid_key(&edge.uuid), &id.to_le_bytes())
-            .map_err(DrevoError::Storage)?;
+            .put(&edge_uuid_key(&edge.uuid), &id.to_le_bytes())?;
 
         // Outgoing adjacency: out:{from_id}:{edge_id}
-        self.backend
-            .put(&out_edge_key(edge.from_id, id), &[])
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&out_edge_key(edge.from_id, id), &[])?;
 
         // Incoming adjacency: in:{to_id}:{edge_id}
-        self.backend
-            .put(&in_edge_key(edge.to_id, id), &[])
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&in_edge_key(edge.to_id, id), &[])?;
 
         // Edge kind index
-        self.backend
-            .put(&edge_kind_key(&edge.kind, id), &[])
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
 
         Ok(edge)
     }
@@ -465,11 +413,7 @@ impl Drevo {
     ///
     /// Returns `None` if the edge does not exist.
     pub fn get_edge(&self, id: u64) -> Result<Option<Edge>> {
-        match self
-            .backend
-            .get(&edge_key(id))
-            .map_err(DrevoError::Storage)?
-        {
+        match self.backend.get(&edge_key(id))? {
             Some(bytes) => Ok(Some(deserialize_edge(&bytes)?)),
             None => Ok(None),
         }
@@ -479,11 +423,7 @@ impl Drevo {
     ///
     /// Returns `None` if no edge has the given UUID.
     pub fn get_edge_by_uuid(&self, uuid: &[u8; 16]) -> Result<Option<Edge>> {
-        match self
-            .backend
-            .get(&edge_uuid_key(uuid))
-            .map_err(DrevoError::Storage)?
-        {
+        match self.backend.get(&edge_uuid_key(uuid))? {
             Some(id_bytes) => {
                 let id = u64_from_bytes(&id_bytes);
                 self.get_edge(id)
@@ -497,10 +437,25 @@ impl Drevo {
     /// Only `Some` fields in the patch are applied (kind, weight, properties).
     /// The edge endpoints (`from_id`, `to_id`) cannot be changed.
     ///
+    /// # Preconditions
+    ///
+    /// - When `patch.weight` is `Some(w)`, `w` MUST be a finite `f32`.
+    ///   See [`create_edge`](Self::create_edge) for the rationale.
+    ///
     /// # Errors
     ///
-    /// Returns [`DrevoError::EdgeNotFound`] if the edge does not exist.
+    /// - [`DrevoError::EdgeNotFound`] if the edge does not exist.
+    /// - [`DrevoError::InvalidWeight`] if `patch.weight` carries a
+    ///   non-finite `f32`.
     pub fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
+        // Validate weight finiteness before any storage mutation so the
+        // failure is observable without leaving the indexes drifted.
+        if let Some(w) = patch.weight {
+            if !w.is_finite() {
+                return Err(DrevoError::InvalidWeight(w));
+            }
+        }
+
         let mut edge = self.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
 
         let old_kind = edge.kind.clone();
@@ -508,18 +463,12 @@ impl Drevo {
         edge.apply_patch(patch);
 
         let data = serialize_edge(&edge)?;
-        self.backend
-            .put(&edge_key(id), &data)
-            .map_err(DrevoError::Storage)?;
+        self.backend.put(&edge_key(id), &data)?;
 
         // Update edge_kind index if kind changed
         if edge.kind != old_kind {
-            self.backend
-                .delete(&edge_kind_key(&old_kind, id))
-                .map_err(DrevoError::Storage)?;
-            self.backend
-                .put(&edge_kind_key(&edge.kind, id), &[])
-                .map_err(DrevoError::Storage)?;
+            self.backend.delete(&edge_kind_key(&old_kind, id))?;
+            self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
         }
 
         Ok(edge)
@@ -536,29 +485,19 @@ impl Drevo {
         let edge = self.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
 
         // Remove edge data
-        self.backend
-            .delete(&edge_key(id))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&edge_key(id))?;
 
         // Remove UUID index
-        self.backend
-            .delete(&edge_uuid_key(&edge.uuid))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&edge_uuid_key(&edge.uuid))?;
 
         // Remove outgoing adjacency entry
-        self.backend
-            .delete(&out_edge_key(edge.from_id, id))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&out_edge_key(edge.from_id, id))?;
 
         // Remove incoming adjacency entry
-        self.backend
-            .delete(&in_edge_key(edge.to_id, id))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&in_edge_key(edge.to_id, id))?;
 
         // Remove edge kind index
-        self.backend
-            .delete(&edge_kind_key(&edge.kind, id))
-            .map_err(DrevoError::Storage)?;
+        self.backend.delete(&edge_kind_key(&edge.kind, id))?;
 
         Ok(())
     }
@@ -602,10 +541,7 @@ impl Drevo {
     /// * `offset` — number of matching nodes to skip
     pub fn list_nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>> {
         let prefix = node_kind_prefix(kind);
-        let entries = self
-            .backend
-            .scan_prefix(&prefix)
-            .map_err(DrevoError::Storage)?;
+        let entries = self.backend.scan_prefix(&prefix)?;
 
         let mut nodes = Vec::new();
         for (key, _) in entries.into_iter().skip(offset).take(limit) {
@@ -629,10 +565,7 @@ impl Drevo {
     /// * `offset` — number of matching edges to skip
     pub fn list_edges_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Edge>> {
         let prefix = edge_kind_prefix(kind);
-        let entries = self
-            .backend
-            .scan_prefix(&prefix)
-            .map_err(DrevoError::Storage)?;
+        let entries = self.backend.scan_prefix(&prefix)?;
 
         let mut edges = Vec::new();
         for (key, _) in entries.into_iter().skip(offset).take(limit) {
@@ -653,10 +586,7 @@ impl Drevo {
             return Ok(Vec::new());
         }
 
-        let entries = self
-            .backend
-            .scan_prefix(PREFIX_UPDATED)
-            .map_err(DrevoError::Storage)?;
+        let entries = self.backend.scan_prefix(PREFIX_UPDATED)?;
 
         let mut nodes = Vec::new();
         for (key, _) in entries.into_iter().take(limit) {
@@ -721,10 +651,7 @@ impl Drevo {
         }
 
         // Total number of indexed nodes (approximate: count node: prefix entries)
-        let all_nodes = self
-            .backend
-            .scan_prefix(PREFIX_NODE)
-            .map_err(DrevoError::Storage)?;
+        let all_nodes = self.backend.scan_prefix(PREFIX_NODE)?;
         let total_nodes = all_nodes.len() as f32;
 
         // Precompute IDF for each query trigram
@@ -890,16 +817,267 @@ impl Drevo {
     }
 
     // ---------------------------------------------------------------
+    // Invariant verification (test-only — `00106`)
+    // ---------------------------------------------------------------
+
+    /// Verify the four storage-layer invariants from
+    /// `.claude/skills/drevo-database/SKILL.md` §"Invariants".
+    ///
+    /// 1. **Adjacency consistency** — every `out:{from_id}:{edge_id}` entry
+    ///    is mirrored by `in:{to_id}:{edge_id}`, and vice versa.
+    /// 2. **No dangling adjacency** — every adjacency entry references an
+    ///    edge that exists and points at the correct node.
+    /// 3. **Index consistency** — every `node_uuid:` / `node_title:` /
+    ///    `node_kind:` index entry resolves to an existing node;
+    ///    `edge_uuid:` / `edge_kind:` to an existing edge.
+    /// 4. **`updated_idx` parity** — every node has exactly one entry in
+    ///    the inverted-timestamp `updated:` index.
+    ///
+    /// Returned vector is empty when all invariants hold. Each element is
+    /// a human-readable description of a single violation; the caller is
+    /// expected to `assert!(violations.is_empty(), "{:?}", violations)`
+    /// inside a test.
+    ///
+    /// This is a **test-only** helper. It is exposed for the integration
+    /// test in `tests/db_invariants_tests.rs` and gated `pub(crate)` so
+    /// it does not leak through the public API of the crate.
+    #[doc(hidden)]
+    pub fn verify_invariants(&self) -> Result<Vec<String>> {
+        let mut violations: Vec<String> = Vec::new();
+
+        // Collect every edge by scanning the edge: prefix once.
+        let edge_entries = self.backend.scan_prefix(PREFIX_EDGE)?;
+        let mut edges_by_id: std::collections::HashMap<u64, Edge> =
+            std::collections::HashMap::with_capacity(edge_entries.len());
+        for (key, bytes) in &edge_entries {
+            // Skip edge_uuid: and edge_kind: entries which share the
+            // "edge" string but have longer prefixes that don't match
+            // PREFIX_EDGE (b"edge:") followed by an 8-byte id.
+            if key.len() != PREFIX_EDGE.len() + 8 {
+                continue;
+            }
+            let edge = deserialize_edge(bytes)?;
+            edges_by_id.insert(edge.id, edge);
+        }
+
+        // Collect every node by scanning the node: prefix once.
+        let node_entries = self.backend.scan_prefix(PREFIX_NODE)?;
+        let mut nodes_by_id: std::collections::HashMap<u64, Node> =
+            std::collections::HashMap::with_capacity(node_entries.len());
+        for (key, bytes) in &node_entries {
+            if key.len() != PREFIX_NODE.len() + 8 {
+                continue;
+            }
+            let node = deserialize_node(bytes)?;
+            nodes_by_id.insert(node.id, node);
+        }
+
+        // ---- Invariant #1 & #2 — adjacency consistency + no dangling ----
+        let out_entries = self.backend.scan_prefix(PREFIX_OUT)?;
+        for (key, _) in &out_entries {
+            // out:{from_id_8}:{edge_id_8}
+            let expected_len = PREFIX_OUT.len() + 8 + 1 + 8;
+            if key.len() != expected_len {
+                violations.push(format!(
+                    "adjacency key has unexpected length: out: key len = {}",
+                    key.len()
+                ));
+                continue;
+            }
+            let from_id = u64_from_adjacency_key_first_id(key, PREFIX_OUT);
+            let edge_id = edge_id_from_adjacency_key(
+                key,
+                &[PREFIX_OUT, &from_id.to_le_bytes(), b":"].concat(),
+            );
+            match edges_by_id.get(&edge_id) {
+                None => violations.push(format!(
+                    "out adjacency points at missing edge: from_id={from_id}, edge_id={edge_id}"
+                )),
+                Some(e) => {
+                    if e.from_id != from_id {
+                        violations.push(format!(
+                            "out adjacency from_id mismatch: key from_id={from_id}, \
+                             edge.from_id={}",
+                            e.from_id
+                        ));
+                    }
+                    // Invariant #1 — the corresponding in: entry MUST exist.
+                    let in_key = in_edge_key(e.to_id, e.id);
+                    if self.backend.get(&in_key)?.is_none() {
+                        violations.push(format!(
+                            "out adjacency missing in mirror: edge_id={edge_id}, \
+                             from_id={from_id}, to_id={}",
+                            e.to_id
+                        ));
+                    }
+                }
+            }
+        }
+
+        let in_entries = self.backend.scan_prefix(PREFIX_IN)?;
+        for (key, _) in &in_entries {
+            let expected_len = PREFIX_IN.len() + 8 + 1 + 8;
+            if key.len() != expected_len {
+                violations.push(format!(
+                    "adjacency key has unexpected length: in: key len = {}",
+                    key.len()
+                ));
+                continue;
+            }
+            let to_id = u64_from_adjacency_key_first_id(key, PREFIX_IN);
+            let edge_id =
+                edge_id_from_adjacency_key(key, &[PREFIX_IN, &to_id.to_le_bytes(), b":"].concat());
+            match edges_by_id.get(&edge_id) {
+                None => violations.push(format!(
+                    "in adjacency points at missing edge: to_id={to_id}, edge_id={edge_id}"
+                )),
+                Some(e) => {
+                    if e.to_id != to_id {
+                        violations.push(format!(
+                            "in adjacency to_id mismatch: key to_id={to_id}, edge.to_id={}",
+                            e.to_id
+                        ));
+                    }
+                    // Invariant #1 — mirror direction.
+                    let out_key = out_edge_key(e.from_id, e.id);
+                    if self.backend.get(&out_key)?.is_none() {
+                        violations.push(format!(
+                            "in adjacency missing out mirror: edge_id={edge_id}, \
+                             to_id={to_id}, from_id={}",
+                            e.from_id
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Every edge must have both adjacency entries — symmetrical check.
+        for edge in edges_by_id.values() {
+            if self
+                .backend
+                .get(&out_edge_key(edge.from_id, edge.id))?
+                .is_none()
+            {
+                violations.push(format!(
+                    "edge {} missing its out: adjacency entry (from_id={})",
+                    edge.id, edge.from_id
+                ));
+            }
+            if self
+                .backend
+                .get(&in_edge_key(edge.to_id, edge.id))?
+                .is_none()
+            {
+                violations.push(format!(
+                    "edge {} missing its in: adjacency entry (to_id={})",
+                    edge.id, edge.to_id
+                ));
+            }
+            // Edge endpoints must reference real nodes.
+            if !nodes_by_id.contains_key(&edge.from_id) {
+                violations.push(format!(
+                    "edge {} references missing from_id={}",
+                    edge.id, edge.from_id
+                ));
+            }
+            if !nodes_by_id.contains_key(&edge.to_id) {
+                violations.push(format!(
+                    "edge {} references missing to_id={}",
+                    edge.id, edge.to_id
+                ));
+            }
+        }
+
+        // ---- Invariant #3 — index consistency ----
+        // node_uuid index
+        for (key, value) in self.backend.scan_prefix(PREFIX_NODE_UUID)? {
+            let id = u64_from_bytes(&value);
+            if !nodes_by_id.contains_key(&id) {
+                violations.push(format!(
+                    "node_uuid index points at missing node id={id} (key len {})",
+                    key.len()
+                ));
+            }
+        }
+        // node_title index — also asserts at most one entry per node
+        let mut titles_seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for (_, value) in self.backend.scan_prefix(PREFIX_NODE_TITLE)? {
+            let id = u64_from_bytes(&value);
+            if !nodes_by_id.contains_key(&id) {
+                violations.push(format!("node_title index points at missing node id={id}"));
+            }
+            if !titles_seen.insert(id) {
+                violations.push(format!(
+                    "node_title index has duplicate entries for node id={id}"
+                ));
+            }
+        }
+        // node_kind index
+        for (key, _) in self.backend.scan_prefix(PREFIX_NODE_KIND)? {
+            let id = id_from_kind_key(&key, b"node_kind:does_not_matter:");
+            // The above is a hack to reuse the same suffix decoder — but we
+            // need to find the actual node_id. Easier: tail 8 bytes.
+            let id = if key.len() >= 8 {
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&key[key.len() - 8..]);
+                u64::from_le_bytes(arr)
+            } else {
+                id
+            };
+            if !nodes_by_id.contains_key(&id) {
+                violations.push(format!("node_kind index points at missing node id={id}"));
+            }
+        }
+        // edge_uuid index
+        for (_, value) in self.backend.scan_prefix(PREFIX_EDGE_UUID)? {
+            let id = u64_from_bytes(&value);
+            if !edges_by_id.contains_key(&id) {
+                violations.push(format!("edge_uuid index points at missing edge id={id}"));
+            }
+        }
+        // edge_kind index — extract trailing 8 bytes as edge id
+        for (key, _) in self.backend.scan_prefix(PREFIX_EDGE_KIND)? {
+            if key.len() < 8 {
+                continue;
+            }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&key[key.len() - 8..]);
+            let id = u64::from_le_bytes(arr);
+            if !edges_by_id.contains_key(&id) {
+                violations.push(format!("edge_kind index points at missing edge id={id}"));
+            }
+        }
+
+        // ---- Invariant #4 — updated_idx parity ----
+        let mut updated_seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for (key, _) in self.backend.scan_prefix(PREFIX_UPDATED)? {
+            let id = node_id_from_updated_key(&key);
+            if !nodes_by_id.contains_key(&id) {
+                violations.push(format!("updated_idx points at missing node id={id}"));
+            }
+            if !updated_seen.insert(id) {
+                violations.push(format!(
+                    "updated_idx has duplicate entries for node id={id}"
+                ));
+            }
+        }
+        for node in nodes_by_id.values() {
+            if !updated_seen.contains(&node.id) {
+                violations.push(format!("node {} has no entry in updated_idx", node.id));
+            }
+        }
+
+        Ok(violations)
+    }
+
+    // ---------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------
 
     /// Collect outgoing edges for a node by scanning the `out:` prefix.
     fn outgoing_edges(&self, node_id: u64) -> Result<Vec<Edge>> {
         let prefix = out_prefix(node_id);
-        let entries = self
-            .backend
-            .scan_prefix(&prefix)
-            .map_err(DrevoError::Storage)?;
+        let entries = self.backend.scan_prefix(&prefix)?;
         let mut edges = Vec::with_capacity(entries.len());
         for (key, _) in entries {
             let edge_id = edge_id_from_adjacency_key(&key, &prefix);
@@ -913,10 +1091,7 @@ impl Drevo {
     /// Collect incoming edges for a node by scanning the `in:` prefix.
     fn incoming_edges(&self, node_id: u64) -> Result<Vec<Edge>> {
         let prefix = in_prefix(node_id);
-        let entries = self
-            .backend
-            .scan_prefix(&prefix)
-            .map_err(DrevoError::Storage)?;
+        let entries = self.backend.scan_prefix(&prefix)?;
         let mut edges = Vec::with_capacity(entries.len());
         for (key, _) in entries {
             let edge_id = edge_id_from_adjacency_key(&key, &prefix);
@@ -932,17 +1107,11 @@ impl Drevo {
     /// Returns (next_node_id, next_edge_id). Defaults to 1 if not found.
     #[cfg(feature = "redb-backend")]
     fn load_counters(backend: &dyn StorageBackend) -> Result<(u64, u64)> {
-        let node_id = match backend
-            .get(META_NEXT_NODE_ID)
-            .map_err(DrevoError::Storage)?
-        {
+        let node_id = match backend.get(META_NEXT_NODE_ID)? {
             Some(bytes) => u64_from_bytes(&bytes),
             None => 1,
         };
-        let edge_id = match backend
-            .get(META_NEXT_EDGE_ID)
-            .map_err(DrevoError::Storage)?
-        {
+        let edge_id = match backend.get(META_NEXT_EDGE_ID)? {
             Some(bytes) => u64_from_bytes(&bytes),
             None => 1,
         };
@@ -954,19 +1123,26 @@ impl Drevo {
         let node_id = self.next_node_id.load(Ordering::Relaxed);
         let edge_id = self.next_edge_id.load(Ordering::Relaxed);
         self.backend
-            .put(META_NEXT_NODE_ID, &node_id.to_le_bytes())
-            .map_err(DrevoError::Storage)?;
+            .put(META_NEXT_NODE_ID, &node_id.to_le_bytes())?;
         self.backend
-            .put(META_NEXT_EDGE_ID, &edge_id.to_le_bytes())
-            .map_err(DrevoError::Storage)?;
+            .put(META_NEXT_EDGE_ID, &edge_id.to_le_bytes())?;
         Ok(())
     }
 }
 
 /// Decode a u64 from little-endian bytes, defaulting to 1 on invalid input.
+///
+/// Refactored in `00106` to eliminate `.unwrap()` from library code
+/// (`drevo-rust` §"Error Handling" + `drevo-architecture` anti-pattern #5).
+/// The previous implementation called `bytes.try_into().unwrap()` after a
+/// `bytes.len() == 8` guard — provably unreachable in practice, but still a
+/// rule violation. The new form uses `copy_from_slice` into a pre-allocated
+/// array, which is panic-free by construction.
 fn u64_from_bytes(bytes: &[u8]) -> u64 {
+    let mut arr = [0u8; 8];
     if bytes.len() == 8 {
-        u64::from_le_bytes(bytes.try_into().unwrap())
+        arr.copy_from_slice(bytes);
+        u64::from_le_bytes(arr)
     } else {
         1
     }
@@ -1041,11 +1217,33 @@ fn in_prefix(node_id: u64) -> Vec<u8> {
     key
 }
 
+/// Decode the first u64 from an `out:`/`in:` adjacency key.
+///
+/// Format: `{prefix}{first_id_8}:{second_id_8}` — this helper returns
+/// `first_id` (the indexed-from node for `out:`, the indexed-to node for
+/// `in:`). Panic-free per `drevo-rust` §"Error Handling".
+fn u64_from_adjacency_key_first_id(key: &[u8], prefix: &[u8]) -> u64 {
+    let start = prefix.len();
+    let end = start + 8;
+    if key.len() < end {
+        return 0;
+    }
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(&key[start..end]);
+    u64::from_le_bytes(arr)
+}
+
 /// Extract the edge ID from an adjacency key by stripping the prefix.
+///
+/// Panic-free per `drevo-rust` §"Error Handling" — uses `copy_from_slice`
+/// instead of `try_into().unwrap()` even though the length guard makes the
+/// previous form unreachable.
 fn edge_id_from_adjacency_key(key: &[u8], prefix: &[u8]) -> u64 {
     let suffix = &key[prefix.len()..];
+    let mut arr = [0u8; 8];
     if suffix.len() == 8 {
-        u64::from_le_bytes(suffix.try_into().unwrap())
+        arr.copy_from_slice(suffix);
+        u64::from_le_bytes(arr)
     } else {
         0
     }
@@ -1100,22 +1298,36 @@ fn updated_key(updated_at: i64, node_id: u64) -> Vec<u8> {
 }
 
 /// Extract the node ID from an updated_at index key.
+///
+/// Panic-free per `drevo-rust` §"Error Handling".
 fn node_id_from_updated_key(key: &[u8]) -> u64 {
     // Format: PREFIX_UPDATED (8) + inverted_ts (8) + ':' (1) + node_id (8)
     let offset = PREFIX_UPDATED.len() + 8 + 1;
+    if key.len() < offset {
+        return 0;
+    }
     let suffix = &key[offset..];
+    let mut arr = [0u8; 8];
     if suffix.len() == 8 {
-        u64::from_le_bytes(suffix.try_into().unwrap())
+        arr.copy_from_slice(suffix);
+        u64::from_le_bytes(arr)
     } else {
         0
     }
 }
 
 /// Extract the ID (u64) from a kind index key by stripping the prefix.
+///
+/// Panic-free per `drevo-rust` §"Error Handling".
 fn id_from_kind_key(key: &[u8], prefix: &[u8]) -> u64 {
+    if key.len() < prefix.len() {
+        return 0;
+    }
     let suffix = &key[prefix.len()..];
+    let mut arr = [0u8; 8];
     if suffix.len() == 8 {
-        u64::from_le_bytes(suffix.try_into().unwrap())
+        arr.copy_from_slice(suffix);
+        u64::from_le_bytes(arr)
     } else {
         0
     }

@@ -46,6 +46,15 @@ pub enum DrevoError {
     #[error("database locked")]
     Locked,
 
+    /// An edge weight failed validation: it is not a finite `f32`
+    /// (NaN, +Inf, or -Inf are rejected at `create_edge` / `update_edge`).
+    ///
+    /// `drevo-database` §"Edge" defines `weight: f32` for Dijkstra ranking;
+    /// `Edge` derives `PartialEq` which `f32::NAN != f32::NAN` would break.
+    /// Cross-link: `audit/AUDIT-model.md` F4.
+    #[error("invalid edge weight: {0} — weight must be a finite f32")]
+    InvalidWeight(f32),
+
     /// An I/O error occurred.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
