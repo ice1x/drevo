@@ -51,6 +51,8 @@ drevo_t *drevo_open_in_memory(void);
  * # Safety
  * `db` must be a valid handle returned by `drevo_open*`, or `NULL`.
  * After this call the handle is invalid and must not be used.
+ * Calling this function twice on the same pointer is undefined behavior
+ * (see the module-level "Lifecycle and double-free" docs).
  */
 int32_t drevo_close(drevo_t *db);
 
