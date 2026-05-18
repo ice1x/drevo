@@ -5,7 +5,7 @@
 //! ([`NodePatch`], [`EdgePatch`]) structs.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// JSON-compatible properties map that works with both bincode and serde_json.
 ///
@@ -36,10 +36,16 @@ impl std::ops::DerefMut for Properties {
 
 impl Serialize for Properties {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Collect into BTreeMap so the output is deterministic across HashMap
+        // iteration orders — required by drevo-rust §"Serialization"
+        // ("bincode v2 — compact, fast, deterministic"). Inner `serde_json::Value`
+        // objects already use `serde_json::Map` (BTreeMap-backed by default), so
+        // only the outer HashMap iteration needed normalising.
+        let sorted: BTreeMap<&String, &serde_json::Value> = self.0.iter().collect();
         if serializer.is_human_readable() {
-            self.0.serialize(serializer)
+            sorted.serialize(serializer)
         } else {
-            let json = serde_json::to_vec(&self.0).map_err(serde::ser::Error::custom)?;
+            let json = serde_json::to_vec(&sorted).map_err(serde::ser::Error::custom)?;
             json.serialize(serializer)
         }
     }
@@ -206,11 +212,17 @@ pub fn new_uuid_v7() -> [u8; 16] {
 }
 
 /// Return the current time as Unix milliseconds.
+///
+/// Total function — never panics. If the host clock is set before the Unix
+/// epoch (`SystemTime::now() < UNIX_EPOCH`), the timestamp is returned as a
+/// negative value reflecting the offset before the epoch, satisfying
+/// `drevo-rust` §"Error Handling" + `drevo-architecture` anti-pattern #5
+/// ("no `unwrap()` / `expect()` in library code").
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock before Unix epoch")
-        .as_millis() as i64
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(dur) => dur.as_millis() as i64,
+        Err(err) => -(err.duration().as_millis() as i64),
+    }
 }
 
 impl Node {
@@ -611,5 +623,175 @@ mod tests {
         let d = Direction::Outgoing;
         let d2 = d;
         assert_eq!(d, d2);
+    }
+
+    // --- Deterministic bincode (drevo-rust §"Serialization") ---
+
+    fn build_properties(pairs: &[(&str, serde_json::Value)]) -> Properties {
+        let mut props = HashMap::new();
+        for (k, v) in pairs {
+            props.insert((*k).to_string(), v.clone());
+        }
+        Properties::from(props)
+    }
+
+    #[test]
+    fn properties_bincode_is_deterministic_across_insertion_order() {
+        // Two HashMaps with identical content but different insertion order
+        // must serialize to identical bincode bytes — the storage layer relies
+        // on `bincode v2 — compact, fast, deterministic` (drevo-rust §"Serialization").
+        let a = build_properties(&[
+            ("alpha", json!(1)),
+            ("beta", json!("two")),
+            ("gamma", json!([3, 4, 5])),
+            ("delta", json!({"nested": true})),
+        ]);
+        let b = build_properties(&[
+            ("delta", json!({"nested": true})),
+            ("gamma", json!([3, 4, 5])),
+            ("alpha", json!(1)),
+            ("beta", json!("two")),
+        ]);
+
+        let config = bincode::config::standard();
+        let bytes_a = bincode::serde::encode_to_vec(&a, config).unwrap();
+        let bytes_b = bincode::serde::encode_to_vec(&b, config).unwrap();
+
+        assert_eq!(
+            bytes_a, bytes_b,
+            "Properties bincode must be byte-identical for equivalent contents \
+             irrespective of HashMap insertion order"
+        );
+    }
+
+    #[test]
+    fn node_bincode_is_deterministic_across_property_insertion_order() {
+        // Same Node logical content, two different property insertion orders →
+        // the entire Node must bincode-encode to identical bytes.
+        let make = |order_a: bool| {
+            let pairs: &[(&str, serde_json::Value)] = if order_a {
+                &[("k1", json!(1)), ("k2", json!(2)), ("k3", json!(3))]
+            } else {
+                &[("k3", json!(3)), ("k1", json!(1)), ("k2", json!(2))]
+            };
+            Node {
+                id: 7,
+                uuid: [0u8; 16],
+                kind: "note".to_string(),
+                title: "T".to_string(),
+                body: "B".to_string(),
+                body_html: String::new(),
+                created_at: 1,
+                updated_at: 1,
+                properties: build_properties(pairs),
+            }
+        };
+
+        let config = bincode::config::standard();
+        let bytes_a = bincode::serde::encode_to_vec(make(true), config).unwrap();
+        let bytes_b = bincode::serde::encode_to_vec(make(false), config).unwrap();
+        assert_eq!(bytes_a, bytes_b);
+    }
+
+    // --- now_ms total — must not panic (drevo-rust §"Error Handling" + drevo-architecture anti-pattern #5) ---
+
+    #[test]
+    fn now_ms_is_total_and_does_not_panic() {
+        for _ in 0..32 {
+            let _ = now_ms();
+        }
+    }
+
+    // --- Unicode edge cases (drevo-tdd §"Edge cases mandatory: Unicode (CJK, emoji, Cyrillic)") ---
+
+    fn roundtrip_node_bincode(node: &Node) {
+        let config = bincode::config::standard();
+        let bytes = bincode::serde::encode_to_vec(node, config).unwrap();
+        let (decoded, _): (Node, _) = bincode::serde::decode_from_slice(&bytes, config).unwrap();
+        assert_eq!(decoded, *node);
+    }
+
+    fn roundtrip_node_json(node: &Node) {
+        let s = serde_json::to_string(node).unwrap();
+        let decoded: Node = serde_json::from_str(&s).unwrap();
+        assert_eq!(decoded, *node);
+    }
+
+    #[test]
+    fn node_with_cjk_content_serializes_roundtrip() {
+        let node = NewNode {
+            kind: "note".to_string(),
+            // Chinese / Japanese / Korean characters
+            title: "知识图谱・グラフノート・지식그래프".to_string(),
+            body: "# 标题\n本文。これは本文です。본문 내용입니다。".to_string(),
+            body_html: "<h1>标题</h1>".to_string(),
+            properties: Properties::default(),
+        }
+        .into_node(1);
+        roundtrip_node_bincode(&node);
+        roundtrip_node_json(&node);
+    }
+
+    #[test]
+    fn node_with_emoji_content_serializes_roundtrip() {
+        let node = NewNode {
+            kind: "note".to_string(),
+            title: "🚀 launch 🌍".to_string(),
+            body: "🔥 multi-codepoint: 👨‍👩‍👧‍👦 family ZWJ sequence".to_string(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        }
+        .into_node(1);
+        roundtrip_node_bincode(&node);
+        roundtrip_node_json(&node);
+    }
+
+    #[test]
+    fn node_with_cyrillic_content_serializes_roundtrip() {
+        let node = NewNode {
+            kind: "заметка".to_string(),
+            title: "Привет, мир!".to_string(),
+            body: "Граф-база данных — производительная и надёжная.".to_string(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        }
+        .into_node(1);
+        roundtrip_node_bincode(&node);
+        roundtrip_node_json(&node);
+    }
+
+    #[test]
+    fn properties_with_unicode_keys_and_values_roundtrip() {
+        let props = build_properties(&[
+            ("标签", json!("中文")),
+            ("emoji_🔑", json!("🌈")),
+            ("кириллица", json!({"вложенный": true})),
+        ]);
+        let config = bincode::config::standard();
+        let bytes = bincode::serde::encode_to_vec(&props, config).unwrap();
+        let (decoded, _): (Properties, _) =
+            bincode::serde::decode_from_slice(&bytes, config).unwrap();
+        assert_eq!(decoded, props);
+
+        // JSON roundtrip too
+        let json = serde_json::to_string(&props).unwrap();
+        let from_json: Properties = serde_json::from_str(&json).unwrap();
+        assert_eq!(from_json, props);
+    }
+
+    #[test]
+    fn edge_with_cyrillic_kind_serializes_roundtrip() {
+        let edge = NewEdge {
+            from_id: 1,
+            to_id: 2,
+            kind: "связано_с".to_string(),
+            weight: 1.0,
+            properties: Properties::default(),
+        }
+        .into_edge(1);
+        let config = bincode::config::standard();
+        let bytes = bincode::serde::encode_to_vec(&edge, config).unwrap();
+        let (decoded, _): (Edge, _) = bincode::serde::decode_from_slice(&bytes, config).unwrap();
+        assert_eq!(decoded, edge);
     }
 }
