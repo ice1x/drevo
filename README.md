@@ -687,7 +687,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - Per-operation redb txn pitfall (`drevo-rust` common pitfall #4) — confirm bulk paths batch writes.
   - **Refactor targets**: extract index maintenance into a dedicated module so mutation paths cannot forget an index update; introduce `verify_invariants()`; consider the `db/` split.
 
-- [ ] `00107` **Traversal audit** — `src/traversal.rs` (~1107 LOC). Verify against `drevo-database` §"Graph Traversal" + `drevo-architecture` §"Algorithm Design Principles" + `drevo-tdd` §"Edge cases mandatory":
+- [x] `00107` **Traversal audit** — `src/traversal.rs` (~1107 LOC). Verify against `drevo-database` §"Graph Traversal" + `drevo-architecture` §"Algorithm Design Principles" + `drevo-tdd` §"Edge cases mandatory":
   - BFS / DFS / Dijkstra / subgraph each hit the documented complexity bound (BFS/DFS O(V+E); Dijkstra O((V+E) log V)).
   - Edge-kind filter is pushed into the traversal (`drevo-database` §"edge-kind filtering at the traversal level is dramatic — 50µs vs 245µs"). Verify all four algorithms support it consistently.
   - Mandatory edge cases (`drevo-tdd`): empty graph, single node, cycles, disconnected components, depth 0, max depth, self-loops, parallel edges. Spot-check coverage in `tests/traversal_edge_case_tests.rs`.
