@@ -678,7 +678,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - `Direction` enum is closed (`drevo-architecture` §SOLID "O" — `Value` enum is closed; the analogous reasoning applies).
   - **Refactor targets**: proptest serde round-trip on every `pub` struct in the module; field-level patch-semantics rustdoc.
 
-- [ ] `00106` **DB core audit** — `src/db.rs` (~1897 LOC; **split into 4 sub-passes if a single context is too tight**: 106a lifecycle, 106b node CRUD + indexes, 106c edge CRUD + adjacency, 106d query/scan paths). Verify against `drevo-database` §"Invariants" + `drevo-architecture` §"Anti-Patterns" + `drevo-tdd` §"Edge cases mandatory":
+- [x] `00106` **DB core audit** — `src/db.rs` (~1897 LOC; **split into 4 sub-passes if a single context is too tight**: 106a lifecycle, 106b node CRUD + indexes, 106c edge CRUD + adjacency, 106d query/scan paths). Verify against `drevo-database` §"Invariants" + `drevo-architecture` §"Anti-Patterns" + `drevo-tdd` §"Edge cases mandatory":
   - **Invariant #1 — Adjacency consistency** (`drevo-database`): every edge in `out_edges[from_id]` mirrored in `in_edges[to_id]`. Add a `Drevo::verify_invariants()` test-only helper and an end-to-end proptest that does N random mutations and asserts the invariant after each.
   - **Invariant #2 — Cascading delete**: deleting a node removes incident edges + adjacency entries + FTS entries (`drevo-database`; `drevo-rust` common pitfall #1).
   - **Invariant #3 — FTS reindex on update**: changing `title` or `body` deindexes the old text and indexes the new (`drevo-rust` common pitfall #2). Already partially tested — verify exhaustive coverage.

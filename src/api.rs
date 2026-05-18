@@ -175,6 +175,7 @@ impl IntoResponse for ApiError {
                     (StatusCode::NOT_FOUND, err.to_string())
                 }
                 DrevoError::DuplicateTitle(_) => (StatusCode::CONFLICT, err.to_string()),
+                DrevoError::InvalidWeight(_) => (StatusCode::BAD_REQUEST, err.to_string()),
                 DrevoError::Locked => (StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
                 DrevoError::Storage(_)
                 | DrevoError::Encode(_)

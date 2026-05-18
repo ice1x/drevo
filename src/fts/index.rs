@@ -6,7 +6,7 @@
 //! This allows efficient posting list retrieval via `scan_prefix("fts:{trigram}:")`,
 //! and efficient add/remove of individual node entries without touching other nodes.
 
-use crate::error::{DrevoError, Result};
+use crate::error::Result;
 use crate::fts::tokenizer::extract_trigrams;
 use crate::storage::StorageBackend;
 
@@ -46,9 +46,7 @@ pub(crate) fn index_node(
 ) -> Result<()> {
     let trigrams = extract_trigrams(title, body);
     for trigram in &trigrams {
-        backend
-            .put(&fts_key(trigram, node_id), &[])
-            .map_err(DrevoError::Storage)?;
+        backend.put(&fts_key(trigram, node_id), &[])?;
     }
     Ok(())
 }
@@ -65,9 +63,7 @@ pub(crate) fn deindex_node(
 ) -> Result<()> {
     let trigrams = extract_trigrams(title, body);
     for trigram in &trigrams {
-        backend
-            .delete(&fts_key(trigram, node_id))
-            .map_err(DrevoError::Storage)?;
+        backend.delete(&fts_key(trigram, node_id))?;
     }
     Ok(())
 }
@@ -80,13 +76,21 @@ pub(crate) fn node_ids_for_trigram(
     trigram: &str,
 ) -> Result<Vec<u64>> {
     let prefix = fts_trigram_prefix(trigram);
-    let entries = backend.scan_prefix(&prefix).map_err(DrevoError::Storage)?;
+    let entries = backend.scan_prefix(&prefix)?;
 
     let mut ids = Vec::with_capacity(entries.len());
     for (key, _) in entries {
+        if key.len() < prefix.len() {
+            continue;
+        }
         let suffix = &key[prefix.len()..];
+        // Refactored in `00106` to remove `.unwrap()` from library code
+        // (`drevo-rust` §"Error Handling"). `copy_from_slice` into a
+        // pre-allocated array is panic-free by construction.
+        let mut arr = [0u8; 8];
         if suffix.len() == 8 {
-            ids.push(u64::from_le_bytes(suffix.try_into().unwrap()));
+            arr.copy_from_slice(suffix);
+            ids.push(u64::from_le_bytes(arr));
         }
     }
     Ok(ids)
@@ -95,7 +99,7 @@ pub(crate) fn node_ids_for_trigram(
 /// Count how many nodes contain a given trigram (document frequency).
 pub(crate) fn posting_list_len(backend: &dyn StorageBackend, trigram: &str) -> Result<usize> {
     let prefix = fts_trigram_prefix(trigram);
-    let entries = backend.scan_prefix(&prefix).map_err(DrevoError::Storage)?;
+    let entries = backend.scan_prefix(&prefix)?;
     Ok(entries.len())
 }
 
