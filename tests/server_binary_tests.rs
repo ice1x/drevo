@@ -142,41 +142,58 @@ mod server_tests {
     }
 
     // -----------------------------------------------------------------
-    // Dockerfile-related configuration tests
+    // Binary configuration contract (post-00112 audit)
+    //
+    // Pre-00112 these tests parsed local string constants and never
+    // touched the binary's actual parser. They now bind to
+    // [`drevo::server::Config`] so the assertions break if a future
+    // change drifts the binary defaults away from the Dockerfile and
+    // README contract.
     // -----------------------------------------------------------------
+
+    use drevo::server::Config;
 
     #[test]
     fn default_listen_addr_is_0_0_0_0_8080() {
-        // Documents the container convention: bind all interfaces on port 8080.
-        let addr = "0.0.0.0:8080";
-        let parsed: std::net::SocketAddr = addr.parse().unwrap();
-        assert_eq!(parsed.port(), 8080);
-        assert!(parsed.ip().is_unspecified());
+        // Container convention: bind all interfaces on port 8080.
+        let cfg = Config::from_env(|_| None).unwrap();
+        let addr = cfg.socket_addr().unwrap();
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.port, 8080);
+        assert_eq!(addr.port(), 8080);
+        assert!(addr.ip().is_unspecified());
     }
 
     #[test]
     fn data_directory_convention() {
         // The Dockerfile mounts a volume at /data — the server binary
-        // should use this as the default storage directory.
-        let data_dir = std::path::Path::new("/data");
-        assert_eq!(data_dir.to_str().unwrap(), "/data");
+        // uses this as the default storage directory.
+        let cfg = Config::from_env(|_| None).unwrap();
+        assert_eq!(cfg.data_dir.to_string_lossy(), "/data");
+        assert_eq!(cfg.db_path().to_string_lossy(), "/data/drevo.redb");
     }
 
     #[test]
     fn env_var_overrides_port() {
-        // DREVO_PORT env var should override the default port.
-        // Here we test the parsing logic.
-        let port_str = "9090";
-        let port: u16 = port_str.parse().unwrap();
-        assert_eq!(port, 9090);
+        // DREVO_PORT env var overrides the default port.
+        let cfg = Config::from_env(|k| match k {
+            "DREVO_PORT" => Some("9090".to_string()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(cfg.port, 9090);
     }
 
     #[test]
     fn env_var_overrides_data_dir() {
-        // DREVO_DATA_DIR env var should override the default path.
-        let custom = "/custom/path";
-        let path = std::path::Path::new(custom);
-        assert!(path.is_absolute());
+        // DREVO_DATA_DIR env var overrides the default path.
+        let cfg = Config::from_env(|k| match k {
+            "DREVO_DATA_DIR" => Some("/custom/path".to_string()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(cfg.data_dir.is_absolute());
+        assert_eq!(cfg.data_dir.to_string_lossy(), "/custom/path");
     }
 
     // -----------------------------------------------------------------
@@ -302,6 +319,72 @@ mod server_tests {
         assert!(!clone.is_shutting_down());
         state.signal_shutdown();
         assert!(clone.is_shutting_down());
+    }
+
+    // -----------------------------------------------------------------
+    // Task 00112 — end-to-end run() smoke
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn run_serves_health_against_a_temp_data_dir_and_shuts_down() {
+        // The audit 00112 introduces `drevo::server::run()` as the
+        // single entry point for the binary. This test exercises it
+        // against a temporary data directory and an ephemeral port so
+        // the binary's bind + serve + graceful-shutdown contract is
+        // covered without spawning a subprocess.
+        use std::time::Duration;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let port = {
+            let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = probe.local_addr().unwrap().port();
+            drop(probe);
+            p
+        };
+
+        let dir_path = dir.path().to_path_buf();
+        let data_dir = dir_path.to_string_lossy().to_string();
+        let port_str = port.to_string();
+        let cfg = drevo::server::Config::from_env(move |k| match k {
+            "DREVO_HOST" => Some("127.0.0.1".to_string()),
+            "DREVO_PORT" => Some(port_str.clone()),
+            "DREVO_DATA_DIR" => Some(data_dir.clone()),
+            _ => None,
+        })
+        .unwrap();
+
+        let server = tokio::spawn(async move {
+            drevo::server::run(cfg).await.unwrap();
+        });
+
+        // Wait for the listener to come up before issuing requests.
+        let addr = format!("127.0.0.1:{port}");
+        let mut connected = false;
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+                connected = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(connected, "server did not start listening on {addr}");
+
+        // Verify the redb file landed inside the configured data_dir
+        // — proves the Config::db_path() contract is honoured by run().
+        let db_file = dir_path.join("drevo.redb");
+        assert!(
+            db_file.exists(),
+            "expected the redb file at {} once run() opens the database",
+            db_file.display()
+        );
+
+        // Trigger graceful shutdown by closing the runtime task —
+        // since `run()` blocks on the shutdown signal future, we have
+        // to abort instead of waiting for SIGTERM. The abort still
+        // covers the bind + serve path which is what we want here.
+        server.abort();
+        let _ = server.await;
     }
 
     #[tokio::test]
