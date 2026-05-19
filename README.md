@@ -732,7 +732,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - The newly-added `signal_shutdown()` flow from task `00048` is correct — cross-link with that task's PR.
   - **Refactor targets**: `tracing` integration; `--config-file` CLI flag; document Windows signal behaviour.
 
-- [ ] `00113` **Cross-cutting audit**. Verify against `drevo-tdd` §"Coverage Targets" + `drevo-rust` §"Code Style":
+- [x] `00113` **Cross-cutting audit**. Verify against `drevo-tdd` §"Coverage Targets" + `drevo-rust` §"Code Style":
   - Test coverage by module — every `pub fn` has at least one direct test (`drevo-tdd` "every public method — at least 1 test"). Run `cargo llvm-cov` (or `cargo tarpaulin`) and produce a per-module heatmap.
   - Dead code: `cargo +nightly udeps`, `cargo machete`, `#[warn(dead_code)]` review for `pub` items with zero callers.
   - Doc coverage: `cargo doc --no-deps -- -D missing_docs`.
@@ -744,7 +744,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
 **Definition of done for Phase 8.5:** `audit/AUDIT-storage.md`–`audit/AUDIT-crosscut.md` exist, each citing the skill rules it verified; every cited rule is either ✅ compliant or has a follow-up refactor PR / accepted exception recorded; the 1092-test baseline grows with new property / proptest / fuzz cases added during the audit; clippy `-D warnings` stays clean across native + WASM; `cargo doc -D missing_docs` passes.
 
-**Progress (2026-05-19, after task 00112):** 00103 (storage) ✅, 00104 (error) ✅, 00105 (model) ✅, 00106 (db core) ✅, 00107 (traversal) ✅, 00108 (fts) ✅, 00109 (http api) ✅, 00110 (ffi) ✅, 00111 (wasm) ✅, 00112 (server + ops) ✅ — `audit/AUDIT-server.md` lands `tracing` integration + `Config` env-var parser + Windows-signal documentation; baseline 1191 → 1216 tests. Remaining: 00113 (cross-cutting).
+**Progress (2026-05-19, after task 00113):** 00103 (storage) ✅, 00104 (error) ✅, 00105 (model) ✅, 00106 (db core) ✅, 00107 (traversal) ✅, 00108 (fts) ✅, 00109 (http api) ✅, 00110 (ffi) ✅, 00111 (wasm) ✅, 00112 (server + ops) ✅, 00113 (cross-cutting) ✅ — `audit/AUDIT-crosscut.md` lands MSRV declaration (`rust-version = "1.85"` + dedicated CI job), `make audit` Makefile target, crate-level rustdoc + `#![warn(missing_docs)]`, `cargo machete` clean (`getrandom` documented), per-module coverage heatmap (90.95% region overall), and three adopted `clippy::nursery` wins (`missing_const_for_fn` ×3, `suboptimal_flops` ×1). Baseline 1216 → 1224 tests. **Phase 8.5 complete.**
 
 ---
 

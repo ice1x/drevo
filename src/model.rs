@@ -113,10 +113,16 @@ pub struct NewNode {
 /// Only `Some` fields are applied; `None` fields are left unchanged.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodePatch {
+    /// New value for [`Node::kind`]; the kind index is rewritten when set.
     pub kind: Option<String>,
+    /// New value for [`Node::title`]; the title index and FTS are rewritten
+    /// when set.
     pub title: Option<String>,
+    /// New value for [`Node::body`]; the FTS index is rewritten when set.
     pub body: Option<String>,
+    /// New value for [`Node::body_html`]; the cached rendered HTML.
     pub body_html: Option<String>,
+    /// New value for [`Node::properties`]; replaces the entire map.
     pub properties: Option<Properties>,
 }
 
@@ -166,8 +172,11 @@ pub struct NewEdge {
 /// Only `Some` fields are applied; `None` fields are left unchanged.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EdgePatch {
+    /// New classification for the edge (e.g. `"links_to"`).
     pub kind: Option<String>,
+    /// New ranking weight for the edge (default `1.0`).
     pub weight: Option<f32>,
+    /// Replaces the entire properties map.
     pub properties: Option<Properties>,
 }
 

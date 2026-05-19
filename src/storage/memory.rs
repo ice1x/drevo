@@ -38,7 +38,7 @@ pub struct MemoryBackend {
 
 impl MemoryBackend {
     /// Create a new empty in-memory backend (ephemeral, no persistence).
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             data: Mutex::new(BTreeMap::new()),
             #[cfg(not(target_arch = "wasm32"))]

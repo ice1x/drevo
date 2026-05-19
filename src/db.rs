@@ -676,9 +676,12 @@ impl Drevo {
         let mut idf_values: Vec<f32> = Vec::with_capacity(query_trigrams.len());
         for trigram in &query_trigrams {
             let df = fts_index::posting_list_len(&*self.backend, trigram)? as f32;
-            // Smoothed IDF: ln(1 + N / df) — avoids zero when df == N
+            // Smoothed IDF: ln(1 + N / df) — avoids zero when df == N. We
+            // use `f32::ln_1p` (i.e. `ln(1 + x)`) so the intermediate
+            // `1 + x` stays accurate when `x` is near zero — clippy nursery
+            // `suboptimal_flops` flag, applied in audit 00113.
             let idf = if df > 0.0 {
-                (1.0 + total_nodes / df).ln()
+                (total_nodes / df).ln_1p()
             } else {
                 0.0
             };

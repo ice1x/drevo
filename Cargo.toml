@@ -2,6 +2,15 @@
 name = "drevo"
 version = "0.1.0"
 edition = "2021"
+# MSRV — locked in by audit task 00113. Bumped to 1.85 because:
+#   * bincode 2.x requires 1.85+
+#   * axum 0.8 requires 1.85+
+#   * redb 2.x requires 1.66+ but tracks the resolver-2 features that
+#     landed in 1.85
+# `cargo +1.85 check --all-features` is exercised by the `msrv` CI job
+# and by the `cargo_toml_declares_rust_version` test in
+# `tests/crosscut_audit_tests.rs`.
+rust-version = "1.85"
 description = "Embedded graph database for cross-platform knowledge management"
 
 [lib]
@@ -58,3 +67,15 @@ harness = false
 [[bench]]
 name = "traversal_bench"
 harness = false
+
+# `getrandom` has no direct `use getrandom::...` site in this crate — it is
+# declared as an optional dependency solely so that the `wasm` feature can
+# write `getrandom/wasm_js` and surface the browser-RNG feature flag on the
+# same `getrandom` version that `uuid` v1 already pulls in transitively.
+# Audit task `00113` (`tests/crosscut_audit_tests.rs::getrandom_marked_as_ignored_...`)
+# locks the rationale into a test so a future contributor cannot delete the
+# dep without first asserting that `cargo build --target wasm32-unknown-unknown
+# --no-default-features --features wasm` still emits a `getrandom` with
+# `wasm_js` enabled.
+[package.metadata.cargo-machete]
+ignored = ["getrandom"]

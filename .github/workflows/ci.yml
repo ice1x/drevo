@@ -48,3 +48,29 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  # Audit task 00113 — MSRV is declared in `Cargo.toml` (`rust-version`)
+  # and locked in by `tests/crosscut_audit_tests.rs::cargo_toml_declares_rust_version`.
+  # This job exercises that exact toolchain so the field cannot decay.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: msrv
+        run: |
+          v=$(awk -F'"' '/^rust-version/ {print $2}' Cargo.toml)
+          if [ -z "$v" ]; then
+            echo "Cargo.toml is missing rust-version" >&2
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-features
+      - run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown
+        # The wasm sanity check is the cheapest way to catch a future MSRV
+        # bump on `getrandom/wasm_js` (audit 00111 / 00113 cross-link).
