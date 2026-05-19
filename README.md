@@ -725,7 +725,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - Memory-only persistence: no FS code paths leak into the WASM build. Verify with `cargo clippy --target wasm32-unknown-unknown --no-default-features --features wasm`.
   - **Refactor targets**: parameterise the WASM test suite to also run under `wasm-pack test --headless` against a real browser (currently only Node.js); document the IndexedDB-fallback story.
 
-- [ ] `00112` **Server binary + ops audit** — `src/bin/server.rs` (~93 LOC). Verify against `drevo-rust` §"Async / Tokio" + `drevo-database` §"HTTP API":
+- [x] `00112` **Server binary + ops audit** — `src/bin/server.rs` (was 93 LOC, post-refactor 52 LOC shim + new `src/server.rs` 340 LOC). Verify against `drevo-rust` §"Async / Tokio" + `drevo-database` §"HTTP API":
   - Env-var parsing: `DREVO_PORT` bounds (u16, 1024+ recommended in container); `DREVO_DATA_DIR` path validation.
   - Replace `eprintln!` with `tracing` + `tracing-subscriber` (the project doesn't have a logging story yet; introducing one here also unblocks `00109`).
   - Signal handling on Windows (currently `cfg(unix)` only) — either document the limitation or implement `Ctrl-Break` for Windows.
@@ -743,6 +743,8 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - **Refactor targets**: `make audit` Makefile target that runs the strict matrix; MSRV declaration; close any test-coverage gap below ~90% per module.
 
 **Definition of done for Phase 8.5:** `audit/AUDIT-storage.md`–`audit/AUDIT-crosscut.md` exist, each citing the skill rules it verified; every cited rule is either ✅ compliant or has a follow-up refactor PR / accepted exception recorded; the 1092-test baseline grows with new property / proptest / fuzz cases added during the audit; clippy `-D warnings` stays clean across native + WASM; `cargo doc -D missing_docs` passes.
+
+**Progress (2026-05-19, after task 00112):** 00103 (storage) ✅, 00104 (error) ✅, 00105 (model) ✅, 00106 (db core) ✅, 00107 (traversal) ✅, 00108 (fts) ✅, 00109 (http api) ✅, 00110 (ffi) ✅, 00111 (wasm) ✅, 00112 (server + ops) ✅ — `audit/AUDIT-server.md` lands `tracing` integration + `Config` env-var parser + Windows-signal documentation; baseline 1191 → 1216 tests. Remaining: 00113 (cross-cutting).
 
 ---
 

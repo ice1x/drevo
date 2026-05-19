@@ -6,6 +6,8 @@ pub mod error;
 pub mod ffi;
 pub mod fts;
 pub mod model;
+#[cfg(feature = "http")]
+pub mod server;
 pub mod storage;
 pub mod traversal;
 #[cfg(feature = "wasm")]

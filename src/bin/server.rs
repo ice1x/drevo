@@ -2,92 +2,51 @@
 //!
 //! Task 00045 introduced this entry point for the containerised
 //! deployment. Task 00048 made graceful shutdown cooperate with
-//! Kubernetes-style rolling restarts: as soon as SIGTERM or Ctrl+C
-//! is observed the shared [`ApiState`] is flipped to "shutting down"
-//! so that `/health` and `/ready` return 503 and the orchestrator
-//! drains traffic before SIGKILL lands. axum's
-//! [`with_graceful_shutdown`] then completes in-flight requests
-//! before the process exits.
+//! Kubernetes-style rolling restarts. Task 00112 (Phase 8.5 audit)
+//! moved every line of behaviour into [`drevo::server`] so the
+//! env-var parser and the bind/serve/shutdown loop are unit-tested;
+//! this file is now a thin shim that initialises `tracing` and
+//! translates failures into a process exit code.
 //!
 //! ## Environment variables
 //!
-//! | Variable             | Default    | Description                    |
-//! |----------------------|------------|--------------------------------|
-//! | `DREVO_PORT`     | `8080`     | TCP port to listen on          |
-//! | `DREVO_DATA_DIR` | `/data`    | Path to the redb database file |
-//! | `DREVO_HOST`     | `0.0.0.0`  | Bind address                   |
+//! | Variable          | Default     | Description                       |
+//! |-------------------|-------------|-----------------------------------|
+//! | `DREVO_HOST`      | `0.0.0.0`   | Bind address                      |
+//! | `DREVO_PORT`      | `8080`      | TCP port to listen on             |
+//! | `DREVO_DATA_DIR`  | `/data`     | Path to the redb database file    |
+//! | `RUST_LOG`        | `info`      | `tracing` filter (env-filter)     |
+//!
+//! See [`drevo::server`] for the documented signal-handling caveats
+//! (Unix vs Windows).
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::process::ExitCode;
 
-use drevo::api::{build_router, ApiState};
-use drevo::db::Drevo;
-
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
-}
+use drevo::server::{run, Config};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() {
-    let host = env_or("DREVO_HOST", "0.0.0.0");
-    let port: u16 = env_or("DREVO_PORT", "8080")
-        .parse()
-        .expect("DREVO_PORT must be a valid port number");
-    let data_dir = env_or("DREVO_DATA_DIR", "/data");
+async fn main() -> ExitCode {
+    init_tracing();
 
-    let db_path = std::path::Path::new(&data_dir).join("drevo.redb");
+    let cfg = match Config::from_env(|key| std::env::var(key).ok()) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::error!(error = %err, "invalid server configuration");
+            return ExitCode::from(2);
+        }
+    };
 
-    eprintln!("drevo: opening database at {}", db_path.display());
-    let db = Drevo::open(&db_path).expect("failed to open database");
-    let state = ApiState::new(Arc::new(db));
-    let shutdown_state = state.clone();
-    let router = build_router(state);
-
-    let addr: SocketAddr = format!("{host}:{port}")
-        .parse()
-        .expect("invalid DREVO_HOST:DREVO_PORT combination");
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind TCP listener");
-
-    eprintln!("drevo: listening on {addr}");
-
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            // Flip /health and /ready to 503 *before* axum begins
-            // draining in-flight requests so that load balancers stop
-            // forwarding new traffic during the drain window.
-            shutdown_state.signal_shutdown();
-            eprintln!("drevo: shutdown signal received, draining…");
-        })
-        .await
-        .expect("server error");
-
-    eprintln!("drevo: shut down cleanly");
+    match run(cfg).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            tracing::error!(error = %err, "server exited with error");
+            ExitCode::FAILURE
+        }
+    }
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
