@@ -84,6 +84,20 @@ pub struct WasmDrevo {
     db: Option<Drevo>,
 }
 
+impl WasmDrevo {
+    /// Borrow the underlying `Drevo`, returning a JS-friendly error
+    /// if `close()` has already been called.
+    ///
+    /// Extracted in audit `00111` (F2) to eliminate the four-line
+    /// `db.as_ref().ok_or_else(...)` boilerplate that appeared in
+    /// every binding method.
+    fn db_ref(&self) -> Result<&Drevo, JsValue> {
+        self.db
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("database closed"))
+    }
+}
+
 #[wasm_bindgen]
 impl WasmDrevo {
     // ----- Lifecycle -----
@@ -126,10 +140,7 @@ impl WasmDrevo {
         body_html: &str,
         properties: &JsValue,
     ) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let props = parse_properties(properties)?;
         let new_node = NewNode {
             kind: kind.to_string(),
@@ -147,10 +158,7 @@ impl WasmDrevo {
     /// Returns the Node as a JS object, or `null` if not found.
     #[wasm_bindgen]
     pub fn get_node(&self, id: u64) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         match db.get_node(id).map_err(to_js_err)? {
             Some(node) => to_js_value(&node),
             None => Ok(JsValue::NULL),
@@ -165,10 +173,7 @@ impl WasmDrevo {
     /// Returns the updated Node as a JS object.
     #[wasm_bindgen]
     pub fn update_node(&self, id: u64, patch: &JsValue) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let patch: NodePatch = from_js_value(patch)?;
         let node = db.update_node(id, patch).map_err(to_js_err)?;
         to_js_value(&node)
@@ -179,10 +184,7 @@ impl WasmDrevo {
     /// Also deletes all edges connected to the node.
     #[wasm_bindgen]
     pub fn delete_node(&self, id: u64) -> Result<(), JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         db.delete_node(id).map_err(to_js_err)
     }
 
@@ -203,10 +205,7 @@ impl WasmDrevo {
         weight: f32,
         properties: &JsValue,
     ) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let props = parse_properties(properties)?;
         let new_edge = NewEdge {
             from_id,
@@ -224,10 +223,7 @@ impl WasmDrevo {
     /// Returns the Edge as a JS object, or `null` if not found.
     #[wasm_bindgen]
     pub fn get_edge(&self, id: u64) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         match db.get_edge(id).map_err(to_js_err)? {
             Some(edge) => to_js_value(&edge),
             None => Ok(JsValue::NULL),
@@ -241,10 +237,7 @@ impl WasmDrevo {
     /// Returns the updated Edge as a JS object.
     #[wasm_bindgen]
     pub fn update_edge(&self, id: u64, patch: &JsValue) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let patch: EdgePatch = from_js_value(patch)?;
         let edge = db.update_edge(id, patch).map_err(to_js_err)?;
         to_js_value(&edge)
@@ -253,10 +246,7 @@ impl WasmDrevo {
     /// Delete an edge by ID.
     #[wasm_bindgen]
     pub fn delete_edge(&self, id: u64) -> Result<(), JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         db.delete_edge(id).map_err(to_js_err)
     }
 
@@ -275,10 +265,7 @@ impl WasmDrevo {
         direction: i32,
         edge_kind: &str,
     ) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let dir = parse_direction(direction)?;
         let kind_filter = if edge_kind.is_empty() {
             None
@@ -303,10 +290,7 @@ impl WasmDrevo {
         direction: i32,
         edge_kind: &str,
     ) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let dir = parse_direction(direction)?;
         let kind_filter = if edge_kind.is_empty() {
             None
@@ -333,10 +317,7 @@ impl WasmDrevo {
         direction: i32,
         edge_kind: &str,
     ) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let dir = parse_direction(direction)?;
         let kind_filter = if edge_kind.is_empty() {
             None
@@ -354,11 +335,42 @@ impl WasmDrevo {
     /// Returns an array of node IDs (u64), or `null` if no path exists.
     #[wasm_bindgen]
     pub fn shortest_path(&self, from_id: u64, to_id: u64) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         match db.shortest_path(from_id, to_id).map_err(to_js_err)? {
+            Some(path) => to_js_value(&path),
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// Find the shortest path between two nodes, only considering
+    /// edges with `kind == edge_kind`.
+    ///
+    /// Pass an empty string for `edge_kind` to disable the filter
+    /// (equivalent to [`Self::shortest_path`]) — matches the
+    /// empty-string-sentinel convention used by `bfs` / `dfs` /
+    /// `neighbors` on the WASM surface.
+    ///
+    /// Returns an array of node IDs (u64), or `null` if no path
+    /// exists through edges of the given kind.
+    ///
+    /// Parity addition with `bfs` / `dfs`, audited under task `00111`.
+    #[wasm_bindgen]
+    pub fn shortest_path_filtered(
+        &self,
+        from_id: u64,
+        to_id: u64,
+        edge_kind: &str,
+    ) -> Result<JsValue, JsValue> {
+        let db = self.db_ref()?;
+        let kind_filter = if edge_kind.is_empty() {
+            None
+        } else {
+            Some(edge_kind)
+        };
+        match db
+            .shortest_path_filtered(from_id, to_id, kind_filter)
+            .map_err(to_js_err)?
+        {
             Some(path) => to_js_value(&path),
             None => Ok(JsValue::NULL),
         }
@@ -369,11 +381,38 @@ impl WasmDrevo {
     /// Returns a JS object with `nodes` (array) and `edges` (array).
     #[wasm_bindgen]
     pub fn subgraph(&self, root_id: u64, depth: u8) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let sg = db.subgraph(root_id, depth).map_err(to_js_err)?;
+        to_js_value(&sg)
+    }
+
+    /// Extract a subgraph rooted at a node, up to a given depth,
+    /// restricted to edges with `kind == edge_kind`.
+    ///
+    /// Pass an empty string for `edge_kind` to disable the filter
+    /// (equivalent to [`Self::subgraph`]). The filter is applied in
+    /// both the discovery BFS phase and the edge-collection phase,
+    /// so chord edges of a different kind are excluded from the
+    /// returned subgraph; nodes only reachable through filtered-out
+    /// edges are not present in the result.
+    ///
+    /// Parity addition with `bfs` / `dfs`, audited under task `00111`.
+    #[wasm_bindgen]
+    pub fn subgraph_filtered(
+        &self,
+        root_id: u64,
+        depth: u8,
+        edge_kind: &str,
+    ) -> Result<JsValue, JsValue> {
+        let db = self.db_ref()?;
+        let kind_filter = if edge_kind.is_empty() {
+            None
+        } else {
+            Some(edge_kind)
+        };
+        let sg = db
+            .subgraph_filtered(root_id, depth, kind_filter)
+            .map_err(to_js_err)?;
         to_js_value(&sg)
     }
 
@@ -384,10 +423,7 @@ impl WasmDrevo {
     /// Returns an array of `{ node, score }` objects, ranked by TF-IDF.
     #[wasm_bindgen]
     pub fn search_fts(&self, query: &str, limit: u32) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let results = db.search_fts(query, limit as usize).map_err(to_js_err)?;
         to_js_value(&results)
     }
@@ -402,10 +438,7 @@ impl WasmDrevo {
         limit: u32,
         offset: u32,
     ) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let nodes = db
             .list_nodes_by_kind(kind, limit as usize, offset as usize)
             .map_err(to_js_err)?;
@@ -417,10 +450,7 @@ impl WasmDrevo {
     /// Returns an array of Node objects, newest first.
     #[wasm_bindgen]
     pub fn list_recent(&self, limit: u32) -> Result<JsValue, JsValue> {
-        let db = self
-            .db
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("database closed"))?;
+        let db = self.db_ref()?;
         let nodes = db.list_recent(limit as usize).map_err(to_js_err)?;
         to_js_value(&nodes)
     }

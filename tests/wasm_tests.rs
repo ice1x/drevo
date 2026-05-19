@@ -326,6 +326,106 @@ fn wasm_subgraph_depth_2() {
 }
 
 // ---------------------------------------------------------------------------
+// Filtered traversal — audit 00111 (F1) parity with bfs / dfs / neighbors
+// ---------------------------------------------------------------------------
+
+/// Build a graph with parallel edges of different kinds between the same
+/// pair of nodes. Returns (a, b, c) where a→b "links_to", a→c "blocks",
+/// c→b "blocks" exist.
+fn setup_parallel_kinds(db: &Drevo) -> (Node, Node, Node) {
+    let a = make_node(db, "note", "Filt_A");
+    let b = make_node(db, "note", "Filt_B");
+    let c = make_node(db, "note", "Filt_C");
+    make_edge(db, a.id, b.id, "links_to");
+    make_edge(db, a.id, c.id, "blocks");
+    make_edge(db, c.id, b.id, "blocks");
+    (a, b, c)
+}
+
+#[test]
+fn wasm_shortest_path_filtered_json_roundtrip() {
+    let db = make_db();
+    let (a, b, _c) = setup_parallel_kinds(&db);
+
+    let path = db
+        .shortest_path_filtered(a.id, b.id, Some("links_to"))
+        .unwrap()
+        .unwrap();
+    let rt: Vec<u64> = json_roundtrip(&path);
+    assert_eq!(rt, vec![a.id, b.id]);
+}
+
+#[test]
+fn wasm_shortest_path_filtered_excludes_wrong_kind() {
+    // Graph: a -"links_to"-> b (direct), a -"blocks"-> c -"blocks"-> b.
+    // Filter for "blocks" should pick the 2-hop path, not the direct edge.
+    let db = make_db();
+    let (a, b, c) = setup_parallel_kinds(&db);
+
+    let path = db
+        .shortest_path_filtered(a.id, b.id, Some("blocks"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(path, vec![a.id, c.id, b.id]);
+
+    // Filter for a kind that doesn't connect them: no path.
+    let path_none = db
+        .shortest_path_filtered(a.id, b.id, Some("depends_on"))
+        .unwrap();
+    assert!(path_none.is_none());
+}
+
+#[test]
+fn wasm_subgraph_filtered_json_roundtrip() {
+    let db = make_db();
+    let (a, b, c) = setup_parallel_kinds(&db);
+
+    let sg = db.subgraph_filtered(a.id, 2, Some("blocks")).unwrap();
+    let rt: SubGraph = json_roundtrip(&sg);
+    // a, c, b all reachable via "blocks" edges
+    let ids: Vec<u64> = rt.nodes.iter().map(|n| n.id).collect();
+    assert!(ids.contains(&a.id));
+    assert!(ids.contains(&b.id));
+    assert!(ids.contains(&c.id));
+}
+
+#[test]
+fn wasm_subgraph_filtered_excludes_wrong_kind_edges() {
+    let db = make_db();
+    let (a, _b, _c) = setup_parallel_kinds(&db);
+
+    let sg = db.subgraph_filtered(a.id, 2, Some("blocks")).unwrap();
+    // None of the returned edges should have kind != "blocks"
+    for e in &sg.edges {
+        assert_eq!(
+            e.kind, "blocks",
+            "chord edge of wrong kind leaked into filtered subgraph"
+        );
+    }
+}
+
+#[test]
+fn wasm_subgraph_filtered_excludes_unreachable_nodes() {
+    // a -"links_to"-> b, then isolated leaf z attached via a -"blocks"-> z
+    let db = make_db();
+    let a = make_node(&db, "note", "FiltUnr_A");
+    let b = make_node(&db, "note", "FiltUnr_B");
+    let z = make_node(&db, "note", "FiltUnr_Z");
+    make_edge(&db, a.id, b.id, "links_to");
+    make_edge(&db, a.id, z.id, "blocks");
+
+    // Filter for "links_to": z is only reachable via "blocks", must be absent
+    let sg = db.subgraph_filtered(a.id, 2, Some("links_to")).unwrap();
+    let ids: Vec<u64> = sg.nodes.iter().map(|n| n.id).collect();
+    assert!(ids.contains(&a.id));
+    assert!(ids.contains(&b.id));
+    assert!(
+        !ids.contains(&z.id),
+        "node only reachable via filtered-out edge must not appear"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Search — JSON roundtrip
 // ---------------------------------------------------------------------------
 
@@ -508,6 +608,54 @@ fn wasm_direction_encoding() {
     let both_b = db.neighbors(b.id, Direction::Both, None).unwrap();
     assert_eq!(both_b.len(), 1);
     assert_eq!(both_b[0].id, a.id);
+}
+
+// ---------------------------------------------------------------------------
+// Unicode through the WASM boundary — audit 00111 (F14)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wasm_unicode_roundtrip() {
+    let db = make_db();
+
+    // Cyrillic title + emoji body
+    let n1 = db
+        .create_node(NewNode {
+            kind: "подтверждение".to_string(),
+            title: "Цикл BFS".to_string(),
+            body: "🇷🇺 emoji ✅ across the boundary".to_string(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .unwrap();
+
+    // CJK title
+    let n2 = db
+        .create_node(NewNode {
+            kind: "подтверждение".to_string(),
+            title: "图遍历测试".to_string(),
+            body: "中文测试".to_string(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .unwrap();
+
+    // Cyrillic + CJK + emoji survive JSON roundtrip
+    let rt1: Node = json_roundtrip(&n1);
+    assert_eq!(rt1.title, "Цикл BFS");
+    assert_eq!(rt1.body, "🇷🇺 emoji ✅ across the boundary");
+    assert_eq!(rt1.kind, "подтверждение");
+
+    let rt2: Node = json_roundtrip(&n2);
+    assert_eq!(rt2.title, "图遍历测试");
+    assert_eq!(rt2.body, "中文测试");
+
+    // Unicode kind is queryable via list_nodes_by_kind through the WASM API
+    let listed = db.list_nodes_by_kind("подтверждение", 10, 0).unwrap();
+    assert_eq!(listed.len(), 2);
+    let titles: Vec<&str> = listed.iter().map(|n| n.title.as_str()).collect();
+    assert!(titles.contains(&"Цикл BFS"));
+    assert!(titles.contains(&"图遍历测试"));
 }
 
 // ---------------------------------------------------------------------------
