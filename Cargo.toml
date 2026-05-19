@@ -46,6 +46,13 @@ tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+# `proptest` powers Phase 9 task `00057` — property-based tests for graph
+# invariants, FTS tokenizer round-trips, and model serialization. Test-only;
+# never compiled into the library, FFI, or WASM artifact. `default-features
+# = false` keeps the dependency tree minimal — no `fork`, no `timeout`, no
+# `regex` — which matters because the proptest harness must run on the same
+# MSRV (1.85) and CI matrix as the rest of the test suite.
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
 
 [[bin]]
 name = "drevo-server"

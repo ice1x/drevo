@@ -519,7 +519,7 @@ MVP: Phases 7-9    →  drevo ships as a Docker/K8s product
 - [ ] `00054` Compaction
 - [ ] `00055` JSON import/export (`export_json`, `import_json`)
 - [ ] `00056` GraphML export (`export_graphml`)
-- [ ] `00057` Property-based tests (proptest) for graph invariants
+- [x] `00057` Property-based tests (proptest) for graph invariants — `proptest` dev-dep added, three test files (`tests/proptest_graph_invariants.rs`, `tests/proptest_fts_tokenizer.rs`, `tests/proptest_model_serialization.rs`) cover (a) the four storage invariants from `.claude/skills/drevo-database/SKILL.md` under arbitrary CRUD sequences, (b) tokenizer round-trip properties (idempotent `normalize`, sorted-and-deduped `trigrams`, 2-or-3-char window bound), and (c) bincode + JSON round-trip for `Node` / `Edge` plus order-independent bincode for `Properties`.
 - [ ] `00058` Fuzz tests for FTS tokenizer
 - [x] `00059` CI: GitHub Actions — test, clippy, fmt (benchmarks pending)
 - [ ] `00060` Rustdoc for all public APIs
@@ -745,6 +745,8 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 **Definition of done for Phase 8.5:** `audit/AUDIT-storage.md`–`audit/AUDIT-crosscut.md` exist, each citing the skill rules it verified; every cited rule is either ✅ compliant or has a follow-up refactor PR / accepted exception recorded; the 1092-test baseline grows with new property / proptest / fuzz cases added during the audit; clippy `-D warnings` stays clean across native + WASM; `cargo doc -D missing_docs` passes.
 
 **Progress (2026-05-19, after task 00113):** 00103 (storage) ✅, 00104 (error) ✅, 00105 (model) ✅, 00106 (db core) ✅, 00107 (traversal) ✅, 00108 (fts) ✅, 00109 (http api) ✅, 00110 (ffi) ✅, 00111 (wasm) ✅, 00112 (server + ops) ✅, 00113 (cross-cutting) ✅ — `audit/AUDIT-crosscut.md` lands MSRV declaration (`rust-version = "1.85"` + dedicated CI job), `make audit` Makefile target, crate-level rustdoc + `#![warn(missing_docs)]`, `cargo machete` clean (`getrandom` documented), per-module coverage heatmap (90.95% region overall), and three adopted `clippy::nursery` wins (`missing_const_for_fn` ×3, `suboptimal_flops` ×1). Baseline 1216 → 1224 tests. **Phase 8.5 complete.**
+
+**Progress (2026-05-19, after task 00057):** Phase 9 hardening kicks off — property-based tests for graph invariants land. `proptest` dev-dep added; three test files (`tests/proptest_graph_invariants.rs`, `tests/proptest_fts_tokenizer.rs`, `tests/proptest_model_serialization.rs`) ship 24 property tests covering (a) the four storage invariants from `.claude/skills/drevo-database/SKILL.md` under arbitrary CRUD op sequences (1..96 ops × 64 cases), (b) tokenizer round-trips — idempotent `normalize`, sorted-and-deduped `trigrams`, 2-or-3-char window bound, punctuation-only inputs produce no trigrams (512 cases each), and (c) bincode + JSON round-trips for `Node` / `Edge` with order-independent bincode for `Properties` (256 cases). Baseline 1224 → 1248 tests; `cargo clippy -- -D warnings` clean. Failing inputs are auto-shrunk by proptest and cached under `proptest-regressions/` for replay.
 
 ---
 
