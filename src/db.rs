@@ -164,6 +164,100 @@ impl Drevo {
         self.next_edge_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Clamp the node-id allocator so the next ID it hands out is at least
+    /// `min`. No-op if the counter is already higher. Used by JSON import
+    /// (Phase 9 task `00055`) to resume allocation above an imported range.
+    pub(crate) fn bump_node_counter_to_at_least(&self, min: u64) {
+        self.next_node_id.fetch_max(min, Ordering::Relaxed);
+    }
+
+    /// Clamp the edge-id allocator so the next ID it hands out is at least
+    /// `min`. See [`bump_node_counter_to_at_least`](Self::bump_node_counter_to_at_least).
+    pub(crate) fn bump_edge_counter_to_at_least(&self, min: u64) {
+        self.next_edge_id.fetch_max(min, Ordering::Relaxed);
+    }
+
+    /// Scan and decode every node currently stored in the backend.
+    ///
+    /// Used by JSON export (Phase 9 task `00055`). Returns nodes sorted by
+    /// ascending id so the dump is deterministic regardless of `scan_prefix`
+    /// implementation details on the chosen backend.
+    pub(crate) fn collect_all_nodes(&self) -> Result<Vec<Node>> {
+        let entries = self.backend.scan_prefix(PREFIX_NODE)?;
+        let mut nodes = Vec::with_capacity(entries.len());
+        for (key, bytes) in &entries {
+            // `node:` prefix is also a substring of `node_uuid:`, `node_title:`,
+            // `node_kind:`. The data rows are exactly `node:` + 8-byte le id,
+            // so filter by total key length to keep `scan_prefix` correct
+            // across both backends without depending on backend-specific
+            // ordering quirks.
+            if key.len() != PREFIX_NODE.len() + 8 {
+                continue;
+            }
+            nodes.push(deserialize_node(bytes)?);
+        }
+        nodes.sort_by_key(|n| n.id);
+        Ok(nodes)
+    }
+
+    /// Scan and decode every edge currently stored in the backend.
+    pub(crate) fn collect_all_edges(&self) -> Result<Vec<Edge>> {
+        let entries = self.backend.scan_prefix(PREFIX_EDGE)?;
+        let mut edges = Vec::with_capacity(entries.len());
+        for (key, bytes) in &entries {
+            if key.len() != PREFIX_EDGE.len() + 8 {
+                continue;
+            }
+            edges.push(deserialize_edge(bytes)?);
+        }
+        edges.sort_by_key(|e| e.id);
+        Ok(edges)
+    }
+
+    /// Insert a verbatim [`Node`], preserving id / uuid / timestamps and
+    /// rebuilding every secondary index. Used by JSON import (Phase 9 task
+    /// `00055`) so dumps can round-trip without losing the producer's IDs.
+    ///
+    /// Errors:
+    /// - [`DrevoError::DuplicateTitle`] if `node.title` is already indexed
+    ///   to a *different* node id.
+    pub(crate) fn insert_node_raw(&self, node: &Node) -> Result<()> {
+        // Title uniqueness: only fail when a different id owns this title;
+        // exact-content matches were filtered upstream in `dump::apply_dump`.
+        let title_key = node_title_key(&node.title);
+        if let Some(existing) = self.backend.get(&title_key)? {
+            let existing_id = u64_from_bytes(&existing);
+            if existing_id != node.id {
+                return Err(DrevoError::DuplicateTitle(node.title.clone()));
+            }
+        }
+
+        let data = serialize_node(node)?;
+        self.backend.put(&node_key(node.id), &data)?;
+        self.backend
+            .put(&node_uuid_key(&node.uuid), &node.id.to_le_bytes())?;
+        self.backend.put(&title_key, &node.id.to_le_bytes())?;
+        self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
+        fts_index::index_node(&*self.backend, node.id, &node.title, &node.body)?;
+        self.backend
+            .put(&updated_key(node.updated_at, node.id), &[])?;
+        Ok(())
+    }
+
+    /// Insert a verbatim [`Edge`], preserving id / uuid / timestamp and
+    /// rebuilding adjacency / kind indexes.
+    pub(crate) fn insert_edge_raw(&self, edge: &Edge) -> Result<()> {
+        let data = serialize_edge(edge)?;
+        self.backend.put(&edge_key(edge.id), &data)?;
+        self.backend
+            .put(&edge_uuid_key(&edge.uuid), &edge.id.to_le_bytes())?;
+        self.backend
+            .put(&out_edge_key(edge.from_id, edge.id), &[])?;
+        self.backend.put(&in_edge_key(edge.to_id, edge.id), &[])?;
+        self.backend.put(&edge_kind_key(&edge.kind, edge.id), &[])?;
+        Ok(())
+    }
+
     /// Return a reference to the underlying storage backend.
     #[allow(dead_code)] // Reserved for future use (e.g. traversal, search)
     pub(crate) fn backend(&self) -> &dyn StorageBackend {

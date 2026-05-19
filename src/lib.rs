@@ -55,6 +55,11 @@
 #[cfg(feature = "http")]
 pub mod api;
 pub mod db;
+/// JSON import / export — Phase 9 task `00055`. Defines the schema-versioned
+/// `drevo-json-v1` wire format plus the `Drevo::export_json` / `import_json`
+/// methods. Filesystem-bound `*_to_path` / `*_from_path` variants are gated
+/// off WASM.
+pub mod dump;
 pub mod error;
 /// `extern "C"` FFI surface for desktop / mobile embedders. Not built on
 /// `wasm32-unknown-unknown` because the platform has no C ABI.

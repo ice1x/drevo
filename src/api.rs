@@ -36,6 +36,13 @@
 //! - `POST /search/fts` — JSON body `{query, limit?}`, returns
 //!   `{results: [ScoredNode]}` ranked by TF-IDF
 //!
+//! Task 00055 (Phase 9 hardening) added JSON import / export endpoints
+//! for backups and cross-deployment migration:
+//!
+//! - `GET /export/json` — full graph as `drevo-json-v1` document.
+//! - `POST /import/json` — JSON body `{dump}`, returns
+//!   `{nodes_imported, edges_imported, nodes_skipped, edges_skipped}`.
+//!
 //! Task 00042 added the admin endpoints used by container liveness
 //! probes and operators:
 //!
@@ -73,6 +80,7 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use crate::db::Drevo;
+use crate::dump::ImportReport;
 use crate::error::DrevoError;
 use crate::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
@@ -700,6 +708,41 @@ async fn ready(State(state): State<ApiState>) -> Response {
     }
 }
 
+// ---------------------------------------------------------------------
+// Export / Import endpoints (task 00055)
+// ---------------------------------------------------------------------
+
+/// JSON body accepted by `POST /import/json`. Carries the raw dump produced
+/// by `GET /export/json` (or [`Drevo::export_json`]) — the server parses,
+/// validates the format header, and replays the payload into the live
+/// database.
+#[derive(Debug, Deserialize)]
+pub struct ImportJsonRequest {
+    /// Raw `drevo-json-v1` payload — the full output of `GET /export/json`.
+    pub dump: String,
+}
+
+/// Handler for `GET /export/json`. Streams the full graph as a pretty-printed
+/// `drevo-json-v1` JSON document. Operators can curl this for backups or to
+/// migrate data between deployments.
+async fn export_json(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    let dump = state.db.export_json()?;
+    Ok((StatusCode::OK, [("content-type", "application/json")], dump).into_response())
+}
+
+/// Handler for `POST /import/json`. Accepts an [`ImportJsonRequest`] body and
+/// returns an [`ImportReport`] summarising newly-inserted vs. skipped rows.
+/// Malformed payloads / unknown formats return 500 via [`DrevoError::Io`];
+/// title collisions against existing nodes return 409.
+async fn import_json(
+    State(state): State<ApiState>,
+    body: Result<Json<ImportJsonRequest>, JsonRejection>,
+) -> Result<Json<ImportReport>, ApiError> {
+    let Json(req) = body?;
+    let report = state.db.import_json(&req.dump)?;
+    Ok(Json(report))
+}
+
 /// Handler for `GET /status`. Returns server metadata and the current
 /// process uptime derived from [`ApiState::started_at`].
 async fn status(State(state): State<ApiState>) -> Json<StatusResponse> {
@@ -777,6 +820,8 @@ pub fn build_router(state: ApiState) -> Router {
         )
         .route("/paths/shortest", with_405(get(get_shortest_path)))
         .route("/search/fts", with_405(axum::routing::post(search_fts)))
+        .route("/export/json", with_405(get(export_json)))
+        .route("/import/json", with_405(axum::routing::post(import_json)))
         .route("/health", with_405(get(health)))
         .route("/ready", with_405(get(ready)))
         .route("/status", with_405(get(status)))
