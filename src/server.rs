@@ -186,7 +186,7 @@ impl Config {
     /// uses this to emit a one-shot warning at startup; it never
     /// rejects the value.
     #[must_use]
-    pub fn is_privileged_port(&self) -> bool {
+    pub const fn is_privileged_port(&self) -> bool {
         self.port < PRIVILEGED_PORT_CEILING
     }
 }
