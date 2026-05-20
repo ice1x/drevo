@@ -96,8 +96,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+      # Pull a prebuilt cargo-fuzz binary from the GitHub release page
+      # via `taiki-e/install-action`. Compiling cargo-fuzz from source
+      # with `cargo install cargo-fuzz --locked` is fragile on modern
+      # nightly: cargo-fuzz 0.13.x pins an old `rustix 0.36.x` that uses
+      # the now-rejected `cfg_attr(rustc_attrs, rustc_layout_scalar_…)`
+      # syntax and fails to build. Prebuilt binaries side-step the
+      # transitive-dep churn entirely and finish in seconds instead of
+      # minutes.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
       - name: Smoke fuzz_normalize (60s)
         run: cargo fuzz run fuzz_normalize -- -max_total_time=60
         working-directory: fuzz
