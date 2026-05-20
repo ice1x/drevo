@@ -1,0 +1,77 @@
+# Phase 9 task `00058` — coverage-guided fuzz harness for the FTS tokenizer.
+#
+# This is a SEPARATE workspace from the parent crate (`drevo`). It depends on
+# `libfuzzer-sys`, which requires the `-Zsanitizer=address` flag and therefore
+# needs `cargo +nightly` plus `cargo install cargo-fuzz`. Keeping it
+# out-of-tree means stable `cargo test` / `cargo clippy` on the main crate
+# never tries to compile this directory — the `[workspace]` block below
+# explicitly tells Cargo not to merge it into any parent workspace.
+#
+# Run with:
+#
+#     cargo +nightly fuzz run fuzz_normalize        -- -max_total_time=60
+#     cargo +nightly fuzz run fuzz_trigrams         -- -max_total_time=60
+#     cargo +nightly fuzz run fuzz_extract_trigrams -- -max_total_time=60
+#
+# Each target carries a seed corpus under `fuzz/seed_corpus/<target>/` so the
+# fuzzer starts from non-trivial inputs (UTF-8 mixed-script strings, CJK,
+# Cyrillic, emoji, combining diacritics). The same seeds are replayed by
+# the stable harness test `tests/fts_tokenizer_fuzz_harness_tests.rs` so
+# the property assertions are exercised on every CI build, not only on the
+# nightly fuzz job.
+#
+# Division of labour with task `00057`: `00057` is property-based (proptest,
+# stable Rust, deterministic shrinking). `00058` is coverage-guided
+# (libFuzzer, nightly Rust, branch-coverage feedback). Same invariants;
+# different input-generation strategies.
+[package]
+name = "drevo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+# `cargo-fuzz` reads this marker to enable libFuzzer-specific link flags.
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.drevo]
+path = ".."
+# Enable only `redb-backend` — the FFI module (`src/ffi.rs`) is compiled
+# on every non-WASM target and references `Drevo::open(path)`, which is
+# itself feature-gated behind `redb-backend`. Anything else from the
+# default feature set (`cbindgen`, `http`) is left out so the fuzz binary
+# stays small and avoids dragging `axum` / `tokio` / `tower` through the
+# sanitised libFuzzer build.
+default-features = false
+features = ["redb-backend"]
+
+# Isolate this directory from any auto-discovered parent workspace.
+[workspace]
+members = ["."]
+
+# Each `fuzz_targets/*.rs` file compiles to its own libFuzzer binary. The
+# `test = false` / `doc = false` / `bench = false` triples suppress harness
+# expectations that fuzz targets (which call `fuzz_target!` and define their
+# own `main`) cannot satisfy.
+[[bin]]
+name = "fuzz_normalize"
+path = "fuzz_targets/fuzz_normalize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_trigrams"
+path = "fuzz_targets/fuzz_trigrams.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_extract_trigrams"
+path = "fuzz_targets/fuzz_extract_trigrams.rs"
+test = false
+doc = false
+bench = false

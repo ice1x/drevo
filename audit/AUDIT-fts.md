@@ -377,6 +377,22 @@ fuzzer) and `00107` (traversal cross-algorithm fuzzer). `00058` will
 upgrade these to coverage-guided fuzzing without changing the
 existing property assertions.
 
+**Landed (2026-05-20, task `00058`).** ✅ The `fuzz/` sub-crate ships
+three `cargo-fuzz` + `libFuzzer` targets — `fuzz_normalize`,
+`fuzz_trigrams`, `fuzz_extract_trigrams` — each carrying a UTF-8
+seed corpus that exercises the same input classes as the `00108`
+property-style fuzzer (ASCII, CJK, Cyrillic, Latin-1, Turkish
+dotless I, emoji, combining diacritics, digits, control chars,
+punctuation runs). The assertion bodies are mirrored in
+`tests/fts_tokenizer_fuzz_harness_tests.rs` so the stable `cargo
+test` matrix replays the same invariants on every PR; the
+nightly-only `fuzz` CI job extends coverage via libFuzzer's
+branch-feedback mutator. Existing `00108` property assertions are
+unchanged — the new harness adds a fourth random-input strategy
+(coverage-guided), not a replacement. See `fuzz/README.md` for
+run instructions and `README.md` task `00058` for the progress
+note. Baseline 1312 → 1318 tests (stable harness only).
+
 ### `#follow-up-nfc` — Unicode normalization
 
 Pinned by F2's `assert_ne!` test. The `unicode-normalization` crate

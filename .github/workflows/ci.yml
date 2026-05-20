@@ -74,3 +74,43 @@ jobs:
       - run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown
         # The wasm sanity check is the cheapest way to catch a future MSRV
         # bump on `getrandom/wasm_js` (audit 00111 / 00113 cross-link).
+
+  # Phase 9 task 00058 — coverage-guided fuzz smoke run for the FTS
+  # tokenizer. cargo-fuzz needs nightly Rust + libFuzzer; the job is
+  # therefore split out from the main matrix (stable Rust is enough for
+  # everything else) and time-boxed to ~60 seconds per target so it
+  # stays under the free CI budget. The stable-CI replay of the seed
+  # corpus is already run by the `test` job above through
+  # `tests/fts_tokenizer_fuzz_harness_tests.rs` — this job extends that
+  # coverage with libFuzzer's branch-feedback mutator on every push.
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    # Don't block merges if cargo-fuzz finds a crash — surface it as a
+    # CI annotation and let humans triage. The stable harness replay in
+    # the `test` job remains a hard gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Smoke fuzz_normalize (60s)
+        run: cargo fuzz run fuzz_normalize -- -max_total_time=60
+        working-directory: fuzz
+      - name: Smoke fuzz_trigrams (60s)
+        run: cargo fuzz run fuzz_trigrams -- -max_total_time=60
+        working-directory: fuzz
+      - name: Smoke fuzz_extract_trigrams (60s)
+        run: cargo fuzz run fuzz_extract_trigrams -- -max_total_time=60
+        working-directory: fuzz
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
