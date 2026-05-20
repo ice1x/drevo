@@ -2492,3 +2492,109 @@ async fn get_node_neighbors_depth_zero_returns_empty() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(value["status"].as_u64().unwrap(), 404);
 }
+
+// ---------------------------------------------------------------------
+// Task 00055 — JSON export / import endpoints
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_export_json_returns_drevo_json_v1_document() {
+    let app = make_app();
+    // Seed a single node so the dump is non-trivial.
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "Export Me", "")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/export/json")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let ct = response
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        ct.starts_with("application/json"),
+        "unexpected content-type: {ct}"
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["format"], "drevo-json-v1");
+    let nodes = body["nodes"].as_array().expect("nodes array");
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["title"], "Export Me");
+}
+
+#[tokio::test]
+async fn post_import_json_loads_dump_into_empty_db() {
+    // Build a source dump via the export endpoint.
+    let src_app = make_app();
+    send(
+        &src_app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "From Source", "")),
+    )
+    .await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/export/json")
+        .body(Body::empty())
+        .unwrap();
+    let response = src_app.oneshot(req).await.unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let dump_string = String::from_utf8(bytes.to_vec()).unwrap();
+
+    // Now POST that dump into a fresh app.
+    let dst_app = make_app();
+    let (status, body) = send(
+        &dst_app,
+        "POST",
+        "/import/json",
+        Some(json!({ "dump": dump_string })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["nodes_imported"], 1);
+    assert_eq!(body["edges_imported"], 0);
+    assert_eq!(body["nodes_skipped"], 0);
+    assert_eq!(body["edges_skipped"], 0);
+
+    // Verify via a follow-up GET that the node is queryable.
+    let (status, body) = send(&dst_app, "GET", "/nodes/1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["title"], "From Source");
+}
+
+#[tokio::test]
+async fn post_import_json_rejects_unknown_format_with_500() {
+    let app = make_app();
+    let bad = r#"{"format":"v999","exported_at":0,"next_node_id":1,"next_edge_id":1,"nodes":[],"edges":[]}"#;
+    let (status, _) = send(&app, "POST", "/import/json", Some(json!({ "dump": bad }))).await;
+    // DumpError::UnsupportedFormat → DrevoError::Io → 500.
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn post_import_json_rejects_missing_body_with_400() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/import/json")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    // Missing `dump` field → JsonRejection → BadRequest 400.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
