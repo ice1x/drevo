@@ -43,6 +43,12 @@
 //! - `POST /import/json` — JSON body `{dump}`, returns
 //!   `{nodes_imported, edges_imported, nodes_skipped, edges_skipped}`.
 //!
+//! Task 00056 (Phase 9 hardening) added the GraphML interop export:
+//!
+//! - `GET /export/graphml` — full graph as a GraphML 1.0 document
+//!   (`application/xml`). Read-only — there is no `import_graphml`
+//!   companion; `drevo-json-v1` remains the authoritative wire format.
+//!
 //! Task 00042 added the admin endpoints used by container liveness
 //! probes and operators:
 //!
@@ -743,6 +749,19 @@ async fn import_json(
     Ok(Json(report))
 }
 
+/// Handler for `GET /export/graphml`. Returns the full graph as a GraphML 1.0
+/// document (`application/xml`) — for interop with yEd, Gephi, NetworkX,
+/// Cytoscape, igraph, and friends. Read-only — no inverse endpoint.
+async fn export_graphml(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    let xml = state.db.export_graphml()?;
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/xml; charset=utf-8")],
+        xml,
+    )
+        .into_response())
+}
+
 /// Handler for `GET /status`. Returns server metadata and the current
 /// process uptime derived from [`ApiState::started_at`].
 async fn status(State(state): State<ApiState>) -> Json<StatusResponse> {
@@ -822,6 +841,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/search/fts", with_405(axum::routing::post(search_fts)))
         .route("/export/json", with_405(get(export_json)))
         .route("/import/json", with_405(axum::routing::post(import_json)))
+        .route("/export/graphml", with_405(get(export_graphml)))
         .route("/health", with_405(get(health)))
         .route("/ready", with_405(get(ready)))
         .route("/status", with_405(get(status)))

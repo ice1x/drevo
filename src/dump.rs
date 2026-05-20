@@ -1,4 +1,6 @@
-//! JSON import / export — Phase 9 hardening task `00055`.
+//! JSON import / export — Phase 9 hardening task `00055`. Phase 9 task
+//! `00056` extends this module with read-only GraphML export
+//! ([`Drevo::export_graphml`] / [`Drevo::export_graphml_to_path`]).
 //!
 //! Provides a human-readable, schema-versioned dump format that captures the
 //! entire graph (every node and every edge) and can be reloaded into any
@@ -55,6 +57,40 @@
 //! [`Drevo::export_json_to_path`] / [`Drevo::import_json_from_path`] are gated
 //! behind `cfg(not(target_arch = "wasm32"))` because `std::fs` is not
 //! available in the browser.
+//!
+//! ## GraphML export (task `00056`)
+//!
+//! [`Drevo::export_graphml`] emits the graph as a GraphML 1.0 document — the
+//! ubiquitous XML interchange format consumed by yEd, Gephi, NetworkX,
+//! Cytoscape, igraph, and a long tail of network-analysis tooling. The export
+//! is one-way (no `import_graphml`); the project's authoritative wire format
+//! remains [`FORMAT_V1`]. GraphML is offered for interop only.
+//!
+//! Layout of the emitted document:
+//!
+//! ```xml
+//! <?xml version="1.0" encoding="UTF-8"?>
+//! <graphml xmlns="http://graphml.graphdrawing.org/xmlns"
+//!          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+//!          xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns
+//!                              http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+//!   <key id="d_uuid"        for="node" attr.name="uuid"       attr.type="string"/>
+//!   <key id="d_kind"        for="node" attr.name="kind"       attr.type="string"/>
+//!   …
+//!   <graph id="drevo" edgedefault="directed">
+//!     <node id="n1"> <data key="d_kind">note</data> … </node>
+//!     <edge id="e1" source="n1" target="n2"> <data key="d_e_kind">links_to</data> … </edge>
+//!   </graph>
+//! </graphml>
+//! ```
+//!
+//! Nested [`Properties`] are serialised as a single JSON-string `<data>` value
+//! (GraphML key type `string`) so the format remains lossless and re-parsable
+//! by external tooling. The exporter is deterministic: nodes / edges are
+//! emitted in id order (`collect_all_nodes` / `collect_all_edges` already sort
+//! by id), and [`Properties`] sort their keys before serialising.
+//!
+//! Filesystem variant [`Drevo::export_graphml_to_path`] is gated off WASM.
 
 use serde::{Deserialize, Serialize};
 
@@ -204,6 +240,45 @@ impl Drevo {
         self.import_json(&raw)
     }
 
+    /// Serialize the entire graph as a GraphML 1.0 document.
+    ///
+    /// GraphML is the standard XML interchange format for network data; the
+    /// output is loadable by yEd, Gephi, NetworkX, Cytoscape, igraph, and
+    /// every other tool that speaks the spec. The graph is emitted with
+    /// `edgedefault="directed"` to match drevo's directional edge model.
+    ///
+    /// Output is deterministic: nodes are listed in id order, edges in id
+    /// order, and [`Properties`] sort their keys before serialising as a JSON
+    /// string. Two databases with identical logical content produce
+    /// byte-identical GraphML.
+    ///
+    /// Node ids are emitted as `n<id>`, edge ids as `e<id>`, so they remain
+    /// valid XML `xs:NMTOKEN` values regardless of the numeric range.
+    /// Property maps are encoded as a single JSON-string `<data key="d_props">`
+    /// value so external readers can re-hydrate the full structure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] on backend scan failures and
+    /// [`DrevoError::Io`] if any [`Properties`] value cannot be serialised to
+    /// JSON (e.g. a non-finite float).
+    pub fn export_graphml(&self) -> Result<String> {
+        let nodes = self.collect_all_nodes()?;
+        let edges = self.collect_all_edges()?;
+        render_graphml(&nodes, &edges)
+    }
+
+    /// Serialize the graph as GraphML and write the result to `path`
+    /// (filesystem write, not available on WASM).
+    ///
+    /// Overwrites the target file. Errors from the filesystem or the
+    /// underlying scan propagate as [`DrevoError`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_graphml_to_path(&self, path: &std::path::Path) -> Result<()> {
+        let xml = self.export_graphml()?;
+        std::fs::write(path, xml).map_err(DrevoError::Io)
+    }
+
     // --- internals ---------------------------------------------------
 
     fn build_dump(&self) -> Result<Dump> {
@@ -304,6 +379,202 @@ fn properties_from_object(obj: serde_json::Map<String, serde_json::Value>) -> Pr
     Properties(obj.into_iter().collect())
 }
 
+// ---------------------------------------------------------------------
+// GraphML rendering (task 00056)
+// ---------------------------------------------------------------------
+
+/// Render a sorted list of nodes / edges into a GraphML 1.0 document.
+///
+/// `nodes` and `edges` are expected to be id-sorted (callers must use
+/// [`Drevo::collect_all_nodes`] / [`Drevo::collect_all_edges`] which already
+/// guarantee this).
+fn render_graphml(nodes: &[Node], edges: &[Edge]) -> Result<String> {
+    let mut out = String::with_capacity(512 + nodes.len() * 256 + edges.len() * 160);
+    out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    out.push_str(
+        "<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\"\n         \
+         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n         \
+         xsi:schemaLocation=\"http://graphml.graphdrawing.org/xmlns \
+         http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd\">\n",
+    );
+
+    // Key declarations — fixed schema. `attr.type` matches the GraphML
+    // permitted-types vocabulary (`string` / `long` / `double`).
+    for (id, name) in NODE_KEYS {
+        out.push_str("  <key id=\"");
+        out.push_str(id);
+        out.push_str("\" for=\"node\" attr.name=\"");
+        out.push_str(name);
+        out.push_str("\" attr.type=\"");
+        out.push_str(node_key_type(id));
+        out.push_str("\"/>\n");
+    }
+    for (id, name) in EDGE_KEYS {
+        out.push_str("  <key id=\"");
+        out.push_str(id);
+        out.push_str("\" for=\"edge\" attr.name=\"");
+        out.push_str(name);
+        out.push_str("\" attr.type=\"");
+        out.push_str(edge_key_type(id));
+        out.push_str("\"/>\n");
+    }
+
+    out.push_str("  <graph id=\"drevo\" edgedefault=\"directed\">\n");
+
+    for node in nodes {
+        render_node(&mut out, node)?;
+    }
+    for edge in edges {
+        render_edge(&mut out, edge)?;
+    }
+
+    out.push_str("  </graph>\n");
+    out.push_str("</graphml>\n");
+    Ok(out)
+}
+
+/// Fixed set of node `<key>` declarations — (key id, human-readable name).
+/// Edge-key ids are prefixed `d_e_` so they never collide with node-key ids.
+const NODE_KEYS: &[(&str, &str)] = &[
+    ("d_uuid", "uuid"),
+    ("d_kind", "kind"),
+    ("d_title", "title"),
+    ("d_body", "body"),
+    ("d_body_html", "body_html"),
+    ("d_created_at", "created_at"),
+    ("d_updated_at", "updated_at"),
+    ("d_props", "properties"),
+];
+
+/// Fixed set of edge `<key>` declarations — (key id, human-readable name).
+const EDGE_KEYS: &[(&str, &str)] = &[
+    ("d_e_uuid", "uuid"),
+    ("d_e_kind", "kind"),
+    ("d_e_weight", "weight"),
+    ("d_e_created_at", "created_at"),
+    ("d_e_props", "properties"),
+];
+
+/// Map a node key id to its GraphML `attr.type`. Timestamps are GraphML
+/// `long`s; everything else is a `string` (uuids are emitted in canonical
+/// hyphenated hex, properties as a JSON literal).
+fn node_key_type(id: &str) -> &'static str {
+    match id {
+        "d_created_at" | "d_updated_at" => "long",
+        _ => "string",
+    }
+}
+
+/// Map an edge key id to its GraphML `attr.type`.
+fn edge_key_type(id: &str) -> &'static str {
+    match id {
+        "d_e_created_at" => "long",
+        "d_e_weight" => "double",
+        _ => "string",
+    }
+}
+
+fn render_node(out: &mut String, node: &Node) -> Result<()> {
+    out.push_str("    <node id=\"n");
+    push_u64(out, node.id);
+    out.push_str("\">\n");
+    push_data(out, "d_uuid", &uuid_to_hyphenated(&node.uuid));
+    push_data(out, "d_kind", &node.kind);
+    push_data(out, "d_title", &node.title);
+    push_data(out, "d_body", &node.body);
+    push_data(out, "d_body_html", &node.body_html);
+    push_data(out, "d_created_at", &node.created_at.to_string());
+    push_data(out, "d_updated_at", &node.updated_at.to_string());
+    let props_json = serde_json::to_string(&node.properties)
+        .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))?;
+    push_data(out, "d_props", &props_json);
+    out.push_str("    </node>\n");
+    Ok(())
+}
+
+fn render_edge(out: &mut String, edge: &Edge) -> Result<()> {
+    out.push_str("    <edge id=\"e");
+    push_u64(out, edge.id);
+    out.push_str("\" source=\"n");
+    push_u64(out, edge.from_id);
+    out.push_str("\" target=\"n");
+    push_u64(out, edge.to_id);
+    out.push_str("\">\n");
+    push_data(out, "d_e_uuid", &uuid_to_hyphenated(&edge.uuid));
+    push_data(out, "d_e_kind", &edge.kind);
+    push_data(out, "d_e_weight", &format_weight(edge.weight));
+    push_data(out, "d_e_created_at", &edge.created_at.to_string());
+    let props_json = serde_json::to_string(&edge.properties)
+        .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))?;
+    push_data(out, "d_e_props", &props_json);
+    out.push_str("    </edge>\n");
+    Ok(())
+}
+
+/// Append a `<data key="..">value</data>` line, escaping XML special
+/// characters in `value`. Indented six spaces to nest cleanly inside a
+/// `<node>` / `<edge>` opened with four leading spaces.
+fn push_data(out: &mut String, key: &str, value: &str) {
+    out.push_str("      <data key=\"");
+    out.push_str(key);
+    out.push_str("\">");
+    push_escaped(out, value);
+    out.push_str("</data>\n");
+}
+
+fn push_u64(out: &mut String, value: u64) {
+    use std::fmt::Write as _;
+    let _ = write!(out, "{value}");
+}
+
+/// Format a node UUID (16 raw bytes) as canonical hyphenated hex.
+fn uuid_to_hyphenated(bytes: &[u8; 16]) -> String {
+    uuid::Uuid::from_bytes(*bytes).hyphenated().to_string()
+}
+
+/// Format an edge weight for GraphML `attr.type="double"` element text.
+///
+/// Non-finite values are not representable by GraphML's `double` schema —
+/// emit them as their JSON-compatible string ("NaN" / "Infinity" / "-Infinity")
+/// so downstream tools can detect the anomaly instead of receiving an empty
+/// or malformed `<data>` value.
+fn format_weight(weight: f32) -> String {
+    if weight.is_finite() {
+        // f32::to_string already produces a `xs:double`-shaped value
+        // (e.g. "1.5", "0.5", "-3.25", "0") for finite floats.
+        weight.to_string()
+    } else if weight.is_nan() {
+        "NaN".to_string()
+    } else if weight > 0.0 {
+        "Infinity".to_string()
+    } else {
+        "-Infinity".to_string()
+    }
+}
+
+/// Append `s` to `out`, escaping the five XML special characters in element
+/// text. `'` and `"` are escaped too so the same routine works inside
+/// attribute values, even though the current renderer only feeds it element
+/// text.
+fn push_escaped(out: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            // GraphML/XML 1.0 forbids most C0 control characters except
+            // tab, LF, CR. Replace anything else with the Unicode replacement
+            // character so the output stays well-formed.
+            c if (c as u32) < 0x20 && c != '\t' && c != '\n' && c != '\r' => {
+                out.push('\u{FFFD}');
+            }
+            c => out.push(c),
+        }
+    }
+}
+
 /// Helper used by `NewEdge::from(&Edge)` round-trips in tests / external
 /// tooling — exposed to keep the wire format documentation grounded in real
 /// code paths.
@@ -379,5 +650,216 @@ mod tests {
         let err: DrevoError = DumpError::UnsupportedFormat("foo".into()).into();
         let message = format!("{err}");
         assert!(message.contains("foo"), "got: {message}");
+    }
+
+    // -----------------------------------------------------------------
+    // GraphML export (task 00056) — unit tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn graphml_empty_graph_has_xml_declaration() {
+        let db = Drevo::open_in_memory().unwrap();
+        let xml = db.export_graphml().unwrap();
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"));
+    }
+
+    #[test]
+    fn graphml_empty_graph_has_root_element_with_namespace() {
+        let db = Drevo::open_in_memory().unwrap();
+        let xml = db.export_graphml().unwrap();
+        assert!(xml.contains("<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\""));
+        assert!(xml.trim_end().ends_with("</graphml>"));
+    }
+
+    #[test]
+    fn graphml_empty_graph_declares_keys_and_directed_graph() {
+        let db = Drevo::open_in_memory().unwrap();
+        let xml = db.export_graphml().unwrap();
+        for (id, name) in NODE_KEYS {
+            assert!(
+                xml.contains(&format!("id=\"{id}\""))
+                    && xml.contains(&format!("attr.name=\"{name}\"")),
+                "missing node key {id}/{name}",
+            );
+        }
+        for (id, name) in EDGE_KEYS {
+            assert!(
+                xml.contains(&format!("id=\"{id}\""))
+                    && xml.contains(&format!("attr.name=\"{name}\"")),
+                "missing edge key {id}/{name}",
+            );
+        }
+        assert!(xml.contains("<graph id=\"drevo\" edgedefault=\"directed\">"));
+    }
+
+    #[test]
+    fn graphml_single_node_emits_data_elements() {
+        let db = Drevo::open_in_memory().unwrap();
+        db.create_node(NewNode {
+            kind: "note".into(),
+            title: "Hello".into(),
+            body: "World".into(),
+            body_html: "<p>World</p>".into(),
+            properties: props(&[("priority", json!(1))]),
+        })
+        .unwrap();
+        let xml = db.export_graphml().unwrap();
+        assert!(xml.contains("<node id=\"n1\">"));
+        assert!(xml.contains("<data key=\"d_kind\">note</data>"));
+        assert!(xml.contains("<data key=\"d_title\">Hello</data>"));
+        // body_html contains XML and must be escaped
+        assert!(xml.contains("<data key=\"d_body_html\">&lt;p&gt;World&lt;/p&gt;</data>"));
+        // properties serialised as a JSON literal — JSON quotes are XML-escaped
+        // because `<data>` text must be well-formed XML.
+        assert!(xml.contains("<data key=\"d_props\">{&quot;priority&quot;:1}</data>"));
+    }
+
+    #[test]
+    fn graphml_escapes_xml_special_chars_in_title_and_body() {
+        let db = Drevo::open_in_memory().unwrap();
+        db.create_node(NewNode {
+            kind: "note".into(),
+            title: "a < b & c > d \" '".into(),
+            body: "body & <tag>".into(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .unwrap();
+        let xml = db.export_graphml().unwrap();
+        assert!(xml.contains("a &lt; b &amp; c &gt; d &quot; &apos;"));
+        assert!(xml.contains("body &amp; &lt;tag&gt;"));
+        // No raw special chars escaped into the text body — sanity: no
+        // unescaped `<tag>` slipping into the document outside legitimate
+        // markup.
+        assert!(!xml.contains(">a < b"));
+    }
+
+    #[test]
+    fn graphml_emits_edge_with_source_and_target() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "A".into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        let b = db
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "B".into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        db.create_edge(NewEdge {
+            from_id: a.id,
+            to_id: b.id,
+            kind: "links_to".into(),
+            weight: 1.5,
+            properties: props(&[("color", json!("red"))]),
+        })
+        .unwrap();
+
+        let xml = db.export_graphml().unwrap();
+        assert!(xml.contains(&format!(
+            "<edge id=\"e1\" source=\"n{}\" target=\"n{}\">",
+            a.id, b.id
+        )));
+        assert!(xml.contains("<data key=\"d_e_kind\">links_to</data>"));
+        assert!(xml.contains("<data key=\"d_e_weight\">1.5</data>"));
+        assert!(xml.contains("<data key=\"d_e_props\">{&quot;color&quot;:&quot;red&quot;}</data>"));
+    }
+
+    #[test]
+    fn graphml_is_deterministic_for_identical_graphs() {
+        let build = || {
+            let db = Drevo::open_in_memory().unwrap();
+            db.create_node(NewNode {
+                kind: "note".into(),
+                title: "Alpha".into(),
+                body: "a".into(),
+                body_html: String::new(),
+                properties: props(&[("z", json!(1)), ("a", json!(2)), ("m", json!(3))]),
+            })
+            .unwrap();
+            db.create_node(NewNode {
+                kind: "note".into(),
+                title: "Beta".into(),
+                body: "b".into(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+            db
+        };
+        let a_db = build();
+        let b_db = build();
+        // The two databases will differ in uuid / created_at / updated_at,
+        // so we compare the GraphML *minus* those volatile fields by stripping
+        // entire `<data key="d_uuid">…</data>` etc. blocks and confirming the
+        // rest matches.
+        let strip = |s: String| {
+            let mut s = s;
+            for key in [
+                "d_uuid",
+                "d_created_at",
+                "d_updated_at",
+                "d_e_uuid",
+                "d_e_created_at",
+            ] {
+                let needle_open = format!("<data key=\"{key}\">");
+                while let Some(start) = s.find(&needle_open) {
+                    let end = s[start..].find("</data>\n").unwrap() + start + "</data>\n".len();
+                    s.replace_range(start..end, "");
+                }
+            }
+            s
+        };
+        assert_eq!(
+            strip(a_db.export_graphml().unwrap()),
+            strip(b_db.export_graphml().unwrap())
+        );
+    }
+
+    #[test]
+    fn graphml_weight_handles_nonfinite_values() {
+        // Direct test of the format helper — we cannot create_edge with NaN
+        // (the DB rejects it via InvalidWeight), but render_graphml may be
+        // called from external pipelines or after future migrations.
+        assert_eq!(format_weight(1.5_f32), "1.5");
+        assert_eq!(format_weight(0.0_f32), "0");
+        assert_eq!(format_weight(-2.25_f32), "-2.25");
+        assert_eq!(format_weight(f32::NAN), "NaN");
+        assert_eq!(format_weight(f32::INFINITY), "Infinity");
+        assert_eq!(format_weight(f32::NEG_INFINITY), "-Infinity");
+    }
+
+    #[test]
+    fn graphml_uuid_is_hyphenated_hex() {
+        let bytes: [u8; 16] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+        let s = uuid_to_hyphenated(&bytes);
+        assert_eq!(s, "01234567-89ab-cdef-fedc-ba9876543210");
+    }
+
+    #[test]
+    fn graphml_escapes_control_characters() {
+        let mut buf = String::new();
+        push_escaped(&mut buf, "ok\u{0001}danger\u{0007}end");
+        assert!(!buf.contains('\u{0001}'));
+        assert!(!buf.contains('\u{0007}'));
+        assert!(buf.contains('\u{FFFD}'));
+        // Whitespace controls are preserved.
+        let mut buf2 = String::new();
+        push_escaped(&mut buf2, "tab\there\nnewline\rcr");
+        assert!(buf2.contains('\t'));
+        assert!(buf2.contains('\n'));
+        assert!(buf2.contains('\r'));
     }
 }

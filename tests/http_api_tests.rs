@@ -2598,3 +2598,75 @@ async fn post_import_json_rejects_missing_body_with_400() {
     // Missing `dump` field → JsonRejection → BadRequest 400.
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+// ---------------------------------------------------------------------
+// Task 00056 — GraphML export endpoint
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_export_graphml_returns_graphml_document() {
+    let app = make_app();
+    // Seed a node so the document has at least one `<node>` element.
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "GraphML Me", "")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/export/graphml")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let ct = response
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        ct.starts_with("application/xml"),
+        "unexpected content-type: {ct}"
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let xml = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+    assert!(xml.contains("<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\""));
+    assert!(xml.contains("<node id=\"n1\">"));
+    assert!(xml.contains("<data key=\"d_title\">GraphML Me</data>"));
+    assert!(xml.trim_end().ends_with("</graphml>"));
+}
+
+#[tokio::test]
+async fn export_graphml_rejects_non_get_methods_with_405() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/export/graphml")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn get_export_graphml_empty_database_still_well_formed() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("GET")
+        .uri("/export/graphml")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let xml = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(xml.contains("<graph id=\"drevo\" edgedefault=\"directed\">"));
+    assert_eq!(xml.matches("<node ").count(), 0);
+    assert_eq!(xml.matches("<edge ").count(), 0);
+}
