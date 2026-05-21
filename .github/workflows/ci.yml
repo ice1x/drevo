@@ -49,6 +49,34 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Phase 8 task 00049 — Kubernetes manifests under `k8s/`.
+  #
+  # Two checks:
+  #   1. `kubectl kustomize k8s/` resolves the kustomization base
+  #      without warnings or errors — catches a renamed resource file,
+  #      a stray top-level YAML doc, or a kustomization syntax slip
+  #      before it reaches a real cluster.
+  #   2. The text-level `k8s_manifests_tests.rs` suite is already run
+  #      in the `test` job above; this job adds the structural pass
+  #      that text matching cannot do (object graph resolution).
+  #
+  # Both checks run server-less — no live cluster, no kubeconfig.
+  k8s:
+    name: K8s manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: kubectl kustomize k8s/
+        run: |
+          kubectl version --client=true
+          kubectl kustomize k8s/ > /tmp/k8s.yaml
+          # Fail the job if kustomize printed any warning to stderr.
+          if kubectl kustomize k8s/ 2>&1 1>/dev/null | grep -i 'warning\|error'; then
+            echo 'kubectl kustomize emitted warnings/errors above — fix before merge' >&2
+            exit 1
+          fi
+          wc -l /tmp/k8s.yaml
+
   # Phase 9 task 00060 — rustdoc for all public APIs.
   #
   # Runs `cargo doc --no-deps --all-features` under

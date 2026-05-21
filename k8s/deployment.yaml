@@ -1,0 +1,118 @@
+# drevo — Kubernetes Deployment
+#
+# Phase 8 task 00049. Single-replica Deployment that runs the
+# `drevo-server` HTTP API container with a ReadWriteOnce PVC mounted at
+# /data.
+#
+# Why a single replica (and not a StatefulSet):
+#   * drevo is a single-writer redb-backed store. Two concurrent writers
+#     would corrupt the database file — MVCC arrives in Phase 13
+#     (task 00080).
+#   * A Deployment with `strategy.type: Recreate` plus a RWO PVC is the
+#     simplest topology that matches that constraint and still gives us
+#     rolling image upgrades, declarative manifests, and Kubernetes
+#     self-healing.
+#   * A StatefulSet would add stable network identity and ordered
+#     deployment guarantees that drevo does not yet need; revisit when
+#     replication ships (task 00095).
+#
+# Why Recreate (vs the default RollingUpdate):
+#   The default RollingUpdate spins up a second pod before the first one
+#   terminates. The new pod would fail to schedule because the RWO PVC
+#   is still bound to the old pod's node. Recreate stops the old pod
+#   first, releasing the volume, then starts the new pod.
+#
+# Probes:
+#   * livenessProbe → /health (cheap, no DB touch — task 00042)
+#   * readinessProbe → /ready (probes redb — task 00048; flips to 503
+#     during SIGTERM drain so Endpoints withdraws traffic before SIGKILL)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drevo
+  labels:
+    app.kubernetes.io/name: drevo
+    app.kubernetes.io/component: graph-database
+    app.kubernetes.io/part-of: drevo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: drevo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: drevo
+        app.kubernetes.io/component: graph-database
+        app.kubernetes.io/part-of: drevo
+    spec:
+      # SIGTERM-triggered graceful shutdown (task 00048) needs headroom
+      # to drain in-flight requests before SIGKILL. 30s is the K8s
+      # default; we keep it explicit so a future operator does not
+      # silently drop it to 0.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # The Dockerfile drops to the unprivileged `drevo` user. Keep
+        # that contract at the pod level so a future image rebuild
+        # cannot silently re-grant root.
+        runAsNonRoot: true
+        # The image's `drevo` system user is UID 999 by default
+        # (debian:bookworm-slim `useradd --system`). Pinning the UID
+        # here means the PVC's directory ownership stays predictable
+        # across reschedules; `fsGroup` makes the kubelet chown the
+        # mount to that gid on attach.
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: drevo
+          # Image is published to GitHub Container Registry by task
+          # 00051. Pin a concrete tag (no `:latest`) so rollouts are
+          # deterministic; bump this string when cutting a release.
+          image: ghcr.io/ice1x/drevo:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DREVO_HOST
+              value: "0.0.0.0"
+            - name: DREVO_PORT
+              value: "8080"
+            - name: DREVO_DATA_DIR
+              value: "/data"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            # /ready already flips to 503 during SIGTERM drain, so a
+            # single failed probe is enough to mark the pod NotReady.
+            failureThreshold: 1
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: drevo-data
