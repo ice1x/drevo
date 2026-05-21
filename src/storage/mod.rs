@@ -5,8 +5,8 @@
 //! - [`memory::MemoryBackend`] — a `BTreeMap`-backed in-process backend.
 //!   The only backend usable from `wasm32-unknown-unknown`, where
 //!   filesystem access is unavailable.
-//! - [`redb::RedbBackend`] — an ACID, B-tree-backed backend powered by
-//!   [`redb`](https://github.com/cberner/redb). The default on native
+//! - `redb::RedbBackend` — an ACID, B-tree-backed backend powered by
+//!   [redb](https://github.com/cberner/redb). The default on native
 //!   targets; gated behind the `redb-backend` Cargo feature so a WASM
 //!   build can opt out of the dependency entirely.
 //!
@@ -23,7 +23,8 @@ pub mod backend;
 pub mod error;
 /// In-memory, `BTreeMap`-backed storage backend (also the WASM target).
 pub mod memory;
-/// [`redb`]-backed, ACID, B-tree storage backend (native, default).
+/// [redb](https://github.com/cberner/redb)-backed, ACID, B-tree storage
+/// backend (native, default).
 #[cfg(feature = "redb-backend")]
 pub mod redb;
 

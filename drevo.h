@@ -9,11 +9,52 @@
 #include <stdlib.h>
 
 /**
+ * Default `limit` applied to `GET /nodes` and `GET /edges` when the
+ * client omits the query parameter. Kept in lockstep with
+ * [`DEFAULT_SEARCH_LIMIT`] for predictable client behaviour across
+ * endpoints.
+ */
+#define DEFAULT_LIST_LIMIT 50
+
+/**
+ * Maximum `limit` accepted by `GET /nodes` and `GET /edges`. Requests
+ * above this cap are silently clamped so that a pathological client
+ * cannot force an unbounded scan over the kind index — the same
+ * rationale as [`MAX_SEARCH_LIMIT`] for the FTS endpoint.
+ */
+#define MAX_LIST_LIMIT 1000
+
+/**
+ * Default depth used when `GET /nodes/{id}/neighbors` omits the
+ * `depth` query parameter.
+ */
+#define DEFAULT_NEIGHBORS_DEPTH 1
+
+/**
+ * Default depth used when `GET /nodes/{id}/subgraph` omits the
+ * `depth` query parameter.
+ */
+#define DEFAULT_SUBGRAPH_DEPTH 1
+
+/**
+ * Default `limit` applied to `POST /search/fts` when the client omits
+ * it. Matches the node/edge list defaults to keep the API consistent.
+ */
+#define DEFAULT_SEARCH_LIMIT 10
+
+/**
+ * Maximum `limit` accepted by `POST /search/fts`. Requests above this
+ * cap are silently clamped so that a pathological client cannot force
+ * a huge scoring pass.
+ */
+#define MAX_SEARCH_LIMIT 1000
+
+/**
  * The main drevo handle.
  *
- * Created via [`Drevo::open`] (disk-backed) or
- * [`Drevo::open_in_memory`] (ephemeral). All graph operations
- * are methods on this struct.
+ * Created via `Drevo::open` (disk-backed, requires the
+ * `redb-backend` Cargo feature) or [`Drevo::open_in_memory`]
+ * (ephemeral). All graph operations are methods on this struct.
  */
 typedef struct Drevo Drevo;
 

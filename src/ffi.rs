@@ -1,20 +1,20 @@
 //! C FFI bindings for drevo.
 //!
-//! Exposes the [`Drevo`] API through `extern "C"` functions for
+//! Exposes the [`crate::db::Drevo`] API through `extern "C"` functions for
 //! consumption by C, Swift (iOS), Kotlin/JNI (Android), and other FFI-capable
 //! languages.
 //!
 //! ## Design
 //!
-//! - **Opaque handle**: [`DrevoHandle`] is a type alias for the Rust struct.
-//!   C consumers receive `*mut DrevoHandle` — an opaque pointer.
+//! - **Opaque handle**: [`crate::ffi::DrevoHandle`] is a type alias for the
+//!   Rust struct. C consumers receive `*mut DrevoHandle` — an opaque pointer.
 //! - **JSON serialization**: complex types (Node, Edge, SubGraph, etc.) cross
 //!   the FFI boundary as JSON-encoded C strings (`*mut c_char`).
 //! - **Error reporting**: thread-local `LAST_ERROR` stores the most recent error
 //!   message. On success it is cleared; on failure it is set. Call
-//!   [`drevo_last_error`] to retrieve (and the caller must free) it.
+//!   [`crate::ffi::drevo_last_error`] to retrieve (and the caller must free) it.
 //! - **Memory ownership**: every `*mut c_char` returned by an FFI function is
-//!   owned by the caller — free it with [`drevo_free_string`].
+//!   owned by the caller — free it with [`crate::ffi::drevo_free_string`].
 //!
 //! ## Panic safety — required by `drevo-rust` §"No panics across FFI"
 //!
@@ -38,14 +38,16 @@
 //!
 //! ## Lifecycle and double-free
 //!
-//! Every successful [`drevo_open`] / [`drevo_open_in_memory`] returns an
-//! owned `*mut DrevoHandle` that must be released by exactly one matching
-//! [`drevo_close`] call. The C contract is the standard one:
+//! Every successful [`crate::ffi::drevo_open`] /
+//! [`crate::ffi::drevo_open_in_memory`] returns an owned `*mut DrevoHandle`
+//! that must be released by exactly one matching
+//! [`crate::ffi::drevo_close`] call. The C contract is the standard one:
 //!
-//! - **Single owner.** Once [`drevo_close`] returns, the pointer is invalid.
-//! - **Double-free is UB.** Calling [`drevo_close`] twice on the same pointer
-//!   is undefined behavior — the second call dereferences freed memory.
-//!   Callers MUST set their handle variable to `NULL` after closing.
+//! - **Single owner.** Once [`crate::ffi::drevo_close`] returns, the pointer
+//!   is invalid.
+//! - **Double-free is UB.** Calling [`crate::ffi::drevo_close`] twice on the
+//!   same pointer is undefined behavior — the second call dereferences freed
+//!   memory. Callers MUST set their handle variable to `NULL` after closing.
 //! - **Use-after-close is UB.** Calling any other `drevo_*` function on a
 //!   closed handle is undefined behavior for the same reason.
 //! - **`NULL` handle is detected.** Passing `NULL` to any function that
@@ -61,7 +63,8 @@
 //! `LAST_ERROR` is `thread_local!`, so each OS thread has an independent
 //! error slot. Cross-thread error reads are impossible by construction —
 //! a C consumer that calls drevo from multiple threads must call
-//! [`drevo_last_error`] on the same thread that produced the error.
+//! [`crate::ffi::drevo_last_error`] on the same thread that produced the
+//! error.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -193,7 +193,7 @@ pub enum Direction {
 
 /// A search result with a relevance score.
 ///
-/// Returned by [`Drevo::search_fts`] — nodes are ranked by TF-IDF score.
+/// Returned by [`crate::db::Drevo::search_fts`] — nodes are ranked by TF-IDF score.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredNode {
     /// The matching node.

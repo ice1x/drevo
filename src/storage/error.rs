@@ -8,10 +8,10 @@ use std::fmt;
 /// task `00104` so that callers (and the HTTP layer in particular) can
 /// programmatically distinguish backend, encode, decode, and lock failures.
 ///
-/// Sub-types of [`redb::Error`] (`redb::TableError`, `redb::CommitError`,
+/// Sub-types of `redb::Error` (`redb::TableError`, `redb::CommitError`,
 /// `redb::StorageError`, `redb::TransactionError`, `redb::DatabaseError`)
-/// all convert to [`StorageError::Redb`] via the `?` operator — see the
-/// explicit `From` impls below.
+/// all convert to `StorageError::Redb` via the `?` operator (only when the
+/// `redb-backend` feature is enabled) — see the explicit `From` impls below.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     /// The requested key was not found.
@@ -34,9 +34,9 @@ pub enum StorageError {
 
     /// A redb-backed storage operation failed.
     ///
-    /// Wraps the upstream [`redb::Error`] directly so callers can match on
+    /// Wraps the upstream `redb::Error` directly so callers can match on
     /// the exact failure mode (table missing, txn aborted, I/O, etc.)
-    /// instead of parsing a string. Boxed because [`redb::Error`] is a
+    /// instead of parsing a string. Boxed because `redb::Error` is a
     /// large enum (~160 bytes) and inflating every `StorageError` to that
     /// size triggers clippy's `result_large_err` lint at every `?` site.
     #[cfg(feature = "redb-backend")]
@@ -48,8 +48,9 @@ pub enum StorageError {
     ///
     /// The backend is in an unrecoverable state — the only sane response
     /// is to log and discard the backend handle. Distinguished from
-    /// [`StorageError::Redb`] because a poisoned lock is structural,
-    /// not a backend-internal I/O or transaction failure.
+    /// `StorageError::Redb` (which only exists with the `redb-backend`
+    /// feature) because a poisoned lock is structural, not a
+    /// backend-internal I/O or transaction failure.
     #[error("lock poisoned")]
     LockPoisoned,
 }

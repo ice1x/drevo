@@ -12,10 +12,11 @@
 //!   [`crate::storage::StorageBackend::scan_prefix`] can retrieve a full
 //!   posting list in one call.
 //!
-//! See [`audit/AUDIT-fts.md`] for the rules verified against the
-//! `drevo-database` and `drevo-tdd` skills and for the recorded
-//! refactor follow-ups (BM25 strategy trait, broad-query performance
-//! mitigations, NFC normalization).
+//! See [`audit/AUDIT-fts.md`](https://github.com/ice1x/drevo/blob/main/audit/AUDIT-fts.md)
+//! for the rules verified against the `drevo-database` and
+//! `drevo-tdd` skills and for the recorded refactor follow-ups (BM25
+//! strategy trait, broad-query performance mitigations, NFC
+//! normalization).
 
 /// Trigram inverted-index storage operations
 /// (build / extend / remove / intersect posting lists).
