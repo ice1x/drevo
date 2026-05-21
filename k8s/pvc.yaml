@@ -1,0 +1,32 @@
+# drevo — PersistentVolumeClaim for the redb data file
+#
+# Phase 8 task 00049. Requests a ReadWriteOnce volume that the
+# Deployment binds at /data. ReadWriteOnce matches drevo's single-writer
+# model: the PVC is intentionally not RWX because that would imply the
+# possibility of multiple pods writing the same redb file concurrently,
+# which would corrupt it.
+#
+# Sizing: 1Gi is a starter default. Operators should raise this for
+# production deployments — graph workloads in the use cases the project
+# targets (CBT journals, story drafts, task graphs, ERP entities, bug
+# trackers) routinely run into the tens of GiB once FTS indices are
+# populated. `kubectl edit pvc/drevo-data` (or `kubectl patch`) supports
+# in-place expansion on storage classes with `allowVolumeExpansion: true`.
+#
+# No storageClassName: the cluster default class is used. Pin a specific
+# class with `storageClassName: <name>` when migrating between clusters
+# (e.g. `gp3` on EKS, `pd-balanced` on GKE).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: drevo-data
+  labels:
+    app.kubernetes.io/name: drevo
+    app.kubernetes.io/component: graph-database
+    app.kubernetes.io/part-of: drevo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

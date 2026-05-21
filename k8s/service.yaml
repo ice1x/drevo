@@ -1,0 +1,29 @@
+# drevo — Kubernetes Service
+#
+# Phase 8 task 00049. ClusterIP service that fronts the single-replica
+# drevo Deployment on port 8080.
+#
+# Why ClusterIP (and not LoadBalancer / NodePort):
+#   drevo is a backing store for higher-level applications. Exposing it
+#   directly to the public internet is almost never what an operator
+#   wants — they should front it with an Ingress / Gateway resource
+#   chosen for their cluster (nginx-ingress, traefik, contour, AWS ALB,
+#   GKE Gateway, …). Shipping a ClusterIP keeps the manifest portable
+#   and forces the operator to make that decision explicitly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: drevo
+  labels:
+    app.kubernetes.io/name: drevo
+    app.kubernetes.io/component: graph-database
+    app.kubernetes.io/part-of: drevo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: drevo
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
