@@ -74,3 +74,62 @@ jobs:
       - run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown
         # The wasm sanity check is the cheapest way to catch a future MSRV
         # bump on `getrandom/wasm_js` (audit 00111 / 00113 cross-link).
+
+  # Phase 9 task 00058 — coverage-guided fuzz smoke run for the FTS
+  # tokenizer. cargo-fuzz needs nightly Rust + libFuzzer; the job is
+  # therefore split out from the main matrix (stable Rust is enough for
+  # everything else) and time-boxed to ~60 seconds per target so it
+  # stays under the free CI budget. The stable-CI replay of the seed
+  # corpus is already run by the `test` job above through
+  # `tests/fts_tokenizer_fuzz_harness_tests.rs` — this job extends that
+  # coverage with libFuzzer's branch-feedback mutator on every push.
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    # Don't block merges if cargo-fuzz finds a crash — surface it as a
+    # CI annotation and let humans triage. The stable harness replay in
+    # the `test` job remains a hard gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      # Pull a prebuilt cargo-fuzz binary from the GitHub release page
+      # via `taiki-e/install-action`. Compiling cargo-fuzz from source
+      # with `cargo install cargo-fuzz --locked` is fragile on modern
+      # nightly: cargo-fuzz 0.13.x pins an old `rustix 0.36.x` that uses
+      # the now-rejected `cfg_attr(rustc_attrs, rustc_layout_scalar_…)`
+      # syntax and fails to build. Prebuilt binaries side-step the
+      # transitive-dep churn entirely and finish in seconds instead of
+      # minutes.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # Every `cargo fuzz run` below pins `--target x86_64-unknown-linux-gnu`
+      # explicitly. The taiki-e prebuilt cargo-fuzz binary is itself built
+      # for `x86_64-unknown-linux-musl` (portable, statically-linked) and
+      # therefore reports musl as its "host target" — which cargo-fuzz
+      # then passes to `cargo build`. AddressSanitizer is incompatible
+      # with statically-linked libc (`error: sanitizer is incompatible
+      # with statically linked libc, disable it using `-C
+      # target-feature=-crt-static``), so we override the target back to
+      # glibc. The runner is ubuntu-latest, which has the gnu target
+      # pre-installed; no extra `rustup target add` step is needed.
+      - name: Smoke fuzz_normalize (60s)
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_normalize -- -max_total_time=60
+        working-directory: fuzz
+      - name: Smoke fuzz_trigrams (60s)
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_trigrams -- -max_total_time=60
+        working-directory: fuzz
+      - name: Smoke fuzz_extract_trigrams (60s)
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_trigrams -- -max_total_time=60
+        working-directory: fuzz
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
