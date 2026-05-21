@@ -1,9 +1,17 @@
 //! Kubernetes manifest structure and convention tests.
 //!
-//! Phase 8 task 00049: verify the manifests under `k8s/` deploy drevo as
-//! a single-replica HTTP service with a persistent volume mounted at
-//! `/data` and Kubernetes-native liveness/readiness probes wired to the
-//! drevo HTTP endpoints `/health` and `/ready`.
+//! Phase 8 task 00049: verify the manifests deploy drevo as a single-replica
+//! HTTP service with a persistent volume mounted at `/data` and
+//! Kubernetes-native liveness/readiness probes wired to the drevo HTTP
+//! endpoints `/health` and `/ready`.
+//!
+//! Phase 8 task 00050 moved the manifests from `k8s/` into `k8s/base/` so
+//! per-env overlays under `k8s/overlays/<env>/` can reference them via
+//! `../../base/` without tripping kustomize's load-restrictor security
+//! check. A thin top-level `k8s/kustomization.yaml` wrapper preserves the
+//! historical `kubectl apply -k k8s/` ergonomics by forwarding to
+//! `./base/`. All file-existence and content checks below now target
+//! `k8s/base/` for the resource manifests; the wrapper is checked separately.
 //!
 //! The tests parse each manifest as text — no `kubectl`, no `kube-rs`
 //! crate, no running cluster required. This mirrors the pattern used by
@@ -16,10 +24,25 @@ fn k8s_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("k8s")
 }
 
+fn k8s_base_dir() -> PathBuf {
+    k8s_dir().join("base")
+}
+
 fn read_manifest(name: &str) -> String {
-    let path = k8s_dir().join(name);
+    let path = k8s_base_dir().join(name);
     fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read k8s manifest {}: {}", path.display(), e))
+}
+
+fn read_top_level(name: &str) -> String {
+    let path = k8s_dir().join(name);
+    fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read k8s top-level file {}: {}",
+            path.display(),
+            e
+        )
+    })
 }
 
 // ------------------------------------------------------------------
@@ -35,26 +58,34 @@ fn k8s_directory_exists() {
 }
 
 #[test]
+fn k8s_base_directory_exists() {
+    assert!(
+        k8s_base_dir().is_dir(),
+        "k8s/base/ directory must exist (task 00050 layout)"
+    );
+}
+
+#[test]
 fn k8s_deployment_manifest_exists() {
     assert!(
-        k8s_dir().join("deployment.yaml").is_file(),
-        "k8s/deployment.yaml must exist"
+        k8s_base_dir().join("deployment.yaml").is_file(),
+        "k8s/base/deployment.yaml must exist"
     );
 }
 
 #[test]
 fn k8s_service_manifest_exists() {
     assert!(
-        k8s_dir().join("service.yaml").is_file(),
-        "k8s/service.yaml must exist"
+        k8s_base_dir().join("service.yaml").is_file(),
+        "k8s/base/service.yaml must exist"
     );
 }
 
 #[test]
 fn k8s_pvc_manifest_exists() {
     assert!(
-        k8s_dir().join("pvc.yaml").is_file(),
-        "k8s/pvc.yaml must exist"
+        k8s_base_dir().join("pvc.yaml").is_file(),
+        "k8s/base/pvc.yaml must exist"
     );
 }
 
@@ -63,6 +94,26 @@ fn k8s_readme_exists() {
     assert!(
         k8s_dir().join("README.md").is_file(),
         "k8s/README.md must document how to apply the manifests"
+    );
+}
+
+#[test]
+fn k8s_top_level_kustomization_wraps_the_base() {
+    // Task 00050 moved the base manifests into `k8s/base/`. The thin
+    // top-level `k8s/kustomization.yaml` preserves the historical
+    // `kubectl apply -k k8s/` ergonomics by forwarding to `./base/`.
+    let content = read_top_level("kustomization.yaml");
+    assert!(
+        content.contains("apiVersion: kustomize.config.k8s.io/v1beta1"),
+        "k8s/kustomization.yaml must declare apiVersion kustomize.config.k8s.io/v1beta1"
+    );
+    assert!(
+        content.contains("kind: Kustomization"),
+        "k8s/kustomization.yaml must have kind: Kustomization"
+    );
+    assert!(
+        content.contains("./base/") || content.contains("./base"),
+        "k8s/kustomization.yaml must list `./base/` under resources to keep `kubectl apply -k k8s/` working"
     );
 }
 

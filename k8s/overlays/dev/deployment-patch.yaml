@@ -1,0 +1,31 @@
+# Strategic-merge patch — dev overlay.
+#
+# Phase 8 task 00050. Halves the base container resource budget for a
+# dev / local cluster and turns on debug-level logging.
+#
+# The patch must NOT raise `replicas` above 1 — the single-writer redb
+# invariant is enforced by `tests/k8s_overlays_tests.rs`. MVCC (Phase 13
+# task 00080) is the only path to multi-writer.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drevo
+spec:
+  template:
+    spec:
+      containers:
+        - name: drevo
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "32Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          env:
+            # Strategic merge on a list keyed by `name` replaces the
+            # whole entry; the base's `DREVO_HOST` / `DREVO_PORT` /
+            # `DREVO_DATA_DIR` are preserved because we only mention
+            # the additions we want.
+            - name: RUST_LOG
+              value: "debug"

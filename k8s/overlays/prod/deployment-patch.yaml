@@ -1,0 +1,29 @@
+# Strategic-merge patch — prod overlay.
+#
+# Phase 8 task 00050. Raises the base container resource budget so a
+# production deployment has head-room for FTS index rebuilds and
+# concurrent HTTP load. Also turns `imagePullPolicy` to `Always` so a
+# `kubectl rollout restart` re-pulls the pinned tag from ghcr.io (the
+# default `IfNotPresent` could keep a stale image around on nodes that
+# already cached the tag).
+#
+# The patch must NOT raise `replicas` above 1 — the single-writer redb
+# invariant is enforced by `tests/k8s_overlays_tests.rs`. MVCC (Phase 13
+# task 00080) is the only path to multi-writer.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drevo
+spec:
+  template:
+    spec:
+      containers:
+        - name: drevo
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"

@@ -1,0 +1,21 @@
+# Strategic-merge patch — prod overlay PVC.
+#
+# Phase 8 task 00050. Raises the storage request to 20 Gi. Graph
+# workloads in the project's target use cases (CBT journals, story
+# drafts, task graphs, ERP entities, bug trackers) routinely hit tens
+# of GiB once FTS indices are populated. Operators on storage classes
+# with `allowVolumeExpansion: true` can grow further in-place; see
+# `k8s/README.md`.
+#
+# `accessModes` is intentionally left to the base (`ReadWriteOnce`) —
+# `tests/k8s_overlays_tests.rs` forbids overlays from relaxing it to
+# `ReadWriteMany` because that would imply two pods can write the
+# redb file at once.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: drevo-data
+spec:
+  resources:
+    requests:
+      storage: 20Gi
