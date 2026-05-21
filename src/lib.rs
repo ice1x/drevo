@@ -12,9 +12,9 @@
 //!
 //! - [`storage`] — pluggable [`storage::StorageBackend`] trait plus the two
 //!   shipping implementations: [`storage::MemoryBackend`] (ephemeral, the
-//!   only backend on WASM) and [`storage::RedbBackend`] (ACID + B-tree, the
-//!   default on native targets). Audited in `audit/AUDIT-storage.md` (task
-//!   `00103`).
+//!   only backend on WASM) and `storage::RedbBackend` (ACID + B-tree, the
+//!   default on native targets, gated behind the `redb-backend` Cargo
+//!   feature). Audited in `audit/AUDIT-storage.md` (task `00103`).
 //! - [`error`] — the crate-wide [`error::DrevoError`] hierarchy. Audited in
 //!   `audit/AUDIT-error.md` (task `00104`).
 //! - [`model`] — public data types ([`model::Node`], [`model::Edge`], …)
@@ -29,15 +29,15 @@
 //!   `audit/AUDIT-traversal.md` (task `00107`).
 //! - [`fts`] — trigram tokenizer + inverted index for full-text search.
 //!   Audited in `audit/AUDIT-fts.md` (task `00108`).
-//! - [`api`] (cfg `http`) — axum router translating REST requests into
+//! - `api` (cfg `http`) — axum router translating REST requests into
 //!   [`db::Drevo`] calls. Audited in `audit/AUDIT-http-api.md` (task
 //!   `00109`).
-//! - [`ffi`] (non-WASM) — `extern "C"` surface for desktop / mobile
+//! - `ffi` (non-WASM) — `extern "C"` surface for desktop / mobile
 //!   embedders. Every entry is wrapped in [`std::panic::catch_unwind`].
 //!   Audited in `audit/AUDIT-ffi.md` (task `00110`).
-//! - [`wasm`] (cfg `wasm`) — `wasm-bindgen` exports for the browser /
+//! - `wasm` (cfg `wasm`) — `wasm-bindgen` exports for the browser /
 //!   Tauri-WASM build. Audited in `audit/AUDIT-wasm.md` (task `00111`).
-//! - [`server`] (cfg `http`) — extracted env-var parser, validator, and
+//! - `server` (cfg `http`) — extracted env-var parser, validator, and
 //!   bind/serve loop for the `drevo-server` binary. Audited in
 //!   `audit/AUDIT-server.md` (task `00112`).
 //!

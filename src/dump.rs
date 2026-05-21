@@ -1,11 +1,12 @@
 //! JSON import / export — Phase 9 hardening task `00055`. Phase 9 task
 //! `00056` extends this module with read-only GraphML export
-//! ([`Drevo::export_graphml`] / [`Drevo::export_graphml_to_path`]).
+//! ([`crate::db::Drevo::export_graphml`] / `Drevo::export_graphml_to_path`
+//! — the filesystem variant is gated off WASM).
 //!
 //! Provides a human-readable, schema-versioned dump format that captures the
 //! entire graph (every node and every edge) and can be reloaded into any
-//! [`Drevo`] handle, regardless of which backend (memory or redb) produced it
-//! or now receives it.
+//! [`crate::db::Drevo`] handle, regardless of which backend (memory or redb)
+//! produced it or now receives it.
 //!
 //! ## Format
 //!
@@ -23,7 +24,7 @@
 //! ```
 //!
 //! * `format` is mandatory; mismatches are rejected as
-//!   [`DumpError::UnsupportedFormat`].
+//!   [`crate::dump::DumpError::UnsupportedFormat`].
 //! * `exported_at` is the producer's [`crate::model::now_ms`] at export time —
 //!   informational only.
 //! * `next_node_id` / `next_edge_id` capture the producer's auto-increment
@@ -38,33 +39,36 @@
 //!
 //! Re-importing an identical dump into a populated database is a no-op: nodes
 //! and edges already present (matched by `id` AND byte-equal content) are
-//! skipped and counted in [`ImportReport::nodes_skipped`] /
-//! [`edges_skipped`]. A title collision against a *different* node yields
-//! [`DrevoError::DuplicateTitle`].
+//! skipped and counted in [`crate::dump::ImportReport::nodes_skipped`] /
+//! [`crate::dump::ImportReport::edges_skipped`]. A title collision against a
+//! *different* node yields [`crate::error::DrevoError::DuplicateTitle`].
 //!
 //! ## Errors
 //!
-//! [`DumpError`] enumerates the import-time failure modes that are
-//! independent of the storage layer (malformed JSON, unknown format,
-//! mismatched schema). They surface to callers as [`DrevoError::Io`] because
-//! the JSON / file boundary is conceptually an IO boundary; this avoids
-//! growing a new top-level variant for a feature that lives one module deep.
+//! [`crate::dump::DumpError`] enumerates the import-time failure modes that
+//! are independent of the storage layer (malformed JSON, unknown format,
+//! mismatched schema). They surface to callers as
+//! [`crate::error::DrevoError::Io`] because the JSON / file boundary is
+//! conceptually an IO boundary; this avoids growing a new top-level variant
+//! for a feature that lives one module deep.
 //!
 //! ## WASM
 //!
-//! [`Drevo::export_json`] and [`Drevo::import_json`] are available on every
-//! target — they operate on `String` only and do not touch the filesystem.
-//! [`Drevo::export_json_to_path`] / [`Drevo::import_json_from_path`] are gated
-//! behind `cfg(not(target_arch = "wasm32"))` because `std::fs` is not
-//! available in the browser.
+//! [`crate::db::Drevo::export_json`] and [`crate::db::Drevo::import_json`] are
+//! available on every target — they operate on `String` only and do not
+//! touch the filesystem. `Drevo::export_json_to_path` /
+//! `Drevo::import_json_from_path` are gated behind
+//! `cfg(not(target_arch = "wasm32"))` because `std::fs` is not available in
+//! the browser.
 //!
 //! ## GraphML export (task `00056`)
 //!
-//! [`Drevo::export_graphml`] emits the graph as a GraphML 1.0 document — the
-//! ubiquitous XML interchange format consumed by yEd, Gephi, NetworkX,
-//! Cytoscape, igraph, and a long tail of network-analysis tooling. The export
-//! is one-way (no `import_graphml`); the project's authoritative wire format
-//! remains [`FORMAT_V1`]. GraphML is offered for interop only.
+//! [`crate::db::Drevo::export_graphml`] emits the graph as a GraphML 1.0
+//! document — the ubiquitous XML interchange format consumed by yEd, Gephi,
+//! NetworkX, Cytoscape, igraph, and a long tail of network-analysis tooling.
+//! The export is one-way (no `import_graphml`); the project's authoritative
+//! wire format remains [`crate::dump::FORMAT_V1`]. GraphML is offered for
+//! interop only.
 //!
 //! Layout of the emitted document:
 //!
@@ -84,13 +88,14 @@
 //! </graphml>
 //! ```
 //!
-//! Nested [`Properties`] are serialised as a single JSON-string `<data>` value
-//! (GraphML key type `string`) so the format remains lossless and re-parsable
-//! by external tooling. The exporter is deterministic: nodes / edges are
-//! emitted in id order (`collect_all_nodes` / `collect_all_edges` already sort
-//! by id), and [`Properties`] sort their keys before serialising.
+//! Nested [`crate::model::Properties`] are serialised as a single
+//! JSON-string `<data>` value (GraphML key type `string`) so the format
+//! remains lossless and re-parsable by external tooling. The exporter is
+//! deterministic: nodes / edges are emitted in id order
+//! (`collect_all_nodes` / `collect_all_edges` already sort by id), and
+//! [`crate::model::Properties`] sort their keys before serialising.
 //!
-//! Filesystem variant [`Drevo::export_graphml_to_path`] is gated off WASM.
+//! Filesystem variant `Drevo::export_graphml_to_path` is gated off WASM.
 
 use serde::{Deserialize, Serialize};
 
@@ -176,7 +181,7 @@ impl Drevo {
     /// pretty-printed JSON string.
     ///
     /// Output is deterministic for a given graph because
-    /// [`Properties`](crate::model::Properties) sorts its keys before
+    /// [`crate::model::Properties`] sorts its keys before
     /// serialising — two databases with the same logical content produce the
     /// same dump byte-for-byte.
     ///

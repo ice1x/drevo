@@ -1,22 +1,22 @@
 //! Server-binary configuration and runtime helpers.
 //!
 //! Introduced by Phase 8.5 audit task `00112` to lift the previously
-//! inlined env-var parsing out of [`crate::bin::server`] so each rule
+//! inlined env-var parsing out of `src/bin/server.rs` so each rule
 //! (port bounds, host validity, data-dir non-emptiness) lives behind a
 //! unit test. The binary itself is now a thin shim around
-//! [`Config::from_env`] + [`run`].
+//! [`crate::server::Config::from_env`] + [`crate::server::run`].
 //!
 //! ## Rules this module implements
 //!
 //! - `drevo-rust` §"Error Handling" — _"Never `unwrap()` / `expect()`
 //!   in library code"._ Every fallible code path returns a typed
-//!   [`ConfigError`]; the binary's `main` is the single boundary that
-//!   logs the error and exits with a non-zero status.
+//!   [`crate::server::ConfigError`]; the binary's `main` is the single
+//!   boundary that logs the error and exits with a non-zero status.
 //! - `drevo-rust` §"Async / Tokio" — the public API is sync where
-//!   nothing awaits; only [`run`] is `async`.
+//!   nothing awaits; only [`crate::server::run`] is `async`.
 //! - `drevo-database` §"HTTP API" — the container convention
 //!   (`0.0.0.0:8080`, `/data/drevo.redb`) is encoded as the
-//!   [`Config`] defaults so test code and the binary agree.
+//!   [`crate::server::Config`] defaults so test code and the binary agree.
 //!
 //! ## Environment variables
 //!
@@ -28,7 +28,7 @@
 //!
 //! ## Signal handling
 //!
-//! Graceful shutdown is driven by [`shutdown_signal`]. On Unix it
+//! Graceful shutdown is driven by [`crate::server::shutdown_signal`]. On Unix it
 //! races `SIGINT` (Ctrl+C) and `SIGTERM`; on non-Unix targets only
 //! `Ctrl+C` is observed — Windows console `Ctrl+Break` and Windows
 //! service-stop notifications are **not** wired today and the process
@@ -306,7 +306,7 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
 /// Windows service-control-manager stop notifications are tracked
 /// as a follow-up under task `00113`.
 ///
-/// Exposed publicly only for the unit-test in [`tests/`] that
+/// Exposed publicly only for the unit-test in `tests/` that
 /// asserts the future is `Send`.
 pub async fn shutdown_signal() {
     let ctrl_c = async {

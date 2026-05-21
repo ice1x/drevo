@@ -1,6 +1,6 @@
 //! HTTP API for drevo.
 //!
-//! This module exposes a thin JSON adapter over [`Drevo`] built on
+//! This module exposes a thin JSON adapter over [`crate::db::Drevo`] built on
 //! [`axum`] and [`tokio`]. Task 00037 introduced the server skeleton
 //! (shared state, unified error type, root endpoint) and task 00038
 //! added node CRUD endpoints:
@@ -57,14 +57,14 @@
 //!   with HTTP 503 once graceful shutdown has been signalled (task
 //!   00048).
 //! - `GET /status` — server metadata including crate name, version,
-//!   and process uptime in seconds since the [`ApiState`] was built.
+//!   and process uptime in seconds since the [`crate::api::ApiState`] was built.
 //!
 //! Task 00048 added the readiness probe and made liveness shutdown-
 //! aware so the standalone server binary cooperates correctly with
 //! Kubernetes-style rolling restarts:
 //!
 //! - `GET /ready` — readiness probe that actively exercises the
-//!   storage backend via [`Drevo::health_check`]. Returns 200 with
+//!   storage backend via [`crate::db::Drevo::health_check`]. Returns 200 with
 //!   `{"status": "ready"}` while the DB is responsive and 503
 //!   otherwise.
 //!
@@ -242,13 +242,13 @@ async fn root(State(_state): State<ApiState>) -> Json<ServerInfo> {
 /// client omits the query parameter. Kept in lockstep with
 /// [`DEFAULT_SEARCH_LIMIT`] for predictable client behaviour across
 /// endpoints.
-const DEFAULT_LIST_LIMIT: usize = 50;
+pub const DEFAULT_LIST_LIMIT: usize = 50;
 
 /// Maximum `limit` accepted by `GET /nodes` and `GET /edges`. Requests
 /// above this cap are silently clamped so that a pathological client
 /// cannot force an unbounded scan over the kind index — the same
 /// rationale as [`MAX_SEARCH_LIMIT`] for the FTS endpoint.
-const MAX_LIST_LIMIT: usize = 1000;
+pub const MAX_LIST_LIMIT: usize = 1000;
 
 // ---------------------------------------------------------------------
 // Node CRUD handlers (task 00038)
@@ -457,11 +457,11 @@ async fn get_node_edges(
 
 /// Default depth used when `GET /nodes/{id}/neighbors` omits the
 /// `depth` query parameter.
-const DEFAULT_NEIGHBORS_DEPTH: u8 = 1;
+pub const DEFAULT_NEIGHBORS_DEPTH: u8 = 1;
 
 /// Default depth used when `GET /nodes/{id}/subgraph` omits the
 /// `depth` query parameter.
-const DEFAULT_SUBGRAPH_DEPTH: u8 = 1;
+pub const DEFAULT_SUBGRAPH_DEPTH: u8 = 1;
 
 /// Query parameters accepted by `GET /nodes/{id}/neighbors`.
 ///
@@ -586,12 +586,12 @@ async fn get_node_subgraph(
 
 /// Default `limit` applied to `POST /search/fts` when the client omits
 /// it. Matches the node/edge list defaults to keep the API consistent.
-const DEFAULT_SEARCH_LIMIT: usize = 10;
+pub const DEFAULT_SEARCH_LIMIT: usize = 10;
 
 /// Maximum `limit` accepted by `POST /search/fts`. Requests above this
 /// cap are silently clamped so that a pathological client cannot force
 /// a huge scoring pass.
-const MAX_SEARCH_LIMIT: usize = 1000;
+pub const MAX_SEARCH_LIMIT: usize = 1000;
 
 /// JSON body for `POST /search/fts`.
 ///

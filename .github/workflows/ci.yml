@@ -49,6 +49,24 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Phase 9 task 00060 — rustdoc for all public APIs.
+  #
+  # Runs `cargo doc --no-deps --all-features` under
+  # `RUSTDOCFLAGS=-D warnings` so a missing rustdoc on any new `pub`
+  # item OR a broken intra-doc link fails the build. `src/lib.rs`
+  # carries `#![warn(missing_docs)]`; without the `-D warnings` env
+  # var the warning would print and the build would still pass.
+  doc:
+    name: Doc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
+
   # Audit task 00113 — MSRV is declared in `Cargo.toml` (`rust-version`)
   # and locked in by `tests/crosscut_audit_tests.rs::cargo_toml_declares_rust_version`.
   # This job exercises that exact toolchain so the field cannot decay.

@@ -1,12 +1,12 @@
 //! WebAssembly bindings for drevo via `wasm-bindgen`.
 //!
-//! Exposes the [`Drevo`] API to JavaScript/TypeScript through
+//! Exposes the [`crate::db::Drevo`] API to JavaScript/TypeScript through
 //! `wasm-bindgen`, enabling browser and Tauri v2 WASM usage.
 //!
 //! ## Design
 //!
-//! - **Wrapper struct**: [`WasmDrevo`] wraps the Rust [`Drevo`]
-//!   and is exported as a JS class.
+//! - **Wrapper struct**: [`crate::wasm::WasmDrevo`] wraps the Rust
+//!   [`crate::db::Drevo`] and is exported as a JS class.
 //! - **JSON serialization**: complex types (Node, Edge, SubGraph, ScoredNode)
 //!   cross the WASM boundary as `JsValue` (parsed from JSON via serde).
 //! - **Error handling**: Rust errors are converted to JavaScript exceptions

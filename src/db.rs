@@ -61,9 +61,9 @@ const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard
 
 /// The main drevo handle.
 ///
-/// Created via [`Drevo::open`] (disk-backed) or
-/// [`Drevo::open_in_memory`] (ephemeral). All graph operations
-/// are methods on this struct.
+/// Created via `Drevo::open` (disk-backed, requires the
+/// `redb-backend` Cargo feature) or [`Drevo::open_in_memory`]
+/// (ephemeral). All graph operations are methods on this struct.
 pub struct Drevo {
     /// The underlying key-value storage backend.
     backend: Box<dyn StorageBackend>,
@@ -954,7 +954,7 @@ impl Drevo {
 
     /// Return immediate neighbors of a node (BFS depth=1).
     ///
-    /// Convenience wrapper over [`bfs`] with `max_depth=1`.
+    /// Convenience wrapper over [`Self::bfs`] with `max_depth=1`.
     ///
     /// # Arguments
     ///
