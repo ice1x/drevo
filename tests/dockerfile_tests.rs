@@ -159,3 +159,157 @@ fn read_dockerfile() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Dockerfile");
     fs::read_to_string(path).expect("failed to read Dockerfile")
 }
+
+// ------------------------------------------------------------------
+// Manifest-parse correctness — every Cargo.toml `[[bench]]`,
+// `[[bin]]`, and `[[test]]` declaration must be reachable in the
+// Docker build context. A declaration without a matching file (or a
+// COPY that misses the directory) makes `cargo build` fail at
+// manifest-parse time inside the container — which is exactly how
+// Phase 8 task 00051 (GHCR publish) caught the missing `COPY benches/`
+// on its first run. These tests lock the invariant going forward so
+// a future bench / bin / test addition cannot regress the container
+// build without a corresponding Dockerfile update.
+// ------------------------------------------------------------------
+
+/// Read all top-level `[[bench]]` / `[[bin]]` / `[[test]]` blocks
+/// from `Cargo.toml` and return the directory each block points at
+/// (e.g. `benches`, `src/bin`, `tests`). The Dockerfile must COPY
+/// every directory in the returned set into the builder stage, or
+/// manifest parsing fails inside the container.
+fn cargo_manifest_target_dirs() -> Vec<String> {
+    let cargo_toml = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .expect("failed to read Cargo.toml");
+    let mut dirs: Vec<String> = Vec::new();
+    let mut current_section: Option<&'static str> = None;
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[[bench]]") {
+            current_section = Some("bench");
+        } else if trimmed.starts_with("[[bin]]") {
+            current_section = Some("bin");
+        } else if trimmed.starts_with("[[test]]") {
+            current_section = Some("test");
+        } else if trimmed.starts_with('[') {
+            current_section = None;
+        } else if let Some(section) = current_section {
+            // Either an explicit `path = "..."` or rely on the
+            // convention: benches/<name>.rs, src/bin/<name>.rs,
+            // tests/<name>.rs.
+            if let Some(rest) = trimmed.strip_prefix("path") {
+                if let Some(value) = rest.split('=').nth(1) {
+                    let path = value.trim().trim_matches('"').to_string();
+                    if let Some((dir, _)) = path.rsplit_once('/') {
+                        dirs.push(dir.to_string());
+                    }
+                }
+            } else if trimmed.starts_with("name") {
+                let dir = match section {
+                    "bench" => "benches",
+                    "bin" => "src/bin",
+                    "test" => "tests",
+                    _ => continue,
+                };
+                dirs.push(dir.to_string());
+            }
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+#[test]
+fn cargo_manifest_target_dirs_collector_finds_benches() {
+    // Sanity check on the helper itself: the project ships four
+    // benches under `benches/` and one bin under `src/bin/`. If the
+    // helper silently regresses, every downstream test below
+    // becomes a tautology.
+    let dirs = cargo_manifest_target_dirs();
+    assert!(
+        dirs.iter().any(|d| d == "benches"),
+        "helper failed to discover the `benches/` directory from `[[bench]]` declarations \
+         — without it the COPY-coverage test below would pass trivially. Got: {dirs:?}"
+    );
+    assert!(
+        dirs.iter().any(|d| d == "src/bin"),
+        "helper failed to discover the `src/bin/` directory from `[[bin]]` declarations. Got: {dirs:?}"
+    );
+}
+
+#[test]
+fn dockerignore_does_not_shadow_cargo_targets() {
+    // A `.dockerignore` exclusion that matches a directory the
+    // Dockerfile then tries to COPY produces:
+    //   ERROR: failed to compute cache key: ".../<dir>": not found
+    // — i.e. the COPY can't find the directory because dockerignore
+    // hid it from the build context. This is the second half of the
+    // bug Phase 8 task 00051 surfaced (the first half was Cargo.toml
+    // declaring benches with no COPY; the fix added the COPY but
+    // dockerignore was still masking `benches/`).
+    let dockerignore =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".dockerignore"))
+            .expect("failed to read .dockerignore");
+    let excluded: Vec<&str> = dockerignore
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('!'))
+        .collect();
+    for dir in cargo_manifest_target_dirs() {
+        let prefix = dir.split('/').next().unwrap_or(&dir);
+        for pattern in &excluded {
+            let is_match = *pattern == dir
+                || *pattern == format!("{dir}/")
+                || *pattern == prefix
+                || *pattern == format!("{prefix}/");
+            assert!(
+                !is_match,
+                ".dockerignore excludes `{pattern}` but `Cargo.toml` declares a target rooted \
+                 at `{dir}/` ([[bench]] / [[bin]] / [[test]]) that the Dockerfile must COPY. \
+                 The exclusion hides the directory from the build context — the COPY would \
+                 fail with `not found`. Remove the exclusion (or re-include with `!{dir}/`)."
+            );
+        }
+    }
+}
+
+#[test]
+fn dockerfile_copies_every_cargo_manifest_target_dir() {
+    // For every directory declared by a `[[bench]]` / `[[bin]]` /
+    // `[[test]]` block in Cargo.toml, the Dockerfile must either
+    // COPY that exact directory or COPY a parent directory that
+    // contains it. Otherwise `cargo build` inside the container
+    // fails at manifest-parse time with:
+    //   error: can't find `<name>` bench at `benches/<name>.rs`
+    // — which is the bug Phase 8 task 00051 (GHCR publish) caught
+    // on its first CI run.
+    let dockerfile = read_dockerfile();
+    let copy_lines: Vec<&str> = dockerfile
+        .lines()
+        .filter(|l| l.trim_start().starts_with("COPY") && !l.contains("--from=builder"))
+        .collect();
+    for dir in cargo_manifest_target_dirs() {
+        // A directory `foo/bar` is "covered" if any COPY line
+        // mentions `foo/bar` OR a prefix `foo/` OR a single
+        // leading `./` variant. We don't try to parse the whole
+        // COPY grammar — substring checks are enough for the
+        // simple `COPY src/ src/` / `COPY benches/ benches/`
+        // shape this Dockerfile uses, and the dockerignore test
+        // already locks the file layout.
+        let prefix = dir.split('/').next().unwrap_or(&dir);
+        let covered = copy_lines.iter().any(|l| {
+            l.contains(&format!("{dir}/"))
+                || l.contains(&format!("{dir} "))
+                || l.contains(&format!(" {prefix}/"))
+                || l.contains(&format!(" ./{prefix}/"))
+        });
+        assert!(
+            covered,
+            "Cargo.toml declares a target rooted at `{dir}/` (via [[bench]] / [[bin]] / [[test]]) \
+             but no COPY line in the Dockerfile pulls it into the builder stage. Add e.g. \
+             `COPY {dir}/ {dir}/` before the `cargo build` step, or the container build will \
+             fail at manifest-parse time. Current non-builder COPY lines:\n  {}",
+            copy_lines.join("\n  ")
+        );
+    }
+}
