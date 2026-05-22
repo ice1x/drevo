@@ -8,6 +8,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock* build.rs cbindgen.toml ./
 COPY src/ src/
+# Cargo parses every `[[bench]]` / `[[bin]]` / `[[test]]` declaration in
+# Cargo.toml even when we ask it to build a single bin — the file must
+# exist or the manifest fails to parse with:
+#   error: can't find `<name>` bench at `benches/<name>.rs`
+# Copying the bench sources costs ~tens of KB and is exercised purely
+# by manifest parsing (we never run `cargo bench` in this stage).
+# Locked by `tests/dockerfile_tests.rs::dockerfile_copies_every_cargo_manifest_target_dir`.
+COPY benches/ benches/
 
 # Build only the server binary in release mode.
 # cbindgen feature is excluded — no C header needed in the container.

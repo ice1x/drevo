@@ -3,6 +3,10 @@ target/
 .github/
 .gitignore
 *.md
-benches/
+# `benches/` must stay in the build context: Cargo parses every
+# `[[bench]]` declaration in `Cargo.toml` even when we `cargo build
+# --bin drevo-server`, and a missing bench file fails manifest parse
+# with `can't find <name> bench at benches/<name>.rs`. Locked by
+# `tests/dockerfile_tests.rs::dockerignore_does_not_shadow_cargo_targets`.
 tests/
 drevo.h
