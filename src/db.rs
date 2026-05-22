@@ -3,10 +3,36 @@
 //! [`Drevo`] is the main entry point for all database operations.
 //! It wraps a [`StorageBackend`] and manages auto-increment counters,
 //! indexes, and the graph data model.
+//!
+//! # WAL / crash recovery (Phase 9 task `00053`)
+//!
+//! drevo persists every redb transaction durably — each backend `put` /
+//! `delete` is its own committed redb transaction with the upstream
+//! double-write + fsync that *is* the redb on-disk WAL. The recovery
+//! model layered on top of that is:
+//!
+//! 1. **Counter recovery.** [`Drevo::open`] re-derives the next-id
+//!    counters from `max(stored_id) + 1` instead of trusting the
+//!    persisted `meta:next_node_id` / `meta:next_edge_id` blindly. The
+//!    persisted counter is a *hint*; the on-disk node / edge rows are
+//!    the source of truth. This prevents the pre-`00053` id-collision
+//!    bug where a process killed between two `create_node` calls would
+//!    rewind the counter and the next allocation would reuse an
+//!    already-stored id.
+//! 2. **Integrity inspection.** [`Drevo::check_integrity`] returns an
+//!    [`IntegrityReport`] enumerating any structural issues (orphan
+//!    index entries, dangling edge endpoints, counter drift repaired
+//!    on this open, corrupt rows).
+//! 3. **Explicit recovery entry point.** [`Drevo::recover`] is a
+//!    convenience wrapper: it opens the database, runs
+//!    `check_integrity`, and returns both the handle and the report so
+//!    operators can react to surprises after a known-bad crash.
+//!
+//! See `tests/wal_crash_recovery_tests.rs` for the contract surface.
 
 #[cfg(feature = "redb-backend")]
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::error::{DrevoError, Result};
 use crate::fts::index as fts_index;
@@ -71,6 +97,82 @@ pub struct Drevo {
     next_node_id: AtomicU64,
     /// Auto-increment counter for edge IDs.
     next_edge_id: AtomicU64,
+    /// Set to `true` by [`Drevo::open`] when `load_counters` had to clamp
+    /// the in-memory counter above the persisted `meta:next_*_id` because
+    /// an on-disk row already used a higher id. This is the signal
+    /// surfaced by [`IntegrityReport::counter_drift_repaired`] — see the
+    /// module-level "WAL / crash recovery" section.
+    counter_drift_repaired: AtomicBool,
+}
+
+/// Structured report produced by [`Drevo::check_integrity`].
+///
+/// Phase 9 task `00053`. Every field is intentionally a plain count or a
+/// flag so the report can be cheaply serialised over the HTTP / FFI / WASM
+/// boundaries — no `Vec<String>` blowups, no nested error types. A
+/// healthy database produces a report where [`is_clean`](Self::is_clean)
+/// returns `true`; anything else is a structural anomaly an operator
+/// should investigate.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IntegrityReport {
+    /// Total number of `node:` rows stored in the backend.
+    pub node_count: u64,
+    /// Total number of `edge:` rows stored in the backend.
+    pub edge_count: u64,
+    /// Highest node id observed in the `node:` prefix scan, if any node
+    /// exists. `None` on an empty database.
+    pub max_node_id: Option<u64>,
+    /// Highest edge id observed in the `edge:` prefix scan, if any edge
+    /// exists. `None` on an empty database.
+    pub max_edge_id: Option<u64>,
+    /// The next-id value the allocator will hand out for a new node.
+    pub next_node_id: u64,
+    /// The next-id value the allocator will hand out for a new edge.
+    pub next_edge_id: u64,
+    /// `true` if [`Drevo::open`] had to clamp the in-memory counter above
+    /// the persisted hint because an on-disk node / edge id was already
+    /// past the persisted value — the headline crash-recovery signal.
+    pub counter_drift_repaired: bool,
+    /// Count of `node_kind:` index entries that point at a missing node id.
+    pub orphan_node_kind_entries: u64,
+    /// Count of `node_title:` index entries that point at a missing node id.
+    pub orphan_node_title_entries: u64,
+    /// Count of `node_uuid:` index entries that point at a missing node id.
+    pub orphan_node_uuid_entries: u64,
+    /// Count of `edge_kind:` index entries that point at a missing edge id.
+    pub orphan_edge_kind_entries: u64,
+    /// Count of `edge_uuid:` index entries that point at a missing edge id.
+    pub orphan_edge_uuid_entries: u64,
+    /// Count of `out:` / `in:` adjacency entries that reference a missing
+    /// edge id.
+    pub orphan_adjacency_entries: u64,
+    /// Count of edges whose `from_id` or `to_id` references a node id
+    /// that no longer exists in the `node:` prefix.
+    pub dangling_edge_endpoints: u64,
+    /// Count of `node:` rows whose payload failed bincode decode (treated
+    /// as a hard corruption — `check_integrity` records the count but
+    /// does not bail).
+    pub corrupt_node_rows: u64,
+    /// Count of `edge:` rows whose payload failed bincode decode.
+    pub corrupt_edge_rows: u64,
+}
+
+impl IntegrityReport {
+    /// Returns `true` when every structural counter is zero and no
+    /// counter drift was repaired on this open — i.e. the database is
+    /// in a fully consistent state with no recovery work to report.
+    pub fn is_clean(&self) -> bool {
+        !self.counter_drift_repaired
+            && self.orphan_node_kind_entries == 0
+            && self.orphan_node_title_entries == 0
+            && self.orphan_node_uuid_entries == 0
+            && self.orphan_edge_kind_entries == 0
+            && self.orphan_edge_uuid_entries == 0
+            && self.orphan_adjacency_entries == 0
+            && self.dangling_edge_endpoints == 0
+            && self.corrupt_node_rows == 0
+            && self.corrupt_edge_rows == 0
+    }
 }
 
 impl Drevo {
@@ -91,12 +193,42 @@ impl Drevo {
     pub fn open(path: &Path) -> Result<Self> {
         let backend = RedbBackend::open(path)?;
         let backend = Box::new(backend);
-        let (next_node_id, next_edge_id) = Self::load_counters(&*backend)?;
+        let (next_node_id, next_edge_id, drift_repaired) = Self::load_counters(&*backend)?;
         Ok(Self {
             backend,
             next_node_id: AtomicU64::new(next_node_id),
             next_edge_id: AtomicU64::new(next_edge_id),
+            counter_drift_repaired: AtomicBool::new(drift_repaired),
         })
+    }
+
+    /// Open a disk-backed database and run [`check_integrity`] in one shot.
+    ///
+    /// Returns the live database handle alongside an [`IntegrityReport`]
+    /// summarising any structural anomalies discovered on this open. The
+    /// counter rescan that fixes the headline crash-recovery bug runs
+    /// inside [`Drevo::open`] regardless — `recover` adds the integrity
+    /// scan so operators can react to surprises after a known-bad crash
+    /// instead of opening blind.
+    ///
+    /// Cost: one extra full scan of `node:` + `edge:` + every secondary
+    /// index — proportional to the database size, *not* to anything in
+    /// memory. Call this on a known-bad open path, not on every start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] / [`DrevoError::Decode`] if the
+    /// scan itself fails — that is a hard failure distinct from the
+    /// soft-warning counts the [`IntegrityReport`] surfaces.
+    ///
+    /// # Availability
+    ///
+    /// Requires the `redb-backend` feature; mirrors [`open`](Self::open).
+    #[cfg(feature = "redb-backend")]
+    pub fn recover(path: &Path) -> Result<(Self, IntegrityReport)> {
+        let db = Self::open(path)?;
+        let report = db.check_integrity()?;
+        Ok((db, report))
     }
 
     /// Open an ephemeral in-memory database.
@@ -109,6 +241,7 @@ impl Drevo {
             backend,
             next_node_id: AtomicU64::new(1),
             next_edge_id: AtomicU64::new(1),
+            counter_drift_repaired: AtomicBool::new(false),
         })
     }
 
@@ -1256,11 +1389,238 @@ impl Drevo {
         Ok(edges)
     }
 
-    /// Load auto-increment counters from storage metadata.
+    /// Load auto-increment counters with a max-scan recovery pass.
     ///
-    /// Returns (next_node_id, next_edge_id). Defaults to 1 if not found.
+    /// Phase 9 task `00053`. Returns `(next_node_id, next_edge_id,
+    /// drift_repaired)`. The persisted `meta:next_*_id` values are read
+    /// first (default to 1 if missing); then the `node:` and `edge:`
+    /// prefixes are scanned to find the highest id already stored. The
+    /// effective counter is `max(persisted, max_stored + 1)` — so if a
+    /// process is killed between two `create_node` calls (before
+    /// `close()` ever persists the bumped counter), the next `Drevo::open`
+    /// still hands out a fresh id instead of colliding with an already-
+    /// stored row. `drift_repaired` reflects whether the rescan had to
+    /// clamp the counter upward; it surfaces through
+    /// [`IntegrityReport::counter_drift_repaired`].
     #[cfg(feature = "redb-backend")]
-    fn load_counters(backend: &dyn StorageBackend) -> Result<(u64, u64)> {
+    fn load_counters(backend: &dyn StorageBackend) -> Result<(u64, u64, bool)> {
+        let persisted_node = match backend.get(META_NEXT_NODE_ID)? {
+            Some(bytes) => u64_from_bytes(&bytes),
+            None => 1,
+        };
+        let persisted_edge = match backend.get(META_NEXT_EDGE_ID)? {
+            Some(bytes) => u64_from_bytes(&bytes),
+            None => 1,
+        };
+
+        let max_node_id = Self::scan_max_id(backend, PREFIX_NODE)?;
+        let max_edge_id = Self::scan_max_id(backend, PREFIX_EDGE)?;
+
+        // The on-disk rows are the source of truth — the persisted
+        // counter is a hint. After a crash the persisted counter may be
+        // stale (only `close()` writes it); the rescan ensures the next
+        // allocation cannot collide with an existing id.
+        let next_node = std::cmp::max(persisted_node, max_node_id.map_or(1, |m| m + 1));
+        let next_edge = std::cmp::max(persisted_edge, max_edge_id.map_or(1, |m| m + 1));
+        let drift_repaired = next_node > persisted_node || next_edge > persisted_edge;
+
+        Ok((next_node, next_edge, drift_repaired))
+    }
+
+    /// Scan the given prefix (one of `PREFIX_NODE` / `PREFIX_EDGE`) and
+    /// return the highest 8-byte little-endian id appended after the
+    /// prefix — the recovery primitive used by `load_counters`.
+    ///
+    /// `node:` and `edge:` are substrings of `node_uuid:` / `edge_uuid:`
+    /// etc., so the per-key length guard isolates the data rows from the
+    /// secondary-index rows. Returns `None` on an empty database.
+    #[cfg(feature = "redb-backend")]
+    fn scan_max_id(backend: &dyn StorageBackend, prefix: &[u8]) -> Result<Option<u64>> {
+        let entries = backend.scan_prefix(prefix)?;
+        let mut max_id: Option<u64> = None;
+        for (key, _) in entries {
+            if key.len() != prefix.len() + 8 {
+                continue;
+            }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&key[prefix.len()..]);
+            let id = u64::from_le_bytes(arr);
+            max_id = Some(max_id.map_or(id, |m| m.max(id)));
+        }
+        Ok(max_id)
+    }
+
+    /// Run an integrity scan and return a structured [`IntegrityReport`].
+    ///
+    /// Phase 9 task `00053`. Scans every secondary index and the
+    /// adjacency lists for orphan / dangling entries, counts corrupt
+    /// node / edge payloads, and reports whether [`Drevo::open`] had to
+    /// repair counter drift on this open. The report is data, not a
+    /// hard error — a caller decides whether a non-clean report blocks
+    /// startup or is logged for an operator.
+    ///
+    /// Cost: O(N) over every key in the backend (one `scan_prefix` per
+    /// index family). Run after a known-bad crash, not on the hot path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] on backend failure. Corrupt
+    /// `node:` / `edge:` payloads are counted in the report — they do
+    /// *not* short-circuit the scan, so a single corrupt row never hides
+    /// downstream issues.
+    pub fn check_integrity(&self) -> Result<IntegrityReport> {
+        // 1) Collect node ids by scanning the `node:` prefix. Reject keys
+        //    of unexpected length (those are `node_uuid:` / `node_title:`
+        //    / `node_kind:` rows that share the "node" string).
+        let mut node_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut max_node_id: Option<u64> = None;
+        let mut corrupt_node_rows: u64 = 0;
+        for (key, bytes) in self.backend.scan_prefix(PREFIX_NODE)? {
+            if key.len() != PREFIX_NODE.len() + 8 {
+                continue;
+            }
+            // Decode payload to surface corruption — but trust the key
+            // for id extraction so a corrupt payload still contributes
+            // to the max-id calculation.
+            if deserialize_node(&bytes).is_err() {
+                corrupt_node_rows += 1;
+            }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&key[PREFIX_NODE.len()..]);
+            let id = u64::from_le_bytes(arr);
+            node_ids.insert(id);
+            max_node_id = Some(max_node_id.map_or(id, |m| m.max(id)));
+        }
+
+        // 2) Collect edges (and their endpoints) so we can flag dangling
+        //    references.
+        let mut edge_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut max_edge_id: Option<u64> = None;
+        let mut corrupt_edge_rows: u64 = 0;
+        let mut dangling_edge_endpoints: u64 = 0;
+        for (key, bytes) in self.backend.scan_prefix(PREFIX_EDGE)? {
+            if key.len() != PREFIX_EDGE.len() + 8 {
+                continue;
+            }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&key[PREFIX_EDGE.len()..]);
+            let id = u64::from_le_bytes(arr);
+            edge_ids.insert(id);
+            max_edge_id = Some(max_edge_id.map_or(id, |m| m.max(id)));
+            match deserialize_edge(&bytes) {
+                Ok(edge) => {
+                    if !node_ids.contains(&edge.from_id) {
+                        dangling_edge_endpoints += 1;
+                    }
+                    if !node_ids.contains(&edge.to_id) && edge.from_id != edge.to_id {
+                        dangling_edge_endpoints += 1;
+                    } else if !node_ids.contains(&edge.to_id) {
+                        // self-loop with both endpoints missing: count once.
+                    }
+                }
+                Err(_) => corrupt_edge_rows += 1,
+            }
+        }
+
+        // 3) Secondary indexes — count orphans.
+        let mut orphan_node_kind_entries: u64 = 0;
+        for (key, _) in self.backend.scan_prefix(PREFIX_NODE_KIND)? {
+            // node_kind:{kind}:{node_id_8} — the trailing 8 bytes are the
+            // node id when the key has at least that many bytes after the
+            // prefix and a `:` separator. Decode tail-first; any key
+            // shorter than expected is an unrelated row.
+            if key.len() < PREFIX_NODE_KIND.len() + 1 + 8 {
+                continue;
+            }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&key[key.len() - 8..]);
+            let id = u64::from_le_bytes(arr);
+            if !node_ids.contains(&id) {
+                orphan_node_kind_entries += 1;
+            }
+        }
+
+        let mut orphan_node_title_entries: u64 = 0;
+        for (_key, value) in self.backend.scan_prefix(PREFIX_NODE_TITLE)? {
+            let id = u64_from_bytes(&value);
+            if !node_ids.contains(&id) {
+                orphan_node_title_entries += 1;
+            }
+        }
+
+        let mut orphan_node_uuid_entries: u64 = 0;
+        for (_key, value) in self.backend.scan_prefix(PREFIX_NODE_UUID)? {
+            let id = u64_from_bytes(&value);
+            if !node_ids.contains(&id) {
+                orphan_node_uuid_entries += 1;
+            }
+        }
+
+        let mut orphan_edge_kind_entries: u64 = 0;
+        for (key, _) in self.backend.scan_prefix(PREFIX_EDGE_KIND)? {
+            if key.len() < PREFIX_EDGE_KIND.len() + 1 + 8 {
+                continue;
+            }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&key[key.len() - 8..]);
+            let id = u64::from_le_bytes(arr);
+            if !edge_ids.contains(&id) {
+                orphan_edge_kind_entries += 1;
+            }
+        }
+
+        let mut orphan_edge_uuid_entries: u64 = 0;
+        for (_key, value) in self.backend.scan_prefix(PREFIX_EDGE_UUID)? {
+            let id = u64_from_bytes(&value);
+            if !edge_ids.contains(&id) {
+                orphan_edge_uuid_entries += 1;
+            }
+        }
+
+        // 4) Adjacency lists — orphan if the referenced edge id is gone.
+        let mut orphan_adjacency_entries: u64 = 0;
+        for prefix in [PREFIX_OUT, PREFIX_IN] {
+            for (key, _) in self.backend.scan_prefix(prefix)? {
+                // {prefix}{node_id_8}:{edge_id_8}
+                let expected = prefix.len() + 8 + 1 + 8;
+                if key.len() != expected {
+                    continue;
+                }
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&key[key.len() - 8..]);
+                let edge_id = u64::from_le_bytes(arr);
+                if !edge_ids.contains(&edge_id) {
+                    orphan_adjacency_entries += 1;
+                }
+            }
+        }
+
+        Ok(IntegrityReport {
+            node_count: node_ids.len() as u64,
+            edge_count: edge_ids.len() as u64,
+            max_node_id,
+            max_edge_id,
+            next_node_id: self.next_node_id.load(Ordering::Relaxed),
+            next_edge_id: self.next_edge_id.load(Ordering::Relaxed),
+            counter_drift_repaired: self.counter_drift_repaired.load(Ordering::Relaxed),
+            orphan_node_kind_entries,
+            orphan_node_title_entries,
+            orphan_node_uuid_entries,
+            orphan_edge_kind_entries,
+            orphan_edge_uuid_entries,
+            orphan_adjacency_entries,
+            dangling_edge_endpoints,
+            corrupt_node_rows,
+            corrupt_edge_rows,
+        })
+    }
+
+    /// Load auto-increment counters from storage metadata — legacy entry
+    /// retained for tests that pre-date the recovery rescan. Returns just
+    /// the persisted counters, no rescan.
+    #[cfg(all(feature = "redb-backend", test))]
+    #[allow(dead_code)]
+    fn load_counters_persisted_only(backend: &dyn StorageBackend) -> Result<(u64, u64)> {
         let node_id = match backend.get(META_NEXT_NODE_ID)? {
             Some(bytes) => u64_from_bytes(&bytes),
             None => 1,
