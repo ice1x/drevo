@@ -50,32 +50,40 @@ jobs:
       - run: cargo fmt --all -- --check
 
   # Phase 8 task 00049 — Kubernetes manifests under `k8s/`.
+  # Phase 8 task 00050 — Kustomize overlays under `k8s/overlays/<env>/`.
   #
-  # Two checks:
-  #   1. `kubectl kustomize k8s/` resolves the kustomization base
-  #      without warnings or errors — catches a renamed resource file,
-  #      a stray top-level YAML doc, or a kustomization syntax slip
-  #      before it reaches a real cluster.
-  #   2. The text-level `k8s_manifests_tests.rs` suite is already run
-  #      in the `test` job above; this job adds the structural pass
-  #      that text matching cannot do (object graph resolution).
+  # Three checks, all server-less (no live cluster, no kubeconfig):
+  #   1. `kubectl kustomize k8s/` resolves the top-level wrapper, which
+  #      forwards to `k8s/base/`.
+  #   2. `kubectl kustomize k8s/base/` resolves the base directly.
+  #   3. `kubectl kustomize k8s/overlays/<env>/` resolves each per-env
+  #      overlay — catches a renamed base manifest, a broken `../../base/`
+  #      reference, an unresolved patch target, or a kustomize-syntax
+  #      slip in any overlay before it reaches a real cluster.
   #
-  # Both checks run server-less — no live cluster, no kubeconfig.
+  # The text-level `k8s_manifests_tests.rs` + `k8s_overlays_tests.rs`
+  # suites already run in the `test` job above; this job adds the
+  # structural pass that text matching cannot do (object graph
+  # resolution, patch target verification).
   k8s:
     name: K8s manifests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: kubectl kustomize k8s/
+      - name: kubectl kustomize k8s/ (wrapper + base + overlays)
         run: |
           kubectl version --client=true
-          kubectl kustomize k8s/ > /tmp/k8s.yaml
-          # Fail the job if kustomize printed any warning to stderr.
-          if kubectl kustomize k8s/ 2>&1 1>/dev/null | grep -i 'warning\|error'; then
-            echo 'kubectl kustomize emitted warnings/errors above — fix before merge' >&2
-            exit 1
-          fi
-          wc -l /tmp/k8s.yaml
+          for target in k8s/ k8s/base/ k8s/overlays/dev/ k8s/overlays/prod/; do
+            echo "::group::kubectl kustomize $target"
+            kubectl kustomize "$target" > "/tmp/$(basename "$target").yaml"
+            # Fail the job if kustomize printed any warning/error to stderr.
+            if kubectl kustomize "$target" 2>&1 1>/dev/null | grep -i 'warning\|error'; then
+              echo "kubectl kustomize $target emitted warnings/errors above — fix before merge" >&2
+              exit 1
+            fi
+            wc -l "/tmp/$(basename "$target").yaml"
+            echo "::endgroup::"
+          done
 
   # Phase 9 task 00060 — rustdoc for all public APIs.
   #

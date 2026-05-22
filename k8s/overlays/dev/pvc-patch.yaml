@@ -1,0 +1,19 @@
+# Strategic-merge patch — dev overlay PVC.
+#
+# Phase 8 task 00050. Pins the storage request to 1 Gi (matching the
+# base default). Pinned here so a future base bump cannot silently
+# inflate the dev footprint — operators who want more should edit this
+# file, not the base.
+#
+# `accessModes` is intentionally left to the base (`ReadWriteOnce`) —
+# `tests/k8s_overlays_tests.rs` forbids overlays from relaxing it to
+# `ReadWriteMany` because that would imply two pods can write the
+# redb file at once.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: drevo-data
+spec:
+  resources:
+    requests:
+      storage: 1Gi

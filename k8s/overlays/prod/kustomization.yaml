@@ -1,0 +1,41 @@
+# drevo — Kustomize overlay: prod
+#
+# Phase 8 task 00050. Wraps the base manifests under `k8s/` with
+# production-environment patches:
+#   * `namespace: drevo-prod` so the prod deployment lives in its own
+#     namespace (network-policy boundary, RBAC scope, kubectl context
+#     switch — all cluster-operator conveniences).
+#   * `images.newTag: v0.1.0` is intentionally identical to the base —
+#     prod follows the canonical release tag. Bump in lockstep when
+#     cutting a new release; keeping the tag explicit (not inherited)
+#     means a base override below a future overlay cannot silently
+#     downgrade prod.
+#   * Strategic-merge patches raise the container resource ceiling
+#     (prod needs head-room for FTS index rebuilds and concurrent HTTP
+#     load) and request a 20 Gi PVC — graph workloads in the use cases
+#     the project targets routinely hit tens of GiB once FTS indices
+#     are populated.
+#
+# Apply with:
+#   kubectl apply -k k8s/overlays/prod/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: drevo-prod
+
+# Reference the base via the sibling `k8s/base/` directory. `../../base/`
+# resolves to a peer subtree of this overlay (not an ancestor) so
+# kustomize's cycle-and-security check accepts it. The base's own
+# `kustomization.yaml` continues to list the Deployment, Service, and
+# PVC, so dropping or renaming a base manifest is caught at
+# `kubectl kustomize` time.
+resources:
+  - ../../base/
+
+images:
+  - name: ghcr.io/ice1x/drevo
+    newTag: v0.1.0
+
+patches:
+  - path: deployment-patch.yaml
+  - path: pvc-patch.yaml

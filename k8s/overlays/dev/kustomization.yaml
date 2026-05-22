@@ -1,0 +1,41 @@
+# drevo — Kustomize overlay: dev
+#
+# Phase 8 task 00050. Wraps the base manifests under `k8s/` with
+# development-environment patches:
+#   * `namespace: drevo-dev` so a dev cluster (or `kind` / `minikube`)
+#     can host multiple drevo instances side by side without colliding
+#     with prod.
+#   * `images.newTag: v0.1.0-dev` overrides the base
+#     `ghcr.io/ice1x/drevo:v0.1.0` so a developer who tags their local
+#     build as `:v0.1.0-dev` and `kubectl apply -k k8s/overlays/dev/`
+#     gets exactly that image. Keep the image NAME identical to the
+#     base (otherwise kustomize's `newName:` rewrite is required); only
+#     the tag changes.
+#   * Strategic-merge patches lower the container resource floor (dev
+#     does not need prod's CPU/memory budget) and request a 1 Gi PVC
+#     (matching the base's starter default; pinned here so a future
+#     base bump cannot silently inflate the dev footprint).
+#
+# Apply with:
+#   kubectl apply -k k8s/overlays/dev/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: drevo-dev
+
+# Reference the base via the sibling `k8s/base/` directory. `../../base/`
+# resolves to a peer subtree of this overlay (not an ancestor) so
+# kustomize's cycle-and-security check accepts it. The base's own
+# `kustomization.yaml` continues to list the Deployment, Service, and
+# PVC, so dropping or renaming a base manifest is caught at
+# `kubectl kustomize` time.
+resources:
+  - ../../base/
+
+images:
+  - name: ghcr.io/ice1x/drevo
+    newTag: v0.1.0-dev
+
+patches:
+  - path: deployment-patch.yaml
+  - path: pvc-patch.yaml
