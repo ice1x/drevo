@@ -145,70 +145,88 @@ jobs:
     # the `test` job remains a hard gate.
     continue-on-error: true
     steps:
-      # The fuzz harness forces `--target x86_64-unknown-linux-gnu`
-      # because libFuzzer + AddressSanitizer require glibc (the
-      # taiki-e prebuilt cargo-fuzz binary is musl-static, which ASan
-      # rejects with "sanitizer is incompatible with statically linked
-      # libc"). That target cannot be cross-compiled from Apple Silicon
-      # without a full Linux toolchain install — and there is no sane
-      # way to do that on a personal CI runner.
-      #
-      # Every step below carries `if: runner.os == 'Linux'`. The
-      # `runner` context is NOT available in a job-level `if:` (it is
-      # populated only after a runner is assigned), so we cannot gate
-      # the entire job in one place — step-level is the only legal
-      # form. On a non-Linux runner each step is skipped, the job
-      # finishes in seconds with no work done, and shows up as a grey
-      # "Skipped" pill rather than a red failure.
-      #
-      # The stable-CI replay of the seed corpus in
-      # `tests/fts_tokenizer_fuzz_harness_tests.rs` (which runs as
-      # part of the `test` job above on every host OS) keeps the
-      # regression gate. When a Linux runner joins the self-hosted
-      # fleet, this job picks up automatically.
-      - if: runner.os == 'Linux'
-        uses: actions/checkout@v4
-      - if: runner.os == 'Linux'
-        uses: dtolnay/rust-toolchain@nightly
-      - if: runner.os == 'Linux'
-        uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-      # Pull a prebuilt cargo-fuzz binary from the GitHub release page
-      # via `taiki-e/install-action`. Compiling cargo-fuzz from source
-      # with `cargo install cargo-fuzz --locked` is fragile on modern
-      # nightly: cargo-fuzz 0.13.x pins an old `rustix 0.36.x` that uses
-      # the now-rejected `cfg_attr(rustc_attrs, rustc_layout_scalar_…)`
-      # syntax and fails to build. Prebuilt binaries side-step the
-      # transitive-dep churn entirely and finish in seconds instead of
-      # minutes.
-      - if: runner.os == 'Linux'
+      # cargo-fuzz binary install + target resolution:
+      #
+      # cargo-fuzz hard-codes a default --target that does not match
+      # the host on either of our self-hosted platforms:
+      #   - On Apple Silicon macOS it defaults to `x86_64-apple-darwin`
+      #     (Intel) — the aarch64 host has no x86_64-apple-darwin rust
+      #     std, so the build dies with E0463 "can't find crate for
+      #     `core`". Override to `aarch64-apple-darwin`.
+      #   - On Linux the cargo-fuzz binary we install is itself the
+      #     taiki-e prebuilt for `x86_64-unknown-linux-musl`
+      #     (statically-linked, portable). AddressSanitizer rejects
+      #     statically-linked libc with "sanitizer is incompatible
+      #     with statically linked libc", so we override to
+      #     `x86_64-unknown-linux-gnu` (preinstalled on every Linux
+      #     self-hosted runner via `rustup target add`).
+      #
+      # Both overrides are derived once at workflow load and exported
+      # via $GITHUB_ENV so the per-target steps stay symmetric.
+      - name: Install cargo-fuzz (Linux prebuilt)
+        if: runner.os == 'Linux'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      # Every `cargo fuzz run` below pins `--target x86_64-unknown-linux-gnu`
-      # explicitly. The taiki-e prebuilt cargo-fuzz binary is itself built
-      # for `x86_64-unknown-linux-musl` (portable, statically-linked) and
-      # therefore reports musl as its "host target" — which cargo-fuzz
-      # then passes to `cargo build`. AddressSanitizer is incompatible
-      # with statically-linked libc (`error: sanitizer is incompatible
-      # with statically linked libc, disable it using `-C
-      # target-feature=-crt-static``), so we override the target back to
-      # glibc. The runner is Linux; the gnu target is preinstalled.
+      - name: Install cargo-fuzz (macOS — from source)
+        # taiki-e ships no prebuilt aarch64-apple-darwin binary, so
+        # build from source on nightly. ~2 min cold; the
+        # Swatinem/rust-cache@v2 (workspaces: fuzz) above warms the
+        # registry index across runs so subsequent runs reuse cached
+        # deps.
+        if: runner.os == 'macOS'
+        run: cargo install cargo-fuzz --locked
+
+      - name: Resolve fuzz --target for host
+        id: fuzz_target
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)
+              echo "target=x86_64-unknown-linux-gnu" >> "$GITHUB_OUTPUT"
+              ;;
+            macOS)
+              # On aarch64 Mac the cargo-fuzz default
+              # `x86_64-apple-darwin` would fail. Pin host arch.
+              # uname -m returns `arm64` on Apple Silicon, `x86_64`
+              # on Intel.
+              if [ "$(uname -m)" = "arm64" ]; then
+                echo "target=aarch64-apple-darwin" >> "$GITHUB_OUTPUT"
+              else
+                echo "target=x86_64-apple-darwin" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *)
+              echo "Unsupported RUNNER_OS=$RUNNER_OS for fuzz" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Smoke fuzz_normalize (60s)
-        if: runner.os == 'Linux'
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_normalize -- -max_total_time=60
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_normalize -- -max_total_time=60
         working-directory: fuzz
       - name: Smoke fuzz_trigrams (60s)
-        if: runner.os == 'Linux'
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_trigrams -- -max_total_time=60
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_trigrams -- -max_total_time=60
         working-directory: fuzz
       - name: Smoke fuzz_extract_trigrams (60s)
-        if: runner.os == 'Linux'
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_trigrams -- -max_total_time=60
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_extract_trigrams -- -max_total_time=60
         working-directory: fuzz
       - name: Upload crash artifacts on failure
-        if: runner.os == 'Linux' && failure()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-artifacts
