@@ -54,6 +54,10 @@
 /// [`db::Drevo`] calls. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
 pub mod api;
+/// Cypher query language — Phase 10. Today only the lexer (task `00061`)
+/// is implemented; the parser, executor, and downstream clause handlers
+/// will land in tasks `00062` onwards.
+pub mod cypher;
 pub mod db;
 /// JSON import / export — Phase 9 task `00055`. Defines the schema-versioned
 /// `drevo-json-v1` wire format plus the `Drevo::export_json` / `import_json`
