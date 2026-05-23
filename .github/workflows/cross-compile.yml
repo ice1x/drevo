@@ -15,7 +15,7 @@ jobs:
   # -------------------------------------------------------------------------
   wasm:
     name: "WASM (wasm32-unknown-unknown)"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +61,7 @@ jobs:
   # -------------------------------------------------------------------------
   ios:
     name: "iOS (aarch64-apple-ios)"
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@v4
 
@@ -113,7 +113,7 @@ jobs:
   # -------------------------------------------------------------------------
   android:
     name: "Android (aarch64-linux-android)"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
 
@@ -182,7 +182,7 @@ jobs:
   # -------------------------------------------------------------------------
   cross-compile-tests:
     name: "Cross-compilation tests (host)"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
 
@@ -200,7 +200,7 @@ jobs:
   # -------------------------------------------------------------------------
   smoke-tests:
     name: "Platform smoke tests (host)"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
 
@@ -218,7 +218,7 @@ jobs:
   # -------------------------------------------------------------------------
   smoke-tests-macos:
     name: "Platform smoke tests (macOS)"
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@v4
 

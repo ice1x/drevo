@@ -12,7 +12,7 @@ env:
 jobs:
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,7 +21,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,7 +41,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,7 +67,7 @@ jobs:
   # resolution, patch target verification).
   k8s:
     name: K8s manifests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - name: kubectl kustomize k8s/ (wrapper + base + overlays)
@@ -94,7 +94,7 @@ jobs:
   # var the warning would print and the build would still pass.
   doc:
     name: Doc
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -108,7 +108,7 @@ jobs:
   # This job exercises that exact toolchain so the field cannot decay.
   msrv:
     name: MSRV
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - id: msrv
@@ -139,7 +139,7 @@ jobs:
   # coverage with libFuzzer's branch-feedback mutator on every push.
   fuzz:
     name: Fuzz
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     # Don't block merges if cargo-fuzz finds a crash — surface it as a
     # CI annotation and let humans triage. The stable harness replay in
     # the `test` job remains a hard gate.
