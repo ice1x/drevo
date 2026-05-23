@@ -11,7 +11,7 @@
 //! double-write + fsync that *is* the redb on-disk WAL. The recovery
 //! model layered on top of that is:
 //!
-//! 1. **Counter recovery.** [`Drevo::open`] re-derives the next-id
+//! 1. **Counter recovery.** `Drevo::open` re-derives the next-id
 //!    counters from `max(stored_id) + 1` instead of trusting the
 //!    persisted `meta:next_node_id` / `meta:next_edge_id` blindly. The
 //!    persisted counter is a *hint*; the on-disk node / edge rows are
@@ -23,10 +23,16 @@
 //!    [`IntegrityReport`] enumerating any structural issues (orphan
 //!    index entries, dangling edge endpoints, counter drift repaired
 //!    on this open, corrupt rows).
-//! 3. **Explicit recovery entry point.** [`Drevo::recover`] is a
+//! 3. **Explicit recovery entry point.** `Drevo::recover` is a
 //!    convenience wrapper: it opens the database, runs
 //!    `check_integrity`, and returns both the handle and the report so
 //!    operators can react to surprises after a known-bad crash.
+//!
+//! `Drevo::open` and `Drevo::recover` are written as plain code spans
+//! rather than intra-doc links because both are gated behind the
+//! `redb-backend` Cargo feature — the symbols do not exist on the
+//! `wasm32-unknown-unknown` build, and rustdoc under `-D warnings`
+//! would reject the unresolved link there.
 //!
 //! See `tests/wal_crash_recovery_tests.rs` for the contract surface.
 
@@ -97,11 +103,12 @@ pub struct Drevo {
     next_node_id: AtomicU64,
     /// Auto-increment counter for edge IDs.
     next_edge_id: AtomicU64,
-    /// Set to `true` by [`Drevo::open`] when `load_counters` had to clamp
-    /// the in-memory counter above the persisted `meta:next_*_id` because
-    /// an on-disk row already used a higher id. This is the signal
-    /// surfaced by [`IntegrityReport::counter_drift_repaired`] — see the
-    /// module-level "WAL / crash recovery" section.
+    /// Set to `true` by `Drevo::open` (gated on `redb-backend`) when
+    /// `load_counters` had to clamp the in-memory counter above the
+    /// persisted `meta:next_*_id` because an on-disk row already used a
+    /// higher id. This is the signal surfaced by
+    /// [`IntegrityReport::counter_drift_repaired`] — see the module-level
+    /// "WAL / crash recovery" section.
     counter_drift_repaired: AtomicBool,
 }
 
@@ -129,9 +136,11 @@ pub struct IntegrityReport {
     pub next_node_id: u64,
     /// The next-id value the allocator will hand out for a new edge.
     pub next_edge_id: u64,
-    /// `true` if [`Drevo::open`] had to clamp the in-memory counter above
+    /// `true` if `Drevo::open` had to clamp the in-memory counter above
     /// the persisted hint because an on-disk node / edge id was already
     /// past the persisted value — the headline crash-recovery signal.
+    /// (Plain code span because `Drevo::open` is gated on `redb-backend`
+    /// and does not exist on the WASM target.)
     pub counter_drift_repaired: bool,
     /// Count of `node_kind:` index entries that point at a missing node id.
     pub orphan_node_kind_entries: u64,
@@ -202,12 +211,13 @@ impl Drevo {
         })
     }
 
-    /// Open a disk-backed database and run [`check_integrity`] in one shot.
+    /// Open a disk-backed database and run [`Self::check_integrity`] in
+    /// one shot.
     ///
     /// Returns the live database handle alongside an [`IntegrityReport`]
     /// summarising any structural anomalies discovered on this open. The
     /// counter rescan that fixes the headline crash-recovery bug runs
-    /// inside [`Drevo::open`] regardless — `recover` adds the integrity
+    /// inside [`Self::open`] regardless — `recover` adds the integrity
     /// scan so operators can react to surprises after a known-bad crash
     /// instead of opening blind.
     ///
@@ -1454,7 +1464,7 @@ impl Drevo {
     ///
     /// Phase 9 task `00053`. Scans every secondary index and the
     /// adjacency lists for orphan / dangling entries, counts corrupt
-    /// node / edge payloads, and reports whether [`Drevo::open`] had to
+    /// node / edge payloads, and reports whether `Drevo::open` had to
     /// repair counter drift on this open. The report is data, not a
     /// hard error — a caller decides whether a non-clean report blocks
     /// startup or is logged for an operator.
