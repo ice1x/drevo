@@ -1,9 +1,9 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use redb::{Database, TableDefinition};
 
-use crate::storage::error::Result;
+use crate::storage::error::{Result, StorageError};
 use crate::storage::StorageBackend;
 
 /// Table definition for the single key-value table.
@@ -30,6 +30,10 @@ const DATA_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("data");
 #[derive(Debug, Clone)]
 pub struct RedbBackend {
     db: Arc<Database>,
+    /// Path to the underlying redb file — retained so
+    /// [`StorageBackend::size_bytes`] can `stat(2)` the file without
+    /// pulling the path through every call site. Set by [`Self::open`].
+    path: PathBuf,
 }
 
 impl RedbBackend {
@@ -43,8 +47,17 @@ impl RedbBackend {
     /// Returns [`crate::storage::StorageError::Redb`] if redb cannot open or
     /// create the file.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let db = Database::create(path.as_ref())?;
-        Ok(Self { db: Arc::new(db) })
+        let path = path.as_ref().to_path_buf();
+        let db = Database::create(&path)?;
+        Ok(Self {
+            db: Arc::new(db),
+            path,
+        })
+    }
+
+    /// Path of the underlying redb database file.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -114,6 +127,42 @@ impl StorageBackend for RedbBackend {
     fn flush(&self) -> Result<()> {
         // redb commits are durable — each put/delete already commits.
         // compact() is available but expensive; flush is a no-op.
+        Ok(())
+    }
+
+    /// Stat the underlying redb file. Returns `Ok(None)` only when the
+    /// file disappears between open and the call (e.g. concurrent deletion
+    /// in a test harness) — every other I/O failure surfaces as `Err`.
+    fn size_bytes(&self) -> Result<Option<u64>> {
+        match std::fs::metadata(&self.path) {
+            Ok(meta) => Ok(Some(meta.len())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(StorageError::Io(e)),
+        }
+    }
+
+    /// Reclaim free pages inside the redb file.
+    ///
+    /// redb's compactor takes `&mut Database`. The wrapper holds the
+    /// database behind `Arc` so it can be shared with the higher-level
+    /// graph layer; calling `compact` therefore requires that no other
+    /// `Arc<Database>` clone exists. The exclusivity is enforced via
+    /// `Arc::get_mut` and surfaced through
+    /// [`StorageError::CompactNotExclusive`] when the caller still holds
+    /// a clone.
+    ///
+    /// `redb::Database::compact` itself never returns
+    /// [`StorageError::CompactNotExclusive`] — only the unique-Arc
+    /// pre-check does. The compactor may decline work (no free pages,
+    /// outstanding savepoint, live read txn) and report that through
+    /// `redb::CompactionError`, which funnels into
+    /// [`StorageError::Redb`].
+    fn compact(&mut self) -> Result<()> {
+        let db = Arc::get_mut(&mut self.db).ok_or(StorageError::CompactNotExclusive)?;
+        // redb::CompactionError → redb::Error → StorageError::Redb via
+        // the existing `From` impls.
+        db.compact()
+            .map_err(|e| StorageError::Redb(Box::new(e.into())))?;
         Ok(())
     }
 }

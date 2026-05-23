@@ -184,6 +184,39 @@ impl IntegrityReport {
     }
 }
 
+/// Structured report produced by [`Drevo::compact`] (Phase 9 task `00054`).
+///
+/// Compaction has two side-effects that an operator cares about: the
+/// physical file footprint shrinks (or stays the same), and the in-memory
+/// next-id counters get checkpointed to `meta:next_*_id` so a process kill
+/// immediately after compact would not rewind them. The report carries
+/// both pieces of information in a single serde-serialisable struct so
+/// it rides over the HTTP / FFI / WASM boundaries cleanly.
+///
+/// `bytes_before` / `bytes_after` are `Option<u64>` because the ephemeral
+/// memory backend has no measurable on-disk footprint — fields stay
+/// `None` rather than reporting a fake zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CompactReport {
+    /// Size in bytes of the backend file *before* compaction, if the
+    /// backend can measure itself. `None` for ephemeral in-memory backends.
+    pub bytes_before: Option<u64>,
+    /// Size in bytes of the backend file *after* compaction. `None` when
+    /// the backend cannot measure its on-disk footprint.
+    pub bytes_after: Option<u64>,
+    /// `bytes_before - bytes_after`, saturating at zero. Always a `u64`
+    /// (never `Option`) so callers can render "X bytes reclaimed" without
+    /// branching on the backend type. Zero for ephemeral backends and for
+    /// already-compact disk-backed backends.
+    pub bytes_reclaimed: u64,
+    /// The next-id value the node allocator will hand out after the
+    /// compaction checkpoint persisted to `meta:next_node_id`.
+    pub next_node_id: u64,
+    /// The next-id value the edge allocator will hand out after the
+    /// compaction checkpoint persisted to `meta:next_edge_id`.
+    pub next_edge_id: u64,
+}
+
 impl Drevo {
     /// Open a disk-backed database at the given path.
     ///
@@ -268,13 +301,58 @@ impl Drevo {
         Ok(())
     }
 
-    /// Trigger compaction of the underlying storage.
+    /// Reclaim unused storage and checkpoint the next-id counters.
     ///
-    /// For redb this is a no-op (redb manages its own compaction).
-    /// For the memory backend this flushes to disk if a path is configured.
-    pub fn compact(&self) -> Result<()> {
-        self.backend.flush()?;
-        Ok(())
+    /// Phase 9 task `00054`. The exact backend-level reclaim is described
+    /// on [`crate::storage::StorageBackend::compact`]; this wrapper adds
+    /// the operator-facing semantics on top:
+    ///
+    /// 1. **Counter checkpoint** — `meta:next_node_id` /
+    ///    `meta:next_edge_id` are persisted *before* the physical
+    ///    compaction runs, so a process kill at any point during or after
+    ///    the call leaves the file with a counter that reflects the
+    ///    pre-compaction id allocator state. The `00053` rescan in
+    ///    `Drevo::open` still corrects any gap if compaction never
+    ///    reached the counter.
+    /// 2. **Size measurement** — the backend's `size_bytes` is sampled
+    ///    before and after the reclaim so the returned [`CompactReport`]
+    ///    can quote a concrete "bytes reclaimed" figure to operators and
+    ///    monitoring dashboards.
+    /// 3. **Physical compaction** — `redb::Database::compact` releases
+    ///    free pages on the redb backend; the persistent memory backend
+    ///    rewrites its snapshot file; the ephemeral memory backend is a
+    ///    no-op.
+    ///
+    /// Compaction is intentionally `&mut self` because the redb compactor
+    /// takes `&mut Database` (it must hold an exclusive write transaction
+    /// to relocate pages). Callers that share `Drevo` behind an `Arc`
+    /// must therefore drop or `Arc::try_unwrap` the handle before
+    /// compacting — there is no in-flight-safe variant.
+    ///
+    /// # Errors
+    ///
+    /// - [`DrevoError::Storage`] propagated from the counter checkpoint,
+    ///   size measurement, or backend compaction call.
+    /// - `DrevoError::Storage(StorageError::CompactNotExclusive)` when the
+    ///   redb backend's inner `Arc<Database>` has outstanding clones
+    ///   (e.g. an embedded user kept a copy of the backend) — the
+    ///   compactor needs `&mut Database`.
+    pub fn compact(&mut self) -> Result<CompactReport> {
+        self.persist_counters()?;
+        let bytes_before = self.backend.size_bytes()?;
+        self.backend.compact()?;
+        let bytes_after = self.backend.size_bytes()?;
+        let bytes_reclaimed = match (bytes_before, bytes_after) {
+            (Some(b), Some(a)) => b.saturating_sub(a),
+            _ => 0,
+        };
+        Ok(CompactReport {
+            bytes_before,
+            bytes_after,
+            bytes_reclaimed,
+            next_node_id: self.next_node_id.load(Ordering::Relaxed),
+            next_edge_id: self.next_edge_id.load(Ordering::Relaxed),
+        })
     }
 
     /// Cheap readiness probe used by the HTTP `/ready` endpoint.
@@ -1934,7 +2012,7 @@ mod tests {
 
     #[test]
     fn open_in_memory_compact_succeeds() {
-        let db = Drevo::open_in_memory().unwrap();
+        let mut db = Drevo::open_in_memory().unwrap();
         db.compact().unwrap();
     }
 
@@ -2002,8 +2080,12 @@ mod tests {
     fn compact_persists_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let db = Drevo::open(&path).unwrap();
-        db.compact().unwrap();
+        let mut db = Drevo::open(&path).unwrap();
+        let report = db.compact().unwrap();
+        // Disk-backed → both sizes measurable, bytes_after <= bytes_before.
+        assert!(report.bytes_before.is_some());
+        assert!(report.bytes_after.is_some());
+        assert!(report.bytes_after.unwrap() <= report.bytes_before.unwrap());
         db.close().unwrap();
     }
 
