@@ -140,27 +140,38 @@ jobs:
   fuzz:
     name: Fuzz
     runs-on: self-hosted
-    # Skip the job entirely on non-Linux runners. The fuzz harness
-    # forces `--target x86_64-unknown-linux-gnu` because libFuzzer +
-    # AddressSanitizer require glibc (the taiki-e prebuilt cargo-fuzz
-    # binary is musl-static, which ASan rejects with "sanitizer is
-    # incompatible with statically linked libc"). That target cannot
-    # be cross-compiled from Apple Silicon without a full Linux
-    # toolchain install — and there is no sane way to do that on a
-    # personal CI runner. The stable-CI replay of the seed corpus in
-    # `tests/fts_tokenizer_fuzz_harness_tests.rs` (which runs as part
-    # of the `test` job above on every host OS) keeps the regression
-    # gate. When a Linux runner is added to the self-hosted fleet,
-    # this job will pick up automatically.
-    if: runner.os == 'Linux'
     # Don't block merges if cargo-fuzz finds a crash — surface it as a
     # CI annotation and let humans triage. The stable harness replay in
     # the `test` job remains a hard gate.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      # The fuzz harness forces `--target x86_64-unknown-linux-gnu`
+      # because libFuzzer + AddressSanitizer require glibc (the
+      # taiki-e prebuilt cargo-fuzz binary is musl-static, which ASan
+      # rejects with "sanitizer is incompatible with statically linked
+      # libc"). That target cannot be cross-compiled from Apple Silicon
+      # without a full Linux toolchain install — and there is no sane
+      # way to do that on a personal CI runner.
+      #
+      # Every step below carries `if: runner.os == 'Linux'`. The
+      # `runner` context is NOT available in a job-level `if:` (it is
+      # populated only after a runner is assigned), so we cannot gate
+      # the entire job in one place — step-level is the only legal
+      # form. On a non-Linux runner each step is skipped, the job
+      # finishes in seconds with no work done, and shows up as a grey
+      # "Skipped" pill rather than a red failure.
+      #
+      # The stable-CI replay of the seed corpus in
+      # `tests/fts_tokenizer_fuzz_harness_tests.rs` (which runs as
+      # part of the `test` job above on every host OS) keeps the
+      # regression gate. When a Linux runner joins the self-hosted
+      # fleet, this job picks up automatically.
+      - if: runner.os == 'Linux'
+        uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        uses: dtolnay/rust-toolchain@nightly
+      - if: runner.os == 'Linux'
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
       # Pull a prebuilt cargo-fuzz binary from the GitHub release page
@@ -171,7 +182,8 @@ jobs:
       # syntax and fails to build. Prebuilt binaries side-step the
       # transitive-dep churn entirely and finish in seconds instead of
       # minutes.
-      - uses: taiki-e/install-action@v2
+      - if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
       # Every `cargo fuzz run` below pins `--target x86_64-unknown-linux-gnu`
@@ -182,19 +194,21 @@ jobs:
       # with statically-linked libc (`error: sanitizer is incompatible
       # with statically linked libc, disable it using `-C
       # target-feature=-crt-static``), so we override the target back to
-      # glibc. The runner is ubuntu-latest, which has the gnu target
-      # pre-installed; no extra `rustup target add` step is needed.
+      # glibc. The runner is Linux; the gnu target is preinstalled.
       - name: Smoke fuzz_normalize (60s)
+        if: runner.os == 'Linux'
         run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_normalize -- -max_total_time=60
         working-directory: fuzz
       - name: Smoke fuzz_trigrams (60s)
+        if: runner.os == 'Linux'
         run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_trigrams -- -max_total_time=60
         working-directory: fuzz
       - name: Smoke fuzz_extract_trigrams (60s)
+        if: runner.os == 'Linux'
         run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_trigrams -- -max_total_time=60
         working-directory: fuzz
       - name: Upload crash artifacts on failure
-        if: failure()
+        if: runner.os == 'Linux' && failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-artifacts
