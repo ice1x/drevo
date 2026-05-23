@@ -60,4 +60,49 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// Returns [`StorageError`](super::error::StorageError) on I/O or backend failure.
     fn flush(&self) -> Result<()>;
+
+    /// Report the on-disk size of the backend, in bytes.
+    ///
+    /// Returns `Ok(None)` when the backend has no measurable on-disk
+    /// footprint (the default for ephemeral in-memory backends). Disk-backed
+    /// backends return the size of the underlying file. Used by Phase 9
+    /// task `00054` (compaction) to populate the `bytes_before` /
+    /// `bytes_after` fields of [`crate::db::CompactReport`].
+    ///
+    /// The default implementation returns `Ok(None)` so existing
+    /// non-disk backends do not need to be updated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on I/O or
+    /// backend failure.
+    fn size_bytes(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    /// Reclaim unused storage. The semantics are backend-specific:
+    ///
+    /// - **redb**: runs `redb::Database::compact` to release pages whose
+    ///   data has been deleted but whose physical slot is still allocated.
+    ///   Requires exclusive access — fails with
+    ///   [`StorageError::CompactNotExclusive`](super::error::StorageError::CompactNotExclusive)
+    ///   if other handles to the same redb `Arc<Database>` exist.
+    /// - **persistent memory backend**: rewrites the snapshot file from
+    ///   the current `BTreeMap`. Naturally drops bytes for deleted keys
+    ///   because the serialisation never re-includes them.
+    /// - **ephemeral memory backend**: no-op (returns `Ok(())`).
+    ///
+    /// The default implementation calls [`flush`](Self::flush) so existing
+    /// backends remain correct without changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on I/O or
+    /// backend failure, or
+    /// [`StorageError::CompactNotExclusive`](super::error::StorageError::CompactNotExclusive)
+    /// when the backend cannot acquire exclusive access to perform
+    /// compaction.
+    fn compact(&mut self) -> Result<()> {
+        self.flush()
+    }
 }

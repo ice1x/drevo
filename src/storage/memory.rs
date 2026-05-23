@@ -151,6 +151,31 @@ impl StorageBackend for MemoryBackend {
         }
         Ok(())
     }
+
+    /// On-disk size of the snapshot file.
+    ///
+    /// Returns `Ok(None)` for ephemeral backends and for persistent
+    /// backends whose snapshot file does not yet exist. Otherwise returns
+    /// the file's length in bytes.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn size_bytes(&self) -> Result<Option<u64>> {
+        let Some(ref path) = self.path else {
+            return Ok(None);
+        };
+        match fs::metadata(path) {
+            Ok(meta) => Ok(Some(meta.len())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(StorageError::Io(e)),
+        }
+    }
+
+    /// Snapshot-style compaction for the persistent path. Re-serialises
+    /// the live `BTreeMap` to disk — naturally drops bytes for keys that
+    /// were deleted between the previous flush and now. No-op for
+    /// ephemeral backends.
+    fn compact(&mut self) -> Result<()> {
+        self.flush()
+    }
 }
 
 // ---------------------------------------------------------------------------

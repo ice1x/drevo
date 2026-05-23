@@ -13,7 +13,7 @@ fn in_memory_db_opens_and_closes() {
 
 #[test]
 fn in_memory_db_compact_is_noop() {
-    let db = Drevo::open_in_memory().unwrap();
+    let mut db = Drevo::open_in_memory().unwrap();
     db.compact().unwrap();
     db.close().unwrap();
 }
@@ -82,7 +82,7 @@ fn disk_db_counters_persist_through_close_reopen_cycle() {
 fn disk_db_compact_flushes_backend() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("drevo.db");
-    let db = Drevo::open(&path).unwrap();
+    let mut db = Drevo::open(&path).unwrap();
     db.compact().unwrap();
     db.close().unwrap();
 }

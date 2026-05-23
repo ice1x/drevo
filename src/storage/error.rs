@@ -53,6 +53,15 @@ pub enum StorageError {
     /// backend-internal I/O or transaction failure.
     #[error("lock poisoned")]
     LockPoisoned,
+
+    /// `StorageBackend::compact` was called on a backend whose internal
+    /// handle is shared with another owner (e.g. an outstanding
+    /// `Arc<Database>` clone on the redb backend). Reclaiming free pages
+    /// in redb requires exclusive `&mut Database` access via
+    /// `Arc::get_mut`; when that fails the operator must drop the extra
+    /// reference and retry. Surfaced by Phase 9 task `00054`.
+    #[error("compact requires exclusive backend access")]
+    CompactNotExclusive,
 }
 
 // Lift redb sub-error types into `StorageError::Redb` so `?` works at every
