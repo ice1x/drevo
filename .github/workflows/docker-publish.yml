@@ -61,7 +61,7 @@ permissions:
 jobs:
   build-and-publish:
     name: Build & publish (ghcr.io)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: self-hosted
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

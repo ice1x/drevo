@@ -2,8 +2,8 @@
 //!
 //! The drevo CI runs on a self-hosted (local) runner registered with
 //! GitHub Actions. Every workflow job must select that runner via the
-//! `self-hosted` label group — never the GitHub-hosted ephemeral
-//! runners (`ubuntu-latest`, `macos-latest`, `windows-latest`).
+//! `self-hosted` label — never the GitHub-hosted ephemeral runners
+//! (`ubuntu-latest`, `macos-latest`, `windows-latest`).
 //!
 //! These tests parse each workflow file as text and assert:
 //!
@@ -14,9 +14,14 @@
 //! 2. No `runs-on:` line points at a GitHub-hosted ephemeral runner
 //!    (`ubuntu-latest`, `ubuntu-22.04`, `macos-latest`, `macos-13`,
 //!    `windows-latest`, etc.).
-//! 3. The standard OS labels (`Linux`, `macOS`) appear alongside
-//!    `self-hosted` so a multi-OS self-hosted fleet can target the
-//!    right host.
+//!
+//! The plain `runs-on: self-hosted` form is intentionally accepted —
+//! drevo's CI currently uses a single self-hosted runner, so OS- and
+//! arch-disambiguation labels (`Linux` / `macOS` / `X64` / `ARM64`)
+//! would be tautological. If the fleet grows to multiple hosts the
+//! workflows can be tightened to `[self-hosted, Linux, X64]` etc.
+//! without changing these tests — they pin the *minimum* requirement,
+//! not the exact label set.
 //!
 //! Pure-text tests: no `act`, no Docker, no GitHub API. They mirror
 //! the pattern of `tests/docker_publish_ci_tests.rs` and
@@ -124,52 +129,34 @@ fn no_github_hosted_ephemeral_runner_is_referenced() {
             assert!(
                 !line.contains(forbidden),
                 "{file}: `{line}` references the GitHub-hosted runner \
-                 `{forbidden}` — replace it with a `[self-hosted, …]` \
-                 label set",
+                 `{forbidden}` — replace it with `self-hosted` (or a \
+                 `[self-hosted, …]` label set)",
             );
         }
     }
 }
 
 #[test]
-fn linux_jobs_carry_the_linux_label() {
-    // A heuristic: any `runs-on:` line that names a Linux-style label
-    // (or omits an OS label entirely) must mention `Linux` explicitly
-    // so the self-hosted fleet can route the job to a Linux host.
-    // We exempt lines that mention `macOS` / `Windows` — those are
-    // tested separately.
+fn runs_on_label_is_either_bare_self_hosted_or_label_array() {
+    // We accept two normal forms:
+    //   1. `runs-on: self-hosted`               (bare scalar)
+    //   2. `runs-on: [self-hosted, …]`          (array including
+    //                                            `self-hosted`)
+    // and reject anything else (e.g. matrix expressions that bypass
+    // these tests, or scalar values other than `self-hosted`).
     let lines = all_runs_on_lines();
     for (file, line) in &lines {
-        let mentions_mac = line.contains("macOS") || line.contains("macos");
-        let mentions_win = line.contains("Windows") || line.contains("windows");
-        if mentions_mac || mentions_win {
-            continue;
-        }
+        let value = line
+            .strip_prefix("runs-on:")
+            .map(str::trim)
+            .unwrap_or_default();
+        let ok = value == "self-hosted"
+            || (value.starts_with('[') && value.ends_with(']') && value.contains("self-hosted"));
         assert!(
-            line.contains("Linux"),
-            "{file}: `{line}` is a Linux job but does not include the \
-             `Linux` label — add it so the self-hosted fleet can route \
-             correctly",
+            ok,
+            "{file}: `runs-on: {value}` is not in a supported form — \
+             use either `runs-on: self-hosted` (bare) or \
+             `runs-on: [self-hosted, …]` (label array)",
         );
-    }
-}
-
-#[test]
-fn macos_jobs_use_self_hosted_macos_label() {
-    let lines = all_runs_on_lines();
-    for (file, line) in &lines {
-        let lower = line.to_ascii_lowercase();
-        // We only look at jobs that *previously* targeted macOS —
-        // detect by the presence of `macOS` (any case) as a label.
-        // If `macos-latest` slipped back in, the previous test caught
-        // it; here we just verify that legitimate macOS jobs are
-        // self-hosted.
-        if lower.contains("macos") {
-            assert!(
-                line.contains("self-hosted"),
-                "{file}: `{line}` is a macOS job but does not include \
-                 `self-hosted` — the macOS CI runner must be local too",
-            );
-        }
     }
 }
