@@ -125,24 +125,60 @@ jobs:
         with:
           key: android
 
-      # Install Android NDK linker
+      # Install Android NDK linker — host-OS aware.
+      #
+      # On GitHub-hosted runners the workflow always ran on
+      # `ubuntu-latest` so the hard-coded `-linux.zip` archive worked
+      # unconditionally. On a self-hosted runner the host can be macOS
+      # (the project's developer baseline — see README "Performance
+      # Targets"), in which case we need the `darwin` NDK archive and
+      # the `darwin-x86_64` toolchain subdir instead. The Apple Silicon
+      # NDK ships as the same `darwin` archive (the prebuilt subdir is
+      # named `darwin-x86_64` even on arm64 hosts — that's Rosetta-2
+      # transparency, not a typo).
+      #
+      # Idempotency: `unzip -o` overwrites without prompting so a
+      # re-run after a previous extraction does not block on the
+      # interactive `replace …? [y]es, [n]o, [A]ll …` question that
+      # broke past runs.
       - name: Install Android NDK
         run: |
+          set -euo pipefail
           ANDROID_NDK_VERSION="r27c"
-          wget -q "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip" -O ndk.zip
-          unzip -q ndk.zip
+          case "$(uname -s)" in
+            Linux*)
+              NDK_HOST_TAG="linux"
+              NDK_PREBUILT_DIR="linux-x86_64"
+              ;;
+            Darwin*)
+              NDK_HOST_TAG="darwin"
+              NDK_PREBUILT_DIR="darwin-x86_64"
+              ;;
+            *)
+              echo "Unsupported host OS: $(uname -s)" >&2
+              exit 1
+              ;;
+          esac
+          NDK_URL="https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-${NDK_HOST_TAG}.zip"
+          # Use curl on macOS (no wget by default); curl is also on
+          # every Linux distro we'd run this on.
+          curl -fsSL "$NDK_URL" -o ndk.zip
+          unzip -qo ndk.zip
           echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+          echo "NDK_PREBUILT_DIR=$NDK_PREBUILT_DIR" >> $GITHUB_ENV
 
-      # Configure cargo to use Android NDK linker
+      # Configure cargo to use Android NDK linker. The toolchain
+      # subdir name comes from the previous step's `NDK_PREBUILT_DIR`
+      # export so the workflow stays host-OS agnostic.
       - name: Configure Android linker
         run: |
+          set -euo pipefail
           mkdir -p .cargo
           cat >> .cargo/config.toml << 'EOF'
           [target.aarch64-linux-android]
           linker = "aarch64-linux-android35-clang"
           EOF
-          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          echo "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+          echo "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$NDK_PREBUILT_DIR/bin" >> $GITHUB_PATH
 
       # Check: compile for Android (no cbindgen in cross-compile, redb enabled)
       - name: cargo check (Android)
