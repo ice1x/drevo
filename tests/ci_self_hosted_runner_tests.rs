@@ -611,3 +611,125 @@ fn ci_skip_yml_mirrors_every_required_job_name_from_ci_yml() {
         );
     }
 }
+
+// ---- bench.yml invariants ------------------------------------------------
+//
+// `bench.yml` runs criterion benches nightly on the self-hosted runner.
+// It MUST NOT be triggered on PR or push, otherwise we re-introduce the
+// four-hour CI debacle the bench-removal fix (PR #77) just resolved.
+// These tests pin the contract.
+
+#[test]
+fn bench_yml_exists() {
+    let bench_yml = workflows_dir().join("bench.yml");
+    assert!(
+        bench_yml.exists(),
+        "`.github/workflows/bench.yml` must exist — it is the \
+         scheduled nightly criterion bench workflow. Without it, \
+         we have no perf-regression signal at all (since PR-gating \
+         CI was changed to skip benches)."
+    );
+}
+
+#[test]
+fn bench_yml_is_scheduled_at_4am_utc() {
+    // Pin the cron expression. Nightly cadence is non-negotiable
+    // (we don't want benches running ad-hoc on the self-hosted
+    // runner; they'd block PR jobs that are queued there for
+    // fuzz / Docker). 04:00 UTC is the agreed quiet window.
+    let bench_yml = workflows_dir().join("bench.yml");
+    let body = fs::read_to_string(&bench_yml).expect("bench.yml exists");
+    let has_cron = body
+        .lines()
+        .any(|line| line.trim() == "- cron: '0 4 * * *'");
+    assert!(
+        has_cron,
+        "bench.yml must declare exactly `- cron: '0 4 * * *'` \
+         (daily at 04:00 UTC). Changing the time is a deliberate \
+         operational decision — update this test together with the \
+         cron expression and explain the new time in the workflow \
+         comment block."
+    );
+}
+
+#[test]
+fn bench_yml_supports_workflow_dispatch() {
+    // Manual trigger is required so a developer can run benches
+    // on demand before / after touching perf-sensitive code without
+    // waiting for the nightly schedule.
+    let bench_yml = workflows_dir().join("bench.yml");
+    let body = fs::read_to_string(&bench_yml).expect("bench.yml exists");
+    assert!(
+        body.contains("workflow_dispatch:"),
+        "bench.yml must declare `workflow_dispatch:` so the bench \
+         suite can be triggered on demand from the Actions UI."
+    );
+}
+
+#[test]
+fn bench_yml_runs_on_self_hosted() {
+    // Benchmark numbers MUST come from a stable host. GitHub-hosted
+    // ubuntu-latest VMs have variable noise floors that swamp the
+    // signal we're trying to measure.
+    let bench_yml = workflows_dir().join("bench.yml");
+    let body = fs::read_to_string(&bench_yml).expect("bench.yml exists");
+    let bench_runs_on = body
+        .lines()
+        .find(|line| line.trim_start().starts_with("runs-on:"))
+        .map(str::to_string)
+        .expect("bench.yml must declare `runs-on:`");
+    assert!(
+        bench_runs_on.contains("self-hosted"),
+        "bench.yml `runs-on:` must include `self-hosted` (found \
+         `{bench_runs_on}`). Benchmark numbers from ephemeral \
+         GitHub-hosted VMs are dominated by neighbour-VM noise."
+    );
+}
+
+#[test]
+fn bench_yml_does_not_trigger_on_pr_or_push() {
+    // The ENTIRE reason for this workflow's existence: it must NOT
+    // re-introduce the four-hour CI debacle by accidentally
+    // triggering on PR or push. Cron + workflow_dispatch only.
+    let bench_yml = workflows_dir().join("bench.yml");
+    let body = fs::read_to_string(&bench_yml).expect("bench.yml exists");
+    // Walk the `on:` block (top-level, indent 0) until we leave it.
+    let mut in_on_block = false;
+    let mut on_indent: usize = 0;
+    let mut forbidden_hits: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let indent = line.chars().take_while(|c| *c == ' ').count();
+        let trimmed = line.trim_start();
+        if !in_on_block {
+            if trimmed.starts_with("on:") && indent == 0 {
+                in_on_block = true;
+                on_indent = indent;
+            }
+            continue;
+        }
+        // Leave the on: block on the next top-level key.
+        if !line.is_empty()
+            && indent <= on_indent
+            && !trimmed.starts_with('#')
+            && trimmed.ends_with(':')
+        {
+            break;
+        }
+        // Top-level trigger keys inside `on:` sit at indent 2 in our
+        // workflow style. Forbid `push:` and `pull_request:`.
+        if indent == on_indent + 2
+            && (trimmed.starts_with("push:") || trimmed.starts_with("pull_request:"))
+        {
+            forbidden_hits.push(trimmed.to_string());
+        }
+    }
+    assert!(
+        forbidden_hits.is_empty(),
+        "bench.yml declares a PR/push trigger (`{}`). Benches MUST \
+         NOT run on PR or push — that path is what caused the \
+         four-hour CI runs on PR #76. Allowed triggers are \
+         `schedule:` (nightly cron) and `workflow_dispatch:` \
+         (manual) only.",
+        forbidden_hits.join("`, `")
+    );
+}
