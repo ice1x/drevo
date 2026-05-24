@@ -101,15 +101,31 @@ jobs:
       # nextest runs the integration + unit test suite ~2-3x faster than
       # `cargo test` because it parallelises across binaries (each
       # tests/*.rs is its own binary) rather than just within one. With
-      # 1691 tests across 25+ test binaries this matters.
+      # ~1700 tests across 25+ test binaries this matters.
       #
-      # nextest does NOT run doctests — that is a separate, explicit
-      # step below. Doctests require a `cargo test --doc` invocation.
+      # Targets NOT included in this run:
+      #   * benches — `[[bench]]` crates with `harness = false` execute
+      #     their criterion `main()` even under `cargo test --benches`
+      #     (or nextest's `--all-targets`), and on the heavy benches
+      #     (`bulk_put_100k/RedbBackend` ≈ 530s; `traversal_bfs/...` ≈
+      #     240s each) a single iteration is enough to push a PR run
+      #     past one hour. CI is for correctness, NOT for measuring
+      #     performance. Bench timings belong in a separate scheduled
+      #     workflow (see Phase 10.5 task 00123) or in a developer's
+      #     `cargo bench` run, not in PR-gating CI.
+      #   * doctests — nextest does not execute them; they are exercised
+      #     by the explicit `cargo test --doc` step below.
+      # That leaves: library unit tests (`src/**/*.rs`) + integration
+      # tests (`tests/*.rs`), which is exactly what we want gated on
+      # every PR.
+      #
+      # The invariant "this step MUST NOT pass `--all-targets`" is
+      # locked by `tests/ci_self_hosted_runner_tests.rs::ci_yml_test_job_does_not_run_benches`.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
       - name: Run unit + integration tests (nextest)
-        run: cargo nextest run --all-targets --no-fail-fast
+        run: cargo nextest run --no-fail-fast
       - name: Run doctests
         run: cargo test --doc --all-features
 

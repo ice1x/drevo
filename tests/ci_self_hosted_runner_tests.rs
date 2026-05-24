@@ -611,3 +611,77 @@ fn ci_skip_yml_mirrors_every_required_job_name_from_ci_yml() {
         );
     }
 }
+
+#[test]
+fn ci_yml_test_job_does_not_run_benches() {
+    // PR-gating CI is for correctness, NOT performance measurement.
+    // The drevo benchmark crates declare `harness = false` in
+    // `Cargo.toml`, which means their criterion-based `main()` runs
+    // when included in a test invocation — and on the heavy ones
+    // (`bulk_put_100k/RedbBackend` ≈ 530s, `traversal_bfs/...` ≈ 240s
+    // each) a single iteration is enough to push a PR run past 60
+    // minutes. PR #76 was observed to do exactly that: 1695 real
+    // tests finished in ~5 minutes, the next ~50 entries were all
+    // benches and consumed another ~90 minutes. Removing
+    // `--all-targets` from the nextest invocation cuts the test job
+    // back down to ~5 minutes.
+    //
+    // This invariant locks the fix in: the `test` job's nextest
+    // invocation must NOT pass `--all-targets`, `--benches`, or any
+    // other flag that would re-enable bench execution.
+    let ci_yml = workflows_dir().join("ci.yml");
+    let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
+
+    // Scope the search to the test job: walk from `^  test:` to the
+    // next top-level job header, then check every step's `run:` line.
+    let mut in_test_job = false;
+    let mut test_job_indent: usize = 0;
+    let mut bench_offenders: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let indent = line.chars().take_while(|c| *c == ' ').count();
+        let trimmed = line.trim_start();
+        // Top-level job declarations sit at column 2.
+        if line.starts_with("  ") && !line.starts_with("    ") && trimmed.ends_with(':') {
+            let job = trimmed.trim_end_matches(':');
+            if in_test_job && job != "test" {
+                break;
+            }
+            in_test_job = job == "test";
+            if in_test_job {
+                test_job_indent = indent;
+            }
+            continue;
+        }
+        if !in_test_job {
+            continue;
+        }
+        // Defensive: stop if we somehow leave the `test:` block.
+        if indent <= test_job_indent && !line.is_empty() && !trimmed.starts_with('-') {
+            break;
+        }
+        if trimmed.starts_with("run:") || trimmed.starts_with("- run:") {
+            // Only flag the nextest invocation; `cargo test --doc` and
+            // any future step that genuinely needs `--all-targets`
+            // (none planned) would be addressed by extending this test.
+            if trimmed.contains("nextest") {
+                for bad_flag in ["--all-targets", "--benches", "--bench "] {
+                    if trimmed.contains(bad_flag) {
+                        bench_offenders.push(format!("{bad_flag}: {trimmed}"));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        bench_offenders.is_empty(),
+        "ci.yml `test` job's nextest invocation passes one or more \
+         bench-enabling flags. PR-gating CI MUST NOT execute \
+         criterion benches — they push the job past 60 minutes. \
+         Offenders:\n  {}\n\n\
+         Default `cargo nextest run` includes only library unit + \
+         integration tests; that is the right scope for PR validation. \
+         Benches belong in a separate scheduled workflow.",
+        bench_offenders.join("\n  "),
+    );
+}
