@@ -12,7 +12,7 @@ env:
 jobs:
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,7 +21,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,7 +41,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,7 +67,7 @@ jobs:
   # resolution, patch target verification).
   k8s:
     name: K8s manifests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - name: kubectl kustomize k8s/ (wrapper + base + overlays)
@@ -94,7 +94,7 @@ jobs:
   # var the warning would print and the build would still pass.
   doc:
     name: Doc
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -108,7 +108,7 @@ jobs:
   # This job exercises that exact toolchain so the field cannot decay.
   msrv:
     name: MSRV
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - id: msrv
@@ -139,7 +139,7 @@ jobs:
   # coverage with libFuzzer's branch-feedback mutator on every push.
   fuzz:
     name: Fuzz
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     # Don't block merges if cargo-fuzz finds a crash — surface it as a
     # CI annotation and let humans triage. The stable harness replay in
     # the `test` job remains a hard gate.
@@ -150,35 +150,80 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-      # Pull a prebuilt cargo-fuzz binary from the GitHub release page
-      # via `taiki-e/install-action`. Compiling cargo-fuzz from source
-      # with `cargo install cargo-fuzz --locked` is fragile on modern
-      # nightly: cargo-fuzz 0.13.x pins an old `rustix 0.36.x` that uses
-      # the now-rejected `cfg_attr(rustc_attrs, rustc_layout_scalar_…)`
-      # syntax and fails to build. Prebuilt binaries side-step the
-      # transitive-dep churn entirely and finish in seconds instead of
-      # minutes.
-      - uses: taiki-e/install-action@v2
+      # cargo-fuzz binary install + target resolution:
+      #
+      # cargo-fuzz hard-codes a default --target that does not match
+      # the host on either of our self-hosted platforms:
+      #   - On Apple Silicon macOS it defaults to `x86_64-apple-darwin`
+      #     (Intel) — the aarch64 host has no x86_64-apple-darwin rust
+      #     std, so the build dies with E0463 "can't find crate for
+      #     `core`". Override to `aarch64-apple-darwin`.
+      #   - On Linux the cargo-fuzz binary we install is itself the
+      #     taiki-e prebuilt for `x86_64-unknown-linux-musl`
+      #     (statically-linked, portable). AddressSanitizer rejects
+      #     statically-linked libc with "sanitizer is incompatible
+      #     with statically linked libc", so we override to
+      #     `x86_64-unknown-linux-gnu` (preinstalled on every Linux
+      #     self-hosted runner via `rustup target add`).
+      #
+      # Both overrides are derived once at workflow load and exported
+      # via $GITHUB_ENV so the per-target steps stay symmetric.
+      - name: Install cargo-fuzz (Linux prebuilt)
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      # Every `cargo fuzz run` below pins `--target x86_64-unknown-linux-gnu`
-      # explicitly. The taiki-e prebuilt cargo-fuzz binary is itself built
-      # for `x86_64-unknown-linux-musl` (portable, statically-linked) and
-      # therefore reports musl as its "host target" — which cargo-fuzz
-      # then passes to `cargo build`. AddressSanitizer is incompatible
-      # with statically-linked libc (`error: sanitizer is incompatible
-      # with statically linked libc, disable it using `-C
-      # target-feature=-crt-static``), so we override the target back to
-      # glibc. The runner is ubuntu-latest, which has the gnu target
-      # pre-installed; no extra `rustup target add` step is needed.
+      - name: Install cargo-fuzz (macOS — from source)
+        # taiki-e ships no prebuilt aarch64-apple-darwin binary, so
+        # build from source on nightly. ~2 min cold; the
+        # Swatinem/rust-cache@v2 (workspaces: fuzz) above warms the
+        # registry index across runs so subsequent runs reuse cached
+        # deps.
+        if: runner.os == 'macOS'
+        run: cargo install cargo-fuzz --locked
+
+      - name: Resolve fuzz --target for host
+        id: fuzz_target
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)
+              echo "target=x86_64-unknown-linux-gnu" >> "$GITHUB_OUTPUT"
+              ;;
+            macOS)
+              # On aarch64 Mac the cargo-fuzz default
+              # `x86_64-apple-darwin` would fail. Pin host arch.
+              # uname -m returns `arm64` on Apple Silicon, `x86_64`
+              # on Intel.
+              if [ "$(uname -m)" = "arm64" ]; then
+                echo "target=aarch64-apple-darwin" >> "$GITHUB_OUTPUT"
+              else
+                echo "target=x86_64-apple-darwin" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *)
+              echo "Unsupported RUNNER_OS=$RUNNER_OS for fuzz" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Smoke fuzz_normalize (60s)
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_normalize -- -max_total_time=60
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_normalize -- -max_total_time=60
         working-directory: fuzz
       - name: Smoke fuzz_trigrams (60s)
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_trigrams -- -max_total_time=60
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_trigrams -- -max_total_time=60
         working-directory: fuzz
       - name: Smoke fuzz_extract_trigrams (60s)
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_trigrams -- -max_total_time=60
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_extract_trigrams -- -max_total_time=60
         working-directory: fuzz
       - name: Upload crash artifacts on failure
         if: failure()
