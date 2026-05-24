@@ -481,6 +481,89 @@ fn job_names_in(workflow_body: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Extract the workflow-level `concurrency.group` literal from a
+/// workflow file body. Returns `None` if no top-level `concurrency:`
+/// block is present.
+fn workflow_concurrency_group(body: &str) -> Option<String> {
+    let mut in_concurrency = false;
+    let mut concurrency_indent: usize = 0;
+    for line in body.lines() {
+        let indent = line.chars().take_while(|c| *c == ' ').count();
+        let trimmed = line.trim_start();
+        if !in_concurrency {
+            if trimmed.starts_with("concurrency:") && indent == 0 {
+                in_concurrency = true;
+                concurrency_indent = indent;
+            }
+            continue;
+        }
+        // We left the concurrency block once we see a line at the same
+        // top-level indent that opens a new key.
+        if !line.is_empty()
+            && indent <= concurrency_indent
+            && trimmed.ends_with(':')
+            && !trimmed.starts_with('#')
+        {
+            return None;
+        }
+        if let Some(rest) = trimmed.strip_prefix("group:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+#[test]
+fn ci_yml_and_ci_skip_yml_have_distinct_concurrency_groups() {
+    // Bug recovered from the third commit on PR #76: both ci.yml and
+    // ci-skip.yml declared `name: CI`, so `${{ github.workflow }}`
+    // resolved to the same string in their concurrency `group:` keys.
+    // The two workflows then shared a single concurrency queue, and
+    // `cancel-in-progress: true` meant whichever workflow started
+    // second (typically the cheap skip workflow on mixed PRs) would
+    // CANCEL the real CI before it ran a single test. Branch
+    // protection then saw the skip workflow's "Success" status as
+    // the latest result for required check names (`CI / Test`,
+    // `CI / Check`, …) and let merges through with no real CI
+    // validation. This invariant pins the fix: the two workflows
+    // MUST use distinct `group:` literals so neither cancels the
+    // other.
+    let ci_yml = workflows_dir().join("ci.yml");
+    let ci_skip_yml = workflows_dir().join("ci-skip.yml");
+    let ci_body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
+    let skip_body = fs::read_to_string(&ci_skip_yml).expect("ci-skip.yml exists");
+
+    let ci_group = workflow_concurrency_group(&ci_body)
+        .expect("ci.yml must declare workflow-level concurrency.group");
+    let skip_group = workflow_concurrency_group(&skip_body)
+        .expect("ci-skip.yml must declare workflow-level concurrency.group");
+
+    assert_ne!(
+        ci_group, skip_group,
+        "ci.yml and ci-skip.yml MUST use distinct concurrency `group:` \
+         literals. Both currently use `{ci_group}`. With identical \
+         groups + `cancel-in-progress: true` the faster skip workflow \
+         silently cancels the real CI on mixed PRs and branch \
+         protection passes on the skip's `echo` jobs instead of the \
+         real test suite."
+    );
+
+    // Belt-and-braces: also forbid the specific anti-pattern of using
+    // `${{ github.workflow }}` in either group, since both workflows
+    // share `name: CI` and that expression resolves identically.
+    for (label, group) in [("ci.yml", &ci_group), ("ci-skip.yml", &skip_group)] {
+        assert!(
+            !group.contains("github.workflow"),
+            "{label}: concurrency `group: {group}` uses `github.workflow` \
+             — both workflows declare `name: CI`, so this expression \
+             resolves to the same string in both files and collapses \
+             their queues. Hard-code a distinct literal (e.g. \
+             `ci-real-${{{{ github.ref }}}}` for the real workflow, \
+             `ci-skip-${{{{ github.ref }}}}` for the skip workflow)."
+        );
+    }
+}
+
 #[test]
 fn ci_skip_yml_mirrors_every_required_job_name_from_ci_yml() {
     // The skip workflow MUST mirror every required-check job name

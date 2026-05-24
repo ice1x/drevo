@@ -44,8 +44,16 @@ on:
 # previous commits — root cause of the multi-hour CI latency seen on
 # PRs #75 and #76. The grouping key includes the workflow name so other
 # workflows (Docker Publish, Cross-compile) keep their own queues.
+# Distinct concurrency group from ci-skip.yml's. Both workflow files
+# declare `name: CI` (required for branch protection to match status
+# checks across them), which means `${{ github.workflow }}` resolves
+# to `"CI"` in BOTH — using it in the group key would collapse the
+# two workflows into the same queue and the faster skip workflow
+# would silently cancel the real CI run via `cancel-in-progress`.
+# Hard-coding `ci-real` here keeps the two queues independent. The
+# invariant is tested in `tests/ci_self_hosted_runner_tests.rs`.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-real-${{ github.ref }}
   cancel-in-progress: true
 
 env:

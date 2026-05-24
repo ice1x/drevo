@@ -58,10 +58,15 @@ on:
       - 'LICENSE'
       - '.gitignore'
 
-# Same cancel-in-progress group as ci.yml — a docs-only PR with rapid
-# pushes does not need a queue of skip jobs either.
+# Distinct concurrency group from ci.yml's. See ci.yml for the full
+# rationale — using `${{ github.workflow }}` in the group key would
+# collapse this workflow's queue into ci.yml's (both are
+# `name: CI`), and on mixed PRs the skip workflow would race-cancel
+# the real CI via `cancel-in-progress`. Hard-coding `ci-skip` here
+# keeps the two queues independent. The invariant is tested in
+# `tests/ci_self_hosted_runner_tests.rs`.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-skip-${{ github.ref }}
   cancel-in-progress: true
 
 # The jobs below mirror the `name:` field of every job in ci.yml. The
