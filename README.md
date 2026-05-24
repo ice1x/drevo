@@ -548,6 +548,50 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
 ---
 
+### Phase 10.5 — Cypher Reliability & Agentic Hardening
+
+> Goal: prove drevo's Cypher implementation is *production-ready under realistic agentic workloads* before exposing it to the world via Bolt (Phase 11). This is a **hard gate** between Phase 10 (executor) and Phase 11 (wire protocol): without parity diff vs Neo4j and a long-running agentic load test, official Neo4j drivers (`cypher-shell`, `neo4j-python-driver`, `neo4j-javascript-driver`) would silently receive *wrong* answers from drevo, with no signal at the wire level. Phase 10.5 closes that gap.
+>
+> The phase is structured around **five workload layers**, each measured independently so perf regressions can be bisected to the layer that introduced them. The Cypher layer specifically gives the honest "Cypher overhead vs raw Rust API" number — the answer to "is `executor` the bottleneck or the storage?".
+>
+> #### Agentic workload layers
+>
+> | # | Layer | Measures | Available when | Test home |
+> |---|---|---|---|---|
+> | 1 | **Rust API** (raw storage) | Upper bound of the storage layer alone. "What redb + our indexes can do, nothing on top." | **Today** | `tests/agentic_workload_rust_api.rs --ignored` |
+> | 2 | **Cypher** (parse + execute) | **Executor overhead over the raw API.** Lexer + parser + AST walk + pattern matching cost. The honest answer to "how much do we lose by giving agents Cypher instead of Rust calls". | After `00063` (Phase 10 executor) | `tests/agentic_workload_cypher.rs --ignored` |
+> | 3 | **Python API** (PyO3) | GIL release latency, serde_json Rust↔Python round-trip, GC pauses, `py.allow_threads` correctness. Sits *on top of* layer 1 or layer 2 — both `Drevo.query(cypher)` and `Drevo.bfs(...)` are valid client paths. | After `00115` (Phase 16 PyO3 bindings) | `tests/e2e/test_agentic_workload.py` (extended `00120`) |
+> | 4 | **MCP stdio** (`drevo-mcp`) | Real Claude Code / Cline cost: stdio framing, JSON-RPC overhead, process boundary per session, tool-call serialisation. | After `00090` + `00121` (Phase 15 MCP server + Python-API tools) | `tests/mcp/agentic_workload.py` |
+> | 5 | **Bolt wire** | PackStream + TLS round-trip cost — what `cypher-shell` actually measures across the network. | After Phase 11 (`00070`–`00074`) | `tests/bolt/agentic_workload.rs` |
+>
+> Each layer test runs the **same query mix** (70 % read, 20 % write, 10 % search) on the **same corpus** (10 k–100 k nodes), so the resulting "overhead per layer" graph is directly comparable. Hot/cold cache, p50/p95/p99 latency per query class, RSS + redb cache growth are recorded uniformly.
+>
+> #### Cross-cutting acceptance criteria
+>
+> - Every workload run completes a **30+ minute session** without OOM, deadlock, or RSS growth beyond a 20 % envelope.
+> - **Nightly CI** runs an 8-hour soak of layer 1 + layer 2 — slow tests live behind `--ignored` / `pytest.mark.slow` so PR pipeline stays fast.
+> - Parity diff vs Neo4j Community Edition 5.x reaches **≥ 95 %** on the curated 100-query corpus — the remaining ≤ 5 % are documented dialect divergences, not bugs.
+> - Concurrency suite passes with **2 writers + 4 readers + 2 mixed agents** for 5 minutes.
+> - Every PoC edge case in `00126` has an explicit test, not just an absence-of-crash assertion.
+
+#### Tasks
+
+- [ ] `00123` **Rust API agentic workload baseline** (layer 1) — `tests/agentic_workload_rust_api.rs`, `#[ignore]` by default, run in nightly CI + on demand. 200–500 mixed queries per minute on a 10 k-node corpus, 30+ min total. Ten query classes tracked separately: `lookup_uuid`, `lookup_title`, `traversal_2hop`, `traversal_3hop`, `subgraph_2`, `fts_short`, `fts_phrase`, `create_node`, `update_props`, `delete_node`. Records p50/p95/p99 per class, peak RSS, redb file growth. The baseline number every later layer is compared against. **Doable today** — no Cypher dependency.
+
+- [ ] `00124` **Neo4j parity diff harness** (layer 2) — `tests/cypher_neo4j_parity/`. `docker-compose.yml` spins up Neo4j Community 5.x on `localhost:7687`. A curated ~100-query corpus is loaded into both databases against an identical schema-versioned dataset; results are diff'd row-by-row with a tolerance for `f64` rounding and for `RETURN`-without-`ORDER BY` non-determinism. Query corpus is **tagged by Cypher feature** (`tag:varlen`, `tag:agg`, `tag:where-in-list`, `tag:case`, `tag:optional`, …) so a diff report shows *which feature class* drifted, not just "row 47 mismatched". Output: `tests/cypher_neo4j_parity/golden/*.jsonl`. Depends on `00063`.
+
+- [ ] `00125` **Concurrency suite** (cross-layer) — `tests/concurrent_agents.rs`. Spawns 2 writers + 4 readers + 2 mixed agents as `tokio` tasks against the same `Drevo` instance for 5 min. Asserts: no deadlocks, no panics, FTS index stays consistent (random parallel `update_node` keeps title trigrams in sync), redb MVCC snapshots prevent torn reads, `RwLock` write-starvation is bounded. Same harness re-runs against the Cypher executor once `00063` lands. Depends on layer 1; Cypher cells depend on `00063`.
+
+- [ ] `00126` **PoC edge-case stress suite** — `tests/cypher_edge_cases.rs` (layer 2; many cells `#[ignore]` until `00063`). Catalogue of PoC-killers: self-loops `(a)-[r]->(a)`, var-length cycles `(a)-[*1..10]->(a)` (BFS dedup), large `IN` lists (10 k elements; hash-set lookup, not O(N²)), fat properties (1 000-element JSON array), Unicode normalisation in WHERE equality (NFC vs NFD), full NULL semantics matrix (`1 + NULL`, `NULL = NULL`, `NULL IN [NULL]`, `[1, NULL, 3]`), string coercion rejection (`1 + '2'` → error), `DELETE` of a connected node without `DETACH` (must fail), `LIMIT 0` (empty result, no error), negative `SKIP`/`LIMIT` (runtime error), dense subgraph (a single node with 1 000+ neighbours), 5+ hop variable-length traversal on a chain of 100, batch insert of 10 k nodes (linear, not quadratic).
+
+- [ ] `00127` **MCP-level agentic workload** (layer 4) — `tests/mcp/agentic_workload.py`. Spawns `drevo-mcp` (Phase 15 `00090`) as a child process, sends 200–500 tool calls via stdio JSON-RPC, measures p50/p95/p99 for `mcp__drevo__node_get`, `mcp__drevo__bfs`, `mcp__drevo__search_fts`, etc. Asserts process survives 30+ min, no stdio buffer overflow, no FD leak. Depends on `00090` (MCP server) **and** `00121` (Python API tools — exercises the same MCP server, validates that adding the new tools didn't break the existing surface).
+
+- [ ] `00128` **Cypher executor workload** (layer 2 dedicated) — `tests/agentic_workload_cypher.rs`. Same query mix as `00123` but driven through `parse → execute → result rows`. Direct comparison against `00123` answers "what is the parser+executor overhead?" with one number per query class. Critical input to capacity-planning decisions in `00094` (RBAC) and `00096` (streaming ingestion). Depends on `00063`.
+
+**Definition of done:** all six tasks land **before** any task in Phase 11 (`00070`–`00074`) starts. Parity diff vs Neo4j ≥ 95 % on the curated corpus; 8-hour nightly soak completes green on layer 1 + layer 2; concurrency suite passes; edge-case catalogue covers every item with an explicit test. This is the **explicit gate** before exposing drevo to Neo4j's official drivers.
+
+---
+
 ### Phase 11 — Bolt Protocol
 
 > Goal: Neo4j-compatible wire protocol so existing official drivers (`cypher-shell`, `neo4j-python-driver`, `neo4j-javascript-driver`) connect without code changes. Requires Phase 10 — Bolt has nothing to execute without a working Cypher engine.
@@ -768,6 +812,7 @@ Why phases 10-15 are ordered this way, rather than appended in `ex/`-source orde
 6. **Optimization once usage exists.** The query planner (Phase 14) only pays off after real Cypher queries run on real workloads — explicit dependency on Phase 10.
 7. **Production / ecosystem last but parallelizable.** Phase 15 items (MCP, Web UI, replication, SDK, fuzz, algorithms, docs, CDC) run independently and concurrently. MCP and Web UI deliver visible value early.
 8. **Risk weighting.** Phase 13 (MVCC) carries highest risk — schedule with buffer. Phase 12 (vector) is novel but isolated — failure mode is contained. Phase 11 (Bolt) is a well-documented protocol — low implementation risk once Cypher works.
+9. **Quality gate between Cypher and Bolt.** Phase 10.5 (`00123`–`00128`) is **not skippable** — it is the *only* moment in the roadmap where drevo's Cypher implementation can be diffed against a reference (Neo4j Community) before official drivers see it. Skipping it means `cypher-shell` users get silently-wrong answers, which is the failure mode most expensive to recover from (broken client traces, no clear bug signal at the wire layer). The 8-hour nightly soak + 95 % parity diff threshold are explicit pre-conditions for *opening* Phase 11.
 
 ---
 
