@@ -1,27 +1,38 @@
 //! GitHub Actions workflow tests — `runs-on` labels.
 //!
-//! The drevo CI runs on a self-hosted (local) runner registered with
-//! GitHub Actions. Every workflow job must select that runner via the
-//! `self-hosted` label — never the GitHub-hosted ephemeral runners
-//! (`ubuntu-latest`, `macos-latest`, `windows-latest`).
+//! drevo CI is **mixed-runner** by policy as of the Phase 10.5 CI
+//! speedup work: stable-Rust PR jobs (check, test, clippy, fmt, doc,
+//! msrv, k8s) run on `ubuntu-latest` so that they execute in parallel
+//! on free GitHub-hosted runners; jobs that genuinely require a
+//! persistent host (cargo-fuzz with nightly + libFuzzer + ASAN; Docker
+//! multi-arch builds with QEMU) stay on the `self-hosted` runner.
 //!
-//! These tests parse each workflow file as text and assert:
+//! Why this changed: the earlier policy ("every job on self-hosted",
+//! introduced by PR #74) optimised for Docker multi-arch + cargo-fuzz
+//! but unintentionally serialised all PR validation through a single
+//! runner-process. The resulting queue made `CI / Test` take 1-2 hours
+//! per push, which broke the development cadence. Restoring
+//! ubuntu-latest for stable-Rust gates gives back the parallelism
+//! without giving up the niche-target benefits self-hosted provides.
 //!
-//! 1. Every `runs-on:` line in the workflow either selects a
-//!    self-hosted runner (`self-hosted` appears in its label set) OR
-//!    is a workflow-level matrix expression that resolves to a
-//!    self-hosted runner.
-//! 2. No `runs-on:` line points at a GitHub-hosted ephemeral runner
-//!    (`ubuntu-latest`, `ubuntu-22.04`, `macos-latest`, `macos-13`,
-//!    `windows-latest`, etc.).
+//! These tests pin the new policy as text-level invariants over the
+//! workflow files in `.github/workflows/`:
 //!
-//! The plain `runs-on: self-hosted` form is intentionally accepted —
-//! drevo's CI currently uses a single self-hosted runner, so OS- and
-//! arch-disambiguation labels (`Linux` / `macOS` / `X64` / `ARM64`)
-//! would be tautological. If the fleet grows to multiple hosts the
-//! workflows can be tightened to `[self-hosted, Linux, X64]` etc.
-//! without changing these tests — they pin the *minimum* requirement,
-//! not the exact label set.
+//! 1. Every `runs-on:` line references either `self-hosted` or one of
+//!    the documented allow-listed GitHub-hosted runners (`ubuntu-latest`
+//!    is the default; `macos-latest` / `windows-latest` are NOT used
+//!    today and are also rejected — adding them is a deliberate design
+//!    decision, not an accident).
+//! 2. The `fuzz` job in `.github/workflows/ci.yml` MUST stay on
+//!    `self-hosted` (cargo-fuzz preinstall + nightly Rust + ASAN +
+//!    libFuzzer; running this on free runners would inflate the GitHub
+//!    minutes budget without benefit).
+//! 3. The Docker Publish workflow MUST stay on `self-hosted` — QEMU
+//!    multi-arch builds are far slower on GitHub-hosted runners and
+//!    consume the entire 6-hour timeout on cold runs.
+//! 4. No `runner.os` reference in a *job-level* `if:` — that's
+//!    rejected by GitHub's workflow validator (regression test for
+//!    commit `03c3909`, reverted in `31ea23a`).
 //!
 //! Pure-text tests: no `act`, no Docker, no GitHub API. They mirror
 //! the pattern of `tests/docker_publish_ci_tests.rs` and
@@ -91,74 +102,114 @@ fn at_least_one_runs_on_directive_exists() {
     );
 }
 
-#[test]
-fn every_runs_on_selects_self_hosted_runner() {
-    let lines = all_runs_on_lines();
-    for (file, line) in &lines {
-        assert!(
-            line.contains("self-hosted"),
-            "{file}: `{line}` does not target the self-hosted runner — \
-             every job must include `self-hosted` in its `runs-on` label \
-             set so CI runs on the local runner, not on GitHub-hosted \
-             ephemeral VMs",
-        );
-    }
-}
+/// Allow-listed `runs-on:` scalar values. Anything else fails the test.
+/// Keep this list short and intentional: every entry is a deliberate
+/// policy decision. New aliases require a code review explaining why
+/// the workflow needs them.
+const ALLOWED_RUNS_ON: &[&str] = &["self-hosted", "ubuntu-latest"];
 
 #[test]
-fn no_github_hosted_ephemeral_runner_is_referenced() {
-    // The full set of GitHub-hosted runner aliases we explicitly
-    // forbid. New aliases (e.g. `ubuntu-26.04` once it ships) should
-    // be added here as they appear.
-    const FORBIDDEN: &[&str] = &[
-        "ubuntu-latest",
-        "ubuntu-22.04",
-        "ubuntu-24.04",
-        "ubuntu-20.04",
-        "macos-latest",
-        "macos-13",
-        "macos-14",
-        "macos-15",
-        "windows-latest",
-        "windows-2022",
-        "windows-2019",
-    ];
-    let lines = all_runs_on_lines();
-    for (file, line) in &lines {
-        for forbidden in FORBIDDEN {
-            assert!(
-                !line.contains(forbidden),
-                "{file}: `{line}` references the GitHub-hosted runner \
-                 `{forbidden}` — replace it with `self-hosted` (or a \
-                 `[self-hosted, …]` label set)",
-            );
-        }
-    }
-}
-
-#[test]
-fn runs_on_label_is_either_bare_self_hosted_or_label_array() {
-    // We accept two normal forms:
-    //   1. `runs-on: self-hosted`               (bare scalar)
-    //   2. `runs-on: [self-hosted, …]`          (array including
-    //                                            `self-hosted`)
-    // and reject anything else (e.g. matrix expressions that bypass
-    // these tests, or scalar values other than `self-hosted`).
+fn every_runs_on_uses_an_allow_listed_runner() {
     let lines = all_runs_on_lines();
     for (file, line) in &lines {
         let value = line
             .strip_prefix("runs-on:")
             .map(str::trim)
             .unwrap_or_default();
-        let ok = value == "self-hosted"
-            || (value.starts_with('[') && value.ends_with(']') && value.contains("self-hosted"));
+
+        // Accept array form `[self-hosted, …]` if every comma-separated
+        // entry is allow-listed.
+        let ok = if value.starts_with('[') && value.ends_with(']') {
+            value
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(str::trim)
+                .all(|label| {
+                    // OS / arch disambiguation labels are allowed in
+                    // arrays as long as `self-hosted` is also present —
+                    // this is enforced below by `array_form_with_os_label_requires_self_hosted`.
+                    ALLOWED_RUNS_ON.contains(&label)
+                        || matches!(label, "Linux" | "macOS" | "Windows" | "X64" | "ARM64")
+                })
+        } else {
+            ALLOWED_RUNS_ON.contains(&value)
+        };
+
         assert!(
             ok,
-            "{file}: `runs-on: {value}` is not in a supported form — \
-             use either `runs-on: self-hosted` (bare) or \
-             `runs-on: [self-hosted, …]` (label array)",
+            "{file}: `runs-on: {value}` is not allow-listed — supported \
+             values are {ALLOWED_RUNS_ON:?} (or an array including \
+             `self-hosted` plus OS/arch labels). Adding a new value \
+             requires updating ALLOWED_RUNS_ON with a comment \
+             explaining why.",
         );
     }
+}
+
+#[test]
+fn fuzz_job_in_ci_must_be_self_hosted() {
+    // The `fuzz` job in ci.yml requires nightly Rust, libFuzzer, and
+    // AddressSanitizer — moving it to ubuntu-latest would mean
+    // installing cargo-fuzz cold on every PR (~2 min) plus burning
+    // GitHub minutes on 3 × 60s smoke runs. The self-hosted runner
+    // has cargo-fuzz cached and consumes no GitHub-hosted minutes.
+    let ci_yml = workflows_dir().join("ci.yml");
+    let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
+    let mut in_fuzz_job = false;
+    let mut fuzz_runs_on: Option<String> = None;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        // Job declarations are indented 2 spaces and end with `:`.
+        if line.starts_with("  ") && !line.starts_with("    ") && trimmed.ends_with(':') {
+            let job = trimmed.trim_end_matches(':');
+            in_fuzz_job = job == "fuzz";
+        }
+        if in_fuzz_job && trimmed.starts_with("runs-on:") {
+            fuzz_runs_on = Some(trimmed.to_string());
+            break;
+        }
+    }
+    let line = fuzz_runs_on.expect("ci.yml fuzz job must declare `runs-on:`");
+    assert!(
+        line.contains("self-hosted"),
+        "ci.yml fuzz job must run on self-hosted (found `{line}`). \
+         Moving it to a GitHub-hosted runner would mean installing \
+         cargo-fuzz + nightly Rust cold on every PR and consuming \
+         GitHub minutes — see the per-job comment in ci.yml for the \
+         full rationale.",
+    );
+}
+
+#[test]
+fn docker_publish_job_must_be_self_hosted() {
+    // Docker multi-arch (linux/amd64 + linux/arm64 via QEMU) on
+    // ubuntu-latest can exceed 30 minutes per build because arm64
+    // emulation is slow. On self-hosted with warm layer cache it
+    // settles to ~5-10 min. This invariant prevents accidental
+    // downgrades.
+    let docker_yml = workflows_dir().join("docker-publish.yml");
+    if !docker_yml.exists() {
+        // If the file is renamed, the rename should ship with this test
+        // updated; until then the absence is a soft signal.
+        return;
+    }
+    let body = fs::read_to_string(&docker_yml).expect("docker-publish.yml exists");
+    let mut found_self_hosted = false;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("runs-on:") && trimmed.contains("self-hosted") {
+            found_self_hosted = true;
+            break;
+        }
+    }
+    assert!(
+        found_self_hosted,
+        "docker-publish.yml has no `runs-on: self-hosted` — multi-arch \
+         Docker builds via QEMU MUST run on the persistent self-hosted \
+         runner so warm-layer cache survives between runs and so GitHub \
+         minutes don't get exhausted by ARM64 emulation.",
+    );
 }
 
 /// Helper: strip the `runs-on:` prefix and surrounding brackets,
@@ -175,27 +226,24 @@ fn runs_on_labels(line: &str) -> String {
 }
 
 #[test]
-fn array_form_with_linux_label_implies_linux_routing() {
-    // If a job uses the *array* form and includes a `Linux` label,
-    // the workflow author is explicitly routing it to a Linux host.
-    // That's only meaningful alongside `self-hosted` AND only on
-    // jobs that actually need Linux. We don't try to read the steps
-    // here (the heuristic is brittle); we just lock in the invariant
-    // that `Linux` never appears without `self-hosted`. Symmetric for
-    // `macOS` / `Windows`.
-    //
-    // This test deliberately does NOT fire on the bare-scalar form
-    // (`runs-on: self-hosted`) — there, OS routing is the runner's
-    // job, not the workflow's. It catches drift if a future array
-    // form drops `self-hosted` while keeping `Linux` / `macOS` /
-    // `Windows` (which would route to a GitHub-hosted runner under
+fn array_form_with_os_label_requires_self_hosted() {
+    // If a job uses the *array* form and includes a `Linux` / `macOS` /
+    // `Windows` label, the workflow author is explicitly routing it to
+    // a specific OS. That's only meaningful alongside `self-hosted` AND
+    // only on jobs that actually need that OS. We don't try to read the
+    // steps here (the heuristic is brittle); we just lock in the
+    // invariant that an OS label never appears in an array form without
+    // `self-hosted` (which would route to GitHub-hosted runners under
     // some org configurations).
+    //
+    // This test deliberately does NOT fire on bare scalars
+    // (`runs-on: ubuntu-latest` or `runs-on: self-hosted`).
     let lines = all_runs_on_lines();
     for (file, line) in &lines {
-        let labels = runs_on_labels(line);
         if !line.contains('[') {
-            continue; // bare scalar — out of scope for this test
+            continue;
         }
+        let labels = runs_on_labels(line);
         for os in &["linux", "macos", "windows"] {
             if labels.contains(os) {
                 assert!(
@@ -266,4 +314,29 @@ fn workflow_files_do_not_smuggle_runner_os_at_job_level() {
             }
         }
     }
+}
+
+#[test]
+fn ci_yml_declares_concurrency_cancel_in_progress() {
+    // The single biggest source of CI wait time on rapid-fire PR
+    // pushes was the *queue*, not any individual job: every push
+    // stacked behind every prior push on the same branch. Adding
+    // workflow-level `concurrency: cancel-in-progress: true` cuts
+    // the queue to length 1 per branch. This invariant locks that
+    // setting in so a future edit doesn't silently revert it.
+    let ci_yml = workflows_dir().join("ci.yml");
+    let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
+    assert!(
+        body.contains("concurrency:"),
+        "ci.yml must declare a `concurrency:` block — without it, \
+         rapid-fire PR pushes stack into the runner queue and CI \
+         latency balloons. See the comment above the block in \
+         ci.yml for the full rationale."
+    );
+    assert!(
+        body.contains("cancel-in-progress: true"),
+        "ci.yml `concurrency:` block must set \
+         `cancel-in-progress: true` — otherwise the cancel does not \
+         take effect and stale runs continue blocking the queue."
+    );
 }
