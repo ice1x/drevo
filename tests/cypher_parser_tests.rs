@@ -803,6 +803,459 @@ fn errors_on_only_whitespace_and_comments() {
     let _ = format!("{err}");
 }
 
+// ===== Complex multi-clause integration =====================================
+
+#[test]
+fn parses_multi_clause_pipeline() {
+    let q = parse(
+        "MATCH (u:User)-[:WROTE]->(p:Post)
+         WHERE p.created_at > 1000
+         WITH u, count(p) AS posts
+         WHERE posts > 5
+         RETURN u.handle, posts ORDER BY posts DESC LIMIT 20",
+    )
+    .unwrap();
+    let single = &q.parts[0].query;
+    assert_eq!(single.clauses.len(), 3);
+    assert!(matches!(&single.clauses[0], Clause::Match(_)));
+    assert!(matches!(&single.clauses[1], Clause::With(_)));
+    assert!(matches!(&single.clauses[2], Clause::Return(_)));
+    if let Clause::With(w) = &single.clauses[1] {
+        assert!(w.where_clause.is_some());
+    } else {
+        panic!();
+    }
+}
+
+#[test]
+fn parses_three_arm_union_all() {
+    let q = parse(
+        "MATCH (a:A) RETURN a.id AS id
+         UNION ALL
+         MATCH (b:B) RETURN b.id AS id
+         UNION ALL
+         MATCH (c:C) RETURN c.id AS id",
+    )
+    .unwrap();
+    assert_eq!(q.parts.len(), 3);
+    assert!(q.parts[0].union.is_none());
+    assert_eq!(q.parts[1].union, Some(UnionKind::All));
+    assert_eq!(q.parts[2].union, Some(UnionKind::All));
+}
+
+#[test]
+fn parses_deeply_nested_arithmetic() {
+    // ((1 + 2) * (3 - 4)) ^ ((5 % 6) / 7)
+    let q = parse("RETURN ((1 + 2) * (3 - 4)) ^ ((5 % 6) / 7)").unwrap();
+    let expr = projection_expr(&q);
+    // Top operator is ^
+    match expr {
+        Expression::Binary {
+            op: BinaryOp::Pow, ..
+        } => {}
+        e => panic!("expected pow at top, got {e:?}"),
+    }
+}
+
+#[test]
+fn parses_boolean_precedence_not_and_or() {
+    // NOT a AND b OR c should parse as (NOT a AND b) OR c
+    let q = parse("MATCH (n) WHERE NOT n.x AND n.y OR n.z RETURN n").unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Match(m) => m,
+        _ => panic!(),
+    };
+    let pred = m.where_clause.as_ref().unwrap();
+    match pred {
+        Expression::Binary {
+            op: BinaryOp::Or,
+            lhs,
+            rhs,
+            ..
+        } => {
+            // LHS should be AND
+            assert!(matches!(
+                lhs.as_ref(),
+                Expression::Binary {
+                    op: BinaryOp::And,
+                    ..
+                }
+            ));
+            // RHS should be a simple property
+            assert!(matches!(rhs.as_ref(), Expression::Property { .. }));
+            // Inside the AND, LHS should be NOT
+            if let Expression::Binary { lhs: and_lhs, .. } = lhs.as_ref() {
+                assert!(matches!(
+                    and_lhs.as_ref(),
+                    Expression::Unary {
+                        op: UnaryOp::Not,
+                        ..
+                    }
+                ));
+            }
+        }
+        e => panic!("expected OR at top, got {e:?}"),
+    }
+}
+
+#[test]
+fn parses_three_segment_path() {
+    let q = parse("MATCH (a:A)-[:R1]->(b:B)-[:R2]->(c:C)-[:R3]->(d:D) RETURN a, d").unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Match(m) => m,
+        _ => panic!(),
+    };
+    assert_eq!(m.patterns[0].path.tail.len(), 3);
+    assert_eq!(
+        m.patterns[0].path.tail[0].relationship.types,
+        vec!["R1".to_string()]
+    );
+    assert_eq!(
+        m.patterns[0].path.tail[1].relationship.types,
+        vec!["R2".to_string()]
+    );
+    assert_eq!(
+        m.patterns[0].path.tail[2].relationship.types,
+        vec!["R3".to_string()]
+    );
+}
+
+#[test]
+fn parses_deep_property_chain() {
+    let q = parse("RETURN n.address.city.zip.code").unwrap();
+    let expr = projection_expr(&q);
+    let mut depth = 0;
+    let mut cur = expr;
+    while let Expression::Property { base, .. } = cur {
+        depth += 1;
+        cur = base;
+    }
+    assert_eq!(depth, 4);
+    assert!(matches!(cur, Expression::Variable(name, _) if name == "n"));
+}
+
+#[test]
+fn parses_nested_map_and_list() {
+    let q = parse("RETURN {a: [1, 2, {b: 3}], c: {d: [4, 5]}}").unwrap();
+    let expr = projection_expr(&q);
+    match expr {
+        Expression::Map(m) => {
+            assert_eq!(m.entries.len(), 2);
+            assert!(matches!(&m.entries[0].1, Expression::List { items, .. } if items.len() == 3));
+            assert!(matches!(&m.entries[1].1, Expression::Map(_)));
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn parses_function_call_with_complex_args() {
+    let q = parse("RETURN coalesce(n.name, n.handle, 'anon')").unwrap();
+    let expr = projection_expr(&q);
+    match expr {
+        Expression::FunctionCall {
+            name,
+            args,
+            distinct,
+            ..
+        } => {
+            assert_eq!(name, &vec!["coalesce".to_string()]);
+            assert!(!*distinct);
+            assert_eq!(args.len(), 3);
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn parses_nested_function_calls() {
+    let q = parse("RETURN toUpper(trim(n.name))").unwrap();
+    let expr = projection_expr(&q);
+    match expr {
+        Expression::FunctionCall { name, args, .. } => {
+            assert_eq!(name, &vec!["toUpper".to_string()]);
+            assert_eq!(args.len(), 1);
+            assert!(matches!(&args[0], Expression::FunctionCall { .. }));
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn parses_case_in_return_with_alias() {
+    let q = parse("MATCH (n) RETURN CASE WHEN n.score > 50 THEN 'pass' ELSE 'fail' END AS verdict")
+        .unwrap();
+    let r = match &q.parts[0].query.clauses[1] {
+        Clause::Return(r) => r,
+        _ => panic!(),
+    };
+    match &r.items[0] {
+        ProjectionItem::Expression { expr, alias } => {
+            assert_eq!(alias.as_deref(), Some("verdict"));
+            assert!(matches!(expr, Expression::Case { .. }));
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn parses_merge_with_empty_on_arms() {
+    // MERGE without ON arms is the most common form.
+    let q = parse("MERGE (n:Person {id: 1})").unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Merge(m) => m,
+        _ => panic!(),
+    };
+    assert!(m.on_create.is_empty());
+    assert!(m.on_match.is_empty());
+}
+
+#[test]
+fn parses_delete_multiple_targets() {
+    let q = parse("MATCH (a), (b), (c) DETACH DELETE a, b, c").unwrap();
+    let d = match &q.parts[0].query.clauses[1] {
+        Clause::Delete(d) => d,
+        _ => panic!(),
+    };
+    assert!(d.detach);
+    assert_eq!(d.targets.len(), 3);
+}
+
+#[test]
+fn parses_skip_limit_with_parameters() {
+    let q = parse("MATCH (n) RETURN n SKIP $offset LIMIT $page").unwrap();
+    let r = match &q.parts[0].query.clauses[1] {
+        Clause::Return(r) => r,
+        _ => panic!(),
+    };
+    assert!(matches!(&r.skip, Some(Expression::Parameter(p, _)) if p == "offset"));
+    assert!(matches!(&r.limit, Some(Expression::Parameter(p, _)) if p == "page"));
+}
+
+#[test]
+fn parses_string_predicate_chain() {
+    let q = parse(
+        "MATCH (n:Post) WHERE n.title STARTS WITH 'How' AND n.body CONTAINS 'rust' RETURN n.title",
+    )
+    .unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Match(m) => m,
+        _ => panic!(),
+    };
+    let pred = m.where_clause.as_ref().unwrap();
+    // Top-level AND of two string predicates
+    match pred {
+        Expression::Binary {
+            op: BinaryOp::And,
+            lhs,
+            rhs,
+            ..
+        } => {
+            assert!(matches!(
+                lhs.as_ref(),
+                Expression::Binary {
+                    op: BinaryOp::StartsWith,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                rhs.as_ref(),
+                Expression::Binary {
+                    op: BinaryOp::Contains,
+                    ..
+                }
+            ));
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn parses_in_with_parameter_list() {
+    let q = parse("MATCH (n) WHERE n.status IN $allowed RETURN n").unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Match(m) => m,
+        _ => panic!(),
+    };
+    let pred = m.where_clause.as_ref().unwrap();
+    assert!(matches!(pred, Expression::In { .. }));
+}
+
+#[test]
+fn parses_aggregations_with_distinct() {
+    let q = parse(
+        "MATCH (u)-[:LIKED]->(p) RETURN u.id, count(DISTINCT p) AS unique_likes, sum(p.score) AS score_total",
+    )
+    .unwrap();
+    let r = match &q.parts[0].query.clauses[1] {
+        Clause::Return(r) => r,
+        _ => panic!(),
+    };
+    assert_eq!(r.items.len(), 3);
+    if let ProjectionItem::Expression {
+        expr: Expression::FunctionCall { distinct, name, .. },
+        ..
+    } = &r.items[1]
+    {
+        assert!(*distinct);
+        assert_eq!(name, &vec!["count".to_string()]);
+    } else {
+        panic!();
+    }
+}
+
+#[test]
+fn parses_grouping_parens_in_where() {
+    let q = parse("MATCH (n) WHERE (n.x > 1 OR n.y > 1) AND n.z < 10 RETURN n").unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Match(m) => m,
+        _ => panic!(),
+    };
+    let pred = m.where_clause.as_ref().unwrap();
+    // Top-level AND (because of explicit parens)
+    match pred {
+        Expression::Binary {
+            op: BinaryOp::And,
+            lhs,
+            ..
+        } => {
+            assert!(matches!(
+                lhs.as_ref(),
+                Expression::Binary {
+                    op: BinaryOp::Or,
+                    ..
+                }
+            ));
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn parses_long_unwind_pipeline() {
+    let q = parse(
+        "UNWIND [1, 2, 3, 4, 5] AS i
+         WITH i, i * i AS sq
+         WHERE sq > 4
+         RETURN i, sq ORDER BY i",
+    )
+    .unwrap();
+    let single = &q.parts[0].query;
+    assert_eq!(single.clauses.len(), 3);
+    assert!(matches!(&single.clauses[0], Clause::Unwind(_)));
+    assert!(matches!(&single.clauses[1], Clause::With(_)));
+    assert!(matches!(&single.clauses[2], Clause::Return(_)));
+}
+
+#[test]
+fn parses_multi_pattern_with_inline_props() {
+    let q =
+        parse("MATCH (u:User {handle: $h}), (p:Post {id: $pid}) WHERE p.author = u.id RETURN p")
+            .unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Match(m) => m,
+        _ => panic!(),
+    };
+    assert_eq!(m.patterns.len(), 2);
+    assert!(m.patterns[0].path.head.properties.is_some());
+    assert!(m.patterns[1].path.head.properties.is_some());
+}
+
+#[test]
+fn parses_inline_comments_between_clauses() {
+    let q = parse(
+        "MATCH (n) // pick a node\n\
+         /* multi-line\n   comment */\
+         WHERE n.x = 1\n\
+         RETURN n // final projection",
+    )
+    .unwrap();
+    assert_eq!(q.parts[0].query.clauses.len(), 2);
+}
+
+#[test]
+fn parses_unicode_identifiers_and_strings() {
+    let q =
+        parse("MATCH (пользователь:Пользователь {имя: 'Анна 🌸'}) RETURN пользователь").unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Match(m) => m,
+        _ => panic!(),
+    };
+    assert_eq!(
+        m.patterns[0].path.head.variable.as_deref(),
+        Some("пользователь")
+    );
+    assert_eq!(
+        m.patterns[0].path.head.labels,
+        vec!["Пользователь".to_string()]
+    );
+}
+
+#[test]
+fn parses_backtick_quoted_identifier_with_spaces() {
+    let q = parse("MATCH (`weird name`:Person) RETURN `weird name`").unwrap();
+    let m = match &q.parts[0].query.clauses[0] {
+        Clause::Match(m) => m,
+        _ => panic!(),
+    };
+    assert_eq!(
+        m.patterns[0].path.head.variable.as_deref(),
+        Some("weird name")
+    );
+}
+
+#[test]
+fn parses_semicolon_terminator() {
+    let q = parse("MATCH (n) RETURN n;").unwrap();
+    assert_eq!(q.parts[0].query.clauses.len(), 2);
+}
+
+#[test]
+fn parses_function_then_property_then_index() {
+    // Postfix chain across function call, property access, and indexing.
+    let q = parse("RETURN keys(n)[0]").unwrap();
+    let expr = projection_expr(&q);
+    match expr {
+        Expression::Index { base, .. } => {
+            assert!(matches!(base.as_ref(), Expression::FunctionCall { .. }));
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn parses_optional_match_then_match_then_return() {
+    let q = parse(
+        "MATCH (u:User {id: $uid})
+         OPTIONAL MATCH (u)-[:LIKED]->(p:Post)
+         RETURN u.handle, count(p) AS likes",
+    )
+    .unwrap();
+    let single = &q.parts[0].query;
+    assert_eq!(single.clauses.len(), 3);
+    if let Clause::Match(m) = &single.clauses[1] {
+        assert!(m.optional);
+    } else {
+        panic!();
+    }
+}
+
+#[test]
+fn parses_create_with_existing_var_then_relate() {
+    let q = parse(
+        "MATCH (a:User {id: 1}), (b:User {id: 2})
+         CREATE (a)-[:FOLLOWS {since: 2026}]->(b)",
+    )
+    .unwrap();
+    let create = match &q.parts[0].query.clauses[1] {
+        Clause::Create(c) => c,
+        _ => panic!(),
+    };
+    let rel = &create.patterns[0].path.tail[0].relationship;
+    assert_eq!(rel.types, vec!["FOLLOWS".to_string()]);
+    assert!(rel.properties.is_some());
+}
+
 // ===== Helpers ==============================================================
 
 fn projection_expr(q: &drevo::cypher::ast::Query) -> &Expression {
