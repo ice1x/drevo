@@ -534,7 +534,7 @@ MVP: Phases 7-9    →  drevo ships as a Docker/K8s product
 
 Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations (SET/DELETE/MERGE) → predicates (WHERE) → aggregations → OPTIONAL MATCH → WITH → variable-length paths.
 
-- [ ] `00061` Cypher lexer — tokens for keywords, literals, identifiers, operators, parameters, comments
+- [x] `00061` Cypher lexer — tokens for keywords, literals, identifiers, operators, parameters, comments
 - [ ] `00062` Cypher parser — AST construction, error recovery, keyword-as-identifier support
 - [ ] `00063` Executor — pattern matching, expression evaluation, CREATE / MATCH / RETURN
 - [ ] `00064` Mutations — SET, DELETE, MERGE, MATCH...MERGE (idempotent relationship creation between bound variables)
