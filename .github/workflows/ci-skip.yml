@@ -1,0 +1,119 @@
+# Docs-only PR pass-through — pairs with `.github/workflows/ci.yml`.
+#
+# Purpose
+# -------
+# When a PR or push touches only documentation (`**/*.md`, `audit/**`,
+# `memory/**`, `LICENSE`, `.gitignore`), the real CI workflow in
+# `ci.yml` is suppressed via its `paths-ignore` filter — none of its
+# jobs run. But GitHub branch protection requires the named status
+# checks (`CI / Check`, `CI / Test`, `CI / Clippy`, …) to exist and
+# pass before a PR can be merged. A workflow that never ran does NOT
+# satisfy branch protection — required checks stay "Expected" forever,
+# blocking the merge.
+#
+# This file emits successful status checks under the same coordinates
+# (`workflow name: CI` + identical `name:` per job) so that docs-only
+# PRs satisfy branch protection without spending CI minutes on a Rust
+# build that has no Rust changes to test.
+#
+# Trigger inversion
+# -----------------
+# `ci.yml` uses `paths-ignore: [**/*.md, audit/**, memory/**, LICENSE,
+# .gitignore]` — it runs when at least one changed path is NOT in that
+# list. This file uses `paths: [**/*.md, audit/**, memory/**, LICENSE,
+# .gitignore]` — it runs when at least one changed path IS in that
+# list.
+#
+# Edge case: a mixed PR (some Rust + some docs) triggers BOTH workflows.
+# That's intentional — the real CI runs the real tests; this skip
+# workflow also runs and trivially passes. Branch protection sees both
+# completing successfully. The cost is one ~5 second job per check name
+# on mixed PRs, which is negligible compared to the real CI run.
+#
+# How to keep this in sync with ci.yml
+# ------------------------------------
+# Every job in `ci.yml` must have a same-named (`name: <X>`) job in
+# this file. If a new job is added to `ci.yml`, add it here too — the
+# tests in `tests/ci_self_hosted_runner_tests.rs` will fail if the
+# job-name sets diverge. The workflow-level `name: CI` must be
+# identical in both files (line 1).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
+
+# Same cancel-in-progress group as ci.yml — a docs-only PR with rapid
+# pushes does not need a queue of skip jobs either.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The jobs below mirror the `name:` field of every job in ci.yml. The
+# job-id (the YAML key, e.g. `check`) must match too — GitHub uses
+# `workflow / job_name` as the status-check coordinate, but matching
+# the id keeps the two files visually aligned for review.
+#
+# Each job is a single `echo` step on ubuntu-latest (free, fast).
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped — docs-only change"
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped — docs-only change"
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped — docs-only change"
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped — docs-only change"
+
+  k8s:
+    name: K8s manifests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped — docs-only change"
+
+  doc:
+    name: Doc
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped — docs-only change"
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "skipped — docs-only change"
+
+  # The fuzz job intentionally has NO skip pass-through. It's
+  # `continue-on-error: true` in ci.yml and is not (and must not be)
+  # a required branch-protection check. If you ever do make it a
+  # required check, mirror it here too.

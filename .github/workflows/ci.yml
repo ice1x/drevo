@@ -1,10 +1,42 @@
 name: CI
 
+# Docs-only changes (README.md, audit/*.md, memory/*.md, LICENSE, .gitignore)
+# bypass this entire workflow via `paths-ignore`. A paired skip-workflow
+# `.github/workflows/ci-skip.yml` runs on the inverse path set and emits
+# successful status checks under the same `CI / <Job>` names so branch
+# protection still passes on docs-only PRs. The two workflows together
+# implement the standard "ci-skip" pattern (see Rust / Tokio / Diesel
+# for prior art). Both workflows MUST mirror their job-name list and
+# their `name: CI` workflow name — checks line up by `workflow / job`
+# coordinates in GitHub's status-check API.
+#
+# What MUST stay outside paths-ignore — i.e. always trigger this real
+# CI workflow:
+#   * `.github/**`     — workflow changes must run real CI to catch
+#                        regressions in the CI itself (paradox: skipping
+#                        CI on CI-file changes is how broken CI ships).
+#   * `Cargo.toml` / `Cargo.lock` — dependency / version changes.
+#   * `*.rs`, `tests/**`, `benches/**`, `fuzz/**` — every Rust source.
+#   * `Dockerfile`, `k8s/**`, `Makefile`, build.rs — infra.
+# These are implicit (not enumerated), because `paths-ignore` is a
+# negative filter: anything not listed below triggers the workflow.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 # Cancel an in-flight CI run when a newer commit lands on the same PR /
 # branch. Without this, every rapid-fire push stacks into the self-hosted
