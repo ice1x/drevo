@@ -1,18 +1,90 @@
 name: CI
 
+# Docs-only changes (README.md, audit/*.md, memory/*.md, LICENSE, .gitignore)
+# bypass this entire workflow via `paths-ignore`. A paired skip-workflow
+# `.github/workflows/ci-skip.yml` runs on the inverse path set and emits
+# successful status checks under the same `CI / <Job>` names so branch
+# protection still passes on docs-only PRs. The two workflows together
+# implement the standard "ci-skip" pattern (see Rust / Tokio / Diesel
+# for prior art). Both workflows MUST mirror their job-name list and
+# their `name: CI` workflow name — checks line up by `workflow / job`
+# coordinates in GitHub's status-check API.
+#
+# What MUST stay outside paths-ignore — i.e. always trigger this real
+# CI workflow:
+#   * `.github/**`     — workflow changes must run real CI to catch
+#                        regressions in the CI itself (paradox: skipping
+#                        CI on CI-file changes is how broken CI ships).
+#   * `Cargo.toml` / `Cargo.lock` — dependency / version changes.
+#   * `*.rs`, `tests/**`, `benches/**`, `fuzz/**` — every Rust source.
+#   * `Dockerfile`, `k8s/**`, `Makefile`, build.rs — infra.
+# These are implicit (not enumerated), because `paths-ignore` is a
+# negative filter: anything not listed below triggers the workflow.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
+
+# Cancel an in-flight CI run when a newer commit lands on the same PR /
+# branch. Without this, every rapid-fire push stacks into the self-hosted
+# runner queue and a PR ends up waiting on stale runs for its own
+# previous commits — root cause of the multi-hour CI latency seen on
+# PRs #75 and #76. The grouping key includes the workflow name so other
+# workflows (Docker Publish, Cross-compile) keep their own queues.
+# Distinct concurrency group from ci-skip.yml's. Both workflow files
+# declare `name: CI` (required for branch protection to match status
+# checks across them), which means `${{ github.workflow }}` resolves
+# to `"CI"` in BOTH — using it in the group key would collapse the
+# two workflows into the same queue and the faster skip workflow
+# would silently cancel the real CI run via `cancel-in-progress`.
+# Hard-coding `ci-real` here keeps the two queues independent. The
+# invariant is tested in `tests/ci_self_hosted_runner_tests.rs`.
+concurrency:
+  group: ci-real-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  # nextest needs no specific env; documented here to make the contract
+  # explicit for future contributors who might wonder.
+  CARGO_INCREMENTAL: 1
 
 jobs:
+  # The four PR gates — check, test, clippy, fmt — all run on
+  # `ubuntu-latest`. Reasoning:
+  #   * GitHub-hosted runners are FREE for public repos and elastically
+  #     parallel: each job gets its own VM, so the four gates here +
+  #     `doc` + `msrv` execute concurrently rather than serialised
+  #     through our single self-hosted runner.
+  #   * The Phase 8 self-hosted migration (PR #74) optimised for Docker
+  #     multi-arch and the cargo-fuzz Linux-only requirement, but moved
+  #     stable-Rust PR jobs onto the same queue. Net result: a single
+  #     1691-test suite waited ~hours behind Docker QEMU builds. Moving
+  #     stable jobs back to ubuntu-latest restores parallelism without
+  #     giving up the niche-target benefits self-hosted brings (multi-
+  #     arch Docker, ARM64 native Mac fuzzing).
+  #   * `Swatinem/rust-cache@v2` already caches `target/` + the cargo
+  #     registry between runs on ubuntu-latest just as it did on
+  #     self-hosted.
+  # Jobs that still need self-hosted are listed below with a per-job
+  # comment explaining why.
+
   check:
     name: Check
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,16 +93,29 @@ jobs:
 
   test:
     name: Test
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets
+      # nextest runs the integration + unit test suite ~2-3x faster than
+      # `cargo test` because it parallelises across binaries (each
+      # tests/*.rs is its own binary) rather than just within one. With
+      # 1691 tests across 25+ test binaries this matters.
+      #
+      # nextest does NOT run doctests — that is a separate, explicit
+      # step below. Doctests require a `cargo test --doc` invocation.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run unit + integration tests (nextest)
+        run: cargo nextest run --all-targets --no-fail-fast
+      - name: Run doctests
+        run: cargo test --doc --all-features
 
   clippy:
     name: Clippy
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,7 +126,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -65,9 +150,12 @@ jobs:
   # suites already run in the `test` job above; this job adds the
   # structural pass that text matching cannot do (object graph
   # resolution, patch target verification).
+  #
+  # ubuntu-latest ships a recent `kubectl` (>=1.27) via setup-tools, so
+  # no self-hosted runner is needed here either.
   k8s:
     name: K8s manifests
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: kubectl kustomize k8s/ (wrapper + base + overlays)
@@ -94,7 +182,7 @@ jobs:
   # var the warning would print and the build would still pass.
   doc:
     name: Doc
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -108,7 +196,7 @@ jobs:
   # This job exercises that exact toolchain so the field cannot decay.
   msrv:
     name: MSRV
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - id: msrv
@@ -137,6 +225,12 @@ jobs:
   # corpus is already run by the `test` job above through
   # `tests/fts_tokenizer_fuzz_harness_tests.rs` — this job extends that
   # coverage with libFuzzer's branch-feedback mutator on every push.
+  #
+  # Stays on self-hosted because (a) cargo-fuzz needs libFuzzer +
+  # AddressSanitizer + nightly Rust, the prebuilt path is best-tested
+  # on a stable, named runner; (b) the 60s smoke run × 3 targets +
+  # cargo-fuzz install can cumulate to ~5 minutes — keeping it off the
+  # GitHub-hosted shared pool is friendlier to budget.
   fuzz:
     name: Fuzz
     runs-on: self-hosted
