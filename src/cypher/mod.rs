@@ -8,9 +8,18 @@
 //! and reuses the existing [`crate::db::Drevo`] storage API — Cypher is
 //! a thin query layer, not a new storage engine.
 //!
-//! Only the lexer module is implemented today. It produces the `Token`
-//! stream that the upcoming parser will consume.
+//! The lexer (task `00061`) produces the `Token` stream that the parser
+//! (task `00062`) consumes; the parser produces the `Query` AST tree
+//! (see the `ast` module) that the upcoming executor (task `00063`)
+//! will walk.
 
+/// Abstract syntax tree types produced by [`parser::parse`] and consumed
+/// by the executor (task `00063`). See the module docs for the shape of
+/// the tree.
+pub mod ast;
 /// Lexical analyser — turns a Cypher source string into a stream of
 /// [`lexer::Token`]s for the parser.
 pub mod lexer;
+/// Recursive-descent + Pratt parser that turns a `Cypher` source string
+/// into an [`ast::Query`].
+pub mod parser;
