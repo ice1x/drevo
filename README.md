@@ -666,7 +666,86 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 - [ ] `00101` Benchmark vs competitors — KuzuDB, Memgraph, Neo4j comparison runs in CI
 - [ ] `00102` Comprehensive docs — user guide, admin guide, SDK reference, Cypher reference, migration guide
 
-**Definition of done:** `docker run ghcr.io/ice1x/drevo` ships with Bolt + HTTP + Web UI + MCP integrated; Python SDK is published to PyPI; the comparison table above is updated with measured numbers from task `00101`.
+**Definition of done:** `docker run ghcr.io/ice1x/drevo` ships with Bolt + HTTP + Web UI + MCP integrated; Python SDK is published to PyPI (delivered by Phase 16, see below); the comparison table above is updated with measured numbers from task `00101`.
+
+> **Note on `00100`:** the placeholder "Python SDK" entry above is **superseded by Phase 16** (`00114`–`00122`), which decomposes the SDK into a graph-RAG-friendly API, three test layers, MCP-introspectable documentation, and a Python CI matrix. The `00100` slot stays in this list only to preserve task numbering; concrete deliverables live under Phase 16.
+
+---
+
+### Phase 16 — Python Graph-RAG SDK
+
+> Goal: a first-class Python package (`drevo-py`) optimised for **graph-RAG (Retrieval-Augmented Generation over a knowledge graph)** use cases. The package wraps the native `Drevo` storage handle through PyO3, exposes ergonomic helpers (`Retriever`, `expand_neighborhood`, `to_text`, batch ingest of LangChain `Document` lists), and ships under three test layers (unit / integration / e2e) so RAG pipelines have the same correctness guarantees as the Rust core. The graph-RAG framing — not generic "Python bindings" — is what differentiates this phase from a thin FFI wrapper.
+>
+> Phase 16 cleanly **supersedes** the placeholder `00100` "Python SDK" entry in Phase 15. It runs **in parallel** with Phase 10 (Cypher) and Phase 12 (vector storage): the API surface is designed against today's Rust API and grows as Cypher + vector land. Initial cut (`00115`) targets the existing graph + FTS surface; later tasks (`00120` e2e) cover Cypher queries from Python and vector-aware retrieval once Phase 12 ships.
+>
+> **Why graph-RAG specifically?** RAG pipelines built on flat vector stores lose structural context (who-wrote-what, which-task-blocks-which, character-co-occurrence). A graph-native retriever can expand a similarity hit into its neighbourhood and feed that neighbourhood to the LLM as connected context — the canonical drevo value-add. This phase encodes those idioms as first-class Python helpers so embedders do not have to re-implement them per project.
+>
+> **Cross-cutting acceptance criteria for every Phase 16 task** (mirrors Phase 8.5 discipline):
+>
+> - Three test layers per `drevo-tdd` skill spec: unit (one function, mocked deps), integration (real `Drevo` instance, real redb file in a tempdir, no network), e2e (LangChain `Document` list → ingest → embed-stub → retrieve → format). Every public Python symbol has tests in **all three** layers.
+> - `pytest -q` runs green on the Python CI matrix (`00122`).
+> - `mypy --strict` clean on the public API surface (type stubs `.pyi` shipped alongside the wheel).
+> - `ruff` + `black --check` clean.
+> - Wheels build for `cp310`/`cp311`/`cp312`/`cp313` × `linux_x86_64` / `linux_aarch64` / `macosx_arm64` / `macosx_x86_64` / `win_amd64` on every release tag.
+> - No regression in the Rust test suite (`cargo test --all-features` baseline preserved).
+
+#### Tasks
+
+- [ ] `00114` **Python API surface RFC** — `audit/RFC-python-api.md` defining naming, type system, sync-vs-async story (default sync; `async-pyo3` evaluated as a follow-up), error mapping (`DrevoError` → typed Python exception hierarchy rooted at `drevo.DrevoError`), iterator vs list returns, batch APIs, `Document`/`Retriever` graph-RAG idioms, comparison to `neo4j` + `kuzu` + `falkordb` Python drivers (idioms to borrow, antipatterns to avoid). Cites: `drevo-architecture` SOLID + anti-patterns; `drevo-rust` §"Error Handling" (for PyO3 error mapping). No code; the next task (`00115`) implements against this RFC.
+
+- [ ] `00115` **PyO3 bindings — core surface** — new crate `drevo-py` in a workspace member directory. Public Python types:
+  - `Drevo` (open / open_in_memory / close / compact / context-manager `__enter__`/`__exit__`),
+  - `Node` / `Edge` / `NewNode` / `NewEdge` / `NodePatch` (dataclass-like, frozen),
+  - CRUD: `create_node`, `get_node`, `get_node_by_uuid`, `get_node_by_title`, `update_node`, `delete_node`, mirrored for edges,
+  - Kind index: `list_nodes_by_kind`, `list_edges_by_kind` (with `limit`, `offset`),
+  - Traversal: `bfs`, `dfs`, `shortest_path`, `subgraph` (returns dataclasses, not opaque handles),
+  - FTS: `search_fts(query, *, limit, kind_filter=None)`,
+  - Cypher (gated behind `cypher = True` kwarg until Phase 10 lands the executor): `query(cypher_text, params=dict)`.
+
+  Errors map: `DrevoError::NotFound` → `drevo.NotFoundError`, `DrevoError::Conflict` → `drevo.ConflictError`, `DrevoError::InvalidInput` → `ValueError`, `DrevoError::Storage` → `drevo.StorageError`. GIL released around every storage I/O call (`py.allow_threads`) so Python threads stay responsive. Cites: `drevo-rust` §"FFI Safety" for panic catching at the Python boundary.
+
+- [ ] `00116` **Python package skeleton + wheels** — `pyproject.toml` (PEP 621), `maturin` build backend, type stubs `drevo/__init__.pyi`, `py.typed` marker, README, LICENSE, CHANGELOG. `cibuildwheel` matrix builds wheels for the platforms listed in the cross-cutting criteria above. `twine check dist/*` green. **No publishing yet** — the wheel build is exercised in CI on every PR; publishing to PyPI lands later as a separate release task. Cites: `drevo-architecture` §"Crate boundaries".
+
+- [ ] `00117` **Graph-RAG idioms layer** — pure-Python module `drevo.rag` built on top of the PyO3 bindings. Concrete API:
+  - `Retriever(drevo, *, hops=2, kind_filter=None)` — given a seed node UUID or FTS query, returns the seed plus its `hops`-deep neighbourhood as a `Context` object,
+  - `Context.to_text(*, format='markdown'|'json'|'turtle')` — formats the retrieved subgraph as LLM-ready context,
+  - `expand_neighborhood(node_uuid, *, hops, kind_filter, max_nodes)` — bounded BFS used by the retriever,
+  - `ingest_documents(docs: list[Document], *, schema=None)` — batched node creation from a LangChain `Document` list, with optional schema mapping,
+  - `MMRReranker` (Maximum Marginal Relevance) — used by `Retriever` when more candidates are returned than fit in the context budget.
+
+  `drevo.rag` has **zero hard dependency on LangChain / LlamaIndex / Haystack** — it accepts duck-typed `Document` objects (anything with `.page_content: str` and `.metadata: dict`) so any orchestrator can plug in. Adapters for those frameworks ship as optional extras (`pip install drevo-py[langchain]`).
+
+- [ ] `00118` **Python unit-test suite** — `tests/unit/` under the Python package. ~80 tests, one focused assertion per case, dependencies mocked where possible (storage, embedder). Covers: every public method on `Drevo`, every error mapping (each `DrevoError` variant has a corresponding Python exception test), `Retriever` algorithmic correctness, `MMRReranker` math, `Context.to_text` formatting for all three formats. Cites: `drevo-tdd` §"Unit tests".
+
+- [ ] `00119` **Python integration-test suite** — `tests/integration/` exercising the **real** redb backend via `Drevo.open(tempfile)`. ~40 tests. Covers cross-component invariants the unit tests can't catch: CRUD round-trip across process restart (open → write → close → reopen → verify), pagination boundary conditions on `list_*` calls, FTS recall over real corpora, traversal correctness on real edge tables, GIL re-acquisition (multi-threaded clients hitting the same `Drevo` instance), Cypher round-trip once `00063` executor lands. Cites: `drevo-tdd` §"Integration tests".
+
+- [ ] `00120` **Python e2e graph-RAG suite** — `tests/e2e/` with the **same five scenario domains** as the Rust + Cypher e2e suites (CBT journal, story editor, IT task manager, ERP, bug tracker) **plus** a graph-RAG-specific scenario:
+  - **RAG scenario:** ingest a synthetic `Document` list, build the graph, issue a natural-language query, expect a `Context` whose serialised form contains the seed node + its declared neighbourhood, in stable order.
+
+  Each scenario runs end-to-end in a tempdir, no network, no real embedder (deterministic stub). The five domain scenarios reuse the AST asserted by the Cypher e2e tests (`tests/cypher_parser_e2e_tests.rs`) but go one layer further: they parse → execute → assert observable outputs (created node count, traversal result, projection rows). This is the **definition-of-done** suite for Phase 16. Cites: `drevo-tdd` §"E2E tests"; mirrors the Phase 10 DoD §"the five scenario test suites pass when expressed in Cypher".
+
+- [ ] `00121` **MCP server documents the Python API** — extends `drevo-mcp` (Phase 15 `00090`) so MCP-compatible clients (Cline, Claude Code, Claude Desktop) can introspect the Python API without leaving the conversation. Concretely:
+  - The Python API surface (every public symbol, signature, docstring, example) is **mirrored into the project's knowledge-graph store** as `Component` / `Function` entities by a generator step in `00115` / `00117` (`drevo-py-build` step → KG entities).
+  - `drevo-mcp` exposes new tools:
+    - `python_api_describe(name: str)` — returns the signature + docstring of a Python symbol,
+    - `python_api_examples(intent: str)` — fuzzy-searches the KG for a code snippet matching the intent,
+    - `python_api_list(prefix: str = "")` — enumerates symbols.
+  - Tools read from the KG, **not** from a hand-maintained markdown file — so updates flow automatically from PyO3 docstrings on every release.
+
+  This is the **answer to "where is the Python API documented?"** — in the KG, queryable both from MCP clients and from `drevo-mcp` users.
+
+- [ ] `00122` **Python CI matrix on every PR** — GitHub Actions workflow `.github/workflows/python.yml`. Matrix: `{python: [3.10, 3.11, 3.12, 3.13]} × {os: [ubuntu-latest, macos-latest, windows-latest]}`. Per-job steps:
+  1. checkout, set up Python, `pip install maturin pytest mypy ruff black`,
+  2. `maturin develop --release --features="redb-backend"`,
+  3. `pytest tests/unit/ -q`,
+  4. `pytest tests/integration/ -q`,
+  5. `pytest tests/e2e/ -q`,
+  6. `mypy --strict drevo/`,
+  7. `ruff check . && black --check .`.
+
+  PR merging is **gated on all matrix cells green**. The workflow also publishes a coverage report (`pytest-cov`) as a PR comment. Cites: `drevo-tdd` §"CI must run all three layers".
+
+**Definition of done:** `pip install drevo-py` from a wheel built by Phase 16 CI works on all matrix platforms; `drevo.rag.Retriever` returns deterministic context for every scenario in `tests/e2e/`; an MCP client (e.g. Claude Code) can ask "how do I open a drevo from Python?" and receive the right snippet via the `drevo-mcp` tools delivered in `00121`; PR builds are gated on the Python matrix being green.
 
 ---
 
@@ -813,6 +892,7 @@ Why phases 10-15 are ordered this way, rather than appended in `ex/`-source orde
 7. **Production / ecosystem last but parallelizable.** Phase 15 items (MCP, Web UI, replication, SDK, fuzz, algorithms, docs, CDC) run independently and concurrently. MCP and Web UI deliver visible value early.
 8. **Risk weighting.** Phase 13 (MVCC) carries highest risk — schedule with buffer. Phase 12 (vector) is novel but isolated — failure mode is contained. Phase 11 (Bolt) is a well-documented protocol — low implementation risk once Cypher works.
 9. **Quality gate between Cypher and Bolt.** Phase 10.5 (`00123`–`00128`) is **not skippable** — it is the *only* moment in the roadmap where drevo's Cypher implementation can be diffed against a reference (Neo4j Community) before official drivers see it. Skipping it means `cypher-shell` users get silently-wrong answers, which is the failure mode most expensive to recover from (broken client traces, no clear bug signal at the wire layer). The 8-hour nightly soak + 95 % parity diff threshold are explicit pre-conditions for *opening* Phase 11.
+10. **Python SDK pulled out into a dedicated phase.** Phase 16 (`00114`–`00122`) supersedes the placeholder `00100` "Python SDK" entry. The SDK is reframed as a **graph-RAG-first** package (`Retriever`, `Context.to_text`, document ingest helpers) rather than a thin FFI wrapper, ships three test layers per `drevo-tdd`, mirrors its API surface into the KG so the `drevo-mcp` server can answer "where is the Python API?" via MCP tools, and gates every PR on a Python × OS CI matrix. Runs **in parallel** with Phase 10 (Cypher) and Phase 12 (vector) because the API surface is designed against today's Rust API and grows as those phases land — no critical-path block, parallelisable from `00114` RFC onwards.
 
 ---
 
@@ -1074,6 +1154,7 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 4. **Begin Phase 10** (`00061`–`00069`): Cypher query language — start with the lexer (`00061`), then parser, then executor for CREATE / MATCH / RETURN.
 5. **Parallel track**: Phase 12 (`00075`–`00079`) — vector storage and HNSW index — can start independently as soon as Phase 10 is underway.
 6. **Phase 15 early-value items**: `00090` MCP server and `00092` Web UI deliver visible value early and can run alongside Phases 10-12.
+7. **Phase 16 — Python Graph-RAG SDK** (`00114`–`00122`): standalone, parallelisable, no critical-path block on Phases 10/12. Start with `00114` RFC immediately; `00115` PyO3 bindings can land against the existing Rust API (CRUD, traversal, FTS) without waiting for Cypher; `00117` graph-RAG idioms layer + `00118`/`00119`/`00120` three-layer tests + `00122` CI matrix close the SDK on the Phase 15 PyPI deliverable, while `00121` wires the API surface into the `drevo-mcp` knowledge graph so AI clients can introspect it.
 
 ---
 
@@ -1094,7 +1175,9 @@ A planned `drevo-mcp` stdio binary will expose drevo as a [Model Context Protoco
 
 The MCP server will expose node CRUD, edge CRUD, traversal, FTS, and (after Phase 10) Cypher query tools — enabling an AI agent to read and write the knowledge graph as part of a conversation.
 
-Tracked as task `00090` (Phase 15).
+**After Phase 16 (`00121`)** the MCP server additionally exposes Python-API introspection tools — `python_api_describe`, `python_api_examples`, `python_api_list` — backed by Python symbol entities mirrored into the KG by the `drevo-py` build pipeline. This means an AI client (Cline, Claude Code, Claude Desktop) can answer "how do I open a drevo from Python?" by querying the MCP server directly, without external docs.
+
+Tracked as task `00090` (Phase 15); Python-API tools tracked as task `00121` (Phase 16).
 
 ---
 
