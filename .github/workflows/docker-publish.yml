@@ -39,15 +39,38 @@
 
 name: Docker Publish
 
+# Docs-only changes bypass this workflow via `paths-ignore`. The set
+# MUST stay byte-identical to ci.yml's and cross-compile.yml's
+# paths-ignore set — locked by
+# `tests/ci_self_hosted_runner_tests.rs::heavy_workflows_share_docs_only_paths_ignore`.
+# Without this filter, a README-only PR would still trigger the
+# linux/amd64 + linux/arm64 multi-arch build via QEMU (~20-30 min
+# under emulation), consuming runner time and adding nothing — the
+# Docker image cannot meaningfully change when only docs do.
+# `push` to tags (`v*`) is intentionally NOT filtered: a release tag
+# always rebuilds the image regardless of what files changed in the
+# tagged commit.
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 env:
