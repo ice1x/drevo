@@ -754,5 +754,47 @@ Any deviation in `00115` requires a follow-up amendment block below.
 
 ## 12. Amendments
 
-*(None yet. Add a dated `## 12.N — <title>` block here for any
+### 12.1 — 2026-05-25, task `00115` PR — Edge field names + timestamp suffix
+
+The implementation in `drevo-py` exposes `Edge.from_id` / `Edge.to_id` /
+`Edge.created_at` (and `Node.created_at` / `Node.updated_at`) rather than
+the `src` / `dst` / `*_ms` spellings shown in the §3.3 type-stub
+snippet. The decision was made because §3.1 explicitly states "**No
+re-spellings** ... the Rust spelling is already idiomatic Python
+`snake_case`." The stub snippet in §3.3 was illustrative, not normative
+— `from_id` / `to_id` / `created_at` / `updated_at` match the Rust
+[`drevo::model::Edge`] / [`drevo::model::Node`] field names exactly, so
+users who read the Rust API docs (e.g. via [docs.rs](https://docs.rs)
+when this crate is published) see the same names on the Python side.
+
+Future amendments to §3.3 should rewrite the stub block to mirror this
+implementation choice. Filed under task `00115` to keep §3.1 the
+single source of truth.
+
+### 12.2 — 2026-05-25, task `00115` PR — UUID surfaced as `bytes`, not `uuid.UUID`
+
+The PyO3 layer returns 16-byte `bytes` for `Node.uuid` / `Edge.uuid`
+and accepts `bytes` for `get_node_by_uuid` / `get_edge_by_uuid`. The
+RFC §3.2 default position (Q-1) is `uuid.UUID` on the Python side; that
+conversion lives one layer up in the pure-Python `drevo/__init__.py`
+shim shipped by task `00116`. Reasoning: keeping the PyO3 layer free of
+`import uuid` calls on the hot path makes the Rust ↔ Python boundary
+cheaper and lets the shim layer evolve UUID handling (timezone-aware
+timestamps from UUID v7 byte 0–5, for example) without recompiling the
+extension module. Users who pre-instal `00116`'s shim see `Node.uuid:
+uuid.UUID`; users who `import _drevo` directly (e.g. during `00115`
+development) see `bytes`.
+
+### 12.3 — 2026-05-25, task `00115` PR — `InvalidWeight` raises `PyValueError` directly
+
+Per the implementation sketch in §5.3, the Rust mapper raises
+`PyValueError` (not a `drevo.InvalidWeightError` subclass) when a
+non-finite weight crosses the boundary. The pure-Python
+`drevo/errors.py` module that introduces a real `InvalidWeightError`
+subclass of `ValueError` lands with task `00116`. Until then, callers
+catching `ValueError` work today; once `00116` lands, callers catching
+`drevo.InvalidWeightError` also work without a re-raise change in this
+crate.
+
+*(Add a dated `## 12.N — <title>` block here for any future
 post-acceptance change. Mention the PR that landed the change.)*
