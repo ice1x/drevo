@@ -1,0 +1,176 @@
+# Phase 16 task `00116` — Python wheel build matrix.
+#
+# Drives `cibuildwheel` over the platform / CPython matrix declared in
+# the cross-cutting acceptance criteria of README.md §"Phase 16 — Python
+# Graph-RAG SDK":
+#
+#   cp310 / cp311 / cp312 / cp313  ×  Ubuntu / macOS / Windows
+#
+# Each leaf builds a wheel via `maturin` (the build backend declared in
+# `drevo-py/pyproject.toml`) and runs `twine check dist/*` to validate
+# wheel metadata. The job uploads built wheels as a workflow artifact so
+# a downstream release step (separate task — not part of `00116`) can
+# fetch them when the time comes to publish to PyPI.
+#
+# **No publishing.** Task `00116` explicitly defers package uploads:
+# the matrix exists so wheel build regressions are caught on every PR,
+# but the release flow lands later once `00122` makes the Python CI
+# matrix the gating check. A scaffolding test in
+# `tests/python_package_wheels_tests.rs` asserts this file invokes
+# neither the upload subcommand nor the official upload action — flip
+# those guards at release-task time, not before.
+#
+# **Not on branch protection yet.** The job is wired to PR + manual
+# dispatch but not yet listed in branch protection's required-checks
+# set. Task `00122` promotes it once the Python CI matrix lands the
+# full unit / integration / e2e test layers; until then, a red wheel
+# build surfaces as an advisory.
+
+name: Python wheels
+
+on:
+  pull_request:
+    branches: [main]
+    # Only re-run when something that affects wheel content changes.
+    # Pure-docs PRs (`*.md` outside `drevo-py/`, `audit/**`, `memory/**`)
+    # do not trigger this workflow — mirror the `ci.yml` paths-ignore
+    # convention.
+    paths:
+      - 'drevo-py/**'
+      - '.github/workflows/python-wheels.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+  push:
+    branches: [main]
+    paths:
+      - 'drevo-py/**'
+      - '.github/workflows/python-wheels.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+  workflow_dispatch:
+
+concurrency:
+  group: python-wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_wheels:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Three runner classes. `cibuildwheel` fans out into CPython
+        # minor versions inside each runner via the `CIBW_BUILD` env
+        # var below, so listing only the OS axis here keeps the matrix
+        # readable.
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    env:
+      # Selects the wheels cibuildwheel will produce. The `cp3XY-*`
+      # pattern matches every architecture cibuildwheel knows about
+      # on the runner; the abi3-py310 feature in
+      # `drevo-py/Cargo.toml` lets one `cp310` wheel run on every
+      # later 3.x — but we build per-minor anyway so PyPI's metadata
+      # records the exact set of tested versions.
+      CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+      # Skip PyPy and 32-bit Linux — drevo's redb backend has not
+      # been validated on either; users on those platforms can build
+      # from source via `pip install drevo-py --no-binary :all:`.
+      CIBW_SKIP: "pp* *-musllinux_i686 cp*-musllinux_*"
+      # Force cibuildwheel to invoke `maturin` rather than its default
+      # `pip wheel`. `pip wheel` would try to use a setuptools backend
+      # and explode immediately — `pyproject.toml` declares maturin.
+      CIBW_BUILD_FRONTEND: "build"
+      # cibuildwheel runs inside its own container on Linux. Install
+      # the Rust toolchain inside that container so cargo is available
+      # to maturin. The `before-build` hook runs once per wheel.
+      CIBW_BEFORE_BUILD_LINUX: >-
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+        sh -s -- -y --profile minimal --default-toolchain stable &&
+        rustup show
+      # Native macOS + Windows runners get rustup from the host setup
+      # step below — no in-container install needed.
+      CIBW_BEFORE_BUILD_MACOS: "rustup show || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable)"
+      CIBW_BEFORE_BUILD_WINDOWS: "rustup show"
+      # Smoke-test every wheel cibuildwheel produces: import the
+      # extension and assert `__version__` is non-empty. The test
+      # runs in cibuildwheel's isolated venv (`pip install ${wheel}`)
+      # so it actually exercises the install path, not the dev tree.
+      CIBW_TEST_COMMAND: 'python -c "import drevo; assert drevo.__version__; print(\"drevo\", drevo.__version__)"'
+
+    steps:
+      - uses: actions/checkout@v4
+        # cibuildwheel needs the full git history to compute the
+        # version when the project uses dynamic versioning. We use
+        # static `version = "0.1.0"` for now, but a shallow clone
+        # still trips up `maturin develop` on some Rust + cargo
+        # interactions, so fetch-depth: 0 is the safe default.
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python (host)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust (host — needed on macOS / Windows)
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cibuildwheel + twine
+        run: python -m pip install --upgrade pip cibuildwheel==2.21.3 twine
+
+      - name: Build wheels with cibuildwheel
+        run: python -m cibuildwheel --output-dir wheelhouse drevo-py
+        # `drevo-py` is the package directory cibuildwheel points at
+        # (`drevo-py/pyproject.toml`).
+
+      - name: Validate wheel metadata (twine check)
+        # `twine check dist/*` exits non-zero on a missing description,
+        # invalid classifier, or unrenderable README. Catches metadata
+        # mistakes before any future release task tries to upload.
+        run: python -m twine check wheelhouse/*.whl
+
+      - name: Upload wheels artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: drevo-py-wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          retention-days: 14
+
+  build_sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build sdist with maturin
+        run: |
+          python -m pip install --upgrade pip 'maturin>=1.7,<2.0' twine
+          maturin sdist --manifest-path drevo-py/Cargo.toml --out wheelhouse
+
+      - name: Validate sdist metadata
+        run: python -m twine check wheelhouse/*.tar.gz
+
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: drevo-py-sdist
+          path: wheelhouse/*.tar.gz
+          retention-days: 14

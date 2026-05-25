@@ -1,0 +1,141 @@
+# Phase 16 task `00116` — Python package skeleton + wheel build config.
+#
+# PEP 621 metadata + maturin build backend for `drevo-py`. The cdylib
+# produced by `drevo-py/Cargo.toml` is bundled into a wheel together
+# with the pure-Python shim under `drevo-py/python/drevo/`. End users
+# `pip install drevo-py` and `import drevo`; the `_drevo` extension
+# module is an implementation detail behind the `drevo.__init__` shim
+# which wraps 16-byte `bytes` UUIDs as `uuid.UUID` (RFC §12.2).
+#
+# Implements the contract in `audit/RFC-python-api.md` §2 ("Wheel layout")
+# plus the Phase 16 cross-cutting acceptance criteria in README.md
+# §"Phase 16 — Python Graph-RAG SDK".
+
+[build-system]
+# `maturin >= 1.7` supports the `[tool.maturin].python-source` layout
+# that keeps the pure-Python `drevo/*.py` files outside `src/` so the
+# rag idioms layer (`00117`) can iterate without recompiling Rust.
+# Pinned with a major version cap to avoid silent surprises from a
+# future 2.x release.
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "drevo-py"
+version = "0.1.0"
+description = "Python bindings for drevo — embedded graph database (PyO3 + abi3-py310)"
+readme = "README.md"
+# `requires-python = ">=3.10"` matches the `abi3-py310` feature in
+# `drevo-py/Cargo.toml`. A single wheel runs on every CPython ≥ 3.10;
+# bumping this floor requires bumping `abi3-pyXYZ` in lockstep.
+requires-python = ">=3.10"
+# SPDX expression matches `drevo-py/Cargo.toml` (`MIT OR Apache-2.0`).
+# The LICENSE file ships both texts under `drevo-py/LICENSE`.
+license = { text = "MIT OR Apache-2.0" }
+authors = [
+    { name = "drevo contributors", email = "noreply@ice1x.dev" },
+]
+keywords = [
+    "graph",
+    "database",
+    "embedded",
+    "redb",
+    "rag",
+    "graph-rag",
+    "neo4j",
+    "knowledge-graph",
+]
+# PyPI classifiers surface the package in search results and document
+# the supported runtime + OS matrix declared in
+# `.github/workflows/python-wheels.yml` (`cibuildwheel`).
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+# Core install has zero pure-Python dependencies — `drevo.rag` (`00117`)
+# adds optional extras (`pip install drevo-py[langchain]`) for adapters.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ice1x/drevo"
+Repository = "https://github.com/ice1x/drevo"
+Issues = "https://github.com/ice1x/drevo/issues"
+Changelog = "https://github.com/ice1x/drevo/blob/main/drevo-py/CHANGELOG.md"
+
+[project.optional-dependencies]
+# Reserved namespaces for follow-on Phase 16 tasks — declared here so
+# they appear in `pip install drevo-py[<extra>]` autocomplete even
+# before the wrapper modules land.
+langchain = []   # task 00117 follow-up — LangChain Document adapter
+llamaindex = []  # task 00117 follow-up — LlamaIndex Document adapter
+dev = [
+    "maturin>=1.7,<2.0",
+    "pytest>=7",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "black>=24",
+    "twine>=5",
+]
+
+[tool.maturin]
+# `module-name = "drevo._drevo"` places the cdylib at
+# `<site-packages>/drevo/_drevo.<abi-tag>.so` so the pure-Python
+# `drevo/__init__.py` shim can `from . import _drevo` (RFC §2). The
+# dotted prefix matters: without it, the cdylib lands at
+# `<site-packages>/_drevo.so` and the shim's relative import breaks.
+module-name = "drevo._drevo"
+# `python-source = "python"` tells maturin to include the
+# `drevo-py/python/` directory in the wheel as pure-Python files. The
+# layout under that directory is `python/drevo/{__init__.py, *.pyi,
+# py.typed, errors.py, rag/...}`. Without this line maturin would only
+# ship the cdylib and the wheel would not import.
+python-source = "python"
+# `features = ["pyo3/extension-module"]` is forwarded to cargo when
+# maturin invokes the Rust build. Mandatory: without it the wheel
+# tries to link libpython statically, which fails on every modern
+# Python distribution.
+features = ["pyo3/extension-module"]
+# `strip = true` removes debug symbols from the cdylib so wheel size
+# stays under PyPI's per-file limit on the larger platforms (arm64
+# + AddressSanitizer can hit ~80 MiB without stripping). Release
+# builds drop another ~3x in size; debug info is preserved in the
+# uncompressed binary anyway during local `maturin develop`.
+strip = true
+
+# Manifest path is relative to *this* `pyproject.toml`. Pointing at the
+# sibling Cargo manifest is required because the workspace root manifest
+# is one level up.
+manifest-path = "Cargo.toml"
+
+[tool.ruff]
+# Pin the Python target version to the minimum supported runtime so
+# `ruff` flags syntax that would not parse on 3.10. Mirrors the
+# `requires-python` declaration above.
+target-version = "py310"
+line-length = 100
+
+[tool.black]
+target-version = ["py310", "py311", "py312", "py313"]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+# `drevo._drevo` is a compiled extension; mypy follows the `.pyi`
+# stubs shipped at `drevo-py/python/drevo/__init__.pyi`.
+mypy_path = "python"

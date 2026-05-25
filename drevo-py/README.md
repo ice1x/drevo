@@ -22,12 +22,37 @@ GIL-releasing surface that mirrors the public Rust API of the
 | `00121` MCP   | ⏳ pending | KG-backed symbol introspection                                |
 | `00122` CI    | ⏳ pending | `.github/workflows/python.yml` (3.10 × {linux, mac, windows}) |
 
-## Local build
+## Install (after task `00116`)
+
+```bash
+# From a published wheel (lands once a PyPI release task ships).
+pip install drevo-py
+
+# From source — works today against this repo. Requires Python ≥ 3.10
+# plus a Rust toolchain (`rustup`) so maturin can compile the cdylib.
+pip install maturin
+pip install .                  # builds + installs the wheel
+# OR for an editable dev install:
+maturin develop --release
+```
+
+After install:
+
+```python
+import drevo
+
+with drevo.Drevo.open_in_memory() as db:
+    node = db.create_node(drevo.NewNode(kind="note", title="hello"))
+    print(node.uuid)            # uuid.UUID, not bytes
+```
+
+## Local Rust build
 
 `drevo-py` is intentionally **not** in `default-members` of the
 workspace — the existing CI (`.github/workflows/ci.yml`) does not
 provision a Python interpreter, and PyO3 requires one at build time. To
-compile this crate locally:
+compile this crate at the Rust level (no Python install required for
+the type-conversion / error-mapping tests):
 
 ```bash
 # Compile the cdylib (requires Python ≥ 3.10 on PATH)
@@ -37,8 +62,10 @@ cargo build -p drevo-py
 cargo test -p drevo-py
 ```
 
-A `maturin develop` workflow that builds the wheel and installs it into
-the current virtualenv lands in task `00116`.
+The maturin wheel build (`maturin build` / `maturin develop`) lives
+behind `drevo-py/pyproject.toml` (task `00116`); the cross-platform
+`cibuildwheel` matrix runs on every PR via
+`.github/workflows/python-wheels.yml`.
 
 ## Public surface (Rust-side)
 
