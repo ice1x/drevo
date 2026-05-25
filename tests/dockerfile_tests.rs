@@ -273,6 +273,113 @@ fn dockerignore_does_not_shadow_cargo_targets() {
     }
 }
 
+/// Read every directory listed in `[workspace] members = [...]` of the
+/// root `Cargo.toml`. The Dockerfile must COPY each member directory
+/// into the builder stage — otherwise cargo refuses to load the
+/// workspace manifest *even when the target being built does not depend
+/// on the member* (the regression task `00115` first surfaced — Docker
+/// Publish failed with "failed to load manifest for workspace member
+/// `/build/drevo-py`" after `drevo-py` joined the workspace but did not
+/// land in the Dockerfile).
+fn cargo_workspace_member_dirs() -> Vec<String> {
+    let cargo_toml = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .expect("failed to read Cargo.toml");
+    let mut dirs: Vec<String> = Vec::new();
+    let mut in_workspace = false;
+    let mut buffer = String::new();
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[workspace]" {
+            in_workspace = true;
+            continue;
+        }
+        if in_workspace && trimmed.starts_with('[') {
+            break;
+        }
+        if !in_workspace {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("members") {
+            // Collect everything until we hit a `]` so we can handle
+            // both single-line `members = [".", "drevo-py"]` and
+            // multi-line forms.
+            buffer.clear();
+            buffer.push_str(rest);
+        } else if !buffer.is_empty() {
+            buffer.push(' ');
+            buffer.push_str(trimmed);
+        }
+        if buffer.contains(']') {
+            // Extract every quoted string between '[' and ']'.
+            let start = buffer.find('[').unwrap_or(0);
+            let end = buffer.find(']').unwrap_or(buffer.len());
+            for part in buffer[start + 1..end].split(',') {
+                let entry = part.trim().trim_matches('"').to_string();
+                // Skip the root crate (".") and entries with glob chars.
+                if entry.is_empty() || entry == "." || entry.contains('*') {
+                    continue;
+                }
+                dirs.push(entry);
+            }
+            buffer.clear();
+            // members = [...] only appears once; stop scanning.
+            break;
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+#[test]
+fn cargo_workspace_member_collector_finds_drevo_py() {
+    // Phase 16 task 00115 added `drevo-py` as the first non-root
+    // workspace member. If the collector silently regresses, the
+    // downstream COPY-coverage test below becomes a tautology.
+    let dirs = cargo_workspace_member_dirs();
+    assert!(
+        dirs.iter().any(|d| d == "drevo-py"),
+        "helper failed to discover `drevo-py` from the [workspace] members list. Got: {dirs:?}"
+    );
+}
+
+#[test]
+fn dockerfile_copies_every_workspace_member_dir() {
+    // For every non-root entry in `[workspace] members = [...]`, the
+    // Dockerfile must COPY that directory into the builder stage. Cargo
+    // refuses to load the workspace manifest if a declared member's
+    // Cargo.toml is missing — even when `cargo build --bin <name>`
+    // targets a binary that does not depend on the missing member.
+    //
+    // Regression source: Phase 16 task 00115 promoted the repo to a
+    // workspace with `drevo-py` as the second member but the
+    // accompanying Dockerfile patch was missed on the first commit.
+    // The CI Docker Publish job failed on the next PR push with:
+    //   error: failed to load manifest for workspace member `/build/drevo-py`
+    // This test would have caught it at `cargo test` time before push.
+    let dockerfile = read_dockerfile();
+    let copy_lines: Vec<&str> = dockerfile
+        .lines()
+        .filter(|l| l.trim_start().starts_with("COPY") && !l.contains("--from=builder"))
+        .collect();
+    for dir in cargo_workspace_member_dirs() {
+        let covered = copy_lines.iter().any(|l| {
+            l.contains(&format!("{dir}/"))
+                || l.contains(&format!("{dir} "))
+                || l.contains(&format!(" ./{dir}/"))
+        });
+        assert!(
+            covered,
+            "[workspace] members declares `{dir}` but no COPY line in the Dockerfile pulls it \
+             into the builder stage. Add e.g. `COPY {dir}/ {dir}/` before the `cargo build` step, \
+             or the container build will fail at manifest-parse time with:\n  \
+             error: failed to load manifest for workspace member `/build/{dir}`\n\
+             Current non-builder COPY lines:\n  {}",
+            copy_lines.join("\n  ")
+        );
+    }
+}
+
 #[test]
 fn dockerfile_copies_every_cargo_manifest_target_dir() {
     // For every directory declared by a `[[bench]]` / `[[bin]]` /
