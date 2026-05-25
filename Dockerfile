@@ -16,6 +16,19 @@ COPY src/ src/
 # by manifest parsing (we never run `cargo bench` in this stage).
 # Locked by `tests/dockerfile_tests.rs::dockerfile_copies_every_cargo_manifest_target_dir`.
 COPY benches/ benches/
+# Phase 16 task 00115 promoted the repo to a Cargo workspace with
+# `drevo-py` as the second member. Cargo refuses to load *any* workspace
+# manifest if a declared member's Cargo.toml is missing — even when the
+# target being built (`--bin drevo-server`) does not depend on the
+# member. Without this COPY, `cargo build` fails inside the container
+# with:
+#   error: failed to load manifest for workspace member `/build/drevo-py`
+# The `drevo-py` source itself is never compiled in this stage —
+# `cargo build --bin drevo-server` filters the dep graph to the server
+# binary, so pyo3 / pythonize do not enter the build. The COPY is
+# strictly for manifest parsing.
+# Locked by `tests/dockerfile_tests.rs::dockerfile_copies_every_workspace_member_dir`.
+COPY drevo-py/ drevo-py/
 
 # Build only the server binary in release mode.
 # cbindgen feature is excluded — no C header needed in the container.

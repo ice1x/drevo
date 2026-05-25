@@ -1,0 +1,87 @@
+# drevo-py — PyO3 bindings for the drevo embedded graph database.
+#
+# Phase 16 task `00115`. The crate is a `cdylib` that compiles into the
+# Python extension module `_drevo.<platform>.so`. The thin pure-Python
+# layer (`python/drevo/__init__.py`, `drevo.rag` package) lands with the
+# packaging task `00116`; this crate's job is to expose the Rust public
+# surface (`Drevo`, `Node`, `Edge`, traversal, FTS, errors) to Python.
+#
+# Implements the contract in `audit/RFC-python-api.md` §§3–7:
+#   * frozen `#[pyclass]` dataclass-like wrappers for the public types
+#   * typed exception hierarchy rooted at `drevo.DrevoError`
+#   * `py.allow_threads` released on every storage I/O call
+#   * panic-catch wrapper so a Rust panic never crosses the FFI boundary
+#
+# Out of scope for `00115` (tracked under follow-on Phase 16 tasks):
+#   * `pyproject.toml` + maturin packaging (`00116`)
+#   * `drevo.rag` graph-RAG idioms layer (`00117`)
+#   * Python unit / integration / e2e test suites (`00118` / `00119` / `00120`)
+#   * MCP introspection generator (`00121`)
+#   * Python CI matrix (`00122`)
+#   * batch APIs (`create_nodes` / `create_edges`) — require a transactional
+#     batch entry point on the Rust side, tracked separately
+#   * `Drevo.query(cypher, params=)` — gated on Phase 10 task `00063`
+#     landing the Cypher executor
+[package]
+name = "drevo-py"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "PyO3 bindings for drevo — embedded graph database"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+# `_drevo` is the runtime module name imported lazily by
+# `python/drevo/__init__.py` (per RFC §2 "Wheel layout"). The user-facing
+# import is `import drevo`; `_drevo` is an implementation detail.
+name = "_drevo"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Wraps the public `drevo::*` API. `default-features = false` plus
+# `features = ["redb-backend"]` keeps the HTTP server, cbindgen build
+# step, and tokio runtime out of the Python wheel — they belong to the
+# server / FFI surfaces, not the Python embedding.
+drevo = { path = "..", default-features = false, features = ["redb-backend"] }
+
+# PyO3 0.23 is the latest stable as of Phase 16 kickoff. `extension-module`
+# tells PyO3 to compile against the Python ABI without linking libpython
+# (the wheel uses dynamic resolution at import time). `abi3-py310` produces
+# a single wheel that runs on every CPython ≥ 3.10, matching the matrix
+# declared in README §Phase 16 cross-cutting acceptance criteria.
+# `extension-module` is gated behind a feature so `cargo test -p drevo-py
+# --no-default-features` can link a normal test binary against libpython
+# (extension-module suppresses libpython linking — fine for the wheel,
+# fatal for a stand-alone test binary). Default features include
+# `extension-module` so `maturin develop` / `cargo build -p drevo-py`
+# produces a working wheel without extra flags.
+pyo3 = { version = "0.23", features = ["abi3-py310"] }
+
+# `pythonize` round-trips `serde_json::Value` to native Python objects so
+# `Node.properties` / `Edge.properties` show up as `dict[str, Any]` on the
+# Python side rather than opaque blobs. Direction: Python `dict[str, Any]`
+# → `serde_json::Value` on input, `serde_json::Value` → Python on output.
+pythonize = "0.23"
+
+# Re-exported by the public types — `uuid::Uuid` becomes Python's
+# `uuid.UUID` at the boundary (RFC §3.2 Q-1 default position).
+uuid = { version = "1", features = ["v7"] }
+
+# `serde_json::Value` is the type behind `drevo::model::Properties`. We
+# depythonize a Python dict straight into a `HashMap<String, Value>`,
+# which is what `Properties` wraps — keeps the wire format identical to
+# the rest of the drevo surface (HTTP, FFI, JSON dump).
+serde_json = "1"
+
+[features]
+default = ["extension-module"]
+# Forwards to `pyo3/extension-module`. With this feature enabled, the
+# resulting cdylib expects to be `dlopen`-ed by a running Python — no
+# libpython linkage. Without it, the build links against libpython and
+# `cargo test -p drevo-py` produces a runnable test binary that hosts
+# its own interpreter.
+extension-module = ["pyo3/extension-module"]
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,3 +1,30 @@
+# --- Workspace ---------------------------------------------------------------
+#
+# Phase 16 task `00115` introduces a second crate — `drevo-py` — that wraps
+# the `drevo` library through PyO3. Promoting the repo to a Cargo workspace
+# lets the Python binding live in a sibling directory without forking the
+# build graph (`Cargo.lock` stays unified; `cargo check -p drevo-py` works
+# out of the box).
+#
+# `default-members = ["."]` deliberately omits `drevo-py`. Reason: PyO3
+# requires a Python interpreter at build time (extension-module link
+# semantics), but the project's existing CI runners (`.github/workflows/ci.yml`)
+# do not provision Python. Keeping `drevo-py` *out* of the default set
+# means `cargo check`, `cargo build`, `cargo nextest run`, `cargo clippy
+# --all-targets`, `cargo doc` — every invocation in CI today — continue
+# to operate only on the root `drevo` crate, so this PR adds Python
+# bindings without regressing existing gates.
+#
+# Building the Python wheel happens explicitly via `maturin develop` /
+# `maturin build` (introduced in Phase 16 task `00116`) and a dedicated
+# Python CI matrix (task `00122`). Until those land, contributors who
+# want to compile `drevo-py` locally run `cargo build -p drevo-py`
+# with a Python install on PATH.
+[workspace]
+members = [".", "drevo-py"]
+default-members = ["."]
+resolver = "2"
+
 [package]
 name = "drevo"
 version = "0.1.0"
