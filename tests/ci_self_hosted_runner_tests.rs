@@ -342,32 +342,50 @@ fn ci_yml_declares_concurrency_cancel_in_progress() {
 }
 
 /// The docs-only path set — these glob patterns MUST appear in
-/// `ci.yml`'s `paths-ignore:` (so the real CI is skipped for them) AND
-/// in `ci-skip.yml`'s `paths:` (so the skip workflow runs and emits
-/// passing required checks). The set is duplicated in BOTH workflow
-/// files; the tests below assert that every element appears in both
-/// places. The list is also re-stated here as the single source of
-/// truth so a future edit cannot silently drift one of the files.
+/// `paths-ignore:` of EVERY "heavy" PR-gating workflow (ci.yml,
+/// cross-compile.yml, docker-publish.yml) AND in `ci-skip.yml`'s
+/// `paths:` (so the skip workflow runs and emits passing required
+/// checks). The list is duplicated across all four workflow files;
+/// the tests below assert that every element appears in every file.
+/// The set is re-stated here as the single source of truth so a
+/// future edit cannot silently drift one of the files.
 const DOCS_ONLY_GLOBS: &[&str] = &["**/*.md", "audit/**", "memory/**", "LICENSE", ".gitignore"];
 
+/// Workflows that MUST skip docs-only PRs via `paths-ignore`. A
+/// docs-only PR (README, audit/, memory/, …) is one that touches no
+/// Rust code, no infra, no workflow files — running any of these
+/// workflows on it is wasted runner time AND a risk: any upstream
+/// network flake (e.g. Android NDK download from dl.google.com via
+/// curl HTTP/2) would block the PR for no legitimate reason. PR #81
+/// (a README-only roadmap PR) was blocked by exactly this on
+/// cross-compile.yml's Android job before this invariant landed.
+const HEAVY_WORKFLOWS_WITH_DOCS_SKIP: &[&str] =
+    &["ci.yml", "cross-compile.yml", "docker-publish.yml"];
+
 #[test]
-fn ci_yml_skips_docs_only_changes_via_paths_ignore() {
-    let ci_yml = workflows_dir().join("ci.yml");
-    let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
-    assert!(
-        body.contains("paths-ignore:"),
-        "ci.yml must declare `paths-ignore:` on its triggers so \
-         docs-only PRs (README, audit/, memory/) do not consume CI \
-         minutes. Pair with `.github/workflows/ci-skip.yml` for the \
-         required-check pass-through."
-    );
-    for glob in DOCS_ONLY_GLOBS {
+fn heavy_workflows_share_docs_only_paths_ignore() {
+    for workflow in HEAVY_WORKFLOWS_WITH_DOCS_SKIP {
+        let path = workflows_dir().join(workflow);
+        let body =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("{workflow} must exist: {e}"));
         assert!(
-            body.contains(glob),
-            "ci.yml `paths-ignore:` is missing the docs-only glob \
-             `{glob}` — the set must be {DOCS_ONLY_GLOBS:?} and stay \
-             in sync with the same list in ci-skip.yml."
+            body.contains("paths-ignore:"),
+            "{workflow} must declare `paths-ignore:` on its PR / push \
+             triggers so docs-only PRs (README, audit/, memory/) do \
+             not consume CI minutes or expose the PR to upstream \
+             network flakes in unrelated build steps. The path set \
+             MUST be byte-identical across all workflows in \
+             HEAVY_WORKFLOWS_WITH_DOCS_SKIP."
         );
+        for glob in DOCS_ONLY_GLOBS {
+            assert!(
+                body.contains(glob),
+                "{workflow} `paths-ignore:` is missing the docs-only \
+                 glob `{glob}` — the set must be {DOCS_ONLY_GLOBS:?} \
+                 and stay in sync across {HEAVY_WORKFLOWS_WITH_DOCS_SKIP:?} \
+                 plus ci-skip.yml's `paths:` (which is the inverse)."
+            );
+        }
     }
 }
 

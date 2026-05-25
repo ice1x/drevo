@@ -1,10 +1,31 @@
 name: Cross-Compilation
 
+# Docs-only changes bypass this workflow via `paths-ignore`. The set
+# MUST stay byte-identical to ci.yml's and docker-publish.yml's
+# paths-ignore set — locked by
+# `tests/ci_self_hosted_runner_tests.rs::heavy_workflows_share_docs_only_paths_ignore`.
+# Without this filter, a README-only PR would still trigger Android,
+# iOS, WASM, host, and macOS smoke-test jobs (5 jobs each consuming
+# minutes / queue slot), and any one of them flaking on an upstream
+# network operation (e.g. Android NDK download from dl.google.com via
+# curl HTTP/2) would block the PR with no legitimate code reason.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'audit/**'
+      - 'memory/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 env:
   CARGO_TERM_COLOR: always
