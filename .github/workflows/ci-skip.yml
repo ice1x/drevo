@@ -74,47 +74,51 @@ concurrency:
 # `workflow / job_name` as the status-check coordinate, but matching
 # the id keeps the two files visually aligned for review.
 #
-# Each job is a single `echo` step on ubuntu-latest (free, fast).
+# Each job is a single `echo` step on the self-hosted runner. We
+# explicitly DO NOT use ubuntu-latest here: the repo is private and
+# GitHub-hosted minutes were exhausted by the earlier PR #76
+# experiment. A self-hosted `echo` finishes in <1 second and
+# satisfies branch protection equally well.
 jobs:
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - run: echo "skipped — docs-only change"
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - run: echo "skipped — docs-only change"
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - run: echo "skipped — docs-only change"
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - run: echo "skipped — docs-only change"
 
   k8s:
     name: K8s manifests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - run: echo "skipped — docs-only change"
 
   doc:
     name: Doc
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - run: echo "skipped — docs-only change"
 
   msrv:
     name: MSRV
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - run: echo "skipped — docs-only change"
 

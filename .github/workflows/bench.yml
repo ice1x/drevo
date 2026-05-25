@@ -1,0 +1,107 @@
+# Nightly criterion benchmark workflow — scheduled, NEVER triggered
+# by PR or push.
+#
+# Why this file exists
+# --------------------
+# drevo's four benchmark crates (`storage_bench`, `graph_bench`,
+# `fts_bench`, `traversal_bench`) declare `harness = false` so each one
+# runs criterion's `main()` even under `cargo test --benches`. Single
+# iterations through the heavy cells are brutal:
+#
+#   bulk_put_100k/RedbBackend        ~530-720 s
+#   scan_prefix/RedbBackend/1000     ~641 s
+#   graph_insert_nodes_100k/Memory   ~122 s
+#   traversal_bfs/outgoing/depth_2   ~245 s
+#   …
+#
+# A full `cargo bench --all-features` cumulates to roughly one hour.
+# Running that on every PR was the root cause of the four-hour CI
+# debacle on PR #76. PR #77 fixed PR-gating CI by removing benches
+# from the `test` job. This file is the OTHER half: benches still
+# matter as a perf signal, they just don't belong in the PR critical
+# path.
+#
+# Triggers
+# --------
+#   * `schedule: cron '0 4 * * *'` — every day at 04:00 UTC. UTC, not
+#     local: GitHub Actions cron is always UTC. Pick a time when the
+#     self-hosted runner is otherwise idle. 04:00 UTC = 06:00 CET /
+#     20:00 PST / 07:00 MSK; no overlap with typical PR activity.
+#   * `workflow_dispatch:` — run on demand from the Actions UI. Use
+#     this before/after touching perf-sensitive code (`src/fts/**`,
+#     `src/storage/**`, `src/traversal.rs`) to spot regressions
+#     before nightly.
+#
+# Notably absent: `push:` and `pull_request:`. Benches do NOT run on
+# PRs. Locked by `tests/ci_self_hosted_runner_tests.rs`.
+#
+# Runner
+# ------
+# `self-hosted`. Benchmark numbers MUST come from a stable host —
+# GitHub-hosted ubuntu-latest VMs are ephemeral with variable
+# neighbour load, so timings would be noise-dominated. The Apple
+# Silicon self-hosted runner already handles cargo-fuzz and Docker
+# multi-arch; criterion stability is the third reason to keep it.
+#
+# Output
+# ------
+# Criterion writes HTML reports + raw timing JSON under
+# `target/criterion/`. The workflow uploads that whole tree as an
+# artifact named `criterion-<run_id>`, which lasts 90 days under
+# GitHub's default retention. For long-term trend tracking, a future
+# task (Phase 10.5 `00123`) can extend this workflow to commit the
+# raw timings into a `bench-history/` folder or publish to
+# GitHub Pages.
+
+name: Bench
+
+on:
+  schedule:
+    # 04:00 UTC daily. GitHub schedules can be late by 15-30 min
+    # under load — that's acceptable; we're not racing anyone.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+# A second cron firing while the previous nightly run is still in
+# progress would queue indefinitely on the single self-hosted runner.
+# Cancel the older run so the latest scheduled (or manually
+# dispatched) bench wins. The group is workflow-specific and does
+# NOT collide with ci.yml's `ci-real-${{ github.ref }}` or
+# ci-skip.yml's `ci-skip-${{ github.ref }}`.
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: Criterion benchmarks
+    runs-on: self-hosted
+    # Do NOT block the workflow on a single regressed bench — let
+    # all four bench crates run, surface failures as annotations,
+    # and capture the criterion HTML so a human can triage.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run all criterion benches
+        # `--all-features` so the bench crates compile against the
+        # same feature surface the test suite uses. `--no-fail-fast`
+        # so one failing bench doesn't prevent the rest from
+        # producing data.
+        run: cargo bench --all-features --no-fail-fast
+
+      - name: Upload criterion reports
+        # Always upload — even on partial failure we want the
+        # criterion HTML for the benches that did complete.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.run_id }}
+          path: target/criterion/
+          retention-days: 90
+          if-no-files-found: warn
