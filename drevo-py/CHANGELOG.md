@@ -96,6 +96,16 @@ matrix mandatory).
   `tests/python_package_wheels_tests.rs` locking every deliverable
   above so a future PR cannot silently drop a file or break the
   cibuildwheel matrix.
+- 40 Python runtime tests in `drevo-py/tests/test_shim.py` exercising
+  the shim layer end-to-end: `Node.uuid` / `Edge.uuid` actually return
+  `uuid.UUID` (not raw `bytes`), `InvalidWeightError` actually
+  subclasses `ValueError`, every name in `__all__` actually resolves,
+  every method enumerated in RFC §3.3 actually exists on `Drevo` at
+  runtime, the `Direction` IntEnum has the documented integer values,
+  the context manager closes the handle, and `get_node_by_uuid` still
+  accepts raw `bytes` on input. Runs inside cibuildwheel's
+  `CIBW_TEST_COMMAND` against every wheel before upload — broken wheel
+  fails the matrix job.
 
 ### Out of scope (deferred to follow-on Phase 16 tasks)
 

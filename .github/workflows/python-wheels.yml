@@ -98,11 +98,19 @@ jobs:
       # step below — no in-container install needed.
       CIBW_BEFORE_BUILD_MACOS: "rustup show || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable)"
       CIBW_BEFORE_BUILD_WINDOWS: "rustup show"
-      # Smoke-test every wheel cibuildwheel produces: import the
-      # extension and assert `__version__` is non-empty. The test
-      # runs in cibuildwheel's isolated venv (`pip install ${wheel}`)
-      # so it actually exercises the install path, not the dev tree.
-      CIBW_TEST_COMMAND: 'python -c "import drevo; assert drevo.__version__; print(\"drevo\", drevo.__version__)"'
+      # Test every wheel cibuildwheel produces against the runtime
+      # contract in drevo-py/tests/test_shim.py (UUID wrapping,
+      # InvalidWeightError subclass, __all__ consistency, RFC §3.3
+      # method enumeration, ~40 tests). The tests run in cibuildwheel's
+      # isolated venv (`pip install ${wheel}`) so they exercise the
+      # install path — the same one end users hit — not the dev tree.
+      # pytest is installed via CIBW_TEST_REQUIRES so it does not
+      # contaminate the wheel's own dependency closure.
+      CIBW_TEST_REQUIRES: "pytest>=7"
+      # `{project}` is expanded by cibuildwheel to the repo root (the
+      # directory passed on the command line — `drevo-py`), so
+      # `{project}/tests` resolves to `drevo-py/tests`.
+      CIBW_TEST_COMMAND: 'pytest -q {project}/tests'
 
     steps:
       - uses: actions/checkout@v4

@@ -491,6 +491,70 @@ fn cibuildwheel_workflow_exists_with_full_matrix() {
 }
 
 #[test]
+fn cibuildwheel_runs_the_python_runtime_test_suite() {
+    // The runtime tests in `drevo-py/tests/test_shim.py` MUST run
+    // inside cibuildwheel's per-wheel test step so a broken UUID
+    // wrap / missing __all__ entry / wrong InvalidWeightError
+    // parent class fails the matrix job at build time — not at
+    // first user import.
+    let wf = read(
+        &repo_root()
+            .join(".github")
+            .join("workflows")
+            .join("python-wheels.yml"),
+    );
+    assert!(
+        wf.contains("CIBW_TEST_COMMAND"),
+        "python-wheels.yml must declare CIBW_TEST_COMMAND so every \
+         built wheel is exercised before upload"
+    );
+    assert!(
+        wf.contains("pytest"),
+        "CIBW_TEST_COMMAND must invoke `pytest` against \
+         `drevo-py/tests/` — a `python -c \"import drevo\"` smoke is \
+         not enough to lock the runtime contract for the shim layer \
+         (UUID wrap, InvalidWeightError, __all__ re-exports)"
+    );
+    assert!(
+        wf.contains("CIBW_TEST_REQUIRES") && wf.contains("pytest"),
+        "python-wheels.yml must install pytest via CIBW_TEST_REQUIRES \
+         so the wheel itself does not gain a pytest dependency"
+    );
+}
+
+#[test]
+fn python_runtime_test_suite_exists() {
+    let suite = repo_root()
+        .join("drevo-py")
+        .join("tests")
+        .join("test_shim.py");
+    assert!(
+        suite.exists(),
+        "drevo-py/tests/test_shim.py must exist — runtime contract \
+         tests for the 00116 shim layer (UUID wrapping, \
+         InvalidWeightError subclass, __all__ consistency)"
+    );
+    let body = read(&suite);
+    // Spot-check the key runtime assertions so a future PR cannot
+    // gut the file without also breaking this test.
+    for needle in [
+        "uuid.UUID",
+        "InvalidWeightError",
+        "ValueError",
+        "__all__",
+        "open_in_memory",
+        "Direction.OUT",
+    ] {
+        assert!(
+            body.contains(needle),
+            "drevo-py/tests/test_shim.py must reference `{needle}` — \
+             RFC §3.2 / §5.3 / §12.2 runtime contract for the 00116 \
+             shim is locked here"
+        );
+    }
+}
+
+#[test]
 fn cibuildwheel_workflow_does_not_publish_to_pypi() {
     let wf = read(
         &repo_root()

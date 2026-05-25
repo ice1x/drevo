@@ -139,3 +139,13 @@ strict = true
 # `drevo._drevo` is a compiled extension; mypy follows the `.pyi`
 # stubs shipped at `drevo-py/python/drevo/__init__.pyi`.
 mypy_path = "python"
+
+[tool.pytest.ini_options]
+# Test discovery rooted at `tests/` so cibuildwheel's
+# `pytest -q {project}/tests` picks up the runtime shim suite
+# (drevo-py/tests/test_shim.py). The conftest.py beside it provides
+# the `drevo_db` fixture used by the UUID + handle round-trip tests.
+testpaths = ["tests"]
+# Catch silent collection errors — without these flags a renamed test
+# fixture surfaces as "0 tests collected" instead of an error.
+addopts = "-ra --strict-markers --strict-config"
