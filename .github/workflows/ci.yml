@@ -63,28 +63,28 @@ env:
   CARGO_INCREMENTAL: 1
 
 jobs:
-  # The four PR gates — check, test, clippy, fmt — all run on
-  # `ubuntu-latest`. Reasoning:
-  #   * GitHub-hosted runners are FREE for public repos and elastically
-  #     parallel: each job gets its own VM, so the four gates here +
-  #     `doc` + `msrv` execute concurrently rather than serialised
-  #     through our single self-hosted runner.
-  #   * The Phase 8 self-hosted migration (PR #74) optimised for Docker
-  #     multi-arch and the cargo-fuzz Linux-only requirement, but moved
-  #     stable-Rust PR jobs onto the same queue. Net result: a single
-  #     1691-test suite waited ~hours behind Docker QEMU builds. Moving
-  #     stable jobs back to ubuntu-latest restores parallelism without
-  #     giving up the niche-target benefits self-hosted brings (multi-
-  #     arch Docker, ARM64 native Mac fuzzing).
-  #   * `Swatinem/rust-cache@v2` already caches `target/` + the cargo
-  #     registry between runs on ubuntu-latest just as it did on
-  #     self-hosted.
-  # Jobs that still need self-hosted are listed below with a per-job
-  # comment explaining why.
+  # All jobs run on `self-hosted`. The repo is private; GitHub Free
+  # gives 2000 GitHub-hosted minutes / month for private repos, and
+  # the prior ubuntu-latest experiment (PR #76 → reverted in this
+  # workflow) blew through that quota in a single afternoon and
+  # left the repo unable to dispatch any GitHub-hosted job (UI saw
+  # "fail after 2s" with no step logs — runners simply never came
+  # online). The self-hosted Apple Silicon runner has no such cap.
+  #
+  # The original speed problem that motivated PR #76 was NOT the
+  # runner — it was criterion benchmarks running inside the `test`
+  # job (`bulk_put_100k/RedbBackend` ≈ 530s and friends). PR #77
+  # removed those by dropping `--all-targets` from the nextest
+  # invocation; on self-hosted with that fix in place the `test`
+  # job finishes in ~5-10 minutes, well within an acceptable PR
+  # latency envelope. Three other PR #76 wins — `concurrency:
+  # cancel-in-progress`, `cargo nextest`, and the docs-only
+  # `paths-ignore` + paired `ci-skip.yml` — are kept, since none
+  # of them depended on the runner choice.
 
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -93,7 +93,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -131,7 +131,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -142,7 +142,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -167,11 +167,9 @@ jobs:
   # structural pass that text matching cannot do (object graph
   # resolution, patch target verification).
   #
-  # ubuntu-latest ships a recent `kubectl` (>=1.27) via setup-tools, so
-  # no self-hosted runner is needed here either.
   k8s:
     name: K8s manifests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - name: kubectl kustomize k8s/ (wrapper + base + overlays)
@@ -198,7 +196,7 @@ jobs:
   # var the warning would print and the build would still pass.
   doc:
     name: Doc
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -212,7 +210,7 @@ jobs:
   # This job exercises that exact toolchain so the field cannot decay.
   msrv:
     name: MSRV
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - id: msrv
