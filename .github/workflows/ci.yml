@@ -61,6 +61,19 @@ env:
   # nextest needs no specific env; documented here to make the contract
   # explicit for future contributors who might wonder.
   CARGO_INCREMENTAL: 1
+  # Persistent local target/ directory shared across every job in this
+  # workflow. Rationale matches `cross-compile.yml`: on the self-hosted
+  # runner `actions/checkout` runs `git clean -ffdx` and wipes `target/`
+  # from the workspace every job, but `$RUNNER_TOOL_CACHE` is a stable
+  # per-runner directory that survives across jobs and runs. Pointing
+  # cargo's target there preserves incremental build state between
+  # check / test / clippy / doc / msrv runs — and means we never depend
+  # on the network-backed GHA cache for the largest artefact. Layout
+  # under this directory is per-target (`debug/`, `release/`,
+  # `aarch64-…/debug/`, …) so jobs that compile against different
+  # feature sets do not collide. Single-runner serialisation means
+  # cargo never needs cross-process locks beyond its own.
+  CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
 
 jobs:
   # All jobs run on `self-hosted`. The repo is private; GitHub Free
@@ -88,7 +101,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
 
   test:
@@ -97,7 +109,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       # nextest runs the integration + unit test suite ~2-3x faster than
       # `cargo test` because it parallelises across binaries (each
       # tests/*.rs is its own binary) rather than just within one. With
@@ -143,7 +154,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
 
   fmt:
@@ -208,7 +218,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps --all-features
 
   # Audit task 00113 — MSRV is declared in `Cargo.toml` (`rust-version`)
@@ -231,7 +240,6 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
       - run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown
         # The wasm sanity check is the cheapest way to catch a future MSRV
@@ -262,8 +270,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: fuzz
       # cargo-fuzz binary install + target resolution:
       #
       # cargo-fuzz hard-codes a default --target that does not match

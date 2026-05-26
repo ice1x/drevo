@@ -41,6 +41,25 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Persistent local target/ directory shared across all jobs in this
+  # workflow. On self-hosted, `actions/checkout` runs `git clean -ffdx`
+  # by default and wipes `target/` from the workspace; pointing
+  # `CARGO_TARGET_DIR` outside the workspace keeps the compiled artifacts
+  # between runs so cargo's native incremental build kicks in, with no
+  # network roundtrip to a GHA cache backend (the old behaviour via
+  # `Swatinem/rust-cache@v2` still works on hosted runners as a fallback,
+  # but on self-hosted it just adds an HTTP fetch in front of a disk
+  # cargo already has). The path lives under `$RUNNER_TOOL_CACHE` —
+  # the same per-runner persistent directory we use to cache the
+  # Android NDK in the `Install Android NDK` step below.
+  #
+  # Cargo lays out artifacts per-target under this directory
+  # (e.g. `${CARGO_TARGET_DIR}/aarch64-linux-android/debug/`), so the
+  # 5 jobs in this workflow do not collide even though they share the
+  # same root. On the self-hosted runner only one job runs at a time
+  # (single-runner serialisation), so the per-job file locks cargo
+  # takes inside target/ never see contention.
+  CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
 
 jobs:
   # -------------------------------------------------------------------------
@@ -56,9 +75,13 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: wasm32
+      # No `Swatinem/rust-cache@v2` here — the workflow-level
+      # `CARGO_TARGET_DIR` env keeps the compiled `target/` directory in
+      # `$RUNNER_TOOL_CACHE` between runs on the self-hosted runner, so
+      # cargo's native incremental build is the cache. Layering Swatinem
+      # on top would replace the locally-incremental state with whatever
+      # snapshot last got uploaded to the GHA cache backend (older, by
+      # definition), which is the opposite of what we want here.
 
       # Check: compile for WASM (no default features, wasm feature enabled)
       - name: cargo check (WASM)
@@ -102,9 +125,7 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ios
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       # Check: compile for iOS with default features (redb + cbindgen)
       - name: cargo check (iOS)
@@ -154,9 +175,7 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: android
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       # Install Android NDK linker — host-OS aware.
       #
@@ -283,9 +302,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: cross-tests
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run cross-compilation tests
         run: cargo test --test cross_compilation_tests -- --nocapture
@@ -301,9 +318,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: smoke-tests
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests
         run: cargo test --test smoke_tests -- --nocapture
@@ -319,9 +334,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: smoke-macos
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests (macOS)
         run: cargo test --test smoke_tests -- --nocapture
