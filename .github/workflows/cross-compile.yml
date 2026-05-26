@@ -41,7 +41,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # CARGO_TARGET_DIR is set per-job (runner context unavailable at workflow level).
+  # CARGO_TARGET_DIR is set by a setup step inside each job (see ci.yml's
+  # comment for the full rationale — `runner.*` context is only valid at
+  # step level, not in workflow- or job-level `env:` blocks).
 
 jobs:
   # -------------------------------------------------------------------------
@@ -50,22 +52,33 @@ jobs:
   wasm:
     name: "WASM (wasm32-unknown-unknown)"
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
 
-      # No `Swatinem/rust-cache@v2` here — the workflow-level
-      # `CARGO_TARGET_DIR` env keeps the compiled `target/` directory in
-      # `$RUNNER_TOOL_CACHE` between runs on the self-hosted runner, so
-      # cargo's native incremental build is the cache. Layering Swatinem
-      # on top would replace the locally-incremental state with whatever
-      # snapshot last got uploaded to the GHA cache backend (older, by
-      # definition), which is the opposite of what we want here.
+      # No `Swatinem/rust-cache@v2` here — the per-job setup step at the
+      # top of this job exported `CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/
+      # drevo-cargo-target` into `$GITHUB_ENV`, which keeps the compiled
+      # `target/` directory at a persistent location between runs on the
+      # self-hosted runner, so cargo's native incremental build is the
+      # cache. Layering Swatinem on top would replace the locally-
+      # incremental state with whatever snapshot last got uploaded to
+      # the GHA cache backend (older, by definition), which is the
+      # opposite of what we want here.
 
       # Check: compile for WASM (no default features, wasm feature enabled)
       - name: cargo check (WASM)
@@ -102,16 +115,25 @@ jobs:
   ios:
     name: "iOS (aarch64-apple-ios)"
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
 
-      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       # Check: compile for iOS with default features (redb + cbindgen)
       - name: cargo check (iOS)
@@ -154,16 +176,25 @@ jobs:
   android:
     name: "Android (aarch64-linux-android)"
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
-      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       # Install Android NDK linker — host-OS aware.
       #
@@ -285,14 +316,23 @@ jobs:
   cross-compile-tests:
     name: "Cross-compilation tests (host)"
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run cross-compilation tests
         run: cargo test --test cross_compilation_tests -- --nocapture
@@ -303,14 +343,23 @@ jobs:
   smoke-tests:
     name: "Platform smoke tests (host)"
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests
         run: cargo test --test smoke_tests -- --nocapture
@@ -321,14 +370,23 @@ jobs:
   smoke-tests-macos:
     name: "Platform smoke tests (macOS)"
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests (macOS)
         run: cargo test --test smoke_tests -- --nocapture

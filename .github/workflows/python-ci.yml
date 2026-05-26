@@ -59,9 +59,18 @@ jobs:
   lint_and_test:
     name: Lint + test (Python 3.12)
     runs-on: ubuntu-latest
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
       - name: Set up Python 3.12
@@ -77,14 +86,14 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # No `Swatinem/rust-cache@v2` here. The job-level
-      # `CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target`
-      # env above already points cargo at a persistent location on
-      # `$RUNNER_TOOL_CACHE` — `maturin develop` honours that env
-      # var, so its compiled drevo + pyo3 + redb artefacts land in
-      # the same shared directory the rest of the CI uses and stay
-      # warm across runs. Layering Swatinem on top would download an
-      # older snapshot over HTTPS and overwrite the live state.
+      # No `Swatinem/rust-cache@v2` here. The setup step above
+      # exported `CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target`
+      # into `$GITHUB_ENV`, pointing cargo at a persistent location.
+      # `maturin develop` honours that env var, so its compiled drevo
+      # + pyo3 + redb artefacts land in the same shared directory the
+      # rest of the CI uses and stay warm across runs. Layering
+      # Swatinem on top would download an older snapshot over HTTPS
+      # and overwrite the live state.
 
       - name: Create + activate venv (maturin develop requires one)
         # `actions/setup-python` exposes the interpreter on PATH but

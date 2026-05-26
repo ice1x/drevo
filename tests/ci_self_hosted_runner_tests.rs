@@ -967,3 +967,94 @@ fn bench_yml_does_not_trigger_on_pr_or_push() {
         forbidden_hits.join("`, `")
     );
 }
+
+/// Regression test for the workflow-parse failure that silently broke
+/// every PR's CI for ~24 hours after commit `0872954` landed.
+///
+/// **Background.** GHA's `runner.*` expression context is only resolved
+/// *at step execution time* — after a runner has been assigned to a
+/// job. Putting `${{ runner.tool_cache }}` (or any other `runner.*`
+/// expression) in a workflow-level `env:` block OR in a job-level
+/// `env:` block produces a generic "workflow file issue" error: the
+/// run appears in the Actions UI under its **file path** instead of
+/// its `name:` field, with conclusion `failure`, 0 jobs, no logs.
+/// Same failure category as the `runner.os` in a job-level `if:`
+/// (already guarded by [`workflow_files_do_not_smuggle_runner_os_at_job_level`]).
+///
+/// **History.** A first revision of the CARGO_TARGET_DIR caching change
+/// put the expression in the *workflow-level* `env:` block, caught and
+/// fixed in commit `0872954`. That fix moved the expression to *job-
+/// level* `env:` — but GHA rejects it there too, which only became
+/// visible after PR #89 merged because no PR landed for the 24h
+/// window where the workflow-parse failure swallowed the `pull_request`
+/// trigger.  This invariant locks the working pattern: a setup step
+/// that exports `CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/…` into
+/// `$GITHUB_ENV` *inside* `steps:` (which IS step-level).
+///
+/// **What this test checks.** For every workflow file, parse a tiny
+/// indentation-based state machine over the YAML to track whether the
+/// current line sits inside `steps:`. Forbid any `${{ runner.* }}`
+/// expression OUTSIDE `steps:` — that's the failure mode.  Comments
+/// are exempt (they're allowed to reference the expression in prose so
+/// future contributors know what NOT to do).
+#[test]
+fn ci_workflows_dont_use_runner_context_outside_steps() {
+    let mut violations: Vec<String> = Vec::new();
+    for path in workflow_files() {
+        let file_label = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let body = fs::read_to_string(&path).unwrap_or_default();
+        let mut steps_indent: Option<usize> = None;
+        for (lineno, line) in body.lines().enumerate() {
+            let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+            // Track entry / exit from a `steps:` block.
+            if trimmed.starts_with("steps:") {
+                steps_indent = Some(indent);
+                continue;
+            }
+            if let Some(si) = steps_indent {
+                // Anything at <= the `steps:` indent that's a YAML key
+                // means we left the steps block (next job or top-level).
+                if !line.trim().is_empty()
+                    && indent <= si
+                    && !trimmed.starts_with('#')
+                    && !trimmed.starts_with('-')
+                    && trimmed.contains(':')
+                {
+                    steps_indent = None;
+                }
+            }
+            // Comments referencing the expression in prose are fine —
+            // they're how we educate future contributors about WHY this
+            // doesn't work.
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            // Inside steps: the expression is valid. Outside it: forbidden.
+            if line.contains("${{ runner.") && steps_indent.is_none() {
+                violations.push(format!(
+                    "{}:{}: `${{{{ runner.* }}}}` used outside of `steps:` — \
+                     GHA's runner context is only resolved at step \
+                     execution time. Move into a setup step like \
+                     `run: echo \"VAR=$RUNNER_TOOL_CACHE/…\" >> $GITHUB_ENV`. \
+                     Line: `{}`",
+                    file_label,
+                    lineno + 1,
+                    line.trim_end(),
+                ));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "GitHub Actions workflow files use `${{{{ runner.* }}}}` outside \
+         of a `steps:` block, which makes GHA reject the workflow YAML \
+         (run appears under file path with no jobs, no logs). See the \
+         test docstring for the history and the fix pattern. \
+         Violations:\n  - {}",
+        violations.join("\n  - "),
+    );
+}

@@ -61,15 +61,19 @@ env:
   # nextest needs no specific env; documented here to make the contract
   # explicit for future contributors who might wonder.
   CARGO_INCREMENTAL: 1
-  # NOTE: `CARGO_TARGET_DIR` is set PER JOB below (each compile-heavy
-  # job has its own `env: CARGO_TARGET_DIR: ${{ runner.tool_cache }}/…`).
-  # GitHub does NOT expose the `runner` expression context at the
-  # workflow-level `env:` block — that context is only populated AFTER
-  # a job is assigned to a runner. Putting `${{ runner.tool_cache }}`
-  # here makes GitHub reject the whole workflow with a generic
-  # "workflow file issue" error (no jobs run, no logs). The first
-  # revision of this caching change made exactly that mistake; the
-  # job-level placement below is the working pattern.
+  # NOTE: `CARGO_TARGET_DIR` is set by a setup step inside each
+  # compile-heavy job below — `echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE
+  # /drevo-cargo-target" >> $GITHUB_ENV`. GHA's `runner.*` expression
+  # context is ONLY available at step level — putting `${{ runner.tool_cache }}`
+  # in either workflow-level `env:` OR job-level `env:` makes GitHub
+  # reject the whole workflow with a generic "workflow file issue"
+  # error (run shows under the file path instead of `name: CI`, no
+  # jobs run, no logs). The first revision of this caching change
+  # made the workflow-level mistake; commit 0872954 moved it to
+  # job-level (still wrong — `runner.*` is unavailable there too);
+  # this revision moves it into a setup step that reads the always-
+  # set `$RUNNER_TOOL_CACHE` shell env var. Locked by
+  # `tests/ci_self_hosted_runner_tests.rs::ci_workflows_dont_use_runner_context_outside_steps`.
 
 jobs:
   # All jobs run on `self-hosted`. The repo is private; GitHub Free
@@ -94,9 +98,18 @@ jobs:
   check:
     name: Check
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check --all-targets
@@ -104,9 +117,18 @@ jobs:
   test:
     name: Test
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       # nextest runs the integration + unit test suite ~2-3x faster than
@@ -149,9 +171,18 @@ jobs:
   clippy:
     name: Clippy
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -228,9 +259,18 @@ jobs:
   msrv:
     name: MSRV
     runs-on: self-hosted
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - id: msrv
         run: |
@@ -270,9 +310,18 @@ jobs:
     # CI annotation and let humans triage. The stable harness replay in
     # the `test` job remains a hard gate.
     continue-on-error: true
-    env:
-      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
+      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       # No Swatinem — job-level `CARGO_TARGET_DIR` above persists
