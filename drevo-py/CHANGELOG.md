@@ -10,6 +10,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Tracked here as Phase 16 tasks land. Sections roll into the next
 released entry on a tagged commit.
 
+### Added — task `00118` (Python unit-test suite)
+
+- `drevo-py/tests/unit/` — focused, mocked-where-possible unit suite
+  per RFC §2 ("Wheel layout" — the three-layer test tree). One
+  assertion per case, dependencies (storage, embedder) stubbed at the
+  smallest viable boundary (in-memory `Drevo` for storage,
+  deterministic SHA-256 / one-hot embedders for vectors). 180+ runtime
+  pytest cases organised by surface area:
+  - `test_handle.py` — `Drevo` lifecycle (open / open_in_memory / close
+    / context manager / compact / health_check).
+  - `test_nodes.py` — full node CRUD + `list_nodes_by_kind`,
+    `list_recent`, `get_node_by_*`, `update_node`, `delete_node`.
+  - `test_edges.py` — full edge CRUD + `edges_of`, `list_edges_by_kind`,
+    `InvalidWeightError` on non-finite weights.
+  - `test_traversal.py` — `bfs` / `dfs` / `shortest_path` / `subgraph` /
+    `neighbors` across the `connected_chain` fixture.
+  - `test_fts.py` — `Drevo.search_fts` happy path + limit + no-match.
+  - `test_errors.py` — every variant in RFC §5.1 + §5.3 inheritance
+    chain (`NotFoundError`, `ConflictError`, `DuplicateTitleError`,
+    `StorageError`, `SerializationError`, `LockedError`, `PanicError`,
+    `InvalidWeightError`).
+  - `test_rag_ingest.py` — `ingest_documents` schema + embedder edges.
+  - `test_rag_neighborhood.py` — `expand_neighborhood` depth / kind
+    filter / `max_nodes` / `hops_used` telemetry / seed-type union.
+  - `test_rag_retriever.py` — `Retriever` dispatch (mocked) + real
+    backend behaviour + `retrieve_with_embedding` deferral.
+  - `test_rag_context.py` — all three `Context.to_text` formats
+    (markdown / json / turtle); JSON validity; UUID textual length;
+    Turtle quote escaping.
+  - `test_rag_mmr.py` — MMR math at both `lambda_=1.0` (pure
+    relevance) and `lambda_=0.0` (pure diversity) plus edge cases
+    (`k=0`, `k>len`, empty input, embedder size mismatch).
+- Shared fixtures in `drevo-py/tests/unit/conftest.py`: `drevo_db`,
+  `mock_drevo` (typed `MagicMock`), `det_embedder` (hash-based),
+  `orthogonal_embedder` (one-hot), `connected_chain` (a → b → c → d),
+  `mixed_kind_neighbourhood` (root + one-of-each-kind), `make_scored`
+  (duck-typed MMR candidate factory).
+- 18 text-level scaffolding tests in
+  `tests/python_unit_test_suite_tests.rs` locking the directory layout,
+  the shared-fixture set, the per-surface test modules, the error
+  hierarchy coverage, both MMR lambda semantics, and all three
+  Context.to_text formats — runs inside the Rust-only CI gate so a
+  rename / delete of a unit module is caught before the Python CI job
+  fires.
+
 ### Added — task `00117` (graph-RAG idioms layer)
 
 - `drevo-py/python/drevo/rag/` — pure-Python subpackage on top of the
@@ -49,7 +94,6 @@ released entry on a tagged commit.
 
 ### Pending
 
-- `00118` — Python unit-test suite under `tests/unit/`.
 - `00119` — Python integration-test suite under `tests/integration/`.
 - `00120` — Python e2e graph-RAG suite under `tests/e2e/`.
 - `00121` — MCP introspection generator (Python symbols mirrored into
