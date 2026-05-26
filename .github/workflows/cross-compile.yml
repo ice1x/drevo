@@ -1,14 +1,27 @@
 name: Cross-Compilation
 
-# Docs-only changes bypass this workflow via `paths-ignore`. The set
-# MUST stay byte-identical to ci.yml's and docker-publish.yml's
-# paths-ignore set — locked by
+# Docs-only changes bypass this workflow via `paths-ignore` on the
+# `push:main` trigger. The set MUST stay byte-identical to ci.yml's
+# and docker-publish.yml's paths-ignore set — locked by
 # `tests/ci_self_hosted_runner_tests.rs::heavy_workflows_share_docs_only_paths_ignore`.
-# Without this filter, a README-only PR would still trigger Android,
-# iOS, WASM, host, and macOS smoke-test jobs (5 jobs each consuming
-# minutes / queue slot), and any one of them flaking on an upstream
-# network operation (e.g. Android NDK download from dl.google.com via
-# curl HTTP/2) would block the PR with no legitimate code reason.
+#
+# Why no `pull_request:` trigger
+# ------------------------------
+# Earlier revisions ran the WASM / iOS / Android / cross-tests /
+# smoke / macos-smoke set on every PR. The Android job in particular
+# downloads ~1 GiB of NDK from dl.google.com on every cold run, and
+# any upstream network flake on `curl` to `dl.google.com` would block
+# the PR with no legitimate code reason — PR #81 (a README-only
+# roadmap PR) hit exactly that mode before the docs-only paths-ignore
+# guard landed. Beyond Android, the value the per-PR matrix added was
+# small: cross-target regressions are rare and ci.yml's `msrv` job
+# already exercises `wasm32-unknown-unknown` on every PR, which is
+# our primary cross-target. The remaining cells (iOS, Android, native
+# smoke) now run on `push:main` (so a real regression is caught on
+# the very next merge into main, before the next PR rebases on top)
+# and twice a week via `schedule:` (so a slow upstream change is
+# caught between merges). Manual `workflow_dispatch` is available
+# when a PR genuinely needs the cross-target validation before merge.
 on:
   push:
     branches: [main]
@@ -18,17 +31,17 @@ on:
       - 'memory/**'
       - 'LICENSE'
       - '.gitignore'
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'audit/**'
-      - 'memory/**'
-      - 'LICENSE'
-      - '.gitignore'
+  schedule:
+    # 06:00 UTC every other day — one hour after slow-tests.yml at
+    # 05:00 UTC, two hours after bench.yml at 04:00 UTC. The three
+    # scheduled workflows therefore queue in series on the single
+    # self-hosted runner without colliding.
+    - cron: '0 6 */2 * *'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  # CARGO_TARGET_DIR is set per-job (runner context unavailable at workflow level).
 
 jobs:
   # -------------------------------------------------------------------------
@@ -37,6 +50,8 @@ jobs:
   wasm:
     name: "WASM (wasm32-unknown-unknown)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -44,9 +59,13 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: wasm32
+      # No `Swatinem/rust-cache@v2` here — the workflow-level
+      # `CARGO_TARGET_DIR` env keeps the compiled `target/` directory in
+      # `$RUNNER_TOOL_CACHE` between runs on the self-hosted runner, so
+      # cargo's native incremental build is the cache. Layering Swatinem
+      # on top would replace the locally-incremental state with whatever
+      # snapshot last got uploaded to the GHA cache backend (older, by
+      # definition), which is the opposite of what we want here.
 
       # Check: compile for WASM (no default features, wasm feature enabled)
       - name: cargo check (WASM)
@@ -83,6 +102,8 @@ jobs:
   ios:
     name: "iOS (aarch64-apple-ios)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -90,9 +111,7 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ios
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       # Check: compile for iOS with default features (redb + cbindgen)
       - name: cargo check (iOS)
@@ -135,6 +154,8 @@ jobs:
   android:
     name: "Android (aarch64-linux-android)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -142,9 +163,7 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: android
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       # Install Android NDK linker — host-OS aware.
       #
@@ -162,7 +181,18 @@ jobs:
       # re-run after a previous extraction does not block on the
       # interactive `replace …? [y]es, [n]o, [A]ll …` question that
       # broke past runs.
-      - name: Install Android NDK
+      #
+      # Caching: the NDK is ~1 GiB unzipped. On the self-hosted runner
+      # the workspace is wiped between jobs (actions/checkout cleans it),
+      # but `$RUNNER_TOOL_CACHE` is a stable per-runner directory that
+      # survives across jobs / runs — exactly what the GitHub-Hosted
+      # runners use for `$RUNNER_TOOL_CACHE/Python/3.12.X/x64`,
+      # `$RUNNER_TOOL_CACHE/node/20.X/x64`, etc. Caching the NDK there
+      # keyed by version means the curl-to-dl.google.com only runs once
+      # per NDK version bump (next bump: edit `ANDROID_NDK_VERSION`,
+      # next run repopulates). On a fresh runner with no cache the
+      # download path is unchanged.
+      - name: Install Android NDK (cached on self-hosted runner)
         run: |
           set -euo pipefail
           ANDROID_NDK_VERSION="r27c"
@@ -180,13 +210,28 @@ jobs:
               exit 1
               ;;
           esac
-          NDK_URL="https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-${NDK_HOST_TAG}.zip"
-          # Use curl on macOS (no wget by default); curl is also on
-          # every Linux distro we'd run this on.
-          curl -fsSL "$NDK_URL" -o ndk.zip
-          unzip -qo ndk.zip
-          echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
-          echo "NDK_PREBUILT_DIR=$NDK_PREBUILT_DIR" >> $GITHUB_ENV
+          # `$RUNNER_TOOL_CACHE` is set by the Actions runner agent on
+          # both hosted and self-hosted runners. Fall back to
+          # `$HOME/.cache` for any non-runner-managed environment.
+          NDK_PARENT="${RUNNER_TOOL_CACHE:-$HOME/.cache}/drevo-ndk"
+          mkdir -p "$NDK_PARENT"
+          NDK_DIR="$NDK_PARENT/android-ndk-${ANDROID_NDK_VERSION}"
+          NDK_LINKER="$NDK_DIR/toolchains/llvm/prebuilt/${NDK_PREBUILT_DIR}/bin/aarch64-linux-android35-clang"
+          if [ -x "$NDK_LINKER" ]; then
+            echo "NDK ${ANDROID_NDK_VERSION} already cached at $NDK_DIR — skipping download"
+          else
+            echo "::group::NDK ${ANDROID_NDK_VERSION} not cached — downloading to $NDK_PARENT"
+            NDK_URL="https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-${NDK_HOST_TAG}.zip"
+            # Use curl on macOS (no wget by default); curl is also on
+            # every Linux distro we'd run this on.
+            tmp_zip="$(mktemp -t ndk-XXXXXX.zip)"
+            trap 'rm -f "$tmp_zip"' EXIT
+            curl -fsSL "$NDK_URL" -o "$tmp_zip"
+            unzip -qo "$tmp_zip" -d "$NDK_PARENT"
+            echo "::endgroup::"
+          fi
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "NDK_PREBUILT_DIR=$NDK_PREBUILT_DIR" >> "$GITHUB_ENV"
 
       # Configure cargo to use Android NDK linker. The toolchain
       # subdir name comes from the previous step's `NDK_PREBUILT_DIR`
@@ -240,14 +285,14 @@ jobs:
   cross-compile-tests:
     name: "Cross-compilation tests (host)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: cross-tests
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run cross-compilation tests
         run: cargo test --test cross_compilation_tests -- --nocapture
@@ -258,14 +303,14 @@ jobs:
   smoke-tests:
     name: "Platform smoke tests (host)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: smoke-tests
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests
         run: cargo test --test smoke_tests -- --nocapture
@@ -276,14 +321,14 @@ jobs:
   smoke-tests-macos:
     name: "Platform smoke tests (macOS)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: smoke-macos
+      # See WASM job — workflow-level `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests (macOS)
         run: cargo test --test smoke_tests -- --nocapture

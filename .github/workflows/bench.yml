@@ -83,10 +83,14 @@ jobs:
     # all four bench crates run, surface failures as annotations,
     # and capture the criterion HTML so a human can triage.
     continue-on-error: true
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # No Swatinem — job-level `CARGO_TARGET_DIR` above persists
+      # target/ on local disk; the GHA-cache restore would replace
+      # fresher local state with an older snapshot.
 
       - name: Run all criterion benches
         # `--all-features` so the bench crates compile against the

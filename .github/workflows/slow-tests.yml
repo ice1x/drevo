@@ -1,0 +1,107 @@
+# Scheduled "slow tests" workflow.
+#
+# Sibling of bench.yml; both run on a fixed cadence (not PR-triggered)
+# so the CI cost lives outside the PR critical path.
+#
+# What this runs
+# --------------
+# `cargo nextest run --no-fail-fast` against the DEFAULT profile (no
+# `--profile ci-fast`). That picks up every integration-test binary,
+# including the eight that the PR-gating `test` job in ci.yml
+# currently filters out via the `ci-fast` profile:
+#
+#   * proptest_graph_invariants
+#   * proptest_fts_tokenizer
+#   * proptest_model_serialization
+#   * compaction_tests
+#   * wal_crash_recovery_tests
+#   * fts_bench_tests
+#   * graph_bench_tests
+#   * traversal_bench_tests
+#
+# Until task `00129` lifts the ci-fast disable, this workflow is the
+# canary that catches regressions in those eight binaries between PR
+# pushes. Local development also exercises them on every `cargo
+# nextest run` (no profile), so this is a backstop, not the primary
+# signal.
+#
+# Triggers
+# --------
+# * `schedule: cron '0 5 */2 * *'` — every other day at 05:00 UTC.
+#   That's one hour after bench.yml's 04:00 UTC nightly run, so the
+#   two scheduled workflows don't collide on the single self-hosted
+#   runner. Cadence rationale: the slow binaries protect properties
+#   that change rarely (graph invariants, FTS tokenizer round-trip,
+#   redb compaction, WAL crash recovery) — running them twice a week
+#   gives an early-warning signal without burning runner time daily.
+# * `workflow_dispatch` — manual trigger from the Actions UI for
+#   "I'm about to merge a refactor that touches FTS / storage, run
+#   the slow suite now."
+#
+# Notably absent: `push:` and `pull_request:`. Adding either would
+# re-introduce the PR-time queueing pressure the ci-fast profile
+# was designed to remove.
+#
+# Runner & policy
+# ---------------
+# `runs-on: self-hosted`. The slow binaries include I/O-heavy redb
+# probes and proptest fuzz-like search; results from ephemeral
+# GitHub-hosted VMs would vary too much for the failure signal to
+# be useful. The Apple Silicon self-hosted runner is the same host
+# that bench.yml relies on for stable timings.
+#
+# `continue-on-error: true` so a single flaky proptest case (e.g.
+# rare shrink/strategy interaction) surfaces as an advisory annotation
+# rather than a hard failure on an unrelated branch — bench.yml uses
+# the same policy for the same reason. When a real regression lands,
+# the run is red in the Actions UI and the maintainer triages from
+# there.
+
+name: Slow tests
+
+on:
+  schedule:
+    # 05:00 UTC every other day. One hour after bench.yml (04:00 UTC
+    # daily) so the two scheduled workflows don't queue behind each
+    # other on the single self-hosted runner.
+    - cron: '0 5 */2 * *'
+  workflow_dispatch:
+
+# Cancel the older scheduled run if a newer cron (or manual dispatch)
+# lands while one is still in progress. Distinct group from bench.yml
+# (`bench-*`), ci.yml (`ci-real-*`), and ci-skip.yml (`ci-skip-*`).
+concurrency:
+  group: slow-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  full_suite:
+    name: nextest (default profile — full suite)
+    runs-on: self-hosted
+    # Advisory, not gating. See header comment.
+    continue-on-error: true
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # No Swatinem — job-level `CARGO_TARGET_DIR` above persists
+      # target/ on local disk; the GHA-cache restore would replace
+      # fresher local state with an older snapshot.
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # No `--profile ci-fast` here — that's exactly the point.
+      # The default profile exercises every integration-test binary,
+      # including the eight that ci.yml's `test` job filters out.
+      - name: cargo nextest run --no-fail-fast (default profile)
+        run: cargo nextest run --no-fail-fast
+
+      # Doctests are not run by nextest; mirror ci.yml's coverage.
+      - name: cargo test --doc --all-features
+        run: cargo test --doc --all-features

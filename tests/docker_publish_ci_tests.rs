@@ -154,12 +154,31 @@ fn docker_publish_triggers_on_version_tags() {
 }
 
 #[test]
-fn docker_publish_triggers_on_pull_request_to_main() {
+fn docker_publish_does_not_trigger_on_pull_request() {
+    // Inverted from the original "must trigger on pull_request" rule.
+    // Reason: on the self-hosted Apple Silicon runner, the `linux/amd64`
+    // half of the multi-arch matrix runs under QEMU emulation and the
+    // end-to-end build cumulated to ~19 min per PR. That duplicates
+    // ci.yml's compilation + test surface and only adds value when the
+    // change touches `Dockerfile` itself (rare). The next push-to-main
+    // build catches any Dockerfile regression before the image actually
+    // ships. Contributors who genuinely need a PR-time multi-arch build
+    // can use `workflow_dispatch` from the Actions UI on the PR branch.
     let w = read_workflow();
+    let trimmed: String = w
+        .lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            !t.starts_with('#') && !t.is_empty()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        w.contains("pull_request:"),
-        "workflow must build (not push) on pull_request so contributors get Dockerfile feedback \
-         in CI"
+        !trimmed.contains("pull_request:"),
+        "workflow MUST NOT declare a `pull_request:` trigger — the PR-time \
+         multi-arch build cost ~19 min per PR under QEMU emulation and \
+         duplicates ci.yml's compilation. Remove the trigger entirely; \
+         do not narrow it with paths."
     );
 }
 

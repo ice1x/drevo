@@ -59,6 +59,8 @@ jobs:
   lint_and_test:
     name: Lint + test (Python 3.12)
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -75,15 +77,14 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # Swatinem/rust-cache keys off Cargo.lock + the target directory
-      # so subsequent runs reuse the compiled redb / pyo3 / drevo
-      # artefacts. Cold maturin build is ~60s, warm is ~10s.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Cache the workspace root — drevo-py/target/ shares the
-          # parent crate's build artefacts via the [workspace] in
-          # the top-level Cargo.toml.
-          workspaces: "."
+      # No `Swatinem/rust-cache@v2` here. The job-level
+      # `CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target`
+      # env above already points cargo at a persistent location on
+      # `$RUNNER_TOOL_CACHE` — `maturin develop` honours that env
+      # var, so its compiled drevo + pyo3 + redb artefacts land in
+      # the same shared directory the rest of the CI uses and stay
+      # warm across runs. Layering Swatinem on top would download an
+      # older snapshot over HTTPS and overwrite the live state.
 
       - name: Create + activate venv (maturin develop requires one)
         # `actions/setup-python` exposes the interpreter on PATH but
