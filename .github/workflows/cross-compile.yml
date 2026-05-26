@@ -1,14 +1,27 @@
 name: Cross-Compilation
 
-# Docs-only changes bypass this workflow via `paths-ignore`. The set
-# MUST stay byte-identical to ci.yml's and docker-publish.yml's
-# paths-ignore set — locked by
+# Docs-only changes bypass this workflow via `paths-ignore` on the
+# `push:main` trigger. The set MUST stay byte-identical to ci.yml's
+# and docker-publish.yml's paths-ignore set — locked by
 # `tests/ci_self_hosted_runner_tests.rs::heavy_workflows_share_docs_only_paths_ignore`.
-# Without this filter, a README-only PR would still trigger Android,
-# iOS, WASM, host, and macOS smoke-test jobs (5 jobs each consuming
-# minutes / queue slot), and any one of them flaking on an upstream
-# network operation (e.g. Android NDK download from dl.google.com via
-# curl HTTP/2) would block the PR with no legitimate code reason.
+#
+# Why no `pull_request:` trigger
+# ------------------------------
+# Earlier revisions ran the WASM / iOS / Android / cross-tests /
+# smoke / macos-smoke set on every PR. The Android job in particular
+# downloads ~1 GiB of NDK from dl.google.com on every cold run, and
+# any upstream network flake on `curl` to `dl.google.com` would block
+# the PR with no legitimate code reason — PR #81 (a README-only
+# roadmap PR) hit exactly that mode before the docs-only paths-ignore
+# guard landed. Beyond Android, the value the per-PR matrix added was
+# small: cross-target regressions are rare and ci.yml's `msrv` job
+# already exercises `wasm32-unknown-unknown` on every PR, which is
+# our primary cross-target. The remaining cells (iOS, Android, native
+# smoke) now run on `push:main` (so a real regression is caught on
+# the very next merge into main, before the next PR rebases on top)
+# and twice a week via `schedule:` (so a slow upstream change is
+# caught between merges). Manual `workflow_dispatch` is available
+# when a PR genuinely needs the cross-target validation before merge.
 on:
   push:
     branches: [main]
@@ -18,14 +31,13 @@ on:
       - 'memory/**'
       - 'LICENSE'
       - '.gitignore'
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'audit/**'
-      - 'memory/**'
-      - 'LICENSE'
-      - '.gitignore'
+  schedule:
+    # 06:00 UTC every other day — one hour after slow-tests.yml at
+    # 05:00 UTC, two hours after bench.yml at 04:00 UTC. The three
+    # scheduled workflows therefore queue in series on the single
+    # self-hosted runner without colliding.
+    - cron: '0 6 */2 * *'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
