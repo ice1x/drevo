@@ -114,9 +114,7 @@ def expand_neighborhood(
                 # When we're at the max_nodes cap and `other_id` is new,
                 # we won't keep it, so skip the edge to keep the result
                 # internally consistent (every edge endpoint is in `nodes`).
-                if edge.id not in edge_ids and (
-                    other_id in visited or len(visited) < max_nodes
-                ):
+                if edge.id not in edge_ids and (other_id in visited or len(visited) < max_nodes):
                     edges_seen.append(edge)
                     edge_ids.add(edge.id)
 

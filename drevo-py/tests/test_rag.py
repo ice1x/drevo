@@ -49,7 +49,6 @@ from drevo.rag import (
     ingest_documents,
 )
 
-
 # ── Document Protocol ─────────────────────────────────────────────────
 
 
@@ -176,10 +175,7 @@ def test_ingest_documents_overrides_default_kind(drevo_db: drevo.Drevo) -> None:
 
 def _build_chain(db: drevo.Drevo, length: int, kind: str = "note") -> list[drevo.Node]:
     """Create a linear chain of `length` nodes with edges 0→1→2→…→length-1."""
-    nodes = [
-        db.create_node(drevo.NewNode(kind=kind, title=f"chain-{i}"))
-        for i in range(length)
-    ]
+    nodes = [db.create_node(drevo.NewNode(kind=kind, title=f"chain-{i}")) for i in range(length)]
     for a, b in zip(nodes, nodes[1:]):
         db.create_edge(drevo.NewEdge(from_id=a.id, to_id=b.id, kind="next"))
     return nodes
@@ -252,9 +248,7 @@ def test_expand_neighborhood_accepts_uuid_object(drevo_db: drevo.Drevo) -> None:
 
 
 def test_retriever_retrieve_from_fts_query_string(drevo_db: drevo.Drevo) -> None:
-    a = drevo_db.create_node(
-        drevo.NewNode(kind="doc", title="alpha bravo charlie unique")
-    )
+    a = drevo_db.create_node(drevo.NewNode(kind="doc", title="alpha bravo charlie unique"))
     drevo_db.create_node(drevo.NewNode(kind="doc", title="unrelated content"))
     r = Retriever(drevo_db, hops=0)
     ctx = r.retrieve("unique", limit=5)

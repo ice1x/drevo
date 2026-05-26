@@ -157,9 +157,7 @@ class Retriever:
             return [node] if node is not None else []
         # bool is a subclass of int — handle it before int.
         if isinstance(seed, bool):
-            raise TypeError(
-                "Retriever.retrieve: seed cannot be bool — pass int, str, or UUID"
-            )
+            raise TypeError("Retriever.retrieve: seed cannot be bool — pass int, str, or UUID")
         if isinstance(seed, int):
             node = self._drevo.get_node(seed)
             return [node] if node is not None else []
@@ -242,9 +240,7 @@ def _edge_dict(e: "Edge") -> dict[str, Any]:
     }
 
 
-def _render_markdown(
-    seeds: list["Node"], neighbours: list["Node"], edges: list["Edge"]
-) -> str:
+def _render_markdown(seeds: list["Node"], neighbours: list["Node"], edges: list["Edge"]) -> str:
     lines: list[str] = []
     lines.append("## Seeds")
     if not seeds:
@@ -265,9 +261,7 @@ def _render_markdown(
         lines.append("- (none)")
     else:
         for e in edges:
-            lines.append(
-                f"- {e.from_id} -[{e.kind}]-> {e.to_id} (id={e.id}, weight={e.weight})"
-            )
+            lines.append(f"- {e.from_id} -[{e.kind}]-> {e.to_id} (id={e.id}, weight={e.weight})")
     return "\n".join(lines) + "\n"
 
 
@@ -286,9 +280,7 @@ def _render_json(
     return json.dumps(payload, sort_keys=True, indent=2)
 
 
-def _render_turtle(
-    seeds: list["Node"], neighbours: list["Node"], edges: list["Edge"]
-) -> str:
+def _render_turtle(seeds: list["Node"], neighbours: list["Node"], edges: list["Edge"]) -> str:
     lines: list[str] = []
     lines.append("@prefix drevo: <https://drevo.local/> .")
     lines.append("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .")

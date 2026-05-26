@@ -95,9 +95,7 @@ class MMRReranker:
                 if not selected:
                     mmr = relevance
                 else:
-                    max_sim = max(
-                        _cosine(embeddings[i], embeddings[j]) for j in selected
-                    )
+                    max_sim = max(_cosine(embeddings[i], embeddings[j]) for j in selected)
                     mmr = lam * relevance - (1.0 - lam) * max_sim
                 if mmr > best_score:
                     best_score = mmr
