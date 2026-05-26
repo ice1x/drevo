@@ -61,19 +61,15 @@ env:
   # nextest needs no specific env; documented here to make the contract
   # explicit for future contributors who might wonder.
   CARGO_INCREMENTAL: 1
-  # Persistent local target/ directory shared across every job in this
-  # workflow. Rationale matches `cross-compile.yml`: on the self-hosted
-  # runner `actions/checkout` runs `git clean -ffdx` and wipes `target/`
-  # from the workspace every job, but `$RUNNER_TOOL_CACHE` is a stable
-  # per-runner directory that survives across jobs and runs. Pointing
-  # cargo's target there preserves incremental build state between
-  # check / test / clippy / doc / msrv runs — and means we never depend
-  # on the network-backed GHA cache for the largest artefact. Layout
-  # under this directory is per-target (`debug/`, `release/`,
-  # `aarch64-…/debug/`, …) so jobs that compile against different
-  # feature sets do not collide. Single-runner serialisation means
-  # cargo never needs cross-process locks beyond its own.
-  CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
+  # NOTE: `CARGO_TARGET_DIR` is set PER JOB below (each compile-heavy
+  # job has its own `env: CARGO_TARGET_DIR: ${{ runner.tool_cache }}/…`).
+  # GitHub does NOT expose the `runner` expression context at the
+  # workflow-level `env:` block — that context is only populated AFTER
+  # a job is assigned to a runner. Putting `${{ runner.tool_cache }}`
+  # here makes GitHub reject the whole workflow with a generic
+  # "workflow file issue" error (no jobs run, no logs). The first
+  # revision of this caching change made exactly that mistake; the
+  # job-level placement below is the working pattern.
 
 jobs:
   # All jobs run on `self-hosted`. The repo is private; GitHub Free
@@ -98,6 +94,8 @@ jobs:
   check:
     name: Check
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -106,6 +104,8 @@ jobs:
   test:
     name: Test
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -149,6 +149,8 @@ jobs:
   clippy:
     name: Clippy
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -226,6 +228,8 @@ jobs:
   msrv:
     name: MSRV
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
       - id: msrv
@@ -266,10 +270,17 @@ jobs:
     # CI annotation and let humans triage. The stable harness replay in
     # the `test` job remains a hard gate.
     continue-on-error: true
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      # No Swatinem — job-level `CARGO_TARGET_DIR` above persists
+      # target/ on local disk. `$HOME/.cargo/registry` and
+      # `$HOME/.cargo/bin/cargo-fuzz` also persist naturally on
+      # self-hosted, so a previously-installed cargo-fuzz binary is
+      # already in `$PATH` on subsequent runs (the install step below
+      # short-circuits when the binary is present).
       # cargo-fuzz binary install + target resolution:
       #
       # cargo-fuzz hard-codes a default --target that does not match
@@ -288,19 +299,33 @@ jobs:
       #
       # Both overrides are derived once at workflow load and exported
       # via $GITHUB_ENV so the per-target steps stay symmetric.
-      - name: Install cargo-fuzz (Linux prebuilt)
+      - name: Install cargo-fuzz (Linux prebuilt — skip if cached)
         if: runner.os == 'Linux'
+        # The taiki-e action is itself idempotent (it short-circuits
+        # if the requested version is already installed in
+        # $RUNNER_TOOL_CACHE), so on self-hosted the second run is a
+        # near-no-op.
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      - name: Install cargo-fuzz (macOS — from source)
+      - name: Install cargo-fuzz (macOS — from source, skip if cached)
         # taiki-e ships no prebuilt aarch64-apple-darwin binary, so
-        # build from source on nightly. ~2 min cold; the
-        # Swatinem/rust-cache@v2 (workspaces: fuzz) above warms the
-        # registry index across runs so subsequent runs reuse cached
-        # deps.
+        # build from source on nightly. ~2 min cold. On the
+        # self-hosted runner `$HOME/.cargo/bin/cargo-fuzz` survives
+        # between runs, so the explicit `command -v` guard turns
+        # every subsequent run into an instant no-op (under a second)
+        # without re-fetching the registry index or re-checking
+        # `cargo install`'s version freshness logic. To force a
+        # rebuild (e.g. after a nightly-Rust ABI bump), delete the
+        # binary on the runner and re-trigger the workflow.
         if: runner.os == 'macOS'
-        run: cargo install cargo-fuzz --locked
+        run: |
+          if command -v cargo-fuzz >/dev/null 2>&1; then
+            echo "cargo-fuzz already installed at $(command -v cargo-fuzz) — skipping cargo install"
+          else
+            echo "cargo-fuzz not found in PATH — building from source"
+            cargo install cargo-fuzz --locked
+          fi
 
       - name: Resolve fuzz --target for host
         id: fuzz_target

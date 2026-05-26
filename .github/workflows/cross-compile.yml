@@ -41,25 +41,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Persistent local target/ directory shared across all jobs in this
-  # workflow. On self-hosted, `actions/checkout` runs `git clean -ffdx`
-  # by default and wipes `target/` from the workspace; pointing
-  # `CARGO_TARGET_DIR` outside the workspace keeps the compiled artifacts
-  # between runs so cargo's native incremental build kicks in, with no
-  # network roundtrip to a GHA cache backend (the old behaviour via
-  # `Swatinem/rust-cache@v2` still works on hosted runners as a fallback,
-  # but on self-hosted it just adds an HTTP fetch in front of a disk
-  # cargo already has). The path lives under `$RUNNER_TOOL_CACHE` —
-  # the same per-runner persistent directory we use to cache the
-  # Android NDK in the `Install Android NDK` step below.
-  #
-  # Cargo lays out artifacts per-target under this directory
-  # (e.g. `${CARGO_TARGET_DIR}/aarch64-linux-android/debug/`), so the
-  # 5 jobs in this workflow do not collide even though they share the
-  # same root. On the self-hosted runner only one job runs at a time
-  # (single-runner serialisation), so the per-job file locks cargo
-  # takes inside target/ never see contention.
-  CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
+  # CARGO_TARGET_DIR is set per-job (runner context unavailable at workflow level).
 
 jobs:
   # -------------------------------------------------------------------------
@@ -68,6 +50,8 @@ jobs:
   wasm:
     name: "WASM (wasm32-unknown-unknown)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -118,6 +102,8 @@ jobs:
   ios:
     name: "iOS (aarch64-apple-ios)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -168,6 +154,8 @@ jobs:
   android:
     name: "Android (aarch64-linux-android)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -297,6 +285,8 @@ jobs:
   cross-compile-tests:
     name: "Cross-compilation tests (host)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -313,6 +303,8 @@ jobs:
   smoke-tests:
     name: "Platform smoke tests (host)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
@@ -329,6 +321,8 @@ jobs:
   smoke-tests-macos:
     name: "Platform smoke tests (macOS)"
     runs-on: self-hosted
+    env:
+      CARGO_TARGET_DIR: ${{ runner.tool_cache }}/drevo-cargo-target
     steps:
       - uses: actions/checkout@v4
 
