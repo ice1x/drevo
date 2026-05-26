@@ -124,8 +124,14 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - name: Run unit + integration tests (nextest)
-        run: cargo nextest run --no-fail-fast
+      # `--profile ci-fast` activates `.config/nextest.toml`'s temporary
+      # slow-binary gate (proptest_*, compaction_tests, wal_crash_recovery_tests,
+      # *_bench_tests). The full suite still runs locally and on the
+      # nightly bench.yml workflow. Re-enablement is tracked by README
+      # task `00129`; the contract is locked by
+      # `tests/ci_self_hosted_runner_tests.rs`.
+      - name: Run unit + integration tests (nextest, ci-fast profile)
+        run: cargo nextest run --no-fail-fast --profile ci-fast
       - name: Run doctests
         run: cargo test --doc --all-features
 

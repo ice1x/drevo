@@ -967,3 +967,190 @@ fn bench_yml_does_not_trigger_on_pr_or_push() {
         forbidden_hits.join("`, `")
     );
 }
+
+// ---- ci-fast nextest profile (temporary slow-suite gating) ----------------
+//
+// Background: even after PR #77 removed criterion benches from the `test`
+// job, PR-gating CI is a serialised pipeline on a single self-hosted runner
+// (check + test + clippy + fmt + doc + msrv + k8s + fuzz, plus the parallel
+// cross-compile, docker-publish, python-ci, python-wheels workflows). A
+// handful of integration test binaries still cumulate several minutes each
+// — proptest fixtures with hundreds of cases, the redb 5 000-write
+// compaction probe, the WAL crash-recovery suite, and the four `*_bench`-
+// suffixed binaries that build hundreds of nodes per test. Stacked behind
+// queueing, the user-observed worst case has been ~4 h.
+//
+// `.config/nextest.toml` declares a `ci-fast` profile whose
+// `default-filter` skips that slow-binary set. The full suite still runs
+// locally via the default `cargo nextest run` (no profile) and on the
+// nightly `bench.yml` runner. This invariant set is the locking layer:
+//
+//   1. `.config/nextest.toml` exists.
+//   2. It declares a `[profile.ci-fast]` block.
+//   3. That block carries a `default-filter =` line whose value mentions
+//      every binary in `SLOW_BINARIES_GATED_FROM_CI_FAST`.
+//   4. `.github/workflows/ci.yml`'s `test` job runs nextest under
+//      `--profile ci-fast`.
+//   5. README documents the temporary disable + cites the re-enable task.
+//
+// When the re-enable task lands, drop the profile + this entire block
+// together — the tests are the canary that any of the five surfaces drifted.
+
+/// Integration-test binaries skipped by the `ci-fast` profile. Each name
+/// matches the `tests/<name>.rs` file (nextest's `binary(...)` selector
+/// uses the binary name, which equals the file stem for `[[test]]`
+/// auto-discovered files). Keep this list in lockstep with the
+/// `default-filter` literal in `.config/nextest.toml`.
+const SLOW_BINARIES_GATED_FROM_CI_FAST: &[&str] = &[
+    "proptest_graph_invariants",
+    "proptest_fts_tokenizer",
+    "proptest_model_serialization",
+    "compaction_tests",
+    "wal_crash_recovery_tests",
+    "fts_bench_tests",
+    "graph_bench_tests",
+    "traversal_bench_tests",
+];
+
+fn nextest_config_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".config")
+        .join("nextest.toml")
+}
+
+#[test]
+fn nextest_config_file_exists() {
+    let p = nextest_config_path();
+    assert!(
+        p.exists(),
+        "`.config/nextest.toml` must exist — it declares the `ci-fast` \
+         profile that gates the slow integration-test binaries off the \
+         PR pipeline. Without the file, ci.yml's `--profile ci-fast` \
+         invocation falls back to nextest's default and the slow suites \
+         run on every PR again."
+    );
+}
+
+#[test]
+fn nextest_config_declares_ci_fast_profile() {
+    let body =
+        fs::read_to_string(nextest_config_path()).expect(".config/nextest.toml must be readable");
+    assert!(
+        body.contains("[profile.ci-fast]"),
+        "`.config/nextest.toml` must declare a `[profile.ci-fast]` \
+         section. ci.yml's `test` job invokes nextest with \
+         `--profile ci-fast`; missing the profile makes nextest abort \
+         with `unknown profile`."
+    );
+}
+
+#[test]
+fn nextest_config_ci_fast_profile_has_default_filter_excluding_slow_binaries() {
+    let body =
+        fs::read_to_string(nextest_config_path()).expect(".config/nextest.toml must be readable");
+
+    // Scope the search to the `[profile.ci-fast]` block to avoid matching
+    // a stray comment elsewhere.
+    let start = body
+        .find("[profile.ci-fast]")
+        .expect("[profile.ci-fast] header must exist (covered by sibling test)");
+    let rest = &body[start..];
+    // Next profile or section header ends the block; for a simple config
+    // we scan to end-of-file otherwise.
+    let end = rest[1..].find("\n[").map(|i| i + 1).unwrap_or(rest.len());
+    let block = &rest[..end];
+
+    assert!(
+        block.contains("default-filter"),
+        "`[profile.ci-fast]` must set `default-filter = '...'` so nextest \
+         applies the skip list when no explicit filter is passed on the \
+         command line. Found block:\n{block}"
+    );
+
+    for binary in SLOW_BINARIES_GATED_FROM_CI_FAST {
+        let needle = format!("binary({binary})");
+        assert!(
+            block.contains(&needle),
+            "`[profile.ci-fast]` default-filter must reference \
+             `binary({binary})` so the corresponding `tests/{binary}.rs` \
+             stays off the PR pipeline. The full set is \
+             {SLOW_BINARIES_GATED_FROM_CI_FAST:?} — keep both this test \
+             and the default-filter literal in `.config/nextest.toml` in \
+             lockstep. Block was:\n{block}"
+        );
+    }
+}
+
+#[test]
+fn ci_yml_test_job_runs_nextest_with_ci_fast_profile() {
+    let ci_yml = workflows_dir().join("ci.yml");
+    let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
+
+    let mut in_test_job = false;
+    let mut test_job_indent: usize = 0;
+    let mut nextest_lines: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let indent = line.chars().take_while(|c| *c == ' ').count();
+        let trimmed = line.trim_start();
+        if line.starts_with("  ") && !line.starts_with("    ") && trimmed.ends_with(':') {
+            let job = trimmed.trim_end_matches(':');
+            if in_test_job && job != "test" {
+                break;
+            }
+            in_test_job = job == "test";
+            if in_test_job {
+                test_job_indent = indent;
+            }
+            continue;
+        }
+        if !in_test_job {
+            continue;
+        }
+        if indent <= test_job_indent && !line.is_empty() && !trimmed.starts_with('-') {
+            break;
+        }
+        if (trimmed.starts_with("run:") || trimmed.starts_with("- run:"))
+            && trimmed.contains("nextest")
+        {
+            nextest_lines.push(trimmed.to_string());
+        }
+    }
+
+    assert!(
+        !nextest_lines.is_empty(),
+        "ci.yml `test` job must invoke nextest — none found. The test \
+         body is the nextest invocation; if it moved out of the `test` \
+         job, update this guard together with the move."
+    );
+    let has_profile = nextest_lines
+        .iter()
+        .any(|l| l.contains("--profile ci-fast"));
+    assert!(
+        has_profile,
+        "ci.yml `test` job's nextest invocation must pass \
+         `--profile ci-fast` so the slow-binary gate in \
+         `.config/nextest.toml` applies. Without the flag, nextest runs \
+         the default profile and the temporary slow-suite disable is \
+         a no-op. Offending lines:\n  {}",
+        nextest_lines.join("\n  "),
+    );
+}
+
+#[test]
+fn readme_documents_temporary_ci_fast_disable() {
+    let readme = Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md");
+    let body = fs::read_to_string(&readme).expect("README.md must be readable");
+    assert!(
+        body.contains("ci-fast"),
+        "README.md must reference the `ci-fast` nextest profile so the \
+         temporary slow-test disable is discoverable from the project's \
+         landing page (not just from .config/nextest.toml). Add a \
+         sub-bullet under the current phase / CI section."
+    );
+    assert!(
+        body.contains("00129"),
+        "README.md must list task `00129` (re-enable slow CI tests) so \
+         the temporary gate has a tracked owner. Without the task id, \
+         the disable can rot into a permanent skip."
+    );
+}
