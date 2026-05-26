@@ -85,6 +85,20 @@ jobs:
           # the top-level Cargo.toml.
           workspaces: "."
 
+      - name: Create + activate venv (maturin develop requires one)
+        # `actions/setup-python` exposes the interpreter on PATH but
+        # does NOT create or activate a virtualenv. `maturin develop`
+        # refuses to install the cdylib without a venv (it does not
+        # want to touch the system / hosted-tool-cache site-packages,
+        # which would leak between CI runs). Solution: create a venv
+        # here and surface `VIRTUAL_ENV` + the venv's `bin/` on PATH
+        # through `$GITHUB_ENV` / `$GITHUB_PATH` so every subsequent
+        # step (each a fresh shell) sees the same environment.
+        run: |
+          python -m venv .venv
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
       - name: Install Python build + lint tooling
         run: |
           python -m pip install --upgrade pip
@@ -96,7 +110,7 @@ jobs:
       - name: maturin develop --release (build + install drevo-py)
         run: |
           # `develop` compiles the cdylib + installs the wheel into
-          # the active environment in editable mode, mirroring what
+          # the active venv in editable mode, mirroring what
           # contributors run locally. `--release` matches the wheel
           # configuration cibuildwheel uses, so any -O / -strip
           # interaction surfaces here too. We compile via the
