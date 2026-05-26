@@ -5,12 +5,27 @@
 #   * push to `main`           → publishes `latest` + `sha-<short>` + `main`
 #   * push of a `v*` git tag   → publishes `MAJOR.MINOR.PATCH` + `MAJOR.MINOR`
 #                                + `sha-<short>`
-#   * pull_request to `main`   → builds (validates Dockerfile) but does NOT
-#                                push. PRs from forked clones cannot publish
-#                                under the project's namespace.
 #   * workflow_dispatch        → manual re-publish from the Actions UI; useful
 #                                for cutting a hotfix tag rebuild without a
 #                                code change.
+#
+# Why no `pull_request:` trigger
+# ------------------------------
+# Earlier revisions of this workflow ran on `pull_request` to provide
+# "Dockerfile feedback in CI" by building (not pushing) the multi-arch
+# image on every PR. On the self-hosted Apple Silicon runner the
+# `linux/amd64` half of the matrix runs under QEMU emulation and the
+# end-to-end build cumulates to ~19 minutes per PR. That cost duplicates
+# what `ci.yml`'s `test` + `check` + `clippy` jobs already do — they
+# compile the same Rust crate against the same dependency tree — and
+# adds value only when a change touches `Dockerfile` itself, which is
+# rare (the Dockerfile has changed twice in the last 200 commits).
+# Removing the trigger reclaims those minutes for every PR; the
+# Dockerfile regression caught by a PR-time multi-arch build is instead
+# caught by the very next push-to-main build, which is the same image
+# that would have been published. If a PR genuinely needs to validate
+# the Docker image before merge, use `workflow_dispatch` from the
+# Actions UI on the PR's branch.
 #
 # Token surface (least-privilege):
 #   * contents: read   — checkout needs it; nothing more
@@ -43,8 +58,8 @@ name: Docker Publish
 # MUST stay byte-identical to ci.yml's and cross-compile.yml's
 # paths-ignore set — locked by
 # `tests/ci_self_hosted_runner_tests.rs::heavy_workflows_share_docs_only_paths_ignore`.
-# Without this filter, a README-only PR would still trigger the
-# linux/amd64 + linux/arm64 multi-arch build via QEMU (~20-30 min
+# Without this filter, a README-only push to `main` would still trigger
+# the linux/amd64 + linux/arm64 multi-arch build via QEMU (~20-30 min
 # under emulation), consuming runner time and adding nothing — the
 # Docker image cannot meaningfully change when only docs do.
 # `push` to tags (`v*`) is intentionally NOT filtered: a release tag
@@ -62,15 +77,6 @@ on:
       - '.gitignore'
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
-    paths-ignore:
-      - '**/*.md'
-      - 'audit/**'
-      - 'memory/**'
-      - 'LICENSE'
-      - '.gitignore'
   workflow_dispatch:
 
 env:

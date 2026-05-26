@@ -29,18 +29,6 @@
 name: Python wheels
 
 on:
-  pull_request:
-    branches: [main]
-    # Only re-run when something that affects wheel content changes.
-    # Pure-docs PRs (`*.md` outside `drevo-py/`, `audit/**`, `memory/**`)
-    # do not trigger this workflow — mirror the `ci.yml` paths-ignore
-    # convention.
-    paths:
-      - 'drevo-py/**'
-      - '.github/workflows/python-wheels.yml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'src/**'
   push:
     branches: [main]
     paths:
@@ -50,6 +38,16 @@ on:
       - 'Cargo.lock'
       - 'src/**'
   workflow_dispatch:
+  # PR trigger intentionally absent. The cibuildwheel matrix is
+  # 4 (cp310-313) × 3 (Ubuntu/macOS/Windows) = 12 cells, each building
+  # a maturin wheel and running `twine check`. Per-PR cumulative cost
+  # was a significant slice of the multi-hour CI wait observed on
+  # this repo. PRs already get fast Python feedback from
+  # `python-ci.yml` (one ubuntu-latest cell × Python 3.12, ~3-5 min).
+  # The cross-platform wheel guarantee is exercised on every push to
+  # `main` and re-exercised on demand via `workflow_dispatch`, which
+  # is the right cadence because there is no PyPI publish on PR — the
+  # only consumer of these wheels is the future release task.
 
 concurrency:
   group: python-wheels-${{ github.ref }}
