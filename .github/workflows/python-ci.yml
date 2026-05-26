@@ -1,0 +1,142 @@
+# Lightweight Python CI gate for `drevo-py` — landed alongside
+# Phase 16 task `00116` packaging.
+#
+# This workflow is the **fast-feedback** Python signal on every PR:
+# one ubuntu-latest job × Python 3.12 that runs `maturin develop`,
+# then `pytest`, `mypy --strict`, `ruff check`, and `black --check`.
+# Total runtime ≈ 3–5 minutes — about a third of what cibuildwheel
+# (`python-wheels.yml`) takes, and small enough to gate every PR
+# without queueing.
+#
+# Why this is NOT the full 00122 matrix yet:
+#   * The matrix in roadmap task 00122 is 4 Python × 3 OS = 12 cells.
+#     Today the only Python tests are the 40 shim cases in
+#     `drevo-py/tests/test_shim.py`; running them across 12 cells
+#     would burn CI minutes without proportional signal.
+#   * The full matrix lights up when `00118` (unit ~80) + `00119`
+#     (integration ~40) + `00120` (e2e 5 scenarios + RAG) ship —
+#     ~125 more tests with meaningful per-OS / per-Python divergence
+#     (FTS UTF-8 boundaries, redb file locking, GIL re-acquisition).
+#   * `python-wheels.yml` (cibuildwheel) already exercises the shim
+#     contract on every wheel before upload, so a Windows-specific
+#     regression in the shim itself is caught there too — just
+#     slower. This workflow gives the fast signal; cibuildwheel
+#     gives the cross-platform proof.
+#
+# Path filters: triggered only by changes that can plausibly affect
+# the Python surface. A doc-only PR or a change isolated to
+# `src/ffi.rs` doesn't need to re-run this workflow.
+
+name: Python CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'drevo-py/**'
+      - '.github/workflows/python-ci.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+  push:
+    branches: [main]
+    paths:
+      - 'drevo-py/**'
+      - '.github/workflows/python-ci.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+  workflow_dispatch:
+
+# Cancel an in-flight run when a newer commit lands on the same PR /
+# branch — same pattern as ci.yml / python-wheels.yml. Distinct group
+# key so the three workflows do not collide.
+concurrency:
+  group: python-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint_and_test:
+    name: Lint + test (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Cache pip downloads keyed off pyproject.toml so a no-op PR
+          # re-uses the previous install. Speeds up the cold path by
+          # ~30s.
+          cache: "pip"
+          cache-dependency-path: drevo-py/pyproject.toml
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Swatinem/rust-cache keys off Cargo.lock + the target directory
+      # so subsequent runs reuse the compiled redb / pyo3 / drevo
+      # artefacts. Cold maturin build is ~60s, warm is ~10s.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Cache the workspace root — drevo-py/target/ shares the
+          # parent crate's build artefacts via the [workspace] in
+          # the top-level Cargo.toml.
+          workspaces: "."
+
+      - name: Install Python build + lint tooling
+        run: |
+          python -m pip install --upgrade pip
+          # Pinned to the same maturin range declared in
+          # drevo-py/pyproject.toml [build-system].requires so the
+          # local + CI build paths stay in lockstep.
+          pip install "maturin>=1.7,<2.0" pytest mypy ruff black
+
+      - name: maturin develop --release (build + install drevo-py)
+        run: |
+          # `develop` compiles the cdylib + installs the wheel into
+          # the active environment in editable mode, mirroring what
+          # contributors run locally. `--release` matches the wheel
+          # configuration cibuildwheel uses, so any -O / -strip
+          # interaction surfaces here too. We compile via the
+          # workspace's `redb-backend` feature (the wheel's default)
+          # to keep parity with the runtime contract in test_shim.py.
+          cd drevo-py
+          maturin develop --release
+
+      - name: pytest (drevo-py/tests — 40 shim runtime tests)
+        # The shim suite at drevo-py/tests/test_shim.py exercises
+        # UUID wrapping, InvalidWeightError subclass, __all__
+        # consistency, RFC §3.3 method enumeration, context-manager
+        # close, etc. Roughly 40 tests, sub-second runtime.
+        run: |
+          cd drevo-py
+          pytest -q
+
+      - name: mypy --strict (python/drevo/ + .pyi stubs)
+        # The .pyi stubs (drevo-py/python/drevo/__init__.pyi) are
+        # hand-authored and shipped in every wheel. `mypy --strict`
+        # asserts (a) the stubs themselves type-check, (b) the
+        # pure-Python `__init__.py` shim type-checks against them.
+        # Locks the contract that user code with `mypy --strict
+        # drevo/` sees no Any leaks.
+        run: |
+          cd drevo-py
+          mypy --strict python/drevo/
+
+      - name: ruff check (python/drevo/ + tests/)
+        # Style + unused-import + bug-class lints. Pinned ruleset
+        # via drevo-py/pyproject.toml [tool.ruff] so adding a rule
+        # is a deliberate PR decision, not a CI surprise.
+        run: |
+          cd drevo-py
+          ruff check python/ tests/
+
+      - name: black --check (python/drevo/ + tests/)
+        # Formatting gate. Matches the black config in
+        # drevo-py/pyproject.toml [tool.black] (line-length 100,
+        # target-version py310-py313).
+        run: |
+          cd drevo-py
+          black --check python/ tests/

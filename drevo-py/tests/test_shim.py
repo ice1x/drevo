@@ -25,7 +25,6 @@ import pytest
 
 import drevo
 
-
 # ── Top-level package surface ─────────────────────────────────────────
 
 
@@ -175,9 +174,7 @@ def test_edge_uuid_is_uuid_uuid(drevo_db):
     """Same contract for `Edge.uuid` (mirror RFC §3.2)."""
     src = drevo_db.create_node(drevo.NewNode(kind="note", title="src"))
     dst = drevo_db.create_node(drevo.NewNode(kind="note", title="dst"))
-    edge = drevo_db.create_edge(
-        drevo.NewEdge(from_id=src.id, to_id=dst.id, kind="links_to")
-    )
+    edge = drevo_db.create_edge(drevo.NewEdge(from_id=src.id, to_id=dst.id, kind="links_to"))
     assert isinstance(edge.uuid, uuid.UUID)
     assert len(edge.uuid.bytes) == 16
 
@@ -318,8 +315,7 @@ def test_node_class_exposes_documented_attributes(drevo_db):
         # / None / "".
         sentinel = object()
         assert getattr(node, attr, sentinel) is not sentinel, (
-            f"Node.{attr} is missing at runtime — drift between the "
-            f".pyi stub and the cdylib"
+            f"Node.{attr} is missing at runtime — drift between the " f".pyi stub and the cdylib"
         )
 
 
@@ -342,8 +338,7 @@ def test_edge_class_exposes_documented_attributes(drevo_db):
     ]:
         sentinel = object()
         assert getattr(edge, attr, sentinel) is not sentinel, (
-            f"Edge.{attr} is missing at runtime — drift between the "
-            f".pyi stub and the cdylib"
+            f"Edge.{attr} is missing at runtime — drift between the " f".pyi stub and the cdylib"
         )
     assert edge.weight == pytest.approx(2.5)
 

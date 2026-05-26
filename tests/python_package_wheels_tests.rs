@@ -523,6 +523,45 @@ fn cibuildwheel_runs_the_python_runtime_test_suite() {
 }
 
 #[test]
+fn python_ci_workflow_runs_full_lint_and_test_gate() {
+    // The lightweight Python CI workflow (`python-ci.yml`) is the
+    // fast-feedback gate on every PR — landed alongside 00116 so the
+    // shim contract is enforced without waiting for the full
+    // cibuildwheel matrix. Lock the four gates here so a future PR
+    // cannot silently drop, say, mypy --strict (which is what catches
+    // .pyi drift against the runtime).
+    let wf = read(
+        &repo_root()
+            .join(".github")
+            .join("workflows")
+            .join("python-ci.yml"),
+    );
+    for needle in [
+        "maturin develop",
+        "pytest",
+        "mypy --strict",
+        "ruff check",
+        "black --check",
+        "ubuntu-latest",
+    ] {
+        assert!(
+            wf.contains(needle),
+            ".github/workflows/python-ci.yml must invoke `{needle}` — \
+             the lightweight Python CI gate from this branch's 00116 \
+             follow-up requires all four lint/test steps + the \
+             ubuntu-latest runner"
+        );
+    }
+    // Path filters: changes outside `drevo-py/**` + workflow + the
+    // root Rust crate should NOT trigger this workflow.
+    assert!(
+        wf.contains("paths:") && wf.contains("drevo-py/**"),
+        ".github/workflows/python-ci.yml must declare `paths:` with \
+         `drevo-py/**` so docs-only PRs don't re-run the gate"
+    );
+}
+
+#[test]
 fn python_runtime_test_suite_exists() {
     let suite = repo_root()
         .join("drevo-py")
