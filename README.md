@@ -535,8 +535,8 @@ MVP: Phases 7-9    →  drevo ships as a Docker/K8s product
 Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations (SET/DELETE/MERGE) → predicates (WHERE) → aggregations → OPTIONAL MATCH → WITH → variable-length paths.
 
 - [x] `00061` Cypher lexer — tokens for keywords, literals, identifiers, operators, parameters, comments
-- [ ] `00062` Cypher parser — AST construction, error recovery, keyword-as-identifier support
-- [ ] `00063` Executor — pattern matching, expression evaluation, CREATE / MATCH / RETURN
+- [x] `00062` Cypher parser — AST construction, error recovery, keyword-as-identifier support
+- [x] `00063` Executor — pattern matching, expression evaluation, CREATE / MATCH / RETURN
 - [ ] `00064` Mutations — SET, DELETE, MERGE, MATCH...MERGE (idempotent relationship creation between bound variables)
 - [ ] `00065` WHERE — boolean expressions, comparison operators, IN, EXISTS, IS NULL
 - [ ] `00066` Aggregations — COUNT, SUM, AVG, MIN, MAX, COLLECT, GROUP BY, DISTINCT
@@ -706,9 +706,9 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
   Errors map: `DrevoError::NotFound` → `drevo.NotFoundError`, `DrevoError::Conflict` → `drevo.ConflictError`, `DrevoError::InvalidInput` → `ValueError`, `DrevoError::Storage` → `drevo.StorageError`. GIL released around every storage I/O call (`py.allow_threads`) so Python threads stay responsive. Cites: `drevo-rust` §"FFI Safety" for panic catching at the Python boundary.
 
-- [ ] `00116` **Python package skeleton + wheels** — `pyproject.toml` (PEP 621), `maturin` build backend, type stubs `drevo/__init__.pyi`, `py.typed` marker, README, LICENSE, CHANGELOG. `cibuildwheel` matrix builds wheels for the platforms listed in the cross-cutting criteria above. `twine check dist/*` green. **No publishing yet** — the wheel build is exercised in CI on every PR; publishing to PyPI lands later as a separate release task. Cites: `drevo-architecture` §"Crate boundaries".
+- [x] `00116` **Python package skeleton + wheels** — `pyproject.toml` (PEP 621), `maturin` build backend, type stubs `drevo/__init__.pyi`, `py.typed` marker, README, LICENSE, CHANGELOG. `cibuildwheel` matrix builds wheels for the platforms listed in the cross-cutting criteria above. `twine check dist/*` green. **No publishing yet** — the wheel build is exercised in CI on every PR; publishing to PyPI lands later as a separate release task. Cites: `drevo-architecture` §"Crate boundaries".
 
-- [ ] `00117` **Graph-RAG idioms layer** — pure-Python module `drevo.rag` built on top of the PyO3 bindings. Concrete API:
+- [x] `00117` **Graph-RAG idioms layer** — pure-Python module `drevo.rag` built on top of the PyO3 bindings. Concrete API:
   - `Retriever(drevo, *, hops=2, kind_filter=None)` — given a seed node UUID or FTS query, returns the seed plus its `hops`-deep neighbourhood as a `Context` object,
   - `Context.to_text(*, format='markdown'|'json'|'turtle')` — formats the retrieved subgraph as LLM-ready context,
   - `expand_neighborhood(node_uuid, *, hops, kind_filter, max_nodes)` — bounded BFS used by the retriever,
@@ -717,7 +717,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
   `drevo.rag` has **zero hard dependency on LangChain / LlamaIndex / Haystack** — it accepts duck-typed `Document` objects (anything with `.page_content: str` and `.metadata: dict`) so any orchestrator can plug in. Adapters for those frameworks ship as optional extras (`pip install drevo-py[langchain]`).
 
-- [ ] `00118` **Python unit-test suite** — `tests/unit/` under the Python package. ~80 tests, one focused assertion per case, dependencies mocked where possible (storage, embedder). Covers: every public method on `Drevo`, every error mapping (each `DrevoError` variant has a corresponding Python exception test), `Retriever` algorithmic correctness, `MMRReranker` math, `Context.to_text` formatting for all three formats. Cites: `drevo-tdd` §"Unit tests".
+- [x] `00118` **Python unit-test suite** — `tests/unit/` under the Python package. ~80 tests, one focused assertion per case, dependencies mocked where possible (storage, embedder). Covers: every public method on `Drevo`, every error mapping (each `DrevoError` variant has a corresponding Python exception test), `Retriever` algorithmic correctness, `MMRReranker` math, `Context.to_text` formatting for all three formats. Cites: `drevo-tdd` §"Unit tests".
 
 - [ ] `00119` **Python integration-test suite** — `tests/integration/` exercising the **real** redb backend via `Drevo.open(tempfile)`. ~40 tests. Covers cross-component invariants the unit tests can't catch: CRUD round-trip across process restart (open → write → close → reopen → verify), pagination boundary conditions on `list_*` calls, FTS recall over real corpora, traversal correctness on real edge tables, GIL re-acquisition (multi-threaded clients hitting the same `Drevo` instance), Cypher round-trip once `00063` executor lands. Cites: `drevo-tdd` §"Integration tests".
 
