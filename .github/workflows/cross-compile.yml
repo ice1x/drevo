@@ -174,7 +174,18 @@ jobs:
       # re-run after a previous extraction does not block on the
       # interactive `replace …? [y]es, [n]o, [A]ll …` question that
       # broke past runs.
-      - name: Install Android NDK
+      #
+      # Caching: the NDK is ~1 GiB unzipped. On the self-hosted runner
+      # the workspace is wiped between jobs (actions/checkout cleans it),
+      # but `$RUNNER_TOOL_CACHE` is a stable per-runner directory that
+      # survives across jobs / runs — exactly what the GitHub-Hosted
+      # runners use for `$RUNNER_TOOL_CACHE/Python/3.12.X/x64`,
+      # `$RUNNER_TOOL_CACHE/node/20.X/x64`, etc. Caching the NDK there
+      # keyed by version means the curl-to-dl.google.com only runs once
+      # per NDK version bump (next bump: edit `ANDROID_NDK_VERSION`,
+      # next run repopulates). On a fresh runner with no cache the
+      # download path is unchanged.
+      - name: Install Android NDK (cached on self-hosted runner)
         run: |
           set -euo pipefail
           ANDROID_NDK_VERSION="r27c"
@@ -192,13 +203,28 @@ jobs:
               exit 1
               ;;
           esac
-          NDK_URL="https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-${NDK_HOST_TAG}.zip"
-          # Use curl on macOS (no wget by default); curl is also on
-          # every Linux distro we'd run this on.
-          curl -fsSL "$NDK_URL" -o ndk.zip
-          unzip -qo ndk.zip
-          echo "ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
-          echo "NDK_PREBUILT_DIR=$NDK_PREBUILT_DIR" >> $GITHUB_ENV
+          # `$RUNNER_TOOL_CACHE` is set by the Actions runner agent on
+          # both hosted and self-hosted runners. Fall back to
+          # `$HOME/.cache` for any non-runner-managed environment.
+          NDK_PARENT="${RUNNER_TOOL_CACHE:-$HOME/.cache}/drevo-ndk"
+          mkdir -p "$NDK_PARENT"
+          NDK_DIR="$NDK_PARENT/android-ndk-${ANDROID_NDK_VERSION}"
+          NDK_LINKER="$NDK_DIR/toolchains/llvm/prebuilt/${NDK_PREBUILT_DIR}/bin/aarch64-linux-android35-clang"
+          if [ -x "$NDK_LINKER" ]; then
+            echo "NDK ${ANDROID_NDK_VERSION} already cached at $NDK_DIR — skipping download"
+          else
+            echo "::group::NDK ${ANDROID_NDK_VERSION} not cached — downloading to $NDK_PARENT"
+            NDK_URL="https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-${NDK_HOST_TAG}.zip"
+            # Use curl on macOS (no wget by default); curl is also on
+            # every Linux distro we'd run this on.
+            tmp_zip="$(mktemp -t ndk-XXXXXX.zip)"
+            trap 'rm -f "$tmp_zip"' EXIT
+            curl -fsSL "$NDK_URL" -o "$tmp_zip"
+            unzip -qo "$tmp_zip" -d "$NDK_PARENT"
+            echo "::endgroup::"
+          fi
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "NDK_PREBUILT_DIR=$NDK_PREBUILT_DIR" >> "$GITHUB_ENV"
 
       # Configure cargo to use Android NDK linker. The toolchain
       # subdir name comes from the previous step's `NDK_PREBUILT_DIR`
