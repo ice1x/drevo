@@ -109,16 +109,27 @@ jobs:
       # `pip wheel`. `pip wheel` would try to use a setuptools backend
       # and explode immediately — `pyproject.toml` declares maturin.
       CIBW_BUILD_FRONTEND: "build"
-      # cibuildwheel runs inside its own container on Linux. Install
-      # the Rust toolchain inside that container so cargo is available
-      # to maturin. The `before-build` hook runs once per wheel.
-      CIBW_BEFORE_BUILD_LINUX: >-
+      # cibuildwheel runs inside its own manylinux container on Linux.
+      # Install the Rust toolchain once per platform (`BEFORE_ALL`, not
+      # `BEFORE_BUILD` — runs once, not per-wheel), then surface
+      # `~/.cargo/bin` through `CIBW_ENVIRONMENT_LINUX` so the build
+      # step actually finds cargo. The previous `BEFORE_BUILD` form
+      # without an env-PATH update failed with exit code 127
+      # ("rustup: command not found") because rustup-init writes the
+      # binary into `$HOME/.cargo/bin` without modifying the active
+      # shell's PATH — every subsequent command in the same script
+      # then has to use the absolute path or re-source `cargo/env`.
+      # Using BEFORE_ALL + CIBW_ENVIRONMENT_LINUX is the pattern the
+      # cibuildwheel docs recommend for Rust-backed wheels.
+      CIBW_BEFORE_ALL_LINUX: >-
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-        sh -s -- -y --profile minimal --default-toolchain stable &&
-        rustup show
+        sh -s -- -y --profile minimal --default-toolchain stable
+      CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH"'
       # Native macOS + Windows runners get rustup from the host setup
-      # step below — no in-container install needed.
-      CIBW_BEFORE_BUILD_MACOS: "rustup show || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable)"
+      # step above (dtolnay/rust-toolchain@stable). No in-container
+      # install needed; `rustup show` is a cheap sanity check that
+      # cargo is on PATH before maturin runs.
+      CIBW_BEFORE_BUILD_MACOS: "rustup show"
       CIBW_BEFORE_BUILD_WINDOWS: "rustup show"
       # Test every wheel cibuildwheel produces against the runtime
       # contract in drevo-py/tests/test_shim.py (UUID wrapping,
