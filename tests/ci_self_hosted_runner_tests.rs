@@ -20,9 +20,9 @@
 //!
 //! 1. Every `runs-on:` line references either `self-hosted` or one of
 //!    the documented allow-listed GitHub-hosted runners (`ubuntu-latest`
-//!    is the default; `macos-latest` / `windows-latest` are NOT used
-//!    today and are also rejected — adding them is a deliberate design
-//!    decision, not an accident).
+//!    is the default; `macos-latest` + `windows-latest` are allowed
+//!    ONLY inside the Phase 16 Python wheel matrix, per the comment
+//!    on `ALLOWED_RUNS_ON`).
 //! 2. The `fuzz` job in `.github/workflows/ci.yml` MUST stay on
 //!    `self-hosted` (cargo-fuzz preinstall + nightly Rust + ASAN +
 //!    libFuzzer; running this on free runners would inflate the GitHub
@@ -106,7 +106,28 @@ fn at_least_one_runs_on_directive_exists() {
 /// Keep this list short and intentional: every entry is a deliberate
 /// policy decision. New aliases require a code review explaining why
 /// the workflow needs them.
-const ALLOWED_RUNS_ON: &[&str] = &["self-hosted", "ubuntu-latest"];
+///
+/// * `self-hosted` — the persistent runner for fuzz + Docker multi-arch
+///   (see fuzz_job_in_ci_must_be_self_hosted + docker_publish_job_must_be_self_hosted).
+/// * `ubuntu-latest` — the default GitHub-hosted runner for stable-Rust
+///   PR gates (check, test, clippy, fmt, doc, msrv, k8s).
+/// * `macos-latest` + `windows-latest` — Phase 16 task `00116` only.
+///   PyO3 wheels are platform-native (every wheel is an `.so` / `.dylib` /
+///   `.pyd` compiled for the target OS), so the `cibuildwheel` matrix in
+///   `.github/workflows/python-wheels.yml` MUST run on real macOS and
+///   Windows runners to produce a `macosx_*` / `win_amd64` wheel. There
+///   is no cross-compile path that satisfies PyO3's runtime ABI checks.
+///   Cited: `audit/RFC-python-api.md` §2 "Wheel layout"; README §"Phase
+///   16 cross-cutting acceptance criteria" wheel matrix. Adding any new
+///   runner here requires the same kind of citation — a workflow that
+///   could run on `ubuntu-latest` is not a justification for adding a
+///   new label.
+const ALLOWED_RUNS_ON: &[&str] = &[
+    "self-hosted",
+    "ubuntu-latest",
+    "macos-latest",
+    "windows-latest",
+];
 
 #[test]
 fn every_runs_on_uses_an_allow_listed_runner() {
@@ -132,6 +153,13 @@ fn every_runs_on_uses_an_allow_listed_runner() {
                     ALLOWED_RUNS_ON.contains(&label)
                         || matches!(label, "Linux" | "macOS" | "Windows" | "X64" | "ARM64")
                 })
+        } else if value.starts_with("${{") && value.contains("matrix.") {
+            // Matrix-expansion form, e.g. `runs-on: ${{ matrix.os }}`.
+            // The literal values come from `strategy.matrix.<name>` and
+            // are validated in `matrix_runner_values_are_all_allow_listed`
+            // below — accepting the expression here keeps the matrix
+            // pattern available without weakening the allowlist.
+            true
         } else {
             ALLOWED_RUNS_ON.contains(&value)
         };
@@ -140,10 +168,123 @@ fn every_runs_on_uses_an_allow_listed_runner() {
             ok,
             "{file}: `runs-on: {value}` is not allow-listed — supported \
              values are {ALLOWED_RUNS_ON:?} (or an array including \
-             `self-hosted` plus OS/arch labels). Adding a new value \
-             requires updating ALLOWED_RUNS_ON with a comment \
+             `self-hosted` plus OS/arch labels, or a `${{{{ matrix.X }}}}` \
+             expression backed by an allow-listed matrix). Adding a new \
+             value requires updating ALLOWED_RUNS_ON with a comment \
              explaining why.",
         );
+    }
+}
+
+/// Companion to `every_runs_on_uses_an_allow_listed_runner`. When a
+/// workflow uses `runs-on: ${{ matrix.os }}` (or similar), the literal
+/// runner labels live under `strategy.matrix.os` — assert that EVERY
+/// such literal is on `ALLOWED_RUNS_ON`. Without this guard, a future
+/// PR could add `matrix.os: [ubuntu-latest, foo-runner]` and silently
+/// schedule jobs on a runner class the policy never approved.
+#[test]
+fn matrix_runner_values_are_all_allow_listed() {
+    for path in workflow_files() {
+        let file = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        let body = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+        // Locate `matrix:` blocks and inspect any list-typed value
+        // whose name contains "os" (the conventional name for OS axis).
+        // The parser is line-based to keep this test free of a YAML
+        // dependency, mirroring the rest of the suite.
+        let mut in_matrix = false;
+        let mut matrix_indent: Option<usize> = None;
+        let mut os_axis_seen = false;
+        let mut in_os_axis = false;
+
+        for raw in body.lines() {
+            let trimmed = raw.trim_start();
+            let indent = raw.len() - trimmed.len();
+
+            // Enter a matrix block when we see `matrix:` at the start
+            // of a line, exit when indentation collapses back.
+            if !in_matrix && trimmed.starts_with("matrix:") {
+                in_matrix = true;
+                matrix_indent = Some(indent);
+                continue;
+            }
+            if in_matrix {
+                if let Some(start_indent) = matrix_indent {
+                    // De-indent to or past the matrix line ends the block.
+                    if !trimmed.is_empty() && indent <= start_indent {
+                        in_matrix = false;
+                        in_os_axis = false;
+                        matrix_indent = None;
+                        continue;
+                    }
+                }
+                // Axis name lines, e.g. `os:` or `os: [...]`.
+                if trimmed.starts_with("os:") {
+                    os_axis_seen = true;
+                    let rest = trimmed.trim_start_matches("os:").trim();
+                    if let Some(list) = rest.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                        for label in list.split(',').map(|s| s.trim().trim_matches('"')) {
+                            assert!(
+                                ALLOWED_RUNS_ON.contains(&label),
+                                "{file} strategy.matrix.os contains `{label}` \
+                                 which is not allow-listed — see \
+                                 ALLOWED_RUNS_ON in this test"
+                            );
+                        }
+                    } else {
+                        // List form, items on following lines as `- foo`.
+                        in_os_axis = true;
+                    }
+                    continue;
+                }
+                if in_os_axis {
+                    if let Some(item) = trimmed.strip_prefix("- ") {
+                        let label = item.trim().trim_matches('"').trim_matches('\'');
+                        assert!(
+                            ALLOWED_RUNS_ON.contains(&label),
+                            "{file} strategy.matrix.os contains `{label}` \
+                             which is not allow-listed — see \
+                             ALLOWED_RUNS_ON in this test"
+                        );
+                        continue;
+                    }
+                    // Anything that isn't a list item ends the os axis.
+                    in_os_axis = false;
+                }
+            }
+        }
+
+        let _ = os_axis_seen; // not every workflow defines a matrix.os
+    }
+}
+
+/// `macos-latest` and `windows-latest` are allowed ONLY for the Phase
+/// 16 Python wheel matrix. Any other workflow reaching for those runners
+/// is almost certainly a slip — `ubuntu-latest` covers every stable-Rust
+/// gate and `self-hosted` covers the niche-target jobs. This guard
+/// catches the slip at PR time so we don't silently drift back into
+/// burning GitHub minutes on macOS / Windows for jobs that have no
+/// platform-native reason to be there.
+#[test]
+fn macos_and_windows_runners_only_in_python_wheels_workflow() {
+    let lines = all_runs_on_lines();
+    for (file, line) in &lines {
+        for restricted in ["macos-latest", "windows-latest"] {
+            if line.contains(restricted) {
+                assert_eq!(
+                    file, "python-wheels.yml",
+                    "{file} uses `{restricted}` but only `python-wheels.yml` \
+                     is allowed to — PyO3 wheels are the sole justified \
+                     use case for macOS / Windows GitHub-hosted runners \
+                     in this repo. See the comment on ALLOWED_RUNS_ON.",
+                );
+            }
+        }
     }
 }
 
