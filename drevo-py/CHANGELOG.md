@@ -10,10 +10,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Tracked here as Phase 16 tasks land. Sections roll into the next
 released entry on a tagged commit.
 
+### Added — task `00117` (graph-RAG idioms layer)
+
+- `drevo-py/python/drevo/rag/` — pure-Python subpackage on top of the
+  PyO3 bindings. No FFI, no `unsafe`, no Rust dependency — the rag
+  layer can be iterated with `pytest` alone without recompiling the
+  cdylib (RFC §2).
+- `Document` (typing.Protocol, `@runtime_checkable`) + `SimpleDocument`
+  reference implementation — duck-typed Document contract compatible
+  with LangChain / LlamaIndex / Haystack out of the box (RFC §8.1).
+- `IngestSchema` + `ingest_documents(drevo, docs, *, schema, kind,
+  embedder)` — batched node creation with optional metadata mapping
+  and embedder hook; full text always preserved under
+  `properties["text"]` per RFC §8.2.
+- `expand_neighborhood(drevo, node_uuid, *, hops, kind_filter,
+  max_nodes)` — bounded BFS returning a `Neighborhood` dataclass with
+  honest `hops_used` telemetry; the kind filter constrains the
+  frontier, not the seed.
+- `Retriever(drevo, *, hops, kind_filter, max_nodes)` with `retrieve`
+  (dispatched by seed type: `str`→FTS, `int`→get_node,
+  `uuid.UUID`→get_node_by_uuid) and `retrieve_with_embedding` (raises
+  `NotImplementedError` until Phase 12 `00075` lands the HNSW index).
+- `Context` + `ContextStats` frozen dataclasses + `Context.to_text(*,
+  format="markdown"|"json"|"turtle")` — deterministic rendering
+  (sorted by `(kind, title, id)` / `(from_id, to_id, id)`) so
+  `00120` can assert byte-equality.
+- `MMRReranker` — Maximum Marginal Relevance; semantics fixed per
+  RFC §10 Q-4 (`lambda_=1.0` → pure relevance, `lambda_=0.0` → pure
+  diversity). No drevo storage I/O, embedder called exactly once.
+- `drevo-py/python/drevo/rag/__init__.pyi` — type stubs for the full
+  public surface; `mypy --strict drevo/rag` clean.
+- 10 text-level scaffolding tests in
+  `tests/python_rag_idioms_tests.rs` locking the module layout, key
+  exports, optional-dependency extras, and the contract that
+  `import drevo` does NOT eagerly load `drevo.rag`.
+- ~40 runtime pytest cases in `drevo-py/tests/test_rag.py` driving
+  every public symbol from happy-path + edge cases.
+
 ### Pending
 
-- `00117` — pure-Python `drevo.rag` graph-RAG idioms layer
-  (`Retriever`, `Context`, `MMRReranker`, `ingest_documents`).
 - `00118` — Python unit-test suite under `tests/unit/`.
 - `00119` — Python integration-test suite under `tests/integration/`.
 - `00120` — Python e2e graph-RAG suite under `tests/e2e/`.
