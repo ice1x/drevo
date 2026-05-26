@@ -79,10 +79,32 @@ jobs:
       # later 3.x — but we build per-minor anyway so PyPI's metadata
       # records the exact set of tested versions.
       CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
-      # Skip PyPy and 32-bit Linux — drevo's redb backend has not
-      # been validated on either; users on those platforms can build
-      # from source via `pip install drevo-py --no-binary :all:`.
-      CIBW_SKIP: "pp* *-musllinux_i686 cp*-musllinux_*"
+      # Skip the platforms NOT in the documented wheel matrix
+      # (README §"Phase 16 cross-cutting acceptance criteria"):
+      #
+      #   pp*                  — PyPy. drevo's PyO3 layer is built
+      #                          against CPython's abi3-py310; PyPy
+      #                          interpreters speak a different ABI.
+      #   *-win32              — Windows 32-bit (`cp310-win32` etc.).
+      #                          Not in the matrix; redb's memory-
+      #                          mapped backend has tight 32-bit
+      #                          address-space limits and the test
+      #                          suite was observed to fail on win32
+      #                          in PR CI (the user's PR run that
+      #                          motivated this skip).
+      #   *-manylinux_i686     — Linux glibc 32-bit. Same reasoning
+      #                          as win32 — not in the matrix, redb
+      #                          is unhappy on 32-bit.
+      #   *-musllinux_i686     — Linux musl 32-bit. Same.
+      #   cp*-musllinux_*      — musl Alpine wheels in general are
+      #                          deferred until a downstream consumer
+      #                          asks for them — manylinux glibc
+      #                          covers ~all real-world deployments.
+      #
+      # Users on any skipped platform can still build from source via
+      # `pip install drevo-py --no-binary :all:` once they have a Rust
+      # toolchain on PATH.
+      CIBW_SKIP: "pp* *-win32 *-manylinux_i686 *-musllinux_i686 cp*-musllinux_*"
       # Force cibuildwheel to invoke `maturin` rather than its default
       # `pip wheel`. `pip wheel` would try to use a setuptools backend
       # and explode immediately — `pyproject.toml` declares maturin.
