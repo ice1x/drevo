@@ -17,6 +17,9 @@
 /// by the executor (task `00063`). See the module docs for the shape of
 /// the tree.
 pub mod ast;
+/// Executor — walks the [`ast::Query`] produced by [`parser::parse`]
+/// and runs it against a [`crate::db::Drevo`] handle. Task `00063`.
+pub mod executor;
 /// Lexical analyser — turns a Cypher source string into a stream of
 /// [`lexer::Token`]s for the parser.
 pub mod lexer;
