@@ -18,7 +18,6 @@ import pytest
 
 import drevo
 
-
 # ── Inheritance chain — locks RFC §5.1 ───────────────────────────────
 
 

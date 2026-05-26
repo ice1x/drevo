@@ -22,7 +22,6 @@ import pytest
 
 from drevo.rag import MMRReranker
 
-
 # ── pure relevance (lambda_ = 1.0) ───────────────────────────────────
 
 

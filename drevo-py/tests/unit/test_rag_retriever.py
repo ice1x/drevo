@@ -22,7 +22,6 @@ import pytest
 import drevo
 from drevo.rag import Context, Retriever
 
-
 # ── Dispatch (mocked storage) ────────────────────────────────────────
 
 

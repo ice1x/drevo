@@ -15,7 +15,6 @@ import pytest
 import drevo
 from drevo.rag import IngestSchema, SimpleDocument, ingest_documents
 
-
 # ── Happy paths the deeper-existence tests didn't cover ──────────────
 
 
