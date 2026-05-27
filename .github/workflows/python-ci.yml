@@ -2,11 +2,20 @@
 # Phase 16 task `00116` packaging.
 #
 # This workflow is the **fast-feedback** Python signal on every PR:
-# one ubuntu-latest job × Python 3.12 that runs `maturin develop`,
+# one self-hosted job × Python 3.12 that runs `maturin develop`,
 # then `pytest`, `mypy --strict`, `ruff check`, and `black --check`.
-# Total runtime ≈ 3–5 minutes — about a third of what cibuildwheel
-# (`python-wheels.yml`) takes, and small enough to gate every PR
-# without queueing.
+# Total runtime ≈ 1–2 minutes on the warm self-hosted runner (the
+# persistent venv at `$RUNNER_TOOL_CACHE/drevo-py-venv-py312` plus
+# the persistent `$CARGO_TARGET_DIR` mean `maturin develop` is
+# usually an incremental relink).
+#
+# Runs on the same self-hosted macOS runner as `ci.yml` /
+# `slow-tests.yml` / `bench.yml` — no GitHub-hosted minutes are
+# billed. An earlier landing of this file mistakenly targeted
+# `ubuntu-latest`; corrected 2026-05-27 alongside
+# `python-wheels.yml`'s self-hosted move after a Phase 10 merge
+# burst consumed ~2,700 of the account's 3,000 monthly Actions
+# minutes in one cycle (see KG: `incident_2026_05_27_ci_minutes_burn`).
 #
 # Why this is NOT the full 00122 matrix yet:
 #   * The matrix in roadmap task 00122 is 4 Python × 3 OS = 12 cells.
@@ -58,9 +67,14 @@ concurrency:
 jobs:
   lint_and_test:
     name: Lint + test (Python 3.12)
-    runs-on: ubuntu-latest
+    # `self-hosted`, matching every other workflow in this repo. The
+    # 2026-05-25 self-hosted-runner revert (memory:
+    # `project_state_2026_05_25`) missed this file and python-wheels.yml;
+    # both burned ~2,700 of the 3,000 monthly Actions minutes during the
+    # Phase 10 Cypher merge burst before being corrected on 2026-05-27.
+    runs-on: self-hosted
     steps:
-      - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
+      - name: Configure persistent paths (cargo target + python venv)
         # `runner.tool_cache` expression is ONLY available at step level —
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
@@ -70,18 +84,31 @@ jobs:
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
-        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
+        #
+        # Two persistent paths under $RUNNER_TOOL_CACHE:
+        #   * drevo-cargo-target — incremental Rust compile cache shared
+        #     with ci.yml; lets `maturin develop` relink in seconds
+        #     instead of rebuilding the full drevo + pyo3 + redb tree.
+        #   * drevo-py-venv-py312 — persistent Python venv keyed to the
+        #     interpreter major.minor. Skipping the `python -m venv`
+        #     recreate every run is what makes the workflow ~1 minute
+        #     instead of ~3.
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
+          echo "DREVO_PY_VENV=$RUNNER_TOOL_CACHE/drevo-py-venv-py312" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
       - name: Set up Python 3.12
+        # `actions/setup-python` is idempotent on self-hosted — after
+        # the first run it caches the interpreter in `runner.tool_cache`
+        # and subsequent runs only confirm the version. `cache: pip`
+        # is omitted on purpose: the persistent venv at
+        # `$DREVO_PY_VENV` IS the cache (every package install lands
+        # in a directory that survives between runs), so layering
+        # actions/cache on top would download a redundant snapshot.
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          # Cache pip downloads keyed off pyproject.toml so a no-op PR
-          # re-uses the previous install. Speeds up the cold path by
-          # ~30s.
-          cache: "pip"
-          cache-dependency-path: drevo-py/pyproject.toml
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -95,26 +122,30 @@ jobs:
       # Swatinem on top would download an older snapshot over HTTPS
       # and overwrite the live state.
 
-      - name: Create + activate venv (maturin develop requires one)
-        # `actions/setup-python` exposes the interpreter on PATH but
-        # does NOT create or activate a virtualenv. `maturin develop`
-        # refuses to install the cdylib without a venv (it does not
-        # want to touch the system / hosted-tool-cache site-packages,
-        # which would leak between CI runs). Solution: create a venv
-        # here and surface `VIRTUAL_ENV` + the venv's `bin/` on PATH
-        # through `$GITHUB_ENV` / `$GITHUB_PATH` so every subsequent
-        # step (each a fresh shell) sees the same environment.
+      - name: Ensure persistent venv at $DREVO_PY_VENV (create on first run)
+        # The previous form `python -m venv .venv` recreated a fresh
+        # venv inside the repo every run — every pip install paid the
+        # cold-cache cost. Moving the venv to
+        # `$RUNNER_TOOL_CACHE/drevo-py-venv-py312` makes it survive
+        # between runs; subsequent runs only verify that the venv
+        # exists and surface its PATH / VIRTUAL_ENV. Re-creation is
+        # automatic if a future Python upgrade renames the tool-cache
+        # path or if an operator wipes the runner's tool cache.
         run: |
-          python -m venv .venv
-          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          if [ ! -x "$DREVO_PY_VENV/bin/python" ]; then
+            python -m venv "$DREVO_PY_VENV"
+          fi
+          echo "VIRTUAL_ENV=$DREVO_PY_VENV" >> "$GITHUB_ENV"
+          echo "$DREVO_PY_VENV/bin" >> "$GITHUB_PATH"
 
-      - name: Install Python build + lint tooling
+      - name: Install / upgrade Python tooling (no-op when up to date)
+        # pip checks installed package metadata and skips packages that
+        # already satisfy the requested version specifier, so on a warm
+        # cache this step takes a couple of seconds. The pin on maturin
+        # matches drevo-py/pyproject.toml [build-system].requires so
+        # the local + CI build paths stay in lockstep.
         run: |
           python -m pip install --upgrade pip
-          # Pinned to the same maturin range declared in
-          # drevo-py/pyproject.toml [build-system].requires so the
-          # local + CI build paths stay in lockstep.
           pip install "maturin>=1.7,<2.0" pytest mypy ruff black
 
       - name: maturin develop --release (build + install drevo-py)

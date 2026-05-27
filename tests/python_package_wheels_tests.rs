@@ -472,15 +472,19 @@ fn cibuildwheel_workflow_exists_with_full_matrix() {
              §2 wheel matrix"
         );
     }
-    // OS matrix: linux, macos, windows — at least the runner labels
-    // must appear so the matrix actually fans out.
-    for os in ["ubuntu", "macos", "windows"] {
-        assert!(
-            wf.contains(os),
-            "python-wheels.yml runner matrix must include `{os}-latest` \
-             — RFC §2 / Phase 16 cross-cutting acceptance criteria"
-        );
-    }
+    // Runner target — `self-hosted` since 2026-05-27. The previous
+    // matrix (`ubuntu-latest, macos-latest, windows-latest` × cp310-313
+    // = 12 cells) billed against GitHub-hosted infrastructure with a
+    // ×10 multiplier on macOS cells; one push to main matching the
+    // path filter cost ~520 billable minutes. Linux + Windows wheel
+    // builds are deferred to the future release-time workflow that
+    // explicitly opts into cross-platform GitHub-hosted minutes for
+    // the PyPI upload step.
+    assert!(
+        wf.contains("runs-on: self-hosted"),
+        "python-wheels.yml must run on `self-hosted` (see KG \
+         `incident_2026_05_27_ci_minutes_burn` for the cost rationale)"
+    );
     // `twine check dist/*` validates wheel metadata before any future
     // release task uploads — locks the contract today.
     assert!(
@@ -542,14 +546,22 @@ fn python_ci_workflow_runs_full_lint_and_test_gate() {
         "mypy --strict",
         "ruff check",
         "black --check",
-        "ubuntu-latest",
+        // Runner target — `self-hosted` since 2026-05-27. Earlier
+        // landings of this file mistakenly used `ubuntu-latest`,
+        // which billed GitHub-hosted minutes against the account.
+        // The repo-wide policy (locked by
+        // `tests/ci_self_hosted_runner_tests.rs`) is that every
+        // workflow runs on `self-hosted` unless a documented
+        // cross-platform need (Linux + Windows matrix in
+        // `python-wheels.yml`) forces GitHub-hosted runners.
+        "runs-on: self-hosted",
     ] {
         assert!(
             wf.contains(needle),
             ".github/workflows/python-ci.yml must invoke `{needle}` — \
              the lightweight Python CI gate from this branch's 00116 \
              follow-up requires all four lint/test steps + the \
-             ubuntu-latest runner"
+             self-hosted runner"
         );
     }
     // Path filters: changes outside `drevo-py/**` + workflow + the

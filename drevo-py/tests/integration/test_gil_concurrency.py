@@ -1,8 +1,7 @@
 """GIL re-acquisition and threaded access on a real disk backend.
 
 Every public method on `Drevo` wraps its storage I/O in
-`Python::allow_threads`. The contract the suite pins here is the one
-the current implementation actually delivers:
+`Python::allow_threads`. The contract the suite pins here:
 
 * **GIL release on storage I/O** — while one Python thread is inside
   a storage call on the handle, an unrelated Python thread (one that
@@ -14,23 +13,29 @@ the current implementation actually delivers:
 * **Per-thread sequential reuse** — a `Drevo` handle is `Send`, so a
   thread spawned with the handle can call `create_node` /
   `get_node` / etc.; on join, the next thread sees every committed
-  row. This pins thread-affinity-agnostic, sequential cross-thread
-  usage (the common pattern in worker pools that hand a job off and
-  wait).
+  row.
 
-* **Sequential close-then-reopen cycles** — a writer that releases the
-  file lock between sessions can be replaced by a fresh handle on the
-  same path without losing data, no matter how many times the cycle
-  repeats.
+* **Concurrent writers on the same live handle** — N Python threads
+  each calling `create_node` produce N×M unique node ids; no torn
+  rows, no missing rows, no deadlock. The PyO3 wrapper drops its
+  mutex guard before entering `py.allow_threads(...)` (see
+  `drevo-py/src/handle.rs::borrow_db`); without that, the GIL+Mutex
+  combination deadlocks after 1–2 iterations because thread A holds
+  the Rust mutex with the GIL released while thread B holds the GIL
+  blocked on the same mutex.
 
-Concurrent N-thread access *to the same live handle* is **out of
-scope** for this suite — the current `handle.rs::with_db` wrapper
-holds a `std::sync::Mutex` for the full duration of every storage
-call while `allow_threads` releases the GIL, which is a classic
-GIL+Mutex deadlock pattern. Fixing the wrapper (e.g. dropping the
-guard before `allow_threads`, or switching to a read-mostly lock)
-unblocks true concurrent access; that work belongs in a separate
-follow-up, not in 00119's test addition.
+* **Reader + writer interleaved on the same handle** — a reader
+  polling `list_nodes_by_kind` while a writer inserts rows observes
+  a monotonically non-decreasing count. redb's internal MVCC
+  guarantees each read transaction sees a single consistent
+  snapshot.
+
+* **Traversal during writes** — a `bfs` running while edges are
+  added returns nodes that are all real (no ghost ids that fail a
+  subsequent `get_node` lookup).
+
+* **Sequential close-then-reopen cycles** — repeated open / close
+  releases the file lock so the next session can re-acquire it.
 """
 
 from __future__ import annotations
@@ -148,6 +153,117 @@ def test_concurrent_reopen_cycles_preserve_data(tmp_db_path: str) -> None:
     with drevo.Drevo.open(tmp_db_path) as db:
         rows = db.list_nodes_by_kind("cycle", limit=100, offset=0)
     assert {n.title for n in rows} == {f"cycle-{i}" for i in range(5)}
+
+
+def test_concurrent_writers_observe_no_torn_rows(disk_db: drevo.Drevo) -> None:
+    """N=8 threads, each creating M=25 nodes on the same handle,
+    produce N*M unique ids with no duplicates.
+
+    Locks the contract that the PyO3 wrapper does NOT serialise
+    storage I/O behind its own mutex (it used to, and the resulting
+    GIL+Mutex deadlock made this test hang indefinitely). The
+    underlying redb backend's internal `RwLock` is what serialises
+    writes correctly without blocking the GIL.
+    """
+    n_threads = 8
+    per_thread = 25
+    created: list[int] = []
+    lock = threading.Lock()
+
+    def worker(tid: int) -> None:
+        local_ids: list[int] = []
+        for i in range(per_thread):
+            node = disk_db.create_node(drevo.NewNode(kind="task", title=f"t{tid}-{i}", body="x"))
+            local_ids.append(node.id)
+        with lock:
+            created.extend(local_ids)
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(created) == n_threads * per_thread
+    assert len(set(created)) == len(created), "duplicate node id allocated"
+
+
+def test_concurrent_readers_during_writes_observe_monotonic_count(
+    disk_db: drevo.Drevo,
+) -> None:
+    """A reader running alongside a writer sees a non-decreasing count
+    of matching rows — never goes backwards (which would imply a torn
+    or rolled-back commit).
+    """
+    writer_done = threading.Event()
+    observations: list[int] = []
+
+    def writer() -> None:
+        for i in range(50):
+            disk_db.create_node(drevo.NewNode(kind="obs", title=f"row-{i}"))
+        writer_done.set()
+
+    def reader() -> None:
+        while not writer_done.is_set():
+            page = disk_db.list_nodes_by_kind("obs", limit=100, offset=0)
+            observations.append(len(page))
+            time.sleep(0.001)
+        # Final observation after the writer signals done.
+        observations.append(len(disk_db.list_nodes_by_kind("obs", limit=100, offset=0)))
+
+    w = threading.Thread(target=writer)
+    r = threading.Thread(target=reader)
+    w.start()
+    r.start()
+    w.join()
+    r.join()
+
+    assert observations[-1] == 50
+    for prev, nxt in zip(observations, observations[1:]):
+        assert nxt >= prev, f"reader saw row count regress: {prev} → {nxt}"
+
+
+def test_threaded_traversal_during_writes_returns_consistent_snapshot(
+    disk_db: drevo.Drevo,
+) -> None:
+    """A `bfs` running while edges are added to the same root returns
+    only real nodes — every id from the traversal lookups back to a
+    live `Node`. redb's MVCC chooses a consistent snapshot at txn-open
+    time, so the reader never sees a ghost id.
+    """
+    root = disk_db.create_node(drevo.NewNode(kind="root", title="root"))
+    initial = [disk_db.create_node(drevo.NewNode(kind="child", title=f"c-{i}")) for i in range(5)]
+    for c in initial:
+        disk_db.create_edge(drevo.NewEdge(from_id=root.id, to_id=c.id, kind="parent_of"))
+
+    stop = threading.Event()
+    errors: list[str] = []
+
+    def writer() -> None:
+        for i in range(50):
+            child = disk_db.create_node(drevo.NewNode(kind="child", title=f"late-{i}"))
+            disk_db.create_edge(drevo.NewEdge(from_id=root.id, to_id=child.id, kind="parent_of"))
+        stop.set()
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                frontier = disk_db.bfs(root.id, 1, drevo.Direction.OUT)
+                for n in frontier:
+                    if disk_db.get_node(n.id) is None:
+                        errors.append(f"bfs returned ghost node {n.id}")
+            except Exception as exc:  # pragma: no cover - regression catch
+                errors.append(f"bfs raised: {exc!r}")
+            time.sleep(0.001)
+
+    w = threading.Thread(target=writer)
+    r = threading.Thread(target=reader)
+    w.start()
+    r.start()
+    w.join()
+    r.join()
+
+    assert errors == []
 
 
 def test_gil_release_around_search_fts(disk_db: drevo.Drevo) -> None:
