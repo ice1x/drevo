@@ -1,21 +1,34 @@
 //! Cypher executor — Phase 10 tasks `00063` (CREATE / MATCH / RETURN),
-//! `00064` (mutations: SET, DELETE, MERGE, REMOVE), and `00065` (WHERE
-//! on `MATCH`).
+//! `00064` (mutations: SET, DELETE, MERGE, REMOVE), `00065` (WHERE on
+//! `MATCH`), and `00066` (aggregations).
 //!
 //! The executor consumes the [`crate::cypher::ast::Query`] produced by
 //! [`crate::cypher::parser::parse`] and runs it against the underlying
 //! [`crate::db::Drevo`] handle. The current cut covers the README
 //! "critical path" prefix — `CREATE`, `MATCH`, `RETURN`, the full
-//! mutation surface, and `WHERE` predicates on `MATCH` — with enough
-//! expression evaluation to make `RETURN`, `ORDER BY`, `SKIP`, `LIMIT`,
-//! `DISTINCT`, inline property filters, `SET` / `REMOVE` / `DELETE`
-//! (incl. `DETACH DELETE`), `MERGE` (with `ON CREATE` / `ON MATCH`
-//! actions), and `WHERE` boolean / comparison / `IN` / `IS NULL`
-//! predicates useful.
+//! mutation surface, `WHERE` predicates on `MATCH`, and aggregation
+//! functions in `RETURN` — with enough expression evaluation to make
+//! `RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `DISTINCT`, inline property
+//! filters, `SET` / `REMOVE` / `DELETE` (incl. `DETACH DELETE`),
+//! `MERGE` (with `ON CREATE` / `ON MATCH` actions), `WHERE` boolean /
+//! comparison / `IN` / `IS NULL` predicates, and `COUNT` / `SUM` /
+//! `AVG` / `MIN` / `MAX` / `COLLECT` (incl. `DISTINCT`) with implicit
+//! `GROUP BY` semantics, all useful.
+//!
+//! # Aggregations (`00066`)
+//!
+//! `GROUP BY` is implicit: every projection in `RETURN` that does *not*
+//! contain an aggregation function call forms a group key. Rows with
+//! equal group keys are folded into one output row, with the
+//! aggregation columns reduced across the group. A pure-aggregation
+//! query (no group keys) always yields exactly one row, even on zero
+//! input rows — `COUNT(*)` returns `0`, `MIN` / `MAX` / `AVG` return
+//! `NULL`. Aggregations skip `NULL` per Cypher semantics; the
+//! `DISTINCT` modifier inside an aggregation deduplicates per-row
+//! argument values before folding.
 //!
 //! Out of scope (tracked under follow-on Phase 10 tasks):
 //!
-//! * Aggregations (`COUNT`, `SUM`, `COLLECT`, …) (`00066`).
 //! * `OPTIONAL MATCH` (`00067`).
 //! * `WITH` query pipelining (`00068`).
 //! * Variable-length paths (`*1..3`) (`00069`).
@@ -498,10 +511,14 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
         Clause::Return(r) => {
             for item in &r.items {
                 if let ProjectionItem::Expression { expr, .. } = item {
-                    validate_expr_supported(expr)?;
+                    validate_expr_supported_in_projection(expr)?;
                 }
             }
             for item in &r.order_by {
+                // ORDER BY after aggregation typically references the
+                // aliased projection columns; sub-expressions still go
+                // through the strict validator (no function calls in
+                // ORDER BY for 00066 — use an alias instead).
                 validate_expr_supported(&item.expression)?;
             }
             if let Some(e) = &r.skip {
@@ -604,7 +621,7 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
     match expr {
         Expression::FunctionCall { name, span, .. } => Err(ExecError::Unsupported {
             feature: format!("function call `{}`", name.join(".")),
-            task: "00066".into(),
+            task: "future Phase 10 follow-up".into(),
             span: *span,
         }),
         Expression::Case { span, .. } => Err(ExecError::Unsupported {
@@ -614,7 +631,7 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
         }),
         Expression::Star(span) => Err(ExecError::Unsupported {
             feature: "`*` outside `count(*)`".into(),
-            task: "00066".into(),
+            task: "future Phase 10 follow-up".into(),
             span: *span,
         }),
         Expression::Index { span, .. } | Expression::Slice { span, .. } => {
@@ -654,6 +671,174 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
                 validate_expr_supported(expr)?;
             }
             Ok(())
+        }
+        Expression::Integer(..)
+        | Expression::Float(..)
+        | Expression::String(..)
+        | Expression::True(_)
+        | Expression::False(_)
+        | Expression::Null(_)
+        | Expression::Variable(..)
+        | Expression::Parameter(..) => Ok(()),
+    }
+}
+
+fn is_aggregation_name(name: &[String]) -> bool {
+    if name.len() != 1 {
+        return false;
+    }
+    matches!(
+        name[0].to_ascii_lowercase().as_str(),
+        "count" | "sum" | "avg" | "min" | "max" | "collect"
+    )
+}
+
+fn contains_aggregation(expr: &Expression) -> bool {
+    match expr {
+        Expression::FunctionCall { name, args, .. } => {
+            is_aggregation_name(name) || args.iter().any(contains_aggregation)
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            contains_aggregation(lhs) || contains_aggregation(rhs)
+        }
+        Expression::Unary { expr, .. } => contains_aggregation(expr),
+        Expression::IsNull { expr, .. } => contains_aggregation(expr),
+        Expression::In { expr, list, .. } => {
+            contains_aggregation(expr) || contains_aggregation(list)
+        }
+        Expression::Property { base, .. } => contains_aggregation(base),
+        Expression::List { items, .. } => items.iter().any(contains_aggregation),
+        Expression::Map(m) => m.entries.iter().any(|(_, e)| contains_aggregation(e)),
+        Expression::Case {
+            scrutinee,
+            arms,
+            else_branch,
+            ..
+        } => {
+            scrutinee
+                .as_deref()
+                .map(contains_aggregation)
+                .unwrap_or(false)
+                || arms
+                    .iter()
+                    .any(|(w, t)| contains_aggregation(w) || contains_aggregation(t))
+                || else_branch
+                    .as_deref()
+                    .map(contains_aggregation)
+                    .unwrap_or(false)
+        }
+        Expression::Index { base, index, .. } => {
+            contains_aggregation(base) || contains_aggregation(index)
+        }
+        Expression::Slice { base, from, to, .. } => {
+            contains_aggregation(base)
+                || from.as_deref().map(contains_aggregation).unwrap_or(false)
+                || to.as_deref().map(contains_aggregation).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// Validator for expressions written in a `RETURN` projection.
+///
+/// Identical to [`validate_expr_supported`] except that **aggregation**
+/// function calls (`count` / `sum` / `avg` / `min` / `max` / `collect`)
+/// are allowed, and `*` is allowed only as the sole argument of `count`.
+/// Non-aggregation function calls remain rejected with a pointer to the
+/// future scalar-function task, since the executor has no scalar
+/// function library yet (`size`, `toLower`, …).
+fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
+    match expr {
+        Expression::FunctionCall {
+            name,
+            distinct,
+            args,
+            span,
+        } => {
+            if !is_aggregation_name(name) {
+                return Err(ExecError::Unsupported {
+                    feature: format!("function call `{}`", name.join(".")),
+                    task: "future Phase 10 follow-up".into(),
+                    span: *span,
+                });
+            }
+            let lower = name[0].to_ascii_lowercase();
+            // `count(*)` is the only context in which `Expression::Star`
+            // is a legal sub-expression. Validate that special case
+            // before the generic arg loop so the inner `Star` doesn't
+            // hit the standalone-`*` reject branch.
+            if lower == "count" && args.len() == 1 && matches!(args[0], Expression::Star(_)) {
+                if *distinct {
+                    return Err(ExecError::InvalidMutation(
+                        "DISTINCT is not allowed with count(*)".into(),
+                    ));
+                }
+                return Ok(());
+            }
+            if args.len() != 1 {
+                return Err(ExecError::InvalidMutation(format!(
+                    "aggregate `{}` takes exactly one argument",
+                    lower
+                )));
+            }
+            if contains_aggregation(&args[0]) {
+                return Err(ExecError::InvalidMutation(format!(
+                    "nested aggregations are not allowed inside `{}`",
+                    lower
+                )));
+            }
+            // The inner argument must be a plain expression — no
+            // further function calls (no scalar function library yet)
+            // and no bare `*`.
+            validate_expr_supported(&args[0])
+        }
+        Expression::Star(span) => Err(ExecError::Unsupported {
+            feature: "`*` outside `count(*)`".into(),
+            task: "future Phase 10 follow-up".into(),
+            span: *span,
+        }),
+        Expression::Binary { lhs, rhs, op, span } => {
+            if matches!(op, BinaryOp::RegexMatch) {
+                return Err(ExecError::Unsupported {
+                    feature: "regex match (`=~`)".into(),
+                    task: "future Phase 10 follow-up".into(),
+                    span: *span,
+                });
+            }
+            validate_expr_supported_in_projection(lhs)?;
+            validate_expr_supported_in_projection(rhs)?;
+            Ok(())
+        }
+        Expression::Unary { expr, .. } => validate_expr_supported_in_projection(expr),
+        Expression::IsNull { expr, .. } => validate_expr_supported_in_projection(expr),
+        Expression::In { expr, list, .. } => {
+            validate_expr_supported_in_projection(expr)?;
+            validate_expr_supported_in_projection(list)
+        }
+        Expression::Property { base, .. } => validate_expr_supported_in_projection(base),
+        Expression::List { items, .. } => {
+            for item in items {
+                validate_expr_supported_in_projection(item)?;
+            }
+            Ok(())
+        }
+        Expression::Map(m) => {
+            for (_, expr) in &m.entries {
+                validate_expr_supported_in_projection(expr)?;
+            }
+            Ok(())
+        }
+        Expression::Case { span, .. } => Err(ExecError::Unsupported {
+            feature: "CASE expression".into(),
+            task: "future Phase 10 follow-up".into(),
+            span: *span,
+        }),
+        Expression::Index { span, .. } | Expression::Slice { span, .. } => {
+            Err(ExecError::Unsupported {
+                feature: "list / map indexing".into(),
+                task: "future Phase 10 follow-up".into(),
+                span: *span,
+            })
         }
         Expression::Integer(..)
         | Expression::Float(..)
@@ -1853,15 +2038,21 @@ impl<'a> Executor<'a> {
         // bindings so ORDER BY can reach `n.prop` even when only `prop`
         // is in the projection list.
         let (columns, projections) = self.resolve_projections(&r.items)?;
-        let mut keyed: KeyedRows = Vec::with_capacity(self.bindings.len());
-        for binding in &self.bindings {
-            let mut row = Vec::with_capacity(projections.len());
-            for proj in &projections {
-                let value = self.eval(proj, binding)?;
-                row.push(value);
+        let has_aggregation = projections.iter().any(contains_aggregation);
+        let mut keyed: KeyedRows = if has_aggregation {
+            self.aggregate_rows(&columns, &projections)?
+        } else {
+            let mut keyed = Vec::with_capacity(self.bindings.len());
+            for binding in &self.bindings {
+                let mut row = Vec::with_capacity(projections.len());
+                for proj in &projections {
+                    let value = self.eval(proj, binding)?;
+                    row.push(value);
+                }
+                keyed.push((row, binding.clone()));
             }
-            keyed.push((row, binding.clone()));
-        }
+            keyed
+        };
 
         if !r.order_by.is_empty() {
             self.sort_keyed(&mut keyed, &r.order_by, &columns)?;
@@ -1964,6 +2155,273 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
+    // ----- Aggregations (00066) -------------------------------------------
+
+    /// Build the result rows for a `RETURN` clause that contains at
+    /// least one aggregation function call.
+    ///
+    /// Grouping is implicit: each projection that does *not* contain an
+    /// aggregation forms a group key. Rows with equal group keys are
+    /// folded into one output row whose aggregation columns are the
+    /// fold of the corresponding values across the group.
+    ///
+    /// Special case — pure aggregation with no group keys and zero
+    /// input bindings still emits exactly one row (matching Neo4j),
+    /// so e.g. `MATCH (n) RETURN count(*)` on an empty database
+    /// returns `[0]`, not `[]`.
+    fn aggregate_rows(
+        &self,
+        columns: &[String],
+        projections: &[Expression],
+    ) -> ExecResultT<KeyedRows> {
+        let mut group_indices: Vec<usize> = Vec::new();
+        let mut agg_indices: Vec<usize> = Vec::new();
+        for (i, p) in projections.iter().enumerate() {
+            if contains_aggregation(p) {
+                agg_indices.push(i);
+            } else {
+                group_indices.push(i);
+            }
+        }
+
+        // Group buckets, kept in input order so the result is
+        // deterministic before any explicit ORDER BY.
+        let mut groups: Vec<(Vec<Value>, Vec<Bindings>)> = Vec::new();
+        for binding in &self.bindings {
+            let mut key = Vec::with_capacity(group_indices.len());
+            for &gi in &group_indices {
+                key.push(self.eval(&projections[gi], binding)?);
+            }
+            if let Some(pos) = groups.iter().position(|(k, _)| k == &key) {
+                groups[pos].1.push(binding.clone());
+            } else {
+                groups.push((key, vec![binding.clone()]));
+            }
+        }
+
+        if group_indices.is_empty() && groups.is_empty() {
+            // Pure aggregation over zero input rows — still emit one
+            // synthetic group so e.g. `count(*)` returns 0.
+            groups.push((Vec::new(), Vec::new()));
+        }
+
+        let mut out: KeyedRows = Vec::with_capacity(groups.len());
+        for (key_values, rows_in_group) in groups {
+            let mut row = vec![Value::Null; projections.len()];
+            for (slot_idx, &gi) in group_indices.iter().enumerate() {
+                row[gi] = key_values[slot_idx].clone();
+            }
+            for &ai in &agg_indices {
+                row[ai] = self.eval_with_agg(&projections[ai], &rows_in_group)?;
+            }
+            // Build a synthetic per-row scope so the subsequent
+            // ORDER BY can resolve column aliases. Raw pattern
+            // variables (`n`, `r`) are *not* in scope after
+            // aggregation — users must reference the projected alias.
+            let mut scope: Bindings = HashMap::new();
+            for (col, val) in columns.iter().zip(row.iter()) {
+                scope.insert(col.clone(), val.clone());
+            }
+            out.push((row, scope));
+        }
+        Ok(out)
+    }
+
+    /// Evaluate a projection expression that contains an aggregation.
+    ///
+    /// Aggregation function calls fold across `group_rows`; everything
+    /// else falls back to ordinary [`Self::eval`] against the first
+    /// binding in the group (any binding works — non-aggregation
+    /// variable references must be invariant across the group, which
+    /// is guaranteed by treating non-aggregation projections as group
+    /// keys).
+    fn eval_with_agg(&self, expr: &Expression, group_rows: &[Bindings]) -> ExecResultT<Value> {
+        match expr {
+            Expression::FunctionCall {
+                name,
+                distinct,
+                args,
+                span,
+            } if is_aggregation_name(name) => {
+                self.eval_aggregate(name, *distinct, args, group_rows, *span)
+            }
+            Expression::Binary { op, lhs, rhs, span } => {
+                let l = self.eval_with_agg(lhs, group_rows)?;
+                let r = self.eval_with_agg(rhs, group_rows)?;
+                eval_binary(*op, l, r, *span)
+            }
+            Expression::Unary { op, expr, span } => {
+                let v = self.eval_with_agg(expr, group_rows)?;
+                eval_unary(*op, v, *span)
+            }
+            Expression::IsNull { expr, negated, .. } => {
+                let v = self.eval_with_agg(expr, group_rows)?;
+                let is_null = matches!(v, Value::Null);
+                Ok(Value::Bool(if *negated { !is_null } else { is_null }))
+            }
+            Expression::In { expr, list, span } => {
+                let needle = self.eval_with_agg(expr, group_rows)?;
+                let haystack = self.eval_with_agg(list, group_rows)?;
+                match haystack {
+                    Value::List(items) => {
+                        let mut saw_null = false;
+                        for item in items {
+                            if matches!(item, Value::Null) {
+                                saw_null = true;
+                                continue;
+                            }
+                            if needle == item {
+                                return Ok(Value::Bool(true));
+                            }
+                        }
+                        if saw_null {
+                            Ok(Value::Null)
+                        } else {
+                            Ok(Value::Bool(false))
+                        }
+                    }
+                    Value::Null => Ok(Value::Null),
+                    other => Err(ExecError::TypeMismatch {
+                        expected: "List".into(),
+                        got: other.type_name().into(),
+                        span: *span,
+                    }),
+                }
+            }
+            Expression::Property { base, name, span } => {
+                let base_value = self.eval_with_agg(base, group_rows)?;
+                Ok(get_property(&base_value, name, *span))
+            }
+            Expression::List { items, .. } => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(self.eval_with_agg(item, group_rows)?);
+                }
+                Ok(Value::List(out))
+            }
+            // Leaf / non-aggregation forms — fall back to a
+            // representative binding. We pick the first one in the
+            // group; for pure-aggregation queries the group may be
+            // empty, in which case bare variable references will
+            // simply raise UnboundVariable, matching ordinary
+            // ordering of error reporting.
+            _ => {
+                let empty: Bindings = HashMap::new();
+                let scope = group_rows.first().unwrap_or(&empty);
+                self.eval(expr, scope)
+            }
+        }
+    }
+
+    /// Fold one aggregation function over the bindings of one group.
+    fn eval_aggregate(
+        &self,
+        name: &[String],
+        distinct: bool,
+        args: &[Expression],
+        group_rows: &[Bindings],
+        span: Span,
+    ) -> ExecResultT<Value> {
+        let func = name[0].to_ascii_lowercase();
+        // `count(*)` short-circuits: count rows, ignore values.
+        if func == "count" && args.len() == 1 && matches!(args[0], Expression::Star(_)) {
+            return Ok(Value::Integer(group_rows.len() as i64));
+        }
+        // Every other aggregation takes exactly one argument and
+        // null-skips. Collect the non-null per-row values up front.
+        let arg = &args[0];
+        let mut values: Vec<Value> = Vec::with_capacity(group_rows.len());
+        for binding in group_rows {
+            let v = self.eval(arg, binding)?;
+            if !matches!(v, Value::Null) {
+                values.push(v);
+            }
+        }
+        if distinct {
+            dedup_values(&mut values);
+        }
+        match func.as_str() {
+            "count" => Ok(Value::Integer(values.len() as i64)),
+            "sum" => {
+                if values.is_empty() {
+                    return Ok(Value::Integer(0));
+                }
+                let mut all_int = true;
+                let mut sum_f = 0.0f64;
+                for v in &values {
+                    match v {
+                        Value::Integer(i) => sum_f += *i as f64,
+                        Value::Float(f) => {
+                            sum_f += *f;
+                            all_int = false;
+                        }
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Integer or Float".into(),
+                                got: other.type_name().into(),
+                                span,
+                            });
+                        }
+                    }
+                }
+                if all_int {
+                    Ok(Value::Integer(sum_f as i64))
+                } else {
+                    Ok(Value::Float(sum_f))
+                }
+            }
+            "avg" => {
+                if values.is_empty() {
+                    return Ok(Value::Null);
+                }
+                let mut sum_f = 0.0f64;
+                for v in &values {
+                    let n = v.as_number().ok_or_else(|| ExecError::TypeMismatch {
+                        expected: "Integer or Float".into(),
+                        got: v.type_name().into(),
+                        span,
+                    })?;
+                    sum_f += n;
+                }
+                Ok(Value::Float(sum_f / values.len() as f64))
+            }
+            "min" => {
+                let mut best: Option<Value> = None;
+                for v in values {
+                    best = Some(match best {
+                        None => v,
+                        Some(prev) => {
+                            if matches!(compare_values(&prev, &v), std::cmp::Ordering::Greater) {
+                                v
+                            } else {
+                                prev
+                            }
+                        }
+                    });
+                }
+                Ok(best.unwrap_or(Value::Null))
+            }
+            "max" => {
+                let mut best: Option<Value> = None;
+                for v in values {
+                    best = Some(match best {
+                        None => v,
+                        Some(prev) => {
+                            if matches!(compare_values(&prev, &v), std::cmp::Ordering::Less) {
+                                v
+                            } else {
+                                prev
+                            }
+                        }
+                    });
+                }
+                Ok(best.unwrap_or(Value::Null))
+            }
+            "collect" => Ok(Value::List(values)),
+            _ => unreachable!("is_aggregation_name gated this call"),
+        }
+    }
+
     // ----- Expression evaluation ------------------------------------------
 
     fn eval(&self, expr: &Expression, row: &Bindings) -> ExecResultT<Value> {
@@ -2050,7 +2508,7 @@ impl<'a> Executor<'a> {
             }
             Expression::FunctionCall { name, span, .. } => Err(ExecError::Unsupported {
                 feature: format!("function call `{}`", name.join(".")),
-                task: "00066".into(),
+                task: "future Phase 10 follow-up".into(),
                 span: *span,
             }),
             Expression::Case { span, .. } => Err(ExecError::Unsupported {
@@ -2060,7 +2518,7 @@ impl<'a> Executor<'a> {
             }),
             Expression::Star(span) => Err(ExecError::Unsupported {
                 feature: "`*` outside `count(*)`".into(),
-                task: "00066".into(),
+                task: "future Phase 10 follow-up".into(),
                 span: *span,
             }),
             Expression::Index { span, .. } | Expression::Slice { span, .. } => {
@@ -2306,6 +2764,18 @@ fn dedup_rows(rows: &mut Vec<Vec<Value>>) {
         }
     }
     *rows = out;
+}
+
+fn dedup_values(values: &mut Vec<Value>) {
+    let mut seen: Vec<Value> = Vec::with_capacity(values.len());
+    let mut out = Vec::with_capacity(values.len());
+    for v in values.drain(..) {
+        if !seen.iter().any(|s| s == &v) {
+            seen.push(v.clone());
+            out.push(v);
+        }
+    }
+    *values = out;
 }
 
 fn eval_unary(op: UnaryOp, value: Value, span: Span) -> ExecResultT<Value> {
@@ -2785,18 +3255,6 @@ mod tests {
         let e = err("MATCH (a)-[*1..3]->(b) RETURN a", &db);
         assert!(
             matches!(e, ExecError::Unsupported { ref task, .. } if task == "00069"),
-            "got {:?}",
-            e
-        );
-    }
-
-    #[test]
-    fn function_call_is_rejected_until_00066() {
-        let db = drevo();
-        run("CREATE (:Person {name: 'A'})", &db);
-        let e = err("MATCH (n:Person) RETURN count(n)", &db);
-        assert!(
-            matches!(e, ExecError::Unsupported { ref task, .. } if task == "00066"),
             "got {:?}",
             e
         );
@@ -3337,6 +3795,291 @@ mod tests {
         let e = err("MATCH (n:Person) WHERE unknown_var.x > 1 RETURN n", &db);
         assert!(
             matches!(e, ExecError::UnboundVariable { .. }),
+            "got {:?}",
+            e
+        );
+    }
+
+    // ---- Aggregations (00066) --------------------------------------------
+
+    #[test]
+    fn count_star_counts_all_rows() {
+        let db = drevo();
+        for n in ["A", "B", "C"] {
+            run(&format!("CREATE (:Person {{name: '{}'}})", n), &db);
+        }
+        let res = run("MATCH (n:Person) RETURN count(*) AS total", &db);
+        assert_eq!(res.columns, vec!["total".to_string()]);
+        assert_eq!(res.rows, vec![vec![Value::Integer(3)]]);
+    }
+
+    #[test]
+    fn count_star_on_empty_match_returns_zero_row() {
+        let db = drevo();
+        let res = run("MATCH (n:Person) RETURN count(*) AS total", &db);
+        assert_eq!(res.rows, vec![vec![Value::Integer(0)]]);
+    }
+
+    #[test]
+    fn count_expression_skips_nulls() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', score: 10})", &db);
+        run("CREATE (:Person {name: 'B'})", &db);
+        run("CREATE (:Person {name: 'C', score: 20})", &db);
+        let res = run("MATCH (n:Person) RETURN count(n.score) AS c", &db);
+        assert_eq!(res.rows, vec![vec![Value::Integer(2)]]);
+    }
+
+    #[test]
+    fn count_distinct_dedupes_argument_values() {
+        let db = drevo();
+        for v in [10, 10, 20, 30, 30] {
+            run(&format!("CREATE (:Person {{score: {}}})", v), &db);
+        }
+        let res = run("MATCH (n:Person) RETURN count(DISTINCT n.score) AS c", &db);
+        assert_eq!(res.rows, vec![vec![Value::Integer(3)]]);
+    }
+
+    #[test]
+    fn sum_integer_returns_integer() {
+        let db = drevo();
+        for v in [1, 2, 3, 4] {
+            run(&format!("CREATE (:Person {{score: {}}})", v), &db);
+        }
+        let res = run("MATCH (n:Person) RETURN sum(n.score) AS s", &db);
+        assert_eq!(res.rows, vec![vec![Value::Integer(10)]]);
+    }
+
+    #[test]
+    fn sum_with_float_promotes_to_float() {
+        let db = drevo();
+        run("CREATE (:Person {score: 1.5})", &db);
+        run("CREATE (:Person {score: 2})", &db);
+        let res = run("MATCH (n:Person) RETURN sum(n.score) AS s", &db);
+        assert_eq!(res.rows, vec![vec![Value::Float(3.5)]]);
+    }
+
+    #[test]
+    fn sum_skips_nulls() {
+        let db = drevo();
+        run("CREATE (:Person {score: 5})", &db);
+        run("CREATE (:Person {})", &db);
+        run("CREATE (:Person {score: 7})", &db);
+        let res = run("MATCH (n:Person) RETURN sum(n.score) AS s", &db);
+        assert_eq!(res.rows, vec![vec![Value::Integer(12)]]);
+    }
+
+    #[test]
+    fn sum_on_empty_returns_zero() {
+        let db = drevo();
+        let res = run("MATCH (n:Person) RETURN sum(n.score) AS s", &db);
+        assert_eq!(res.rows, vec![vec![Value::Integer(0)]]);
+    }
+
+    #[test]
+    fn avg_returns_float_mean_of_non_nulls() {
+        let db = drevo();
+        for v in [2, 4, 6] {
+            run(&format!("CREATE (:Person {{score: {}}})", v), &db);
+        }
+        let res = run("MATCH (n:Person) RETURN avg(n.score) AS a", &db);
+        assert_eq!(res.rows, vec![vec![Value::Float(4.0)]]);
+    }
+
+    #[test]
+    fn avg_on_empty_returns_null() {
+        let db = drevo();
+        let res = run("MATCH (n:Person) RETURN avg(n.score) AS a", &db);
+        assert_eq!(res.rows, vec![vec![Value::Null]]);
+    }
+
+    #[test]
+    fn min_and_max_skip_nulls() {
+        let db = drevo();
+        run("CREATE (:Person {score: 10})", &db);
+        run("CREATE (:Person {})", &db);
+        run("CREATE (:Person {score: 3})", &db);
+        run("CREATE (:Person {score: 27})", &db);
+        let res = run(
+            "MATCH (n:Person) RETURN min(n.score) AS lo, max(n.score) AS hi",
+            &db,
+        );
+        assert_eq!(res.rows, vec![vec![Value::Integer(3), Value::Integer(27)]]);
+    }
+
+    #[test]
+    fn min_max_on_empty_returns_null() {
+        let db = drevo();
+        let res = run(
+            "MATCH (n:Person) RETURN min(n.score) AS lo, max(n.score) AS hi",
+            &db,
+        );
+        assert_eq!(res.rows, vec![vec![Value::Null, Value::Null]]);
+    }
+
+    #[test]
+    fn collect_returns_list_of_non_null_values_preserving_input_order() {
+        let db = drevo();
+        for name in ["A", "B", "C"] {
+            run(&format!("CREATE (:Person {{name: '{}'}})", name), &db);
+        }
+        let res = run(
+            "MATCH (n:Person) RETURN collect(n.name) AS names ORDER BY names",
+            &db,
+        );
+        let row = &res.rows[0];
+        let list = match &row[0] {
+            Value::List(items) => items.clone(),
+            other => panic!("expected list, got {:?}", other),
+        };
+        let mut names: Vec<String> = list
+            .into_iter()
+            .map(|v| match v {
+                Value::String(s) => s,
+                other => panic!("expected string, got {:?}", other),
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_distinct_dedupes() {
+        let db = drevo();
+        for v in ["red", "red", "blue", "blue", "red"] {
+            run(&format!("CREATE (:Person {{team: '{}'}})", v), &db);
+        }
+        let res = run(
+            "MATCH (n:Person) RETURN collect(DISTINCT n.team) AS teams",
+            &db,
+        );
+        let list = match &res.rows[0][0] {
+            Value::List(items) => items.clone(),
+            other => panic!("expected list, got {:?}", other),
+        };
+        let mut teams: Vec<String> = list
+            .into_iter()
+            .map(|v| match v {
+                Value::String(s) => s,
+                other => panic!("expected string, got {:?}", other),
+            })
+            .collect();
+        teams.sort();
+        assert_eq!(teams, vec!["blue".to_string(), "red".to_string()]);
+    }
+
+    #[test]
+    fn group_by_implicit_via_non_agg_projection() {
+        let db = drevo();
+        for (team, score) in [
+            ("red", 10),
+            ("red", 20),
+            ("blue", 5),
+            ("blue", 15),
+            ("blue", 100),
+        ] {
+            run(
+                &format!("CREATE (:Person {{team: '{}', score: {}}})", team, score),
+                &db,
+            );
+        }
+        let res = run(
+            "MATCH (n:Person) RETURN n.team AS team, sum(n.score) AS total ORDER BY team",
+            &db,
+        );
+        assert_eq!(res.columns, vec!["team".to_string(), "total".to_string()]);
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::String("blue".into()), Value::Integer(120)],
+                vec![Value::String("red".into()), Value::Integer(30)],
+            ]
+        );
+    }
+
+    #[test]
+    fn group_by_with_count_per_group() {
+        let db = drevo();
+        for kind in ["a", "a", "a", "b", "b", "c"] {
+            run(&format!("CREATE (:Item {{kind: '{}'}})", kind), &db);
+        }
+        let res = run(
+            "MATCH (n:Item) RETURN n.kind AS k, count(*) AS c ORDER BY k",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::String("a".into()), Value::Integer(3)],
+                vec![Value::String("b".into()), Value::Integer(2)],
+                vec![Value::String("c".into()), Value::Integer(1)],
+            ]
+        );
+    }
+
+    #[test]
+    fn aggregation_combined_with_arithmetic() {
+        let db = drevo();
+        for v in [1, 2, 3, 4] {
+            run(&format!("CREATE (:Person {{score: {}}})", v), &db);
+        }
+        let res = run("MATCH (n:Person) RETURN sum(n.score) * 2 AS doubled", &db);
+        assert_eq!(res.rows, vec![vec![Value::Integer(20)]]);
+    }
+
+    #[test]
+    fn aggregation_order_by_alias_then_limit() {
+        let db = drevo();
+        for kind in ["a", "a", "b", "b", "b", "c"] {
+            run(&format!("CREATE (:Item {{kind: '{}'}})", kind), &db);
+        }
+        let res = run(
+            "MATCH (n:Item) RETURN n.kind AS k, count(*) AS c ORDER BY c DESC LIMIT 2",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::String("b".into()), Value::Integer(3)],
+                vec![Value::String("a".into()), Value::Integer(2)],
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_aggregations_are_rejected() {
+        let db = drevo();
+        run("CREATE (:Person {score: 10})", &db);
+        let e = err("MATCH (n:Person) RETURN count(sum(n.score)) AS c", &db);
+        assert!(
+            matches!(e, ExecError::InvalidMutation(ref s) if s.contains("nested aggregations")),
+            "got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn unknown_function_still_unsupported() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        let e = err("MATCH (n:Person) RETURN size(n.name) AS s", &db);
+        assert!(
+            matches!(e, ExecError::Unsupported { ref feature, .. } if feature.contains("function call")),
+            "got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn distinct_on_count_star_is_rejected() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        let e = err("MATCH (n:Person) RETURN count(DISTINCT *) AS c", &db);
+        assert!(
+            matches!(e, ExecError::InvalidMutation(ref s) if s.contains("DISTINCT")),
             "got {:?}",
             e
         );
