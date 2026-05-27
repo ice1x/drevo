@@ -542,7 +542,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 - [x] `00066` Aggregations — COUNT, SUM, AVG, MIN, MAX, COLLECT, GROUP BY, DISTINCT
 - [x] `00067` OPTIONAL MATCH — left-join semantics, null propagation for unmatched variables
 - [x] `00068` WITH clause — query pipelining, intermediate projection, aggregation-before-filter
-- [ ] `00069` Variable-length paths — `(a)-[*1..3]->(b)` BFS traversals leveraging existing `traversal.rs`
+- [x] `00069` Variable-length paths — `(a)-[*1..3]->(b)` BFS traversals leveraging existing `traversal.rs`
 
 **Definition of done:** all five scenario test suites (CBT, story, task manager, ERP, bug tracker) pass when expressed in Cypher — same workflows yield identical results via Cypher and the existing Rust API.
 
