@@ -217,6 +217,40 @@ fn python_ci_matrix_runs_maturin_develop_release() {
 }
 
 #[test]
+fn python_ci_matrix_creates_venv_before_maturin_develop() {
+    let wf = read_workflow();
+    // `maturin develop` REQUIRES an active virtualenv — without one
+    // it errors out with "Couldn't find a virtualenv or conda
+    // environment". `actions/setup-python` installs Python on the
+    // runner but does NOT create a venv. The first run of this
+    // workflow (PR #103, commit a6971e3) hit exactly this error in
+    // every one of the 12 matrix cells; the follow-up commit creates
+    // a `.venv` at the repo root and exports `VIRTUAL_ENV` +
+    // prepends the venv `bin/` (or `Scripts/` on Windows) to
+    // `$GITHUB_PATH`. Lock the contract here so a future PR cannot
+    // silently delete the venv step and re-introduce the failure.
+    assert!(
+        wf.contains("python -m venv"),
+        "python.yml must create a virtualenv (`python -m venv .venv`) \
+         before `maturin develop` — without it every matrix cell \
+         fails with 'Couldn't find a virtualenv or conda environment'",
+    );
+    assert!(
+        wf.contains("VIRTUAL_ENV="),
+        "python.yml must export `VIRTUAL_ENV=…` to `$GITHUB_ENV` so \
+         subsequent steps see the venv as active without `source`-ing \
+         (which doesn't work cleanly across the bash / Linux / macOS / \
+         Windows shell matrix)",
+    );
+    assert!(
+        wf.contains("$GITHUB_PATH"),
+        "python.yml must prepend the venv `bin/` (or `Scripts/` on \
+         Windows) to `$GITHUB_PATH` so `pip` / `pytest` / `mypy` / \
+         `ruff` / `black` all resolve to the venv-installed binaries",
+    );
+}
+
+#[test]
 fn python_ci_matrix_installs_dev_tooling() {
     let wf = read_workflow();
     // Spec step 1: `pip install maturin pytest mypy ruff black`.

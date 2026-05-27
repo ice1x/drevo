@@ -130,6 +130,35 @@ jobs:
           # the .so / .dylib / .pyd here.
           workspaces: ". -> target"
 
+      - name: Create venv for maturin develop
+        # `maturin develop` REQUIRES an active virtualenv (it installs
+        # the freshly-built wheel via `pip install` into the active
+        # interpreter). `actions/setup-python` installs Python on the
+        # runner but does NOT create a venv, so without this step the
+        # next step fails with "Couldn't find a virtualenv or conda
+        # environment". We export `VIRTUAL_ENV` + prepend the venv
+        # `bin/` (or `Scripts/` on Windows) to `$GITHUB_PATH` so every
+        # subsequent step sees the venv as active without an explicit
+        # `source` (which doesn't work cleanly across the Windows
+        # `bash` / Linux / macOS shell matrix).
+        #
+        # We deliberately do NOT cache the venv across runs — hosted
+        # runners are ephemeral and the cache hit rate would be ~0%.
+        # The cargo cache (Swatinem above) is the real warm-path win;
+        # the venv reinstall is ~5 s of pip work, which is noise next
+        # to a cold `maturin develop`.
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [ -d .venv/Scripts ]; then
+            # Windows layout (bin/ is named Scripts/).
+            echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+            echo "$GITHUB_WORKSPACE/.venv/Scripts" >> "$GITHUB_PATH"
+          else
+            echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+            echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          fi
+
       - name: Install Python dev tooling
         # Spec step 1: pip install maturin pytest mypy ruff black.
         # `pytest-cov` is added so the coverage publish step at the
@@ -142,7 +171,9 @@ jobs:
         # Spec step 2: maturin develop --release --features="redb-backend".
         # `redb-backend` is the wheel's default feature in
         # drevo-py/Cargo.toml; passing it explicitly here keeps the
-        # CI / wheel / local-dev paths in lockstep.
+        # CI / wheel / local-dev paths in lockstep. The `.venv`
+        # created two steps above is what maturin links the wheel
+        # into via `pip install`.
         working-directory: drevo-py
         run: maturin develop --release --features="redb-backend"
 
