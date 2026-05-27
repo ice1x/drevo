@@ -1,13 +1,25 @@
-# Phase 16 task `00122` — full Python CI matrix.
+# Phase 16 task `00122` — Python CI matrix.
 #
 # This workflow is the **definition-of-done gate** for Phase 16
 # (drevo-py Python Graph-RAG SDK). It runs the three test layers
 # landed by 00118 (unit ~180+), 00119 (integration ~52), and 00120
-# (e2e ~40) across the matrix declared in the roadmap:
+# (e2e ~40) across the matrix:
 #
-#   {python: [3.10, 3.11, 3.12, 3.13]} × {os: [ubuntu-latest, macos-latest, windows-latest]}
+#   {python: [3.13]} × {os: [ubuntu-latest, macos-latest, windows-latest]}
 #
-# = 12 cells per PR. Each cell installs `maturin`, builds the PyO3
+# = 3 cells per PR. The roadmap task originally declared a 4 × 3 =
+# 12-cell matrix (python ∈ {3.10, 3.11, 3.12, 3.13}). At review time
+# the user (KG: `feedback_pin_python_to_latest_under_abi3`) pointed
+# out that drevo-py ships an `abi3-py310` wheel: a single binary
+# that runs on every CPython 3.10+ interpreter without a recompile.
+# The middle minors (3.11, 3.12) almost never catch anything 3.13
+# misses — they just multiply CI spend (windows-latest alone is
+# ~12 min per cold cell × 4 = ~50 hosted minutes per PR for one
+# OS). Dropping to 3.13-only keeps the cross-OS signal (Windows
+# locale, redb file locking, FTS UTF-8) while cutting cost to a
+# quarter.
+#
+# Each cell installs `maturin`, builds the PyO3
 # cdylib with `maturin develop --release --features="redb-backend"`,
 # then runs the four gates from `python-ci.yml` (pytest, mypy, ruff,
 # black) and additionally records a `pytest-cov` coverage report that
@@ -25,9 +37,10 @@
 # alongside each other on every PR; `python-ci.yml` returns first,
 # `python.yml` is the final gating signal.
 #
-# **Cost guard.** A 12-cell GitHub-hosted matrix at ~5 min each
-# burns ~60 billable minutes per PR, plus the macOS ×10 multiplier
-# on the four `macos-latest` cells. To keep that bounded:
+# **Cost guard.** A 3-cell GitHub-hosted matrix (ubuntu + macOS +
+# windows on Python 3.13) at ~1-12 min each burns ~15 billable
+# minutes per PR (mostly the windows cold-build). To keep that
+# bounded:
 #
 #   * Path filters limit triggers to changes that can plausibly
 #     affect the Python surface — see `paths:` below. Doc-only PRs
@@ -94,7 +107,10 @@ jobs:
       # red mark with no diagnostic.
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13"]
+        # Single Python minor: abi3-py310 means one wheel binary runs
+        # on every CPython 3.10+, so testing 3.13 covers the whole
+        # supported range. See the file's preamble for rationale.
+        python: ["3.13"]
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
@@ -226,9 +242,9 @@ jobs:
         # coverage report (`pytest-cov`) as a PR comment." We
         # generate the report in XML form on every cell so a
         # downstream comment step can consume it; the actual PR
-        # comment is posted only from the Ubuntu / Python 3.12
+        # comment is posted only from the Ubuntu / Python 3.13
         # cell (canonical Linux env), gated by the `if:` below, to
-        # avoid 12 duplicate comments.
+        # avoid 3 duplicate comments.
         working-directory: drevo-py
         run: |
           pytest --cov=drevo --cov-report=xml --cov-report=term tests/
@@ -236,7 +252,7 @@ jobs:
       - name: Upload coverage XML artifact
         # The artifact name is matrix-cell-unique so each cell's
         # report uploads cleanly; the PR comment job below pulls the
-        # canonical Ubuntu / 3.12 cell's report.
+        # canonical Ubuntu / 3.13 cell's report.
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -257,17 +273,17 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - name: Download canonical coverage artefact (Ubuntu / Python 3.12)
+      - name: Download canonical coverage artefact (Ubuntu / Python 3.13)
         uses: actions/download-artifact@v4
         with:
-          name: coverage-ubuntu-latest-py3.12
+          name: coverage-ubuntu-latest-py3.13
           path: ./coverage-canonical
       - name: Comment on PR with coverage summary
         # Uses the `pytest-cov` XML the matrix job produced. A short
-        # script renders a coverage % + per-file delta vs the base
-        # branch into a Markdown comment. The post-comment action is
-        # vendor-neutral (`actions/github-script@v7`) so we don't
-        # take a transitive dependency on a third-party action.
+        # script renders a coverage % into a Markdown comment. The
+        # post-comment action is vendor-neutral
+        # (`actions/github-script@v7`) so we don't take a transitive
+        # dependency on a third-party action.
         uses: actions/github-script@v7
         with:
           script: |
@@ -278,7 +294,7 @@ jobs:
             const body = [
               '## drevo-py coverage (Python CI matrix)',
               '',
-              '`pytest --cov=drevo` (Ubuntu / Python 3.12 cell):',
+              '`pytest --cov=drevo` (Ubuntu / Python 3.13 cell):',
               '',
               `- **Line coverage:** ${pct}%`,
               '',

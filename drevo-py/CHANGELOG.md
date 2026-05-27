@@ -13,27 +13,51 @@ released entry on a tagged commit.
 ### Added — task `00122` (Python CI matrix on every PR)
 
 - `.github/workflows/python.yml` — the definition-of-done gate for
-  Phase 16. Full Python × OS matrix declared in roadmap task `00122`:
-  `{python: [3.10, 3.11, 3.12, 3.13]} × {os: [ubuntu-latest,
-  macos-latest, windows-latest]}` = 12 cells per PR. Each cell:
-  `actions/setup-python@v5` (with pip cache), `dtolnay/rust-toolchain@stable`
-  + `Swatinem/rust-cache@v2` (matrix-cell-keyed so Linux/macOS/Windows
-  caches stay separate and warm-path `maturin develop` drops from
-  ~5 min cold to ~30 s on Linux / ~1 min on macOS+Windows),
+  Phase 16. Matrix as shipped: `{python: [3.13]} × {os: [ubuntu-latest,
+  macos-latest, windows-latest]}` = 3 cells per PR.
+- **Slimmed from the roadmap spec.** The original task text declared
+  `python: [3.10, 3.11, 3.12, 3.13]` = 12 cells. At review time we
+  pinned the Python axis to the latest interpreter only: drevo-py
+  wheels ship `abi3-py310`, meaning one binary runs on every
+  CPython 3.10+ without a recompile. Testing every minor multiplied
+  CI spend (windows-latest cold-build is ~12 min × 4 versions per OS
+  = ~50 hosted minutes wasted per PR) without meaningful coverage
+  delta. The cross-OS signal (Windows locale-sensitive FTS UTF-8,
+  redb file locking, macOS keychain) is preserved on the OS axis —
+  it's the OS axis, not the Python axis, that delivers the actual
+  platform-divergence coverage `00122` wanted. Locked by
+  `tests/python_ci_matrix_tests.rs::python_ci_matrix_pins_python_to_latest_under_abi3`
+  with positive (`"3.13"` present) + negative (`"3.10"`/`"3.11"`/`"3.12"`
+  absent) assertions so a future PR cannot silently reflate the
+  matrix without re-running this argument.
+- Per cell: `actions/setup-python@v5` (with pip cache),
+  `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2` (matrix-
+  cell-keyed so Linux/macOS/Windows caches stay separate and warm-
+  path `maturin develop` drops from ~5 min cold to ~30 s on Linux /
+  ~1 min on macOS+Windows), a venv-creation step that `python -m
+  venv .venv` + exports `VIRTUAL_ENV` + prepends the venv `bin/`
+  (or `Scripts/` on Windows under `shell: bash`) to `$GITHUB_PATH`
+  (without it `maturin develop` errored with "Couldn't find a
+  virtualenv or conda environment" in every cell — locked by
+  `python_ci_matrix_creates_venv_before_maturin_develop`),
   `pip install maturin>=1.7,<2.0 pytest pytest-cov mypy ruff black`,
-  `maturin develop --release --features="redb-backend"`, then the five
-  per-spec gates as DISCRETE Actions steps so the UI surfaces *which*
-  layer regressed: `pytest tests/unit/` (00118), `pytest tests/integration/`
+  `maturin develop --release` (the README spec's
+  `--features="redb-backend"` was dropped — that feature lives on
+  the root `drevo` crate's `default = […]` set, not on `drevo-py`,
+  so passing it errored with "the package 'drevo-py' does not
+  contain this feature: redb-backend"), then the five per-spec
+  gates as DISCRETE Actions steps so the UI surfaces *which* layer
+  regressed: `pytest tests/unit/` (00118), `pytest tests/integration/`
   (00119), `pytest tests/e2e/` (00120), `mypy --strict python/drevo/`,
-  `ruff check + black --check`. A final `pytest --cov=drevo --cov-report=xml`
-  runs per cell and uploads the report as a per-cell
-  `coverage-${os}-py${python}` artefact (7-day retention).
+  `ruff check + black --check`. A final `pytest --cov=drevo
+  --cov-report=xml` runs per cell and uploads the report as a per-
+  cell `coverage-${os}-py${python}` artefact (7-day retention).
 - `coverage_comment` job — a second job on `ubuntu-latest`, triggered
-  only on `pull_request`, pulls the canonical `coverage-ubuntu-latest-py3.12`
+  only on `pull_request`, pulls the canonical `coverage-ubuntu-latest-py3.13`
   artefact and posts a Markdown coverage summary to the PR via
   `actions/github-script@v7`. Vendor-neutral (no third-party action
   dependency); reads the XML produced by `pytest-cov` directly.
-- Cost guards: `fail-fast: false` so the 12-cell signal stays
+- Cost guards: `fail-fast: false` so the 3-cell signal stays
   diagnostic instead of collapsing to a single red mark;
   `concurrency: python-matrix-${{ github.ref }}` with
   `cancel-in-progress: true` (distinct from `python-ci-` and
@@ -54,14 +78,18 @@ released entry on a tagged commit.
   renamed `..._python_matrix_workflows` and now asserts each
   `runs-on: macos-latest` / `windows-latest` literal lives in one of
   the allow-listed files.
-- `tests/python_ci_matrix_tests.rs` — 18 text-level scaffolding cases
+- `tests/python_ci_matrix_tests.rs` — 19 text-level scaffolding cases
   that grep-lock the new workflow's shape end-to-end:
   - top-level `name:` includes `Python`;
   - triggers `pull_request: branches:[main]`, `push:`, and
     `workflow_dispatch:` are all present;
   - path filters cover `drevo-py/**`, `src/**`, and the workflow file
     itself;
-  - every `cp310..cp313` Python minor enumerated as `"3.10"..."3.13"`;
+  - the slim Python axis: positive `"3.13"` present + negative
+    `"3.10"`/`"3.11"`/`"3.12"` absent assertions (locks the abi3-py310
+    "test latest only" decision against silent expansion);
+  - the venv-creation step exports `VIRTUAL_ENV=` and prepends to
+    `$GITHUB_PATH` (locks the maturin venv-discovery fix);
   - every OS axis label (`ubuntu-latest`, `macos-latest`,
     `windows-latest`) enumerated;
   - `strategy: matrix:` block declared with `runs-on: ${{ matrix.os }}`

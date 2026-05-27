@@ -150,17 +150,34 @@ fn python_ci_matrix_uses_path_filters() {
 // ── 3. Matrix shape ────────────────────────────────────────────────────
 
 #[test]
-fn python_ci_matrix_enumerates_every_python_minor() {
+fn python_ci_matrix_pins_python_to_latest_under_abi3() {
     let wf = read_workflow();
-    // Phase 16 cross-cutting acceptance criteria + task 00122 matrix.
-    // Every cp310..cp313 minor must appear in the strategy.matrix
-    // python axis. cibuildwheel uses `cp31X-*` patterns; this matrix
-    // uses dotted versions because `actions/setup-python` accepts them.
-    for py in ["\"3.10\"", "\"3.11\"", "\"3.12\"", "\"3.13\""] {
+    // drevo-py wheels are built with `abi3-py310`: one binary that
+    // runs on every CPython 3.10+ interpreter without a recompile.
+    // Testing every minor (3.10/3.11/3.12/3.13) multiplies CI spend
+    // (~50 hosted minutes per PR for windows alone) without
+    // meaningful coverage delta — the middle minors almost never
+    // catch anything 3.13 misses. The matrix pins python to 3.13;
+    // OS axis (ubuntu / macOS / windows) still gives the cross-
+    // platform signal that 00122 actually wants (Windows locale,
+    // redb file locking, FTS UTF-8). Locks the slim configuration
+    // so a future PR cannot silently reflate the matrix without
+    // re-running this argument.
+    assert!(
+        wf.contains("python: [\"3.13\"]") || wf.contains("python:\n        - \"3.13\""),
+        "python.yml strategy.matrix.python must pin to [\"3.13\"] \
+         only — abi3-py310 wheels make multi-minor testing redundant; \
+         see the file's preamble for rationale",
+    );
+    // Negative assertions — none of the dropped minors should be
+    // back in the matrix without explicit reasoning.
+    for dropped in ["\"3.10\"", "\"3.11\"", "\"3.12\""] {
         assert!(
-            wf.contains(py),
-            "python.yml strategy.matrix.python must include {py} — \
-             task 00122 spec",
+            !wf.contains(dropped),
+            "python.yml must NOT include {dropped} in the matrix — \
+             the abi3-py310 wheel makes it redundant. If you genuinely \
+             need to test an older minor, also relax the assertion \
+             in `python_ci_matrix_pins_python_to_latest_under_abi3`",
         );
     }
 }
