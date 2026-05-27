@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, ExecStats, Value};
+use drevo::cypher::executor::{execute, ExecStats, Value};
 use drevo::cypher::parser::parse;
 use drevo::db::Drevo;
 
@@ -36,11 +36,6 @@ fn run_with(source: &str, drevo: &Drevo, params: HashMap<String, Value>) -> Vec<
 fn stats(source: &str, drevo: &Drevo) -> ExecStats {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").stats
-}
-
-fn err(source: &str, drevo: &Drevo) -> ExecError {
-    let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect_err("expected error")
 }
 
 // ===== Scenario 1 — CBT journal =============================================
@@ -260,18 +255,4 @@ fn parameter_in_property_map_during_create() {
     );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][0], Value::String("Carol".into()));
-}
-
-#[test]
-fn varlen_paths_rejected_with_pointer_to_00069() {
-    let db = db();
-    run(
-        "CREATE (:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(:Person)",
-        &db,
-    );
-    let e = err("MATCH (a:Person)-[:KNOWS*1..3]->(b:Person) RETURN a", &db);
-    match e {
-        ExecError::Unsupported { task, .. } => assert_eq!(task, "00069"),
-        other => panic!("expected Unsupported, got {:?}", other),
-    }
 }
