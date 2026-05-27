@@ -98,24 +98,41 @@ jobs:
           echo "DREVO_PY_VENV=$RUNNER_TOOL_CACHE/drevo-py-venv-py313" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
-        # `actions/setup-python` is idempotent on self-hosted — after
-        # the first run it caches the interpreter in `runner.tool_cache`
-        # and subsequent runs only confirm the version. `cache: pip`
-        # is omitted on purpose: the persistent venv at
-        # `$DREVO_PY_VENV` IS the cache (every package install lands
-        # in a directory that survives between runs), so layering
-        # actions/cache on top would download a redundant snapshot.
+      - name: Locate system Python 3.13 on the self-hosted runner
+        # NOT `actions/setup-python` — its installation path is
+        # hardcoded to `/Users/runner/hostedtoolcache/` on macOS
+        # and the install step tries `mkdir /Users/runner`, which
+        # the self-hosted runner's user (`cold00n`, not `runner`)
+        # cannot create. The runner already ships Python 3.13 at
+        # `/Library/Frameworks/Python.framework/Versions/3.13/bin/`
+        # (installed via the python.org pkg, surviving brew /
+        # pyenv churn) — that is what local development uses too.
+        # Using the same interpreter keeps local + CI formatting
+        # consistent (the previous black AST-safety failures were
+        # the symptom of a mismatch).
         #
         # Pinned to 3.13 because `[tool.black].target-version` in
         # `drevo-py/pyproject.toml` includes `py313`; black's AST
-        # safety check fails on Python < target. Running CI on the
-        # highest target Python is the simplest invariant that keeps
-        # local + CI formatting in lockstep. The wheel abi3-py310
-        # tag still produces wheels compatible with CPython 3.10+.
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+        # safety check fails when the running Python is older than
+        # the target. The wheel abi3-py310 tag still produces
+        # wheels compatible with CPython 3.10+, so the runtime
+        # support matrix is unchanged; only the CI lint/test Python
+        # moves up.
+        id: py
+        run: |
+          for candidate in \
+            "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13" \
+            "$(command -v python3.13 || true)" \
+            "/opt/homebrew/bin/python3.13" \
+            "/usr/local/bin/python3.13"; do
+            if [ -x "$candidate" ]; then
+              echo "DREVO_PY_BIN=$candidate" >> "$GITHUB_ENV"
+              echo "Using $candidate ($($candidate --version))"
+              exit 0
+            fi
+          done
+          echo "::error::python3.13 not found on the self-hosted runner — install via the python.org pkg or brew install python@3.13"
+          exit 1
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -138,9 +155,13 @@ jobs:
         # exists and surface its PATH / VIRTUAL_ENV. Re-creation is
         # automatic if a future Python upgrade renames the tool-cache
         # path or if an operator wipes the runner's tool cache.
+        #
+        # Uses `$DREVO_PY_BIN` (exported by the previous step) so the
+        # venv binds to the same interpreter that was located on the
+        # runner — not whatever happens to be on PATH.
         run: |
           if [ ! -x "$DREVO_PY_VENV/bin/python" ]; then
-            python -m venv "$DREVO_PY_VENV"
+            "$DREVO_PY_BIN" -m venv "$DREVO_PY_VENV"
           fi
           echo "VIRTUAL_ENV=$DREVO_PY_VENV" >> "$GITHUB_ENV"
           echo "$DREVO_PY_VENV/bin" >> "$GITHUB_PATH"
