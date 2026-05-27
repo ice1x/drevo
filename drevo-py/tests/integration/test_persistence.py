@@ -58,9 +58,7 @@ def test_edge_survives_close_and_reopen(tmp_db_path: str) -> None:
     with drevo.Drevo.open(tmp_db_path) as db:
         a = db.create_node(drevo.NewNode(kind="note", title="src"))
         b = db.create_node(drevo.NewNode(kind="note", title="dst"))
-        e = db.create_edge(
-            drevo.NewEdge(from_id=a.id, to_id=b.id, kind="links_to", weight=0.42)
-        )
+        e = db.create_edge(drevo.NewEdge(from_id=a.id, to_id=b.id, kind="links_to", weight=0.42))
         edge_id = e.id
     with drevo.Drevo.open(tmp_db_path) as db:
         fetched = db.get_edge(edge_id)
@@ -166,9 +164,7 @@ def test_property_values_round_trip_through_reopen(tmp_db_path: str) -> None:
         "nested": {"k": [1, 2, 3]},
     }
     with drevo.Drevo.open(tmp_db_path) as db:
-        node = db.create_node(
-            drevo.NewNode(kind="note", title="mixed-props", properties=payload)
-        )
+        node = db.create_node(drevo.NewNode(kind="note", title="mixed-props", properties=payload))
         nid = node.id
     with drevo.Drevo.open(tmp_db_path) as db:
         fetched = db.get_node(nid)

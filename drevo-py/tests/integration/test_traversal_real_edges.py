@@ -16,7 +16,7 @@ import drevo
 
 
 def _build_diamond(db: drevo.Drevo) -> dict[str, drevo.Node]:
-    """    a → b → d
+    """a → b → d
             ↘     ↗
               c
 
@@ -160,12 +160,8 @@ def test_cascade_delete_removes_incident_edges(disk_db: drevo.Drevo) -> None:
     disk_db.delete_node(nodes["b"].id)
     # b is gone, so the links_to branch breaks; only the tagged_with
     # branch can still reach d.
-    reached = disk_db.bfs(
-        nodes["a"].id, 5, drevo.Direction.OUT, edge_kind="links_to"
-    )
+    reached = disk_db.bfs(nodes["a"].id, 5, drevo.Direction.OUT, edge_kind="links_to")
     assert reached == []
     # The tagged_with branch is intact.
-    reached_tagged = disk_db.bfs(
-        nodes["a"].id, 5, drevo.Direction.OUT, edge_kind="tagged_with"
-    )
+    reached_tagged = disk_db.bfs(nodes["a"].id, 5, drevo.Direction.OUT, edge_kind="tagged_with")
     assert {n.title for n in reached_tagged} == {"c", "d"}

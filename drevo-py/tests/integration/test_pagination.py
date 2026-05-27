@@ -19,7 +19,6 @@ from typing import Callable
 
 import drevo
 
-
 # ── list_nodes_by_kind ─────────────────────────────────────────────────
 
 
@@ -112,10 +111,7 @@ def test_list_edges_pagination_reassembles_full_corpus(disk_db: drevo.Drevo) -> 
     pagination — concat of pages == full corpus.
     """
     a = disk_db.create_node(drevo.NewNode(kind="note", title="a"))
-    targets = [
-        disk_db.create_node(drevo.NewNode(kind="note", title=f"t-{i}"))
-        for i in range(15)
-    ]
+    targets = [disk_db.create_node(drevo.NewNode(kind="note", title=f"t-{i}")) for i in range(15)]
     edges = [
         disk_db.create_edge(drevo.NewEdge(from_id=a.id, to_id=t.id, kind="links_to"))
         for t in targets

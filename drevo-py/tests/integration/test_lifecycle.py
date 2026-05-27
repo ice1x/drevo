@@ -86,9 +86,7 @@ def test_compact_survives_reopen(tmp_db_path: str) -> None:
     session's reads.
     """
     with drevo.Drevo.open(tmp_db_path) as db:
-        nodes = [
-            db.create_node(drevo.NewNode(kind="t", title=f"row-{i}")) for i in range(10)
-        ]
+        nodes = [db.create_node(drevo.NewNode(kind="t", title=f"row-{i}")) for i in range(10)]
         for n in nodes[:5]:
             db.delete_node(n.id)
         db.compact()

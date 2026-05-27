@@ -95,9 +95,7 @@ def test_handle_is_usable_after_worker_thread_returns(
 
     def worker() -> None:
         for i in range(20):
-            node = disk_db.create_node(
-                drevo.NewNode(kind="worker", title=f"w-{i}")
-            )
+            node = disk_db.create_node(drevo.NewNode(kind="worker", title=f"w-{i}"))
             created_ids.append(node.id)
 
     t = threading.Thread(target=worker)
