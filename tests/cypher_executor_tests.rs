@@ -263,19 +263,6 @@ fn parameter_in_property_map_during_create() {
 }
 
 #[test]
-fn set_clause_rejected_with_pointer_to_00064() {
-    let db = db();
-    let e = err("MATCH (n:Person) SET n.age = 30 RETURN n", &db);
-    match e {
-        ExecError::Unsupported { feature, task, .. } => {
-            assert!(feature.contains("SET"));
-            assert_eq!(task, "00064");
-        }
-        other => panic!("expected Unsupported, got {:?}", other),
-    }
-}
-
-#[test]
 fn aggregations_rejected_with_pointer_to_00066() {
     let db = db();
     run("CREATE (:Person {name: 'A'})", &db);
