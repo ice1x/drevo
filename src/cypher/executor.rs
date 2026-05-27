@@ -1,23 +1,29 @@
-//! Cypher executor — Phase 10 tasks `00063` (CREATE / MATCH / RETURN)
-//! and `00064` (mutations: SET, DELETE, MERGE, REMOVE).
+//! Cypher executor — Phase 10 tasks `00063` (CREATE / MATCH / RETURN),
+//! `00064` (mutations: SET, DELETE, MERGE, REMOVE), and `00065` (WHERE
+//! on `MATCH`).
 //!
 //! The executor consumes the [`crate::cypher::ast::Query`] produced by
 //! [`crate::cypher::parser::parse`] and runs it against the underlying
 //! [`crate::db::Drevo`] handle. The current cut covers the README
-//! "critical path" prefix — `CREATE`, `MATCH`, `RETURN`, plus the full
-//! mutation surface — with enough expression evaluation to make
-//! `RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `DISTINCT`, inline property
-//! filters, `SET` / `REMOVE` / `DELETE` (incl. `DETACH DELETE`) and
-//! `MERGE` (with `ON CREATE` / `ON MATCH` actions) useful.
+//! "critical path" prefix — `CREATE`, `MATCH`, `RETURN`, the full
+//! mutation surface, and `WHERE` predicates on `MATCH` — with enough
+//! expression evaluation to make `RETURN`, `ORDER BY`, `SKIP`, `LIMIT`,
+//! `DISTINCT`, inline property filters, `SET` / `REMOVE` / `DELETE`
+//! (incl. `DETACH DELETE`), `MERGE` (with `ON CREATE` / `ON MATCH`
+//! actions), and `WHERE` boolean / comparison / `IN` / `IS NULL`
+//! predicates useful.
 //!
 //! Out of scope (tracked under follow-on Phase 10 tasks):
 //!
-//! * `WHERE` on `MATCH` (`00065`).
 //! * Aggregations (`COUNT`, `SUM`, `COLLECT`, …) (`00066`).
 //! * `OPTIONAL MATCH` (`00067`).
 //! * `WITH` query pipelining (`00068`).
 //! * Variable-length paths (`*1..3`) (`00069`).
 //! * `UNWIND` clause and `UNION` queries.
+//! * `EXISTS { pattern }` pattern-existence subqueries — the lexer
+//!   already tokenises `EXISTS`, but the parser does not yet treat it
+//!   as an expression form. In modern Cypher `n.prop IS NOT NULL` is
+//!   the property-existence replacement, which `00065` already ships.
 //!
 //! Anything in that list surfaces as
 //! [`ExecError::Unsupported`](crate::cypher::executor::ExecError::Unsupported)
@@ -478,11 +484,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                 });
             }
             if let Some(expr) = &m.where_clause {
-                return Err(ExecError::Unsupported {
-                    feature: "WHERE on MATCH".into(),
-                    task: "00065".into(),
-                    span: expr.span(),
-                });
+                validate_expr_supported(expr)?;
             }
             for pattern in &m.patterns {
                 validate_path_supported(&pattern.path, /*creating=*/ false)?;
@@ -755,13 +757,6 @@ impl<'a> Executor<'a> {
                 span: m.span,
             });
         }
-        if let Some(expr) = &m.where_clause {
-            return Err(ExecError::Unsupported {
-                feature: "WHERE on MATCH".into(),
-                task: "00065".into(),
-                span: expr.span(),
-            });
-        }
 
         let mut new_bindings: Vec<Bindings> = Vec::new();
         let prior = std::mem::take(&mut self.bindings);
@@ -780,6 +775,31 @@ impl<'a> Executor<'a> {
             }
             new_bindings.extend(current);
         }
+
+        // WHERE is applied *after* pattern matching produced its
+        // candidate rows — same shape as Cypher's evaluation model. A
+        // row is kept iff the predicate evaluates to Bool(true); NULL
+        // and Bool(false) both drop the row (Cypher's three-valued
+        // logic treats NULL as "unknown", which a WHERE filter rejects).
+        if let Some(expr) = &m.where_clause {
+            let mut filtered: Vec<Bindings> = Vec::with_capacity(new_bindings.len());
+            for row in new_bindings.into_iter() {
+                let value = self.eval(expr, &row)?;
+                match value {
+                    Value::Bool(true) => filtered.push(row),
+                    Value::Bool(false) | Value::Null => {}
+                    other => {
+                        return Err(ExecError::TypeMismatch {
+                            expected: "Boolean".into(),
+                            got: other.type_name().into(),
+                            span: expr.span(),
+                        });
+                    }
+                }
+            }
+            new_bindings = filtered;
+        }
+
         self.bindings = new_bindings;
         Ok(())
     }
@@ -2742,19 +2762,6 @@ mod tests {
     // ---- Errors -----------------------------------------------------------
 
     #[test]
-    fn where_clause_is_rejected_until_00065() {
-        let db = drevo();
-        let e = err("MATCH (n:Person) WHERE n.age > 18 RETURN n", &db);
-        match e {
-            ExecError::Unsupported { feature, task, .. } => {
-                assert!(feature.contains("WHERE"));
-                assert_eq!(task, "00065");
-            }
-            other => panic!("expected Unsupported, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn unbound_variable_reports_name() {
         let db = drevo();
         let e = err("RETURN unknown", &db);
@@ -3079,5 +3086,259 @@ mod tests {
             &db,
         );
         assert_eq!(res2.stats.relationships_created, 0);
+    }
+
+    // ---- WHERE ------------------------------------------------------------
+
+    #[test]
+    fn where_filters_by_simple_equality() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', age: 30})", &db);
+        run("CREATE (:Person {name: 'B', age: 25})", &db);
+        let res = run(
+            "MATCH (n:Person) WHERE n.name = 'A' RETURN n.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+    }
+
+    #[test]
+    fn where_filters_by_numeric_comparison() {
+        let db = drevo();
+        for (name, age) in [("A", 17), ("B", 18), ("C", 25), ("D", 40)] {
+            run(
+                &format!("CREATE (:Person {{name: '{}', age: {}}})", name, age),
+                &db,
+            );
+        }
+        let res = run(
+            "MATCH (n:Person) WHERE n.age >= 18 RETURN n.name AS name ORDER BY n.name",
+            &db,
+        );
+        let names: Vec<String> = res
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["B".to_string(), "C".to_string(), "D".to_string()]
+        );
+    }
+
+    #[test]
+    fn where_combines_predicates_with_and_or_not() {
+        let db = drevo();
+        for (n, age, team) in [
+            ("A", 25, "red"),
+            ("B", 35, "red"),
+            ("C", 30, "blue"),
+            ("D", 45, "blue"),
+        ] {
+            run(
+                &format!(
+                    "CREATE (:Person {{name: '{}', age: {}, team: '{}'}})",
+                    n, age, team
+                ),
+                &db,
+            );
+        }
+        let res = run(
+            "MATCH (n:Person) WHERE n.age > 30 AND n.team = 'blue' RETURN n.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("D".into()));
+
+        let res = run(
+            "MATCH (n:Person) WHERE n.team = 'red' OR n.age >= 45 RETURN n.name AS name ORDER BY n.name",
+            &db,
+        );
+        let names: Vec<String> = res
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["A".to_string(), "B".to_string(), "D".to_string()]
+        );
+
+        let res = run(
+            "MATCH (n:Person) WHERE NOT n.team = 'red' RETURN n.name AS name ORDER BY n.name",
+            &db,
+        );
+        let names: Vec<String> = res
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(names, vec!["C".to_string(), "D".to_string()]);
+    }
+
+    #[test]
+    fn where_in_list_membership() {
+        let db = drevo();
+        for n in ["A", "B", "C", "D"] {
+            run(&format!("CREATE (:Person {{name: '{}'}})", n), &db);
+        }
+        let res = run(
+            "MATCH (n:Person) WHERE n.name IN ['A', 'C', 'Z'] RETURN n.name AS name ORDER BY n.name",
+            &db,
+        );
+        let names: Vec<String> = res
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(names, vec!["A".to_string(), "C".to_string()]);
+    }
+
+    #[test]
+    fn where_is_null_and_is_not_null() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', email: 'a@b.com'})", &db);
+        run("CREATE (:Person {name: 'B'})", &db);
+        let res = run(
+            "MATCH (n:Person) WHERE n.email IS NULL RETURN n.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("B".into()));
+
+        let res = run(
+            "MATCH (n:Person) WHERE n.email IS NOT NULL RETURN n.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+    }
+
+    #[test]
+    fn where_string_predicates_starts_with_ends_with_contains() {
+        let db = drevo();
+        for s in ["alpha", "beta", "gamma", "alphabet"] {
+            run(&format!("CREATE (:Word {{title: '{}'}})", s), &db);
+        }
+        let res = run(
+            "MATCH (n:Word) WHERE n.title STARTS WITH 'alpha' RETURN n.title AS title ORDER BY n.title",
+            &db,
+        );
+        let titles: Vec<String> = res
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(titles, vec!["alpha".to_string(), "alphabet".to_string()]);
+
+        let res = run(
+            "MATCH (n:Word) WHERE n.title ENDS WITH 'a' RETURN n.title AS title ORDER BY n.title",
+            &db,
+        );
+        let titles: Vec<String> = res
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+
+        let res = run(
+            "MATCH (n:Word) WHERE n.title CONTAINS 'amma' RETURN n.title AS title",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("gamma".into()));
+    }
+
+    #[test]
+    fn where_null_predicate_drops_row() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        // Comparing against a missing property yields NULL; WHERE keeps
+        // only TRUE rows, so this should return zero results.
+        let res = run(
+            "MATCH (n:Person) WHERE n.missing = 'x' RETURN n.name AS name",
+            &db,
+        );
+        assert!(res.rows.is_empty());
+    }
+
+    #[test]
+    fn where_on_relationship_pattern() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'A'})-[:KNOWS {since: 2020}]->(b:Person {name: 'B'})",
+            &db,
+        );
+        run(
+            "CREATE (a:Person {name: 'C'})-[:KNOWS {since: 2024}]->(b:Person {name: 'D'})",
+            &db,
+        );
+        let res = run(
+            "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE r.since >= 2024 RETURN a.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("C".into()));
+    }
+
+    #[test]
+    fn where_with_parameter() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Alice'})", &db);
+        run("CREATE (:Person {name: 'Bob'})", &db);
+        let mut params = HashMap::new();
+        params.insert("who".to_string(), Value::String("Alice".into()));
+        let q = parse("MATCH (n:Person) WHERE n.name = $who RETURN n.name AS name").unwrap();
+        let res = execute(&q, &db, params).unwrap();
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("Alice".into()));
+    }
+
+    #[test]
+    fn where_arithmetic_in_predicate() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', age: 30})", &db);
+        run("CREATE (:Person {name: 'B', age: 17})", &db);
+        let res = run(
+            "MATCH (n:Person) WHERE n.age + 1 > 18 RETURN n.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+    }
+
+    #[test]
+    fn where_with_unbound_variable_errors() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        let e = err("MATCH (n:Person) WHERE unknown_var.x > 1 RETURN n", &db);
+        assert!(
+            matches!(e, ExecError::UnboundVariable { .. }),
+            "got {:?}",
+            e
+        );
     }
 }
