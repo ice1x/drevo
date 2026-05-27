@@ -1,21 +1,22 @@
-//! Cypher executor — Phase 10 task `00063`.
+//! Cypher executor — Phase 10 tasks `00063` (CREATE / MATCH / RETURN)
+//! and `00064` (mutations: SET, DELETE, MERGE, REMOVE).
 //!
 //! The executor consumes the [`crate::cypher::ast::Query`] produced by
 //! [`crate::cypher::parser::parse`] and runs it against the underlying
-//! [`crate::db::Drevo`] handle. The initial cut (`00063`) targets the
-//! README "critical path" prefix — `CREATE`, `MATCH`, `RETURN` — with
-//! enough expression evaluation to make `RETURN`, `ORDER BY`, `SKIP`,
-//! `LIMIT`, `DISTINCT`, and inline property filters on patterns useful.
+//! [`crate::db::Drevo`] handle. The current cut covers the README
+//! "critical path" prefix — `CREATE`, `MATCH`, `RETURN`, plus the full
+//! mutation surface — with enough expression evaluation to make
+//! `RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `DISTINCT`, inline property
+//! filters, `SET` / `REMOVE` / `DELETE` (incl. `DETACH DELETE`) and
+//! `MERGE` (with `ON CREATE` / `ON MATCH` actions) useful.
 //!
-//! Out of scope for `00063` (tracked under follow-on Phase 10 tasks):
+//! Out of scope (tracked under follow-on Phase 10 tasks):
 //!
 //! * `WHERE` on `MATCH` (`00065`).
 //! * Aggregations (`COUNT`, `SUM`, `COLLECT`, …) (`00066`).
 //! * `OPTIONAL MATCH` (`00067`).
 //! * `WITH` query pipelining (`00068`).
 //! * Variable-length paths (`*1..3`) (`00069`).
-//! * Mutations beyond `CREATE`: `SET`, `DELETE`, `MERGE`, `REMOVE`
-//!   (`00064`).
 //! * `UNWIND` clause and `UNION` queries.
 //!
 //! Anything in that list surfaces as
@@ -26,8 +27,13 @@
 //! # Mapping between Cypher and drevo
 //!
 //! * A Cypher **label** maps to drevo's [`crate::model::Node::kind`].
-//!   The first task (`00063`) supports exactly one label per node;
-//!   multi-label nodes (`MERGE` / `SET :Label`) land with `00064`.
+//!   The primary label (drevo `kind`) is the one used by the kind
+//!   index. Additional labels added via `SET n:Label` live in a
+//!   reserved `_labels` property (a JSON array of strings); they are
+//!   surfaced as part of the node's `labels` set but are not part of
+//!   drevo's primary-kind index, so `MATCH (n:SecondaryLabel)` falls
+//!   back to a full scan filtered by label. An indexed fast path lands
+//!   with the planner work in task `00086`.
 //! * A Cypher **relationship type** maps to drevo's
 //!   [`crate::model::Edge::kind`].
 //! * Cypher **properties** round-trip through drevo's
@@ -38,6 +44,15 @@
 //!   nodes of the same label don't collide on drevo's title uniqueness
 //!   index. The `"body"` key aliases [`crate::model::Node::body`] for
 //!   the same reason (the FTS index reads from `title` + `body`).
+//! * **`DELETE`** of a node with connected relationships errors with
+//!   [`ExecError::InvalidMutation`](crate::cypher::executor::ExecError::InvalidMutation) unless the user wrote
+//!   `DETACH DELETE`. `DETACH DELETE` reuses the cascade behaviour of
+//!   [`crate::db::Drevo::delete_node`] (which removes every adjacency
+//!   for the node).
+//! * **`MERGE`** runs as MATCH-or-CREATE: the pattern is matched
+//!   against existing data first; if no row matches, the pattern is
+//!   created exactly once. `ON CREATE SET` runs only on the create
+//!   branch, `ON MATCH SET` only on the match branch.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -138,12 +153,20 @@ pub struct ExecStats {
     pub nodes_created: usize,
     /// Total number of relationships created during this query.
     pub relationships_created: usize,
-    /// Reserved for `00064` — currently always 0.
+    /// Total number of property assignments performed by `SET` /
+    /// `REMOVE` / `MERGE`. A single `SET n = {a:1, b:2}` counts as two
+    /// assignments. Label adds / removes are tracked separately by
+    /// [`labels_added`](Self::labels_added) / [`labels_removed`](Self::labels_removed).
     pub properties_set: usize,
-    /// Reserved for `00064` — currently always 0.
+    /// Total number of nodes removed by `DELETE` / `DETACH DELETE`.
     pub nodes_deleted: usize,
-    /// Reserved for `00064` — currently always 0.
+    /// Total number of relationships removed by `DELETE` / `DETACH DELETE`
+    /// (including the cascade-removed edges of `DETACH DELETE`).
     pub relationships_deleted: usize,
+    /// Total number of labels added by `SET n:Label`.
+    pub labels_added: usize,
+    /// Total number of labels removed by `REMOVE n:Label`.
+    pub labels_removed: usize,
 }
 
 /// Errors raised by the executor.
@@ -189,6 +212,11 @@ pub enum ExecError {
     /// `CREATE (a)-[r]->(b)` without a relationship type).
     #[error("invalid CREATE pattern: {0}")]
     InvalidCreate(String),
+    /// A mutation clause (`SET` / `REMOVE` / `DELETE` / `MERGE`) saw a
+    /// structurally invalid target — e.g. `SET` on a literal, `DELETE`
+    /// of a connected node without `DETACH`.
+    #[error("invalid mutation: {0}")]
+    InvalidMutation(String),
     /// Underlying storage / serialization failure.
     #[error("storage error: {0}")]
     Storage(#[from] DrevoError),
@@ -202,7 +230,10 @@ impl ExecError {
             Self::Unsupported { span, .. }
             | Self::UnboundVariable { span, .. }
             | Self::TypeMismatch { span, .. } => Some(*span),
-            Self::MissingParameter(_) | Self::InvalidCreate(_) | Self::Storage(_) => None,
+            Self::MissingParameter(_)
+            | Self::InvalidCreate(_)
+            | Self::InvalidMutation(_)
+            | Self::Storage(_) => None,
         }
     }
 }
@@ -323,6 +354,15 @@ fn value_to_json(v: &Value) -> Option<serde_json::Value> {
     })
 }
 
+/// Reserved property key holding a node's secondary Cypher labels.
+///
+/// drevo storage has a single primary `kind` per node. Cypher allows a
+/// node to carry any number of labels; the extras live in this property
+/// as a JSON array of strings, never visible to user-level Cypher
+/// `n.<prop>` access (the executor filters it out when surfacing the
+/// property map).
+const SECONDARY_LABELS_KEY: &str = "_labels";
+
 fn node_to_value(node: &Node) -> Arc<NodeValue> {
     let mut properties = BTreeMap::new();
     // Surface `title` and `body` as ordinary properties so Cypher code
@@ -335,13 +375,26 @@ fn node_to_value(node: &Node) -> Arc<NodeValue> {
     if !node.body.is_empty() {
         properties.insert("body".to_string(), Value::String(node.body.clone()));
     }
+    let mut secondary: Vec<String> = Vec::new();
     for (k, v) in node.properties.iter() {
+        if k == SECONDARY_LABELS_KEY {
+            if let serde_json::Value::Array(arr) = v {
+                for item in arr {
+                    if let serde_json::Value::String(s) = item {
+                        secondary.push(s.clone());
+                    }
+                }
+            }
+            continue;
+        }
         properties.insert(k.clone(), json_to_value(v));
     }
+    let mut labels = vec![node.kind.clone()];
+    labels.extend(secondary);
     Arc::new(NodeValue {
         id: node.id,
         uuid: node.uuid,
-        labels: vec![node.kind.clone()],
+        labels,
         properties,
     })
 }
@@ -457,32 +510,32 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
             }
         }
         Clause::Merge(m) => {
-            return Err(ExecError::Unsupported {
-                feature: "MERGE".into(),
-                task: "00064".into(),
-                span: m.span,
-            })
+            validate_path_supported(&m.pattern.path, /*creating=*/ true)?;
+            for item in m.on_create.iter().chain(m.on_match.iter()) {
+                validate_set_item_supported(item)?;
+            }
         }
         Clause::Delete(d) => {
-            return Err(ExecError::Unsupported {
-                feature: "DELETE".into(),
-                task: "00064".into(),
-                span: d.span,
-            })
+            for target in &d.targets {
+                validate_expr_supported(target)?;
+            }
         }
         Clause::Set(s) => {
-            return Err(ExecError::Unsupported {
-                feature: "SET".into(),
-                task: "00064".into(),
-                span: s.span,
-            })
+            for item in &s.items {
+                validate_set_item_supported(item)?;
+            }
         }
         Clause::Remove(r) => {
-            return Err(ExecError::Unsupported {
-                feature: "REMOVE".into(),
-                task: "00064".into(),
-                span: r.span,
-            })
+            for item in &r.items {
+                match item {
+                    crate::cypher::ast::RemoveItem::Property(expr) => {
+                        validate_expr_supported(expr)?
+                    }
+                    crate::cypher::ast::RemoveItem::Labels { target, .. } => {
+                        validate_expr_supported(target)?;
+                    }
+                }
+            }
         }
         Clause::With(w) => {
             return Err(ExecError::Unsupported {
@@ -503,13 +556,6 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
 }
 
 fn validate_path_supported(path: &PathPattern, _creating: bool) -> ExecResultT<()> {
-    if path.head.labels.len() > 1 {
-        return Err(ExecError::Unsupported {
-            feature: "multi-label patterns".into(),
-            task: "00064".into(),
-            span: path.head.span,
-        });
-    }
     if let Some(map) = &path.head.properties {
         for (_, expr) in &map.entries {
             validate_expr_supported(expr)?;
@@ -529,18 +575,25 @@ fn validate_path_supported(path: &PathPattern, _creating: bool) -> ExecResultT<(
                 validate_expr_supported(expr)?;
             }
         }
-        if segment.node.labels.len() > 1 {
-            return Err(ExecError::Unsupported {
-                feature: "multi-label patterns".into(),
-                task: "00064".into(),
-                span: segment.node.span,
-            });
-        }
         if let Some(map) = &segment.node.properties {
             for (_, expr) in &map.entries {
                 validate_expr_supported(expr)?;
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_set_item_supported(item: &crate::cypher::ast::SetItem) -> ExecResultT<()> {
+    use crate::cypher::ast::SetItem;
+    match item {
+        SetItem::Property { target, value }
+        | SetItem::Replace { target, value }
+        | SetItem::Merge { target, value } => {
+            validate_expr_supported(target)?;
+            validate_expr_supported(value)?;
+        }
+        SetItem::Labels { target, .. } => validate_expr_supported(target)?,
     }
     Ok(())
 }
@@ -675,26 +728,10 @@ impl<'a> Executor<'a> {
             Clause::Match(m) => self.run_match(m),
             Clause::Create(c) => self.run_create(c),
             Clause::Return(r) => self.run_return(r),
-            Clause::Merge(m) => Err(ExecError::Unsupported {
-                feature: "MERGE".into(),
-                task: "00064".into(),
-                span: m.span,
-            }),
-            Clause::Delete(d) => Err(ExecError::Unsupported {
-                feature: "DELETE".into(),
-                task: "00064".into(),
-                span: d.span,
-            }),
-            Clause::Set(s) => Err(ExecError::Unsupported {
-                feature: "SET".into(),
-                task: "00064".into(),
-                span: s.span,
-            }),
-            Clause::Remove(r) => Err(ExecError::Unsupported {
-                feature: "REMOVE".into(),
-                task: "00064".into(),
-                span: r.span,
-            }),
+            Clause::Merge(m) => self.run_merge(m),
+            Clause::Delete(d) => self.run_delete(d),
+            Clause::Set(s) => self.run_set(s),
+            Clause::Remove(r) => self.run_remove(r),
             Clause::With(w) => Err(ExecError::Unsupported {
                 feature: "WITH".into(),
                 task: "00068".into(),
@@ -812,14 +849,26 @@ impl<'a> Executor<'a> {
     }
 
     fn enumerate_nodes(&self, pattern: &NodePattern) -> ExecResultT<Vec<Arc<NodeValue>>> {
-        let nodes: Vec<Node> = if let Some(label) = pattern.labels.first() {
-            self.drevo.list_nodes_by_kind(label, usize::MAX, 0)?
-        } else {
-            // No label: scan everything. Until `00065` we only have
-            // `list_recent` (limit-bound). usize::MAX is fine — the
-            // backend iterators stream lazily.
-            self.drevo.list_recent(usize::MAX)?
-        };
+        // For a single label we can prefer `list_nodes_by_kind` (drevo's
+        // primary-kind index) as a fast path, but the pattern label may
+        // match a secondary label — added via `SET n:Label` and stored
+        // in the reserved `_labels` property. Secondary labels have no
+        // dedicated index, so we always fall back to `list_recent` to
+        // catch them. Picking the union is more work than necessary; in
+        // practice list_recent on the in-memory backend is O(n) which
+        // matches list_nodes_by_kind, and an optimised index lands with
+        // task `00086` (cost-based planner).
+        let mut nodes: Vec<Node> = self.drevo.list_recent(usize::MAX)?;
+        if let Some(label) = pattern.labels.first() {
+            // Merge in primary-kind hits in case `list_recent` is bounded
+            // by some future backend implementation.
+            let primary = self.drevo.list_nodes_by_kind(label, usize::MAX, 0)?;
+            for node in primary {
+                if !nodes.iter().any(|n| n.id == node.id) {
+                    nodes.push(node);
+                }
+            }
+        }
         let mut out = Vec::with_capacity(nodes.len());
         for node in &nodes {
             let nv = node_to_value(node);
@@ -985,13 +1034,7 @@ impl<'a> Executor<'a> {
                 "CREATE node must have exactly one label (use `(n:Label)`)".into(),
             )
         })?;
-        if pattern.labels.len() > 1 {
-            return Err(ExecError::Unsupported {
-                feature: "multi-label CREATE".into(),
-                task: "00064".into(),
-                span: pattern.span,
-            });
-        }
+        let extra_labels: Vec<String> = pattern.labels.iter().skip(1).cloned().collect();
 
         let mut props = self.eval_map(&pattern.properties, row)?;
         let title = match props.remove("title") {
@@ -1019,6 +1062,9 @@ impl<'a> Executor<'a> {
 
         let mut storage_props = std::collections::HashMap::new();
         for (k, v) in props.iter() {
+            if k == SECONDARY_LABELS_KEY {
+                continue;
+            }
             let json = value_to_json(v).ok_or_else(|| {
                 ExecError::InvalidCreate(format!(
                     "cannot store value of type {} as property `{}`",
@@ -1027,6 +1073,17 @@ impl<'a> Executor<'a> {
                 ))
             })?;
             storage_props.insert(k.clone(), json);
+        }
+        if !extra_labels.is_empty() {
+            storage_props.insert(
+                SECONDARY_LABELS_KEY.to_string(),
+                serde_json::Value::Array(
+                    extra_labels
+                        .iter()
+                        .map(|l| serde_json::Value::String(l.clone()))
+                        .collect(),
+                ),
+            );
         }
 
         let new_node = NewNode {
@@ -1097,6 +1154,674 @@ impl<'a> Executor<'a> {
         if let Some(name) = &rel.variable {
             row.insert(name.clone(), Value::Relationship(edge_to_value(&stored)));
         }
+        Ok(())
+    }
+
+    // ----- SET / REMOVE / DELETE / MERGE -----------------------------------
+
+    fn run_set(&mut self, s: &crate::cypher::ast::SetClause) -> ExecResultT<()> {
+        use crate::cypher::ast::SetItem;
+        // If no MATCH preceded the SET, the binding set is empty — Cypher
+        // semantics say SET is a per-row mutation, so it does nothing.
+        let bindings = std::mem::take(&mut self.bindings);
+        let mut updated_bindings = Vec::with_capacity(bindings.len());
+        for mut row in bindings.into_iter() {
+            for item in &s.items {
+                match item {
+                    SetItem::Property { target, value } => {
+                        self.apply_set_property(target, value, &mut row)?;
+                    }
+                    SetItem::Replace { target, value } => {
+                        self.apply_set_replace(target, value, &mut row, /*merge=*/ false)?;
+                    }
+                    SetItem::Merge { target, value } => {
+                        self.apply_set_replace(target, value, &mut row, /*merge=*/ true)?;
+                    }
+                    SetItem::Labels { target, labels } => {
+                        self.apply_set_labels(target, labels, &mut row)?;
+                    }
+                }
+            }
+            updated_bindings.push(row);
+        }
+        self.bindings = updated_bindings;
+        Ok(())
+    }
+
+    fn run_remove(&mut self, r: &crate::cypher::ast::RemoveClause) -> ExecResultT<()> {
+        use crate::cypher::ast::RemoveItem;
+        let bindings = std::mem::take(&mut self.bindings);
+        let mut updated_bindings = Vec::with_capacity(bindings.len());
+        for mut row in bindings.into_iter() {
+            for item in &r.items {
+                match item {
+                    RemoveItem::Property(target) => {
+                        self.apply_remove_property(target, &mut row)?;
+                    }
+                    RemoveItem::Labels { target, labels } => {
+                        self.apply_remove_labels(target, labels, &mut row)?;
+                    }
+                }
+            }
+            updated_bindings.push(row);
+        }
+        self.bindings = updated_bindings;
+        Ok(())
+    }
+
+    fn run_delete(&mut self, d: &crate::cypher::ast::DeleteClause) -> ExecResultT<()> {
+        // Collect ids first, then delete — this avoids issues if the
+        // same node is bound under different variable names across rows.
+        let mut node_ids: Vec<u64> = Vec::new();
+        let mut rel_ids: Vec<u64> = Vec::new();
+        for row in &self.bindings {
+            for target in &d.targets {
+                let v = self.eval(target, row)?;
+                match v {
+                    Value::Node(nv) => {
+                        if !node_ids.contains(&nv.id) {
+                            node_ids.push(nv.id);
+                        }
+                    }
+                    Value::Relationship(rv) => {
+                        if !rel_ids.contains(&rv.id) {
+                            rel_ids.push(rv.id);
+                        }
+                    }
+                    Value::Null => {}
+                    other => {
+                        return Err(ExecError::InvalidMutation(format!(
+                            "DELETE expects a Node or Relationship, got {}",
+                            other.type_name()
+                        )));
+                    }
+                }
+            }
+        }
+        // Relationships first so they're not cascade-deleted by node removal.
+        for id in &rel_ids {
+            if self.drevo.get_edge(*id)?.is_some() {
+                self.drevo.delete_edge(*id)?;
+                self.stats.relationships_deleted += 1;
+            }
+        }
+        for id in &node_ids {
+            if let Some(_node) = self.drevo.get_node(*id)? {
+                let connected = self.drevo.edges_of(*id, ModelDirection::Both)?;
+                if !d.detach && !connected.is_empty() {
+                    return Err(ExecError::InvalidMutation(format!(
+                        "cannot DELETE node {} — it has {} connected relationship(s); use DETACH DELETE",
+                        id, connected.len()
+                    )));
+                }
+                let edge_count = connected.len();
+                self.drevo.delete_node(*id)?;
+                self.stats.nodes_deleted += 1;
+                if d.detach {
+                    self.stats.relationships_deleted += edge_count;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn run_merge(&mut self, m: &crate::cypher::ast::MergeClause) -> ExecResultT<()> {
+        if self.bindings.is_empty() {
+            self.bindings.push(HashMap::new());
+        }
+        let prior = std::mem::take(&mut self.bindings);
+        let mut new_bindings: Vec<Bindings> = Vec::new();
+        for existing in prior.into_iter() {
+            // Try to MATCH the pattern first.
+            let matched = self.match_path(&m.pattern.path, &existing)?;
+            if !matched.is_empty() {
+                for mut row in matched {
+                    self.apply_set_items(&m.on_match, &mut row)?;
+                    new_bindings.push(row);
+                }
+            } else {
+                // No match — CREATE the pattern and run ON CREATE actions.
+                let mut row = existing.clone();
+                self.create_path(&m.pattern.path, &mut row)?;
+                self.apply_set_items(&m.on_create, &mut row)?;
+                new_bindings.push(row);
+            }
+        }
+        self.bindings = new_bindings;
+        Ok(())
+    }
+
+    fn apply_set_items(
+        &mut self,
+        items: &[crate::cypher::ast::SetItem],
+        row: &mut Bindings,
+    ) -> ExecResultT<()> {
+        use crate::cypher::ast::SetItem;
+        for item in items {
+            match item {
+                SetItem::Property { target, value } => {
+                    self.apply_set_property(target, value, row)?;
+                }
+                SetItem::Replace { target, value } => {
+                    self.apply_set_replace(target, value, row, /*merge=*/ false)?;
+                }
+                SetItem::Merge { target, value } => {
+                    self.apply_set_replace(target, value, row, /*merge=*/ true)?;
+                }
+                SetItem::Labels { target, labels } => {
+                    self.apply_set_labels(target, labels, row)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_set_property(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+        row: &mut Bindings,
+    ) -> ExecResultT<()> {
+        let Expression::Property { base, name, span } = target else {
+            return Err(ExecError::InvalidMutation(
+                "SET target must be a property access (`var.prop`)".into(),
+            ));
+        };
+        let var_name = match base.as_ref() {
+            Expression::Variable(n, _) => n.clone(),
+            _ => {
+                return Err(ExecError::InvalidMutation(
+                    "SET target must be of the form `variable.property`".into(),
+                ));
+            }
+        };
+        let new_value = self.eval(value, row)?;
+        let entity = row
+            .get(&var_name)
+            .cloned()
+            .ok_or_else(|| ExecError::UnboundVariable {
+                name: var_name.clone(),
+                span: *span,
+            })?;
+        match entity {
+            Value::Node(nv) => {
+                self.write_node_property(&nv, name, new_value.clone(), row, &var_name)?;
+            }
+            Value::Relationship(rv) => {
+                self.write_edge_property(&rv, name, new_value.clone(), row, &var_name)?;
+            }
+            other => {
+                return Err(ExecError::TypeMismatch {
+                    expected: "Node or Relationship".into(),
+                    got: other.type_name().into(),
+                    span: *span,
+                });
+            }
+        }
+        self.stats.properties_set += 1;
+        Ok(())
+    }
+
+    fn apply_set_replace(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+        row: &mut Bindings,
+        merge: bool,
+    ) -> ExecResultT<()> {
+        let Expression::Variable(var_name, span) = target else {
+            return Err(ExecError::InvalidMutation(
+                "SET = / SET += target must be a variable".into(),
+            ));
+        };
+        let entity = row
+            .get(var_name)
+            .cloned()
+            .ok_or_else(|| ExecError::UnboundVariable {
+                name: var_name.clone(),
+                span: *span,
+            })?;
+        let new_map = match self.eval(value, row)? {
+            Value::Map(m) => m,
+            other => {
+                return Err(ExecError::TypeMismatch {
+                    expected: "Map".into(),
+                    got: other.type_name().into(),
+                    span: *span,
+                });
+            }
+        };
+        let count = new_map.len();
+        match entity {
+            Value::Node(nv) => {
+                self.replace_node_properties(&nv, new_map, merge, row, var_name)?;
+            }
+            Value::Relationship(rv) => {
+                self.replace_edge_properties(&rv, new_map, merge, row, var_name)?;
+            }
+            other => {
+                return Err(ExecError::TypeMismatch {
+                    expected: "Node or Relationship".into(),
+                    got: other.type_name().into(),
+                    span: *span,
+                });
+            }
+        }
+        self.stats.properties_set += count;
+        Ok(())
+    }
+
+    fn apply_set_labels(
+        &mut self,
+        target: &Expression,
+        labels: &[String],
+        row: &mut Bindings,
+    ) -> ExecResultT<()> {
+        let Expression::Variable(var_name, span) = target else {
+            return Err(ExecError::InvalidMutation(
+                "SET :Label target must be a variable".into(),
+            ));
+        };
+        let entity = row
+            .get(var_name)
+            .cloned()
+            .ok_or_else(|| ExecError::UnboundVariable {
+                name: var_name.clone(),
+                span: *span,
+            })?;
+        let Value::Node(nv) = entity else {
+            return Err(ExecError::TypeMismatch {
+                expected: "Node".into(),
+                got: entity.type_name().into(),
+                span: *span,
+            });
+        };
+        let stored = self
+            .drevo
+            .get_node(nv.id)?
+            .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
+        let mut current = node_labels_from_storage(&stored);
+        let mut changed = 0usize;
+        for label in labels {
+            if !current.iter().any(|l| l == label) {
+                current.push(label.clone());
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.persist_node_labels(&stored, &current)?;
+            self.stats.labels_added += changed;
+            // Refresh binding so subsequent clauses see the new labels.
+            if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+                row.insert(var_name.clone(), Value::Node(node_to_value(&refreshed)));
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_remove_property(
+        &mut self,
+        target: &Expression,
+        row: &mut Bindings,
+    ) -> ExecResultT<()> {
+        let Expression::Property { base, name, span } = target else {
+            return Err(ExecError::InvalidMutation(
+                "REMOVE target must be a property access (`var.prop`)".into(),
+            ));
+        };
+        let var_name = match base.as_ref() {
+            Expression::Variable(n, _) => n.clone(),
+            _ => {
+                return Err(ExecError::InvalidMutation(
+                    "REMOVE target must be of the form `variable.property`".into(),
+                ));
+            }
+        };
+        let entity = row
+            .get(&var_name)
+            .cloned()
+            .ok_or_else(|| ExecError::UnboundVariable {
+                name: var_name.clone(),
+                span: *span,
+            })?;
+        match entity {
+            Value::Node(nv) => {
+                self.remove_node_property(&nv, name, row, &var_name)?;
+            }
+            Value::Relationship(rv) => {
+                self.remove_edge_property(&rv, name, row, &var_name)?;
+            }
+            other => {
+                return Err(ExecError::TypeMismatch {
+                    expected: "Node or Relationship".into(),
+                    got: other.type_name().into(),
+                    span: *span,
+                });
+            }
+        }
+        self.stats.properties_set += 1;
+        Ok(())
+    }
+
+    fn apply_remove_labels(
+        &mut self,
+        target: &Expression,
+        labels: &[String],
+        row: &mut Bindings,
+    ) -> ExecResultT<()> {
+        let Expression::Variable(var_name, span) = target else {
+            return Err(ExecError::InvalidMutation(
+                "REMOVE :Label target must be a variable".into(),
+            ));
+        };
+        let entity = row
+            .get(var_name)
+            .cloned()
+            .ok_or_else(|| ExecError::UnboundVariable {
+                name: var_name.clone(),
+                span: *span,
+            })?;
+        let Value::Node(nv) = entity else {
+            return Err(ExecError::TypeMismatch {
+                expected: "Node".into(),
+                got: entity.type_name().into(),
+                span: *span,
+            });
+        };
+        let stored = self
+            .drevo
+            .get_node(nv.id)?
+            .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
+        // Cannot remove the primary label (drevo `kind`).
+        for label in labels {
+            if &stored.kind == label {
+                return Err(ExecError::InvalidMutation(format!(
+                    "cannot REMOVE primary label `{}` — drevo nodes always carry their `kind`",
+                    label
+                )));
+            }
+        }
+        let mut current = node_labels_from_storage(&stored);
+        let before = current.len();
+        current.retain(|l| !labels.iter().any(|rm| rm == l));
+        let removed = before - current.len();
+        if removed > 0 {
+            self.persist_node_labels(&stored, &current)?;
+            self.stats.labels_removed += removed;
+            if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+                row.insert(var_name.clone(), Value::Node(node_to_value(&refreshed)));
+            }
+        }
+        Ok(())
+    }
+
+    fn write_node_property(
+        &mut self,
+        nv: &Arc<NodeValue>,
+        prop_name: &str,
+        new_value: Value,
+        row: &mut Bindings,
+        var_name: &str,
+    ) -> ExecResultT<()> {
+        let stored = self
+            .drevo
+            .get_node(nv.id)?
+            .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
+        let mut patch = crate::model::NodePatch::default();
+        match prop_name {
+            "title" => {
+                patch.title = Some(value_as_string_for_alias(&new_value, "title")?);
+            }
+            "body" => {
+                patch.body = Some(value_as_string_for_alias(&new_value, "body")?);
+            }
+            _ => {
+                let mut props = stored.properties.clone();
+                if matches!(new_value, Value::Null) {
+                    props.remove(prop_name);
+                } else {
+                    let json = value_to_json(&new_value).ok_or_else(|| {
+                        ExecError::InvalidMutation(format!(
+                            "cannot store value of type {} as property `{}`",
+                            new_value.type_name(),
+                            prop_name
+                        ))
+                    })?;
+                    props.insert(prop_name.to_string(), json);
+                }
+                patch.properties = Some(props);
+            }
+        }
+        self.drevo.update_node(nv.id, patch)?;
+        if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+            row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
+        }
+        Ok(())
+    }
+
+    fn write_edge_property(
+        &mut self,
+        rv: &Arc<RelationshipValue>,
+        prop_name: &str,
+        new_value: Value,
+        row: &mut Bindings,
+        var_name: &str,
+    ) -> ExecResultT<()> {
+        let stored = self.drevo.get_edge(rv.id)?.ok_or_else(|| {
+            ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
+        })?;
+        let mut props = stored.properties.clone();
+        if matches!(new_value, Value::Null) {
+            props.remove(prop_name);
+        } else {
+            let json = value_to_json(&new_value).ok_or_else(|| {
+                ExecError::InvalidMutation(format!(
+                    "cannot store value of type {} as property `{}`",
+                    new_value.type_name(),
+                    prop_name
+                ))
+            })?;
+            props.insert(prop_name.to_string(), json);
+        }
+        let patch = crate::model::EdgePatch {
+            properties: Some(props),
+            ..Default::default()
+        };
+        self.drevo.update_edge(rv.id, patch)?;
+        if let Some(refreshed) = self.drevo.get_edge(rv.id)? {
+            row.insert(
+                var_name.to_string(),
+                Value::Relationship(edge_to_value(&refreshed)),
+            );
+        }
+        Ok(())
+    }
+
+    fn replace_node_properties(
+        &mut self,
+        nv: &Arc<NodeValue>,
+        new_map: BTreeMap<String, Value>,
+        merge: bool,
+        row: &mut Bindings,
+        var_name: &str,
+    ) -> ExecResultT<()> {
+        let stored = self
+            .drevo
+            .get_node(nv.id)?
+            .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
+        // Start either from existing storage props (merge) or empty (replace).
+        // Always preserve the reserved `_labels` key — it carries Cypher
+        // labels orthogonal to user properties.
+        let mut next_props = if merge {
+            stored.properties.clone()
+        } else {
+            let mut p = crate::model::Properties::default();
+            if let Some(v) = stored.properties.get(SECONDARY_LABELS_KEY) {
+                p.insert(SECONDARY_LABELS_KEY.to_string(), v.clone());
+            }
+            p
+        };
+        let mut patch = crate::model::NodePatch::default();
+        for (k, v) in &new_map {
+            match k.as_str() {
+                "title" => {
+                    patch.title = Some(value_as_string_for_alias(v, "title")?);
+                }
+                "body" => {
+                    patch.body = Some(value_as_string_for_alias(v, "body")?);
+                }
+                _ => {
+                    if matches!(v, Value::Null) {
+                        next_props.remove(k);
+                    } else {
+                        let json = value_to_json(v).ok_or_else(|| {
+                            ExecError::InvalidMutation(format!(
+                                "cannot store value of type {} as property `{}`",
+                                v.type_name(),
+                                k
+                            ))
+                        })?;
+                        next_props.insert(k.clone(), json);
+                    }
+                }
+            }
+        }
+        // On replace, clear title/body if not provided in the new map.
+        if !merge {
+            if !new_map.contains_key("title") {
+                patch.title = Some(synth_title(&stored.kind));
+            }
+            if !new_map.contains_key("body") {
+                patch.body = Some(String::new());
+            }
+        }
+        patch.properties = Some(next_props);
+        self.drevo.update_node(nv.id, patch)?;
+        if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+            row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
+        }
+        Ok(())
+    }
+
+    fn replace_edge_properties(
+        &mut self,
+        rv: &Arc<RelationshipValue>,
+        new_map: BTreeMap<String, Value>,
+        merge: bool,
+        row: &mut Bindings,
+        var_name: &str,
+    ) -> ExecResultT<()> {
+        let stored = self.drevo.get_edge(rv.id)?.ok_or_else(|| {
+            ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
+        })?;
+        let mut next = if merge {
+            stored.properties.clone()
+        } else {
+            crate::model::Properties::default()
+        };
+        for (k, v) in &new_map {
+            if matches!(v, Value::Null) {
+                next.remove(k);
+            } else {
+                let json = value_to_json(v).ok_or_else(|| {
+                    ExecError::InvalidMutation(format!(
+                        "cannot store value of type {} as property `{}`",
+                        v.type_name(),
+                        k
+                    ))
+                })?;
+                next.insert(k.clone(), json);
+            }
+        }
+        let patch = crate::model::EdgePatch {
+            properties: Some(next),
+            ..Default::default()
+        };
+        self.drevo.update_edge(rv.id, patch)?;
+        if let Some(refreshed) = self.drevo.get_edge(rv.id)? {
+            row.insert(
+                var_name.to_string(),
+                Value::Relationship(edge_to_value(&refreshed)),
+            );
+        }
+        Ok(())
+    }
+
+    fn remove_node_property(
+        &mut self,
+        nv: &Arc<NodeValue>,
+        prop_name: &str,
+        row: &mut Bindings,
+        var_name: &str,
+    ) -> ExecResultT<()> {
+        let stored = self
+            .drevo
+            .get_node(nv.id)?
+            .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
+        let mut patch = crate::model::NodePatch::default();
+        match prop_name {
+            "title" => patch.title = Some(synth_title(&stored.kind)),
+            "body" => patch.body = Some(String::new()),
+            _ => {
+                let mut props = stored.properties.clone();
+                props.remove(prop_name);
+                patch.properties = Some(props);
+            }
+        }
+        self.drevo.update_node(nv.id, patch)?;
+        if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+            row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
+        }
+        Ok(())
+    }
+
+    fn remove_edge_property(
+        &mut self,
+        rv: &Arc<RelationshipValue>,
+        prop_name: &str,
+        row: &mut Bindings,
+        var_name: &str,
+    ) -> ExecResultT<()> {
+        let stored = self.drevo.get_edge(rv.id)?.ok_or_else(|| {
+            ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
+        })?;
+        let mut props = stored.properties.clone();
+        props.remove(prop_name);
+        let patch = crate::model::EdgePatch {
+            properties: Some(props),
+            ..Default::default()
+        };
+        self.drevo.update_edge(rv.id, patch)?;
+        if let Some(refreshed) = self.drevo.get_edge(rv.id)? {
+            row.insert(
+                var_name.to_string(),
+                Value::Relationship(edge_to_value(&refreshed)),
+            );
+        }
+        Ok(())
+    }
+
+    fn persist_node_labels(&mut self, stored: &Node, labels: &[String]) -> ExecResultT<()> {
+        let mut props = stored.properties.clone();
+        let secondary: Vec<&String> = labels.iter().skip(1).collect();
+        if secondary.is_empty() {
+            props.remove(SECONDARY_LABELS_KEY);
+        } else {
+            props.insert(
+                SECONDARY_LABELS_KEY.to_string(),
+                serde_json::Value::Array(
+                    secondary
+                        .iter()
+                        .map(|s| serde_json::Value::String((*s).clone()))
+                        .collect(),
+                ),
+            );
+        }
+        let patch = crate::model::NodePatch {
+            properties: Some(props),
+            ..Default::default()
+        };
+        self.drevo.update_node(stored.id, patch)?;
         Ok(())
     }
 
@@ -1362,6 +2087,32 @@ impl<'a> Executor<'a> {
 
 // ===== Pure helpers =========================================================
 
+fn node_labels_from_storage(node: &Node) -> Vec<String> {
+    let mut labels = vec![node.kind.clone()];
+    if let Some(serde_json::Value::Array(arr)) = node.properties.get(SECONDARY_LABELS_KEY) {
+        for item in arr {
+            if let serde_json::Value::String(s) = item {
+                if !labels.iter().any(|l| l == s) {
+                    labels.push(s.clone());
+                }
+            }
+        }
+    }
+    labels
+}
+
+fn value_as_string_for_alias(value: &Value, alias: &str) -> ExecResultT<String> {
+    match value {
+        Value::String(s) => Ok(s.clone()),
+        Value::Null => Ok(String::new()),
+        other => Err(ExecError::InvalidMutation(format!(
+            "alias `{}` must be a String, got {}",
+            alias,
+            other.type_name()
+        ))),
+    }
+}
+
 fn synth_title(label: &str) -> String {
     // UUID-based suffix keeps drevo's title uniqueness invariant while
     // staying deterministic for the storage layer's title index.
@@ -1409,19 +2160,11 @@ fn node_matches_pattern(
     pattern: &NodePattern,
     executor: &Executor<'_>,
 ) -> ExecResultT<bool> {
-    // Labels: drevo nodes carry one label today; the pattern must
-    // match it exactly or omit labels altogether.
-    if let Some(label) = pattern.labels.first() {
+    // All requested labels must be present (Cypher MATCH semantics).
+    for label in &pattern.labels {
         if !nv.labels.iter().any(|l| l == label) {
             return Ok(false);
         }
-    }
-    if pattern.labels.len() > 1 {
-        return Err(ExecError::Unsupported {
-            feature: "multi-label MATCH".into(),
-            task: "00064".into(),
-            span: pattern.span,
-        });
     }
     if let Some(map) = &pattern.properties {
         for (k, expr) in &map.entries {
@@ -2012,17 +2755,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_is_rejected_until_00064() {
-        let db = drevo();
-        let e = err("MERGE (n:Person {name: 'A'})", &db);
-        assert!(
-            matches!(e, ExecError::Unsupported { ref task, .. } if task == "00064"),
-            "got {:?}",
-            e
-        );
-    }
-
-    #[test]
     fn unbound_variable_reports_name() {
         let db = drevo();
         let e = err("RETURN unknown", &db);
@@ -2061,5 +2793,291 @@ mod tests {
             "got {:?}",
             e
         );
+    }
+
+    // ---- SET --------------------------------------------------------------
+
+    #[test]
+    fn set_single_property_assigns_value() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', age: 30})", &db);
+        let res = run("MATCH (n:Person {name: 'A'}) SET n.age = 31", &db);
+        assert_eq!(res.stats.properties_set, 1);
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        assert_eq!(persisted.properties.get("age").unwrap().as_i64(), Some(31));
+    }
+
+    #[test]
+    fn set_property_creates_new_one_if_missing() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        run("MATCH (n:Person) SET n.email = 'a@b.com'", &db);
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        assert_eq!(
+            persisted.properties.get("email").unwrap().as_str(),
+            Some("a@b.com")
+        );
+    }
+
+    #[test]
+    fn set_title_alias_updates_node_title() {
+        let db = drevo();
+        run("CREATE (:Note {title: 'Old'})", &db);
+        run("MATCH (n:Note) SET n.title = 'New'", &db);
+        let persisted = &db.list_nodes_by_kind("Note", 10, 0).unwrap()[0];
+        assert_eq!(persisted.title, "New");
+    }
+
+    #[test]
+    fn set_body_alias_updates_node_body() {
+        let db = drevo();
+        run("CREATE (:Note {title: 'T', body: 'Old body'})", &db);
+        run("MATCH (n:Note) SET n.body = 'New body'", &db);
+        let persisted = &db.list_nodes_by_kind("Note", 10, 0).unwrap()[0];
+        assert_eq!(persisted.body, "New body");
+    }
+
+    #[test]
+    fn set_replace_overwrites_entire_property_map() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', age: 30, team: 'red'})", &db);
+        run(
+            "MATCH (n:Person {name: 'A'}) SET n = {name: 'A', score: 99}",
+            &db,
+        );
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        assert!(persisted.properties.get("age").is_none());
+        assert!(persisted.properties.get("team").is_none());
+        assert_eq!(
+            persisted.properties.get("score").unwrap().as_i64(),
+            Some(99)
+        );
+    }
+
+    #[test]
+    fn set_merge_keeps_old_and_adds_new() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', age: 30})", &db);
+        run(
+            "MATCH (n:Person {name: 'A'}) SET n += {age: 31, team: 'blue'}",
+            &db,
+        );
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        assert_eq!(persisted.properties.get("age").unwrap().as_i64(), Some(31));
+        assert_eq!(
+            persisted.properties.get("team").unwrap().as_str(),
+            Some("blue")
+        );
+    }
+
+    #[test]
+    fn set_label_adds_secondary_label_to_node() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        run("MATCH (n:Person) SET n:Employee", &db);
+        let res = run("MATCH (n:Employee) RETURN n.name AS name", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+    }
+
+    #[test]
+    fn set_multiple_labels_in_one_clause() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        run("MATCH (n:Person) SET n:Employee:Manager", &db);
+        let r1 = run("MATCH (n:Employee) RETURN n.name AS name", &db);
+        let r2 = run("MATCH (n:Manager) RETURN n.name AS name", &db);
+        assert_eq!(r1.rows.len(), 1);
+        assert_eq!(r2.rows.len(), 1);
+    }
+
+    #[test]
+    fn set_property_on_relationship() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'A'})-[:KNOWS {since: 2020}]->(b:Person {name: 'B'})",
+            &db,
+        );
+        let res = run(
+            "MATCH (a:Person)-[r:KNOWS]->(b:Person) SET r.since = 2024 RETURN r.since AS since",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::Integer(2024));
+    }
+
+    // ---- REMOVE -----------------------------------------------------------
+
+    #[test]
+    fn remove_property_drops_key_from_map() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', age: 30, team: 'red'})", &db);
+        run("MATCH (n:Person) REMOVE n.team", &db);
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        assert!(persisted.properties.get("team").is_none());
+        assert_eq!(persisted.properties.get("age").unwrap().as_i64(), Some(30));
+    }
+
+    #[test]
+    fn remove_label_drops_secondary_label() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        run("MATCH (n:Person) SET n:Employee", &db);
+        run("MATCH (n:Employee) REMOVE n:Employee", &db);
+        let res = run("MATCH (n:Employee) RETURN n", &db);
+        assert!(res.rows.is_empty());
+    }
+
+    #[test]
+    fn remove_primary_label_is_rejected() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        let e = err("MATCH (n:Person) REMOVE n:Person", &db);
+        assert!(
+            matches!(e, ExecError::InvalidMutation(_)),
+            "expected InvalidMutation, got {:?}",
+            e
+        );
+    }
+
+    // ---- DELETE -----------------------------------------------------------
+
+    #[test]
+    fn delete_unconnected_node_removes_it() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Solo'})", &db);
+        let res = run("MATCH (n:Person {name: 'Solo'}) DELETE n", &db);
+        assert_eq!(res.stats.nodes_deleted, 1);
+        assert!(db.list_nodes_by_kind("Person", 10, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_connected_node_without_detach_errors() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})",
+            &db,
+        );
+        let e = err("MATCH (a:Person {name: 'A'}) DELETE a", &db);
+        assert!(
+            matches!(e, ExecError::InvalidMutation(_)),
+            "expected InvalidMutation, got {:?}",
+            e
+        );
+        // The error is fail-fast — node should still exist.
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn detach_delete_removes_node_and_its_edges() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})",
+            &db,
+        );
+        let res = run("MATCH (a:Person {name: 'A'}) DETACH DELETE a", &db);
+        assert_eq!(res.stats.nodes_deleted, 1);
+        assert_eq!(res.stats.relationships_deleted, 1);
+        let people = db.list_nodes_by_kind("Person", 10, 0).unwrap();
+        assert_eq!(people.len(), 1);
+        assert_eq!(
+            people[0].properties.get("name").and_then(|v| v.as_str()),
+            Some("B")
+        );
+    }
+
+    #[test]
+    fn delete_relationship_only() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})",
+            &db,
+        );
+        let res = run("MATCH (a:Person)-[r:KNOWS]->(b:Person) DELETE r", &db);
+        assert_eq!(res.stats.relationships_deleted, 1);
+        assert_eq!(res.stats.nodes_deleted, 0);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn delete_same_node_twice_is_idempotent_per_run() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        // Two MATCH rows would target the same node only if we double-bind,
+        // but DELETE on an already-removed id should not panic.
+        let res = run("MATCH (n:Person) DELETE n", &db);
+        assert_eq!(res.stats.nodes_deleted, 1);
+        let res2 = run("MATCH (n:Person) DELETE n", &db);
+        assert_eq!(res2.stats.nodes_deleted, 0);
+    }
+
+    // ---- MERGE ------------------------------------------------------------
+
+    #[test]
+    fn merge_creates_when_missing() {
+        let db = drevo();
+        let res = run("MERGE (n:Person {name: 'A'})", &db);
+        assert_eq!(res.stats.nodes_created, 1);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merge_matches_existing_and_does_not_recreate() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        let res = run("MERGE (n:Person {name: 'A'})", &db);
+        assert_eq!(res.stats.nodes_created, 0);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merge_is_idempotent_when_repeated() {
+        let db = drevo();
+        for _ in 0..3 {
+            run("MERGE (n:Person {name: 'A'})", &db);
+        }
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merge_on_create_set_runs_only_on_create() {
+        let db = drevo();
+        run(
+            "MERGE (n:Person {name: 'A'}) ON CREATE SET n.created = true ON MATCH SET n.matched = true",
+            &db,
+        );
+        let p = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        assert_eq!(p.properties.get("created").unwrap().as_bool(), Some(true));
+        assert!(p.properties.get("matched").is_none());
+    }
+
+    #[test]
+    fn merge_on_match_set_runs_only_on_match() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        run(
+            "MERGE (n:Person {name: 'A'}) ON CREATE SET n.created = true ON MATCH SET n.matched = true",
+            &db,
+        );
+        let p = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        assert_eq!(p.properties.get("matched").unwrap().as_bool(), Some(true));
+        assert!(p.properties.get("created").is_none());
+    }
+
+    #[test]
+    fn merge_relationship_between_bound_vars() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        run("CREATE (:Person {name: 'B'})", &db);
+        let res = run(
+            "MATCH (a:Person {name: 'A'}), (b:Person {name: 'B'}) MERGE (a)-[:KNOWS]->(b)",
+            &db,
+        );
+        assert_eq!(res.stats.relationships_created, 1);
+        // Second MERGE must not double-create.
+        let res2 = run(
+            "MATCH (a:Person {name: 'A'}), (b:Person {name: 'B'}) MERGE (a)-[:KNOWS]->(b)",
+            &db,
+        );
+        assert_eq!(res2.stats.relationships_created, 0);
     }
 }
