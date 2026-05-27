@@ -263,17 +263,6 @@ fn parameter_in_property_map_during_create() {
 }
 
 #[test]
-fn aggregations_rejected_with_pointer_to_00066() {
-    let db = db();
-    run("CREATE (:Person {name: 'A'})", &db);
-    let e = err("MATCH (n:Person) RETURN count(n) AS total", &db);
-    match e {
-        ExecError::Unsupported { task, .. } => assert_eq!(task, "00066"),
-        other => panic!("expected Unsupported, got {:?}", other),
-    }
-}
-
-#[test]
 fn optional_match_rejected_with_pointer_to_00067() {
     let db = db();
     let e = err("OPTIONAL MATCH (n:Person) RETURN n", &db);

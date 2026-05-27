@@ -539,7 +539,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 - [x] `00063` Executor — pattern matching, expression evaluation, CREATE / MATCH / RETURN
 - [x] `00064` Mutations — SET, DELETE, MERGE, MATCH...MERGE (idempotent relationship creation between bound variables)
 - [x] `00065` WHERE — boolean expressions, comparison operators, IN, EXISTS, IS NULL
-- [ ] `00066` Aggregations — COUNT, SUM, AVG, MIN, MAX, COLLECT, GROUP BY, DISTINCT
+- [x] `00066` Aggregations — COUNT, SUM, AVG, MIN, MAX, COLLECT, GROUP BY, DISTINCT
 - [ ] `00067` OPTIONAL MATCH — left-join semantics, null propagation for unmatched variables
 - [ ] `00068` WITH clause — query pipelining, intermediate projection, aggregation-before-filter
 - [ ] `00069` Variable-length paths — `(a)-[*1..3]->(b)` BFS traversals leveraging existing `traversal.rs`
