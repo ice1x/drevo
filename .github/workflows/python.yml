@@ -168,14 +168,21 @@ jobs:
           pip install "maturin>=1.7,<2.0" pytest pytest-cov mypy ruff black
 
       - name: maturin develop --release (build + install drevo-py)
-        # Spec step 2: maturin develop --release --features="redb-backend".
-        # `redb-backend` is the wheel's default feature in
-        # drevo-py/Cargo.toml; passing it explicitly here keeps the
-        # CI / wheel / local-dev paths in lockstep. The `.venv`
-        # created two steps above is what maturin links the wheel
-        # into via `pip install`.
+        # Spec step 2: maturin develop --release. The README task
+        # 00122 spec originally read `--features="redb-backend"`, but
+        # that feature lives on the root `drevo` crate (where it sits
+        # in `default = [...]`) — `drevo-py` itself has no such
+        # feature, so passing it errors out with "the package
+        # 'drevo-py' does not contain this feature: redb-backend".
+        # Dropping the flag is the smallest correct fix: `drevo-py`
+        # depends on `drevo` with its default features enabled, so
+        # `redb-backend` is already on the build path. Matches the
+        # `maturin develop --release` invocation used by the warm-path
+        # `python-ci.yml` gate.
+        # The `.venv` created two steps above is what maturin links
+        # the wheel into via `pip install`.
         working-directory: drevo-py
-        run: maturin develop --release --features="redb-backend"
+        run: maturin develop --release
 
       - name: pytest tests/unit/ (00118 — ~180+ unit tests)
         # Spec step 3. Each layer gets its own pytest invocation so a
