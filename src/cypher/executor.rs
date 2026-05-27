@@ -1,6 +1,7 @@
 //! Cypher executor — Phase 10 tasks `00063` (CREATE / MATCH / RETURN),
 //! `00064` (mutations: SET, DELETE, MERGE, REMOVE), `00065` (WHERE on
-//! `MATCH`), `00066` (aggregations), and `00067` (`OPTIONAL MATCH`).
+//! `MATCH`), `00066` (aggregations), `00067` (`OPTIONAL MATCH`), and
+//! `00068` (`WITH` query pipelining).
 //!
 //! The executor consumes the [`crate::cypher::ast::Query`] produced by
 //! [`crate::cypher::parser::parse`] and runs it against the underlying
@@ -40,9 +41,29 @@
 //! rows that fail it are treated as "no match" and trigger the
 //! null-row synthesis, so the upstream row is *never* dropped.
 //!
+//! # WITH (`00068`)
+//!
+//! `WITH` is the query-pipelining boundary. Like `RETURN` it projects
+//! a set of expressions with optional aliases, applies `DISTINCT` /
+//! `ORDER BY` / `SKIP` / `LIMIT`, and supports aggregation. Unlike
+//! `RETURN` it isn't terminal — it converts the projected rows back
+//! into bindings keyed by the column names, so the *next* clause
+//! sees only the projected aliases (pattern variables that weren't
+//! projected are dropped — `WITH` is the only point at which the
+//! variable scope can be reshaped).
+//!
+//! `WITH` accepts a trailing `WHERE` that filters *after* projection
+//! (and after aggregation). This is the canonical
+//! aggregation-before-filter pattern: `MATCH (n) WITH n.team AS team,
+//! count(*) AS c WHERE c >= 2 RETURN team, c`.
+//!
+//! Cypher requires every non-variable projection in `WITH` to have an
+//! `AS alias` — otherwise downstream clauses have no name to
+//! reference. We surface that as `ExecError::InvalidMutation` with a
+//! "use `expr AS name`" pointer.
+//!
 //! Out of scope (tracked under follow-on Phase 10 tasks):
 //!
-//! * `WITH` query pipelining (`00068`).
 //! * Variable-length paths (`*1..3`) (`00069`).
 //! * `UNWIND` clause and `UNION` queries.
 //! * `EXISTS { pattern }` pattern-existence subqueries — the lexer
@@ -562,11 +583,35 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
             }
         }
         Clause::With(w) => {
-            return Err(ExecError::Unsupported {
-                feature: "WITH".into(),
-                task: "00068".into(),
-                span: w.span,
-            })
+            for item in &w.items {
+                match item {
+                    ProjectionItem::Star => {}
+                    ProjectionItem::Expression { expr, alias } => {
+                        // Cypher requires an alias for every projection
+                        // in WITH that isn't a bare variable — otherwise
+                        // the projected column has no name downstream
+                        // clauses can reference.
+                        if alias.is_none() && !matches!(expr, Expression::Variable(..)) {
+                            return Err(ExecError::InvalidMutation(
+                                "WITH projection requires an alias for non-variable expression (use `expr AS name`)".into(),
+                            ));
+                        }
+                        validate_expr_supported_in_projection(expr)?;
+                    }
+                }
+            }
+            for item in &w.order_by {
+                validate_expr_supported(&item.expression)?;
+            }
+            if let Some(e) = &w.skip {
+                validate_expr_supported(e)?;
+            }
+            if let Some(e) = &w.limit {
+                validate_expr_supported(e)?;
+            }
+            if let Some(e) = &w.where_clause {
+                validate_expr_supported(e)?;
+            }
         }
         Clause::Unwind(u) => {
             return Err(ExecError::Unsupported {
@@ -967,11 +1012,7 @@ impl<'a> Executor<'a> {
             Clause::Delete(d) => self.run_delete(d),
             Clause::Set(s) => self.run_set(s),
             Clause::Remove(r) => self.run_remove(r),
-            Clause::With(w) => Err(ExecError::Unsupported {
-                feature: "WITH".into(),
-                task: "00068".into(),
-                span: w.span,
-            }),
+            Clause::With(w) => self.run_with(w),
             Clause::Unwind(u) => Err(ExecError::Unsupported {
                 feature: "UNWIND".into(),
                 task: "future Phase 10 follow-up".into(),
@@ -2136,6 +2177,100 @@ impl<'a> Executor<'a> {
 
         self.result_columns = columns;
         self.result_rows = rows;
+        Ok(())
+    }
+
+    /// Run a `WITH` projection — the query-pipelining boundary.
+    ///
+    /// Mirrors `run_return` for the projection / ORDER BY / SKIP /
+    /// LIMIT / DISTINCT pipeline, then:
+    ///
+    /// 1. Applies the trailing `WHERE` (post-projection filter — this
+    ///    is how aggregation-before-filter works: `WITH count(*) AS c
+    ///    WHERE c >= 2 …`).
+    /// 2. Converts each surviving projected row back into a binding
+    ///    keyed by the projection column names, so downstream clauses
+    ///    see only the projected aliases — pattern variables that
+    ///    weren't projected are dropped, matching Cypher's "WITH is
+    ///    the only point at which the variable scope can be reshaped"
+    ///    rule.
+    fn run_with(&mut self, w: &crate::cypher::ast::WithClause) -> ExecResultT<()> {
+        let (columns, projections) = self.resolve_projections(&w.items)?;
+        let has_aggregation = projections.iter().any(contains_aggregation);
+        let mut keyed: KeyedRows = if has_aggregation {
+            self.aggregate_rows(&columns, &projections)?
+        } else {
+            let mut keyed = Vec::with_capacity(self.bindings.len());
+            for binding in &self.bindings {
+                let mut row = Vec::with_capacity(projections.len());
+                for proj in &projections {
+                    let value = self.eval(proj, binding)?;
+                    row.push(value);
+                }
+                keyed.push((row, binding.clone()));
+            }
+            keyed
+        };
+
+        if !w.order_by.is_empty() {
+            self.sort_keyed(&mut keyed, &w.order_by, &columns)?;
+        }
+
+        let mut rows: Vec<Vec<Value>> = keyed.into_iter().map(|(r, _)| r).collect();
+
+        if w.distinct {
+            dedup_rows(&mut rows);
+        }
+
+        if let Some(skip_expr) = &w.skip {
+            let n = self.eval_usize(skip_expr, &HashMap::new())?;
+            if n >= rows.len() {
+                rows.clear();
+            } else {
+                rows.drain(..n);
+            }
+        }
+        if let Some(limit_expr) = &w.limit {
+            let n = self.eval_usize(limit_expr, &HashMap::new())?;
+            if rows.len() > n {
+                rows.truncate(n);
+            }
+        }
+
+        // Convert projected rows back into bindings keyed by column
+        // names so downstream clauses see exactly the projected scope.
+        let mut new_bindings: Vec<Bindings> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut scope: Bindings = HashMap::new();
+            for (col, val) in columns.iter().zip(row) {
+                scope.insert(col.clone(), val);
+            }
+            new_bindings.push(scope);
+        }
+
+        // Post-projection WHERE — references aliased columns, applied
+        // *after* aggregation so `WITH count(*) AS c WHERE c >= 2` is
+        // the canonical aggregation-then-filter.
+        if let Some(expr) = &w.where_clause {
+            let mut filtered: Vec<Bindings> = Vec::with_capacity(new_bindings.len());
+            for row in new_bindings.into_iter() {
+                let value = self.eval(expr, &row)?;
+                match value {
+                    Value::Bool(true) => filtered.push(row),
+                    Value::Bool(false) | Value::Null => {}
+                    other => {
+                        return Err(ExecError::TypeMismatch {
+                            expected: "Boolean".into(),
+                            got: other.type_name().into(),
+                            span: expr.span(),
+                        });
+                    }
+                }
+            }
+            new_bindings = filtered;
+        }
+
+        self.bindings = new_bindings;
         Ok(())
     }
 
@@ -4281,5 +4416,152 @@ mod tests {
         // because count(f) skips nulls.
         assert_eq!(res.rows[1][0], Value::String("B".into()));
         assert_eq!(res.rows[1][1], Value::Integer(0));
+    }
+
+    // ---- WITH (00068) ---------------------------------------------------
+
+    #[test]
+    fn with_renames_variable_for_downstream_use() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', age: 30})", &db);
+        let res = run(
+            "MATCH (n:Person) WITH n AS person RETURN person.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+    }
+
+    #[test]
+    fn with_distinct_dedupes_intermediate_rows() {
+        let db = drevo();
+        for team in ["red", "red", "blue", "red", "blue"] {
+            run(&format!("CREATE (:Person {{team: '{}'}})", team), &db);
+        }
+        let res = run(
+            "MATCH (n:Person) WITH DISTINCT n.team AS team RETURN team ORDER BY team",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0][0], Value::String("blue".into()));
+        assert_eq!(res.rows[1][0], Value::String("red".into()));
+    }
+
+    #[test]
+    fn with_where_filters_after_projection() {
+        let db = drevo();
+        for (n, age) in [("A", 10), ("B", 20), ("C", 30), ("D", 40)] {
+            run(
+                &format!("CREATE (:Person {{name: '{}', age: {}}})", n, age),
+                &db,
+            );
+        }
+        let res = run(
+            "MATCH (p:Person) WITH p.name AS name, p.age AS age WHERE age > 20 RETURN name ORDER BY name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0][0], Value::String("C".into()));
+        assert_eq!(res.rows[1][0], Value::String("D".into()));
+    }
+
+    #[test]
+    fn with_aggregation_then_where_filter_on_aggregate() {
+        let db = drevo();
+        // Pre-aggregate count(*) per team, then keep only teams with >= 2.
+        for team in ["a", "a", "b", "b", "b", "c"] {
+            run(&format!("CREATE (:Item {{team: '{}'}})", team), &db);
+        }
+        let res = run(
+            "MATCH (n:Item) WITH n.team AS team, count(*) AS c WHERE c >= 2 RETURN team, c ORDER BY team",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0][0], Value::String("a".into()));
+        assert_eq!(res.rows[0][1], Value::Integer(2));
+        assert_eq!(res.rows[1][0], Value::String("b".into()));
+        assert_eq!(res.rows[1][1], Value::Integer(3));
+    }
+
+    #[test]
+    fn with_order_by_skip_limit_pipeline_to_return() {
+        let db = drevo();
+        for (n, age) in [("A", 10), ("B", 20), ("C", 30), ("D", 40), ("E", 50)] {
+            run(
+                &format!("CREATE (:Person {{name: '{}', age: {}}})", n, age),
+                &db,
+            );
+        }
+        let res = run(
+            "MATCH (p:Person) WITH p.name AS name, p.age AS age ORDER BY age DESC SKIP 1 LIMIT 2 RETURN name ORDER BY name",
+            &db,
+        );
+        // Sort by age DESC: E(50), D(40), C(30), B(20), A(10).
+        // SKIP 1 LIMIT 2 → D, C. Then RETURN sorted by name → C, D.
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0][0], Value::String("C".into()));
+        assert_eq!(res.rows[1][0], Value::String("D".into()));
+    }
+
+    #[test]
+    fn with_chained_pipelines_through_multiple_stages() {
+        let db = drevo();
+        for v in 1..=10 {
+            run(&format!("CREATE (:N {{v: {}}})", v), &db);
+        }
+        // Stage 1: keep v >= 4. Stage 2: keep v <= 8. Stage 3: sum v.
+        let res = run(
+            "MATCH (n:N) WITH n.v AS v WHERE v >= 4 WITH v WHERE v <= 8 RETURN sum(v) AS total",
+            &db,
+        );
+        // 4+5+6+7+8 = 30
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::Integer(30));
+    }
+
+    #[test]
+    fn with_projection_without_alias_for_complex_expression_is_rejected() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        // `WITH n.name` without AS is not legal in Cypher — must be either
+        // a bare variable or an aliased expression.
+        let e = err("MATCH (n:Person) WITH n.name RETURN n.name", &db);
+        assert!(
+            matches!(e, ExecError::InvalidMutation(ref s) if s.contains("alias")),
+            "got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn with_bare_variable_is_allowed_without_alias() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        // `WITH n` without alias is fine — `n` becomes the column name.
+        let res = run("MATCH (n:Person) WITH n RETURN n.name AS name", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+    }
+
+    #[test]
+    fn with_star_passes_all_bound_variables() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        let res = run("MATCH (n:Person) WITH * RETURN n.name AS name", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+    }
+
+    #[test]
+    fn with_drops_unprojected_variables() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A', age: 30})", &db);
+        // After WITH p.name AS name, the variable `p` is no longer bound.
+        let e = err("MATCH (p:Person) WITH p.name AS name RETURN p.age", &db);
+        assert!(
+            matches!(e, ExecError::UnboundVariable { ref name, .. } if name == "p"),
+            "got {:?}",
+            e
+        );
     }
 }
