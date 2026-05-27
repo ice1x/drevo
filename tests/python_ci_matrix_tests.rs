@@ -201,14 +201,68 @@ fn python_ci_matrix_declares_strategy_matrix_block() {
     assert!(
         wf.contains("strategy:") && wf.contains("matrix:"),
         "python.yml must declare `strategy: matrix:` — that is what \
-         actually fans the job out to 12 cells",
+         actually fans the job out to 3 cells",
     );
-    // The job's runs-on must thread the matrix.os axis (not be a
-    // hard-coded value), otherwise the OS axis is decorative.
+    // The job's `runs-on:` must reference `matrix.os` somewhere
+    // (either as a bare expression OR through a ternary that routes
+    // macos-latest to self-hosted). Plain `runs-on: ${{ matrix.os }}`
+    // is the canonical form; a ternary that ALSO contains
+    // `matrix.os` is the macOS-self-hosted form locked separately
+    // by `python_ci_matrix_macos_cell_runs_on_self_hosted`. Either
+    // way, `matrix.os` MUST appear inside the `runs-on:` expression.
     assert!(
-        wf.contains("runs-on: ${{ matrix.os }}"),
-        "python.yml must declare `runs-on: ${{{{ matrix.os }}}}` — \
-         hard-coding the runner defeats the OS axis",
+        wf.contains("runs-on: ${{ matrix.os")
+            || wf.lines().any(|line| {
+                let t = line.trim_start();
+                t.starts_with("runs-on:") && t.contains("matrix.os")
+            }),
+        "python.yml must thread `matrix.os` into the job's runs-on \
+         expression — hard-coding the runner defeats the OS axis",
+    );
+}
+
+#[test]
+fn python_ci_matrix_macos_cell_runs_on_self_hosted() {
+    let wf = read_workflow();
+    // The macOS matrix cell is routed to the project's persistent
+    // self-hosted macOS runner (`self-hosted, macOS`) so it doesn't
+    // burn GitHub-hosted minutes. ubuntu and windows cells still hit
+    // GitHub-hosted runners because no self-hosted Linux / Windows
+    // runner is registered to this repo today. Pattern locked here:
+    //
+    //   runs-on: ${{ matrix.os == 'macos-latest'
+    //                && fromJSON('["self-hosted", "macOS"]')
+    //                || matrix.os }}
+    //
+    // Without this routing, the macOS cell on PRs at the GitHub Free
+    // tier billed against the same 2000-min cap that already
+    // motivated the 2026-05-25 self-hosted revert of ci.yml. A
+    // future PR cannot silently drop the ternary and route the
+    // macOS cell back to a billable runner.
+    let macos_routing_present = wf.contains("matrix.os == 'macos-latest'")
+        && wf.contains("\"self-hosted\"")
+        && wf.contains("\"macOS\"")
+        && wf.contains("fromJSON");
+    assert!(
+        macos_routing_present,
+        "python.yml must route the macos-latest matrix cell to the \
+         self-hosted macOS runner via a `runs-on:` ternary that \
+         resolves to `fromJSON('[\"self-hosted\", \"macOS\"]')` when \
+         `matrix.os == 'macos-latest'`. See the comment on this test \
+         for the full expression",
+    );
+    // The macOS cell also needs a step that locates the system
+    // Python 3.13 (actions/setup-python doesn't work on this
+    // self-hosted runner — see python-ci.yml's preamble). Locking
+    // the locator's presence here keeps the contract intact.
+    assert!(
+        wf.contains("Locate system Python 3.13")
+            && wf.contains("/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13"),
+        "python.yml must include a 'Locate system Python 3.13' step \
+         gated on `matrix.os == 'macos-latest'` that scans known \
+         install paths for the python.org-pkg interpreter — \
+         `actions/setup-python@v5` cannot install into the self-\
+         hosted runner's hostedtoolcache path",
     );
 }
 

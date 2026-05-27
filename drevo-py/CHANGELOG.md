@@ -15,6 +15,30 @@ released entry on a tagged commit.
 - `.github/workflows/python.yml` — the definition-of-done gate for
   Phase 16. Matrix as shipped: `{python: [3.13]} × {os: [ubuntu-latest,
   macos-latest, windows-latest]}` = 3 cells per PR.
+- **macOS cell routed to self-hosted.** The macOS matrix cell runs
+  on the project's persistent self-hosted macOS runner (labels
+  `self-hosted, macOS`) via a ternary `runs-on:` expression —
+  `${{ matrix.os == 'macos-latest' && fromJSON('["self-hosted", "macOS"]') || matrix.os }}`.
+  Zero GitHub-hosted minutes for that cell. ubuntu-latest and
+  windows-latest stay on GitHub-hosted because no self-hosted Linux
+  / Windows runner is registered to this repo yet. The ternary
+  expands cleanly when those runners come online — just extend the
+  expression with additional OS-label branches.
+- On the macOS cell `actions/setup-python@v5` is skipped (it cannot
+  install into `/Users/runner/hostedtoolcache/` under the self-
+  hosted runner's user) and replaced with a `Locate system Python
+  3.13` step (mirrors `python-ci.yml`'s pattern): scans
+  `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13`
+  + `$(command -v python3.13)` + `/opt/homebrew/bin/python3.13` +
+  `/usr/local/bin/python3.13`, then symlinks the located interpreter
+  as `python` / `python3` / `python3.13` inside
+  `$GITHUB_WORKSPACE/.py-shim` and prepends that dir to
+  `$GITHUB_PATH` so every subsequent venv / pip / maturin / pytest
+  step resolves cleanly without per-step `if:` plumbing.
+- Locked by `tests/python_ci_matrix_tests.rs::python_ci_matrix_macos_cell_runs_on_self_hosted`
+  — positive assertions on the ternary expression + `fromJSON(["self-hosted", "macOS"])`
+  + the locator step's existence. A future PR cannot silently drop
+  the routing and put the macOS cell back on a billable runner.
 - **Slimmed from the roadmap spec.** The original task text declared
   `python: [3.10, 3.11, 3.12, 3.13]` = 12 cells. At review time we
   pinned the Python axis to the latest interpreter only: drevo-py
