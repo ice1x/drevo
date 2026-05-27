@@ -10,6 +10,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Tracked here as Phase 16 tasks land. Sections roll into the next
 released entry on a tagged commit.
 
+### Added — task `00122` (Python CI matrix on every PR)
+
+- `.github/workflows/python.yml` — the definition-of-done gate for
+  Phase 16. Full Python × OS matrix declared in roadmap task `00122`:
+  `{python: [3.10, 3.11, 3.12, 3.13]} × {os: [ubuntu-latest,
+  macos-latest, windows-latest]}` = 12 cells per PR. Each cell:
+  `actions/setup-python@v5` (with pip cache), `dtolnay/rust-toolchain@stable`
+  + `Swatinem/rust-cache@v2` (matrix-cell-keyed so Linux/macOS/Windows
+  caches stay separate and warm-path `maturin develop` drops from
+  ~5 min cold to ~30 s on Linux / ~1 min on macOS+Windows),
+  `pip install maturin>=1.7,<2.0 pytest pytest-cov mypy ruff black`,
+  `maturin develop --release --features="redb-backend"`, then the five
+  per-spec gates as DISCRETE Actions steps so the UI surfaces *which*
+  layer regressed: `pytest tests/unit/` (00118), `pytest tests/integration/`
+  (00119), `pytest tests/e2e/` (00120), `mypy --strict python/drevo/`,
+  `ruff check + black --check`. A final `pytest --cov=drevo --cov-report=xml`
+  runs per cell and uploads the report as a per-cell
+  `coverage-${os}-py${python}` artefact (7-day retention).
+- `coverage_comment` job — a second job on `ubuntu-latest`, triggered
+  only on `pull_request`, pulls the canonical `coverage-ubuntu-latest-py3.12`
+  artefact and posts a Markdown coverage summary to the PR via
+  `actions/github-script@v7`. Vendor-neutral (no third-party action
+  dependency); reads the XML produced by `pytest-cov` directly.
+- Cost guards: `fail-fast: false` so the 12-cell signal stays
+  diagnostic instead of collapsing to a single red mark;
+  `concurrency: python-matrix-${{ github.ref }}` with
+  `cancel-in-progress: true` (distinct from `python-ci-` and
+  `python-wheels-` so the three workflows do not cancel each other on
+  a shared key); `timeout-minutes: 30` per cell (Windows cold-build
+  worst case during local probing); path filters narrowed to
+  `drevo-py/**` + `src/**` + `Cargo.toml`/`Cargo.lock` + the workflow
+  file itself so doc-only PRs do NOT pay the matrix cost.
+- `tests/ci_self_hosted_runner_tests.rs` updated — the runner policy
+  widens the macOS/Windows allow-list from `python-wheels.yml` only to
+  the new `PYTHON_OS_MATRIX_WORKFLOWS = ["python-wheels.yml",
+  "python.yml"]` const, with the same RFC §2 wheel-layout citation:
+  PyO3 ABI checks are platform-native (no cross-compile path), FTS
+  UTF-8 tokenisation is locale-sensitive on Windows, redb file locking
+  is kernel-dependent — only running on real macOS / Windows runners
+  gives meaningful regression signal for those classes. The test
+  `macos_and_windows_runners_only_in_python_wheels_workflow` is
+  renamed `..._python_matrix_workflows` and now asserts each
+  `runs-on: macos-latest` / `windows-latest` literal lives in one of
+  the allow-listed files.
+- `tests/python_ci_matrix_tests.rs` — 18 text-level scaffolding cases
+  that grep-lock the new workflow's shape end-to-end:
+  - top-level `name:` includes `Python`;
+  - triggers `pull_request: branches:[main]`, `push:`, and
+    `workflow_dispatch:` are all present;
+  - path filters cover `drevo-py/**`, `src/**`, and the workflow file
+    itself;
+  - every `cp310..cp313` Python minor enumerated as `"3.10"..."3.13"`;
+  - every OS axis label (`ubuntu-latest`, `macos-latest`,
+    `windows-latest`) enumerated;
+  - `strategy: matrix:` block declared with `runs-on: ${{ matrix.os }}`
+    threading the OS axis;
+  - `maturin develop` with `--release`;
+  - every tool from `pip install maturin pytest mypy ruff black`
+    appears;
+  - three DISCRETE `pytest tests/{unit,integration,e2e}/` invocations
+    (not a single bulk `pytest tests/` call) so each layer surfaces
+    its own pass/fail signal;
+  - `mypy --strict`, `ruff check`, and `black --check` each named;
+  - `pytest-cov` / `--cov` present;
+  - `concurrency:` group named `python-matrix-…` with
+    `cancel-in-progress: true`;
+  - no `twine upload` / `pypi-publish` surface (the workflow is a GATE,
+    not a release pipeline);
+  - the runner policy file mentions `python.yml` (relaxation landed);
+  - README ticks `[x] 00122` and includes a `Progress (YYYY-MM-DD,
+    after task 00122)` note;
+  - this CHANGELOG entry references `00122`.
+- The new workflow does NOT replace `python-ci.yml`: that lightweight
+  self-hosted single-cell gate stays as the fast (~1-2 min) feedback
+  signal alongside the matrix; both run on every Python-touching PR.
+
 ### Added — task `00118` (Python unit-test suite)
 
 - `drevo-py/tests/unit/` — focused, mocked-where-possible unit suite

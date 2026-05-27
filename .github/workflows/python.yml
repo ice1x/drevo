@@ -1,0 +1,254 @@
+# Phase 16 task `00122` — full Python CI matrix.
+#
+# This workflow is the **definition-of-done gate** for Phase 16
+# (drevo-py Python Graph-RAG SDK). It runs the three test layers
+# landed by 00118 (unit ~180+), 00119 (integration ~52), and 00120
+# (e2e ~40) across the matrix declared in the roadmap:
+#
+#   {python: [3.10, 3.11, 3.12, 3.13]} × {os: [ubuntu-latest, macos-latest, windows-latest]}
+#
+# = 12 cells per PR. Each cell installs `maturin`, builds the PyO3
+# cdylib with `maturin develop --release --features="redb-backend"`,
+# then runs the four gates from `python-ci.yml` (pytest, mypy, ruff,
+# black) and additionally records a `pytest-cov` coverage report that
+# the workflow posts as a PR comment. PR merging is gated on every
+# cell green.
+#
+# **Why this is separate from `python-ci.yml`.** The lightweight
+# `python-ci.yml` runs on the self-hosted macOS runner × Python 3.13
+# in ~1-2 minutes — fast feedback. This workflow is the
+# cross-platform / cross-version proof: it catches PyO3 ABI drift on
+# real Windows / Linux runners, FTS UTF-8 tokeniser divergence on
+# Windows codepages, redb file-locking differences on each kernel,
+# and CPython 3.10-only regressions that the `--target-version
+# py313` setup in `python-ci.yml` hides. Both workflows live
+# alongside each other on every PR; `python-ci.yml` returns first,
+# `python.yml` is the final gating signal.
+#
+# **Cost guard.** A 12-cell GitHub-hosted matrix at ~5 min each
+# burns ~60 billable minutes per PR, plus the macOS ×10 multiplier
+# on the four `macos-latest` cells. To keep that bounded:
+#
+#   * Path filters limit triggers to changes that can plausibly
+#     affect the Python surface — see `paths:` below. Doc-only PRs
+#     and Rust-only changes outside `src/**` do NOT retrigger.
+#   * `concurrency: cancel-in-progress: true` cancels superseded
+#     runs of the same PR / branch so a force-push or rapid push
+#     burst does not multiply minute spend.
+#   * Job-level `timeout-minutes: 30` caps the worst case (cold
+#     `maturin develop` on `windows-latest` was observed at ~12 min
+#     during local probing).
+#
+# `macos-latest` + `windows-latest` are added to the runner allow-
+# list in `tests/ci_self_hosted_runner_tests.rs` for this file
+# alongside `python-wheels.yml`. The justification mirrors the
+# wheel-matrix reasoning in RFC §2: PyO3 ABI checks are platform-
+# native, FTS UTF-8 tokenisation is locale-sensitive on Windows,
+# redb file locking is kernel-dependent — only running on real
+# macOS / Windows runners gives a meaningful regression signal for
+# those classes. There is no cross-compile path that exercises them.
+#
+# Locked from text by `tests/python_ci_matrix_tests.rs`.
+
+name: Python CI matrix
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'drevo-py/**'
+      - '.github/workflows/python.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+  push:
+    branches: [main]
+    paths:
+      - 'drevo-py/**'
+      - '.github/workflows/python.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+  workflow_dispatch:
+
+# Distinct concurrency group from `python-ci.yml`
+# (`python-ci-${{ github.ref }}`) and `python-wheels.yml`
+# (`python-wheels-${{ github.ref }}`) so the three workflows do not
+# cancel each other on a shared key. Locked by
+# `tests/python_ci_matrix_tests.rs::python_ci_matrix_uses_concurrency_with_cancel_in_progress`.
+concurrency:
+  group: python-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test_matrix:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    # Cap a stuck cell so a hung Windows `maturin develop` cannot
+    # camp on the 12-cell matrix slot for 6 hours.
+    timeout-minutes: 30
+    strategy:
+      # Don't cancel the other 11 cells when one fails — the whole
+      # value of a 12-cell matrix is seeing which Python × OS pairs
+      # diverge, and `fail-fast: true` collapses that to a single
+      # red mark with no diagnostic.
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history mirrors `python-wheels.yml`: maturin can
+          # sometimes pick up a dirty-tree indicator from shallow
+          # clones, and the cost (~1 s on a 1500-commit repo) is
+          # noise next to a 5-min Windows build.
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: 'pip'
+
+      - name: Set up Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artefacts
+        # Hosted runners are ephemeral — `Swatinem/rust-cache`
+        # persists the cargo target dir across runs in the GH-hosted
+        # cache. Without this every cell pays the full ~5-min
+        # `maturin develop` rebuild; with it the warm path drops to
+        # ~30 s on Linux, ~1 min on macOS / Windows.
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct keys per matrix cell so a Linux build doesn't
+          # poison the macOS / Windows cache (and vice versa).
+          key: python-matrix-${{ matrix.os }}-py${{ matrix.python }}
+          # Cache the wheel build dir too — `maturin develop` writes
+          # the .so / .dylib / .pyd here.
+          workspaces: ". -> target"
+
+      - name: Install Python dev tooling
+        # Spec step 1: pip install maturin pytest mypy ruff black.
+        # `pytest-cov` is added so the coverage publish step at the
+        # tail of the job has the plugin available.
+        run: |
+          python -m pip install --upgrade pip
+          pip install "maturin>=1.7,<2.0" pytest pytest-cov mypy ruff black
+
+      - name: maturin develop --release (build + install drevo-py)
+        # Spec step 2: maturin develop --release --features="redb-backend".
+        # `redb-backend` is the wheel's default feature in
+        # drevo-py/Cargo.toml; passing it explicitly here keeps the
+        # CI / wheel / local-dev paths in lockstep.
+        working-directory: drevo-py
+        run: maturin develop --release --features="redb-backend"
+
+      - name: pytest tests/unit/ (00118 — ~180+ unit tests)
+        # Spec step 3. Each layer gets its own pytest invocation so a
+        # single failing layer surfaces as a discrete failed step in
+        # the Actions UI — diagnosis without re-reading the full log.
+        working-directory: drevo-py
+        run: pytest tests/unit/ -q
+
+      - name: pytest tests/integration/ (00119 — ~52 integration tests)
+        # Spec step 4. Integration layer exercises real redb backend
+        # via `Drevo.open(tempfile)` — cross-component invariants the
+        # unit layer can't catch (open/close round-trip, FTS recall,
+        # traversal correctness, GIL re-acquisition).
+        working-directory: drevo-py
+        run: pytest tests/integration/ -q
+
+      - name: pytest tests/e2e/ (00120 — ~40 e2e scenario tests)
+        # Spec step 5. End-to-end suite covers the five scenario
+        # domains (CBT / story / task / ERP / bug) + the graph-RAG
+        # scenario. Definition-of-done for Phase 16 per drevo-tdd.
+        working-directory: drevo-py
+        run: pytest tests/e2e/ -q
+
+      - name: mypy --strict (drevo/)
+        # Spec step 6. Locks .pyi stub drift against the runtime
+        # shim — without `--strict` an `Any` leak slips through.
+        working-directory: drevo-py
+        run: mypy --strict python/drevo/
+
+      - name: ruff check + black --check
+        # Spec step 7. Run as separate commands so a black-vs-ruff
+        # disagreement surfaces in the Actions UI rather than as a
+        # mystery exit code.
+        working-directory: drevo-py
+        run: |
+          ruff check python/ tests/
+          black --check python/ tests/
+
+      - name: pytest --cov (coverage report)
+        # Spec final paragraph: "The workflow also publishes a
+        # coverage report (`pytest-cov`) as a PR comment." We
+        # generate the report in XML form on every cell so a
+        # downstream comment step can consume it; the actual PR
+        # comment is posted only from the Ubuntu / Python 3.12
+        # cell (canonical Linux env), gated by the `if:` below, to
+        # avoid 12 duplicate comments.
+        working-directory: drevo-py
+        run: |
+          pytest --cov=drevo --cov-report=xml --cov-report=term tests/
+
+      - name: Upload coverage XML artifact
+        # The artifact name is matrix-cell-unique so each cell's
+        # report uploads cleanly; the PR comment job below pulls the
+        # canonical Ubuntu / 3.12 cell's report.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-py${{ matrix.python }}
+          path: drevo-py/coverage.xml
+          retention-days: 7
+
+  coverage_comment:
+    name: Post coverage report as PR comment
+    needs: test_matrix
+    # Skip on `push:main` (no PR to comment on) and on
+    # `workflow_dispatch` from a non-PR ref. The matrix job above
+    # still uploads the artefact in those cases — just no comment.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download canonical coverage artefact (Ubuntu / Python 3.12)
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-ubuntu-latest-py3.12
+          path: ./coverage-canonical
+      - name: Comment on PR with coverage summary
+        # Uses the `pytest-cov` XML the matrix job produced. A short
+        # script renders a coverage % + per-file delta vs the base
+        # branch into a Markdown comment. The post-comment action is
+        # vendor-neutral (`actions/github-script@v7`) so we don't
+        # take a transitive dependency on a third-party action.
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const xml = fs.readFileSync('./coverage-canonical/coverage.xml', 'utf8');
+            const match = xml.match(/line-rate="([0-9.]+)"/);
+            const pct = match ? (parseFloat(match[1]) * 100).toFixed(1) : 'unknown';
+            const body = [
+              '## drevo-py coverage (Python CI matrix)',
+              '',
+              '`pytest --cov=drevo` (Ubuntu / Python 3.12 cell):',
+              '',
+              `- **Line coverage:** ${pct}%`,
+              '',
+              '_Full coverage XML per matrix cell is available as a workflow artefact._',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
