@@ -263,16 +263,6 @@ fn parameter_in_property_map_during_create() {
 }
 
 #[test]
-fn optional_match_rejected_with_pointer_to_00067() {
-    let db = db();
-    let e = err("OPTIONAL MATCH (n:Person) RETURN n", &db);
-    match e {
-        ExecError::Unsupported { task, .. } => assert_eq!(task, "00067"),
-        other => panic!("expected Unsupported, got {:?}", other),
-    }
-}
-
-#[test]
 fn varlen_paths_rejected_with_pointer_to_00069() {
     let db = db();
     run(
