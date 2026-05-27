@@ -542,14 +542,22 @@ fn python_ci_workflow_runs_full_lint_and_test_gate() {
         "mypy --strict",
         "ruff check",
         "black --check",
-        "ubuntu-latest",
+        // Runner target — `self-hosted` since 2026-05-27. Earlier
+        // landings of this file mistakenly used `ubuntu-latest`,
+        // which billed GitHub-hosted minutes against the account.
+        // The repo-wide policy (locked by
+        // `tests/ci_self_hosted_runner_tests.rs`) is that every
+        // workflow runs on `self-hosted` unless a documented
+        // cross-platform need (Linux + Windows matrix in
+        // `python-wheels.yml`) forces GitHub-hosted runners.
+        "self-hosted",
     ] {
         assert!(
             wf.contains(needle),
             ".github/workflows/python-ci.yml must invoke `{needle}` — \
              the lightweight Python CI gate from this branch's 00116 \
              follow-up requires all four lint/test steps + the \
-             ubuntu-latest runner"
+             self-hosted runner"
         );
     }
     // Path filters: changes outside `drevo-py/**` + workflow + the

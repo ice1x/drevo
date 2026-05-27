@@ -2,11 +2,16 @@
 # Phase 16 task `00116` packaging.
 #
 # This workflow is the **fast-feedback** Python signal on every PR:
-# one ubuntu-latest job × Python 3.12 that runs `maturin develop`,
+# one self-hosted job × Python 3.12 that runs `maturin develop`,
 # then `pytest`, `mypy --strict`, `ruff check`, and `black --check`.
 # Total runtime ≈ 3–5 minutes — about a third of what cibuildwheel
 # (`python-wheels.yml`) takes, and small enough to gate every PR
-# without queueing.
+# without queueing. Runs on the same self-hosted macOS runner as
+# `ci.yml` / `slow-tests.yml` — no GitHub-hosted minutes are billed
+# (an earlier landing of this file mistakenly targeted ubuntu-latest;
+# corrected 2026-05-27 alongside `python-wheels.yml`'s push-trigger
+# removal after a Phase 10 merge burst consumed ~2,700 of the
+# account's 3,000 monthly Actions minutes in one cycle).
 #
 # Why this is NOT the full 00122 matrix yet:
 #   * The matrix in roadmap task 00122 is 4 Python × 3 OS = 12 cells.
@@ -58,7 +63,18 @@ concurrency:
 jobs:
   lint_and_test:
     name: Lint + test (Python 3.12)
-    runs-on: ubuntu-latest
+    # `self-hosted`, matching every other workflow in this repo. The
+    # original landing of this file used `ubuntu-latest` for the
+    # initial 00116 shim run; the self-hosted reversal on 2026-05-25
+    # (see `project_state_2026_05_25` in memory + the
+    # `ci_self_hosted_runner_*` tasks in the KG) missed this file and
+    # the wheels workflow, so every Python CI run was still billing
+    # GitHub-hosted ubuntu minutes for a workflow whose target-dir
+    # wiring (`$RUNNER_TOOL_CACHE/drevo-cargo-target` below) is
+    # specifically designed for a persistent self-hosted state. With
+    # this change, every step here uses local laptop resources only,
+    # matching the rest of `ci.yml` / `slow-tests.yml` / etc.
+    runs-on: self-hosted
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —

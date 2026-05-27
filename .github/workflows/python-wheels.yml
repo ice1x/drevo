@@ -29,25 +29,35 @@
 name: Python wheels
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'drevo-py/**'
-      - '.github/workflows/python-wheels.yml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'src/**'
+  # `push: branches: [main]` removed 2026-05-27 — the cibuildwheel
+  # matrix (3 OS × 4 CPython = 12 cells, of which the macOS cells bill
+  # at GitHub's ×10 multiplier and Windows at ×2) cannot run on this
+  # repo's self-hosted macOS runner, so every push to `main` that
+  # touched `src/**` or `drevo-py/**` re-ran the matrix on GitHub-
+  # hosted runners. Over the Phase 10 Cypher merge cadence (00064–
+  # 00069), this single workflow consumed roughly 2,700 of the
+  # account's 3,000 monthly Actions minutes inside one cycle.
+  #
+  # The trigger comment below already noted "the only consumer of
+  # these wheels is the future release task" — wheels are not
+  # consumed by any PR or main-branch flow today, so the auto-build
+  # on push was pure cost. Keeping only `workflow_dispatch` (manual
+  # button in the Actions tab) preserves the ability to validate the
+  # full matrix on demand or right before a PyPI publish.
+  #
+  # When the release task lands and PyPI publish goes live, replace
+  # this with `release: types: [published]` (and pin the upload step
+  # behind a separate workflow), not a blanket push-to-main trigger.
   workflow_dispatch:
   # PR trigger intentionally absent. The cibuildwheel matrix is
   # 4 (cp310-313) × 3 (Ubuntu/macOS/Windows) = 12 cells, each building
   # a maturin wheel and running `twine check`. Per-PR cumulative cost
   # was a significant slice of the multi-hour CI wait observed on
   # this repo. PRs already get fast Python feedback from
-  # `python-ci.yml` (one ubuntu-latest cell × Python 3.12, ~3-5 min).
-  # The cross-platform wheel guarantee is exercised on every push to
-  # `main` and re-exercised on demand via `workflow_dispatch`, which
-  # is the right cadence because there is no PyPI publish on PR — the
-  # only consumer of these wheels is the future release task.
+  # `python-ci.yml` (now on self-hosted, ~3-5 min). The cross-platform
+  # wheel guarantee is exercised on demand via `workflow_dispatch`,
+  # which is the right cadence because there is no PyPI publish on
+  # PR — the only consumer of these wheels is the future release task.
 
 concurrency:
   group: python-wheels-${{ github.ref }}
