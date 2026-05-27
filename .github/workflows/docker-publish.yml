@@ -95,6 +95,43 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Use an ephemeral DOCKER_CONFIG so `docker login` does NOT write
+      # through the macOS osxkeychain credsStore.
+      #
+      # Why this step exists
+      # --------------------
+      # The project's self-hosted runner is an Apple Silicon Mac. Docker
+      # Desktop on macOS ships `~/.docker/config.json` with
+      # `"credsStore": "desktop"` (which delegates to `osxkeychain`).
+      # `docker/login-action` shells out to `docker login`, which then
+      # tries to write the GHCR credential through that credsStore.
+      # Writing to the Keychain requires an unlocked GUI session, so on
+      # a headless runner the call fails with:
+      #
+      #   Error saving credentials: error storing credentials - err: exit
+      #   status 1, out: `User interaction is not allowed. (-25308)`
+      #
+      # Docker Publish was red on every push to main from before #90
+      # through bce8ade because of this exact error.
+      #
+      # Fix: point DOCKER_CONFIG at a per-run temp directory containing
+      # a `config.json` of just `{}`. With no `credsStore` key, docker
+      # writes the auth blob as plain JSON inside DOCKER_CONFIG —
+      # ephemeral, never touches the Keychain, GC'd with the workspace.
+      # Placed BEFORE buildx setup so the buildx instance also lives
+      # inside DOCKER_CONFIG and the post-job `docker buildx rm` step
+      # finds it without falling back to the user config.
+      #
+      # Pinned by
+      # `tests/ci_self_hosted_runner_tests.rs::docker_publish_overrides_docker_config_to_avoid_macos_keychain`.
+      - name: Use ephemeral DOCKER_CONFIG (bypass macOS keychain)
+        run: |
+          set -euo pipefail
+          DC="${RUNNER_TEMP:-/tmp}/docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$DC"
+          echo '{}' > "$DC/config.json"
+          echo "DOCKER_CONFIG=$DC" >> "$GITHUB_ENV"
+
       # QEMU first — buildx needs the binfmt_misc handlers registered
       # before it spawns the arm64 builder container.
       - name: Set up QEMU

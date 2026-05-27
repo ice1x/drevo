@@ -1058,3 +1058,254 @@ fn ci_workflows_dont_use_runner_context_outside_steps() {
         violations.join("\n  - "),
     );
 }
+
+// ============================================================================
+// Android NDK download — curl resilience against dl.google.com HTTP/2 flakes
+// ============================================================================
+//
+// The Android job in cross-compile.yml downloads the NDK from
+// `dl.google.com/android/repository/android-ndk-rXX-<host>.zip` with a
+// single `curl -fsSL` call on a cold cache. dl.google.com terminates
+// HTTP/2 streams mid-transfer often enough that we observed it on main
+// (bce8ade, 2026-05-26):
+//
+//   curl: (92) HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR (err 2)
+//
+// One-shot curl with no retry surfaces every upstream flake as a red CI
+// build, and the Android job is the only thing in the workflow that
+// touches the public internet for a ~1 GiB artifact. The fix is to make
+// curl retry transient failures (including mid-stream HTTP/2 resets) and
+// to force HTTP/1.1, which sidesteps the HTTP/2 termination class entirely
+// — dl.google.com still serves the same archive over HTTP/1.1 with no
+// behavioural difference besides the absence of stream multiplexing.
+//
+// These flags are NON-NEGOTIABLE on every curl-to-dl.google.com call in
+// the workflow: dropping any one of them re-opens the failure mode.
+
+const ANDROID_NDK_CURL_FLAGS: &[(&str, &str)] = &[
+    (
+        "--retry",
+        "without `--retry N` (N>=3) the single transient HTTP/2 reset from \
+         dl.google.com fails the whole CI run — exactly the failure mode \
+         observed on commit bce8ade",
+    ),
+    (
+        "--retry-all-errors",
+        "without `--retry-all-errors` curl only retries on a small subset of \
+         exit codes; HTTP/2 stream errors (exit 92) and broken pipes (exit \
+         18) are NOT in that subset and slip past plain `--retry`",
+    ),
+    (
+        "--retry-delay",
+        "without `--retry-delay` curl backs off zero seconds between attempts \
+         and hammers dl.google.com with the same in-flight congestion that \
+         caused the first reset, so all N retries fail in a fraction of a \
+         second",
+    ),
+    (
+        "--connect-timeout",
+        "without `--connect-timeout` a hung TCP connect can stall the job \
+         for the workflow's full 6-hour budget before timing out — \
+         dl.google.com edge nodes occasionally accept-then-stall on warm \
+         self-hosted IPs",
+    ),
+    (
+        "--http1.1",
+        "without `--http1.1` curl negotiates HTTP/2 by default and inherits \
+         dl.google.com's stream-reset behaviour; forcing HTTP/1.1 sidesteps \
+         the failure class entirely with no functional downside for a \
+         single-file download",
+    ),
+];
+
+#[test]
+fn cross_compile_android_ndk_download_uses_resilient_curl() {
+    let cross = fs::read_to_string(workflows_dir().join("cross-compile.yml"))
+        .expect("cross-compile.yml must exist");
+
+    // The curl call we care about is the one to dl.google.com inside the
+    // `Install Android NDK` step. Locate its surrounding block first so
+    // we assert on the right call (rather than picking up any curl
+    // anywhere else in the workflow).
+    let ndk_block = extract_ndk_install_block(&cross);
+    // The curl call can span multiple physical lines via `\` continuation
+    // (the readable form is `curl -fsSL \\\n  --retry 5 …`). Walk lines
+    // and accumulate continuation lines onto whichever line starts with
+    // `curl `, so the flag assertions below see the full invocation as a
+    // single string.
+    let curl_text = join_continued_curl_lines(&ndk_block);
+    assert!(
+        !curl_text.is_empty(),
+        "the `Install Android NDK` step in cross-compile.yml must invoke \
+         `curl` to fetch the NDK archive from dl.google.com — block was:\n{}",
+        ndk_block,
+    );
+    for (flag, why) in ANDROID_NDK_CURL_FLAGS {
+        assert!(
+            curl_text.contains(flag),
+            "the NDK-download `curl` in cross-compile.yml is missing `{flag}` \
+             — {why}. Current curl invocation(s):\n{curl_text}"
+        );
+    }
+}
+
+/// Collapse `\`-continued shell command lines that start with `curl `
+/// into a single logical line each, then return all such commands
+/// joined by newlines. Lines that are pure shell-comment (`#`) inside
+/// a continuation chain are dropped — `curl` does not honour comments
+/// mid-arguments. This lets the flag assertions above match across
+/// physical line boundaries without forcing the workflow to keep curl
+/// on a single physical line.
+fn join_continued_curl_lines(block: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut current: Option<String> = None;
+    for line in block.lines() {
+        let trimmed = line.trim_start();
+        let is_curl_start = trimmed.starts_with("curl ") || trimmed.contains(" curl ");
+        if is_curl_start {
+            if let Some(prev) = current.take() {
+                out.push(prev);
+            }
+            current = Some(line.trim_end_matches('\\').trim().to_string());
+            // If the curl line itself does NOT end with `\`, it's a
+            // single-line invocation — flush it immediately.
+            if !line.trim_end().ends_with('\\') {
+                if let Some(done) = current.take() {
+                    out.push(done);
+                }
+            }
+            continue;
+        }
+        if let Some(ref mut buf) = current {
+            // Inside a continuation chain. Skip pure comment lines —
+            // they aren't part of the curl arguments.
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            buf.push(' ');
+            buf.push_str(line.trim_end_matches('\\').trim());
+            if !line.trim_end().ends_with('\\') {
+                if let Some(done) = current.take() {
+                    out.push(done);
+                }
+            }
+        }
+    }
+    if let Some(done) = current.take() {
+        out.push(done);
+    }
+    out.join("\n")
+}
+
+/// Extract the body of the `Install Android NDK (cached on self-hosted
+/// runner)` step from cross-compile.yml so the curl-flag assertions
+/// above are scoped to the actual NDK-download script — not any other
+/// curl that might appear elsewhere in the workflow.
+fn extract_ndk_install_block(workflow: &str) -> String {
+    let marker = "Install Android NDK";
+    let start = workflow.find(marker).unwrap_or_else(|| {
+        panic!(
+            "cross-compile.yml must contain a step named \"Install \
+             Android NDK\" — the curl-flag invariants below need to \
+             find the right block. Workflow body:\n{workflow}"
+        )
+    });
+    // Walk forward to the next step's `- name:` (or end-of-file). Steps
+    // in this workflow are indented 6 spaces under `steps:`.
+    let after_start = &workflow[start..];
+    let rel_next = after_start
+        .match_indices("\n      - name:")
+        .nth(1)
+        .map(|(idx, _)| idx)
+        .unwrap_or(after_start.len());
+    after_start[..rel_next].to_string()
+}
+
+// ============================================================================
+// Docker login — avoid macOS Keychain when running on a self-hosted Mac
+// ============================================================================
+//
+// `docker/login-action` shells out to `docker login`, which on macOS
+// writes credentials through the `osxkeychain` credsStore by default
+// (the system Docker config under `~/.docker/config.json` has
+// `"credsStore": "desktop"` / `"osxkeychain"`). Writing to the keychain
+// requires an unlocked GUI session and surfaces as:
+//
+//   Error saving credentials: error storing credentials - err: exit
+//   status 1, out: `User interaction is not allowed. (-25308)`
+//
+// when the runner is invoked headlessly (the project's self-hosted Mac
+// runner is). The workflow has been red on every push to main since
+// before #90 because of this exact error.
+//
+// Fix: before `docker/login-action` runs, point `DOCKER_CONFIG` at a
+// per-run temp directory containing a `config.json` with an empty
+// `credsStore` (and no `credsStore` key), which makes `docker login`
+// write the auth blob as plain JSON in that temp dir. The credential
+// lives only for the duration of the job, never touches the Keychain,
+// and is discarded with the workspace.
+
+#[test]
+fn docker_publish_overrides_docker_config_to_avoid_macos_keychain() {
+    let w = fs::read_to_string(workflows_dir().join("docker-publish.yml"))
+        .expect("docker-publish.yml must exist");
+
+    // The fix must (a) export DOCKER_CONFIG to a path under a temp /
+    // workspace dir and (b) seed an empty (or credsStore-less)
+    // config.json there. We check for both invariants because either
+    // alone leaks back to the macOS keychain:
+    //   - DOCKER_CONFIG without a config.json → docker falls back to
+    //     ~/.docker/config.json (which has credsStore=osxkeychain).
+    //   - config.json with credsStore set → docker writes through it.
+    assert!(
+        w.contains("DOCKER_CONFIG="),
+        "docker-publish.yml must export `DOCKER_CONFIG=<per-run dir>` \
+         before `docker/login-action` runs — otherwise `docker login` \
+         writes credentials through the macOS osxkeychain credsStore \
+         and fails with `User interaction is not allowed. (-25308)` on \
+         the headless self-hosted runner (observed on every push to \
+         main since before #90)."
+    );
+
+    // The setup step must come before the login step so the env var is
+    // in scope when docker/login-action runs.
+    let docker_config_idx = w
+        .find("DOCKER_CONFIG=")
+        .expect("checked above that the export exists");
+    // Match the `uses:` directive (not bare prose mentions in
+    // docstrings — the workflow comment block explaining WHY this
+    // override exists naturally references `docker/login-action` by
+    // name).
+    let login_idx = w.find("uses: docker/login-action").expect(
+        "login step (`uses: docker/login-action@vN`) is required and pinned by another test",
+    );
+    assert!(
+        docker_config_idx < login_idx,
+        "the step that exports `DOCKER_CONFIG=` must be ordered BEFORE \
+         the `docker/login-action` step — otherwise login runs against \
+         the default `~/.docker/config.json` (which has \
+         `credsStore: osxkeychain` on macOS) and fails -25308. The \
+         export currently appears at byte {docker_config_idx} but \
+         login-action is at byte {login_idx}."
+    );
+
+    // The seeded config.json must not opt back into a credsStore. An
+    // empty object `{}` (or one without a credsStore key) is what makes
+    // `docker login` fall back to plain-text auth in the file.
+    let has_credsstore_optout = w.contains("\"credsStore\":\"\"")
+        || w.contains("\"credsStore\": \"\"")
+        || w.contains("'credsStore':''")
+        || w.contains("echo '{}'")
+        || w.contains("echo \"{}\"")
+        || w.contains("printf '{}'")
+        || w.contains("printf \"{}\"");
+    assert!(
+        has_credsstore_optout,
+        "docker-publish.yml's DOCKER_CONFIG setup step must seed a \
+         config.json that disables `credsStore` (write `{{}}` or set \
+         `\"credsStore\": \"\"`). Without it, `docker login` still \
+         consults the user's ~/.docker/config.json (or its own default) \
+         and writes through the osxkeychain credsStore, re-introducing \
+         the -25308 failure."
+    );
+}
