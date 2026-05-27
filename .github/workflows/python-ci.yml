@@ -2,10 +2,10 @@
 # Phase 16 task `00116` packaging.
 #
 # This workflow is the **fast-feedback** Python signal on every PR:
-# one self-hosted job × Python 3.12 that runs `maturin develop`,
+# one self-hosted job × Python 3.13 that runs `maturin develop`,
 # then `pytest`, `mypy --strict`, `ruff check`, and `black --check`.
 # Total runtime ≈ 1–2 minutes on the warm self-hosted runner (the
-# persistent venv at `$RUNNER_TOOL_CACHE/drevo-py-venv-py312` plus
+# persistent venv at `$RUNNER_TOOL_CACHE/drevo-py-venv-py313` plus
 # the persistent `$CARGO_TARGET_DIR` mean `maturin develop` is
 # usually an incremental relink).
 #
@@ -66,7 +66,7 @@ concurrency:
 
 jobs:
   lint_and_test:
-    name: Lint + test (Python 3.12)
+    name: Lint + test (Python 3.13)
     # `self-hosted`, matching every other workflow in this repo. The
     # 2026-05-25 self-hosted-runner revert (memory:
     # `project_state_2026_05_25`) missed this file and python-wheels.yml;
@@ -89,16 +89,16 @@ jobs:
         #   * drevo-cargo-target — incremental Rust compile cache shared
         #     with ci.yml; lets `maturin develop` relink in seconds
         #     instead of rebuilding the full drevo + pyo3 + redb tree.
-        #   * drevo-py-venv-py312 — persistent Python venv keyed to the
+        #   * drevo-py-venv-py313 — persistent Python venv keyed to the
         #     interpreter major.minor. Skipping the `python -m venv`
         #     recreate every run is what makes the workflow ~1 minute
         #     instead of ~3.
         run: |
           echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
-          echo "DREVO_PY_VENV=$RUNNER_TOOL_CACHE/drevo-py-venv-py312" >> "$GITHUB_ENV"
+          echo "DREVO_PY_VENV=$RUNNER_TOOL_CACHE/drevo-py-venv-py313" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python 3.13
         # `actions/setup-python` is idempotent on self-hosted — after
         # the first run it caches the interpreter in `runner.tool_cache`
         # and subsequent runs only confirm the version. `cache: pip`
@@ -106,9 +106,16 @@ jobs:
         # `$DREVO_PY_VENV` IS the cache (every package install lands
         # in a directory that survives between runs), so layering
         # actions/cache on top would download a redundant snapshot.
+        #
+        # Pinned to 3.13 because `[tool.black].target-version` in
+        # `drevo-py/pyproject.toml` includes `py313`; black's AST
+        # safety check fails on Python < target. Running CI on the
+        # highest target Python is the simplest invariant that keeps
+        # local + CI formatting in lockstep. The wheel abi3-py310
+        # tag still produces wheels compatible with CPython 3.10+.
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -126,7 +133,7 @@ jobs:
         # The previous form `python -m venv .venv` recreated a fresh
         # venv inside the repo every run — every pip install paid the
         # cold-cache cost. Moving the venv to
-        # `$RUNNER_TOOL_CACHE/drevo-py-venv-py312` makes it survive
+        # `$RUNNER_TOOL_CACHE/drevo-py-venv-py313` makes it survive
         # between runs; subsequent runs only verify that the venv
         # exists and surface its PATH / VIRTUAL_ENV. Re-creation is
         # automatic if a future Python upgrade renames the tool-cache
