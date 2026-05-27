@@ -34,20 +34,29 @@ on:
     paths:
       - 'drevo-py/**'
       - '.github/workflows/python-wheels.yml'
-      - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'src/**'
   workflow_dispatch:
-  # PR trigger intentionally absent. The cibuildwheel matrix is
-  # 4 (cp310-313) × 3 (Ubuntu/macOS/Windows) = 12 cells, each building
-  # a maturin wheel and running `twine check`. Per-PR cumulative cost
-  # was a significant slice of the multi-hour CI wait observed on
-  # this repo. PRs already get fast Python feedback from
-  # `python-ci.yml` (one ubuntu-latest cell × Python 3.12, ~3-5 min).
-  # The cross-platform wheel guarantee is exercised on every push to
-  # `main` and re-exercised on demand via `workflow_dispatch`, which
-  # is the right cadence because there is no PyPI publish on PR — the
-  # only consumer of these wheels is the future release task.
+  # PR trigger intentionally absent. cibuildwheel + twine check on
+  # every PR was a significant slice of the multi-hour CI wait
+  # observed on this repo. PRs already get fast Python feedback from
+  # `python-ci.yml` (self-hosted, ~1-2 min). Wheel builds re-exercise
+  # on every push to `main` (now zero billable cost — see below) and
+  # on demand via `workflow_dispatch`, which is the right cadence
+  # because there is no PyPI publish on PR — the only consumer of
+  # these wheels is the future release task.
+  #
+  # **Path-filter scope** narrowed on 2026-05-27 from
+  # `src/**` + `Cargo.toml` + `Cargo.lock` to just `Cargo.lock`. The
+  # PyO3 surface in drevo-py/src/handle.rs only exposes the embedded
+  # graph + traversal + FTS subset of drevo core; Cypher / FFI /
+  # WASM / server / CLI changes in `src/**` never affect the wheel
+  # ABI. `Cargo.lock` is retained because a transitive dep bump can
+  # legitimately change the produced wheel. This keeps wheel rebuilds
+  # to "the Python surface actually changed" instead of "anything in
+  # the Rust crate moved", which was the path that fired 6 main
+  # merges × 12 hosted cells = ~3,120 billable minutes during the
+  # Phase 10 Cypher merge burst (see KG
+  # `incident_2026_05_27_ci_minutes_burn`).
 
 concurrency:
   group: python-wheels-${{ github.ref }}
@@ -55,19 +64,23 @@ concurrency:
 
 jobs:
   build_wheels:
-    name: Build wheels (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Three runner classes. `cibuildwheel` fans out into CPython
-        # minor versions inside each runner via the `CIBW_BUILD` env
-        # var below, so listing only the OS axis here keeps the matrix
-        # readable.
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+    name: Build macOS wheels (self-hosted)
+    # Self-hosted macOS runner only. The previous matrix
+    # (`ubuntu-latest, macos-latest, windows-latest` × `cp310-cp313`
+    # = 12 cells) billed against GitHub-hosted infrastructure with a
+    # ×10 multiplier on macOS cells and ×2 on Windows; one push to
+    # main matching the path filter cost ~520 billable minutes.
+    # Linux + Windows wheels need a real runner of that OS class to
+    # produce a working `.so`/`.pyd` (PyO3's runtime ABI checks have
+    # no cross-compile path); building them here is deferred to a
+    # release-time workflow (the future task that wires
+    # `release: types: [published]` and explicitly opts into
+    # cross-platform GitHub-hosted minutes for the upload step).
+    # Until then, this workflow validates the macOS wheel build +
+    # twine metadata on every main-touching change at zero billable
+    # cost — see KG `incident_2026_05_27_ci_minutes_burn` for the
+    # full incident write-up.
+    runs-on: self-hosted
 
     env:
       # Selects the wheels cibuildwheel will produce. The `cp3XY-*`
@@ -183,13 +196,17 @@ jobs:
       - name: Upload wheels artifact
         uses: actions/upload-artifact@v4
         with:
-          name: drevo-py-wheels-${{ matrix.os }}
+          name: drevo-py-wheels-macos-self-hosted
           path: wheelhouse/*.whl
           retention-days: 14
 
   build_sdist:
     name: Build sdist
-    runs-on: ubuntu-latest
+    # Self-hosted runner — sdist is a pure-Python tarball that does
+    # not need a Linux-specific environment. Was previously
+    # `ubuntu-latest`; corrected 2026-05-27 in the same change that
+    # moved `build_wheels` to self-hosted.
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
         with:
