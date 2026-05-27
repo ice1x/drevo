@@ -538,7 +538,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 - [x] `00062` Cypher parser — AST construction, error recovery, keyword-as-identifier support
 - [x] `00063` Executor — pattern matching, expression evaluation, CREATE / MATCH / RETURN
 - [x] `00064` Mutations — SET, DELETE, MERGE, MATCH...MERGE (idempotent relationship creation between bound variables)
-- [ ] `00065` WHERE — boolean expressions, comparison operators, IN, EXISTS, IS NULL
+- [x] `00065` WHERE — boolean expressions, comparison operators, IN, EXISTS, IS NULL
 - [ ] `00066` Aggregations — COUNT, SUM, AVG, MIN, MAX, COLLECT, GROUP BY, DISTINCT
 - [ ] `00067` OPTIONAL MATCH — left-join semantics, null propagation for unmatched variables
 - [ ] `00068` WITH clause — query pipelining, intermediate projection, aggregation-before-filter
