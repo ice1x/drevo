@@ -1,6 +1,6 @@
 //! Cypher executor — Phase 10 tasks `00063` (CREATE / MATCH / RETURN),
 //! `00064` (mutations: SET, DELETE, MERGE, REMOVE), `00065` (WHERE on
-//! `MATCH`), and `00066` (aggregations).
+//! `MATCH`), `00066` (aggregations), and `00067` (`OPTIONAL MATCH`).
 //!
 //! The executor consumes the [`crate::cypher::ast::Query`] produced by
 //! [`crate::cypher::parser::parse`] and runs it against the underlying
@@ -27,9 +27,21 @@
 //! `DISTINCT` modifier inside an aggregation deduplicates per-row
 //! argument values before folding.
 //!
+//! # OPTIONAL MATCH (`00067`)
+//!
+//! `OPTIONAL MATCH` is the Cypher analogue of SQL's LEFT OUTER JOIN.
+//! For every input binding row, the pattern is matched as usual; if
+//! it produces zero rows (either because the pattern doesn't match
+//! or because the optional `WHERE` rejects every candidate), exactly
+//! one synthetic row is emitted with every variable the pattern
+//! *would* have introduced set to `NULL`. Variables already bound by
+//! an upstream `MATCH` flow through unchanged. WHERE attached to an
+//! `OPTIONAL MATCH` is part of the pattern (not a post-join filter):
+//! rows that fail it are treated as "no match" and trigger the
+//! null-row synthesis, so the upstream row is *never* dropped.
+//!
 //! Out of scope (tracked under follow-on Phase 10 tasks):
 //!
-//! * `OPTIONAL MATCH` (`00067`).
 //! * `WITH` query pipelining (`00068`).
 //! * Variable-length paths (`*1..3`) (`00069`).
 //! * `UNWIND` clause and `UNION` queries.
@@ -489,13 +501,6 @@ pub fn execute(
 fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
     match clause {
         Clause::Match(m) => {
-            if m.optional {
-                return Err(ExecError::Unsupported {
-                    feature: "OPTIONAL MATCH".into(),
-                    task: "00067".into(),
-                    span: m.span,
-                });
-            }
             if let Some(expr) = &m.where_clause {
                 validate_expr_supported(expr)?;
             }
@@ -681,6 +686,49 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
         | Expression::Variable(..)
         | Expression::Parameter(..) => Ok(()),
     }
+}
+
+/// Walk the patterns of a `MATCH` clause and return every node /
+/// relationship variable name that appears, in source order with
+/// duplicates removed.
+///
+/// Used by `OPTIONAL MATCH` to figure out which variables a missing
+/// pattern would have bound, so the synthesised "no match" row can
+/// fill them with `NULL` (Cypher's left-join semantics).
+fn collect_pattern_variables(patterns: &[NamedPattern]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let push_unique = |name: &str, sink: &mut Vec<String>| {
+        if !sink.iter().any(|n| n == name) {
+            sink.push(name.to_string());
+        }
+    };
+    for pattern in patterns {
+        if let Some(name) = &pattern.path.head.variable {
+            push_unique(name, &mut out);
+        }
+        for segment in &pattern.path.tail {
+            if let Some(name) = &segment.relationship.variable {
+                push_unique(name, &mut out);
+            }
+            if let Some(name) = &segment.node.variable {
+                push_unique(name, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// Build the `OPTIONAL MATCH` "no match" row: the existing binding
+/// plus a `NULL` entry for every variable the pattern *would* have
+/// introduced (skipping any already bound by upstream clauses).
+fn synthesise_null_row(existing: &Bindings, new_variables: &[String]) -> Bindings {
+    let mut row = existing.clone();
+    for name in new_variables {
+        if !row.contains_key(name) {
+            row.insert(name.clone(), Value::Null);
+        }
+    }
+    row
 }
 
 fn is_aggregation_name(name: &[String]) -> bool {
@@ -935,20 +983,22 @@ impl<'a> Executor<'a> {
     // ----- MATCH -----------------------------------------------------------
 
     fn run_match(&mut self, m: &MatchClause) -> ExecResultT<()> {
-        if m.optional {
-            return Err(ExecError::Unsupported {
-                feature: "OPTIONAL MATCH".into(),
-                task: "00067".into(),
-                span: m.span,
-            });
-        }
-
+        // Process each prior binding independently so OPTIONAL MATCH
+        // can fall back to a single all-null row per input when no
+        // pattern matches (Cypher's left-join semantics — see
+        // `synthesise_null_row` below).
         let mut new_bindings: Vec<Bindings> = Vec::new();
         let prior = std::mem::take(&mut self.bindings);
+        let new_variables: Vec<String> = if m.optional {
+            collect_pattern_variables(&m.patterns)
+        } else {
+            Vec::new()
+        };
+
         for existing in prior.into_iter() {
             // The MATCH may contain multiple comma-separated patterns;
             // each one further multiplies the current binding row.
-            let mut current = vec![existing];
+            let mut current = vec![existing.clone()];
             for pattern in &m.patterns {
                 let mut next = Vec::new();
                 for row in current.drain(..) {
@@ -958,31 +1008,36 @@ impl<'a> Executor<'a> {
                 }
                 current = next;
             }
-            new_bindings.extend(current);
-        }
 
-        // WHERE is applied *after* pattern matching produced its
-        // candidate rows — same shape as Cypher's evaluation model. A
-        // row is kept iff the predicate evaluates to Bool(true); NULL
-        // and Bool(false) both drop the row (Cypher's three-valued
-        // logic treats NULL as "unknown", which a WHERE filter rejects).
-        if let Some(expr) = &m.where_clause {
-            let mut filtered: Vec<Bindings> = Vec::with_capacity(new_bindings.len());
-            for row in new_bindings.into_iter() {
-                let value = self.eval(expr, &row)?;
-                match value {
-                    Value::Bool(true) => filtered.push(row),
-                    Value::Bool(false) | Value::Null => {}
-                    other => {
-                        return Err(ExecError::TypeMismatch {
-                            expected: "Boolean".into(),
-                            got: other.type_name().into(),
-                            span: expr.span(),
-                        });
+            // WHERE is applied *per input row* — for OPTIONAL MATCH
+            // a row whose pattern matched but failed WHERE is treated
+            // as "no match", which then triggers the null-row
+            // synthesis below (Cypher spec: WHERE on OPTIONAL MATCH
+            // is part of the pattern, not a post-join filter).
+            if let Some(expr) = &m.where_clause {
+                let mut filtered: Vec<Bindings> = Vec::with_capacity(current.len());
+                for row in current.drain(..) {
+                    let value = self.eval(expr, &row)?;
+                    match value {
+                        Value::Bool(true) => filtered.push(row),
+                        Value::Bool(false) | Value::Null => {}
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Boolean".into(),
+                                got: other.type_name().into(),
+                                span: expr.span(),
+                            });
+                        }
                     }
                 }
+                current = filtered;
             }
-            new_bindings = filtered;
+
+            if m.optional && current.is_empty() {
+                current.push(synthesise_null_row(&existing, &new_variables));
+            }
+
+            new_bindings.extend(current);
         }
 
         self.bindings = new_bindings;
@@ -4083,5 +4138,148 @@ mod tests {
             "got {:?}",
             e
         );
+    }
+
+    // ---- OPTIONAL MATCH (00067) -----------------------------------------
+
+    #[test]
+    fn optional_match_on_empty_db_yields_single_null_row() {
+        let db = drevo();
+        let res = run("OPTIONAL MATCH (n:Person) RETURN n", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::Null);
+    }
+
+    #[test]
+    fn optional_match_with_results_returns_those_rows() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        run("CREATE (:Person {name: 'B'})", &db);
+        let res = run(
+            "OPTIONAL MATCH (n:Person) RETURN n.name AS name ORDER BY name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+        assert_eq!(res.rows[1][0], Value::String("B".into()));
+    }
+
+    #[test]
+    fn match_then_optional_match_preserves_left_rows_with_null() {
+        let db = drevo();
+        // Two people; only one has a KNOWS edge.
+        run(
+            "CREATE (:Person {name: 'A'})-[:KNOWS]->(:Person {name: 'X'})",
+            &db,
+        );
+        run("CREATE (:Person {name: 'B'})", &db);
+        // B has no outgoing KNOWS — its friend column should be NULL.
+        let res = run(
+            "MATCH (n:Person) WHERE n.name IN ['A', 'B'] OPTIONAL MATCH (n)-[:KNOWS]->(f:Person) RETURN n.name AS who, f.name AS friend ORDER BY who",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+        assert_eq!(res.rows[0][1], Value::String("X".into()));
+        assert_eq!(res.rows[1][0], Value::String("B".into()));
+        assert_eq!(res.rows[1][1], Value::Null);
+    }
+
+    #[test]
+    fn optional_match_relationship_introduces_null_rel_variable() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        let res = run(
+            "MATCH (n:Person) OPTIONAL MATCH (n)-[r:KNOWS]->(f) RETURN n.name AS who, r, f",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+        assert_eq!(res.rows[0][1], Value::Null);
+        assert_eq!(res.rows[0][2], Value::Null);
+    }
+
+    #[test]
+    fn optional_match_with_where_falling_to_no_rows_yields_null_row() {
+        let db = drevo();
+        run(
+            "CREATE (:Person {name: 'A'})-[:KNOWS {since: 2020}]->(:Person {name: 'X'})",
+            &db,
+        );
+        let res = run(
+            "MATCH (n:Person {name: 'A'}) OPTIONAL MATCH (n)-[r:KNOWS]->(f) WHERE r.since > 2024 RETURN n.name AS who, f.name AS friend",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+        assert_eq!(res.rows[0][1], Value::Null);
+    }
+
+    #[test]
+    fn optional_match_does_not_drop_input_row_when_pattern_matches_in_another() {
+        let db = drevo();
+        run(
+            "CREATE (:Person {name: 'A'})-[:KNOWS]->(:Person {name: 'X'})",
+            &db,
+        );
+        run("CREATE (:Person {name: 'B'})", &db);
+        run(
+            "CREATE (:Person {name: 'C'})-[:KNOWS]->(:Person {name: 'Y'})",
+            &db,
+        );
+        // A and C have friends; B does not — but it must still appear.
+        let res = run(
+            "MATCH (n:Person) WHERE n.name IN ['A', 'B', 'C'] OPTIONAL MATCH (n)-[:KNOWS]->(f) RETURN n.name AS who, f.name AS friend ORDER BY who",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 3);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+        assert_eq!(res.rows[0][1], Value::String("X".into()));
+        assert_eq!(res.rows[1][0], Value::String("B".into()));
+        assert_eq!(res.rows[1][1], Value::Null);
+        assert_eq!(res.rows[2][0], Value::String("C".into()));
+        assert_eq!(res.rows[2][1], Value::String("Y".into()));
+    }
+
+    #[test]
+    fn optional_match_chained_independently() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        // Two independent OPTIONAL MATCHes that both miss → single all-null row.
+        let res = run(
+            "MATCH (n:Person {name: 'A'}) OPTIONAL MATCH (n)-[:KNOWS]->(f) OPTIONAL MATCH (n)-[:LIKES]->(t) RETURN n.name AS who, f, t",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+        assert_eq!(res.rows[0][1], Value::Null);
+        assert_eq!(res.rows[0][2], Value::Null);
+    }
+
+    #[test]
+    fn optional_match_with_aggregation_counts_zero_for_unmatched() {
+        let db = drevo();
+        run(
+            "CREATE (:Person {name: 'A'})-[:KNOWS]->(:Person {name: 'X'})",
+            &db,
+        );
+        run(
+            "CREATE (:Person {name: 'A'})-[:KNOWS]->(:Person {name: 'Y'})",
+            &db,
+        );
+        run("CREATE (:Person {name: 'B'})", &db);
+        let res = run(
+            "MATCH (n:Person) WHERE n.name IN ['A', 'B'] OPTIONAL MATCH (n)-[:KNOWS]->(f) RETURN n.name AS who, count(f) AS friends ORDER BY who",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 2);
+        // A has 2 friends; the (n=A, f=X) and (n=A, f=Y) rows both
+        // contribute to the same group key 'A'.
+        assert_eq!(res.rows[0][0], Value::String("A".into()));
+        assert_eq!(res.rows[0][1], Value::Integer(2));
+        // B has none; the synthesized (n=B, f=Null) row contributes 0
+        // because count(f) skips nulls.
+        assert_eq!(res.rows[1][0], Value::String("B".into()));
+        assert_eq!(res.rows[1][1], Value::Integer(0));
     }
 }
