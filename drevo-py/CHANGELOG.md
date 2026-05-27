@@ -92,10 +92,67 @@ released entry on a tagged commit.
 - ~40 runtime pytest cases in `drevo-py/tests/test_rag.py` driving
   every public symbol from happy-path + edge cases.
 
+### Added — task `00120` (Python end-to-end test suite)
+
+- `drevo-py/tests/e2e/` — definition-of-done suite for Phase 16 per
+  `drevo-tdd` §"E2E tests". Six scenario modules, each running the
+  full domain workflow against the on-disk redb backend in a tempdir
+  (no network, no real embedder):
+  - `test_cbt_journal.py` — Cognitive Behavioural Therapy journal
+    (situation / thought / emotion / cognitive_distortion /
+    rational_response). Mirrors `tests/scenario_cbt_journal.rs` at
+    the Python surface: per-kind census, BFS reach across the
+    reframing chain, shortest path thought → calm, FTS distortion
+    search, subgraph projection, close + reopen round-trip.
+  - `test_story_editor.py` — long-form fiction outliner (book /
+    chapter / scene / character / location / plot_arc). Reading-order
+    walk, character screen-time lookup via inbound `appears_in`,
+    plot-arc advancement chain, FTS recall on scene body, reopen
+    round-trip. Mirrors `tests/scenario_story_editor.rs`.
+  - `test_task_manager.py` — IT sprint board (project / sprint /
+    task / person / label). Assignee column via inbound `assigned_to`,
+    dependency-chain `shortest_path` with `edge_kind="depends_on"`,
+    label projection, sprint-level subgraph, reopen round-trip.
+    Mirrors `tests/scenario_task_manager.rs`.
+  - `test_erp.py` — enterprise resource planning (company /
+    department / employee / product / customer / purchase_order).
+    Org-chart traversal, headcount via `employs`, management chain
+    `shortest_path`, PO line items via `supplies`, full-org subgraph,
+    PO-by-title FTS, reopen round-trip. Mirrors
+    `tests/scenario_erp.rs`.
+  - `test_bug_tracker.py` — bug + regression ledger (project / bug /
+    component / release / person / test_case). Component-affecting
+    bug projection, regression-per-release lookup, fixed-in changelog,
+    uncovered-bug gap detection, body-text FTS, reopen round-trip.
+    Mirrors `tests/scenario_bug_tracker.rs`.
+  - `test_graph_rag.py` — the dedicated graph-RAG scenario called out
+    in the 00120 brief: ingest a `SimpleDocument` corpus, wire
+    reference edges, run `Retriever(hops=2)`, assert `Context` seeds
+    + neighbours, exercise every `Context.to_text` format (markdown /
+    json / turtle), confirm byte-stable output across runs, and
+    persist + reopen so the same retrieval yields the same serialised
+    context.
+- Shared fixtures in `drevo-py/tests/e2e/conftest.py`: `tmp_db_path`
+  (per-test temp dir with cleanup on scope exit), `disk_db` (one-shot
+  context-managed handle), `deterministic_embedder` (SHA-256 → 8-d
+  vector, no numpy, no network — keeps the suite runnable inside a
+  bare wheel install).
+- 18 text-level scaffolding tests in
+  `tests/python_e2e_test_suite_tests.rs` that run on the Rust-only CI
+  runners: directory + package-marker existence, conftest fixture
+  signatures, scenario-module presence + disk-backend usage + reopen
+  round-trips, domain-kind drift checks against the Rust scenario
+  vocabulary, RAG-surface coverage (`Document` / `ingest_documents` /
+  `Retriever` / `Context` named, all three `to_text` formats
+  asserted, determinism contract asserted, embedder fixture wired),
+  and this CHANGELOG entry.
+- Total drevo-py runtime suite after 00120: 361 pytest cases
+  (180+ unit + 52 integration + 40 e2e + the small `tests/` shim
+  modules), all green against the on-disk redb backend.
+
 ### Pending
 
 - `00119` — Python integration-test suite under `tests/integration/`.
-- `00120` — Python e2e graph-RAG suite under `tests/e2e/`.
 - `00121` — MCP introspection generator (Python symbols mirrored into
   the project knowledge graph for `drevo-mcp` clients).
 - `00122` — Python CI matrix (`.github/workflows/python.yml`) — `cp310`
