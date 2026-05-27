@@ -45,7 +45,7 @@
 //!   index. The `"body"` key aliases [`crate::model::Node::body`] for
 //!   the same reason (the FTS index reads from `title` + `body`).
 //! * **`DELETE`** of a node with connected relationships errors with
-//!   [`ExecError::InvalidMutation`] unless the user wrote
+//!   [`ExecError::InvalidMutation`](crate::cypher::executor::ExecError::InvalidMutation) unless the user wrote
 //!   `DETACH DELETE`. `DETACH DELETE` reuses the cascade behaviour of
 //!   [`crate::db::Drevo::delete_node`] (which removes every adjacency
 //!   for the node).
