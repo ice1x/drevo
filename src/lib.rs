@@ -54,6 +54,13 @@
 /// [`db::Drevo`] calls. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
 pub mod api;
+/// Bolt wire protocol — Phase 11. Task `00070` ships the bytes-on-the-
+/// wire layer (PackStream codec, chunked framing, handshake + async
+/// TCP listener). The session layer (HELLO / RUN / PULL / DISCARD /
+/// RESET / GOODBYE on top of [`db::Drevo`]) lands in task `00071`.
+/// Not built on `wasm32-unknown-unknown`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bolt;
 /// Cypher query language — Phase 10. Today only the lexer (task `00061`)
 /// is implemented; the parser, executor, and downstream clause handlers
 /// will land in tasks `00062` onwards.
