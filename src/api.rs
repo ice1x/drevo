@@ -190,7 +190,10 @@ impl IntoResponse for ApiError {
                 }
                 DrevoError::DuplicateTitle(_) => (StatusCode::CONFLICT, err.to_string()),
                 DrevoError::InvalidWeight(_) => (StatusCode::BAD_REQUEST, err.to_string()),
-                DrevoError::Locked => (StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+                DrevoError::Locked | DrevoError::TransactionAlreadyActive => {
+                    (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
+                }
+                DrevoError::NoActiveTransaction => (StatusCode::CONFLICT, err.to_string()),
                 DrevoError::Storage(_)
                 | DrevoError::Encode(_)
                 | DrevoError::Decode(_)
@@ -932,6 +935,8 @@ mod error_mapping_tests {
                 DrevoError::Encode(_) => "Encode",
                 DrevoError::Decode(_) => "Decode",
                 DrevoError::Io(_) => "Io",
+                DrevoError::TransactionAlreadyActive => "TransactionAlreadyActive",
+                DrevoError::NoActiveTransaction => "NoActiveTransaction",
             }
         }
     }

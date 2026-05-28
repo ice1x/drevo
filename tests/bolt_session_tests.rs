@@ -557,43 +557,402 @@ fn goodbye_from_connected_state_also_defuncts() {
     assert_eq!(s.state(), State::Defunct);
 }
 
-// --- BEGIN/COMMIT/ROLLBACK reserved for 00072 ------------------------------
+// --- BEGIN/COMMIT/ROLLBACK explicit transactions (00072) -------------------
 
 #[test]
-fn begin_yields_failure_explicitly_pointing_to_00072() {
+fn begin_in_ready_transitions_to_tx_ready_with_success_reply() {
     let drevo = open();
     let mut s = Session::new(&drevo);
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Begin { extra: dict([]) });
     assert_eq!(replies.len(), 1);
     match &replies[0] {
+        ServerMessage::Success { metadata } => assert!(metadata.is_empty()),
+        other => panic!("expected Success, got {other:?}"),
+    }
+    assert_eq!(s.state(), State::TxReady);
+    assert!(drevo.is_tx_active());
+}
+
+#[test]
+fn commit_in_tx_ready_transitions_back_to_ready() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    let replies = s.handle(ClientMessage::Commit);
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+    assert_eq!(s.state(), State::Ready);
+    assert!(!drevo.is_tx_active());
+}
+
+#[test]
+fn rollback_in_tx_ready_transitions_back_to_ready_and_unsets_tx() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    let replies = s.handle(ClientMessage::Rollback);
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+    assert_eq!(s.state(), State::Ready);
+    assert!(!drevo.is_tx_active());
+}
+
+#[test]
+fn begin_in_connected_state_yields_failure_before_hello() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    let replies = s.handle(ClientMessage::Begin { extra: dict([]) });
+    assert!(matches!(replies[0], ServerMessage::Failure { .. }));
+    assert_eq!(s.state(), State::Failed);
+}
+
+#[test]
+fn nested_begin_yields_transient_outdated_failure() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    let replies = s.handle(ClientMessage::Begin { extra: dict([]) });
+    match &replies[0] {
         ServerMessage::Failure { metadata } => {
-            let msg = metadata.get("message").expect("message");
-            match msg {
-                Value::String(s) => assert!(s.contains("00072"), "message = {s}"),
-                other => panic!("expected string message, got {other:?}"),
+            let code = metadata.get("code").expect("code field");
+            match code {
+                Value::String(s) => assert_eq!(s, "Neo.ClientError.Request.Invalid"),
+                other => panic!("expected string code, got {other:?}"),
             }
         }
         other => panic!("expected Failure, got {other:?}"),
     }
+    assert_eq!(s.state(), State::Failed);
 }
 
 #[test]
-fn commit_yields_failure_explicitly_pointing_to_00072() {
+fn commit_without_active_tx_yields_failure() {
     let drevo = open();
     let mut s = Session::new(&drevo);
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Commit);
     assert!(matches!(replies[0], ServerMessage::Failure { .. }));
+    assert_eq!(s.state(), State::Failed);
 }
 
 #[test]
-fn rollback_yields_failure_explicitly_pointing_to_00072() {
+fn rollback_without_active_tx_yields_failure() {
     let drevo = open();
     let mut s = Session::new(&drevo);
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Rollback);
     assert!(matches!(replies[0], ServerMessage::Failure { .. }));
+    assert_eq!(s.state(), State::Failed);
+}
+
+#[test]
+fn run_inside_tx_transitions_to_tx_streaming() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    s.handle(ClientMessage::Run {
+        query: "RETURN 1 AS x".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    assert_eq!(s.state(), State::TxStreaming);
+}
+
+#[test]
+fn pull_inside_tx_drains_back_to_tx_ready_not_ready() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    s.handle(ClientMessage::Run {
+        query: "RETURN 1 AS x".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    // Crucial: do NOT slip back to Ready — that would release the tx.
+    assert_eq!(s.state(), State::TxReady);
+    assert!(drevo.is_tx_active());
+}
+
+#[test]
+fn discard_inside_tx_drains_back_to_tx_ready_not_ready() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    s.handle(ClientMessage::Run {
+        query: "RETURN 1 AS x UNION ALL RETURN 2 AS x".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    // Some queries fail (UNION is unsupported pre-00081 in the executor).
+    // Fall back to a guaranteed-working autocommit-equivalent query.
+    if s.state() != State::TxStreaming {
+        // Recover via RESET → BEGIN → simple RUN.
+        s.handle(ClientMessage::Reset);
+        s.handle(ClientMessage::Begin { extra: dict([]) });
+        s.handle(ClientMessage::Run {
+            query: "RETURN 1 AS x".to_string(),
+            parameters: dict([]),
+            extra: dict([]),
+        });
+    }
+    s.handle(ClientMessage::Discard {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    assert_eq!(s.state(), State::TxReady);
+    assert!(drevo.is_tx_active());
+}
+
+#[test]
+fn rollback_undoes_create_executed_inside_tx() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    s.handle(ClientMessage::Run {
+        query: "CREATE (:Person {name: 'ephemeral'})".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    s.handle(ClientMessage::Rollback);
+    // Verify the node is gone via a follow-up autocommit MATCH.
+    s.handle(ClientMessage::Run {
+        query: "MATCH (n:Person) RETURN n.name AS name".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    let replies = s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    let records: Vec<_> = replies
+        .iter()
+        .filter(|r| matches!(r, ServerMessage::Record { .. }))
+        .collect();
+    assert!(records.is_empty(), "rollback did not undo the CREATE");
+}
+
+#[test]
+fn commit_persists_create_executed_inside_tx() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    s.handle(ClientMessage::Run {
+        query: "CREATE (:Person {name: 'kept'})".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    s.handle(ClientMessage::Commit);
+    s.handle(ClientMessage::Run {
+        query: "MATCH (n:Person {name: 'kept'}) RETURN n.name AS name".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    let replies = s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    let records: Vec<_> = replies
+        .iter()
+        .filter(|r| matches!(r, ServerMessage::Record { .. }))
+        .collect();
+    assert_eq!(records.len(), 1, "COMMIT failed to keep the CREATE");
+}
+
+#[test]
+fn rollback_restores_pre_tx_property_after_update() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    // Seed a node in autocommit mode.
+    s.handle(ClientMessage::Run {
+        query: "CREATE (:Person {name: 'alice'})".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    // Begin a tx, rename the node, then roll back.
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    s.handle(ClientMessage::Run {
+        query: "MATCH (n:Person {name: 'alice'}) SET n.name = 'bob'".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    s.handle(ClientMessage::Rollback);
+    // Verify the original name is back.
+    s.handle(ClientMessage::Run {
+        query: "MATCH (n:Person {name: 'alice'}) RETURN n.name AS name".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    let replies = s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    let records: Vec<_> = replies
+        .iter()
+        .filter_map(|r| {
+            if let ServerMessage::Record { fields } = r {
+                Some(fields.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(records, vec![vec![Value::String("alice".to_string())]]);
+}
+
+#[test]
+fn reset_during_tx_rolls_back_and_returns_to_ready() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    s.handle(ClientMessage::Run {
+        query: "CREATE (:Person {name: 'ghost'})".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    let replies = s.handle(ClientMessage::Reset);
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+    assert_eq!(s.state(), State::Ready);
+    assert!(!drevo.is_tx_active());
+    // Tx-staged CREATE is gone.
+    s.handle(ClientMessage::Run {
+        query: "MATCH (n:Person {name: 'ghost'}) RETURN n.name AS name".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    let replies = s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    let records: Vec<_> = replies
+        .iter()
+        .filter(|r| matches!(r, ServerMessage::Record { .. }))
+        .collect();
+    assert!(records.is_empty(), "RESET did not roll back the tx");
+}
+
+#[test]
+fn goodbye_during_tx_rolls_back_so_next_session_can_begin() {
+    let drevo = open();
+    {
+        let mut s = Session::new(&drevo);
+        s.handle(ClientMessage::Hello { extra: dict([]) });
+        s.handle(ClientMessage::Begin { extra: dict([]) });
+        s.handle(ClientMessage::Goodbye);
+        assert_eq!(s.state(), State::Defunct);
+    }
+    // Without GOODBYE-rollback the journal slot would stay Active and
+    // the second session's BEGIN would get TransactionAlreadyActive.
+    assert!(!drevo.is_tx_active());
+    let mut s2 = Session::new(&drevo);
+    s2.handle(ClientMessage::Hello { extra: dict([]) });
+    let replies = s2.handle(ClientMessage::Begin { extra: dict([]) });
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+}
+
+#[test]
+fn failure_inside_tx_routes_to_failed_then_reset_rolls_back() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    // Seed a node in autocommit mode using an explicit `title` so the
+    // drevo storage-layer title-uniqueness rule kicks in when we try
+    // to recreate it mid-tx.
+    s.handle(ClientMessage::Run {
+        query: "CREATE (:Person {title: 'dup'})".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    // A CREATE inside the tx that succeeds (different title).
+    s.handle(ClientMessage::Run {
+        query: "CREATE (:Person {title: 'in-tx'})".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    // A second CREATE that collides with the pre-tx node — drives the
+    // session to Failed because the executor returns DuplicateTitle.
+    s.handle(ClientMessage::Run {
+        query: "CREATE (:Person {title: 'dup'})".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    assert_eq!(s.state(), State::Failed);
+    // RESET must roll back the in-flight tx (including the successful
+    // CREATE) and return to Ready.
+    let replies = s.handle(ClientMessage::Reset);
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+    assert_eq!(s.state(), State::Ready);
+    assert!(!drevo.is_tx_active());
+    // Verify only the pre-tx node survives.
+    s.handle(ClientMessage::Run {
+        query: "MATCH (n:Person) RETURN n.title AS title".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    let replies = s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    let records: Vec<_> = replies
+        .iter()
+        .filter_map(|r| {
+            if let ServerMessage::Record { fields } = r {
+                Some(fields.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(records, vec![vec![Value::String("dup".to_string())]]);
+}
+
+#[test]
+fn run_in_failed_state_inside_tx_still_ignored() {
+    let drevo = open();
+    let mut s = Session::new(&drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    // Force a syntax error → Failed.
+    s.handle(ClientMessage::Run {
+        query: "MATCH this is not valid cypher".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    assert_eq!(s.state(), State::Failed);
+    // Subsequent RUN is IGNORED rather than executing inside the tx.
+    let replies = s.handle(ClientMessage::Run {
+        query: "RETURN 1".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    assert!(matches!(replies[0], ServerMessage::Ignored));
 }
 
 // --- Cypher integration -----------------------------------------------------
