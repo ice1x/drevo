@@ -191,16 +191,68 @@ jobs:
       - name: Set up Rust toolchain (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo build artefacts
-        # Hosted runners are ephemeral — `Swatinem/rust-cache`
-        # persists the cargo target dir across runs in the GH-hosted
-        # cache. Without this every cell pays the full ~5-min
-        # `maturin develop` rebuild; with it the warm path drops to
-        # ~30 s on Linux, ~1 min on macOS / Windows.
+      - name: Configure persistent self-hosted caches (macOS only)
+        # The macOS cell runs on the project's persistent self-hosted
+        # runner, so disk state survives between jobs by default. We
+        # exploit that explicitly:
+        #
+        #   * CARGO_TARGET_DIR points at `$RUNNER_TOOL_CACHE/drevo-cargo-target-matrix`
+        #     so `maturin develop --release` resolves to an incremental
+        #     relink (~30 s warm) instead of a full ~5 min cold build.
+        #     The path is DISTINCT from python-ci.yml's
+        #     `drevo-cargo-target` (which the fast PR gate uses) to
+        #     avoid file-lock contention when both workflows fire on
+        #     the same self-hosted runner concurrently — concurrency:
+        #     cancel-in-progress: true cancels *prior* runs of THIS
+        #     workflow, not sibling workflows.
+        #
+        #   * CARGO_INCREMENTAL=1 overrides cargo's CI-mode default
+        #     of 0 (which disables incremental compilation to save
+        #     ephemeral runner disk space; meaningless on persistent
+        #     self-hosted). Required for the persistent CARGO_TARGET_DIR
+        #     above to actually deliver warm relinks.
+        #
+        #   * DREVO_PY_VENV_MATRIX points at a persistent venv that
+        #     survives between runs. First run creates it, subsequent
+        #     runs reuse it. `pip install` short-circuits packages
+        #     that already satisfy the version specifier — turns the
+        #     "Install Python dev tooling" step from ~15 s cold to
+        #     ~2 s warm.
+        #
+        # `~/.cargo/bin`, `~/.cargo/registry`, `~/Library/Caches/pip`,
+        # `~/.rustup` are all persistent on self-hosted by default; we
+        # don't need to export anything for those.
+        #
+        # Skipped on ubuntu / windows GH-hosted cells: those runners
+        # are ephemeral and the next step (`Swatinem/rust-cache`)
+        # provides the GH-cache-backed equivalent for them.
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-matrix" >> "$GITHUB_ENV"
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          echo "DREVO_PY_VENV_MATRIX=$RUNNER_TOOL_CACHE/drevo-py-venv-py313-matrix" >> "$GITHUB_ENV"
+
+      - name: Cache cargo build artefacts (GitHub-hosted only)
+        # ubuntu / windows GH-hosted runners are ephemeral —
+        # `Swatinem/rust-cache@v2` persists the cargo target dir
+        # across runs via the GH-cache backend. Without this every
+        # ephemeral cell pays the full ~5 min `maturin develop`
+        # rebuild; with it the warm path drops to ~30 s on Linux,
+        # ~1 min on Windows.
+        #
+        # NOT used on the macOS cell — the previous step's
+        # CARGO_TARGET_DIR + native filesystem persistence on the
+        # self-hosted runner is strictly better than Swatinem's
+        # GH-cache restore (no upload/download bandwidth, no cache
+        # eviction, no 7-day expiry). Running Swatinem on top of the
+        # persistent dir would also try to overwrite live state on
+        # restore, which would be wrong.
+        if: matrix.os != 'macos-latest'
         uses: Swatinem/rust-cache@v2
         with:
           # Distinct keys per matrix cell so a Linux build doesn't
-          # poison the macOS / Windows cache (and vice versa).
+          # poison the Windows cache (and vice versa).
           key: python-matrix-${{ matrix.os }}-py${{ matrix.python }}
           # Cache the wheel build dir too — `maturin develop` writes
           # the .so / .dylib / .pyd here.
@@ -218,13 +270,23 @@ jobs:
         # `source` (which doesn't work cleanly across the Windows
         # `bash` / Linux / macOS shell matrix).
         #
-        # We deliberately do NOT cache the venv across runs — hosted
-        # runners are ephemeral and the cache hit rate would be ~0%.
-        # The cargo cache (Swatinem above) is the real warm-path win;
-        # the venv reinstall is ~5 s of pip work, which is noise next
-        # to a cold `maturin develop`.
+        # On the macOS cell we reuse `$DREVO_PY_VENV_MATRIX` (a
+        # persistent venv under `$RUNNER_TOOL_CACHE`) so the venv
+        # survives between runs and pip can short-circuit packages
+        # that already satisfy the version specifier. On GH-hosted
+        # cells the runner is ephemeral, so we create a fresh `.venv`
+        # at the workspace root each run — caching wouldn't help.
         shell: bash
         run: |
+          if [ -n "${DREVO_PY_VENV_MATRIX:-}" ]; then
+            # macOS self-hosted: persistent venv at $RUNNER_TOOL_CACHE.
+            if [ ! -x "$DREVO_PY_VENV_MATRIX/bin/python" ]; then
+              python -m venv "$DREVO_PY_VENV_MATRIX"
+            fi
+            echo "VIRTUAL_ENV=$DREVO_PY_VENV_MATRIX" >> "$GITHUB_ENV"
+            echo "$DREVO_PY_VENV_MATRIX/bin" >> "$GITHUB_PATH"
+            exit 0
+          fi
           python -m venv .venv
           if [ -d .venv/Scripts ]; then
             # Windows layout (bin/ is named Scripts/).

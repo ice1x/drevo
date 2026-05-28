@@ -222,6 +222,80 @@ fn python_ci_matrix_declares_strategy_matrix_block() {
 }
 
 #[test]
+fn python_ci_matrix_macos_cell_uses_persistent_self_hosted_caches() {
+    let wf = read_workflow();
+    // On the self-hosted macOS cell we exploit native filesystem
+    // persistence: a persistent CARGO_TARGET_DIR under
+    // `$RUNNER_TOOL_CACHE/drevo-cargo-target-matrix`, a persistent
+    // venv under `$RUNNER_TOOL_CACHE/drevo-py-venv-py313-matrix`,
+    // and `CARGO_INCREMENTAL=1` so cargo actually uses the
+    // persistent target dir's incremental state. Locked here so a
+    // future PR cannot quietly delete the "Configure persistent
+    // self-hosted caches" step and re-introduce ~5 min cold
+    // `maturin develop` rebuilds on every PR.
+    for needle in [
+        // The step name itself — grep-anchor for the block.
+        "Configure persistent self-hosted caches",
+        // Persistent target dir export.
+        "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-matrix",
+        // Incremental compilation explicitly turned ON (cargo CI
+        // mode defaults to 0).
+        "CARGO_INCREMENTAL=1",
+        // Persistent venv export.
+        "DREVO_PY_VENV_MATRIX=$RUNNER_TOOL_CACHE/drevo-py-venv-py313-matrix",
+    ] {
+        assert!(
+            wf.contains(needle),
+            "python.yml macOS cell must export `{needle}` so the \
+             self-hosted runner's persistent filesystem is exploited \
+             — see `python_ci_matrix_macos_cell_uses_persistent_self_hosted_caches`",
+        );
+    }
+    // The persistent CARGO_TARGET_DIR path MUST be distinct from
+    // python-ci.yml's `drevo-cargo-target` to avoid file-lock
+    // contention when both workflows fire on the same self-hosted
+    // runner concurrently. We don't grep python-ci.yml here (it's a
+    // different file), we just assert the matrix path has the
+    // disambiguating suffix.
+    assert!(
+        wf.contains("drevo-cargo-target-matrix"),
+        "python.yml CARGO_TARGET_DIR must use the `-matrix` suffix \
+         to avoid contention with python-ci.yml's `drevo-cargo-target`",
+    );
+    // Same for the venv path.
+    assert!(
+        wf.contains("drevo-py-venv-py313-matrix"),
+        "python.yml persistent venv must use the `-matrix` suffix \
+         so it does not collide with python-ci.yml's persistent venv",
+    );
+    // The persistent-cache step MUST be gated on the macOS cell
+    // only. Without the gate, GH-hosted Linux/Windows cells would
+    // also try to write to a $RUNNER_TOOL_CACHE path that doesn't
+    // survive between runs, defeating the purpose and confusing the
+    // downstream venv-discovery branch.
+    assert!(
+        wf.contains("if: matrix.os == 'macos-latest'"),
+        "python.yml persistent-cache step must be gated on \
+         `matrix.os == 'macos-latest'`",
+    );
+    // Swatinem/rust-cache MUST be skipped on macOS cell — running
+    // it on top of the persistent target dir would clobber live
+    // state on restore.
+    let swatinem_block_skipped_on_macos = wf.lines().collect::<Vec<_>>().windows(20).any(|w| {
+        w.iter().any(|l| l.contains("Swatinem/rust-cache"))
+            && w.iter()
+                .any(|l| l.contains("if: matrix.os != 'macos-latest'"))
+    });
+    assert!(
+        swatinem_block_skipped_on_macos,
+        "python.yml `Swatinem/rust-cache@v2` step must be gated on \
+         `matrix.os != 'macos-latest'` — running it on top of the \
+         persistent CARGO_TARGET_DIR on the self-hosted macOS \
+         runner would clobber live filesystem state on restore",
+    );
+}
+
+#[test]
 fn python_ci_matrix_macos_cell_runs_on_self_hosted() {
     let wf = read_workflow();
     // The macOS matrix cell is routed to the project's persistent

@@ -39,6 +39,48 @@ released entry on a tagged commit.
   — positive assertions on the ternary expression + `fromJSON(["self-hosted", "macOS"])`
   + the locator step's existence. A future PR cannot silently drop
   the routing and put the macOS cell back on a billable runner.
+- **macOS cell exploits self-hosted filesystem persistence.** A
+  "Configure persistent self-hosted caches" step (gated `if:
+  matrix.os == 'macos-latest'`) exports three env vars to
+  `$GITHUB_ENV`:
+  - `CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-matrix` —
+    persistent cargo target dir under the runner's tool cache;
+    survives between runs. The `-matrix` suffix is intentional and
+    DISTINCT from python-ci.yml's `drevo-cargo-target` so the two
+    workflows do not collide on file locks when they fire on the
+    same self-hosted runner concurrently (concurrency:
+    cancel-in-progress only cancels prior runs of the SAME workflow,
+    not sibling workflows).
+  - `CARGO_INCREMENTAL=1` — cargo defaults to 0 in CI mode to save
+    ephemeral disk; meaningless on persistent self-hosted. Setting
+    to 1 is what makes the persistent `CARGO_TARGET_DIR` actually
+    deliver warm incremental relinks.
+  - `DREVO_PY_VENV_MATRIX=$RUNNER_TOOL_CACHE/drevo-py-venv-py313-matrix` —
+    persistent venv path; first run creates it, subsequent runs
+    reuse it. `pip install` short-circuits packages that already
+    satisfy the version specifier, turning the dev-tooling install
+    from ~15 s cold to ~2 s warm.
+- The `Cache cargo build artefacts` step (`Swatinem/rust-cache@v2`)
+  is gated on `matrix.os != 'macos-latest'` so it only runs on the
+  ephemeral GH-hosted cells. Running it on top of the persistent
+  `CARGO_TARGET_DIR` on macOS would clobber live filesystem state
+  on cache restore — strictly worse than native filesystem
+  persistence.
+- The venv-creation step branches on whether `$DREVO_PY_VENV_MATRIX`
+  is set in the environment: macOS reuses or creates the persistent
+  venv there; GH-hosted cells stay with an ephemeral `.venv` at
+  workspace root (no caching value on ephemeral runners).
+- `~/.cargo/bin`, `~/.cargo/registry/{cache,src}`, `~/Library/Caches/pip`,
+  `~/.rustup` are all persistent on self-hosted by default — no
+  explicit export needed for those.
+- Net effect: warm-path `maturin develop --release` on the macOS
+  cell drops from ~5 min cold to ~30 s (incremental relink against
+  persistent target). Dev-tooling install drops from ~15 s to ~2 s.
+- Locked by `tests/python_ci_matrix_tests.rs::python_ci_matrix_macos_cell_uses_persistent_self_hosted_caches`
+  (22nd scaffolding case) — positive grep-asserts for the step
+  name, each env-var export literal, the `-matrix` suffix on both
+  paths, the macOS-only gate, and the `matrix.os != 'macos-latest'`
+  gate on Swatinem.
 - **Slimmed from the roadmap spec.** The original task text declared
   `python: [3.10, 3.11, 3.12, 3.13]` = 12 cells. At review time we
   pinned the Python axis to the latest interpreter only: drevo-py
