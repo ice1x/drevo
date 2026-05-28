@@ -2,11 +2,12 @@
 //! handshake, then drives the session loop.
 //!
 //! Gated behind the `http` Cargo feature because that's what already
-//! pulls in `tokio`. [`accept_handshake`] runs the 20-byte exchange
-//! and returns the still-open socket so callers can layer their own
-//! protocol on top; [`accept_and_run_session`] (task `00071`) bundles
-//! handshake + session loop in one call so a `tokio::spawn`-per-
-//! connection server is a one-liner.
+//! pulls in `tokio`. [`crate::bolt::listener::accept_handshake`] runs
+//! the 20-byte exchange and returns the still-open socket so callers
+//! can layer their own protocol on top;
+//! [`crate::bolt::listener::accept_and_run_session`] (task `00071`)
+//! bundles handshake + session loop in one call so a `tokio::spawn`-
+//! per-connection server is a one-liner.
 //!
 //! ## What's intentionally minimal
 //!
