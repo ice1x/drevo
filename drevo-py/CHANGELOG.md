@@ -10,10 +10,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Tracked here as Phase 16 tasks land. Sections roll into the next
 released entry on a tagged commit.
 
-### Added — task `00122` (Python CI matrix on every PR)
+### Added — task `00122` (Python CI matrix on every PR — cibuildwheel pivot)
+
+- `.github/workflows/python.yml` re-shaped as a `cibuildwheel`-driven
+  matrix after a series of iterations exposed a fundamental GHA
+  limitation. The original landing (3-cell `{python: [3.13]} × {os:
+  [ubuntu-latest, macos-latest, windows-latest]}` on GitHub-hosted
+  runners) hit the private-repo billing cap; the follow-up attempt
+  to route the ubuntu cell through GHA `container: python:3.13-bookworm`
+  on the self-hosted macOS host failed with `Container operations
+  are only supported on Linux runners` (GHA's `container:` is
+  implemented only in the Linux runner-agent regardless of Docker
+  on the host).
+- **Final shape: `{platform: [macos, linux]}` = 2 cells, both
+  `runs-on: [self-hosted, macOS]`, zero GitHub-hosted billing.**
+  cibuildwheel manages `docker run` itself for the Linux cell
+  (manylinux container pulled and run on the same macOS host that
+  serves the macos cell) — same pattern `python-wheels.yml` has
+  used since the 2026-05-27 self-hosted revert.
+- `CIBW_BUILD: "cp313-*"` — pinned per abi3-py310 per KG decision
+  `decision_python_ci_matrix_pin_to_latest_only`. Scaffolding test
+  negative-asserts `cp310-*` / `cp311-*` / `cp312-*` absence so a
+  future PR can't silently reflate the build matrix.
+- `CIBW_PLATFORM: ${{ matrix.platform }}` threads the matrix axis.
+  Without it cibuildwheel only builds the host's native platform.
+- `CIBW_TEST_REQUIRES: "pytest>=7 mypy ruff black"` — installs the
+  five-gate tooling in cibuildwheel's isolated test env.
+- `CIBW_TEST_COMMAND` chains the gates with `&&` so a failure
+  surfaces in the cibuildwheel log:
+
+      pytest -q {package}/tests/unit/      (00118)
+      pytest -q {package}/tests/integration/  (00119)
+      pytest -q {package}/tests/e2e/       (00120)
+      mypy --strict {package}/python/drevo/
+      ruff check {package}/python/ {package}/tests/
+      black --check {package}/python/ {package}/tests/
+
+  `{package}` resolves to the dir passed to cibuildwheel
+  (`drevo-py/`).
+- Linux container's in-container Rust install via
+  `CIBW_BEFORE_ALL_LINUX` (rustup-init) with retry-friendly
+  `CARGO_NET_RETRY=10 CARGO_HTTP_TIMEOUT=120` in
+  `CIBW_ENVIRONMENT_LINUX` — defends against the kind of transient
+  crates.io network blip that bit the `cargo install cargo-fuzz`
+  fallback in ci.yml's Fuzz job on 2026-05-28.
+- macOS cell preserves the `python-ci.yml`-style locator step that
+  scans the python.org-pkg install paths and symlinks `python` /
+  `python3` into `$GITHUB_WORKSPACE/.py-shim`; the persistent venv
+  / persistent CARGO_TARGET_DIR optimisations from earlier
+  iterations were dropped because cibuildwheel manages its own
+  isolated env per wheel and adding them back as
+  `CIBW_CONTAINER_ENGINE_PARAMS` volume-mounts is a follow-up.
+- Windows is intentionally NOT in the matrix: cibuildwheel can't
+  cross-build Windows wheels on a macOS host. That path stays in
+  `python-wheels.yml` workflow_dispatch runs until a self-hosted
+  Windows runner exists.
+- `concurrency: python-matrix-${{ github.ref }}` with
+  `cancel-in-progress: true` (distinct from `python-ci-` and
+  `python-wheels-` groups); `fail-fast: false`; `timeout-minutes:
+  30`; path filters narrowed to `drevo-py/**` + `src/**` +
+  `Cargo.toml`/`Cargo.lock` + the workflow file.
+- `tests/python_ci_matrix_tests.rs` — 16 text-level scaffolding
+  cases for the cibuildwheel shape. Positive grep-asserts for
+  cibuildwheel presence + `CIBW_BUILD` + `CIBW_PLATFORM` + every
+  gate in `CIBW_TEST_COMMAND` + concurrency + no-PyPI-publish.
+  Load-bearing **negative** assertions: no GHA `container:`
+  directive at job-or-workflow level (prevents the broken regime
+  from coming back); no `ubuntu-latest` / `windows-latest` in any
+  `runs-on:` line (prevents accidental re-billing).
+- The KG decision entities `decision_python_ci_macos_cell_on_self_hosted`,
+  `decision_python_ci_macos_persistent_caches`, and
+  `decision_python_ci_ubuntu_in_container_on_macos_host` from the
+  earlier iterations are SUPERSEDED by
+  `decision_python_ci_unified_via_cibuildwheel`. Earlier decisions
+  remain in the KG as historical context with their relationships
+  preserved.
+
+### Added — task `00122` (Python CI matrix on every PR — original landing, superseded by cibuildwheel pivot above)
 
 - `.github/workflows/python.yml` — the definition-of-done gate for
-  Phase 16. Matrix as shipped: `{python: [3.13]} × {os: [ubuntu-latest,
+  Phase 16. Matrix as originally shipped: `{python: [3.13]} × {os: [ubuntu-latest,
   macos-latest, windows-latest]}` = 3 cells per PR.
 - **macOS cell routed to self-hosted.** The macOS matrix cell runs
   on the project's persistent self-hosted macOS runner (labels
