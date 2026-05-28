@@ -86,6 +86,18 @@ name = "drevo-server"
 path = "src/bin/server.rs"
 required-features = ["http", "redb-backend"]
 
+# Phase 15 task `00090` — `drevo-mcp` stdio MCP server. Embedded
+# storage (redb), no Docker, no HTTP. Speaks JSON-RPC 2.0 over
+# stdin / stdout per the Model Context Protocol 2024-11-05 spec.
+# Requires `redb-backend` because the server opens a real on-disk
+# Drevo handle; pure-Rust beyond that (no extra deps — see
+# `src/mcp/mod.rs` for the rationale on not using a third-party
+# MCP SDK).
+[[bin]]
+name = "drevo-mcp"
+path = "src/bin/mcp.rs"
+required-features = ["redb-backend"]
+
 [[bench]]
 name = "storage_bench"
 harness = false
