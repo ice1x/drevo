@@ -1,76 +1,72 @@
-# Phase 16 task `00122` — Python CI matrix.
+# Phase 16 task `00122` — Python CI matrix, cibuildwheel-driven.
 #
 # This workflow is the **definition-of-done gate** for Phase 16
 # (drevo-py Python Graph-RAG SDK). It runs the three test layers
 # landed by 00118 (unit ~180+), 00119 (integration ~52), and 00120
-# (e2e ~40) across the matrix:
+# (e2e ~40) inside cibuildwheel's per-platform sandbox.
 #
-#   {python: [3.13]} × {os: [ubuntu-latest, macos-latest, windows-latest]}
+# ## Why cibuildwheel and not GHA `container:`?
 #
-# = 3 cells per PR. The roadmap task originally declared a 4 × 3 =
-# 12-cell matrix (python ∈ {3.10, 3.11, 3.12, 3.13}). At review time
-# the user (KG: `feedback_pin_python_to_latest_under_abi3`) pointed
-# out that drevo-py ships an `abi3-py310` wheel: a single binary
-# that runs on every CPython 3.10+ interpreter without a recompile.
-# The middle minors (3.11, 3.12) almost never catch anything 3.13
-# misses — they just multiply CI spend (windows-latest alone is
-# ~12 min per cold cell × 4 = ~50 hosted minutes per PR for one
-# OS). Dropping to 3.13-only keeps the cross-OS signal (Windows
-# locale, redb file locking, FTS UTF-8) while cutting cost to a
-# quarter.
+# An earlier iteration tried to route the ubuntu cell to the
+# self-hosted macOS runner via the GHA `container:` directive
+# (`container: python:3.13-bookworm`). The runner-agent rejected it
+# with:
 #
-# Each cell installs `maturin`, builds the PyO3
-# cdylib with `maturin develop --release --features="redb-backend"`,
-# then runs the four gates from `python-ci.yml` (pytest, mypy, ruff,
-# black) and additionally records a `pytest-cov` coverage report that
-# the workflow posts as a PR comment. PR merging is gated on every
-# cell green.
+#     ##[error]Container operations are only supported on Linux runners
 #
-# **Why this is separate from `python-ci.yml`.** The lightweight
-# `python-ci.yml` runs on the self-hosted macOS runner × Python 3.13
-# in ~1-2 minutes — fast feedback. This workflow is the
-# cross-platform / cross-version proof: it catches PyO3 ABI drift on
-# real Windows / Linux runners, FTS UTF-8 tokeniser divergence on
-# Windows codepages, redb file-locking differences on each kernel,
-# and CPython 3.10-only regressions that the `--target-version
-# py313` setup in `python-ci.yml` hides. Both workflows live
-# alongside each other on every PR; `python-ci.yml` returns first,
-# `python.yml` is the final gating signal.
+# GHA's `container:` is implemented only in the Linux runner-agent;
+# Docker availability on the macOS host doesn't help. cibuildwheel
+# sidesteps that by managing `docker run` itself (it's a regular
+# subprocess, not a GHA mechanism). The same trick `python-wheels.yml`
+# has used since the 2026-05-27 self-hosted revert.
 #
-# **Runner routing.** The macOS cell runs on the project's persistent
-# self-hosted macOS runner (labels `self-hosted, macOS`) — zero
-# GitHub-hosted minutes. ubuntu-latest and windows-latest stay on
-# GitHub-hosted because no self-hosted Linux / Windows runner is
-# registered to this repo at time of writing. Conditional `runs-on:`
-# (ternary) keeps the single matrix declaration while varying the
-# runner per cell. If / when Linux + Windows self-hosted runners come
-# online (with labels `self-hosted, Linux` and `self-hosted, Windows`
-# respectively), the ternary expands cleanly without restructuring
-# the matrix.
+# ## Matrix shape
 #
-# **Cost guard.** Two GitHub-hosted cells (ubuntu + windows on
-# Python 3.13) at ~5-12 min each burn ~10-15 billable minutes per PR
-# (mostly the windows cold-build). The macOS cell is free now. To
-# keep the GH-hosted spend bounded:
+#   {platform: [macos, linux]} = 2 cells.
 #
-#   * Path filters limit triggers to changes that can plausibly
-#     affect the Python surface — see `paths:` below. Doc-only PRs
-#     and Rust-only changes outside `src/**` do NOT retrigger.
-#   * `concurrency: cancel-in-progress: true` cancels superseded
-#     runs of the same PR / branch so a force-push or rapid push
-#     burst does not multiply minute spend.
-#   * Job-level `timeout-minutes: 30` caps the worst case (cold
-#     `maturin develop` on `windows-latest` was observed at ~12 min
-#     during local probing).
+#   * macos — cibuildwheel builds natively on the self-hosted macOS
+#     runner (no container).
+#   * linux — cibuildwheel pulls the manylinux container image and
+#     runs the entire build + test inside it ON the self-hosted
+#     macOS host. Apple Virtualization Framework makes the Linux
+#     container native on Apple Silicon (`linux/arm64`).
 #
-# `macos-latest` + `windows-latest` are added to the runner allow-
-# list in `tests/ci_self_hosted_runner_tests.rs` for this file
-# alongside `python-wheels.yml`. The justification mirrors the
-# wheel-matrix reasoning in RFC §2: PyO3 ABI checks are platform-
-# native, FTS UTF-8 tokenisation is locale-sensitive on Windows,
-# redb file locking is kernel-dependent — only running on real
-# macOS / Windows runners gives a meaningful regression signal for
-# those classes. There is no cross-compile path that exercises them.
+# Windows is intentionally NOT in the matrix: cibuildwheel cannot
+# cross-build Windows wheels on a macOS host (no Win32 runtime
+# available there). When a self-hosted Windows runner exists, a
+# third matrix cell can be added; until then, windows coverage
+# lives in `python-wheels.yml` workflow_dispatch runs only.
+#
+# ## CIBW_BUILD pin
+#
+# `cp313-*` only. drevo-py wheels are built with `abi3-py310`: a
+# single binary that runs on every CPython 3.10+ interpreter
+# without a recompile. Multi-minor testing would produce identical
+# wheels and run identical tests — see KG decision
+# `decision_python_ci_matrix_pin_to_latest_only`.
+#
+# ## CIBW_TEST_COMMAND
+#
+# Runs against the just-installed wheel in cibuildwheel's isolated
+# venv. Five gates, chained with `&&`:
+#
+#   pytest tests/unit/      (00118)
+#   pytest tests/integration/ (00119)
+#   pytest tests/e2e/       (00120)
+#   mypy --strict python/drevo/
+#   ruff check python/ tests/
+#   black --check python/ tests/
+#
+# `{package}` resolves to `drevo-py/` (the dir passed to
+# cibuildwheel on the command line).
+#
+# ## Cost
+#
+# Both cells run on `[self-hosted, macOS]`. Zero GitHub-hosted
+# billable minutes. Cold path: ~5-10 min cibuildwheel + manylinux
+# pull + cargo compile + test run. Warm path benefits from
+# self-hosted's persistent Docker layer cache + cargo registry
+# cache.
 #
 # Locked from text by `tests/python_ci_matrix_tests.rs`.
 
@@ -97,72 +93,69 @@ on:
 
 # Distinct concurrency group from `python-ci.yml`
 # (`python-ci-${{ github.ref }}`) and `python-wheels.yml`
-# (`python-wheels-${{ github.ref }}`) so the three workflows do not
-# cancel each other on a shared key. Locked by
-# `tests/python_ci_matrix_tests.rs::python_ci_matrix_uses_concurrency_with_cancel_in_progress`.
+# (`python-wheels-${{ github.ref }}`).
 concurrency:
   group: python-matrix-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test_matrix:
-    name: ${{ matrix.os }} / Python ${{ matrix.python }}
-    # The macOS cell is routed to the project's persistent self-hosted
-    # macOS runner (labels: `self-hosted, macOS`) to keep it off the
-    # GitHub-hosted minutes budget. ubuntu-latest and windows-latest
-    # stay on GitHub-hosted because no self-hosted Linux / Windows
-    # runner is registered to this repo today. Ternary form is the
-    # cleanest way to vary `runs-on:` across matrix cells without
-    # giving up the shared `strategy.matrix` declaration.
-    runs-on: ${{ matrix.os == 'macos-latest' && fromJSON('["self-hosted", "macOS"]') || matrix.os }}
-    # Cap a stuck cell so a hung Windows `maturin develop` cannot
-    # camp on a matrix slot for 6 hours.
+    name: cibuildwheel ${{ matrix.platform }} / cp313
+    runs-on: [self-hosted, macOS]
     timeout-minutes: 30
     strategy:
-      # Don't cancel the other cells when one fails — the whole value
-      # of a 3-cell matrix is seeing which OS diverges, and
-      # `fail-fast: true` collapses that to a single red mark with no
-      # diagnostic.
+      # Don't cancel the other cell when one fails — keeps the
+      # platform-divergence signal intact.
       fail-fast: false
       matrix:
-        # Single Python minor: abi3-py310 means one wheel binary runs
-        # on every CPython 3.10+, so testing 3.13 covers the whole
-        # supported range. See the file's preamble for rationale.
-        python: ["3.13"]
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        platform: [macos, linux]
+    env:
+      # cibuildwheel-controlled. Same envs as python-wheels.yml so
+      # the two workflows stay aligned.
+      CIBW_BUILD: "cp313-*"
+      CIBW_SKIP: "pp* *-win32 *-manylinux_i686 *-musllinux_i686 cp*-musllinux_*"
+      CIBW_BUILD_FRONTEND: "build"
+      CIBW_BEFORE_ALL_LINUX: >-
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+        sh -s -- -y --profile minimal --default-toolchain stable
+      CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH" CARGO_NET_RETRY=10 CARGO_HTTP_TIMEOUT=120'
+      CIBW_BEFORE_BUILD_MACOS: "rustup show"
+      # Test dependencies installed in the wheel's isolated test
+      # env (not in the wheel itself). pytest + the four gates.
+      CIBW_TEST_REQUIRES: "pytest>=7 mypy ruff black"
+      # Run the full test suite against the just-built wheel.
+      # `{package}` expands to `drevo-py/` (the dir cibuildwheel is
+      # pointed at below). Each gate gets its own command so a
+      # failure surfaces as a discrete step in the cibuildwheel log.
+      CIBW_TEST_COMMAND: >-
+        pytest -q {package}/tests/unit/ &&
+        pytest -q {package}/tests/integration/ &&
+        pytest -q {package}/tests/e2e/ &&
+        mypy --strict {package}/python/drevo/ &&
+        ruff check {package}/python/ {package}/tests/ &&
+        black --check {package}/python/ {package}/tests/
+      # Per-cell platform override — selects native macOS or
+      # Linux-in-container.
+      CIBW_PLATFORM: ${{ matrix.platform }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history mirrors `python-wheels.yml`: maturin can
-          # sometimes pick up a dirty-tree indicator from shallow
-          # clones, and the cost (~1 s on a 1500-commit repo) is
-          # noise next to a 5-min Windows build.
+          # cibuildwheel can pick up a dirty-tree indicator from
+          # shallow clones in some maturin paths; full history is
+          # cheap on this repo.
           fetch-depth: 0
 
-      - name: Set up Python ${{ matrix.python }} (GitHub-hosted)
-        # `actions/setup-python@v5` installs into
-        # `/Users/runner/hostedtoolcache/` on macOS, which the
-        # self-hosted runner's user cannot create — see the
-        # cross-referenced rationale in `python-ci.yml`. We skip
-        # it on the macOS cell and locate the pre-installed system
-        # Python 3.13 in the next step instead.
-        if: matrix.os != 'macos-latest'
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-          cache: 'pip'
-
-      - name: Locate system Python 3.13 (self-hosted macOS)
-        # Mirrors the locator in `python-ci.yml`: scans the known
-        # install paths for a 3.13 interpreter on the macOS self-
-        # hosted runner. The runner is required to have CPython 3.13
-        # pre-installed via the python.org pkg (the same artefact
-        # local development uses). We prepend its `bin/` to
-        # `$GITHUB_PATH` so the subsequent venv / pip / maturin /
-        # pytest steps resolve `python` and `python3` to 3.13 without
-        # any conditional `if:` plumbing.
-        if: matrix.os == 'macos-latest'
+      - name: Locate system Python 3.13 on self-hosted macOS
+        # `actions/setup-python@v5` cannot install into
+        # `/Users/runner/hostedtoolcache/` under the self-hosted
+        # runner's user (it tries to `mkdir /Users/runner`). Same
+        # workaround `python-ci.yml` uses: locate the python.org-pkg
+        # 3.13 binary and symlink it as `python` / `python3` in a
+        # `$GITHUB_WORKSPACE/.py-shim` dir prepended to
+        # `$GITHUB_PATH`. cibuildwheel uses the host's Python to
+        # orchestrate; the container/wheel Python is managed by
+        # cibuildwheel itself.
         shell: bash
         run: |
           for candidate in \
@@ -172,197 +165,34 @@ jobs:
             "/usr/local/bin/python3.13"; do
             if [ -x "$candidate" ]; then
               echo "Using $candidate ($($candidate --version))"
-              # Symlink as `python` / `python3` so the generic steps
-              # below work without conditional `if:` per-step. We
-              # write the symlinks to `$GITHUB_WORKSPACE/.py-shim`
-              # so they live inside the workspace dir (gitignored)
-              # and `$GITHUB_PATH` picks them up first.
               mkdir -p "$GITHUB_WORKSPACE/.py-shim"
               ln -sf "$candidate" "$GITHUB_WORKSPACE/.py-shim/python"
               ln -sf "$candidate" "$GITHUB_WORKSPACE/.py-shim/python3"
-              ln -sf "$candidate" "$GITHUB_WORKSPACE/.py-shim/python3.13"
               echo "$GITHUB_WORKSPACE/.py-shim" >> "$GITHUB_PATH"
               exit 0
             fi
           done
-          echo "::error::python3.13 not found on the self-hosted macOS runner — install via the python.org pkg or `brew install python@3.13`"
+          echo "::error::python3.13 not found on self-hosted macOS — install via the python.org pkg"
           exit 1
 
-      - name: Set up Rust toolchain (stable)
+      - name: Set up Rust toolchain (macOS native build)
+        # Only needed for the macOS cibuildwheel cell — the Linux
+        # cell installs Rust INSIDE the manylinux container via
+        # CIBW_BEFORE_ALL_LINUX above. Running dtolnay's action on
+        # the macOS cell ensures `rustup show` (CIBW_BEFORE_BUILD_MACOS)
+        # finds a toolchain.
+        if: matrix.platform == 'macos'
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo build artefacts
-        # Hosted runners are ephemeral — `Swatinem/rust-cache`
-        # persists the cargo target dir across runs in the GH-hosted
-        # cache. Without this every cell pays the full ~5-min
-        # `maturin develop` rebuild; with it the warm path drops to
-        # ~30 s on Linux, ~1 min on macOS / Windows.
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Distinct keys per matrix cell so a Linux build doesn't
-          # poison the macOS / Windows cache (and vice versa).
-          key: python-matrix-${{ matrix.os }}-py${{ matrix.python }}
-          # Cache the wheel build dir too — `maturin develop` writes
-          # the .so / .dylib / .pyd here.
-          workspaces: ". -> target"
-
-      - name: Create venv for maturin develop
-        # `maturin develop` REQUIRES an active virtualenv (it installs
-        # the freshly-built wheel via `pip install` into the active
-        # interpreter). `actions/setup-python` installs Python on the
-        # runner but does NOT create a venv, so without this step the
-        # next step fails with "Couldn't find a virtualenv or conda
-        # environment". We export `VIRTUAL_ENV` + prepend the venv
-        # `bin/` (or `Scripts/` on Windows) to `$GITHUB_PATH` so every
-        # subsequent step sees the venv as active without an explicit
-        # `source` (which doesn't work cleanly across the Windows
-        # `bash` / Linux / macOS shell matrix).
-        #
-        # We deliberately do NOT cache the venv across runs — hosted
-        # runners are ephemeral and the cache hit rate would be ~0%.
-        # The cargo cache (Swatinem above) is the real warm-path win;
-        # the venv reinstall is ~5 s of pip work, which is noise next
-        # to a cold `maturin develop`.
+      - name: Install cibuildwheel
         shell: bash
-        run: |
-          python -m venv .venv
-          if [ -d .venv/Scripts ]; then
-            # Windows layout (bin/ is named Scripts/).
-            echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
-            echo "$GITHUB_WORKSPACE/.venv/Scripts" >> "$GITHUB_PATH"
-          else
-            echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
-            echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
-          fi
+        run: python -m pip install --upgrade pip "cibuildwheel==2.21.3"
 
-      - name: Install Python dev tooling
-        # Spec step 1: pip install maturin pytest mypy ruff black.
-        # `pytest-cov` is added so the coverage publish step at the
-        # tail of the job has the plugin available.
-        run: |
-          python -m pip install --upgrade pip
-          pip install "maturin>=1.7,<2.0" pytest pytest-cov mypy ruff black
-
-      - name: maturin develop --release (build + install drevo-py)
-        # Spec step 2: maturin develop --release. The README task
-        # 00122 spec originally read `--features="redb-backend"`, but
-        # that feature lives on the root `drevo` crate (where it sits
-        # in `default = [...]`) — `drevo-py` itself has no such
-        # feature, so passing it errors out with "the package
-        # 'drevo-py' does not contain this feature: redb-backend".
-        # Dropping the flag is the smallest correct fix: `drevo-py`
-        # depends on `drevo` with its default features enabled, so
-        # `redb-backend` is already on the build path. Matches the
-        # `maturin develop --release` invocation used by the warm-path
-        # `python-ci.yml` gate.
-        # The `.venv` created two steps above is what maturin links
-        # the wheel into via `pip install`.
-        working-directory: drevo-py
-        run: maturin develop --release
-
-      - name: pytest tests/unit/ (00118 — ~180+ unit tests)
-        # Spec step 3. Each layer gets its own pytest invocation so a
-        # single failing layer surfaces as a discrete failed step in
-        # the Actions UI — diagnosis without re-reading the full log.
-        working-directory: drevo-py
-        run: pytest tests/unit/ -q
-
-      - name: pytest tests/integration/ (00119 — ~52 integration tests)
-        # Spec step 4. Integration layer exercises real redb backend
-        # via `Drevo.open(tempfile)` — cross-component invariants the
-        # unit layer can't catch (open/close round-trip, FTS recall,
-        # traversal correctness, GIL re-acquisition).
-        working-directory: drevo-py
-        run: pytest tests/integration/ -q
-
-      - name: pytest tests/e2e/ (00120 — ~40 e2e scenario tests)
-        # Spec step 5. End-to-end suite covers the five scenario
-        # domains (CBT / story / task / ERP / bug) + the graph-RAG
-        # scenario. Definition-of-done for Phase 16 per drevo-tdd.
-        working-directory: drevo-py
-        run: pytest tests/e2e/ -q
-
-      - name: mypy --strict (drevo/)
-        # Spec step 6. Locks .pyi stub drift against the runtime
-        # shim — without `--strict` an `Any` leak slips through.
-        working-directory: drevo-py
-        run: mypy --strict python/drevo/
-
-      - name: ruff check + black --check
-        # Spec step 7. Run as separate commands so a black-vs-ruff
-        # disagreement surfaces in the Actions UI rather than as a
-        # mystery exit code.
-        working-directory: drevo-py
-        run: |
-          ruff check python/ tests/
-          black --check python/ tests/
-
-      - name: pytest --cov (coverage report)
-        # Spec final paragraph: "The workflow also publishes a
-        # coverage report (`pytest-cov`) as a PR comment." We
-        # generate the report in XML form on every cell so a
-        # downstream comment step can consume it; the actual PR
-        # comment is posted only from the Ubuntu / Python 3.13
-        # cell (canonical Linux env), gated by the `if:` below, to
-        # avoid 3 duplicate comments.
-        working-directory: drevo-py
-        run: |
-          pytest --cov=drevo --cov-report=xml --cov-report=term tests/
-
-      - name: Upload coverage XML artifact
-        # The artifact name is matrix-cell-unique so each cell's
-        # report uploads cleanly; the PR comment job below pulls the
-        # canonical Ubuntu / 3.13 cell's report.
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.os }}-py${{ matrix.python }}
-          path: drevo-py/coverage.xml
-          retention-days: 7
-
-  coverage_comment:
-    name: Post coverage report as PR comment
-    needs: test_matrix
-    # Skip on `push:main` (no PR to comment on) and on
-    # `workflow_dispatch` from a non-PR ref. The matrix job above
-    # still uploads the artefact in those cases — just no comment.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download canonical coverage artefact (Ubuntu / Python 3.13)
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-ubuntu-latest-py3.13
-          path: ./coverage-canonical
-      - name: Comment on PR with coverage summary
-        # Uses the `pytest-cov` XML the matrix job produced. A short
-        # script renders a coverage % into a Markdown comment. The
-        # post-comment action is vendor-neutral
-        # (`actions/github-script@v7`) so we don't take a transitive
-        # dependency on a third-party action.
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const xml = fs.readFileSync('./coverage-canonical/coverage.xml', 'utf8');
-            const match = xml.match(/line-rate="([0-9.]+)"/);
-            const pct = match ? (parseFloat(match[1]) * 100).toFixed(1) : 'unknown';
-            const body = [
-              '## drevo-py coverage (Python CI matrix)',
-              '',
-              '`pytest --cov=drevo` (Ubuntu / Python 3.13 cell):',
-              '',
-              `- **Line coverage:** ${pct}%`,
-              '',
-              '_Full coverage XML per matrix cell is available as a workflow artefact._',
-            ].join('\n');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });
+      - name: Run cibuildwheel (build + test wheel)
+        # `drevo-py` is the package dir cibuildwheel points at —
+        # contains `pyproject.toml` declaring maturin as the build
+        # backend. The output dir holds the produced wheels; we
+        # don't upload them (this is a test workflow, not a release
+        # one), but cibuildwheel needs the path.
+        shell: bash
+        run: python -m cibuildwheel --output-dir wheelhouse drevo-py

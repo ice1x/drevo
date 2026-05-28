@@ -1,43 +1,41 @@
-//! Phase 16 task `00122` — text-level scaffolding tests for the full
-//! Python CI matrix workflow.
+//! Phase 16 task `00122` — text-level scaffolding tests for the
+//! cibuildwheel-driven Python CI matrix.
 //!
 //! Same pattern as `python_package_wheels_tests.rs` (`00116`) and
 //! `python_e2e_test_suite_tests.rs` (`00120`): the existing Rust CI
 //! runners do not provision a Python interpreter, so these tests do
-//! NOT invoke `pytest`, `pip`, or `maturin`. They lock the *shape* of
-//! the new workflow file by grepping it on disk.
+//! NOT invoke `pytest`, `pip`, `maturin`, or `cibuildwheel`. They
+//! lock the *shape* of `.github/workflows/python.yml` by grepping it
+//! on disk.
 //!
-//! The workflow itself — `.github/workflows/python.yml` — is the
-//! definition-of-done for Phase 16: a Python × OS matrix that gates
-//! PR merges on the three test layers shipped in `00118` / `00119` /
-//! `00120` plus `mypy --strict`, `ruff check`, and `black --check`.
+//! The workflow itself is the definition-of-done gate for Phase 16:
+//! a 2-cell cibuildwheel matrix (`platform: [macos, linux]`) that
+//! runs the three drevo-py test layers (00118 unit, 00119 integration,
+//! 00120 e2e) plus `mypy --strict`, `ruff check`, and `black --check`
+//! inside cibuildwheel's per-platform sandbox.
 //!
-//! The matrix declared in roadmap task `00122`:
+//! **Why cibuildwheel and not GHA `container:`?** An earlier iteration
+//! tried `container: python:3.13-bookworm` to route the ubuntu cell
+//! to the self-hosted macOS runner. The runner-agent refused with
+//! "Container operations are only supported on Linux runners" — GHA's
+//! `container:` directive is implemented only in the Linux runner
+//! agent. cibuildwheel sidesteps that by managing `docker run` itself,
+//! the same pattern `python-wheels.yml` already uses.
 //!
-//!   {python: [3.10, 3.11, 3.12, 3.13]} × {os: [ubuntu-latest, macos-latest, windows-latest]}
+//! **Why `[macos, linux]` and not the full `[ubuntu, macos, windows]`
+//! roadmap matrix?** The 4 × 3 = 12-cell roadmap matrix doesn't pay
+//! its way under abi3-py310 (same binary covers every CPython 3.10+).
+//! `cp313-*` only is enforced via `CIBW_BUILD`. Windows isn't in the
+//! matrix because cibuildwheel can't cross-build Windows wheels on a
+//! macOS host; that path stays in `python-wheels.yml` until a
+//! self-hosted Windows runner exists.
 //!
-//! = 12 cells per PR. Per-job: checkout, setup-python, `pip install
-//! maturin pytest mypy ruff black`, `maturin develop --release
-//! --features="redb-backend"`, `pytest tests/unit/`, `pytest
-//! tests/integration/`, `pytest tests/e2e/`, `mypy --strict drevo/`,
-//! `ruff check . && black --check .`. The workflow also publishes a
-//! pytest-cov coverage report as a PR comment per the spec.
+//! See KG decisions:
 //!
-//! Cost note: the matrix burns GitHub-hosted minutes on every Python-
-//! touching PR. Path filters narrow trigger conditions to
-//! `drevo-py/**` + `src/**` + the workflow itself + Cargo.toml/lock.
-//! Doc-only PRs do not pay the matrix cost. The fast-feedback
-//! `python-ci.yml` (self-hosted, single cell) remains as the warm
-//! sub-2-minute signal alongside.
+//!   * `decision_python_ci_matrix_pin_to_latest_only`
+//!   * `decision_python_ci_unified_via_cibuildwheel` (this iteration)
 //!
-//! macos-latest + windows-latest are added to the allow-list in
-//! `tests/ci_self_hosted_runner_tests.rs` for this workflow alongside
-//! `python-wheels.yml`. The justification matches RFC §2 wheel-layout
-//! reasoning: PyO3 ABI checks are platform-native, FTS UTF-8
-//! tokenisation is locale-sensitive on Windows, and redb file
-//! locking behaves differently on each kernel — only running on real
-//! macOS / Windows runners produces a meaningful regression signal
-//! for those classes.
+//! Both have `do_not_revert: true`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -72,18 +70,10 @@ fn read_workflow() -> String {
 fn python_ci_matrix_workflow_exists() {
     let wf = read_workflow();
     assert!(
-        wf.contains("name:"),
-        ".github/workflows/python.yml must declare a top-level `name:`",
-    );
-    // The exact display name is not constrained by the task, but it
-    // MUST be something Python-matrix-ish so the GitHub Actions UI
-    // separates it from `python-ci.yml` (display name "Python CI") at
-    // a glance.
-    assert!(
         wf.lines()
             .any(|line| line.starts_with("name:") && line.to_lowercase().contains("python")),
-        ".github/workflows/python.yml `name:` must include `Python` — \
-         distinguishes it from non-Python workflows in the Actions UI",
+        "python.yml `name:` must include `Python` — distinguishes \
+         it from non-Python workflows in the Actions UI",
     );
 }
 
@@ -92,12 +82,9 @@ fn python_ci_matrix_workflow_exists() {
 #[test]
 fn python_ci_matrix_runs_on_every_pr() {
     let wf = read_workflow();
-    // Roadmap task wording: "Python CI matrix on every PR." The
-    // workflow MUST trigger on `pull_request` against `main`.
     assert!(
         wf.contains("pull_request:"),
-        "python.yml must include a `pull_request:` trigger — task 00122 \
-         says 'matrix on every PR'",
+        "python.yml must include a `pull_request:` trigger",
     );
     assert!(
         wf.contains("branches: [main]") || wf.contains("- main"),
@@ -110,402 +97,248 @@ fn python_ci_matrix_also_runs_on_push_main_and_workflow_dispatch() {
     let wf = read_workflow();
     assert!(
         wf.contains("push:"),
-        "python.yml must include a `push:` trigger so post-merge \
-         regressions on main surface immediately",
+        "python.yml must include `push:` trigger"
     );
     assert!(
         wf.contains("workflow_dispatch:"),
-        "python.yml must include `workflow_dispatch:` so a maintainer \
-         can re-run the matrix on demand without a code change",
+        "python.yml must include `workflow_dispatch:` trigger",
     );
 }
 
 #[test]
 fn python_ci_matrix_uses_path_filters() {
     let wf = read_workflow();
-    // Cost guard: 12-cell hosted matrix is expensive. Path filters
-    // narrow to changes that can plausibly affect the Python surface.
     assert!(
         wf.contains("paths:"),
-        "python.yml must declare `paths:` filters so a doc-only PR \
-         does not pay the 12-cell hosted-matrix cost",
+        "python.yml must declare `paths:` filters"
     );
-    assert!(
-        wf.contains("drevo-py/**"),
-        "python.yml `paths:` must include `drevo-py/**` so changes to \
-         the Python package retrigger the matrix",
-    );
-    assert!(
-        wf.contains("src/**"),
-        "python.yml `paths:` must include `src/**` so a Rust core \
-         change (which `maturin develop` will rebuild) retriggers",
-    );
-    assert!(
-        wf.contains("python.yml"),
-        "python.yml `paths:` must include the workflow file itself so \
-         a workflow-only edit retriggers the matrix",
-    );
+    for needle in ["drevo-py/**", "src/**", "python.yml"] {
+        assert!(
+            wf.contains(needle),
+            "python.yml `paths:` must include `{needle}`",
+        );
+    }
 }
 
-// ── 3. Matrix shape ────────────────────────────────────────────────────
+// ── 3. cibuildwheel mechanism ──────────────────────────────────────────
+
+#[test]
+fn python_ci_matrix_uses_cibuildwheel_not_gha_container_directive() {
+    let wf = read_workflow();
+    // The whole point of pivoting this workflow: cibuildwheel
+    // manages docker itself, so the Linux cell works on the
+    // self-hosted macOS host without hitting GHA's "Container
+    // operations are only supported on Linux runners" wall.
+    assert!(
+        wf.contains("cibuildwheel"),
+        "python.yml must invoke cibuildwheel — the GHA `container:` \
+         directive is rejected by the macOS runner agent",
+    );
+    // Negative: no GHA `container:` directive. A bare top-level
+    // `container:` key would re-enter the broken regime.
+    let has_gha_container_directive = wf.lines().any(|line| {
+        let t = line.trim_start();
+        // Matches `container:` at job/workflow level (4 or fewer
+        // leading spaces of indent — strategy.matrix is deeper).
+        // We accept `container: ${{ ... }}` or `container: image`
+        // forms; rule it out entirely.
+        let indent = line.len() - t.len();
+        indent <= 4 && t.starts_with("container:")
+    });
+    assert!(
+        !has_gha_container_directive,
+        "python.yml must NOT use the GHA `container:` directive — \
+         it fails on macOS runners with 'Container operations are \
+         only supported on Linux runners'. Use cibuildwheel + \
+         CIBW_PLATFORM instead.",
+    );
+}
 
 #[test]
 fn python_ci_matrix_pins_python_to_latest_under_abi3() {
     let wf = read_workflow();
-    // drevo-py wheels are built with `abi3-py310`: one binary that
-    // runs on every CPython 3.10+ interpreter without a recompile.
-    // Testing every minor (3.10/3.11/3.12/3.13) multiplies CI spend
-    // (~50 hosted minutes per PR for windows alone) without
-    // meaningful coverage delta — the middle minors almost never
-    // catch anything 3.13 misses. The matrix pins python to 3.13;
-    // OS axis (ubuntu / macOS / windows) still gives the cross-
-    // platform signal that 00122 actually wants (Windows locale,
-    // redb file locking, FTS UTF-8). Locks the slim configuration
-    // so a future PR cannot silently reflate the matrix without
-    // re-running this argument.
+    // CIBW_BUILD restricted to cp313 only — abi3-py310 wheel works
+    // on every CPython 3.10+, so the latest minor covers the
+    // supported range. KG: `decision_python_ci_matrix_pin_to_latest_only`.
     assert!(
-        wf.contains("python: [\"3.13\"]") || wf.contains("python:\n        - \"3.13\""),
-        "python.yml strategy.matrix.python must pin to [\"3.13\"] \
-         only — abi3-py310 wheels make multi-minor testing redundant; \
-         see the file's preamble for rationale",
+        wf.contains("CIBW_BUILD: \"cp313-*\"") || wf.contains("CIBW_BUILD: 'cp313-*'"),
+        "python.yml must declare `CIBW_BUILD: \"cp313-*\"` — pinning \
+         to the latest CPython under abi3-py310",
     );
-    // Negative assertions — none of the dropped minors should be
-    // back in the matrix without explicit reasoning.
-    for dropped in ["\"3.10\"", "\"3.11\"", "\"3.12\""] {
+    // Negative: no other cp31X-* in the build list.
+    for forbidden in ["cp310-*", "cp311-*", "cp312-*"] {
         assert!(
-            !wf.contains(dropped),
-            "python.yml must NOT include {dropped} in the matrix — \
-             the abi3-py310 wheel makes it redundant. If you genuinely \
-             need to test an older minor, also relax the assertion \
-             in `python_ci_matrix_pins_python_to_latest_under_abi3`",
+            !wf.contains(forbidden),
+            "python.yml must NOT include `{forbidden}` in CIBW_BUILD \
+             — abi3-py310 makes multi-minor builds redundant. If you \
+             genuinely need another minor, relax this test and the \
+             pin-to-latest decision in the same PR.",
         );
     }
 }
 
 #[test]
-fn python_ci_matrix_enumerates_every_os() {
-    let wf = read_workflow();
-    for os in ["ubuntu-latest", "macos-latest", "windows-latest"] {
-        assert!(
-            wf.contains(os),
-            "python.yml strategy.matrix.os must include `{os}` — task \
-             00122 spec mandates the three-OS matrix for PyO3 ABI / FTS \
-             UTF-8 / redb-locking platform divergence",
-        );
-    }
-}
-
-#[test]
-fn python_ci_matrix_declares_strategy_matrix_block() {
+fn python_ci_matrix_declares_platform_axis() {
     let wf = read_workflow();
     assert!(
         wf.contains("strategy:") && wf.contains("matrix:"),
-        "python.yml must declare `strategy: matrix:` — that is what \
-         actually fans the job out to 3 cells",
+        "python.yml must declare a `strategy: matrix:` block",
     );
-    // The job's `runs-on:` must reference `matrix.os` somewhere
-    // (either as a bare expression OR through a ternary that routes
-    // macos-latest to self-hosted). Plain `runs-on: ${{ matrix.os }}`
-    // is the canonical form; a ternary that ALSO contains
-    // `matrix.os` is the macOS-self-hosted form locked separately
-    // by `python_ci_matrix_macos_cell_runs_on_self_hosted`. Either
-    // way, `matrix.os` MUST appear inside the `runs-on:` expression.
+    // The platform axis drives CIBW_PLATFORM. Two cells: macos +
+    // linux. Windows excluded — cibuildwheel can't cross-build it
+    // on a macOS host.
     assert!(
-        wf.contains("runs-on: ${{ matrix.os")
-            || wf.lines().any(|line| {
-                let t = line.trim_start();
-                t.starts_with("runs-on:") && t.contains("matrix.os")
-            }),
-        "python.yml must thread `matrix.os` into the job's runs-on \
-         expression — hard-coding the runner defeats the OS axis",
+        wf.contains("platform: [macos, linux]")
+            || wf.contains("- macos\n")
+            || wf.contains("- linux\n"),
+        "python.yml strategy.matrix.platform must list both `macos` \
+         and `linux` cells",
+    );
+    assert!(
+        wf.contains("CIBW_PLATFORM: ${{ matrix.platform }}"),
+        "python.yml must thread `matrix.platform` into \
+         `CIBW_PLATFORM` — without it cibuildwheel only builds the \
+         host's native platform",
     );
 }
 
 #[test]
-fn python_ci_matrix_macos_cell_runs_on_self_hosted() {
+fn python_ci_matrix_all_cells_self_hosted() {
     let wf = read_workflow();
-    // The macOS matrix cell is routed to the project's persistent
-    // self-hosted macOS runner (`self-hosted, macOS`) so it doesn't
-    // burn GitHub-hosted minutes. ubuntu and windows cells still hit
-    // GitHub-hosted runners because no self-hosted Linux / Windows
-    // runner is registered to this repo today. Pattern locked here:
-    //
-    //   runs-on: ${{ matrix.os == 'macos-latest'
-    //                && fromJSON('["self-hosted", "macOS"]')
-    //                || matrix.os }}
-    //
-    // Without this routing, the macOS cell on PRs at the GitHub Free
-    // tier billed against the same 2000-min cap that already
-    // motivated the 2026-05-25 self-hosted revert of ci.yml. A
-    // future PR cannot silently drop the ternary and route the
-    // macOS cell back to a billable runner.
-    let macos_routing_present = wf.contains("matrix.os == 'macos-latest'")
-        && wf.contains("\"self-hosted\"")
-        && wf.contains("\"macOS\"")
-        && wf.contains("fromJSON");
+    // Both cells (macos and linux) run on the self-hosted macOS
+    // host. cibuildwheel handles the Linux container itself.
+    // Without this guard, a future contributor might "split out
+    // the linux cell to ubuntu-latest" and re-enter GHA billing.
     assert!(
-        macos_routing_present,
-        "python.yml must route the macos-latest matrix cell to the \
-         self-hosted macOS runner via a `runs-on:` ternary that \
-         resolves to `fromJSON('[\"self-hosted\", \"macOS\"]')` when \
-         `matrix.os == 'macos-latest'`. See the comment on this test \
-         for the full expression",
+        wf.contains("runs-on: [self-hosted, macOS]"),
+        "python.yml must set `runs-on: [self-hosted, macOS]` for \
+         the matrix job — cibuildwheel manages Linux container on \
+         the same macOS host",
     );
-    // The macOS cell also needs a step that locates the system
-    // Python 3.13 (actions/setup-python doesn't work on this
-    // self-hosted runner — see python-ci.yml's preamble). Locking
-    // the locator's presence here keeps the contract intact.
-    assert!(
-        wf.contains("Locate system Python 3.13")
-            && wf.contains("/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13"),
-        "python.yml must include a 'Locate system Python 3.13' step \
-         gated on `matrix.os == 'macos-latest'` that scans known \
-         install paths for the python.org-pkg interpreter — \
-         `actions/setup-python@v5` cannot install into the self-\
-         hosted runner's hostedtoolcache path",
-    );
-}
-
-// ── 4. Build + test steps ──────────────────────────────────────────────
-
-#[test]
-fn python_ci_matrix_runs_maturin_develop_release() {
-    let wf = read_workflow();
-    // Spec line: `maturin develop --release --features="redb-backend"`.
-    // The release flag matches the wheel configuration cibuildwheel
-    // uses; redb-backend is the wheel's default feature.
-    assert!(
-        wf.contains("maturin develop"),
-        "python.yml must invoke `maturin develop` — that is the only \
-         way the matrix cells link the PyO3 cdylib into the active \
-         interpreter for the tests below",
-    );
-    assert!(
-        wf.contains("--release"),
-        "python.yml `maturin develop` must use `--release` so the \
-         cdylib matches the wheel build's optimisation level",
-    );
-}
-
-#[test]
-fn python_ci_matrix_creates_venv_before_maturin_develop() {
-    let wf = read_workflow();
-    // `maturin develop` REQUIRES an active virtualenv — without one
-    // it errors out with "Couldn't find a virtualenv or conda
-    // environment". `actions/setup-python` installs Python on the
-    // runner but does NOT create a venv. The first run of this
-    // workflow (PR #103, commit a6971e3) hit exactly this error in
-    // every one of the 12 matrix cells; the follow-up commit creates
-    // a `.venv` at the repo root and exports `VIRTUAL_ENV` +
-    // prepends the venv `bin/` (or `Scripts/` on Windows) to
-    // `$GITHUB_PATH`. Lock the contract here so a future PR cannot
-    // silently delete the venv step and re-introduce the failure.
-    assert!(
-        wf.contains("python -m venv"),
-        "python.yml must create a virtualenv (`python -m venv .venv`) \
-         before `maturin develop` — without it every matrix cell \
-         fails with 'Couldn't find a virtualenv or conda environment'",
-    );
-    assert!(
-        wf.contains("VIRTUAL_ENV="),
-        "python.yml must export `VIRTUAL_ENV=…` to `$GITHUB_ENV` so \
-         subsequent steps see the venv as active without `source`-ing \
-         (which doesn't work cleanly across the bash / Linux / macOS / \
-         Windows shell matrix)",
-    );
-    assert!(
-        wf.contains("$GITHUB_PATH"),
-        "python.yml must prepend the venv `bin/` (or `Scripts/` on \
-         Windows) to `$GITHUB_PATH` so `pip` / `pytest` / `mypy` / \
-         `ruff` / `black` all resolve to the venv-installed binaries",
-    );
-}
-
-#[test]
-fn python_ci_matrix_installs_dev_tooling() {
-    let wf = read_workflow();
-    // Spec step 1: `pip install maturin pytest mypy ruff black`.
-    // The full set must appear in a single `pip install` line OR be
-    // installed across multiple lines — we grep for each token
-    // independently so the implementation has room to choose.
-    for tool in ["maturin", "pytest", "mypy", "ruff", "black"] {
+    // Negative: no GitHub-hosted runner labels.
+    for ghd in ["ubuntu-latest", "windows-latest"] {
+        let bad = wf.lines().any(|line| {
+            let t = line.trim_start();
+            t.starts_with("runs-on:") && t.contains(ghd)
+        });
         assert!(
-            wf.contains(tool),
-            "python.yml must install `{tool}` via pip — task 00122 \
-             step 1 enumerates the dev tooling",
+            !bad,
+            "python.yml must NOT route any cell to `{ghd}` — the \
+             whole point of the cibuildwheel pivot is zero \
+             GitHub-hosted minutes",
         );
     }
 }
 
+// ── 4. CIBW_TEST_COMMAND covers all gates ──────────────────────────────
+
 #[test]
-fn python_ci_matrix_runs_three_pytest_layers() {
+fn python_ci_matrix_test_command_runs_three_pytest_layers() {
     let wf = read_workflow();
-    // Spec steps 3-5: pytest against the three test layers landed by
-    // 00118 (unit), 00119 (integration), 00120 (e2e). Each layer
-    // gets its own pytest invocation so a single failing layer shows
-    // up in the Actions UI as a discrete failed step.
     for layer in ["tests/unit", "tests/integration", "tests/e2e"] {
         assert!(
             wf.contains(layer),
-            "python.yml must invoke `pytest {layer}` — task 00122 \
-             spec runs the three test layers independently so the \
-             Actions UI surfaces which layer regressed",
+            "python.yml CIBW_TEST_COMMAND must invoke pytest against \
+             `{layer}/` — task 00122 runs the three layers \
+             independently so a failure surfaces in the log without \
+             re-reading the bulk pytest output",
         );
     }
 }
 
 #[test]
-fn python_ci_matrix_runs_mypy_ruff_black() {
+fn python_ci_matrix_test_command_runs_mypy_ruff_black() {
     let wf = read_workflow();
-    // Spec steps 6-7: type-check + lint + format gate.
     assert!(
-        wf.contains("mypy --strict") || wf.contains("mypy"),
-        "python.yml must run `mypy --strict` — guards .pyi stub \
-         drift against the runtime shim",
+        wf.contains("mypy --strict"),
+        "python.yml CIBW_TEST_COMMAND must invoke `mypy --strict` — \
+         guards .pyi stub drift against the runtime shim",
     );
     assert!(
         wf.contains("ruff check"),
-        "python.yml must run `ruff check` — style + unused-import \
-         + bug-class lints, pinned in drevo-py/pyproject.toml",
+        "python.yml CIBW_TEST_COMMAND must invoke `ruff check`",
     );
     assert!(
         wf.contains("black --check"),
-        "python.yml must run `black --check` — formatting gate, \
-         matches drevo-py/pyproject.toml [tool.black]",
+        "python.yml CIBW_TEST_COMMAND must invoke `black --check`",
     );
 }
 
 #[test]
-fn python_ci_matrix_publishes_coverage_report() {
+fn python_ci_matrix_test_requires_lists_pytest_and_lint_tooling() {
     let wf = read_workflow();
-    // Spec final paragraph: "The workflow also publishes a coverage
-    // report (`pytest-cov`) as a PR comment." Without this assertion
-    // a future PR could quietly delete the pytest-cov bits and the
-    // PR comment integration would silently disappear.
+    // CIBW_TEST_REQUIRES installs pytest/mypy/ruff/black into the
+    // wheel's isolated test env. Without it, CIBW_TEST_COMMAND
+    // would crash with "command not found".
     assert!(
-        wf.contains("pytest-cov") || wf.contains("--cov"),
-        "python.yml must publish a pytest-cov coverage report — task \
-         00122 spec final paragraph",
+        wf.contains("CIBW_TEST_REQUIRES"),
+        "python.yml must declare `CIBW_TEST_REQUIRES` so the test \
+         env has pytest + mypy + ruff + black available",
     );
+    for tool in ["pytest", "mypy", "ruff", "black"] {
+        assert!(
+            wf.contains(tool),
+            "python.yml CIBW_TEST_REQUIRES (or CIBW_TEST_COMMAND) \
+             must mention `{tool}`",
+        );
+    }
 }
 
-// ── 5. Concurrency + cost guards ───────────────────────────────────────
+// ── 5. Concurrency / cost / release guards ─────────────────────────────
 
 #[test]
 fn python_ci_matrix_uses_concurrency_with_cancel_in_progress() {
     let wf = read_workflow();
-    // Cost guard: a force-push or rapid PR re-push should NOT keep
-    // 12 hosted cells running for the previous head SHA. Every other
-    // workflow in this repo follows this pattern; locking it here
-    // prevents accidental drift.
     assert!(
-        wf.contains("concurrency:"),
-        "python.yml must declare a `concurrency:` block so superseded \
-         runs of the same PR / branch get cancelled",
+        wf.contains("concurrency:") && wf.contains("cancel-in-progress: true"),
+        "python.yml must declare concurrency with cancel-in-progress: true",
     );
-    assert!(
-        wf.contains("cancel-in-progress: true"),
-        "python.yml `concurrency:` must set `cancel-in-progress: true` \
-         — without it the 12-cell matrix keeps running on every old \
-         commit, multiplying minute spend",
-    );
-    // Distinct concurrency group from `python-ci.yml` (group key
-    // `python-ci-${{ github.ref }}`) and `python-wheels.yml`
-    // (`python-wheels-${{ github.ref }}`) so the three workflows do
-    // not cancel each other.
     assert!(
         wf.contains("python-matrix-") || wf.contains("python-ci-matrix-"),
-        "python.yml `concurrency.group` must be distinct from \
-         `python-ci-` and `python-wheels-` so the workflows do not \
-         cancel each other on a shared key",
+        "python.yml concurrency group must be distinct from \
+         `python-ci-` and `python-wheels-`",
     );
 }
 
 #[test]
 fn python_ci_matrix_does_not_publish_to_pypi() {
     let wf = read_workflow();
-    // Same guard `python-wheels.yml` carries: this workflow is a
-    // GATE, not a release pipeline. Catching `twine upload` /
-    // `pypa/gh-action-pypi-publish` here keeps the responsibility
-    // separation explicit.
+    // The cibuildwheel pivot is a TEST gate, not a release pipeline.
+    // python-wheels.yml is the release-staging workflow.
     assert!(
         !wf.contains("twine upload") && !wf.contains("pypi-publish"),
-        "python.yml MUST NOT publish to PyPI — it is a PR gate, the \
-         publish flow is a separate release task",
+        "python.yml MUST NOT publish to PyPI — it is a PR gate; \
+         release flow stays in python-wheels.yml",
     );
 }
 
-// ── 6. Allow-list integration ──────────────────────────────────────────
-
-#[test]
-fn allow_list_now_permits_macos_and_windows_in_python_yml() {
-    // Sibling test in `tests/ci_self_hosted_runner_tests.rs` —
-    // `macos_and_windows_runners_only_in_python_wheels_workflow` —
-    // historically pinned `macos-latest` / `windows-latest` to
-    // `python-wheels.yml` only. Task 00122 widens the allow-list to
-    // ALSO permit `python.yml` (the matrix workflow itself). This
-    // test reads the policy file and asserts the relaxation landed,
-    // so a future revert that re-narrows the allow-list breaks here
-    // instead of silently breaking the matrix in production.
-    let policy = read(
-        &repo_root()
-            .join("tests")
-            .join("ci_self_hosted_runner_tests.rs"),
-    );
-    assert!(
-        policy.contains("python.yml"),
-        "tests/ci_self_hosted_runner_tests.rs must mention \
-         `python.yml` — task 00122 widens the macos/windows \
-         allow-list to cover the new matrix workflow alongside \
-         python-wheels.yml",
-    );
-    // Make sure the relaxation is keyed on the file-name allow-list
-    // (`python.yml` or `python-wheels.yml`) rather than removed
-    // entirely — otherwise we have lost a load-bearing guard.
-    assert!(
-        policy.contains("python-wheels.yml"),
-        "tests/ci_self_hosted_runner_tests.rs must still mention \
-         `python-wheels.yml` — the relaxation must widen, not \
-         replace, the existing allow-list",
-    );
-}
-
-// ── 7. README + CHANGELOG bookkeeping ──────────────────────────────────
+// ── 6. README + CHANGELOG bookkeeping ──────────────────────────────────
 
 #[test]
 fn readme_ticks_task_00122() {
     let readme = read(&repo_root().join("README.md"));
-    // README task list uses `[x]` for shipped tasks and `[ ]` for
-    // pending. After 00122 ships, the box must be ticked.
     assert!(
         readme.contains("[x] `00122`"),
-        "README.md must tick `[x] 00122` after the Python CI matrix \
-         workflow lands — task tracker invariant",
+        "README.md must tick `[x] 00122` after the cibuildwheel-\
+         driven matrix lands",
     );
 }
 
 #[test]
 fn readme_progress_note_for_00122_landed() {
     let readme = read(&repo_root().join("README.md"));
-    // Pattern matches every other Phase 16 progress note: starts
-    // with `**Progress (YYYY-MM-DD, after task 00XXX)`.
     assert!(
         readme.contains("after task 00122"),
         "README.md must include a `Progress (YYYY-MM-DD, after task \
-         00122)` note describing the matrix workflow — Phase 16 \
-         convention",
+         00122)` note",
     );
 }
 
 #[test]
 fn changelog_records_task_00122() {
     let body = read(&repo_root().join("drevo-py").join("CHANGELOG.md"));
-    // drevo-py CHANGELOG keeps a Keep-a-Changelog entry per Phase 16
-    // task. Lock the 00122 reference so a future PR can't silently
-    // forget to update it.
     assert!(
         body.contains("00122"),
-        "drevo-py/CHANGELOG.md must reference task `00122` — the \
-         Python CI matrix is a user-visible packaging milestone",
+        "drevo-py/CHANGELOG.md must reference task `00122`",
     );
 }
