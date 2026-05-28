@@ -1,4 +1,4 @@
-//! Bolt session layer — Phase 11 task `00071`.
+//! Bolt session layer — Phase 11 tasks `00071` and `00072`.
 //!
 //! Sits on top of the wire codec (`00070`) and drives the per-connection
 //! state machine that official Neo4j drivers (`cypher-shell`,
@@ -6,15 +6,26 @@
 //! handshake completes:
 //!
 //! ```text
-//!                  HELLO                RUN
-//!     Connected -----------> Ready -----------> Streaming
-//!                   ^          ^                    |
-//!                   |          | PULL/DISCARD       |
-//!                   | RESET    |   (all consumed)   |
-//!                   |          +--------------------+
+//!                                    autocommit RUN
+//!                  HELLO            +----------+
+//!     Connected -----------> Ready  | RUN      v
+//!                   ^          ^----+      Streaming
+//!                   |          ^               |
+//!                   |          | PULL/DISCARD  |
+//!                   | RESET    |  (drained)    |
+//!                   |          +---------------+
+//!                   |
+//!                   |             BEGIN          RUN
+//!                   |          Ready -----> TxReady -----> TxStreaming
+//!                   |                       ^   ^             |
+//!                   |                       |   | PULL/DISCARD|
+//!                   |        COMMIT/ROLLBACK|   +-------------+
+//!                   |                       |     (drained)
+//!                   |                       v
+//!                   |                     Ready
 //!                   |
 //!                   |  any failure → Failed → (RESET) → Ready
-//!                   |
+//!                   |                          (open tx → rolled back)
 //!                  GOODBYE
 //!                   v
 //!                Defunct
@@ -22,32 +33,46 @@
 //!
 //! ## Scope
 //!
-//! This task ships six client message families and their server replies:
+//! Nine client message families decode through this layer and drive the
+//! state machine end-to-end:
 //!
 //! - `HELLO` (`0x01`) — connection setup; replies with `SUCCESS` carrying
 //!   `server` + `connection_id` metadata.
 //! - `RUN` (`0x10`) — parses + executes a Cypher query against
 //!   [`crate::cypher::executor::execute`], materialises the result, and
-//!   replies with `SUCCESS { fields: [..] }`.
+//!   replies with `SUCCESS { fields: [..] }`. Allowed both in autocommit
+//!   mode (`Ready` → `Streaming`) and inside an explicit transaction
+//!   (`TxReady` → `TxStreaming`).
 //! - `PULL` (`0x3F`) — streams up to `n` `RECORD` messages followed by
-//!   `SUCCESS { has_more: bool }`.
-//! - `DISCARD` (`0x2F`) — drops up to `n` rows without emitting `RECORD`s,
-//!   then replies `SUCCESS`.
+//!   `SUCCESS { has_more: bool }`. Returns to `Ready` or `TxReady`
+//!   depending on which branch the stream came from.
+//! - `DISCARD` (`0x2F`) — drops up to `n` rows without emitting
+//!   `RECORD`s, then replies `SUCCESS`. Same `Ready` / `TxReady`
+//!   routing as `PULL`.
+//! - `BEGIN` (`0x11`) — opens an explicit transaction (Phase 11 task
+//!   `00072`). `Ready` → `TxReady`. Calls
+//!   [`crate::db::Drevo::tx_begin`]; concurrent attempts get
+//!   `Neo.TransientError.Transaction.Outdated`.
+//! - `COMMIT` (`0x12`) — commits the in-flight transaction. `TxReady` →
+//!   `Ready`; the journal is discarded.
+//! - `ROLLBACK` (`0x13`) — rolls back the in-flight transaction.
+//!   `TxReady` → `Ready`; the journal is replayed in reverse.
 //! - `RESET` (`0x0F`) — clears any pending stream / failure and returns
-//!   to `Ready`.
-//! - `GOODBYE` (`0x02`) — closes the session; no reply (the caller closes
-//!   the socket).
+//!   to `Ready`. If a transaction was open it is rolled back as part of
+//!   the reset.
+//! - `GOODBYE` (`0x02`) — closes the session; no reply. Any open
+//!   transaction is rolled back on the way out so the next session
+//!   isn't left holding the journal slot.
 //!
 //! ## Not in scope
 //!
-//! - `BEGIN` / `COMMIT` / `ROLLBACK` (Bolt transactions) — task `00072`.
-//!   Decoding still works (so the session can replay-debug a transcript)
-//!   but the response is `FAILURE` whose `message` points the caller at
-//!   the follow-on task.
 //! - TLS — task `00073`.
 //! - Authentication (`scheme` / `principal` / `credentials` fields of
 //!   `HELLO`) — task `00074`. Today the session accepts any extras and
 //!   transitions to `Ready` regardless.
+//! - Multi-statement transaction isolation across concurrent sessions —
+//!   lands with MVCC (`00080`–`00084`). For 00072 only one explicit
+//!   transaction is in flight per [`crate::db::Drevo`] handle at a time.
 //!
 //! ## Why a materialised result
 //!
@@ -81,11 +106,11 @@ pub const GOODBYE: u8 = 0x02;
 pub const RESET: u8 = 0x0F;
 /// `RUN` request: parse + execute a Cypher query.
 pub const RUN: u8 = 0x10;
-/// `BEGIN` request: open an explicit transaction (reserved for `00072`).
+/// `BEGIN` request: open an explicit transaction (Phase 11 task `00072`).
 pub const BEGIN: u8 = 0x11;
-/// `COMMIT` request: commit the open transaction (reserved for `00072`).
+/// `COMMIT` request: commit the open explicit transaction (Phase 11 task `00072`).
 pub const COMMIT: u8 = 0x12;
-/// `ROLLBACK` request: roll back the open transaction (reserved for `00072`).
+/// `ROLLBACK` request: roll back the open explicit transaction (Phase 11 task `00072`).
 pub const ROLLBACK: u8 = 0x13;
 /// `DISCARD` request: drop pending rows without emitting them.
 pub const DISCARD: u8 = 0x2F;
@@ -129,14 +154,14 @@ pub enum ClientMessage {
         /// Per-call metadata (`mode`, `db`, `tx_timeout`, …).
         extra: BTreeMap<String, Value>,
     },
-    /// `BEGIN` — reserved for `00072`.
+    /// `BEGIN` — open an explicit transaction (Phase 11 task `00072`).
     Begin {
-        /// Per-transaction metadata.
+        /// Per-transaction metadata (`tx_timeout`, `mode`, `bookmarks`, …).
         extra: BTreeMap<String, Value>,
     },
-    /// `COMMIT` — reserved for `00072`.
+    /// `COMMIT` — commit the in-flight explicit transaction.
     Commit,
-    /// `ROLLBACK` — reserved for `00072`.
+    /// `ROLLBACK` — roll back the in-flight explicit transaction.
     Rollback,
     /// `DISCARD` — drop pending rows.
     Discard {
@@ -184,12 +209,23 @@ pub enum ServerMessage {
 pub enum State {
     /// Handshake complete, no `HELLO` yet.
     Connected,
-    /// `HELLO` accepted; ready to receive `RUN`.
+    /// `HELLO` accepted; ready to receive `RUN` (autocommit) or `BEGIN`.
     Ready,
-    /// `RUN` succeeded; `PULL` / `DISCARD` drain the pending result set.
+    /// Autocommit `RUN` succeeded; `PULL` / `DISCARD` drain the pending
+    /// result set. Returning to `Ready` releases no transactional state
+    /// because the executor has already committed.
     Streaming,
+    /// `BEGIN` accepted (Phase 11 task `00072`); inside an explicit
+    /// transaction, ready to receive `RUN` / `COMMIT` / `ROLLBACK`.
+    TxReady,
+    /// `RUN` inside an explicit transaction; `PULL` / `DISCARD` drain
+    /// the pending result set and return to [`State::TxReady`]. The
+    /// open transaction remains in flight until `COMMIT` / `ROLLBACK`.
+    TxStreaming,
     /// Any client-visible error transitioned the session here; only
-    /// `RESET` will clear it (every other message → `IGNORED`).
+    /// `RESET` will clear it (every other message → `IGNORED`). If a
+    /// transaction was open at the moment of the failure, `RESET` will
+    /// roll it back as part of the cleanup.
     Failed,
     /// `GOODBYE` was received; subsequent messages are not processed.
     Defunct,
@@ -340,6 +376,10 @@ mod codes {
     pub const PARAMETER_MISSING: &str = "Neo.ClientError.Statement.ParameterMissing";
     pub const UNSUPPORTED: &str = "Neo.DatabaseError.General.UnknownError";
     pub const STORAGE: &str = "Neo.DatabaseError.Statement.ExecutionFailed";
+    /// Returned for a second `BEGIN` while one transaction is already
+    /// in flight on the same `Drevo` handle. Phase 11 task `00072` is
+    /// single-writer; proper multi-tx isolation lands with MVCC.
+    pub const TRANSACTION_OUTDATED: &str = "Neo.TransientError.Transaction.Outdated";
 }
 
 // -------------------------------------------------------------------------
@@ -427,9 +467,9 @@ impl<'a> Session<'a> {
             } => self.handle_run(query, parameters, extra),
             ClientMessage::Pull { extra } => self.handle_pull(extra),
             ClientMessage::Discard { extra } => self.handle_discard(extra),
-            ClientMessage::Begin { .. } => self.unsupported_for_00072("BEGIN"),
-            ClientMessage::Commit => self.unsupported_for_00072("COMMIT"),
-            ClientMessage::Rollback => self.unsupported_for_00072("ROLLBACK"),
+            ClientMessage::Begin { extra } => self.handle_begin(extra),
+            ClientMessage::Commit => self.handle_commit(),
+            ClientMessage::Rollback => self.handle_rollback(),
         }
     }
 
@@ -459,6 +499,14 @@ impl<'a> Session<'a> {
     }
 
     fn handle_goodbye(&mut self) -> Vec<ServerMessage> {
+        // An explicit transaction left open at GOODBYE is rolled back
+        // so the next session that connects through the same `Drevo`
+        // handle isn't blocked by a stale journal slot. Errors during
+        // rollback are silently swallowed — the client is already
+        // walking away and no reply is delivered for `GOODBYE`.
+        if self.drevo.is_tx_active() {
+            let _ = self.drevo.tx_rollback();
+        }
         self.state = State::Defunct;
         self.pending = None;
         Vec::new()
@@ -466,10 +514,104 @@ impl<'a> Session<'a> {
 
     fn handle_reset(&mut self) -> Vec<ServerMessage> {
         self.pending = None;
+        // RESET inside an explicit transaction rolls it back, matching
+        // the Neo4j driver contract: the transaction is gone when the
+        // session returns to READY. Any rollback failure surfaces as
+        // FAILURE so the driver gets a deterministic signal rather
+        // than a torn connection.
+        if self.drevo.is_tx_active() {
+            if let Err(e) = self.drevo.tx_rollback() {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(
+                        codes::STORAGE,
+                        &format!("rollback during RESET failed: {e}"),
+                    ),
+                }];
+            }
+        }
         self.state = State::Ready;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
         }]
+    }
+
+    fn handle_begin(&mut self, _extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
+        if self.state != State::Ready {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::REQUEST_INVALID,
+                    "BEGIN outside READY state — explicit transactions cannot nest",
+                ),
+            }];
+        }
+        match self.drevo.tx_begin() {
+            Ok(()) => {
+                self.state = State::TxReady;
+                vec![ServerMessage::Success {
+                    metadata: BTreeMap::new(),
+                }]
+            }
+            Err(e) => {
+                self.state = State::Failed;
+                vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::TRANSACTION_OUTDATED, &format!("{e}")),
+                }]
+            }
+        }
+    }
+
+    fn handle_commit(&mut self) -> Vec<ServerMessage> {
+        if self.state != State::TxReady {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::REQUEST_INVALID,
+                    "COMMIT without an active transaction",
+                ),
+            }];
+        }
+        match self.drevo.tx_commit() {
+            Ok(()) => {
+                self.state = State::Ready;
+                vec![ServerMessage::Success {
+                    metadata: BTreeMap::new(),
+                }]
+            }
+            Err(e) => {
+                self.state = State::Failed;
+                vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::STORAGE, &format!("{e}")),
+                }]
+            }
+        }
+    }
+
+    fn handle_rollback(&mut self) -> Vec<ServerMessage> {
+        if self.state != State::TxReady {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::REQUEST_INVALID,
+                    "ROLLBACK without an active transaction",
+                ),
+            }];
+        }
+        match self.drevo.tx_rollback() {
+            Ok(()) => {
+                self.state = State::Ready;
+                vec![ServerMessage::Success {
+                    metadata: BTreeMap::new(),
+                }]
+            }
+            Err(e) => {
+                self.state = State::Failed;
+                vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::STORAGE, &format!("{e}")),
+                }]
+            }
+        }
     }
 
     fn handle_run(
@@ -478,12 +620,23 @@ impl<'a> Session<'a> {
         parameters: BTreeMap<String, Value>,
         _extra: BTreeMap<String, Value>,
     ) -> Vec<ServerMessage> {
-        if self.state != State::Ready {
-            self.state = State::Failed;
-            return vec![ServerMessage::Failure {
-                metadata: failure_metadata(codes::REQUEST_INVALID, "RUN outside READY state"),
-            }];
-        }
+        // RUN is legal both in autocommit mode (`Ready`) and inside an
+        // explicit transaction (`TxReady`); the resulting stream lands
+        // in `Streaming` or `TxStreaming` respectively so PULL knows
+        // which state to return to once the rows are drained.
+        let in_tx = match self.state {
+            State::Ready => false,
+            State::TxReady => true,
+            _ => {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(
+                        codes::REQUEST_INVALID,
+                        "RUN outside READY / TX_READY state",
+                    ),
+                }];
+            }
+        };
         // Convert PackStream parameters into Cypher executor values.
         let cypher_params = match params_to_cypher(parameters) {
             Ok(p) => p,
@@ -519,7 +672,11 @@ impl<'a> Session<'a> {
         self.pending = Some(PendingResult {
             rows: result.rows.into_iter(),
         });
-        self.state = State::Streaming;
+        self.state = if in_tx {
+            State::TxStreaming
+        } else {
+            State::Streaming
+        };
         let mut md: BTreeMap<String, Value> = BTreeMap::new();
         md.insert(
             "fields".to_string(),
@@ -531,8 +688,9 @@ impl<'a> Session<'a> {
     fn handle_pull(&mut self, extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
         // Take ownership of the pending stream up front; if either
         // precondition fails, restore nothing and transition to Failed.
-        let mut pending = match (self.state, self.pending.take()) {
-            (State::Streaming, Some(p)) => p,
+        let (mut pending, in_tx) = match (self.state, self.pending.take()) {
+            (State::Streaming, Some(p)) => (p, false),
+            (State::TxStreaming, Some(p)) => (p, true),
             _ => {
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
@@ -568,12 +726,15 @@ impl<'a> Session<'a> {
         }
         let mut md: BTreeMap<String, Value> = BTreeMap::new();
         if exhausted {
-            self.state = State::Ready;
+            // A drained stream returns to TX_READY when we're inside an
+            // explicit transaction, otherwise to READY. The explicit-tx
+            // remains in flight until COMMIT / ROLLBACK.
+            self.state = if in_tx { State::TxReady } else { State::Ready };
             md.insert("has_more".to_string(), Value::Boolean(false));
             // `type` per Bolt 4.4 spec: r / w / rw / s. We do not yet
             // distinguish — a query that mutated rows is captured by
-            // ExecStats; for `00071` we report `rw` so drivers don't
-            // assume read-only and accidentally retry.
+            // ExecStats; we report `rw` so drivers don't assume
+            // read-only and accidentally retry.
             md.insert("type".to_string(), Value::String("rw".to_string()));
         } else {
             // Restore the partially-drained stream so the next PULL /
@@ -586,8 +747,9 @@ impl<'a> Session<'a> {
     }
 
     fn handle_discard(&mut self, extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
-        let mut pending = match (self.state, self.pending.take()) {
-            (State::Streaming, Some(p)) => p,
+        let (mut pending, in_tx) = match (self.state, self.pending.take()) {
+            (State::Streaming, Some(p)) => (p, false),
+            (State::TxStreaming, Some(p)) => (p, true),
             _ => {
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
@@ -614,7 +776,7 @@ impl<'a> Session<'a> {
         }
         let mut md: BTreeMap<String, Value> = BTreeMap::new();
         if exhausted {
-            self.state = State::Ready;
+            self.state = if in_tx { State::TxReady } else { State::Ready };
             md.insert("has_more".to_string(), Value::Boolean(false));
             md.insert("type".to_string(), Value::String("rw".to_string()));
         } else {
@@ -622,18 +784,6 @@ impl<'a> Session<'a> {
             md.insert("has_more".to_string(), Value::Boolean(true));
         }
         vec![ServerMessage::Success { metadata: md }]
-    }
-
-    fn unsupported_for_00072(&mut self, what: &str) -> Vec<ServerMessage> {
-        self.state = State::Failed;
-        vec![ServerMessage::Failure {
-            metadata: failure_metadata(
-                codes::UNSUPPORTED,
-                &format!(
-                    "{what} not supported by 00071 — lands with task 00072 (Bolt transactions)"
-                ),
-            ),
-        }]
     }
 }
 

@@ -58,6 +58,23 @@ pub enum DrevoError {
     /// An I/O error occurred.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A second explicit transaction (`Drevo::tx_begin`) was requested
+    /// while one is already active or being rolled back. The MVP
+    /// undo-log layer (Phase 11 task `00072`) allows only a single
+    /// in-flight transaction per [`crate::db::Drevo`] handle —
+    /// concurrent isolation lands with MVCC (`00080`–`00084`). Maps to
+    /// the Bolt status code `Neo.TransientError.Transaction.Outdated`.
+    #[error("transaction already active")]
+    TransactionAlreadyActive,
+
+    /// `Drevo::tx_commit` / `Drevo::tx_rollback` was called outside of
+    /// an explicit transaction. The Bolt session machinery (Phase 11
+    /// task `00072`) guards this at the protocol layer; surfacing the
+    /// distinct variant keeps non-Bolt callers honest. Maps to
+    /// `Neo.ClientError.Transaction.TransactionNotFound` on the wire.
+    #[error("no active transaction")]
+    NoActiveTransaction,
 }
 
 /// Convenience type alias for drevo operations.

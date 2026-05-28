@@ -82,17 +82,17 @@
 #define RUN 16
 
 /**
- * `BEGIN` request: open an explicit transaction (reserved for `00072`).
+ * `BEGIN` request: open an explicit transaction (Phase 11 task `00072`).
  */
 #define BEGIN 17
 
 /**
- * `COMMIT` request: commit the open transaction (reserved for `00072`).
+ * `COMMIT` request: commit the open explicit transaction (Phase 11 task `00072`).
  */
 #define COMMIT 18
 
 /**
- * `ROLLBACK` request: roll back the open transaction (reserved for `00072`).
+ * `ROLLBACK` request: roll back the open explicit transaction (Phase 11 task `00072`).
  */
 #define ROLLBACK 19
 

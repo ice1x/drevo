@@ -39,6 +39,7 @@
 #[cfg(feature = "redb-backend")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use crate::error::{DrevoError, Result};
 use crate::fts::index as fts_index;
@@ -110,6 +111,76 @@ pub struct Drevo {
     /// [`IntegrityReport::counter_drift_repaired`] — see the module-level
     /// "WAL / crash recovery" section.
     counter_drift_repaired: AtomicBool,
+    /// Active explicit-transaction slot (Phase 11 task `00072`).
+    ///
+    /// `Idle` is the no-transaction state — every mutation autocommits as
+    /// before. `Active(journal)` is set by [`Self::tx_begin`]; while held
+    /// every mutation pushes its inverse [`UndoOp`] onto the journal so
+    /// [`Self::tx_rollback`] can undo them in reverse order.
+    /// `RollingBack` is held briefly inside `tx_rollback` to keep
+    /// concurrent `tx_begin` callers from racing in while the replay is
+    /// in flight.
+    ///
+    /// The MVP allows only one in-flight transaction per `Drevo` handle;
+    /// proper multi-writer isolation lands with MVCC (`00081`).
+    tx_state: Mutex<TxState>,
+}
+
+/// Per-`Drevo` explicit-transaction state — see the `tx_state` field on
+/// [`Drevo`] for the lifecycle.
+#[derive(Debug, Default)]
+enum TxState {
+    /// No explicit transaction is active.
+    #[default]
+    Idle,
+    /// `tx_begin` was called; mutations append to the journal.
+    Active(TxJournal),
+    /// `tx_rollback` is replaying inverses; further `tx_begin` calls are
+    /// rejected until the replay finishes.
+    RollingBack,
+}
+
+/// Append-only undo log captured during an explicit transaction.
+///
+/// Phase 11 task `00072`. Every mutation method on [`Drevo`] —
+/// `create_node`, `update_node`, `delete_node`, `create_edge`,
+/// `update_edge`, `delete_edge` — records an [`UndoOp`] here when the
+/// session has called [`Drevo::tx_begin`]. The replay in
+/// [`Drevo::tx_rollback`] walks the vector in reverse so that nested
+/// `CREATE`/`UPDATE`/`DELETE` chains unwind to the pre-transaction
+/// state (a `CREATE`-then-`UPDATE` rolls back through the update, then
+/// purges the create).
+#[derive(Debug, Default, Clone)]
+struct TxJournal {
+    ops: Vec<UndoOp>,
+}
+
+/// Inverse of a single graph mutation, captured eagerly while the
+/// transaction is live so [`Drevo::tx_rollback`] can replay it without
+/// re-reading the database.
+#[derive(Debug, Clone)]
+enum UndoOp {
+    /// A `create_node` was performed inside the tx — undo by deleting
+    /// the node at this id.
+    CreatedNode(u64),
+    /// A `create_edge` was performed inside the tx — undo by deleting
+    /// the edge at this id.
+    CreatedEdge(u64),
+    /// A `update_node` was performed inside the tx — undo by writing
+    /// the captured pre-image back at the same id.
+    UpdatedNode(Node),
+    /// A `update_edge` was performed inside the tx — undo by writing
+    /// the captured pre-image back at the same id.
+    UpdatedEdge(Edge),
+    /// A `delete_node` was performed inside the tx — undo by
+    /// re-inserting the captured pre-image at the same id. Cascade
+    /// edges are journaled separately as their own `DeletedEdge` ops
+    /// and replayed in reverse order so the node exists by the time
+    /// the edges restore.
+    DeletedNode(Node),
+    /// A `delete_edge` was performed inside the tx — undo by
+    /// re-inserting the captured pre-image at the same id.
+    DeletedEdge(Edge),
 }
 
 /// Structured report produced by [`Drevo::check_integrity`].
@@ -241,6 +312,7 @@ impl Drevo {
             next_node_id: AtomicU64::new(next_node_id),
             next_edge_id: AtomicU64::new(next_edge_id),
             counter_drift_repaired: AtomicBool::new(drift_repaired),
+            tx_state: Mutex::new(TxState::Idle),
         })
     }
 
@@ -285,6 +357,7 @@ impl Drevo {
             next_node_id: AtomicU64::new(1),
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
+            tx_state: Mutex::new(TxState::Idle),
         })
     }
 
@@ -486,6 +559,260 @@ impl Drevo {
     }
 
     // ---------------------------------------------------------------
+    // Explicit transactions (Phase 11 task `00072`)
+    // ---------------------------------------------------------------
+    //
+    // The Bolt session layer (`src/bolt/session.rs`) maps the wire
+    // `BEGIN` / `COMMIT` / `ROLLBACK` messages onto these methods. The
+    // MVP design is an undo-log replay: every mutation method below
+    // (`create_node`, `update_node`, `delete_node`, `create_edge`,
+    // `update_edge`, `delete_edge`) pushes its inverse onto the active
+    // [`TxJournal`] while the transaction is open, and `tx_rollback`
+    // walks the journal in reverse order to restore the pre-transaction
+    // state. Mutations called outside an explicit transaction continue
+    // to autocommit exactly as before — the journal slot stays `Idle`
+    // and `record_undo` becomes a no-op brief mutex acquisition.
+    //
+    // Concurrency: at most one explicit transaction is in flight per
+    // `Drevo` handle. Concurrent autocommit writes from other sessions
+    // are not blocked but *are* journaled, so a rollback affects them
+    // as well — proper isolation lands with MVCC (`00080`–`00084`).
+
+    /// Begin an explicit transaction on this `Drevo` handle.
+    ///
+    /// While a transaction is active, every successful mutation appends
+    /// an inverse operation to an internal journal. [`tx_commit`]
+    /// discards the journal; [`tx_rollback`] replays it in reverse to
+    /// restore the pre-transaction state of the mutated entities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::TransactionAlreadyActive`] if a previous
+    /// transaction is still in flight (the MVP is single-writer; proper
+    /// isolation lands with `00081`).
+    ///
+    /// [`tx_commit`]: Self::tx_commit
+    /// [`tx_rollback`]: Self::tx_rollback
+    pub fn tx_begin(&self) -> Result<()> {
+        let mut state = self.lock_tx_state();
+        match &*state {
+            TxState::Idle => {
+                *state = TxState::Active(TxJournal::default());
+                Ok(())
+            }
+            TxState::Active(_) | TxState::RollingBack => Err(DrevoError::TransactionAlreadyActive),
+        }
+    }
+
+    /// Commit the in-flight explicit transaction.
+    ///
+    /// The mutations performed since [`tx_begin`](Self::tx_begin) are
+    /// already durable on disk (each redb `put` / `delete` autocommitted
+    /// at the storage level). This call simply discards the undo
+    /// journal so no rollback is possible afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::NoActiveTransaction`] if no transaction is
+    /// active.
+    pub fn tx_commit(&self) -> Result<()> {
+        let mut state = self.lock_tx_state();
+        match &*state {
+            TxState::Active(_) => {
+                *state = TxState::Idle;
+                Ok(())
+            }
+            TxState::Idle | TxState::RollingBack => Err(DrevoError::NoActiveTransaction),
+        }
+    }
+
+    /// Roll back the in-flight explicit transaction.
+    ///
+    /// Replays the captured inverse operations in reverse order, undoing
+    /// every `create_*` / `update_*` / `delete_*` performed since
+    /// [`tx_begin`](Self::tx_begin). The journal slot is moved to
+    /// `RollingBack` before the replay starts so concurrent `tx_begin`
+    /// calls from other sessions are rejected until the rollback
+    /// completes; further mutations executed by the replay itself see
+    /// `RollingBack` and skip journaling.
+    ///
+    /// # Errors
+    ///
+    /// * [`DrevoError::NoActiveTransaction`] if no transaction is
+    ///   active.
+    /// * The first error encountered while replaying an inverse op.
+    ///   In that case the rollback is left partially applied and the
+    ///   tx slot transitions back to `Idle` (the caller's session will
+    ///   already be `Failed` and require `RESET` to recover).
+    pub fn tx_rollback(&self) -> Result<()> {
+        let journal = {
+            let mut state = self.lock_tx_state();
+            match std::mem::replace(&mut *state, TxState::RollingBack) {
+                TxState::Active(j) => j,
+                prev @ (TxState::Idle | TxState::RollingBack) => {
+                    // Restore the pre-call state so we don't leak a
+                    // bogus `RollingBack` slot on the error path.
+                    *state = prev;
+                    return Err(DrevoError::NoActiveTransaction);
+                }
+            }
+        };
+        let mut replay_err: Option<DrevoError> = None;
+        for op in journal.ops.into_iter().rev() {
+            if let Err(e) = self.apply_undo(op) {
+                replay_err = Some(e);
+                break;
+            }
+        }
+        {
+            let mut state = self.lock_tx_state();
+            *state = TxState::Idle;
+        }
+        match replay_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// `true` while an explicit transaction is in flight. Inspected by
+    /// the Bolt session machinery so it can refuse stray `COMMIT` /
+    /// `ROLLBACK` messages without going through the locking dance.
+    pub fn is_tx_active(&self) -> bool {
+        matches!(*self.lock_tx_state(), TxState::Active(_))
+    }
+
+    /// Acquire the transaction-state mutex, recovering transparently
+    /// from a poisoned lock. `unwrap_or_else(|p| p.into_inner())` is
+    /// the standard idiom for "I am OK reading the inner state even if
+    /// a previous holder panicked" — we have no consistency invariant
+    /// the panic could have broken (the journal is structurally
+    /// independent of every other field).
+    fn lock_tx_state(&self) -> std::sync::MutexGuard<'_, TxState> {
+        self.tx_state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Push an inverse op onto the active journal, if any. No-op when
+    /// the slot is `Idle` or `RollingBack`. Called by every mutation
+    /// method after the change has successfully landed on disk.
+    fn record_undo(&self, op: UndoOp) {
+        let mut state = self.lock_tx_state();
+        if let TxState::Active(j) = &mut *state {
+            j.ops.push(op);
+        }
+    }
+
+    /// Apply one captured inverse op against the live backend. Called
+    /// only from [`Self::tx_rollback`]; the tx slot is `RollingBack`
+    /// for the duration, so mutations performed here do not re-journal.
+    fn apply_undo(&self, op: UndoOp) -> Result<()> {
+        match op {
+            UndoOp::CreatedNode(id) => self.purge_node_no_journal(id),
+            UndoOp::CreatedEdge(id) => self.purge_edge_no_journal(id),
+            UndoOp::UpdatedNode(pre) => self.restore_node_in_place(&pre),
+            UndoOp::UpdatedEdge(pre) => self.restore_edge_in_place(&pre),
+            UndoOp::DeletedNode(pre) => self.recreate_node_at_id(pre),
+            UndoOp::DeletedEdge(pre) => self.recreate_edge_at_id(pre),
+        }
+    }
+
+    /// Re-insert a node and all its indexes at the given id. Called by
+    /// the rollback path to undo a `delete_node`. The caller has already
+    /// ensured (via journal ordering) that no edges reference this id.
+    fn recreate_node_at_id(&self, node: Node) -> Result<()> {
+        let data = serialize_node(&node)?;
+        self.backend.put(&node_key(node.id), &data)?;
+        self.backend
+            .put(&node_uuid_key(&node.uuid), &node.id.to_le_bytes())?;
+        self.backend
+            .put(&node_title_key(&node.title), &node.id.to_le_bytes())?;
+        self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
+        fts_index::index_node(&*self.backend, node.id, &node.title, &node.body)?;
+        self.backend
+            .put(&updated_key(node.updated_at, node.id), &[])?;
+        Ok(())
+    }
+
+    /// Re-insert an edge and all its indexes at the given id. Used by
+    /// the rollback path to undo a `delete_edge`.
+    fn recreate_edge_at_id(&self, edge: Edge) -> Result<()> {
+        let data = serialize_edge(&edge)?;
+        self.backend.put(&edge_key(edge.id), &data)?;
+        self.backend
+            .put(&edge_uuid_key(&edge.uuid), &edge.id.to_le_bytes())?;
+        self.backend
+            .put(&out_edge_key(edge.from_id, edge.id), &[])?;
+        self.backend.put(&in_edge_key(edge.to_id, edge.id), &[])?;
+        self.backend.put(&edge_kind_key(&edge.kind, edge.id), &[])?;
+        Ok(())
+    }
+
+    /// Overwrite the node at `pre.id` with the supplied pre-image,
+    /// rebuilding every secondary index from the currently-stored
+    /// values. Used by the rollback path to undo an `update_node`.
+    fn restore_node_in_place(&self, pre: &Node) -> Result<()> {
+        let current = self
+            .get_node(pre.id)?
+            .ok_or(DrevoError::NodeNotFound(pre.id))?;
+        // Drop the current secondary-index entries before re-inserting
+        // the pre-image — title / kind / FTS / updated-at may all differ.
+        self.backend.delete(&node_uuid_key(&current.uuid))?;
+        self.backend.delete(&node_title_key(&current.title))?;
+        self.backend
+            .delete(&node_kind_key(&current.kind, current.id))?;
+        fts_index::deindex_node(&*self.backend, current.id, &current.title, &current.body)?;
+        self.backend
+            .delete(&updated_key(current.updated_at, current.id))?;
+        self.recreate_node_at_id(pre.clone())
+    }
+
+    /// Overwrite the edge at `pre.id` with the supplied pre-image,
+    /// rebuilding every secondary index. Used by the rollback path to
+    /// undo an `update_edge` (endpoints / uuid don't change but kind
+    /// might).
+    fn restore_edge_in_place(&self, pre: &Edge) -> Result<()> {
+        let current = self
+            .get_edge(pre.id)?
+            .ok_or(DrevoError::EdgeNotFound(pre.id))?;
+        self.backend
+            .delete(&edge_kind_key(&current.kind, current.id))?;
+        // uuid / endpoints don't change inside `update_edge`, but
+        // rewriting the indexes unconditionally keeps the restore
+        // self-contained.
+        self.backend.delete(&edge_uuid_key(&current.uuid))?;
+        self.backend
+            .delete(&out_edge_key(current.from_id, current.id))?;
+        self.backend
+            .delete(&in_edge_key(current.to_id, current.id))?;
+        self.recreate_edge_at_id(pre.clone())
+    }
+
+    /// Remove a node and all its indexes without journaling and without
+    /// cascading to edges. The journal replay calls this after every
+    /// edge that referenced the node has already been purged (the
+    /// inverse-order replay guarantees this).
+    fn purge_node_no_journal(&self, id: u64) -> Result<()> {
+        let node = self.get_node(id)?.ok_or(DrevoError::NodeNotFound(id))?;
+        self.backend.delete(&node_key(id))?;
+        self.backend.delete(&node_uuid_key(&node.uuid))?;
+        self.backend.delete(&node_title_key(&node.title))?;
+        self.backend.delete(&node_kind_key(&node.kind, id))?;
+        fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
+        self.backend.delete(&updated_key(node.updated_at, id))?;
+        Ok(())
+    }
+
+    /// Remove an edge and all its indexes without journaling.
+    fn purge_edge_no_journal(&self, id: u64) -> Result<()> {
+        let edge = self.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
+        self.backend.delete(&edge_key(id))?;
+        self.backend.delete(&edge_uuid_key(&edge.uuid))?;
+        self.backend.delete(&out_edge_key(edge.from_id, id))?;
+        self.backend.delete(&in_edge_key(edge.to_id, id))?;
+        self.backend.delete(&edge_kind_key(&edge.kind, id))?;
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
     // Node CRUD
     // ---------------------------------------------------------------
 
@@ -528,6 +855,7 @@ impl Drevo {
         // Updated-at index (newest-first ordering)
         self.backend.put(&updated_key(node.updated_at, id), &[])?;
 
+        self.record_undo(UndoOp::CreatedNode(id));
         Ok(node)
     }
 
@@ -580,6 +908,12 @@ impl Drevo {
     pub fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
         let mut node = self.get_node(id)?.ok_or(DrevoError::NodeNotFound(id))?;
 
+        // Capture the pre-image *before* mutation so an active explicit
+        // transaction (Phase 11 task `00072`) can restore the prior
+        // state on rollback. Cheap clone — `Node` is small bincode-
+        // derived plain data.
+        let pre_image = node.clone();
+
         let old_title = node.title.clone();
         let old_body = node.body.clone();
         let old_kind = node.kind.clone();
@@ -624,6 +958,7 @@ impl Drevo {
         self.backend.delete(&updated_key(old_updated_at, id))?;
         self.backend.put(&updated_key(node.updated_at, id), &[])?;
 
+        self.record_undo(UndoOp::UpdatedNode(pre_image));
         Ok(node)
     }
 
@@ -640,6 +975,9 @@ impl Drevo {
 
         // Cascade-delete all edges connected to this node (both directions).
         // Using Direction::Both deduplicates self-loop edges automatically.
+        // Each cascade `delete_edge` records its own `DeletedEdge` undo
+        // op, so an in-flight explicit transaction can replay them in
+        // reverse and restore both the node and its edges.
         let connected_edges = self.edges_of(id, Direction::Both)?;
         for edge in &connected_edges {
             self.delete_edge(edge.id)?;
@@ -663,6 +1001,7 @@ impl Drevo {
         // Remove updated-at index
         self.backend.delete(&updated_key(node.updated_at, id))?;
 
+        self.record_undo(UndoOp::DeletedNode(node));
         Ok(())
     }
 
@@ -721,6 +1060,7 @@ impl Drevo {
         // Edge kind index
         self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
 
+        self.record_undo(UndoOp::CreatedEdge(id));
         Ok(edge)
     }
 
@@ -773,6 +1113,9 @@ impl Drevo {
 
         let mut edge = self.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
 
+        // Pre-image for explicit-tx rollback (Phase 11 task `00072`).
+        let pre_image = edge.clone();
+
         let old_kind = edge.kind.clone();
 
         edge.apply_patch(patch);
@@ -786,6 +1129,7 @@ impl Drevo {
             self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
         }
 
+        self.record_undo(UndoOp::UpdatedEdge(pre_image));
         Ok(edge)
     }
 
@@ -814,6 +1158,7 @@ impl Drevo {
         // Remove edge kind index
         self.backend.delete(&edge_kind_key(&edge.kind, id))?;
 
+        self.record_undo(UndoOp::DeletedEdge(edge));
         Ok(())
     }
 
@@ -2707,5 +3052,204 @@ mod tests {
         let new_key = updated_key(2000, 2);
         // Newer timestamp should produce a smaller key (lower inverted value)
         assert!(new_key < old_key);
+    }
+
+    // -----------------------------------------------------------------
+    // Explicit transactions (Phase 11 task `00072`).
+    //
+    // These inline tests pin the `tx_begin` / `tx_commit` / `tx_rollback`
+    // contract before the Bolt session machinery exercises it across the
+    // wire — they are the cheapest reproducer for any future regression
+    // in the journal-replay path.
+    // -----------------------------------------------------------------
+
+    fn sample_node(title: &str) -> NewNode {
+        NewNode {
+            kind: "note".into(),
+            title: title.into(),
+            body: "body".into(),
+            body_html: String::new(),
+            properties: Default::default(),
+        }
+    }
+
+    #[test]
+    fn tx_begin_then_commit_returns_to_idle() {
+        let db = Drevo::open_in_memory().unwrap();
+        assert!(!db.is_tx_active());
+        db.tx_begin().unwrap();
+        assert!(db.is_tx_active());
+        db.tx_commit().unwrap();
+        assert!(!db.is_tx_active());
+    }
+
+    #[test]
+    fn tx_begin_twice_in_a_row_is_rejected() {
+        let db = Drevo::open_in_memory().unwrap();
+        db.tx_begin().unwrap();
+        let err = db.tx_begin().unwrap_err();
+        assert!(matches!(err, DrevoError::TransactionAlreadyActive));
+    }
+
+    #[test]
+    fn tx_commit_without_begin_is_rejected() {
+        let db = Drevo::open_in_memory().unwrap();
+        let err = db.tx_commit().unwrap_err();
+        assert!(matches!(err, DrevoError::NoActiveTransaction));
+    }
+
+    #[test]
+    fn tx_rollback_without_begin_is_rejected() {
+        let db = Drevo::open_in_memory().unwrap();
+        let err = db.tx_rollback().unwrap_err();
+        assert!(matches!(err, DrevoError::NoActiveTransaction));
+    }
+
+    #[test]
+    fn tx_rollback_undoes_create_node() {
+        let db = Drevo::open_in_memory().unwrap();
+        db.tx_begin().unwrap();
+        let node = db.create_node(sample_node("alpha")).unwrap();
+        assert!(db.get_node(node.id).unwrap().is_some());
+        db.tx_rollback().unwrap();
+        assert!(db.get_node(node.id).unwrap().is_none());
+        // Title index also rolled back so the title is free again.
+        let again = db.create_node(sample_node("alpha")).unwrap();
+        assert_eq!(again.title, "alpha");
+    }
+
+    #[test]
+    fn tx_commit_keeps_create_node() {
+        let db = Drevo::open_in_memory().unwrap();
+        db.tx_begin().unwrap();
+        let node = db.create_node(sample_node("alpha")).unwrap();
+        db.tx_commit().unwrap();
+        assert!(db.get_node(node.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn tx_rollback_undoes_update_node_restoring_title_and_properties() {
+        let db = Drevo::open_in_memory().unwrap();
+        let node = db.create_node(sample_node("alpha")).unwrap();
+        db.tx_begin().unwrap();
+        let patch = NodePatch {
+            title: Some("alpha2".into()),
+            body: Some("changed".into()),
+            ..Default::default()
+        };
+        db.update_node(node.id, patch).unwrap();
+        let mid = db.get_node(node.id).unwrap().unwrap();
+        assert_eq!(mid.title, "alpha2");
+        db.tx_rollback().unwrap();
+        let after = db.get_node(node.id).unwrap().unwrap();
+        assert_eq!(after.title, "alpha");
+        assert_eq!(after.body, "body");
+        // Old title index also restored — looking it up returns the node.
+        let by_title = db.get_node_by_title("alpha").unwrap().unwrap();
+        assert_eq!(by_title.id, node.id);
+        // New title was freed.
+        assert!(db.get_node_by_title("alpha2").unwrap().is_none());
+    }
+
+    #[test]
+    fn tx_rollback_undoes_delete_node_and_restores_cascade_edges() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db.create_node(sample_node("a")).unwrap();
+        let b = db.create_node(sample_node("b")).unwrap();
+        let e = db
+            .create_edge(NewEdge {
+                from_id: a.id,
+                to_id: b.id,
+                kind: "links_to".into(),
+                weight: 1.0,
+                properties: Default::default(),
+            })
+            .unwrap();
+        db.tx_begin().unwrap();
+        db.delete_node(a.id).unwrap();
+        // Mid-tx: A and its edge are gone.
+        assert!(db.get_node(a.id).unwrap().is_none());
+        assert!(db.get_edge(e.id).unwrap().is_none());
+        db.tx_rollback().unwrap();
+        let restored_a = db.get_node(a.id).unwrap().expect("A re-created");
+        assert_eq!(restored_a.title, "a");
+        let restored_e = db.get_edge(e.id).unwrap().expect("edge re-created");
+        assert_eq!(restored_e.from_id, a.id);
+        assert_eq!(restored_e.to_id, b.id);
+        // Adjacency restored too.
+        let out = db.edges_of(a.id, Direction::Outgoing).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, e.id);
+    }
+
+    #[test]
+    fn tx_rollback_undoes_mixed_create_update_delete_chain() {
+        let db = Drevo::open_in_memory().unwrap();
+        let pre = db.create_node(sample_node("keep")).unwrap();
+        db.tx_begin().unwrap();
+        let _new = db.create_node(sample_node("tmp")).unwrap();
+        let patch = NodePatch {
+            body: Some("twiddled".into()),
+            ..Default::default()
+        };
+        db.update_node(pre.id, patch).unwrap();
+        db.delete_node(pre.id).unwrap();
+        db.tx_rollback().unwrap();
+        // Everything pre-tx is back; everything tx-only is gone.
+        let restored = db.get_node(pre.id).unwrap().unwrap();
+        assert_eq!(restored.title, "keep");
+        assert_eq!(restored.body, "body");
+        assert!(db.get_node_by_title("tmp").unwrap().is_none());
+    }
+
+    #[test]
+    fn tx_rollback_undoes_create_edge_and_update_edge() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db.create_node(sample_node("a")).unwrap();
+        let b = db.create_node(sample_node("b")).unwrap();
+        let e = db
+            .create_edge(NewEdge {
+                from_id: a.id,
+                to_id: b.id,
+                kind: "links_to".into(),
+                weight: 1.0,
+                properties: Default::default(),
+            })
+            .unwrap();
+        db.tx_begin().unwrap();
+        let e2 = db
+            .create_edge(NewEdge {
+                from_id: b.id,
+                to_id: a.id,
+                kind: "reply".into(),
+                weight: 2.0,
+                properties: Default::default(),
+            })
+            .unwrap();
+        let patch = EdgePatch {
+            kind: Some("renamed".into()),
+            weight: Some(7.0),
+            properties: None,
+        };
+        db.update_edge(e.id, patch).unwrap();
+        db.tx_rollback().unwrap();
+        assert!(db.get_edge(e2.id).unwrap().is_none());
+        let original = db.get_edge(e.id).unwrap().unwrap();
+        assert_eq!(original.kind, "links_to");
+        assert!((original.weight - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn rollback_does_not_re_journal_replayed_mutations() {
+        let db = Drevo::open_in_memory().unwrap();
+        db.tx_begin().unwrap();
+        db.create_node(sample_node("alpha")).unwrap();
+        // Rollback walks the journal, calling delete_node. If that call
+        // re-journaled itself we would end up looping; the
+        // RollingBack-state guard documented on `tx_state` prevents it.
+        db.tx_rollback().unwrap();
+        // Slot must be Idle again — a follow-up tx_begin succeeds.
+        db.tx_begin().unwrap();
+        db.tx_commit().unwrap();
     }
 }
