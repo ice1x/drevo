@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>drevo browser</title>
+  <link rel="stylesheet" href="/ui/styles.css" />
+  <!--
+    Cytoscape.js loaded from a pinned CDN — same trust model as the
+    Neo4j Browser (HTML loaded from server, JS lib pinned to a known
+    version on a public CDN). No build step, no bundler, no npm tree.
+    To go fully offline, swap the src for a local static copy and
+    add /ui/cytoscape.min.js to the embedded asset map in src/web_ui.rs.
+  -->
+  <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"
+          integrity="sha384-MZJgK7n7T0PSb7HxFXxk3PRfeWa6PrPiHsoGmYxsiRDOtNbtoSJ4Vy2dN6Bm6sPa"
+          crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">drevo browser</div>
+    <form id="search-form" class="search">
+      <input type="text" id="search-input" name="query"
+             placeholder="Full-text search (FTS)…"
+             autocomplete="off" />
+      <button type="submit">Search</button>
+    </form>
+    <div class="server-info" id="server-info">connecting…</div>
+  </header>
+
+  <main class="layout">
+    <!-- Left rail: FTS results pane. Populated on submit. -->
+    <aside class="results-pane" id="results-pane">
+      <h2>Results</h2>
+      <ol id="results-list" class="results-list">
+        <li class="results-empty">Type a query above to begin.</li>
+      </ol>
+    </aside>
+
+    <!-- Graph canvas: Cytoscape.js renders here. -->
+    <section class="graph-canvas" id="cy"></section>
+
+    <!-- Right rail: node inspector. Shows when a node is clicked. -->
+    <aside class="inspector" id="inspector">
+      <h2>Node inspector</h2>
+      <div id="inspector-body" class="inspector-body">
+        <p class="inspector-empty">
+          Click a node in the canvas to view its properties.
+        </p>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="statusbar" id="statusbar">
+    <span id="status-text">Ready.</span>
+    <span class="hint">Tip: click a result to load its 2-hop subgraph.</span>
+  </footer>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>

@@ -89,3 +89,9 @@ pub mod traversal;
 /// only with the `wasm` feature.
 #[cfg(feature = "wasm")]
 pub mod wasm;
+/// Phase 15 task `00092` — embedded Web UI handlers (HTML / JS / CSS
+/// shipped via `include_str!`). Cytoscape.js graph explorer served by
+/// the same `axum` router as the HTTP API. Compiled only with the
+/// `http` feature.
+#[cfg(feature = "http")]
+pub mod web_ui;
