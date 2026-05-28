@@ -81,6 +81,40 @@ released entry on a tagged commit.
   name, each env-var export literal, the `-matrix` suffix on both
   paths, the macOS-only gate, and the `matrix.os != 'macos-latest'`
   gate on Swatinem.
+- **ubuntu cell routed to a Linux container on the macOS self-hosted
+  host.** The `runs-on:` ternary now routes BOTH `macos-latest` AND
+  `ubuntu-latest` to `[self-hosted, macOS]`. The job for the ubuntu
+  cell runs INSIDE a `python:3.13-bookworm` Linux container via the
+  `container:` directive (`container.image:
+  ${{ matrix.container_image }}`, where `container_image` is set
+  only for the ubuntu cell via `matrix.include`). On Apple Silicon
+  the multi-arch image resolves to its `linux/arm64` variant —
+  native speed, no Rosetta emulation. drevo-py's PyO3 + redb + FTS
+  stack has no x86-specific intrinsics, so arm64 Linux is a valid
+  regression signal for the broader Linux glibc / kernel-locking /
+  FTS UTF-8 cross-platform contract.
+- New `Install container build deps` step (gated `if: matrix.os ==
+  'ubuntu-latest'`) apt-installs `build-essential`, `pkg-config`,
+  `libssl-dev`, `libffi-dev`, `git`, `ca-certificates`, `curl` and
+  symlinks `python3.13 -> /usr/local/bin/python` /
+  `/usr/local/bin/python3` so the downstream generic steps resolve
+  to the container's preinstalled 3.13 interpreter.
+- `actions/setup-python@v5` now gates `if: matrix.os ==
+  'windows-latest'` only (was `!= 'macos-latest'`). The ubuntu
+  container already ships CPython 3.13 at `/usr/local/bin` and the
+  apt-install step symlinks it.
+- Locked by `tests/python_ci_matrix_tests.rs::python_ci_matrix_ubuntu_cell_runs_in_container_on_self_hosted`
+  (23rd scaffolding case) — asserts the runs-on ternary covers both
+  macos-latest AND ubuntu-latest, declares `container.image` via
+  `matrix.container_image`, sets `container_image: python:3.13-bookworm`
+  inside `matrix.include`, declares the `Install container build
+  deps` step, and apt-installs build-essential / pkg-config /
+  libssl-dev.
+- Net effect: 0 GitHub-hosted minutes for the ubuntu cell (was
+  ~5 min cold per PR). Combined with the macOS-routing decision,
+  only the windows cell still hits GitHub-hosted runners — the
+  remaining ~3 min cold per PR until either a self-hosted Windows
+  runner or the billing limit gets resolved.
 - **Slimmed from the roadmap spec.** The original task text declared
   `python: [3.10, 3.11, 3.12, 3.13]` = 12 cells. At review time we
   pinned the Python axis to the latest interpreter only: drevo-py

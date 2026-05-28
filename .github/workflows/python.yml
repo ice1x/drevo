@@ -107,14 +107,32 @@ concurrency:
 jobs:
   test_matrix:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
-    # The macOS cell is routed to the project's persistent self-hosted
-    # macOS runner (labels: `self-hosted, macOS`) to keep it off the
-    # GitHub-hosted minutes budget. ubuntu-latest and windows-latest
-    # stay on GitHub-hosted because no self-hosted Linux / Windows
-    # runner is registered to this repo today. Ternary form is the
-    # cleanest way to vary `runs-on:` across matrix cells without
-    # giving up the shared `strategy.matrix` declaration.
-    runs-on: ${{ matrix.os == 'macos-latest' && fromJSON('["self-hosted", "macOS"]') || matrix.os }}
+    # Runner routing per cell:
+    #
+    #   * macos-latest   → self-hosted macOS runner (labels: `self-hosted, macOS`)
+    #   * ubuntu-latest  → self-hosted macOS runner + `python:3.13-bookworm` container
+    #   * windows-latest → GitHub-hosted (no self-hosted Windows runner yet)
+    #
+    # The ubuntu cell runs on the same self-hosted macOS host as the
+    # macOS cell, but the JOB executes inside a Linux container
+    # (`container:` directive below). On Apple Silicon, the
+    # `python:3.13-bookworm` multi-arch image resolves to its
+    # `linux/arm64` variant — native speed, no Rosetta emulation.
+    # This delivers the Linux signal that 00122 wanted (FTS UTF-8 on
+    # glibc, redb file locking on Linux kernel) at zero GitHub-hosted
+    # minute cost. Trade-off: the wheel built is linux-arm64, not
+    # linux-amd64 like ubuntu-latest GH-hosted would produce. For
+    # drevo-py the wheel has no architecture-specific intrinsics
+    # (PyO3 + redb + tantivy-style FTS are all portable), so this is
+    # a valid Linux regression signal.
+    runs-on: ${{ (matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest') && fromJSON('["self-hosted", "macOS"]') || matrix.os }}
+    # The container key takes effect ONLY on cells where
+    # `matrix.container_image` is set (ubuntu cell via `include:`
+    # below). macOS and Windows cells have it unset → empty string →
+    # GitHub Actions treats it as "no container" and the job runs
+    # on the host runner directly.
+    container:
+      image: ${{ matrix.container_image }}
     # Cap a stuck cell so a hung Windows `maturin develop` cannot
     # camp on a matrix slot for 6 hours.
     timeout-minutes: 30
@@ -130,8 +148,40 @@ jobs:
         # supported range. See the file's preamble for rationale.
         python: ["3.13"]
         os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          # Run the ubuntu-latest cell inside a Linux container on
+          # the self-hosted macOS host. python:3.13-bookworm has
+          # CPython 3.13 + apt + a Debian stable userland — we add
+          # build-essential / pkg-config / libssl-dev in the first
+          # in-container step below for cargo + maturin + pyo3.
+          - os: ubuntu-latest
+            container_image: python:3.13-bookworm
 
     steps:
+      - name: Install container build deps (ubuntu cell only)
+        # The ubuntu cell runs inside `python:3.13-bookworm` —
+        # CPython 3.13 is preinstalled but the toolchain for
+        # building PyO3 + redb extensions is not. Add
+        # build-essential (gcc, make), pkg-config, libssl-dev,
+        # libffi-dev, and `git` (actions/checkout calls git inside
+        # the container; the slim variants would lack it; bookworm
+        # has it, but pinning here documents the expectation).
+        # `--no-install-recommends` keeps the layer small.
+        # Container is ephemeral per-run, so this re-runs each
+        # time. ~30 s; the Docker layer cache short-circuits the
+        # base image pull on subsequent runs.
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev libffi-dev git ca-certificates curl
+          # The container ships python3.13 at /usr/local/bin; symlink
+          # as `python` so generic steps below resolve cleanly.
+          ln -sf "$(command -v python3.13)" /usr/local/bin/python
+          ln -sf "$(command -v python3.13)" /usr/local/bin/python3
+          python --version
+
       - uses: actions/checkout@v4
         with:
           # Full history mirrors `python-wheels.yml`: maturin can
@@ -145,9 +195,11 @@ jobs:
         # `/Users/runner/hostedtoolcache/` on macOS, which the
         # self-hosted runner's user cannot create — see the
         # cross-referenced rationale in `python-ci.yml`. We skip
-        # it on the macOS cell and locate the pre-installed system
-        # Python 3.13 in the next step instead.
-        if: matrix.os != 'macos-latest'
+        # it on the macOS cell (locate system Python instead) AND
+        # on the ubuntu cell (the `python:3.13-bookworm` container
+        # already ships Python 3.13 at /usr/local/bin and the
+        # apt-install step above symlinks it as `python`).
+        if: matrix.os == 'windows-latest'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}

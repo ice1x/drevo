@@ -222,6 +222,76 @@ fn python_ci_matrix_declares_strategy_matrix_block() {
 }
 
 #[test]
+fn python_ci_matrix_ubuntu_cell_runs_in_container_on_self_hosted() {
+    let wf = read_workflow();
+    // The ubuntu cell runs inside a Linux container
+    // (`python:3.13-bookworm`) on the project's persistent self-
+    // hosted macOS runner. Pattern locked here:
+    //
+    //   * runs-on ternary routes both macOS AND ubuntu to
+    //     `[self-hosted, macOS]`;
+    //   * `container.image` is set per-cell via `matrix.include` —
+    //     ubuntu gets `python:3.13-bookworm`, macos / windows get
+    //     no container (their `container_image` is unset);
+    //   * a `container build deps` step (gated
+    //     `if: matrix.os == 'ubuntu-latest'`) installs
+    //     build-essential / pkg-config / libssl-dev / libffi-dev /
+    //     git / ca-certificates / curl and symlinks
+    //     `python3.13 -> python` for the generic downstream steps.
+    //
+    // Net effect: drevo-py's Linux signal (glibc FTS UTF-8, redb
+    // kernel locking, GIL re-acquisition on Linux) runs at zero
+    // GitHub-hosted minute cost. On Apple Silicon the multi-arch
+    // image resolves to `linux/arm64` — native speed, no Rosetta.
+    assert!(
+        wf.contains("matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest'")
+            || (wf.contains("matrix.os == 'macos-latest'")
+                && wf.contains("matrix.os == 'ubuntu-latest'")
+                && wf.contains("[\"self-hosted\", \"macOS\"]")),
+        "python.yml runs-on ternary must route BOTH `macos-latest` \
+         AND `ubuntu-latest` to `[self-hosted, macOS]` — without \
+         that, the ubuntu cell falls back to ubuntu-latest GH-hosted \
+         and re-enters the billing block",
+    );
+    assert!(
+        wf.contains("container:") && wf.contains("matrix.container_image"),
+        "python.yml must declare `container.image: matrix.container_image` \
+         — the ubuntu cell's container is wired through the matrix \
+         include below; macos / windows cells have container_image \
+         unset (empty -> no container)",
+    );
+    assert!(
+        wf.contains("python:3.13-bookworm"),
+        "python.yml ubuntu cell must use the `python:3.13-bookworm` \
+         container image — CPython 3.13 preinstalled at /usr/local, \
+         multi-arch (linux/arm64 native on Apple Silicon)",
+    );
+    assert!(
+        wf.contains("container_image: python:3.13-bookworm"),
+        "python.yml must declare the container image inside \
+         `matrix.include` so it ONLY applies to the ubuntu-latest \
+         cell — declaring it at the matrix axis level would force \
+         macos/windows cells into the container too",
+    );
+    // The in-container apt-install step is required because the
+    // base image lacks the C toolchain that pyo3 + redb need.
+    assert!(
+        wf.contains("Install container build deps") && wf.contains("apt-get install"),
+        "python.yml must include an `Install container build deps` \
+         step gated `if: matrix.os == 'ubuntu-latest'` that \
+         apt-installs build-essential / pkg-config / libssl-dev / \
+         libffi-dev",
+    );
+    for pkg in ["build-essential", "pkg-config", "libssl-dev"] {
+        assert!(
+            wf.contains(pkg),
+            "python.yml ubuntu container deps step must apt-install \
+             `{pkg}` — pyo3 + redb + maturin require the C toolchain",
+        );
+    }
+}
+
+#[test]
 fn python_ci_matrix_macos_cell_uses_persistent_self_hosted_caches() {
     let wf = read_workflow();
     // On the self-hosted macOS cell we exploit native filesystem
