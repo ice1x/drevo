@@ -165,6 +165,18 @@ jobs:
       # `tests/ci_self_hosted_runner_tests.rs`.
       - name: Run unit + integration tests (nextest, ci-fast profile)
         run: cargo nextest run --no-fail-fast --profile ci-fast
+      # Phase 11 task `00073` — Bolt-over-TLS lives behind the
+      # `bolt-tls` Cargo feature, which is NOT in the default set
+      # (rustls + tokio-rustls + rustls-pemfile add ~10 transitive
+      # crates that unrelated CI gates have no reason to compile).
+      # Re-run nextest with `--features bolt-tls` over the gated
+      # binary + the inline unit tests so every push exercises the
+      # encrypted path. Targeting only the TLS test surfaces keeps
+      # the incremental cost to one rustls compile + ~3 short loopback
+      # tests; the rest of the suite is already covered by the
+      # full-suite step above.
+      - name: Run bolt-tls feature tests (nextest)
+        run: cargo nextest run --no-fail-fast --features bolt-tls --profile ci-fast -E 'binary(bolt_tls_tests) | (kind(lib) & test(bolt::tls))'
       - name: Run doctests
         run: cargo test --doc --all-features
 
@@ -188,6 +200,12 @@ jobs:
         with:
           components: clippy
       - run: cargo clippy --all-targets -- -D warnings
+      # Phase 11 task `00073` — guard the `bolt-tls`-gated code paths
+      # against clippy regressions. Default-feature clippy doesn't see
+      # `src/bolt/tls.rs` or `tests/bolt_tls_tests.rs`, so a second
+      # invocation with the feature enabled is the only way to catch
+      # warnings in those files before merge.
+      - run: cargo clippy --all-targets --features bolt-tls -- -D warnings
 
   fmt:
     name: Format

@@ -58,6 +58,19 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 tower = { version = "0.5", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+# Phase 11 task `00073` — TLS for Bolt. `rustls` is the only modern
+# pure-Rust TLS stack (openssl-sys would defeat the "embeddable, no
+# external system deps" property), `tokio-rustls` wires it into the
+# same async TCP listener used by `00070`/`00071`/`00072`, and
+# `rustls-pemfile` parses on-disk certificate/key PEM bundles. All
+# three are gated behind the `bolt-tls` Cargo feature so default
+# builds (and every CI gate that doesn't opt in) keep their dep
+# graph unchanged. The `ring` crypto provider is picked over
+# `aws-lc-rs` because it builds without a C toolchain (the existing
+# Rust-only build matrix is the constraint).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+rustls-pemfile = { version = "2", optional = true }
 
 [build-dependencies]
 cbindgen = { version = "0.27", optional = true }
@@ -67,6 +80,11 @@ default = ["redb-backend", "cbindgen", "http"]
 redb-backend = ["redb"]
 wasm = ["wasm-bindgen", "js-sys", "getrandom/wasm_js"]
 http = ["dep:axum", "dep:tokio", "dep:tower", "dep:tracing", "dep:tracing-subscriber"]
+# Phase 11 task `00073` — Bolt over TLS. Compiles `src/bolt/tls.rs`
+# and the `_tls` variants of the listener entry points. Implies
+# `http` because TLS is meaningless without the TCP listener (which
+# is itself gated on `http`).
+bolt-tls = ["http", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -80,6 +98,12 @@ tower = { version = "0.5", features = ["util"] }
 # `regex` — which matters because the proptest harness must run on the same
 # MSRV (1.85) and CI matrix as the rest of the test suite.
 proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
+# `rcgen` powers Phase 11 task `00073` — generates a self-signed
+# certificate + PKCS#8 private key in-memory at test time so the
+# Bolt TLS integration tests don't need a checked-in PEM bundle
+# (which would otherwise need rotation or pin a real authority).
+# Test-only; never compiled into the library, FFI, or WASM artifact.
+rcgen = "0.13"
 
 [[bin]]
 name = "drevo-server"
