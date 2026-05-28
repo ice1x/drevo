@@ -111,17 +111,28 @@ fn at_least_one_runs_on_directive_exists() {
 ///   (see fuzz_job_in_ci_must_be_self_hosted + docker_publish_job_must_be_self_hosted).
 /// * `ubuntu-latest` — the default GitHub-hosted runner for stable-Rust
 ///   PR gates (check, test, clippy, fmt, doc, msrv, k8s).
-/// * `macos-latest` + `windows-latest` — Phase 16 task `00116` only.
+/// * `macos-latest` + `windows-latest` — Phase 16 tasks `00116` AND
+///   `00122` only.
 ///   PyO3 wheels are platform-native (every wheel is an `.so` / `.dylib` /
 ///   `.pyd` compiled for the target OS), so the `cibuildwheel` matrix in
 ///   `.github/workflows/python-wheels.yml` MUST run on real macOS and
 ///   Windows runners to produce a `macosx_*` / `win_amd64` wheel. There
 ///   is no cross-compile path that satisfies PyO3's runtime ABI checks.
 ///   Cited: `audit/RFC-python-api.md` §2 "Wheel layout"; README §"Phase
-///   16 cross-cutting acceptance criteria" wheel matrix. Adding any new
-///   runner here requires the same kind of citation — a workflow that
-///   could run on `ubuntu-latest` is not a justification for adding a
-///   new label.
+///   16 cross-cutting acceptance criteria" wheel matrix.
+///
+///   Task `00122` widens the same allow-list to `.github/workflows/python.yml`
+///   — the Python CI matrix that exercises the three test layers (00118
+///   unit, 00119 integration, 00120 e2e) across 4 CPython × 3 OS = 12
+///   cells. The justification mirrors the wheel-matrix reasoning: PyO3
+///   ABI checks are platform-native, FTS UTF-8 tokenisation is locale-
+///   sensitive on Windows, redb file locking is kernel-dependent — only
+///   running on real macOS / Windows runners gives a meaningful
+///   regression signal for those classes.
+///
+///   Adding any new runner here requires the same kind of citation —
+///   a workflow that could run on `ubuntu-latest` is not a justification
+///   for adding a new label.
 const ALLOWED_RUNS_ON: &[&str] = &[
     "self-hosted",
     "ubuntu-latest",
@@ -264,24 +275,36 @@ fn matrix_runner_values_are_all_allow_listed() {
 }
 
 /// `macos-latest` and `windows-latest` are allowed ONLY for the Phase
-/// 16 Python wheel matrix. Any other workflow reaching for those runners
-/// is almost certainly a slip — `ubuntu-latest` covers every stable-Rust
-/// gate and `self-hosted` covers the niche-target jobs. This guard
-/// catches the slip at PR time so we don't silently drift back into
-/// burning GitHub minutes on macOS / Windows for jobs that have no
-/// platform-native reason to be there.
+/// 16 Python wheel matrix (`python-wheels.yml`, task `00116`) and the
+/// Phase 16 Python CI matrix (`python.yml`, task `00122`). Any other
+/// workflow reaching for those runners is almost certainly a slip —
+/// `ubuntu-latest` covers every stable-Rust gate and `self-hosted`
+/// covers the niche-target jobs. This guard catches the slip at PR
+/// time so we don't silently drift back into burning GitHub minutes
+/// on macOS / Windows for jobs that have no platform-native reason
+/// to be there.
+///
+/// Both `python-wheels.yml` and `python.yml` carry the same
+/// justification: PyO3 ABI checks are platform-native (no cross-
+/// compile path), FTS UTF-8 tokenisation is locale-sensitive on
+/// Windows, redb file locking is kernel-dependent. See the comment
+/// on ALLOWED_RUNS_ON above for the full citation.
+const PYTHON_OS_MATRIX_WORKFLOWS: &[&str] = &["python-wheels.yml", "python.yml"];
+
 #[test]
-fn macos_and_windows_runners_only_in_python_wheels_workflow() {
+fn macos_and_windows_runners_only_in_python_matrix_workflows() {
     let lines = all_runs_on_lines();
     for (file, line) in &lines {
         for restricted in ["macos-latest", "windows-latest"] {
             if line.contains(restricted) {
-                assert_eq!(
-                    file, "python-wheels.yml",
-                    "{file} uses `{restricted}` but only `python-wheels.yml` \
-                     is allowed to — PyO3 wheels are the sole justified \
-                     use case for macOS / Windows GitHub-hosted runners \
-                     in this repo. See the comment on ALLOWED_RUNS_ON.",
+                assert!(
+                    PYTHON_OS_MATRIX_WORKFLOWS.contains(&file.as_str()),
+                    "{file} uses `{restricted}` but only \
+                     {PYTHON_OS_MATRIX_WORKFLOWS:?} are allowed to — \
+                     PyO3 wheels (00116) and the Python CI matrix \
+                     (00122) are the sole justified use cases for \
+                     macOS / Windows GitHub-hosted runners in this \
+                     repo. See the comment on ALLOWED_RUNS_ON.",
                 );
             }
         }

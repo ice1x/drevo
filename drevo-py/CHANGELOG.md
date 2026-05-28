@@ -10,6 +10,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Tracked here as Phase 16 tasks land. Sections roll into the next
 released entry on a tagged commit.
 
+### Added — task `00122` (Python CI matrix on every PR)
+
+- `.github/workflows/python.yml` — the definition-of-done gate for
+  Phase 16. Matrix as shipped: `{python: [3.13]} × {os: [ubuntu-latest,
+  macos-latest, windows-latest]}` = 3 cells per PR.
+- **macOS cell routed to self-hosted.** The macOS matrix cell runs
+  on the project's persistent self-hosted macOS runner (labels
+  `self-hosted, macOS`) via a ternary `runs-on:` expression —
+  `${{ matrix.os == 'macos-latest' && fromJSON('["self-hosted", "macOS"]') || matrix.os }}`.
+  Zero GitHub-hosted minutes for that cell. ubuntu-latest and
+  windows-latest stay on GitHub-hosted because no self-hosted Linux
+  / Windows runner is registered to this repo yet. The ternary
+  expands cleanly when those runners come online — just extend the
+  expression with additional OS-label branches.
+- On the macOS cell `actions/setup-python@v5` is skipped (it cannot
+  install into `/Users/runner/hostedtoolcache/` under the self-
+  hosted runner's user) and replaced with a `Locate system Python
+  3.13` step (mirrors `python-ci.yml`'s pattern): scans
+  `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13`
+  + `$(command -v python3.13)` + `/opt/homebrew/bin/python3.13` +
+  `/usr/local/bin/python3.13`, then symlinks the located interpreter
+  as `python` / `python3` / `python3.13` inside
+  `$GITHUB_WORKSPACE/.py-shim` and prepends that dir to
+  `$GITHUB_PATH` so every subsequent venv / pip / maturin / pytest
+  step resolves cleanly without per-step `if:` plumbing.
+- Locked by `tests/python_ci_matrix_tests.rs::python_ci_matrix_macos_cell_runs_on_self_hosted`
+  — positive assertions on the ternary expression + `fromJSON(["self-hosted", "macOS"])`
+  + the locator step's existence. A future PR cannot silently drop
+  the routing and put the macOS cell back on a billable runner.
+- **Slimmed from the roadmap spec.** The original task text declared
+  `python: [3.10, 3.11, 3.12, 3.13]` = 12 cells. At review time we
+  pinned the Python axis to the latest interpreter only: drevo-py
+  wheels ship `abi3-py310`, meaning one binary runs on every
+  CPython 3.10+ without a recompile. Testing every minor multiplied
+  CI spend (windows-latest cold-build is ~12 min × 4 versions per OS
+  = ~50 hosted minutes wasted per PR) without meaningful coverage
+  delta. The cross-OS signal (Windows locale-sensitive FTS UTF-8,
+  redb file locking, macOS keychain) is preserved on the OS axis —
+  it's the OS axis, not the Python axis, that delivers the actual
+  platform-divergence coverage `00122` wanted. Locked by
+  `tests/python_ci_matrix_tests.rs::python_ci_matrix_pins_python_to_latest_under_abi3`
+  with positive (`"3.13"` present) + negative (`"3.10"`/`"3.11"`/`"3.12"`
+  absent) assertions so a future PR cannot silently reflate the
+  matrix without re-running this argument.
+- Per cell: `actions/setup-python@v5` (with pip cache),
+  `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2` (matrix-
+  cell-keyed so Linux/macOS/Windows caches stay separate and warm-
+  path `maturin develop` drops from ~5 min cold to ~30 s on Linux /
+  ~1 min on macOS+Windows), a venv-creation step that `python -m
+  venv .venv` + exports `VIRTUAL_ENV` + prepends the venv `bin/`
+  (or `Scripts/` on Windows under `shell: bash`) to `$GITHUB_PATH`
+  (without it `maturin develop` errored with "Couldn't find a
+  virtualenv or conda environment" in every cell — locked by
+  `python_ci_matrix_creates_venv_before_maturin_develop`),
+  `pip install maturin>=1.7,<2.0 pytest pytest-cov mypy ruff black`,
+  `maturin develop --release` (the README spec's
+  `--features="redb-backend"` was dropped — that feature lives on
+  the root `drevo` crate's `default = […]` set, not on `drevo-py`,
+  so passing it errored with "the package 'drevo-py' does not
+  contain this feature: redb-backend"), then the five per-spec
+  gates as DISCRETE Actions steps so the UI surfaces *which* layer
+  regressed: `pytest tests/unit/` (00118), `pytest tests/integration/`
+  (00119), `pytest tests/e2e/` (00120), `mypy --strict python/drevo/`,
+  `ruff check + black --check`. A final `pytest --cov=drevo
+  --cov-report=xml` runs per cell and uploads the report as a per-
+  cell `coverage-${os}-py${python}` artefact (7-day retention).
+- `coverage_comment` job — a second job on `ubuntu-latest`, triggered
+  only on `pull_request`, pulls the canonical `coverage-ubuntu-latest-py3.13`
+  artefact and posts a Markdown coverage summary to the PR via
+  `actions/github-script@v7`. Vendor-neutral (no third-party action
+  dependency); reads the XML produced by `pytest-cov` directly.
+- Cost guards: `fail-fast: false` so the 3-cell signal stays
+  diagnostic instead of collapsing to a single red mark;
+  `concurrency: python-matrix-${{ github.ref }}` with
+  `cancel-in-progress: true` (distinct from `python-ci-` and
+  `python-wheels-` so the three workflows do not cancel each other on
+  a shared key); `timeout-minutes: 30` per cell (Windows cold-build
+  worst case during local probing); path filters narrowed to
+  `drevo-py/**` + `src/**` + `Cargo.toml`/`Cargo.lock` + the workflow
+  file itself so doc-only PRs do NOT pay the matrix cost.
+- `tests/ci_self_hosted_runner_tests.rs` updated — the runner policy
+  widens the macOS/Windows allow-list from `python-wheels.yml` only to
+  the new `PYTHON_OS_MATRIX_WORKFLOWS = ["python-wheels.yml",
+  "python.yml"]` const, with the same RFC §2 wheel-layout citation:
+  PyO3 ABI checks are platform-native (no cross-compile path), FTS
+  UTF-8 tokenisation is locale-sensitive on Windows, redb file locking
+  is kernel-dependent — only running on real macOS / Windows runners
+  gives meaningful regression signal for those classes. The test
+  `macos_and_windows_runners_only_in_python_wheels_workflow` is
+  renamed `..._python_matrix_workflows` and now asserts each
+  `runs-on: macos-latest` / `windows-latest` literal lives in one of
+  the allow-listed files.
+- `tests/python_ci_matrix_tests.rs` — 19 text-level scaffolding cases
+  that grep-lock the new workflow's shape end-to-end:
+  - top-level `name:` includes `Python`;
+  - triggers `pull_request: branches:[main]`, `push:`, and
+    `workflow_dispatch:` are all present;
+  - path filters cover `drevo-py/**`, `src/**`, and the workflow file
+    itself;
+  - the slim Python axis: positive `"3.13"` present + negative
+    `"3.10"`/`"3.11"`/`"3.12"` absent assertions (locks the abi3-py310
+    "test latest only" decision against silent expansion);
+  - the venv-creation step exports `VIRTUAL_ENV=` and prepends to
+    `$GITHUB_PATH` (locks the maturin venv-discovery fix);
+  - every OS axis label (`ubuntu-latest`, `macos-latest`,
+    `windows-latest`) enumerated;
+  - `strategy: matrix:` block declared with `runs-on: ${{ matrix.os }}`
+    threading the OS axis;
+  - `maturin develop` with `--release`;
+  - every tool from `pip install maturin pytest mypy ruff black`
+    appears;
+  - three DISCRETE `pytest tests/{unit,integration,e2e}/` invocations
+    (not a single bulk `pytest tests/` call) so each layer surfaces
+    its own pass/fail signal;
+  - `mypy --strict`, `ruff check`, and `black --check` each named;
+  - `pytest-cov` / `--cov` present;
+  - `concurrency:` group named `python-matrix-…` with
+    `cancel-in-progress: true`;
+  - no `twine upload` / `pypi-publish` surface (the workflow is a GATE,
+    not a release pipeline);
+  - the runner policy file mentions `python.yml` (relaxation landed);
+  - README ticks `[x] 00122` and includes a `Progress (YYYY-MM-DD,
+    after task 00122)` note;
+  - this CHANGELOG entry references `00122`.
+- The new workflow does NOT replace `python-ci.yml`: that lightweight
+  self-hosted single-cell gate stays as the fast (~1-2 min) feedback
+  signal alongside the matrix; both run on every Python-touching PR.
+
 ### Added — task `00118` (Python unit-test suite)
 
 - `drevo-py/tests/unit/` — focused, mocked-where-possible unit suite
