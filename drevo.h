@@ -62,6 +62,71 @@
 #define HANDSHAKE_LEN 20
 
 /**
+ * `HELLO` request: connection setup.
+ */
+#define HELLO 1
+
+/**
+ * `GOODBYE` request: close the session.
+ */
+#define GOODBYE 2
+
+/**
+ * `RESET` request: clear failed state / drop pending stream.
+ */
+#define RESET 15
+
+/**
+ * `RUN` request: parse + execute a Cypher query.
+ */
+#define RUN 16
+
+/**
+ * `BEGIN` request: open an explicit transaction (reserved for `00072`).
+ */
+#define BEGIN 17
+
+/**
+ * `COMMIT` request: commit the open transaction (reserved for `00072`).
+ */
+#define COMMIT 18
+
+/**
+ * `ROLLBACK` request: roll back the open transaction (reserved for `00072`).
+ */
+#define ROLLBACK 19
+
+/**
+ * `DISCARD` request: drop pending rows without emitting them.
+ */
+#define DISCARD 47
+
+/**
+ * `PULL` request: stream pending rows as `RECORD` messages.
+ */
+#define PULL 63
+
+/**
+ * `SUCCESS` response.
+ */
+#define SUCCESS 112
+
+/**
+ * `RECORD` response: a single row from a streaming result set.
+ */
+#define RECORD 113
+
+/**
+ * `IGNORED` response: returned for messages received while in `Failed`.
+ */
+#define IGNORED 126
+
+/**
+ * `FAILURE` response.
+ */
+#define FAILURE 127
+
+/**
  * A negotiated Bolt protocol version: `major.minor`. Wire format is
  * `[0x00, 0x00, minor, major]` per the Bolt v4 spec.
  */

@@ -48,6 +48,9 @@ pub mod chunked;
 pub mod error;
 pub mod handshake;
 pub mod packstream;
+/// Bolt session state machine — HELLO / RUN / PULL / DISCARD / RESET /
+/// GOODBYE on top of the codec. Phase 11 task `00071`.
+pub mod session;
 
 /// Async TCP listener for incoming Bolt connections. Compiled only
 /// with the `http` feature (the same feature that pulls `tokio` in
