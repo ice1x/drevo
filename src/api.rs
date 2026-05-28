@@ -845,6 +845,15 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/health", with_405(get(health)))
         .route("/ready", with_405(get(ready)))
         .route("/status", with_405(get(status)))
+        // ── Phase 15 task `00092` — embedded Web UI ─────────────────
+        // Routes serve HTML / JS / CSS baked into the binary via
+        // `include_str!` (see `crate::web_ui`). Same-origin with the
+        // API above so the front-end's `fetch('/search/fts', …)` does
+        // not need CORS.
+        .route("/ui", get(crate::web_ui::serve_index))
+        .route("/ui/", get(crate::web_ui::redirect_ui_slash))
+        .route("/ui/app.js", get(crate::web_ui::serve_app_js))
+        .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
         .fallback(fallback)
         .with_state(state)
 }
