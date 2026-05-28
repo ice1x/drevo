@@ -70,6 +70,14 @@ pub mod error;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ffi;
 pub mod fts;
+/// Model Context Protocol (MCP) server — Phase 15 task `00090`. Stdio
+/// JSON-RPC 2.0 binding so AI clients (Cline / Claude Code / Claude
+/// Desktop) can drive an embedded [`db::Drevo`] handle without going
+/// through Docker / HTTP / Bolt. Pure-Rust, no extra dependencies
+/// beyond `serde_json` + `tracing` (already in the tree). Not built on
+/// `wasm32-unknown-unknown` because stdio has no meaning there.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mcp;
 pub mod model;
 /// Extracted env-var parser, validator, and bind/serve loop for the
 /// `drevo-server` binary. Compiled only with the `http` feature.
