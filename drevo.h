@@ -50,6 +50,24 @@
 #define MAX_SEARCH_LIMIT 1000
 
 /**
+ * Maximum bytes carried in a single chunk (the 16-bit length field's
+ * max value). Messages longer than this are split across multiple
+ * chunks.
+ */
+#define MAX_CHUNK_SIZE (uintptr_t)UINT16_MAX
+
+/**
+ * Total length of the client handshake message in bytes.
+ */
+#define HANDSHAKE_LEN 20
+
+/**
+ * A negotiated Bolt protocol version: `major.minor`. Wire format is
+ * `[0x00, 0x00, minor, major]` per the Bolt v4 spec.
+ */
+typedef struct BoltVersion BoltVersion;
+
+/**
  * The main drevo handle.
  *
  * Created via `Drevo::open` (disk-backed, requires the
@@ -62,6 +80,8 @@ typedef struct Drevo Drevo;
  * Opaque handle exposed to C consumers.
  */
 typedef struct Drevo drevo_t;
+
+
 
 /**
  * Open a disk-backed database at the given path.
