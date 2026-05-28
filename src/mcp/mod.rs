@@ -4,7 +4,7 @@
 //! MCP is a JSON-RPC 2.0 protocol over stdio used by AI clients (Cline,
 //! Claude Code, Claude Desktop) to discover and call tools exposed by a
 //! server process. This module ships the protocol layer, the tool
-//! registry, and the stdio dispatch loop used by the [`drevo-mcp`]
+//! registry, and the stdio dispatch loop used by the `drevo-mcp`
 //! binary (Phase 15 task `00090`).
 //!
 //! ## Why a custom implementation
@@ -18,17 +18,17 @@
 //!
 //! ## Module layout
 //!
-//! - [`protocol`] — JSON-RPC 2.0 envelope + MCP message types
-//!   (`InitializeResult`, `Tool`, `ToolCallResult`, …) with serde
-//!   round-trip tests.
-//! - [`tools`] — the [`tools::Tool`] trait, the [`tools::ToolRegistry`],
-//!   and the seven baseline tools that wrap [`crate::db::Drevo`]
-//!   (`drevo_health_check`, `drevo_count_nodes`, `drevo_node_get`,
-//!   `drevo_node_get_by_uuid`, `drevo_search_fts`, `drevo_bfs`,
-//!   `drevo_list_nodes_by_kind`).
-//! - [`server`] — the sync stdio dispatcher. Reads one JSON object per
-//!   line, dispatches via the registry, writes one JSON object per
-//!   line. EOF on stdin = graceful shutdown.
+//! - [`crate::mcp::protocol`] — JSON-RPC 2.0 envelope + MCP message
+//!   types (`InitializeResult`, `Tool`, `ToolCallResult`, …) with
+//!   serde round-trip tests.
+//! - [`crate::mcp::tools`] — the [`crate::mcp::tools::Tool`] trait,
+//!   the [`crate::mcp::tools::ToolRegistry`], and the seven baseline
+//!   tools that wrap [`crate::db::Drevo`] (`drevo_health_check`,
+//!   `drevo_count_nodes`, `drevo_node_get`, `drevo_node_get_by_uuid`,
+//!   `drevo_search_fts`, `drevo_bfs`, `drevo_list_nodes_by_kind`).
+//! - [`crate::mcp::server`] — the sync stdio dispatcher. Reads one
+//!   JSON object per line, dispatches via the registry, writes one
+//!   JSON object per line. EOF on stdin = graceful shutdown.
 //!
 //! ## What's intentionally out of scope for task `00090`
 //!
