@@ -90,6 +90,22 @@ dev = [
     "ruff>=0.5",
     "black>=24",
     "twine>=5",
+    # Test-data generation — used across the pytest suites to round-trip
+    # realistic values instead of hardcoded literals (see tests/conftest.py
+    # `fake` fixture). Default-on per the project Python-testing policy.
+    "faker>=24",
+    # Property-based / fuzz testing of the pure-Python boundary helpers
+    # (tests/unit/test_uuid_shim_properties.py) and the serialization
+    # round-trip (tests/integration/test_property_roundtrip.py). Reaches
+    # far more of the input space than hand-picked examples.
+    "hypothesis>=6",
+    # NOTE: `mutmut` (mutation testing) was evaluated for the shim and
+    # deliberately NOT adopted — see the comment at the former
+    # `[tool.mutmut]` site (removed). mutmut 3.5.0 has an upstream bug
+    # that splits `tests_dir` character-by-character when handing it to
+    # pytest, so no mutant can actually be executed under the maturin
+    # `python-source` layout; combined with the tiny (~9-line) shim
+    # surface the profit is currently nil. Revisit if the bug is fixed.
 ]
 
 [tool.maturin]
@@ -149,3 +165,12 @@ testpaths = ["tests"]
 # Catch silent collection errors — without these flags a renamed test
 # fixture surfaces as "0 tests collected" instead of an error.
 addopts = "-ra --strict-markers --strict-config"
+
+# NOTE: no `[tool.mutmut]` section. Mutation testing of the pure-Python
+# shim (`python/drevo/__init__.py`) was evaluated and NOT adopted:
+# mutmut 3.5.0 has an upstream bug that hands `tests_dir` to pytest one
+# character at a time (`['t','e','s','t','s','/', ...]`), so under this
+# package's maturin `python-source` layout no mutant can be executed —
+# all 14 generated mutants report "not checked". With the shim only ~9
+# lines, the profit does not justify shipping a broken config. Revisit
+# if the upstream bug is fixed.

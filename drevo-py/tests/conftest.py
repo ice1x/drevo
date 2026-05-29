@@ -16,6 +16,32 @@ correctness) — the gaps the text-level scaffolding tests in
 from __future__ import annotations
 
 import pytest
+from faker import Faker
+
+# Deterministic seed so every run draws the same incidental data. Pinned
+# to the date this fixture landed (2026-05-29) — an arbitrary but stable
+# constant. A flake that reproduces locally reproduces in CI too.
+_FAKE_SEED = 20260529
+
+
+@pytest.fixture
+def fake() -> Faker:
+    """A deterministically-seeded `faker.Faker` for incidental test data.
+
+    Use it for values whose *exact* content is irrelevant to what a test
+    asserts — a node body, a free-text property leaf, a sentence. The
+    discipline is **capture-and-round-trip**: generate the value once,
+    bind it to a local variable, pass that variable in, then assert the
+    stored value equals the captured variable. Never assert against a
+    fresh `fake.*()` call (it would draw a *different* value) and never
+    use faker for values a test pins exactly (kinds, weights, ids).
+
+    Seeded with a fixed constant so the suite stays reproducible: the
+    same example is drawn on every machine and every CI run.
+    """
+    instance = Faker()
+    instance.seed_instance(_FAKE_SEED)
+    return instance
 
 
 @pytest.fixture

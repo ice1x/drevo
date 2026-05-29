@@ -150,7 +150,7 @@ jobs:
       # install path — the same one end users hit — not the dev tree.
       # pytest is installed via CIBW_TEST_REQUIRES so it does not
       # contaminate the wheel's own dependency closure.
-      CIBW_TEST_REQUIRES: "pytest>=7"
+      CIBW_TEST_REQUIRES: "pytest>=7 faker hypothesis"
       # `{package}` resolves to the package source (`drevo-py/`, the
       # directory passed on the cibuildwheel command line below);
       # `{project}` would resolve to the repo root (`drevo/`), which
