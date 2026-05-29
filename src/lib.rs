@@ -92,6 +92,12 @@ pub mod model;
 pub mod server;
 pub mod storage;
 pub mod traversal;
+/// Phase 12 task `00075` — vector value type + similarity / distance
+/// functions (cosine, euclidean, dot product) over `f32` embeddings.
+/// Dependency-free and always compiled; the building block the HNSW
+/// index (`00076`) and joint graph+vector Cypher queries (`00077`) sit
+/// on top of.
+pub mod vector;
 /// `wasm-bindgen` exports for the browser / Tauri-WASM build. Compiled
 /// only with the `wasm` feature.
 #[cfg(feature = "wasm")]
