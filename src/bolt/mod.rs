@@ -57,3 +57,12 @@ pub mod session;
 /// for the HTTP server).
 #[cfg(feature = "http")]
 pub mod listener;
+
+/// TLS wrapper around the async TCP listener. Compiled only with
+/// the `bolt-tls` feature, which implies `http`. Phase 11 task
+/// `00073`. Provides [`crate::bolt::tls::TlsConfig`] (cert + key
+/// loading, in-memory or from PEM files) and the `_tls` variants
+/// of the listener entry points (`accept_handshake_tls` /
+/// `accept_and_run_session_tls`).
+#[cfg(feature = "bolt-tls")]
+pub mod tls;

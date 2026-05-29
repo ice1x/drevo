@@ -11,10 +11,20 @@
 //!
 //! ## What's intentionally minimal
 //!
-//! * No TLS — `rustls` integration lands with `00073`.
 //! * No authentication — basic auth + session tokens land with `00074`.
 //! * No back-pressure / connection limit — added when MVCC concurrency
 //!   work (`00080`+) gives us a meaningful budget to enforce.
+//!
+//! TLS lands as task `00073` in the sibling `crate::bolt::tls`
+//! module (feature `bolt-tls`; link not generated under default
+//! features so this rustdoc compiles either way). It is layered on
+//! top of the generic
+//! [`crate::bolt::listener::accept_handshake_on`] /
+//! [`crate::bolt::listener::run_session_on`] entry points exposed
+//! here — those work over *any* `AsyncRead + AsyncWrite + Unpin`
+//! stream, not just [`tokio::net::TcpStream`], so the only TLS-aware
+//! code path is the wrapper that calls `tokio_rustls::TlsAcceptor`
+//! before invoking the same handshake + session loop.
 
 use std::io;
 
@@ -41,8 +51,29 @@ pub struct AcceptedConnection {
     pub negotiated: Option<BoltVersion>,
 }
 
+/// Generic counterpart of [`AcceptedConnection`] returned by
+/// [`accept_handshake_on`]. Exists so the TLS module (task `00073`)
+/// can drive the same handshake over a `tokio_rustls::server::TlsStream`
+/// without paying for a separate code path. The `S` type parameter is
+/// whatever async stream the caller passed in — most commonly
+/// [`tokio::net::TcpStream`] (the back-compat alias [`AcceptedConnection`]
+/// remains) or a TLS-wrapped variant.
+#[derive(Debug)]
+pub struct AcceptedConnectionOn<S> {
+    /// The stream, returned past the handshake + server reply.
+    pub stream: S,
+    /// Negotiated version, or `None` if no client proposal was
+    /// supported (reply `00 00 00 00` was written; caller closes).
+    pub negotiated: Option<BoltVersion>,
+}
+
 /// Read the 20-byte client handshake from `socket`, choose a version,
 /// and write the 4-byte server reply.
+///
+/// Thin wrapper over [`accept_handshake_on`] preserved for callers
+/// that work with [`tokio::net::TcpStream`] directly. New code that
+/// needs to support both plain TCP and TLS should call
+/// [`accept_handshake_on`] instead.
 ///
 /// On success returns the still-open socket plus the chosen version
 /// (or `None` if no proposal was supported — in that case the server
@@ -53,14 +84,35 @@ pub struct AcceptedConnection {
 ///
 /// * [`super::error::BoltError::InvalidMagic`] — bad preamble.
 /// * [`super::error::BoltError::Io`] — socket read or write failure.
-pub async fn accept_handshake(mut socket: TcpStream) -> BoltResult<AcceptedConnection> {
+pub async fn accept_handshake(socket: TcpStream) -> BoltResult<AcceptedConnection> {
+    let accepted = accept_handshake_on(socket).await?;
+    Ok(AcceptedConnection {
+        socket: accepted.stream,
+        negotiated: accepted.negotiated,
+    })
+}
+
+/// Same as [`accept_handshake`] but generic over any
+/// `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS-wrapped TCP,
+/// in-memory duplex, etc. The bytes-on-the-wire layer is identical;
+/// the only thing that changes is what `S` is.
+///
+/// Used as the foundation for both the plain-TCP entry point and the
+/// TLS entry point (task `00073`).
+///
+/// # Errors
+///
+/// Same as [`accept_handshake`].
+pub async fn accept_handshake_on<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+) -> BoltResult<AcceptedConnectionOn<S>> {
     let mut buf = [0u8; HANDSHAKE_LEN];
-    socket.read_exact(&mut buf).await?;
+    stream.read_exact(&mut buf).await?;
     let parsed = parse_client_handshake(&buf)?;
     let negotiated = select_version(&parsed.versions);
     let reply = negotiated.unwrap_or(BoltVersion::NONE).to_be_bytes();
-    socket.write_all(&reply).await?;
-    Ok(AcceptedConnection { socket, negotiated })
+    stream.write_all(&reply).await?;
+    Ok(AcceptedConnectionOn { stream, negotiated })
 }
 
 /// Bundle handshake + session loop in a single call. Suitable as the
@@ -78,14 +130,38 @@ pub async fn accept_handshake(mut socket: TcpStream) -> BoltResult<AcceptedConne
 /// errors are surfaced as `FAILURE` messages on the wire and do *not*
 /// abort this loop.
 pub async fn accept_and_run_session(socket: TcpStream, drevo: &Drevo) -> BoltResult<()> {
-    let accepted = accept_handshake(socket).await?;
-    let mut socket = accepted.socket;
+    let accepted = accept_handshake_on(socket).await?;
     if accepted.negotiated.is_none() {
         return Ok(());
     }
+    let mut stream = accepted.stream;
+    run_session_on(&mut stream, drevo).await
+}
+
+/// Post-handshake session loop. Drives a [`Session`] over any
+/// `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS, etc. The
+/// stream must already be past the 20-byte handshake (call
+/// [`accept_handshake_on`] first).
+///
+/// Used directly by the TLS module (task `00073`) so the same
+/// session-loop bytes flow whether the underlying transport is plain
+/// TCP or TLS-wrapped TCP.
+///
+/// Returns once the peer hits clean EOF, sends `GOODBYE`, or the
+/// connection errors. Cypher errors are reported on the wire as
+/// `FAILURE` messages and do *not* abort the loop.
+///
+/// # Errors
+///
+/// Propagates I/O failures from the stream. Cypher / protocol errors
+/// are surfaced as Bolt `FAILURE` messages.
+pub async fn run_session_on<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    drevo: &Drevo,
+) -> BoltResult<()> {
     let mut session = Session::new(drevo);
     loop {
-        let payload = match read_message_async(&mut socket).await {
+        let payload = match read_message_async(stream).await {
             Ok(p) => p,
             Err(BoltError::Eof) => return Ok(()),
             Err(e) => return Err(e),
@@ -103,13 +179,13 @@ pub async fn accept_and_run_session(socket: TcpStream, drevo: &Drevo) -> BoltRes
                 let reply = ServerMessage::Failure {
                     metadata: super::session::protocol_failure_metadata(&format!("{e}")),
                 };
-                write_server_async(&reply, &mut socket).await?;
+                write_server_async(&reply, stream).await?;
                 continue;
             }
         };
         let replies = session.handle(msg);
         for reply in &replies {
-            write_server_async(reply, &mut socket).await?;
+            write_server_async(reply, stream).await?;
         }
         if session.state() == State::Defunct {
             return Ok(());

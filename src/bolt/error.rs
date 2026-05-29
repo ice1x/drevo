@@ -53,6 +53,19 @@ pub enum BoltError {
     /// Underlying I/O error from the socket / reader / writer.
     #[error("io error: {0}")]
     Io(#[from] io::Error),
+
+    /// TLS layer failure raised by `crate::bolt::tls` (Phase 11 task
+    /// `00073`) — bad PEM, missing private key, mismatched cert/key,
+    /// or a `tokio_rustls::TlsAcceptor::accept` handshake error.
+    ///
+    /// Carries a `String` rather than wrapping the underlying
+    /// `rustls::Error` because the `rustls` dependency is optional
+    /// (feature `bolt-tls`) — keeping the message-only payload here
+    /// means the `BoltError` enum compiles unchanged whether or not
+    /// the feature is enabled, and the rest of the Bolt module never
+    /// has to `cfg`-gate its error-matching arms.
+    #[error("tls error: {0}")]
+    Tls(String),
 }
 
 /// Convenience `Result` alias used throughout the Bolt module.
