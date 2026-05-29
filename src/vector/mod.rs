@@ -29,8 +29,12 @@
 
 /// Cosine similarity, Euclidean distance, and dot product over `&[f32]`.
 pub mod distance;
+/// HNSW approximate-nearest-neighbor index over [`Vector`] embeddings
+/// (`00076`).
+pub mod hnsw;
 
 pub use distance::{cosine_similarity, dot_product, euclidean_distance};
+pub use hnsw::{HnswConfig, HnswIndex, Metric, Neighbor};
 
 /// Errors raised by vector construction and the distance functions.
 ///
