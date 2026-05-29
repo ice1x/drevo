@@ -154,6 +154,7 @@ use crate::error::DrevoError;
 use crate::model::{
     new_uuid_v7, Direction as ModelDirection, Edge, NewEdge, NewNode, Node, Properties,
 };
+use crate::vector::cosine_similarity;
 
 // ===== Public types =========================================================
 
@@ -303,6 +304,18 @@ pub enum ExecError {
     /// of a connected node without `DETACH`.
     #[error("invalid mutation: {0}")]
     InvalidMutation(String),
+    /// A scalar function call was structurally invalid — wrong arity, an
+    /// argument of the wrong type, or (for `similar`) an underlying vector
+    /// math error such as a dimension mismatch or zero-magnitude operand.
+    #[error("invalid call to `{name}`: {message}")]
+    InvalidFunctionCall {
+        /// Function name as written (`"similar"`).
+        name: String,
+        /// Explanation of what was wrong.
+        message: String,
+        /// Source span of the offending call.
+        span: Span,
+    },
     /// Underlying storage / serialization failure.
     #[error("storage error: {0}")]
     Storage(#[from] DrevoError),
@@ -315,7 +328,8 @@ impl ExecError {
         match self {
             Self::Unsupported { span, .. }
             | Self::UnboundVariable { span, .. }
-            | Self::TypeMismatch { span, .. } => Some(*span),
+            | Self::TypeMismatch { span, .. }
+            | Self::InvalidFunctionCall { span, .. } => Some(*span),
             Self::MissingParameter(_)
             | Self::InvalidCreate(_)
             | Self::InvalidMutation(_)
@@ -752,11 +766,22 @@ fn validate_set_item_supported(item: &crate::cypher::ast::SetItem) -> ExecResult
 
 fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
     match expr {
-        Expression::FunctionCall { name, span, .. } => Err(ExecError::Unsupported {
-            feature: format!("function call `{}`", name.join(".")),
-            task: "future Phase 10 follow-up".into(),
-            span: *span,
-        }),
+        Expression::FunctionCall {
+            name, args, span, ..
+        } => {
+            if is_scalar_function_name(name) {
+                for arg in args {
+                    validate_expr_supported(arg)?;
+                }
+                Ok(())
+            } else {
+                Err(ExecError::Unsupported {
+                    feature: format!("function call `{}`", name.join(".")),
+                    task: "future Phase 10 follow-up".into(),
+                    span: *span,
+                })
+            }
+        }
         Expression::Case { span, .. } => Err(ExecError::Unsupported {
             feature: "CASE expression".into(),
             task: "future Phase 10 follow-up".into(),
@@ -869,6 +894,12 @@ fn is_aggregation_name(name: &[String]) -> bool {
     )
 }
 
+/// The supported scalar (non-aggregation) functions. Currently just
+/// `similar(...)`, drevo's joint graph+vector predicate (`00077`).
+fn is_scalar_function_name(name: &[String]) -> bool {
+    name.len() == 1 && name[0].eq_ignore_ascii_case("similar")
+}
+
 fn contains_aggregation(expr: &Expression) -> bool {
     match expr {
         Expression::FunctionCall { name, args, .. } => {
@@ -932,6 +963,14 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             span,
         } => {
             if !is_aggregation_name(name) {
+                // Scalar functions (currently `similar`) are allowed in a
+                // projection; validate their arguments and accept.
+                if is_scalar_function_name(name) {
+                    for arg in args {
+                        validate_expr_supported(arg)?;
+                    }
+                    return Ok(());
+                }
                 return Err(ExecError::Unsupported {
                     feature: format!("function call `{}`", name.join(".")),
                     task: "future Phase 10 follow-up".into(),
@@ -2946,11 +2985,9 @@ impl<'a> Executor<'a> {
                     }),
                 }
             }
-            Expression::FunctionCall { name, span, .. } => Err(ExecError::Unsupported {
-                feature: format!("function call `{}`", name.join(".")),
-                task: "future Phase 10 follow-up".into(),
-                span: *span,
-            }),
+            Expression::FunctionCall {
+                name, args, span, ..
+            } => self.eval_scalar_function(name, args, row, *span),
             Expression::Case { span, .. } => Err(ExecError::Unsupported {
                 feature: "CASE expression".into(),
                 task: "future Phase 10 follow-up".into(),
@@ -2969,6 +3006,83 @@ impl<'a> Executor<'a> {
                 })
             }
         }
+    }
+
+    /// Dispatch a non-aggregation (scalar) function call.
+    ///
+    /// Only `similar(...)` — drevo's joint graph+vector predicate — is
+    /// recognised today (`00077`). Every other name stays
+    /// [`ExecError::Unsupported`] so callers get a deterministic "not yet"
+    /// rather than a silent wrong answer.
+    fn eval_scalar_function(
+        &self,
+        name: &[String],
+        args: &[Expression],
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        if name.len() == 1 && name[0].eq_ignore_ascii_case("similar") {
+            return self.eval_similar(args, row, span);
+        }
+        Err(ExecError::Unsupported {
+            feature: format!("function call `{}`", name.join(".")),
+            task: "future Phase 10 follow-up".into(),
+            span,
+        })
+    }
+
+    /// Evaluate `similar(vector, query, threshold)` — `true` when the
+    /// cosine similarity between the first two embeddings is at least
+    /// `threshold`.
+    ///
+    /// Embeddings reach the executor as `Value::List` of numbers (a JSON
+    /// array node property). A `NULL` in any argument — most commonly a
+    /// node that simply lacks the embedding property — propagates to
+    /// `NULL`, which `WHERE` treats as falsy; this lets a similarity
+    /// filter scan a heterogeneous label without erroring on the nodes
+    /// that have no vector. Genuine data errors (a non-list argument, a
+    /// non-numeric element, a dimension mismatch, a zero-magnitude
+    /// operand) surface as [`ExecError::InvalidFunctionCall`].
+    fn eval_similar(&self, args: &[Expression], row: &Bindings, span: Span) -> ExecResultT<Value> {
+        if args.len() != 3 {
+            return Err(ExecError::InvalidFunctionCall {
+                name: "similar".into(),
+                message: format!(
+                    "expected 3 arguments (vector, query, threshold), got {}",
+                    args.len()
+                ),
+                span,
+            });
+        }
+        let lhs = self.eval(&args[0], row)?;
+        let rhs = self.eval(&args[1], row)?;
+        let threshold = self.eval(&args[2], row)?;
+
+        // NULL propagation: a missing embedding / query / threshold makes
+        // the whole predicate NULL (falsy under WHERE), never an error.
+        if matches!(lhs, Value::Null)
+            || matches!(rhs, Value::Null)
+            || matches!(threshold, Value::Null)
+        {
+            return Ok(Value::Null);
+        }
+
+        let a = similar_operand(&lhs, "vector", span)?;
+        let b = similar_operand(&rhs, "query", span)?;
+        let threshold = threshold
+            .as_number()
+            .ok_or_else(|| ExecError::InvalidFunctionCall {
+                name: "similar".into(),
+                message: format!("threshold must be a number, got {}", threshold.type_name()),
+                span,
+            })?;
+
+        let score = cosine_similarity(&a, &b).map_err(|e| ExecError::InvalidFunctionCall {
+            name: "similar".into(),
+            message: e.to_string(),
+            span,
+        })?;
+        Ok(Value::Bool(f64::from(score) >= threshold))
     }
 
     fn eval_usize(&self, expr: &Expression, row: &Bindings) -> ExecResultT<usize> {
@@ -3115,6 +3229,40 @@ fn edge_matches_pattern(
         }
     }
     Ok(true)
+}
+
+/// Convert a `similar(...)` operand into a dense `Vec<f32>`.
+///
+/// The operand must be a `Value::List` whose every element is a number;
+/// integer and float elements are both accepted (a JSON embedding array
+/// may carry either). `which` names the argument (`"vector"` / `"query"`)
+/// for the error message.
+fn similar_operand(value: &Value, which: &str, span: Span) -> ExecResultT<Vec<f32>> {
+    let Value::List(items) = value else {
+        return Err(ExecError::InvalidFunctionCall {
+            name: "similar".into(),
+            message: format!(
+                "{which} argument must be a list of numbers, got {}",
+                value.type_name()
+            ),
+            span,
+        });
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let n = item
+            .as_number()
+            .ok_or_else(|| ExecError::InvalidFunctionCall {
+                name: "similar".into(),
+                message: format!(
+                    "{which} argument element at index {index} is not a number (got {})",
+                    item.type_name()
+                ),
+                span,
+            })?;
+        out.push(n as f32);
+    }
+    Ok(out)
 }
 
 fn get_property(base: &Value, name: &str, _span: Span) -> Value {
@@ -4981,5 +5129,81 @@ mod tests {
             "got {:?}",
             e
         );
+    }
+
+    // ---- similar() scalar function (00077) --------------------------------
+
+    /// A zero span for unit-testing the pure helpers (`Span` carries no
+    /// `Default`, so we spell one out).
+    fn zero_span() -> Span {
+        Span {
+            start: 0,
+            end: 0,
+            line: 0,
+            column: 0,
+        }
+    }
+
+    #[test]
+    fn scalar_function_name_recognises_similar_case_insensitively() {
+        assert!(is_scalar_function_name(&["similar".to_string()]));
+        assert!(is_scalar_function_name(&["SIMILAR".to_string()]));
+        assert!(is_scalar_function_name(&["Similar".to_string()]));
+        assert!(!is_scalar_function_name(&["count".to_string()]));
+        assert!(!is_scalar_function_name(&["size".to_string()]));
+        // A dotted name is never a built-in scalar function.
+        assert!(!is_scalar_function_name(&[
+            "apoc".to_string(),
+            "similar".to_string()
+        ]));
+    }
+
+    #[test]
+    fn similar_operand_accepts_mixed_int_and_float_elements() {
+        let span = zero_span();
+        let v = Value::List(vec![
+            Value::Integer(1),
+            Value::Float(2.5),
+            Value::Integer(0),
+        ]);
+        assert_eq!(
+            similar_operand(&v, "vector", span).unwrap(),
+            vec![1.0_f32, 2.5, 0.0]
+        );
+    }
+
+    #[test]
+    fn similar_operand_rejects_non_list() {
+        let span = zero_span();
+        let e = similar_operand(&Value::String("nope".into()), "query", span).unwrap_err();
+        assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn similar_operand_rejects_non_numeric_element() {
+        let span = zero_span();
+        let v = Value::List(vec![Value::Float(1.0), Value::Bool(true)]);
+        let e = similar_operand(&v, "vector", span).unwrap_err();
+        match e {
+            ExecError::InvalidFunctionCall { message, .. } => {
+                assert!(message.contains("index 1"), "message was {message:?}");
+            }
+            other => panic!("expected InvalidFunctionCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zero_magnitude_embedding_is_an_error() {
+        let db = drevo();
+        run("CREATE (:Doc {title: 'zero', embedding: [0.0, 0.0]})", &db);
+        let mut params = HashMap::new();
+        params.insert(
+            "q".to_string(),
+            Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
+        );
+        let query =
+            parse("MATCH (d:Doc) WHERE similar(d.embedding, $q, 0.5) RETURN d.title").unwrap();
+        let e = execute(&query, &db, params).expect_err("zero vector must error");
+        assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
     }
 }
