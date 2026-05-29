@@ -50,9 +50,10 @@ def test_create_node_uuids_are_unique(drevo_db: drevo.Drevo) -> None:
     assert a.uuid != b.uuid
 
 
-def test_create_node_stores_body(drevo_db: drevo.Drevo) -> None:
-    node = drevo_db.create_node(drevo.NewNode(kind="note", title="t", body="rich body"))
-    assert node.body == "rich body"
+def test_create_node_stores_body(drevo_db: drevo.Drevo, fake) -> None:
+    body = fake.text()
+    node = drevo_db.create_node(drevo.NewNode(kind="note", title="t", body=body))
+    assert node.body == body
 
 
 def test_create_node_stores_body_html(drevo_db: drevo.Drevo) -> None:
@@ -60,9 +61,9 @@ def test_create_node_stores_body_html(drevo_db: drevo.Drevo) -> None:
     assert node.body_html == "<p>hi</p>"
 
 
-def test_create_node_stores_properties_dict(drevo_db: drevo.Drevo) -> None:
+def test_create_node_stores_properties_dict(drevo_db: drevo.Drevo, fake) -> None:
     """Arbitrary JSON-shaped properties survive the Rust↔Python round-trip."""
-    props = {"tags": ["a", "b"], "count": 7, "nested": {"k": "v"}}
+    props = {"tags": [fake.word(), fake.word()], "count": 7, "nested": {"k": fake.word()}}
     node = drevo_db.create_node(drevo.NewNode(kind="note", title="t", properties=props))
     assert node.properties == props
 
@@ -121,11 +122,12 @@ def test_update_node_patches_title(drevo_db: drevo.Drevo) -> None:
     assert patched.title == "after"
 
 
-def test_update_node_leaves_unset_fields_intact(drevo_db: drevo.Drevo) -> None:
+def test_update_node_leaves_unset_fields_intact(drevo_db: drevo.Drevo, fake) -> None:
     """A `NodePatch` only touches the keys explicitly set on it."""
-    saved = drevo_db.create_node(drevo.NewNode(kind="note", title="t", body="keep this body"))
+    body = fake.sentence()
+    saved = drevo_db.create_node(drevo.NewNode(kind="note", title="t", body=body))
     patched = drevo_db.update_node(saved.id, drevo.NodePatch(title="new title"))
-    assert patched.body == "keep this body"
+    assert patched.body == body
 
 
 def test_update_node_patches_properties(drevo_db: drevo.Drevo) -> None:

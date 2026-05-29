@@ -119,6 +119,18 @@ For algorithmic code (FTS tokenizer, graph invariants), use `proptest`. Tracked 
 
 ---
 
+## Python tests (`drevo-py` — the API/SDK minority)
+
+Most of drevo is Rust and follows the `cargo fmt && cargo clippy && cargo test` gates above. The `drevo-py` crate (PyO3 bindings + the `drevo.rag` SDK) is the small Python surface, and its pytest suites follow the global Python-testing rule (`~/.claude/CLAUDE.md` → "Python Testing"):
+
+- **`faker`** — default ON for generating realistic test data in `drevo-py/tests/**` (nodes, edges, document text, CBT/story/task/ERP/bug fixtures) instead of hand-rolled literals; seed it when a test must stay deterministic.
+- **`hypothesis`** — case-by-case property-based tests for logic with clear invariants (UUID round-trips, serialization, query-result shape); weigh runtime/flakiness cost before applying — skip for thin CRUD glue.
+- **`mutmut`** — case-by-case mutation testing to validate suite strength on high-value SDK logic; expensive, so apply deliberately, not as a default gate.
+
+Declare these in `drevo-py/pyproject.toml` → `[project.optional-dependencies].dev` when first used. This is additive to (not a replacement for) the Rust gates, which remain the source of truth for the core engine.
+
+---
+
 ## Order of Operations for a New Feature
 
 1. Read the relevant section of `README.md` (task `0XXXX`, definition of done)

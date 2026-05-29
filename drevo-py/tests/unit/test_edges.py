@@ -72,13 +72,14 @@ def test_create_edge_assigns_uuid(
 
 
 def test_create_edge_stores_properties(
-    drevo_db: drevo.Drevo, two_nodes: tuple[drevo.Node, drevo.Node]
+    drevo_db: drevo.Drevo, two_nodes: tuple[drevo.Node, drevo.Node], fake
 ) -> None:
     src, dst = two_nodes
+    props = {"label": fake.word(), "note": fake.sentence()}
     edge = drevo_db.create_edge(
-        drevo.NewEdge(from_id=src.id, to_id=dst.id, kind="links_to", properties={"score": 0.9})
+        drevo.NewEdge(from_id=src.id, to_id=dst.id, kind="links_to", properties=props)
     )
-    assert edge.properties == {"score": 0.9}
+    assert edge.properties == props
 
 
 @pytest.mark.parametrize("bad_weight", [float("nan"), math.inf, -math.inf])
