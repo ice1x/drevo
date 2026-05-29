@@ -10,11 +10,12 @@
 
 use std::collections::BTreeMap;
 
+use drevo::bolt::auth::{AuthOutcome, Authenticator};
 use drevo::bolt::packstream::{decode, encode, Value};
 use drevo::bolt::session::{
-    decode_client, encode_server, run_session_sync, ClientMessage, ServerMessage, Session, State,
-    BEGIN, COMMIT, DISCARD, FAILURE, GOODBYE, HELLO, IGNORED, PULL, RECORD, RESET, ROLLBACK, RUN,
-    SUCCESS,
+    decode_client, encode_server, run_session_sync, run_session_sync_with_auth, ClientMessage,
+    ServerMessage, Session, State, BEGIN, COMMIT, DISCARD, FAILURE, GOODBYE, HELLO, IGNORED, PULL,
+    RECORD, RESET, ROLLBACK, RUN, SUCCESS,
 };
 use drevo::db::Drevo;
 
@@ -1130,6 +1131,164 @@ fn run_session_sync_drives_full_hello_run_pull_goodbye_flow() {
     assert_eq!(tags[1], SUCCESS); // RUN ack
     assert_eq!(tags[2], RECORD); // PULL record
     assert_eq!(tags[3], SUCCESS); // PULL ack
+}
+
+// --- Authentication (Phase 11 task 00074) ----------------------------------
+
+/// Dependency-free test authenticator: accepts exactly one
+/// principal/credentials pair, regardless of the `bolt-auth` feature.
+/// Proves the session layer enforces *any* `Authenticator`, not just the
+/// argon2-backed `UserStore` (which is exercised in `bolt_auth_tests.rs`).
+struct FixedCreds {
+    principal: &'static str,
+    credentials: &'static str,
+}
+
+impl Authenticator for FixedCreds {
+    fn authenticate(&self, extra: &BTreeMap<String, Value>) -> AuthOutcome {
+        let principal = match extra.get("principal") {
+            Some(Value::String(s)) => s.as_str(),
+            _ => return AuthOutcome::Denied("missing principal".to_string()),
+        };
+        let credentials = match extra.get("credentials") {
+            Some(Value::String(s)) => s.as_str(),
+            _ => return AuthOutcome::Denied("missing credentials".to_string()),
+        };
+        if principal == self.principal && credentials == self.credentials {
+            AuthOutcome::Authenticated
+        } else {
+            AuthOutcome::Denied("invalid principal or credentials".to_string())
+        }
+    }
+}
+
+#[test]
+fn session_without_auth_accepts_hello_with_no_credentials() {
+    let drevo = open();
+    let mut session = Session::new(&drevo);
+    let replies = session.handle(ClientMessage::Hello { extra: dict([]) });
+    assert_eq!(session.state(), State::Ready);
+    assert_eq!(extract_struct_msg(&replies[0]), SUCCESS);
+}
+
+#[test]
+fn session_with_auth_accepts_valid_credentials() {
+    let drevo = open();
+    let auth = FixedCreds {
+        principal: "neo4j",
+        credentials: "s3cret",
+    };
+    let mut session = Session::with_auth(&drevo, &auth);
+    let replies = session.handle(ClientMessage::Hello {
+        extra: dict([
+            ("scheme", Value::String("basic".to_string())),
+            ("principal", Value::String("neo4j".to_string())),
+            ("credentials", Value::String("s3cret".to_string())),
+        ]),
+    });
+    assert_eq!(session.state(), State::Ready);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(extract_struct_msg(&replies[0]), SUCCESS);
+}
+
+#[test]
+fn session_with_auth_denies_bad_credentials_and_goes_defunct() {
+    let drevo = open();
+    let auth = FixedCreds {
+        principal: "neo4j",
+        credentials: "s3cret",
+    };
+    let mut session = Session::with_auth(&drevo, &auth);
+    let replies = session.handle(ClientMessage::Hello {
+        extra: dict([
+            ("principal", Value::String("neo4j".to_string())),
+            ("credentials", Value::String("wrong".to_string())),
+        ]),
+    });
+    assert_eq!(replies.len(), 1);
+    match &replies[0] {
+        ServerMessage::Failure { metadata } => {
+            assert_eq!(
+                metadata.get("code"),
+                Some(&Value::String(
+                    "Neo.ClientError.Security.Unauthorized".to_string()
+                ))
+            );
+        }
+        other => panic!("expected FAILURE, got {other:?}"),
+    }
+    // Failed auth closes the connection — the next message is IGNORED.
+    assert_eq!(session.state(), State::Defunct);
+}
+
+#[test]
+fn run_session_sync_with_auth_rejects_bad_password_then_closes() {
+    use drevo::bolt::chunked::{read_message, write_message};
+    use std::io::Cursor;
+
+    let drevo = open();
+    let auth = FixedCreds {
+        principal: "neo4j",
+        credentials: "s3cret",
+    };
+
+    // A driver that fails auth then (optimistically) sends RUN. The RUN
+    // must never execute — the connection is gone after the FAILURE.
+    let mut client_bytes: Vec<u8> = Vec::new();
+    for msg in [
+        ClientMessage::Hello {
+            extra: dict([
+                ("principal", Value::String("neo4j".to_string())),
+                ("credentials", Value::String("nope".to_string())),
+            ]),
+        },
+        ClientMessage::Run {
+            query: "CREATE (n:Secret) RETURN n".to_string(),
+            parameters: dict([]),
+            extra: dict([]),
+        },
+    ] {
+        let value = client_message_to_value(&msg);
+        let mut payload = Vec::new();
+        encode(&value, &mut payload).unwrap();
+        write_message(&payload, &mut client_bytes).unwrap();
+    }
+
+    let mut reader = Cursor::new(client_bytes);
+    let mut writer: Vec<u8> = Vec::new();
+    run_session_sync_with_auth(&mut reader, &mut writer, &drevo, &auth).expect("session loop");
+
+    let mut server_msgs = Vec::new();
+    let mut cur = Cursor::new(writer);
+    while let Ok(payload) = read_message(&mut cur) {
+        let (val, rest) = decode(&payload).unwrap();
+        assert!(rest.is_empty());
+        server_msgs.push(val);
+    }
+
+    // Exactly one reply: the auth FAILURE. The RUN was never processed
+    // because the loop returned once the session went Defunct.
+    assert_eq!(server_msgs.len(), 1);
+    let (tag, fields) = extract_struct(server_msgs[0].clone());
+    assert_eq!(tag, FAILURE);
+    let md = extract_dict(fields[0].clone());
+    assert_eq!(
+        md.get("code"),
+        Some(&Value::String(
+            "Neo.ClientError.Security.Unauthorized".to_string()
+        ))
+    );
+    // The CREATE never ran.
+    assert!(drevo.list_recent(10).unwrap().is_empty());
+}
+
+fn extract_struct_msg(msg: &ServerMessage) -> u8 {
+    match msg {
+        ServerMessage::Success { .. } => SUCCESS,
+        ServerMessage::Failure { .. } => FAILURE,
+        ServerMessage::Record { .. } => RECORD,
+        ServerMessage::Ignored => IGNORED,
+    }
 }
 
 fn client_message_to_value(msg: &ClientMessage) -> Value {

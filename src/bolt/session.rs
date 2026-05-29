@@ -64,12 +64,19 @@
 //!   transaction is rolled back on the way out so the next session
 //!   isn't left holding the journal slot.
 //!
+//! ## Authentication (task `00074`)
+//!
+//! [`Session::new`](crate::bolt::session::Session::new) accepts any
+//! `HELLO` extras (loopback / embedded use).
+//! [`Session::with_auth`](crate::bolt::session::Session::with_auth) binds a
+//! [`crate::bolt::auth::Authenticator`] that validates the `scheme` /
+//! `principal` / `credentials` tuple before reaching `Ready`; a denial
+//! replies `Neo.ClientError.Security.Unauthorized` and marks the
+//! session `Defunct`.
+//!
 //! ## Not in scope
 //!
 //! - TLS — task `00073`.
-//! - Authentication (`scheme` / `principal` / `credentials` fields of
-//!   `HELLO`) — task `00074`. Today the session accepts any extras and
-//!   transitions to `Ready` regardless.
 //! - Multi-statement transaction isolation across concurrent sessions —
 //!   lands with MVCC (`00080`–`00084`). For 00072 only one explicit
 //!   transaction is in flight per [`crate::db::Drevo`] handle at a time.
@@ -87,6 +94,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::bolt::auth::{AuthOutcome, Authenticator};
 use crate::bolt::chunked::{read_message, write_message};
 use crate::bolt::error::{BoltError, BoltResult};
 use crate::bolt::packstream::{decode, encode, Value};
@@ -376,6 +384,11 @@ mod codes {
     pub const PARAMETER_MISSING: &str = "Neo.ClientError.Statement.ParameterMissing";
     pub const UNSUPPORTED: &str = "Neo.DatabaseError.General.UnknownError";
     pub const STORAGE: &str = "Neo.DatabaseError.Statement.ExecutionFailed";
+    /// Returned when a `HELLO` carries missing / wrong / unsupported
+    /// authentication credentials and the session is bound to an
+    /// [`Authenticator`](crate::bolt::auth::Authenticator). Phase 11
+    /// task `00074`.
+    pub const UNAUTHORIZED: &str = "Neo.ClientError.Security.Unauthorized";
     /// Returned for a second `BEGIN` while one transaction is already
     /// in flight on the same `Drevo` handle. Phase 11 task `00072` is
     /// single-writer; proper multi-tx isolation lands with MVCC.
@@ -405,6 +418,11 @@ pub struct Session<'a> {
     /// Materialised result set for the active `RUN` (set in
     /// `Ready`→`Streaming`, drained by `PULL`/`DISCARD`).
     pending: Option<PendingResult>,
+    /// Optional credential check applied to `HELLO`. `None` accepts any
+    /// connection (loopback / embedded use); `Some` enforces the
+    /// `scheme`/`principal`/`credentials` tuple before reaching
+    /// [`State::Ready`]. Phase 11 task `00074`.
+    authenticator: Option<&'a dyn Authenticator>,
 }
 
 struct PendingResult {
@@ -414,7 +432,24 @@ struct PendingResult {
 impl<'a> Session<'a> {
     /// Create a new session bound to `drevo`. Starts in
     /// [`State::Connected`]; the caller must send `HELLO` next.
+    ///
+    /// No authentication is enforced — every `HELLO` is accepted. Use
+    /// [`Session::with_auth`](crate::bolt::session::Session::with_auth) to require credentials.
     pub fn new(drevo: &'a Drevo) -> Self {
+        Self::build(drevo, None)
+    }
+
+    /// Create a new session that authenticates every `HELLO` against
+    /// `authenticator` before transitioning to [`State::Ready`]. A
+    /// `HELLO` with missing / wrong / unsupported credentials is
+    /// answered with a `Neo.ClientError.Security.Unauthorized` failure
+    /// and the connection is marked [`State::Defunct`]. Phase 11 task
+    /// `00074`.
+    pub fn with_auth(drevo: &'a Drevo, authenticator: &'a dyn Authenticator) -> Self {
+        Self::build(drevo, Some(authenticator))
+    }
+
+    fn build(drevo: &'a Drevo, authenticator: Option<&'a dyn Authenticator>) -> Self {
         let id = CONNECTION_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
             drevo,
@@ -422,6 +457,7 @@ impl<'a> Session<'a> {
             server_agent: format!("drevo/{}", env!("CARGO_PKG_VERSION")),
             connection_id: format!("drevo-bolt-{id}"),
             pending: None,
+            authenticator,
         }
     }
 
@@ -473,7 +509,7 @@ impl<'a> Session<'a> {
         }
     }
 
-    fn handle_hello(&mut self, _extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
+    fn handle_hello(&mut self, extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
         if self.state != State::Connected {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
@@ -483,8 +519,19 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
-        // 00074 will validate the `scheme` / `principal` / `credentials`
-        // tuple. For now, accept any extras.
+        // Validate the `scheme` / `principal` / `credentials` tuple when
+        // an authenticator is bound (Phase 11 task `00074`). A denial
+        // marks the connection Defunct after the FAILURE is written —
+        // the Bolt contract is to close the socket on a failed auth, and
+        // the session loops return once they observe `Defunct`.
+        if let Some(auth) = self.authenticator {
+            if let AuthOutcome::Denied(reason) = auth.authenticate(&extra) {
+                self.state = State::Defunct;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::UNAUTHORIZED, &reason),
+                }];
+            }
+        }
         self.state = State::Ready;
         let mut md: BTreeMap<String, Value> = BTreeMap::new();
         md.insert(
@@ -809,7 +856,32 @@ pub fn run_session_sync<R: Read, W: Write>(
     writer: &mut W,
     drevo: &Drevo,
 ) -> BoltResult<()> {
-    let mut session = Session::new(drevo);
+    run_session_sync_inner(reader, writer, Session::new(drevo))
+}
+
+/// Authenticating counterpart of [`run_session_sync`]. Every `HELLO` is
+/// checked against `authenticator`; a denial is reported as a
+/// `Neo.ClientError.Security.Unauthorized` `FAILURE` and the loop
+/// returns (the connection is closed). Phase 11 task `00074`.
+///
+/// # Errors
+///
+/// Same as [`run_session_sync`] — only codec-level failures abort the
+/// loop; auth denials and Cypher errors surface as `FAILURE` messages.
+pub fn run_session_sync_with_auth<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    drevo: &Drevo,
+    authenticator: &dyn Authenticator,
+) -> BoltResult<()> {
+    run_session_sync_inner(reader, writer, Session::with_auth(drevo, authenticator))
+}
+
+fn run_session_sync_inner<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    mut session: Session<'_>,
+) -> BoltResult<()> {
     loop {
         let payload = match read_message(reader) {
             Ok(p) => p,

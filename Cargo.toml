@@ -71,6 +71,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
 rustls-pemfile = { version = "2", optional = true }
+# Phase 11 task `00074` — authentication for Bolt. `argon2` is the
+# modern, pure-Rust password-hashing standard (Argon2id), so the user
+# table stores PHC-format salted hashes — never plaintext or an
+# unsalted digest. It is pure Rust (no C toolchain, preserving the
+# "embeddable, no external system deps" property) and is gated behind
+# the `bolt-auth` Cargo feature so default builds (and every CI gate
+# that doesn't opt in) keep their dependency graph unchanged. The
+# `Authenticator` trait + `AuthOutcome` in `src/bolt/auth.rs` are
+# dependency-free and always compiled; only the argon2-backed
+# `UserStore` is feature-gated.
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "rand", "std"], optional = true }
 
 [build-dependencies]
 cbindgen = { version = "0.27", optional = true }
@@ -85,6 +96,13 @@ http = ["dep:axum", "dep:tokio", "dep:tower", "dep:tracing", "dep:tracing-subscr
 # `http` because TLS is meaningless without the TCP listener (which
 # is itself gated on `http`).
 bolt-tls = ["http", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
+# Phase 11 task `00074` — authentication for Bolt. Compiles the
+# argon2-backed `UserStore` in `src/bolt/auth.rs` (basic auth +
+# session tokens + user table). Does NOT imply `http`: the auth
+# logic + `run_session_sync_with_auth` driver are transport-agnostic
+# (plain `std::io::Read`/`Write`); the async listener `_with_auth`
+# entry points are independently gated on `http`.
+bolt-auth = ["dep:argon2"]
 
 [dev-dependencies]
 tempfile = "3"
