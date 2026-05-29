@@ -177,6 +177,14 @@ jobs:
       # full-suite step above.
       - name: Run bolt-tls feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features bolt-tls --profile ci-fast -E 'binary(bolt_tls_tests) | (kind(lib) & test(bolt::tls))'
+      # Phase 11 task `00074` — Bolt authentication. The argon2-backed
+      # `UserStore` lives behind the `bolt-auth` Cargo feature (NOT in
+      # the default set), so re-run nextest with the feature on over the
+      # gated binary + inline unit tests. The dependency-free session
+      # auth tests in `bolt_session_tests` are already covered by the
+      # full-suite step above; this step adds the argon2 path.
+      - name: Run bolt-auth feature tests (nextest)
+        run: cargo nextest run --no-fail-fast --features bolt-auth --profile ci-fast -E 'binary(bolt_auth_tests) | (kind(lib) & test(bolt::auth))'
       - name: Run doctests
         run: cargo test --doc --all-features
 
@@ -206,6 +214,10 @@ jobs:
       # invocation with the feature enabled is the only way to catch
       # warnings in those files before merge.
       - run: cargo clippy --all-targets --features bolt-tls -- -D warnings
+      # Phase 11 task `00074` — guard the `bolt-auth`-gated code paths
+      # (`src/bolt/auth.rs` UserStore + `tests/bolt_auth_tests.rs`)
+      # against clippy regressions the default-feature pass can't see.
+      - run: cargo clippy --all-targets --features bolt-auth -- -D warnings
 
   fmt:
     name: Format

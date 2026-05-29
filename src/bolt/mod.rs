@@ -44,6 +44,12 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+/// Bolt authentication — the [`crate::bolt::auth::Authenticator`] trait
+/// + [`crate::bolt::auth::AuthOutcome`] (dependency-free, always
+/// compiled) plus the argon2-backed [`crate::bolt::auth::UserStore`]
+/// (feature `bolt-auth`: basic auth + session tokens + user table).
+/// Phase 11 task `00074`.
+pub mod auth;
 pub mod chunked;
 pub mod error;
 pub mod handshake;

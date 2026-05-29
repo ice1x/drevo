@@ -11,7 +11,11 @@
 //!
 //! ## What's intentionally minimal
 //!
-//! * No authentication — basic auth + session tokens land with `00074`.
+//! * Authentication is opt-in (task `00074`): the plain entry points
+//!   here accept any connection, while the `_with_auth` siblings
+//!   ([`accept_and_run_session_with_auth`](crate::bolt::listener::accept_and_run_session_with_auth) /
+//!   [`run_session_on_with_auth`](crate::bolt::listener::run_session_on_with_auth)) enforce a
+//!   [`crate::bolt::auth::Authenticator`] on every `HELLO`.
 //! * No back-pressure / connection limit — added when MVCC concurrency
 //!   work (`00080`+) gives us a meaningful budget to enforce.
 //!
@@ -31,6 +35,7 @@ use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use super::auth::Authenticator;
 use super::chunked::MAX_CHUNK_SIZE;
 use super::error::{BoltError, BoltResult};
 use super::handshake::{parse_client_handshake, select_version, BoltVersion, HANDSHAKE_LEN};
@@ -138,6 +143,28 @@ pub async fn accept_and_run_session(socket: TcpStream, drevo: &Drevo) -> BoltRes
     run_session_on(&mut stream, drevo).await
 }
 
+/// Authenticating counterpart of [`accept_and_run_session`]. Every
+/// `HELLO` is checked against `authenticator` (a shared
+/// [`crate::bolt::auth::Authenticator`] — most commonly an
+/// [`crate::bolt::auth::UserStore`]) before the session reaches
+/// [`State::Ready`]. Phase 11 task `00074`.
+///
+/// # Errors
+///
+/// Same as [`accept_and_run_session`].
+pub async fn accept_and_run_session_with_auth(
+    socket: TcpStream,
+    drevo: &Drevo,
+    authenticator: &dyn Authenticator,
+) -> BoltResult<()> {
+    let accepted = accept_handshake_on(socket).await?;
+    if accepted.negotiated.is_none() {
+        return Ok(());
+    }
+    let mut stream = accepted.stream;
+    run_session_on_with_auth(&mut stream, drevo, authenticator).await
+}
+
 /// Post-handshake session loop. Drives a [`Session`] over any
 /// `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS, etc. The
 /// stream must already be past the 20-byte handshake (call
@@ -159,7 +186,29 @@ pub async fn run_session_on<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     drevo: &Drevo,
 ) -> BoltResult<()> {
-    let mut session = Session::new(drevo);
+    run_session_on_inner(stream, Session::new(drevo)).await
+}
+
+/// Authenticating counterpart of [`run_session_on`]. Drives a
+/// [`Session::with_auth`](crate::bolt::session::Session::with_auth) over any `AsyncRead + AsyncWrite + Unpin`
+/// stream so both plain-TCP and TLS transports share the same
+/// auth-aware loop. Phase 11 task `00074`.
+///
+/// # Errors
+///
+/// Same as [`run_session_on`].
+pub async fn run_session_on_with_auth<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    drevo: &Drevo,
+    authenticator: &dyn Authenticator,
+) -> BoltResult<()> {
+    run_session_on_inner(stream, Session::with_auth(drevo, authenticator)).await
+}
+
+async fn run_session_on_inner<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    mut session: Session<'_>,
+) -> BoltResult<()> {
     loop {
         let payload = match read_message_async(stream).await {
             Ok(p) => p,
