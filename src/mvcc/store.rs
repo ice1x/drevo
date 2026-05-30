@@ -27,7 +27,7 @@ use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 
 use super::error::{MvccError, Result};
-use super::transaction::{Snapshot, TransactionManager, Xid};
+use super::transaction::{Snapshot, TransactionManager, Xid, XidStatus, INVALID_XID};
 use super::version::Version;
 
 /// The outcome of a [`VersionedStore::vacuum`] pass.
@@ -120,6 +120,130 @@ where
         let Some(chain) = chains.get_mut(key) else {
             return Ok(false);
         };
+        match chain.iter_mut().rev().find(|v| v.is_live()) {
+            Some(live) => {
+                live.mark_deleted(xid);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Decide whether a write by `writer` against `chain` collides with a
+    /// concurrent transaction — the optimistic-concurrency-control check of
+    /// task `00083`.
+    ///
+    /// Only the chain **head** (newest version) can carry a concurrent
+    /// modification: a serial update retires the previous live version and
+    /// appends a fresh one, so whoever last touched the key authored the
+    /// head — either by creating it (the head is live) or by retiring it (the
+    /// head is a tombstone). The "deciding" transaction is therefore the
+    /// head's `xmin` when it is live, or its `xmax` when it has been deleted.
+    ///
+    /// That transaction conflicts with `writer` iff it is a *different*, still
+    /// in-flight effect: not `writer` itself, not [`INVALID_XID`], not
+    /// already visible to `writer`'s `snapshot` (a commit that landed before
+    /// the snapshot is the row `writer` legitimately builds on, not a race),
+    /// and not aborted (an aborted writer's mark is void). What survives all
+    /// four filters is exactly an in-progress writer or one that committed
+    /// *after* `writer`'s snapshot — the first-updater-wins loser.
+    ///
+    /// Returns `Some(xid)` naming the winner on conflict, or `None` when the
+    /// write may proceed.
+    fn conflicting_writer(
+        &self,
+        chain: &[Version<V>],
+        writer: Xid,
+        snapshot: &Snapshot,
+    ) -> Result<Option<Xid>> {
+        let Some(head) = chain.last() else {
+            return Ok(None);
+        };
+        let decider = if head.is_live() {
+            head.xmin()
+        } else {
+            head.xmax()
+        };
+        if decider == INVALID_XID || decider == writer {
+            return Ok(None);
+        }
+        // A commit visible to our snapshot is the row we legitimately build
+        // on, not a concurrent racer.
+        if snapshot.sees_effect(decider, &self.mgr)? {
+            return Ok(None);
+        }
+        // An aborted mark is void — the head is logically untouched by it.
+        if matches!(self.mgr.status(decider)?, XidStatus::Aborted) {
+            return Ok(None);
+        }
+        Ok(Some(decider))
+    }
+
+    /// Insert or update `key` on behalf of `xid`, **rejecting write-write
+    /// conflicts** (task `00083`).
+    ///
+    /// Identical to [`put`](Self::put) except that, before mutating, it runs
+    /// the optimistic-concurrency-control check against `xid`'s `snapshot`:
+    /// if the key's chain head was concurrently modified by another in-flight
+    /// transaction, the write is refused with
+    /// [`MvccError::WriteConflict`] and the
+    /// store is left untouched. The caller should abort `xid` and retry
+    /// against a fresh snapshot — see
+    /// [`run_with_retry`](crate::mvcc::run_with_retry).
+    ///
+    /// The check and the mutation happen under one acquisition of the store
+    /// write lock, so two threads cannot both pass the check and then both
+    /// append (no time-of-check/time-of-use gap).
+    ///
+    /// # Errors
+    ///
+    /// * [`MvccError::WriteConflict`] if the
+    ///   chain head was concurrently modified.
+    /// * [`MvccError::LockPoisoned`] on a
+    ///   poisoned lock.
+    pub fn put_checked(&self, xid: Xid, snapshot: &Snapshot, key: K, value: V) -> Result<()> {
+        let mut chains = self.write()?;
+        let chain = chains.entry(key).or_default();
+        if let Some(winner) = self.conflicting_writer(chain, xid, snapshot)? {
+            return Err(MvccError::WriteConflict {
+                conflicting: winner,
+            });
+        }
+        if let Some(live) = chain.iter_mut().rev().find(|v| v.is_live()) {
+            live.mark_deleted(xid);
+        }
+        chain.push(Version::new(xid, value));
+        Ok(())
+    }
+
+    /// Delete `key` on behalf of `xid`, **rejecting write-write conflicts**
+    /// (task `00083`).
+    ///
+    /// Identical to [`delete`](Self::delete) except for the
+    /// optimistic-concurrency-control check against `xid`'s `snapshot`: a
+    /// concurrent modification of the chain head is refused with
+    /// [`MvccError::WriteConflict`] and the
+    /// store is left untouched. Returns `Ok(true)` if a live version was
+    /// retired, `Ok(false)` if the key had no live version to delete. Like
+    /// [`put_checked`](Self::put_checked), the check and the mutation share a
+    /// single write-lock acquisition.
+    ///
+    /// # Errors
+    ///
+    /// * [`MvccError::WriteConflict`] if the
+    ///   chain head was concurrently modified.
+    /// * [`MvccError::LockPoisoned`] on a
+    ///   poisoned lock.
+    pub fn delete_checked(&self, xid: Xid, snapshot: &Snapshot, key: &K) -> Result<bool> {
+        let mut chains = self.write()?;
+        let Some(chain) = chains.get_mut(key) else {
+            return Ok(false);
+        };
+        if let Some(winner) = self.conflicting_writer(chain, xid, snapshot)? {
+            return Err(MvccError::WriteConflict {
+                conflicting: winner,
+            });
+        }
         match chain.iter_mut().rev().find(|v| v.is_live()) {
             Some(live) => {
                 live.mark_deleted(xid);
@@ -463,6 +587,178 @@ mod tests {
         assert_eq!(s.version_count(&"k".into()).unwrap(), 1);
         let snap = s.manager().snapshot(0).unwrap();
         assert_eq!(s.get(&"k".into(), &snap).unwrap(), Some(1));
+    }
+
+    // --- optimistic concurrency control (task `00083`) ---
+
+    #[test]
+    fn checked_put_on_fresh_key_succeeds() {
+        let s = store();
+        let w = s.manager().begin().unwrap();
+        let snap = s.manager().snapshot(w).unwrap();
+        assert!(s.put_checked(w, &snap, "k".into(), 1).is_ok());
+    }
+
+    #[test]
+    fn serial_checked_updates_do_not_conflict() {
+        let s = store();
+        // first writer commits a value
+        let w0 = s.manager().begin().unwrap();
+        let snap0 = s.manager().snapshot(w0).unwrap();
+        s.put_checked(w0, &snap0, "k".into(), 1).unwrap();
+        s.manager().commit(w0).unwrap();
+        // a later writer snapshots AFTER the commit -> sees it -> no conflict
+        let w1 = s.manager().begin().unwrap();
+        let snap1 = s.manager().snapshot(w1).unwrap();
+        assert!(s.put_checked(w1, &snap1, "k".into(), 2).is_ok());
+        s.manager().commit(w1).unwrap();
+        assert_eq!(s.version_count(&"k".into()).unwrap(), 2);
+    }
+
+    #[test]
+    fn concurrent_checked_update_conflicts_with_committed_winner() {
+        let s = store();
+        // seed a committed value
+        let seed = s.manager().begin().unwrap();
+        let seed_snap = s.manager().snapshot(seed).unwrap();
+        s.put_checked(seed, &seed_snap, "k".into(), 1).unwrap();
+        s.manager().commit(seed).unwrap();
+
+        // T1 and T2 both snapshot the world seeing value 1
+        let t1 = s.manager().begin().unwrap();
+        let snap1 = s.manager().snapshot(t1).unwrap();
+        let t2 = s.manager().begin().unwrap();
+        let snap2 = s.manager().snapshot(t2).unwrap();
+
+        // T1 updates and commits first
+        s.put_checked(t1, &snap1, "k".into(), 2).unwrap();
+        s.manager().commit(t1).unwrap();
+
+        // T2's snapshot predates T1's commit -> it must lose
+        let err = s.put_checked(t2, &snap2, "k".into(), 3).unwrap_err();
+        assert!(matches!(err, MvccError::WriteConflict { conflicting } if conflicting == t1));
+    }
+
+    #[test]
+    fn concurrent_checked_update_conflicts_with_in_progress_writer() {
+        let s = store();
+        let seed = s.manager().begin().unwrap();
+        let seed_snap = s.manager().snapshot(seed).unwrap();
+        s.put_checked(seed, &seed_snap, "k".into(), 1).unwrap();
+        s.manager().commit(seed).unwrap();
+
+        let t1 = s.manager().begin().unwrap();
+        let snap1 = s.manager().snapshot(t1).unwrap();
+        let t2 = s.manager().begin().unwrap();
+        let snap2 = s.manager().snapshot(t2).unwrap();
+
+        // T1 writes but has NOT committed; T2 still races it
+        s.put_checked(t1, &snap1, "k".into(), 2).unwrap();
+        let err = s.put_checked(t2, &snap2, "k".into(), 3).unwrap_err();
+        assert!(matches!(err, MvccError::WriteConflict { conflicting } if conflicting == t1));
+    }
+
+    #[test]
+    fn conflict_leaves_the_store_untouched() {
+        let s = store();
+        let seed = s.manager().begin().unwrap();
+        let seed_snap = s.manager().snapshot(seed).unwrap();
+        s.put_checked(seed, &seed_snap, "k".into(), 1).unwrap();
+        s.manager().commit(seed).unwrap();
+
+        let t1 = s.manager().begin().unwrap();
+        let snap1 = s.manager().snapshot(t1).unwrap();
+        let t2 = s.manager().begin().unwrap();
+        let snap2 = s.manager().snapshot(t2).unwrap();
+        s.put_checked(t1, &snap1, "k".into(), 2).unwrap();
+        s.manager().commit(t1).unwrap();
+
+        let before = s.version_count(&"k".into()).unwrap();
+        let _ = s.put_checked(t2, &snap2, "k".into(), 3).unwrap_err();
+        // the rejected write appended nothing and retired nothing
+        assert_eq!(s.version_count(&"k".into()).unwrap(), before);
+    }
+
+    #[test]
+    fn writer_may_update_its_own_uncommitted_write_without_conflict() {
+        let s = store();
+        let t = s.manager().begin().unwrap();
+        let snap = s.manager().snapshot(t).unwrap();
+        s.put_checked(t, &snap, "k".into(), 1).unwrap();
+        // same transaction writes the key again -> the head is its own, no conflict
+        assert!(s.put_checked(t, &snap, "k".into(), 2).is_ok());
+    }
+
+    #[test]
+    fn aborted_concurrent_writer_does_not_conflict() {
+        let s = store();
+        let seed = s.manager().begin().unwrap();
+        let seed_snap = s.manager().snapshot(seed).unwrap();
+        s.put_checked(seed, &seed_snap, "k".into(), 1).unwrap();
+        s.manager().commit(seed).unwrap();
+
+        let t1 = s.manager().begin().unwrap();
+        let snap1 = s.manager().snapshot(t1).unwrap();
+        let t2 = s.manager().begin().unwrap();
+        let snap2 = s.manager().snapshot(t2).unwrap();
+
+        // T1 writes then ABORTS -> its mark on the head is void
+        s.put_checked(t1, &snap1, "k".into(), 2).unwrap();
+        s.manager().abort(t1).unwrap();
+
+        // T2 may now proceed: the head's deciding tx is aborted
+        assert!(s.put_checked(t2, &snap2, "k".into(), 3).is_ok());
+    }
+
+    #[test]
+    fn checked_delete_detects_concurrent_update() {
+        let s = store();
+        let seed = s.manager().begin().unwrap();
+        let seed_snap = s.manager().snapshot(seed).unwrap();
+        s.put_checked(seed, &seed_snap, "k".into(), 1).unwrap();
+        s.manager().commit(seed).unwrap();
+
+        let t1 = s.manager().begin().unwrap();
+        let snap1 = s.manager().snapshot(t1).unwrap();
+        let t2 = s.manager().begin().unwrap();
+        let snap2 = s.manager().snapshot(t2).unwrap();
+
+        s.put_checked(t1, &snap1, "k".into(), 2).unwrap();
+        s.manager().commit(t1).unwrap();
+
+        // T2 tries to delete the row it saw as value 1 -> conflict
+        let err = s.delete_checked(t2, &snap2, &"k".into()).unwrap_err();
+        assert!(matches!(err, MvccError::WriteConflict { conflicting } if conflicting == t1));
+    }
+
+    #[test]
+    fn concurrent_delete_then_update_conflicts() {
+        let s = store();
+        let seed = s.manager().begin().unwrap();
+        let seed_snap = s.manager().snapshot(seed).unwrap();
+        s.put_checked(seed, &seed_snap, "k".into(), 1).unwrap();
+        s.manager().commit(seed).unwrap();
+
+        let t1 = s.manager().begin().unwrap();
+        let snap1 = s.manager().snapshot(t1).unwrap();
+        let t2 = s.manager().begin().unwrap();
+        let snap2 = s.manager().snapshot(t2).unwrap();
+
+        // T1 deletes (head becomes a tombstone) and commits
+        assert!(s.delete_checked(t1, &snap1, &"k".into()).unwrap());
+        s.manager().commit(t1).unwrap();
+
+        // T2's update races the committed delete -> conflict on the tombstone's xmax
+        let err = s.put_checked(t2, &snap2, "k".into(), 9).unwrap_err();
+        assert!(matches!(err, MvccError::WriteConflict { conflicting } if conflicting == t1));
+    }
+
+    #[test]
+    fn checked_delete_of_missing_key_returns_false() {
+        let s = store();
+        let t = s.manager().begin().unwrap();
+        let snap = s.manager().snapshot(t).unwrap();
+        assert!(!s.delete_checked(t, &snap, &"nope".into()).unwrap());
     }
 
     #[test]

@@ -2,11 +2,12 @@
 //!
 //! Phase 13 task `00081` keeps the multi-version concurrency primitives in
 //! their own error channel rather than reaching straight for
-//! [`crate::error::DrevoError`]. The MVCC engine is not yet wired into the
-//! [`crate::db::Drevo`] mutation paths (that lands with the optimistic
-//! concurrency control of task `00083` and the isolation levels of
-//! `00084`), so a self-contained [`MvccError`] keeps this task's blast
-//! radius to the new module and leaves the crate-wide error enum untouched.
+//! [`crate::error::DrevoError`]. The MVCC engine is still a standalone module
+//! — task `00083` adds the optimistic-concurrency-control conflict and retry
+//! variants here, and full wiring into the [`crate::db::Drevo`] mutation
+//! paths lands with the isolation levels of `00084`. A self-contained
+//! [`MvccError`] keeps each task's blast radius to the new module and leaves
+//! the crate-wide error enum untouched.
 
 /// Errors raised by the MVCC transaction manager and versioned store.
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +31,30 @@ pub enum MvccError {
     /// [`TransactionManager::abort`]: super::TransactionManager::abort
     #[error("transaction {0} is not in progress")]
     NotInProgress(super::Xid),
+
+    /// A write-write conflict detected by the optimistic concurrency control
+    /// of task `00083`: the writer tried to update or delete a key whose
+    /// chain head had already been modified by a *concurrent* transaction
+    /// (one still in progress, or one that committed after the writer's
+    /// snapshot was taken). First-updater-wins — the second writer must abort
+    /// and retry against a fresh snapshot rather than silently lose the
+    /// concurrent update.
+    ///
+    /// `conflicting` is the id of the transaction that won the race.
+    #[error("write-write conflict: key was concurrently modified by transaction {conflicting}")]
+    WriteConflict {
+        /// The concurrent transaction that already modified the chain head.
+        conflicting: super::Xid,
+    },
+
+    /// [`run_with_retry`](super::occ::run_with_retry) exhausted its retry
+    /// budget: every attempt hit a [`WriteConflict`](Self::WriteConflict)
+    /// under sustained contention. Carries how many attempts were made.
+    #[error("optimistic retry gave up after {attempts} attempt(s) under contention")]
+    RetriesExhausted {
+        /// The total number of attempts made before giving up.
+        attempts: usize,
+    },
 }
 
 /// Convenience alias for fallible MVCC operations.
