@@ -59,6 +59,7 @@ use pyo3::types::PyBytes;
 
 use drevo::db as ddb;
 use drevo::model as dmodel;
+use drevo::vector::{HnswConfig, Vector};
 
 use crate::errors::{map_err, panic_to_pyerr};
 use crate::types;
@@ -610,6 +611,113 @@ impl Drevo {
                     .allow_threads(|| db.search_fts(query, limit))
                     .map_err(map_err)?;
                 Ok(results.into_iter().map(types::ScoredNode::new).collect())
+            })
+        })
+    }
+
+    // ── Vector embeddings (Phase 12 task `00079`) ──────────────────
+
+    /// Persist an embedding for a node (overwriting any prior value).
+    ///
+    /// Bridges [`drevo::db::Drevo::set_embedding`] — the node must exist
+    /// (`NodeNotFoundError` otherwise). Embeddings live in the durable
+    /// `00078` vector store, separate from node properties.
+    fn set_embedding(&self, py: Python<'_>, node_id: u64, embedding: Vec<f32>) -> PyResult<()> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.set_embedding(node_id, Vector::from(embedding.clone())))
+                    .map_err(map_err)
+            })
+        })
+    }
+
+    /// Persist embeddings for many nodes in one batched write.
+    ///
+    /// Bridges [`drevo::db::Drevo::set_embeddings_batch`]: on the redb
+    /// backend the whole slice commits in a single transaction. Every
+    /// target node is validated to exist first, so the batch is
+    /// all-or-nothing (`NodeNotFoundError` aborts before any write).
+    fn set_embeddings_batch(
+        &self,
+        py: Python<'_>,
+        embeddings: Vec<(u64, Vec<f32>)>,
+    ) -> PyResult<()> {
+        let owned: Vec<(u64, Vector)> = embeddings
+            .into_iter()
+            .map(|(id, v)| (id, Vector::from(v)))
+            .collect();
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.set_embeddings_batch(&owned))
+                    .map_err(map_err)
+            })
+        })
+    }
+
+    /// Fetch the embedding stored for a node, or `None` if it has none.
+    ///
+    /// Bridges [`drevo::db::Drevo::get_embedding`].
+    fn get_embedding(&self, py: Python<'_>, node_id: u64) -> PyResult<Option<Vec<f32>>> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                let res = py
+                    .allow_threads(|| db.get_embedding(node_id))
+                    .map_err(map_err)?;
+                Ok(res.map(|v| v.0))
+            })
+        })
+    }
+
+    /// Remove the embedding stored for a node (a no-op if it has none).
+    ///
+    /// Bridges [`drevo::db::Drevo::delete_embedding`].
+    fn delete_embedding(&self, py: Python<'_>, node_id: u64) -> PyResult<()> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.delete_embedding(node_id))
+                    .map_err(map_err)
+            })
+        })
+    }
+
+    /// Count the embeddings currently persisted.
+    ///
+    /// Bridges [`drevo::db::Drevo::embedding_count`].
+    fn embedding_count(&self, py: Python<'_>) -> PyResult<usize> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.embedding_count()).map_err(map_err)
+            })
+        })
+    }
+
+    /// Find the `k` nearest neighbours to `query` among the persisted
+    /// embeddings, returned as `(node_id, distance)` pairs ordered nearest
+    /// first.
+    ///
+    /// Rebuilds the `00076` HNSW index from the durable store (via
+    /// [`drevo::db::Drevo::build_vector_index`]) and runs an
+    /// approximate-nearest-neighbour search. `distance` is the index
+    /// metric (cosine distance by default — smaller is nearer). A
+    /// dimension mismatch between a stored vector and `query`, or between
+    /// stored vectors, surfaces as `ValueError`.
+    fn vector_search(
+        &self,
+        py: Python<'_>,
+        query: Vec<f32>,
+        k: usize,
+    ) -> PyResult<Vec<(u64, f32)>> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                let hits = py
+                    .allow_threads(|| {
+                        let index = db.build_vector_index(HnswConfig::default())?;
+                        index
+                            .search(&query, k)
+                            .map_err(drevo::error::DrevoError::from)
+                    })
+                    .map_err(map_err)?;
+                Ok(hits.into_iter().map(|n| (n.key, n.distance)).collect())
             })
         })
     }

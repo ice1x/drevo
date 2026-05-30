@@ -10,6 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Tracked here as Phase 16 tasks land. Sections roll into the next
 released entry on a tagged commit.
 
+### Added — task `00079` (embedding integration helpers — Phase 12)
+
+- **`Drevo` vector bridge.** The PyO3 handle now exposes the durable
+  `00078` vector store + `00076` HNSW search to Python:
+  `set_embedding(node_id, list[float])`,
+  `set_embeddings_batch(list[tuple[int, list[float]]])`,
+  `get_embedding(node_id) -> list[float] | None`,
+  `delete_embedding(node_id)`, `embedding_count() -> int`, and
+  `vector_search(query, k) -> list[tuple[int, float]]` (nearest-first
+  `(node_id, distance)`). Each releases the GIL and validates node
+  existence; a dimension mismatch surfaces as `ValueError`.
+- **`drevo.rag.embedding`** (new module) — pure-Python helpers on top of
+  the bridge: the `Embedder` protocol, the `VectorHit` dataclass,
+  `embed_and_store(drevo, nodes, embedder)` (one batched write), and
+  `vector_search(drevo, query, *, embedder=None, k=10)` (raw vector or
+  str query → ranked `VectorHit`s).
+- **`Retriever.retrieve_with_embedding`** is implemented (was
+  `NotImplementedError`): it seeds on the nearest vectors via
+  `Drevo.vector_search` then expands the neighbourhood like `retrieve`.
+- **`ingest_documents(embedder=...)`** now persists embeddings
+  first-class via `set_embeddings_batch` in addition to the existing
+  `"embedding"` property (which the `00077` Cypher `similar()` predicate
+  reads), so an ingested corpus is queryable through both surfaces.
+
 ### Added — task `00122` (Python CI matrix on every PR — cibuildwheel pivot)
 
 - `.github/workflows/python.yml` re-shaped as a `cibuildwheel`-driven

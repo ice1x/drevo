@@ -140,14 +140,20 @@ class Retriever:
         *,
         limit: int = 10,
     ) -> Context:
-        """Vector-similarity variant. Raises `NotImplementedError`
-        until Phase 12 (`00075`) ships the HNSW index — RFC §8.3.
+        """Vector-similarity variant — RFC §8.3.
+
+        Resolves the seed nodes by nearest-neighbour search over drevo's
+        first-class embedding store (`Drevo.vector_search`, Phase 12 task
+        `00079`) instead of FTS, then expands each seed `hops` deep exactly
+        like `retrieve`. The `limit` nearest vectors become the seeds.
         """
-        raise NotImplementedError(
-            "Retriever.retrieve_with_embedding: vector index not yet "
-            "available — tracked under Phase 12 task 00075. Use "
-            "Retriever.retrieve(<fts query>) until then."
-        )
+        hits = self._drevo.vector_search(list(embedding), limit)
+        seeds: list[Node] = []
+        for node_id, _distance in hits:
+            node = self._drevo.get_node(node_id)
+            if node is not None:
+                seeds.append(node)
+        return self._expand_seeds(seeds)
 
     # ── internals ───────────────────────────────────────────────────
 

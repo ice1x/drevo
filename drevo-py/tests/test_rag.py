@@ -281,12 +281,16 @@ def test_retriever_returns_context_with_stats(drevo_db: drevo.Drevo) -> None:
     assert ctx.stats.seed_count == len(ctx.seeds)
 
 
-def test_retriever_retrieve_with_embedding_is_not_yet_implemented(
+def test_retriever_retrieve_with_embedding_seeds_on_nearest_vector(
     drevo_db: drevo.Drevo,
 ) -> None:
-    r = Retriever(drevo_db)
-    with pytest.raises(NotImplementedError):
-        r.retrieve_with_embedding([0.1, 0.2, 0.3])
+    """Phase 12 task 00079 — `retrieve_with_embedding` resolves seeds via
+    the first-class vector store and expands them like `retrieve`."""
+    a = drevo_db.create_node(drevo.NewNode(kind="doc", title="a"))
+    b = drevo_db.create_node(drevo.NewNode(kind="doc", title="b"))
+    drevo_db.set_embeddings_batch([(a.id, [1.0, 0.0, 0.0]), (b.id, [0.0, 1.0, 0.0])])
+    ctx = Retriever(drevo_db, hops=0).retrieve_with_embedding([1.0, 0.0, 0.0], limit=1)
+    assert [s.title for s in ctx.seeds] == ["a"]
 
 
 def test_retriever_unknown_seed_type_raises_typeerror(drevo_db: drevo.Drevo) -> None:

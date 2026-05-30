@@ -218,9 +218,8 @@ fn rag_retriever_module_defines_retriever_and_context() {
     );
     assert!(
         r.contains("retrieve_with_embedding"),
-        "Retriever must declare `retrieve_with_embedding(...)` even \
-         though it raises NotImplementedError until Phase 12 (00075) \
-         — RFC §8.3 explicitly names this method"
+        "Retriever must declare `retrieve_with_embedding(...)` — RFC §8.3 \
+         explicitly names this method (implemented in Phase 12 task 00079)"
     );
     assert!(
         r.contains("def to_text"),
@@ -233,10 +232,14 @@ fn rag_retriever_module_defines_retriever_and_context() {
         "Context.to_text must handle the three formats from RFC §8.4: \
          markdown (default), json, turtle",
     );
+    // Phase 12 task `00079` implemented `retrieve_with_embedding`: it now
+    // seeds via the first-class vector store instead of raising
+    // NotImplementedError. Lock the wiring to `vector_search` so the method
+    // can never silently regress to the placeholder.
     assert!(
-        r.contains("NotImplementedError"),
-        "retrieve_with_embedding must raise NotImplementedError until \
-         00075 lands the HNSW vector index (RFC §8.3)"
+        r.contains("vector_search("),
+        "retrieve_with_embedding must resolve seeds via Drevo.vector_search \
+         now that 00079 has landed the embedding bridge (RFC §8.3)"
     );
 }
 
@@ -323,8 +326,7 @@ fn rag_type_stubs_declare_public_surface() {
     assert!(
         pyi.contains("retrieve_with_embedding"),
         "rag/__init__.pyi must declare Retriever.retrieve_with_embedding \
-         even though it raises NotImplementedError at runtime — the \
-         stub locks the eventual signature for downstream typecheckers"
+         — the stub locks the signature for downstream typecheckers"
     );
 }
 

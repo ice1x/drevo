@@ -26,6 +26,7 @@ Pull it in explicitly with `from drevo.rag import Retriever` (or
 from __future__ import annotations
 
 from ._document import Document, SimpleDocument
+from .embedding import Embedder, VectorHit, embed_and_store, vector_search
 from .ingest import IngestSchema, ingest_documents
 from .neighborhood import Neighborhood, expand_neighborhood
 from .rerank import MMRReranker
@@ -35,11 +36,15 @@ __all__ = [
     "Context",
     "ContextStats",
     "Document",
+    "Embedder",
     "IngestSchema",
     "MMRReranker",
     "Neighborhood",
     "Retriever",
     "SimpleDocument",
+    "VectorHit",
+    "embed_and_store",
     "expand_neighborhood",
     "ingest_documents",
+    "vector_search",
 ]
