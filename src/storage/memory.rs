@@ -124,6 +124,14 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    fn put_batch(&self, items: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
+        let mut data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
+        for (key, value) in items {
+            data.insert(key.clone(), value.clone());
+        }
+        Ok(())
+    }
+
     fn delete(&self, key: &[u8]) -> Result<()> {
         let mut data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
         data.remove(key);
