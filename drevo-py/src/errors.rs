@@ -80,6 +80,7 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
         D::Io(err) => StorageError::new_err(err.to_string()),
         D::TransactionAlreadyActive => TransactionError::new_err("transaction already active"),
         D::NoActiveTransaction => TransactionError::new_err("no active transaction"),
+        D::Vector(err) => PyValueError::new_err(err.to_string()),
     }
 }
 
@@ -121,6 +122,7 @@ mod tests {
             DrevoError::DuplicateTitle("dup".into()),
             DrevoError::InvalidWeight(f32::NAN),
             DrevoError::Locked,
+            DrevoError::Vector(drevo::vector::VectorError::Empty),
         ];
         for v in variants {
             let msg = format!("{v}");

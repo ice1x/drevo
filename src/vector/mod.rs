@@ -32,6 +32,9 @@ pub mod distance;
 /// HNSW approximate-nearest-neighbor index over [`Vector`] embeddings
 /// (`00076`).
 pub mod hnsw;
+/// Durable embedding store — redb-backed persistence and a batched
+/// insert API for [`Vector`] payloads (`00078`).
+pub mod store;
 
 pub use distance::{cosine_similarity, dot_product, euclidean_distance};
 pub use hnsw::{HnswConfig, HnswIndex, Metric, Neighbor};
@@ -93,7 +96,12 @@ pub enum VectorError {
 /// JSON via [`Vector::from_json_value`] (used at the API boundary).
 /// [`Deref`](std::ops::Deref) to `[f32]` means a `&Vector` is accepted
 /// anywhere the distance functions want a `&[f32]`.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// The [`serde`](https://serde.rs) derives let the persistence layer
+/// (`00078`) round-trip a `Vector` through `bincode` into the durable
+/// embedding store; serialization is the bare `Vec<f32>` (a newtype is
+/// transparent), so the on-disk form carries no extra framing.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Vector(pub Vec<f32>);
 
 impl Vector {

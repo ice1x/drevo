@@ -32,6 +32,32 @@ pub trait StorageBackend: Send + Sync {
     /// Returns [`StorageError`](super::error::StorageError) on I/O or backend failure.
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()>;
 
+    /// Insert or update many key-value pairs as one logical operation.
+    ///
+    /// Existing keys are overwritten. The default implementation simply
+    /// calls [`put`](Self::put) for each pair, which is correct for any
+    /// backend; durable backends are encouraged to override it so the
+    /// whole batch commits in a **single** transaction. The redb backend
+    /// does exactly that — per-key `put` opens its own write transaction
+    /// (one `fsync` each), which is unusable for the bulk vector inserts
+    /// Phase 12 task `00078` performs, so [`RedbBackend`](super::RedbBackend)
+    /// folds the entire slice into one `begin_write` / `commit`.
+    ///
+    /// The batch is not required to be atomic for the default
+    /// implementation (a mid-loop failure leaves earlier puts applied);
+    /// overriding backends that wrap a transaction get all-or-nothing
+    /// semantics for free.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on I/O or backend failure.
+    fn put_batch(&self, items: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
+        for (key, value) in items {
+            self.put(key, value)?;
+        }
+        Ok(())
+    }
+
     /// Delete a key-value pair.
     ///
     /// Deleting a non-existent key is a no-op (returns `Ok(())`).

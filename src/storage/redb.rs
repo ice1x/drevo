@@ -85,6 +85,21 @@ impl StorageBackend for RedbBackend {
         Ok(())
     }
 
+    fn put_batch(&self, items: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DATA_TABLE)?;
+            for (key, value) in items {
+                table.insert(key.as_slice(), value.as_slice())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
     fn delete(&self, key: &[u8]) -> Result<()> {
         let write_txn = self.db.begin_write()?;
         {

@@ -50,6 +50,8 @@ use crate::model::{
 #[cfg(feature = "redb-backend")]
 use crate::storage::RedbBackend;
 use crate::storage::{MemoryBackend, StorageBackend};
+use crate::vector::store as vector_store;
+use crate::vector::{HnswConfig, HnswIndex, Vector};
 
 /// Meta key for the next node ID counter.
 const META_NEXT_NODE_ID: &[u8] = b"meta:next_node_id";
@@ -1001,8 +1003,112 @@ impl Drevo {
         // Remove updated-at index
         self.backend.delete(&updated_key(node.updated_at, id))?;
 
+        // Remove any persisted embedding sidecar (Phase 12 task `00078`).
+        // Node ids are never reused, so a stray embedding would only waste
+        // space rather than mis-associate, but cleaning it up keeps the
+        // store free of orphans. This deletion is not yet undo-logged —
+        // embedding persistence becomes transaction-aware with MVCC.
+        vector_store::delete(&*self.backend, id)?;
+
         self.record_undo(UndoOp::DeletedNode(node));
         Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // Vector embeddings (Phase 12 task `00078`)
+    // ---------------------------------------------------------------
+
+    /// Persist an embedding for a node, overwriting any prior value.
+    ///
+    /// Embeddings live in a dedicated durable store (`vec:{id}` keys),
+    /// separate from the JSON `properties` the `00077` `similar(...)`
+    /// predicate reads — this is the typed, compact home for vectors that
+    /// survives a reopen and feeds [`build_vector_index`](Self::build_vector_index).
+    ///
+    /// The target node must exist; deleting the node later removes its
+    /// embedding automatically.
+    ///
+    /// # Errors
+    ///
+    /// - [`DrevoError::NodeNotFound`] if `node_id` does not refer to an
+    ///   existing node.
+    /// - [`DrevoError::Encode`] / [`DrevoError::Storage`] on a backend or
+    ///   serialization failure.
+    pub fn set_embedding(&self, node_id: u64, embedding: Vector) -> Result<()> {
+        if self.get_node(node_id)?.is_none() {
+            return Err(DrevoError::NodeNotFound(node_id));
+        }
+        vector_store::put(&*self.backend, node_id, &embedding)
+    }
+
+    /// Persist embeddings for many nodes in a single batched write.
+    ///
+    /// On the redb backend the whole slice commits in one transaction
+    /// (one `fsync`), making this the throughput path for bulk embedding
+    /// ingest — a per-node [`set_embedding`](Self::set_embedding) loop
+    /// would open one write transaction per row. Every target node is
+    /// validated to exist *before* the write, so the batch is all-or-nothing.
+    ///
+    /// # Errors
+    ///
+    /// - [`DrevoError::NodeNotFound`] if any id does not refer to an
+    ///   existing node — no embedding is written in that case.
+    /// - [`DrevoError::Encode`] / [`DrevoError::Storage`] on a backend or
+    ///   serialization failure.
+    pub fn set_embeddings_batch(&self, embeddings: &[(u64, Vector)]) -> Result<()> {
+        for (node_id, _) in embeddings {
+            if self.get_node(*node_id)?.is_none() {
+                return Err(DrevoError::NodeNotFound(*node_id));
+            }
+        }
+        vector_store::put_batch(&*self.backend, embeddings)
+    }
+
+    /// Fetch the embedding stored for a node, or `None` if it has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Decode`] if the stored bytes are corrupt, or
+    /// [`DrevoError::Storage`] on backend failure.
+    pub fn get_embedding(&self, node_id: u64) -> Result<Option<Vector>> {
+        vector_store::get(&*self.backend, node_id)
+    }
+
+    /// Remove the embedding stored for a node. A node with no embedding is
+    /// a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] on backend failure.
+    pub fn delete_embedding(&self, node_id: u64) -> Result<()> {
+        vector_store::delete(&*self.backend, node_id)
+    }
+
+    /// Count the embeddings currently persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] on backend failure.
+    pub fn embedding_count(&self) -> Result<usize> {
+        vector_store::count(&*self.backend)
+    }
+
+    /// Rebuild an in-memory HNSW index (`00076`) from every persisted
+    /// embedding.
+    ///
+    /// The HNSW proximity graph is in-memory only; after a reopen this
+    /// replays the durable vectors into a fresh [`HnswIndex`] keyed by
+    /// node id — the approximate-nearest-neighbor acceleration path that
+    /// the brute-force `00077` `similar(...)` predicate provides the
+    /// correctness baseline for.
+    ///
+    /// # Errors
+    ///
+    /// - [`DrevoError::Vector`] if a persisted embedding cannot be
+    ///   inserted (e.g. its dimension disagrees with the first vector).
+    /// - [`DrevoError::Storage`] on backend failure.
+    pub fn build_vector_index(&self, config: HnswConfig) -> Result<HnswIndex> {
+        vector_store::build_hnsw(&*self.backend, config)
     }
 
     // ---------------------------------------------------------------

@@ -1,6 +1,7 @@
 //! Top-level error types for drevo.
 
 use crate::storage::StorageError;
+use crate::vector::VectorError;
 
 /// Errors that can occur during drevo operations.
 ///
@@ -58,6 +59,16 @@ pub enum DrevoError {
     /// An I/O error occurred.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A vector operation failed — a malformed embedding, a dimension
+    /// mismatch, or a zero-magnitude operand. Raised by the Phase 12
+    /// persistence layer (`00078`) when a stored [`crate::vector::Vector`]
+    /// cannot be inserted into the HNSW index it is rebuilding, and
+    /// available to any caller that lifts a
+    /// [`VectorError`] into the database error
+    /// channel. Maps to a Bolt `SEMANTIC_ERROR` on the wire.
+    #[error("vector error: {0}")]
+    Vector(#[from] VectorError),
 
     /// A second explicit transaction (`Drevo::tx_begin`) was requested
     /// while one is already active or being rolled back. The MVP
