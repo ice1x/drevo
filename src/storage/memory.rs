@@ -5,7 +5,7 @@ use std::fs;
 use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 use crate::storage::error::{Result, StorageError};
 use crate::storage::StorageBackend;
@@ -19,7 +19,15 @@ use crate::storage::StorageBackend;
 ///   creation and writes a snapshot back on [`flush()`](StorageBackend::flush).
 ///   Not available on WASM targets (no filesystem access).
 ///
-/// Thread-safe via interior `Mutex`.
+/// Thread-safe via an interior `RwLock`: reads ([`get`](StorageBackend::get),
+/// [`scan_prefix`](StorageBackend::scan_prefix), and the snapshot read inside
+/// [`flush`](StorageBackend::flush)) take a shared read lock so any number of
+/// readers run concurrently, while writes ([`put`](StorageBackend::put),
+/// [`put_batch`](StorageBackend::put_batch),
+/// [`delete`](StorageBackend::delete)) take an exclusive write lock. This is
+/// the in-memory half of Phase 13 task `00080` "read-write separation"; the
+/// redb backend already gets concurrent reads for free from redb's own MVCC
+/// (each `begin_read` opens an independent snapshot).
 ///
 /// Persistence format: bincode-encoded `Vec<(Vec<u8>, Vec<u8>)>` — the
 /// sorted entries of the BTreeMap. Writes are atomic (temp file + rename).
@@ -31,7 +39,7 @@ use crate::storage::StorageBackend;
 /// - Small databases that fit in memory but need durability
 #[derive(Debug)]
 pub struct MemoryBackend {
-    data: Mutex<BTreeMap<Vec<u8>, Vec<u8>>>,
+    data: RwLock<BTreeMap<Vec<u8>, Vec<u8>>>,
     #[cfg(not(target_arch = "wasm32"))]
     path: Option<PathBuf>,
 }
@@ -40,7 +48,7 @@ impl MemoryBackend {
     /// Create a new empty in-memory backend (ephemeral, no persistence).
     pub const fn new() -> Self {
         Self {
-            data: Mutex::new(BTreeMap::new()),
+            data: RwLock::new(BTreeMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             path: None,
         }
@@ -69,7 +77,7 @@ impl MemoryBackend {
             BTreeMap::new()
         };
         Ok(Self {
-            data: Mutex::new(data),
+            data: RwLock::new(data),
             path: Some(path),
         })
     }
@@ -114,18 +122,18 @@ impl Default for MemoryBackend {
 
 impl StorageBackend for MemoryBackend {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let data = self.data.read().map_err(|_| StorageError::LockPoisoned)?;
         Ok(data.get(key).cloned())
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let mut data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut data = self.data.write().map_err(|_| StorageError::LockPoisoned)?;
         data.insert(key.to_vec(), value.to_vec());
         Ok(())
     }
 
     fn put_batch(&self, items: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
-        let mut data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut data = self.data.write().map_err(|_| StorageError::LockPoisoned)?;
         for (key, value) in items {
             data.insert(key.clone(), value.clone());
         }
@@ -133,13 +141,13 @@ impl StorageBackend for MemoryBackend {
     }
 
     fn delete(&self, key: &[u8]) -> Result<()> {
-        let mut data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut data = self.data.write().map_err(|_| StorageError::LockPoisoned)?;
         data.remove(key);
         Ok(())
     }
 
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let data = self.data.read().map_err(|_| StorageError::LockPoisoned)?;
         let results: Vec<(Vec<u8>, Vec<u8>)> = data
             .range(prefix.to_vec()..)
             .take_while(|(k, _)| k.starts_with(prefix))
@@ -154,7 +162,7 @@ impl StorageBackend for MemoryBackend {
             let Some(ref path) = self.path else {
                 return Ok(());
             };
-            let data = self.data.lock().map_err(|_| StorageError::LockPoisoned)?;
+            let data = self.data.read().map_err(|_| StorageError::LockPoisoned)?;
             Self::save_to_file(&data, path)?;
         }
         Ok(())
@@ -440,21 +448,21 @@ mod tests {
     }
 
     #[test]
-    fn mutex_poisoning_maps_to_lock_poisoned() {
+    fn lock_poisoning_maps_to_lock_poisoned() {
         use std::sync::Arc;
         use std::thread;
 
         let backend = Arc::new(MemoryBackend::new());
         backend.put(b"k", b"v").unwrap();
 
-        // Spawn a thread that takes the lock and panics, poisoning it.
+        // Spawn a thread that takes the write lock and panics, poisoning it.
         let poisoner = Arc::clone(&backend);
         let handle = thread::spawn(move || {
-            let _guard = poisoner.data.lock().expect("first lock must succeed");
-            panic!("poisoning the mutex on purpose");
+            let _guard = poisoner.data.write().expect("first lock must succeed");
+            panic!("poisoning the rwlock on purpose");
         });
         let _ = handle.join();
-        assert!(backend.data.is_poisoned(), "mutex must be poisoned");
+        assert!(backend.data.is_poisoned(), "rwlock must be poisoned");
 
         // Every data accessor must surface LockPoisoned, not Backend(_).
         // `flush()` short-circuits on an ephemeral backend before taking the
@@ -475,7 +483,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn mutex_poisoning_maps_to_lock_poisoned_on_flush() {
+    fn lock_poisoning_maps_to_lock_poisoned_on_flush() {
         use std::sync::Arc;
         use std::thread;
 
@@ -486,8 +494,8 @@ mod tests {
 
         let poisoner = Arc::clone(&backend);
         let handle = thread::spawn(move || {
-            let _guard = poisoner.data.lock().expect("first lock must succeed");
-            panic!("poisoning the mutex on purpose");
+            let _guard = poisoner.data.write().expect("first lock must succeed");
+            panic!("poisoning the rwlock on purpose");
         });
         let _ = handle.join();
 
@@ -496,5 +504,107 @@ mod tests {
             Err(other) => panic!("expected LockPoisoned, got: {other:?}"),
             Ok(()) => panic!("expected LockPoisoned, got Ok"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Read-write separation (Phase 13 task 00080)
+    // ------------------------------------------------------------------
+
+    /// The defining property of the `RwLock` swap: multiple readers hold the
+    /// lock at the same time. With the previous `Mutex` this deadlocked —
+    /// a second `lock()` while the first guard is alive blocks forever.
+    #[test]
+    fn concurrent_readers_share_the_lock() {
+        let backend = MemoryBackend::new();
+        backend.put(b"k", b"v").unwrap();
+
+        let first = backend.data.read().expect("first read guard");
+        // A second shared read must succeed *while the first is still held*.
+        let second = backend
+            .data
+            .try_read()
+            .expect("second concurrent read guard must be granted");
+
+        assert_eq!(first.get(b"k".as_slice()), Some(&b"v".to_vec()));
+        assert_eq!(second.get(b"k".as_slice()), Some(&b"v".to_vec()));
+    }
+
+    /// The exclusion half: a held write lock blocks every reader. `try_read`
+    /// must fail (would-block) rather than observe a half-applied mutation.
+    #[test]
+    fn writer_excludes_readers() {
+        let backend = MemoryBackend::new();
+
+        let writer = backend.data.write().expect("write guard");
+        assert!(
+            backend.data.try_read().is_err(),
+            "a reader must not acquire the lock while a writer holds it"
+        );
+        drop(writer);
+
+        // Once the writer releases, readers flow again.
+        assert!(backend.data.try_read().is_ok());
+    }
+
+    /// End-to-end through the public `StorageBackend` API: many threads read
+    /// the same shared backend at once and every read observes the committed
+    /// value. Exercises the `Send + Sync` contract under real contention.
+    #[test]
+    fn many_threads_read_concurrently() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let backend = Arc::new(MemoryBackend::new());
+        for i in 0..100u32 {
+            backend
+                .put(format!("k:{i}").as_bytes(), &i.to_le_bytes())
+                .unwrap();
+        }
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let b = Arc::clone(&backend);
+            handles.push(thread::spawn(move || {
+                for _ in 0..50 {
+                    for i in 0..100u32 {
+                        let got = b.get(format!("k:{i}").as_bytes()).unwrap();
+                        assert_eq!(got, Some(i.to_le_bytes().to_vec()));
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("reader thread must not panic");
+        }
+    }
+
+    /// A panic *inside a reader* must NOT poison the lock. `std::sync::RwLock`
+    /// only poisons on a write-mode panic, so a misbehaving read query cannot
+    /// take the whole backend down with it — surviving readers and writers
+    /// keep working. This is a real reliability win of the read-write split,
+    /// so pin it with a test.
+    #[test]
+    fn reader_panic_does_not_poison() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let backend = Arc::new(MemoryBackend::new());
+        backend.put(b"k", b"v").unwrap();
+
+        let reader = Arc::clone(&backend);
+        let handle = thread::spawn(move || {
+            let _guard = reader.data.read().expect("read guard");
+            panic!("a read query blew up");
+        });
+        let _ = handle.join();
+
+        assert!(
+            !backend.data.is_poisoned(),
+            "a reader panic must not poison the lock"
+        );
+        // The backend is still fully usable afterwards.
+        assert_eq!(backend.get(b"k").unwrap(), Some(b"v".to_vec()));
+        backend.put(b"k2", b"v2").unwrap();
+        assert_eq!(backend.get(b"k2").unwrap(), Some(b"v2".to_vec()));
     }
 }
