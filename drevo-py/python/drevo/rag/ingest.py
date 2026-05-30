@@ -93,9 +93,13 @@ def ingest_documents(
       - `title = truncate(page_content, 200)` (overridable by `schema.title_from`)
       - `properties = doc.metadata | {"text": page_content}` (renamed per `schema.property_map`)
 
-    If `embedder` is provided, its output for each doc lands under the
-    property key ``"embedding"`` as a `list[float]`. Phase 12 (vector
-    index, `00075`) promotes that to first-class vector storage.
+    If `embedder` is provided, its output for each doc is persisted **two
+    ways** (Phase 12 task `00079`): under the property key ``"embedding"``
+    as a `list[float]` (what the `00077` Cypher ``similar(...)`` predicate
+    reads), *and* first-class in drevo's durable vector store via
+    `Drevo.set_embeddings_batch` (what `drevo.rag.embedding.vector_search`
+    and `Retriever.retrieve_with_embedding` query through the HNSW index).
+    The two paths serve different query surfaces, so both are kept.
 
     Returns the created Nodes in the same order as `docs`. No
     deduplication — duplicate truncated titles raise
@@ -118,6 +122,7 @@ def ingest_documents(
             )
 
     nodes: list[Node] = []
+    first_class: list[tuple[int, list[float]]] = []
     for doc, embedding in zip(docs, embeddings):
         meta = dict(doc.metadata) if doc.metadata is not None else {}
         node_kind = _resolve_kind(kind, meta, schema)
@@ -126,5 +131,11 @@ def ingest_documents(
         if embedding is not None:
             properties["embedding"] = list(embedding)
         new_node = NewNode(kind=node_kind, title=node_title, properties=properties)
-        nodes.append(drevo.create_node(new_node))
+        node = drevo.create_node(new_node)
+        nodes.append(node)
+        if embedding is not None:
+            first_class.append((node.id, list(embedding)))
+
+    if first_class:
+        drevo.set_embeddings_batch(first_class)
     return nodes

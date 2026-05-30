@@ -94,10 +94,15 @@ def test_retrieve_uuid_seed_round_trips(
     assert [s.title for s in ctx.seeds] == ["b"]
 
 
-def test_retrieve_with_embedding_not_implemented(mock_drevo: MagicMock) -> None:
-    """RFC §8.3 — vector seeds are deferred to Phase 12 / task 00075."""
-    with pytest.raises(NotImplementedError):
-        Retriever(mock_drevo).retrieve_with_embedding([0.0, 1.0])
+def test_retrieve_with_embedding_dispatches_to_vector_search(mock_drevo: MagicMock) -> None:
+    """RFC §8.3 — vector seeds now resolve via `Drevo.vector_search`
+    (Phase 12 task 00079). With no hits the context is empty and no
+    expansion runs; the point is that the embedding + limit are forwarded
+    to the bridge verbatim."""
+    mock_drevo.vector_search.return_value = []
+    ctx = Retriever(mock_drevo).retrieve_with_embedding([0.0, 1.0], limit=7)
+    mock_drevo.vector_search.assert_called_once_with([0.0, 1.0], 7)
+    assert ctx.seeds == []
 
 
 def test_retrieve_missing_int_seed_returns_empty_seeds(

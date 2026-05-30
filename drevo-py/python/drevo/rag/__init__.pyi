@@ -111,6 +111,34 @@ class Retriever:
         limit: int = ...,
     ) -> Context: ...
 
+# ── Embedding helpers (Phase 12 task 00079) ───────────────────────────
+
+@runtime_checkable
+class Embedder(Protocol):
+    def __call__(self, texts: list[str]) -> list[list[float]]: ...
+
+class VectorHit:
+    node: Node
+    distance: float
+    similarity: float
+
+    def __init__(self, node: Node, distance: float, similarity: float) -> None: ...
+
+def embed_and_store(
+    drevo: Drevo,
+    nodes: Sequence[Node],
+    embedder: Callable[[list[str]], list[list[float]]],
+    *,
+    text_of: Optional[Callable[[Node], str]] = ...,
+) -> int: ...
+def vector_search(
+    drevo: Drevo,
+    query: Union[str, Sequence[float]],
+    *,
+    embedder: Optional[Callable[[list[str]], list[list[float]]]] = ...,
+    k: int = ...,
+) -> list[VectorHit]: ...
+
 # ── MMR reranker ──────────────────────────────────────────────────────
 
 class MMRReranker:
@@ -131,11 +159,15 @@ __all__: Final[list[str]] = [
     "Context",
     "ContextStats",
     "Document",
+    "Embedder",
     "IngestSchema",
     "MMRReranker",
     "Neighborhood",
     "Retriever",
     "SimpleDocument",
+    "VectorHit",
+    "embed_and_store",
     "expand_neighborhood",
     "ingest_documents",
+    "vector_search",
 ]
