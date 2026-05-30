@@ -58,14 +58,25 @@
 //! background [`GcWorker`](crate::mvcc::GcWorker) thread runs that vacuum on a
 //! cadence (native targets only; WASM hosts vacuum manually).
 //!
+//! # Optimistic concurrency control (task `00083`)
+//!
+//! Append-only writes do not by themselves stop two concurrent transactions
+//! from each retiring the *same* live version and producing a lost update.
+//! [`VersionedStore::put_checked`](crate::mvcc::VersionedStore::put_checked)
+//! and [`delete_checked`](crate::mvcc::VersionedStore::delete_checked) detect
+//! that race: a write whose key's chain head was concurrently modified is
+//! refused with
+//! [`MvccError::WriteConflict`](crate::mvcc::MvccError::WriteConflict)
+//! (first-updater-wins). [`run_with_retry`](crate::mvcc::run_with_retry) wraps
+//! the discipline into forward progress — it re-snapshots and replays the
+//! transaction body until it commits or the retry budget is exhausted.
+//!
 //! # What lands later in Phase 13
 //!
-//! * **`00083` optimistic concurrency control** — detect two writers
-//!   retiring the same live version (a write-write conflict) and force a
-//!   retry instead of silently losing an update.
 //! * **`00084` isolation levels** — choose between re-snapshotting per
 //!   statement (Read Committed) and once per transaction (Snapshot
-//!   Isolation), plus a serializable check.
+//!   Isolation), plus a serializable check, and wire the engine into the
+//!   [`Drevo`](crate::db::Drevo) mutation paths.
 //!
 //! These all build directly on the primitives defined here.
 
@@ -76,6 +87,9 @@ pub mod error;
 /// ([`GcWorker`](crate::mvcc::GcWorker)).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gc;
+/// Optimistic concurrency control retry loop
+/// ([`run_with_retry`](crate::mvcc::run_with_retry)).
+pub mod occ;
 /// Multi-version key-value store
 /// ([`VersionedStore`](crate::mvcc::VersionedStore),
 /// [`VacuumReport`](crate::mvcc::VacuumReport)).
@@ -92,6 +106,7 @@ pub mod version;
 pub use error::{MvccError, Result};
 #[cfg(not(target_arch = "wasm32"))]
 pub use gc::GcWorker;
+pub use occ::run_with_retry;
 pub use store::{VacuumReport, VersionedStore};
 pub use transaction::{Snapshot, SnapshotGuard, TransactionManager, Xid, XidStatus, INVALID_XID};
 pub use version::Version;
