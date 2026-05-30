@@ -42,11 +42,24 @@
 //! the snapshot was captured stays invisible to it forever, which is what
 //! makes the view stable (repeatable reads) under concurrent commits.
 //!
+//! # Garbage collection (task `00082`)
+//!
+//! Append-only storage means dead versions accumulate forever unless they
+//! are reclaimed. A reader registers its snapshot with
+//! [`TransactionManager::begin_snapshot`](crate::mvcc::TransactionManager::begin_snapshot),
+//! which publishes the snapshot's `xmin` and hands back a
+//! [`SnapshotGuard`](crate::mvcc::SnapshotGuard); the oldest registered
+//! `xmin` is the [`gc_horizon`](crate::mvcc::TransactionManager::gc_horizon).
+//! [`VersionedStore::vacuum`](crate::mvcc::VersionedStore::vacuum) physically
+//! removes every version that is invisible to all readers at or above that
+//! horizon — versions deleted/superseded by a committed transaction below it,
+//! and versions created by an aborted transaction below it — while preserving
+//! every live version and anything a registered reader can still see. The
+//! background [`GcWorker`](crate::mvcc::GcWorker) thread runs that vacuum on a
+//! cadence (native targets only; WASM hosts vacuum manually).
+//!
 //! # What lands later in Phase 13
 //!
-//! * **`00082` garbage collection** — reclaim versions older than the
-//!   oldest live snapshot's
-//!   [`Snapshot::xmin`](crate::mvcc::Snapshot::xmin) horizon.
 //! * **`00083` optimistic concurrency control** — detect two writers
 //!   retiring the same live version (a write-write conflict) and force a
 //!   retry instead of silently losing an update.
@@ -54,14 +67,18 @@
 //!   statement (Read Committed) and once per transaction (Snapshot
 //!   Isolation), plus a serializable check.
 //!
-//! These all build directly on the primitives defined here; this task is
-//! deliberately the visibility core and nothing more.
+//! These all build directly on the primitives defined here.
 
 /// Recoverable error type for the MVCC layer
 /// ([`MvccError`](crate::mvcc::MvccError)).
 pub mod error;
+/// Background garbage collection thread
+/// ([`GcWorker`](crate::mvcc::GcWorker)).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gc;
 /// Multi-version key-value store
-/// ([`VersionedStore`](crate::mvcc::VersionedStore)).
+/// ([`VersionedStore`](crate::mvcc::VersionedStore),
+/// [`VacuumReport`](crate::mvcc::VacuumReport)).
 pub mod store;
 /// Transaction ids, the commit log, and snapshots
 /// ([`TransactionManager`](crate::mvcc::TransactionManager),
@@ -73,6 +90,8 @@ pub mod transaction;
 pub mod version;
 
 pub use error::{MvccError, Result};
-pub use store::VersionedStore;
-pub use transaction::{Snapshot, TransactionManager, Xid, XidStatus, INVALID_XID};
+#[cfg(not(target_arch = "wasm32"))]
+pub use gc::GcWorker;
+pub use store::{VacuumReport, VersionedStore};
+pub use transaction::{Snapshot, SnapshotGuard, TransactionManager, Xid, XidStatus, INVALID_XID};
 pub use version::Version;

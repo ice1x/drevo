@@ -15,8 +15,8 @@
 //! [`VersionedStore`](crate::mvcc::VersionedStore) types; this module owns
 //! only *who ran when and whether they committed*.
 
-use std::collections::{BTreeSet, HashMap};
-use std::sync::RwLock;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, RwLock};
 
 use super::error::{MvccError, Result};
 
@@ -76,6 +76,13 @@ struct Registry {
     /// global snapshot horizon could be pruned by the garbage collector
     /// (Phase 13 task `00082`); today they are retained.
     status: HashMap<Xid, XidStatus>,
+    /// A multiset of the `xmin` of every *registered* live snapshot (one
+    /// captured via [`begin_snapshot`](TransactionManager::begin_snapshot)),
+    /// keyed by `xmin` with a reference count. The smallest key is the GC
+    /// horizon: no version a registered reader can still see lies below it.
+    /// Plain [`snapshot`](TransactionManager::snapshot)s are *not* tracked
+    /// here — they are one-shot reads the collector need not respect.
+    active_snaps: BTreeMap<Xid, u64>,
 }
 
 impl TransactionManager {
@@ -85,6 +92,7 @@ impl TransactionManager {
             inner: RwLock::new(Registry {
                 next: 1,
                 status: HashMap::new(),
+                active_snaps: BTreeMap::new(),
             }),
         }
     }
@@ -193,6 +201,102 @@ impl TransactionManager {
             active,
             my_xid,
         })
+    }
+
+    /// Capture a snapshot **and register it** so the garbage collector
+    /// (Phase 13 task `00082`) will not reclaim any version this reader can
+    /// still see.
+    ///
+    /// Returns a [`SnapshotGuard`] that publishes the snapshot's `xmin` into
+    /// the manager's active set for as long as it lives and removes it again
+    /// on drop. While any guard with a given `xmin` is alive,
+    /// [`gc_horizon`](Self::gc_horizon) will not advance past it. Use this for
+    /// long-lived readers; the cheaper untracked [`snapshot`](Self::snapshot)
+    /// is fine for one-shot reads completed before the next vacuum.
+    ///
+    /// The receiver is `&Arc<Self>` so the returned guard can own a manager
+    /// handle and therefore be `Send + 'static` — movable into reader threads.
+    ///
+    /// # Errors
+    ///
+    /// [`MvccError::LockPoisoned`] on a poisoned lock.
+    pub fn begin_snapshot(self: &Arc<Self>, my_xid: Xid) -> Result<SnapshotGuard> {
+        let snap = self.snapshot(my_xid)?;
+        let xmin = snap.xmin;
+        *self.write()?.active_snaps.entry(xmin).or_insert(0) += 1;
+        Ok(SnapshotGuard {
+            mgr: Arc::clone(self),
+            snap,
+            xmin,
+        })
+    }
+
+    /// Drop one registration of a snapshot whose horizon was `xmin`. Called
+    /// by [`SnapshotGuard`]'s destructor. A poisoned lock is swallowed: there
+    /// is nothing a destructor can do about it, and over-retaining a horizon
+    /// entry only delays GC, it never corrupts visibility.
+    fn release_snapshot(&self, xmin: Xid) {
+        if let Ok(mut reg) = self.write() {
+            if let Some(count) = reg.active_snaps.get_mut(&xmin) {
+                *count -= 1;
+                if *count == 0 {
+                    reg.active_snaps.remove(&xmin);
+                }
+            }
+        }
+    }
+
+    /// The garbage-collection horizon: the oldest `xmin` of any registered
+    /// live snapshot, or the next id to be allocated (one past the highest
+    /// allocated id) when none are registered.
+    ///
+    /// Every version retired by a committed transaction strictly below this
+    /// value is invisible to every registered reader and so may be reclaimed
+    /// by the vacuum the
+    /// [`VersionedStore::vacuum`](super::store::VersionedStore::vacuum)
+    /// reclamation pass performs.
+    ///
+    /// # Errors
+    ///
+    /// [`MvccError::LockPoisoned`] on a poisoned lock.
+    pub fn gc_horizon(&self) -> Result<Xid> {
+        let reg = self.read()?;
+        Ok(reg.active_snaps.keys().next().copied().unwrap_or(reg.next))
+    }
+}
+
+/// An RAII handle to a registered [`Snapshot`].
+///
+/// Created by [`TransactionManager::begin_snapshot`]. It dereferences to the
+/// underlying [`Snapshot`] (so it can be passed straight to
+/// [`VersionedStore::get`](super::store::VersionedStore::get) via deref
+/// coercion) and, while alive, pins the garbage-collection horizon at or
+/// below its snapshot's `xmin`. Dropping it releases that pin.
+#[derive(Debug)]
+pub struct SnapshotGuard {
+    mgr: Arc<TransactionManager>,
+    snap: Snapshot,
+    xmin: Xid,
+}
+
+impl SnapshotGuard {
+    /// Borrow the underlying [`Snapshot`].
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snap
+    }
+}
+
+impl std::ops::Deref for SnapshotGuard {
+    type Target = Snapshot;
+
+    fn deref(&self) -> &Snapshot {
+        &self.snap
+    }
+}
+
+impl Drop for SnapshotGuard {
+    fn drop(&mut self) {
+        self.mgr.release_snapshot(self.xmin);
     }
 }
 
@@ -411,5 +515,82 @@ mod tests {
         m.abort(w).unwrap();
         let snap = m.snapshot(INVALID_XID).unwrap();
         assert!(!snap.sees_effect(w, &m).unwrap());
+    }
+
+    #[test]
+    fn gc_horizon_is_next_when_no_snapshots_registered() {
+        let m = TransactionManager::new();
+        // nothing allocated yet -> next is 1
+        assert_eq!(m.gc_horizon().unwrap(), 1);
+        let a = m.begin().unwrap();
+        m.commit(a).unwrap();
+        // an untracked plain snapshot does NOT hold the horizon back
+        let _plain = m.snapshot(INVALID_XID).unwrap();
+        assert_eq!(m.gc_horizon().unwrap(), 2); // next id after a==1
+    }
+
+    #[test]
+    fn registered_snapshot_pins_horizon_until_dropped() {
+        let m = Arc::new(TransactionManager::new());
+        // a long-running reader still in progress -> its xmin is the live tx
+        let reader_tx = m.begin().unwrap(); // 1, stays active
+        let guard = m.begin_snapshot(reader_tx).unwrap();
+        // bump the clock with more committed work
+        for _ in 0..5 {
+            let w = m.begin().unwrap();
+            m.commit(w).unwrap();
+        }
+        // horizon pinned at the registered reader's xmin (==1)
+        assert_eq!(m.gc_horizon().unwrap(), reader_tx);
+        drop(guard);
+        // once released, the horizon jumps forward to `next`
+        let next = m.snapshot(INVALID_XID).unwrap().xmax();
+        assert_eq!(m.gc_horizon().unwrap(), next);
+    }
+
+    #[test]
+    fn horizon_is_minimum_across_multiple_registered_snapshots() {
+        let m = Arc::new(TransactionManager::new());
+        // an old reader registers while tx 1 is the lowest active id
+        let old_tx = m.begin().unwrap(); // 1, active
+        let old = m.begin_snapshot(old_tx).unwrap();
+        assert_eq!(old.xmin(), old_tx);
+        // tx 1 finishes; a newer reader now captures a higher xmin
+        m.commit(old_tx).unwrap();
+        let mid_tx = m.begin().unwrap(); // 2, active
+        let mid = m.begin_snapshot(mid_tx).unwrap();
+        assert_eq!(mid.xmin(), mid_tx);
+
+        assert_eq!(m.gc_horizon().unwrap(), old_tx); // smallest registered xmin wins
+        drop(old);
+        assert_eq!(m.gc_horizon().unwrap(), mid_tx); // now the next-oldest
+        drop(mid);
+    }
+
+    #[test]
+    fn duplicate_xmin_snapshots_refcount_correctly() {
+        let m = Arc::new(TransactionManager::new());
+        let reader_tx = m.begin().unwrap(); // 1, active -> both guards share xmin 1
+        let g1 = m.begin_snapshot(reader_tx).unwrap();
+        let g2 = m.begin_snapshot(reader_tx).unwrap();
+        assert_eq!(m.gc_horizon().unwrap(), reader_tx);
+        drop(g1);
+        // one guard still holds xmin 1 -> horizon unchanged
+        assert_eq!(m.gc_horizon().unwrap(), reader_tx);
+        drop(g2);
+        assert_eq!(
+            m.gc_horizon().unwrap(),
+            m.snapshot(INVALID_XID).unwrap().xmax()
+        );
+    }
+
+    #[test]
+    fn snapshot_guard_derefs_to_snapshot() {
+        let m = Arc::new(TransactionManager::new());
+        let w = m.begin().unwrap();
+        m.commit(w).unwrap();
+        let guard = m.begin_snapshot(INVALID_XID).unwrap();
+        // deref gives access to Snapshot methods
+        assert_eq!(guard.xmax(), guard.snapshot().xmax());
     }
 }

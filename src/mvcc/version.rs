@@ -13,7 +13,7 @@
 //! under its [`Snapshot`]. Writers append; they never mutate value bytes.
 
 use super::error::Result;
-use super::transaction::{Snapshot, TransactionManager, Xid, INVALID_XID};
+use super::transaction::{Snapshot, TransactionManager, Xid, XidStatus, INVALID_XID};
 
 /// A single immutable version of a value, tagged with the transactions that
 /// created and (optionally) retired it.
@@ -86,6 +86,46 @@ impl<V> Version<V> {
         }
         Ok(!snapshot.sees_effect(self.xmax, mgr)?)
     }
+
+    /// Decide whether this version can be physically reclaimed by the garbage
+    /// collector (Phase 13 task `00082`) given a GC `horizon`.
+    ///
+    /// The `horizon` is the oldest `xmin` of any reader the collector must
+    /// respect — see [`TransactionManager::gc_horizon`]. A version is
+    /// reclaimable iff it can never again become visible to a snapshot whose
+    /// `xmin >= horizon`, which is true in exactly two cases:
+    ///
+    /// 1. **Superseded or deleted** — its `xmax` is a *committed* transaction
+    ///    fully below the horizon (`xmax < horizon`). Because `xmax <
+    ///    horizon <= snapshot.xmin` for every respected snapshot, the
+    ///    deleter is neither in that snapshot's future nor its active set, so
+    ///    every such snapshot sees the deletion and this version is invisible
+    ///    to all of them.
+    /// 2. **Dead on arrival** — its `xmin` is an *aborted* transaction below
+    ///    the horizon (`xmin < horizon`). An aborted creator's effect is
+    ///    invisible to everyone, so the version was never and will never be
+    ///    visible.
+    ///
+    /// A live version (`xmax == INVALID_XID`) and a version retired by an
+    /// in-progress or aborted deleter are never reclaimable: a reader may
+    /// still resolve to them.
+    ///
+    /// # Errors
+    ///
+    /// [`MvccError::LockPoisoned`](super::MvccError::LockPoisoned) if the
+    /// manager's lock is poisoned.
+    pub(super) fn is_reclaimable(&self, horizon: Xid, mgr: &TransactionManager) -> Result<bool> {
+        if self.xmax != INVALID_XID
+            && self.xmax < horizon
+            && matches!(mgr.status(self.xmax)?, XidStatus::Committed)
+        {
+            return Ok(true);
+        }
+        if self.xmin < horizon && matches!(mgr.status(self.xmin)?, XidStatus::Aborted) {
+            return Ok(true);
+        }
+        Ok(false)
+    }
 }
 
 #[cfg(test)]
@@ -157,5 +197,66 @@ mod tests {
         m.abort(deleter).unwrap(); // delete rolled back
         let after = m.snapshot(INVALID_XID).unwrap();
         assert!(v.is_visible(&after, &m).unwrap());
+    }
+
+    #[test]
+    fn live_version_is_never_reclaimable() {
+        let m = TransactionManager::new();
+        let creator = m.begin().unwrap();
+        m.commit(creator).unwrap();
+        let v = Version::new(creator, "x");
+        // even at an aggressive horizon a live version is retained
+        assert!(!v.is_reclaimable(u64::MAX, &m).unwrap());
+    }
+
+    #[test]
+    fn committed_delete_below_horizon_is_reclaimable() {
+        let m = TransactionManager::new();
+        let creator = m.begin().unwrap();
+        m.commit(creator).unwrap();
+        let mut v = Version::new(creator, "x");
+        let deleter = m.begin().unwrap();
+        v.mark_deleted(deleter);
+        m.commit(deleter).unwrap();
+        // horizon strictly above the deleter -> reclaimable
+        assert!(v.is_reclaimable(deleter + 1, &m).unwrap());
+        // horizon at the deleter -> NOT yet reclaimable (a reader at this
+        // horizon could still predate the delete)
+        assert!(!v.is_reclaimable(deleter, &m).unwrap());
+    }
+
+    #[test]
+    fn committed_delete_with_in_progress_deleter_is_not_reclaimable() {
+        let m = TransactionManager::new();
+        let creator = m.begin().unwrap();
+        m.commit(creator).unwrap();
+        let mut v = Version::new(creator, "x");
+        let deleter = m.begin().unwrap();
+        v.mark_deleted(deleter); // deleter still in progress
+        assert!(!v.is_reclaimable(u64::MAX, &m).unwrap());
+    }
+
+    #[test]
+    fn aborted_delete_is_not_reclaimable() {
+        let m = TransactionManager::new();
+        let creator = m.begin().unwrap();
+        m.commit(creator).unwrap();
+        let mut v = Version::new(creator, "x");
+        let deleter = m.begin().unwrap();
+        v.mark_deleted(deleter);
+        m.abort(deleter).unwrap();
+        // the delete rolled back, so the version is still logically live
+        assert!(!v.is_reclaimable(u64::MAX, &m).unwrap());
+    }
+
+    #[test]
+    fn aborted_creator_below_horizon_is_reclaimable() {
+        let m = TransactionManager::new();
+        let creator = m.begin().unwrap();
+        m.abort(creator).unwrap();
+        let v = Version::new(creator, "x");
+        assert!(v.is_reclaimable(creator + 1, &m).unwrap());
+        // not yet, if the horizon hasn't passed the creator
+        assert!(!v.is_reclaimable(creator, &m).unwrap());
     }
 }
