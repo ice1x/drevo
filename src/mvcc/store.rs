@@ -30,6 +30,20 @@ use super::error::{MvccError, Result};
 use super::transaction::{Snapshot, TransactionManager, Xid};
 use super::version::Version;
 
+/// The outcome of a [`VersionedStore::vacuum`] pass.
+///
+/// Returned so callers (notably the background
+/// [`GcWorker`](super::gc::GcWorker)) can observe how much dead state a cycle
+/// reclaimed without instrumenting the store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VacuumReport {
+    /// The number of physical [`Version`]s removed from version chains.
+    pub reclaimed_versions: usize,
+    /// The number of keys whose chains became empty and were dropped from the
+    /// index entirely (their last visible version had been deleted).
+    pub emptied_keys: usize,
+}
+
 /// An MVCC key-value store sharing a [`TransactionManager`].
 ///
 /// `K` must be hashable; `V` is cloned out on read. Construct one over a
@@ -167,11 +181,70 @@ where
     pub fn version_count(&self, key: &K) -> Result<usize> {
         Ok(self.read()?.get(key).map_or(0, Vec::len))
     }
+
+    /// Reclaim dead versions below `horizon`, vacuuming the store.
+    ///
+    /// Every chain is filtered by the per-version reclaimability rule:
+    /// versions superseded or deleted by a committed transaction below the
+    /// horizon, and versions created by an aborted transaction below it, are
+    /// physically removed. A chain that becomes empty (its last live version
+    /// was deleted and the delete is now below the horizon) is dropped from
+    /// the index. Versions still reachable by some snapshot at or above the
+    /// horizon — and every live version — are retained, so visibility is
+    /// unchanged for any reader the horizon respects.
+    ///
+    /// `horizon` is normally [`TransactionManager::gc_horizon`]; pass a
+    /// smaller value to vacuum more conservatively. The relative order of the
+    /// surviving versions in each chain is preserved (newest stays last).
+    ///
+    /// # Errors
+    ///
+    /// [`MvccError::LockPoisoned`] on a poisoned lock.
+    pub fn vacuum(&self, horizon: Xid) -> Result<VacuumReport> {
+        let mut chains = self.write()?;
+        let mut report = VacuumReport::default();
+        let mut emptied: Vec<K> = Vec::new();
+
+        for (key, chain) in chains.iter_mut() {
+            let mut kept: Vec<Version<V>> = Vec::with_capacity(chain.len());
+            for version in chain.drain(..) {
+                if version.is_reclaimable(horizon, &self.mgr)? {
+                    report.reclaimed_versions += 1;
+                } else {
+                    kept.push(version);
+                }
+            }
+            if kept.is_empty() {
+                emptied.push(key.clone());
+            } else {
+                *chain = kept;
+            }
+        }
+
+        report.emptied_keys = emptied.len();
+        for key in emptied {
+            chains.remove(&key);
+        }
+        Ok(report)
+    }
+
+    /// Vacuum the store at the manager's current
+    /// [`gc_horizon`](TransactionManager::gc_horizon) — the convenience
+    /// entry point the background [`GcWorker`](super::gc::GcWorker) drives.
+    ///
+    /// # Errors
+    ///
+    /// [`MvccError::LockPoisoned`] on a poisoned lock.
+    pub fn vacuum_to_horizon(&self) -> Result<VacuumReport> {
+        let horizon = self.mgr.gc_horizon()?;
+        self.vacuum(horizon)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mvcc::INVALID_XID;
 
     fn store() -> VersionedStore<String, i64> {
         VersionedStore::new(Arc::new(TransactionManager::new()))
@@ -297,5 +370,114 @@ mod tests {
         let mut rows = s.scan_visible(&snap).unwrap();
         rows.sort();
         assert_eq!(rows, vec![("a".into(), 1)]);
+    }
+
+    #[test]
+    fn vacuum_reclaims_superseded_versions_below_horizon() {
+        let s = store();
+        // three committed updates to the same key -> chain of 3
+        for v in 1..=3 {
+            let w = s.manager().begin().unwrap();
+            s.put(w, "k".into(), v).unwrap();
+            s.manager().commit(w).unwrap();
+        }
+        assert_eq!(s.version_count(&"k".into()).unwrap(), 3);
+
+        // no readers registered -> horizon is `next`, all dead versions go
+        let report = s.vacuum_to_horizon().unwrap();
+        assert_eq!(report.reclaimed_versions, 2);
+        assert_eq!(report.emptied_keys, 0);
+        // only the live version survives
+        assert_eq!(s.version_count(&"k".into()).unwrap(), 1);
+
+        // and it is still the latest committed value
+        let snap = s.manager().snapshot(0).unwrap();
+        assert_eq!(s.get(&"k".into(), &snap).unwrap(), Some(3));
+    }
+
+    #[test]
+    fn vacuum_preserves_versions_a_registered_reader_still_needs() {
+        let s = store();
+        let mgr = s.manager().clone();
+
+        // seed value 1, committed
+        let seed = mgr.begin().unwrap();
+        s.put(seed, "k".into(), 1).unwrap();
+        mgr.commit(seed).unwrap();
+
+        // a long reader registers a snapshot seeing value 1
+        let reader = mgr.begin_snapshot(INVALID_XID).unwrap();
+        assert_eq!(s.get(&"k".into(), &reader).unwrap(), Some(1));
+
+        // a writer supersedes it with value 2
+        let w = mgr.begin().unwrap();
+        s.put(w, "k".into(), 2).unwrap();
+        mgr.commit(w).unwrap();
+
+        // vacuum must NOT drop the old version: the registered reader sees it
+        let report = s.vacuum_to_horizon().unwrap();
+        assert_eq!(report.reclaimed_versions, 0);
+        assert_eq!(s.version_count(&"k".into()).unwrap(), 2);
+        assert_eq!(s.get(&"k".into(), &reader).unwrap(), Some(1));
+
+        // once the reader leaves, the old version becomes collectable
+        drop(reader);
+        let report = s.vacuum_to_horizon().unwrap();
+        assert_eq!(report.reclaimed_versions, 1);
+        assert_eq!(s.version_count(&"k".into()).unwrap(), 1);
+    }
+
+    #[test]
+    fn vacuum_drops_emptied_chain_after_committed_delete() {
+        let s = store();
+        let w = s.manager().begin().unwrap();
+        s.put(w, "k".into(), 1).unwrap();
+        s.manager().commit(w).unwrap();
+        let d = s.manager().begin().unwrap();
+        assert!(s.delete(d, &"k".into()).unwrap());
+        s.manager().commit(d).unwrap();
+
+        let report = s.vacuum_to_horizon().unwrap();
+        assert_eq!(report.reclaimed_versions, 1);
+        assert_eq!(report.emptied_keys, 1);
+        assert_eq!(s.version_count(&"k".into()).unwrap(), 0);
+    }
+
+    #[test]
+    fn vacuum_reclaims_aborted_writes() {
+        let s = store();
+        // committed live value
+        let w = s.manager().begin().unwrap();
+        s.put(w, "k".into(), 1).unwrap();
+        s.manager().commit(w).unwrap();
+        // an aborted update: retires the live version, appends a dead one
+        let bad = s.manager().begin().unwrap();
+        s.put(bad, "k".into(), 99).unwrap();
+        s.manager().abort(bad).unwrap();
+        assert_eq!(s.version_count(&"k".into()).unwrap(), 2);
+
+        let report = s.vacuum_to_horizon().unwrap();
+        // the aborted version is reclaimed; the original is restored to live
+        // (its xmax points at an aborted tx, so it is not reclaimable)
+        assert_eq!(report.reclaimed_versions, 1);
+        assert_eq!(s.version_count(&"k".into()).unwrap(), 1);
+        let snap = s.manager().snapshot(0).unwrap();
+        assert_eq!(s.get(&"k".into(), &snap).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn vacuum_is_idempotent() {
+        let s = store();
+        for v in 1..=4 {
+            let w = s.manager().begin().unwrap();
+            s.put(w, "k".into(), v).unwrap();
+            s.manager().commit(w).unwrap();
+        }
+        let first = s.vacuum_to_horizon().unwrap();
+        assert_eq!(first.reclaimed_versions, 3);
+        // a second pass finds nothing more to reclaim
+        let second = s.vacuum_to_horizon().unwrap();
+        assert_eq!(second.reclaimed_versions, 0);
+        assert_eq!(second.emptied_keys, 0);
     }
 }
