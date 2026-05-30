@@ -86,6 +86,13 @@ pub mod fts;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod model;
+/// Multi-version concurrency control — Phase 13 task `00081`. The
+/// transaction-id allocator + commit log ([`mvcc::TransactionManager`]),
+/// snapshot capture ([`mvcc::Snapshot`]), `xmin`/`xmax` tuple versioning
+/// ([`mvcc::Version`]), and the snapshot-isolated [`mvcc::VersionedStore`]
+/// the rest of Phase 13 (GC `00082`, OCC `00083`, isolation levels
+/// `00084`) builds on. Dependency-free and always compiled.
+pub mod mvcc;
 /// Extracted env-var parser, validator, and bind/serve loop for the
 /// `drevo-server` binary. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
