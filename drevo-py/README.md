@@ -46,6 +46,80 @@ with drevo.Drevo.open_in_memory() as db:
     print(node.uuid)            # uuid.UUID, not bytes
 ```
 
+## Examples
+
+These snippets are the curated usage corpus surfaced by the
+`python_api_examples` MCP tool (task `00121`): the `drevo-mcp` server
+embeds this README at build time and fuzzy-searches these blocks by
+intent, so an AI client can answer "how do I …?" without leaving the
+conversation. Keep each block self-contained and runnable.
+
+### Create and read a node
+
+```python
+import drevo
+
+with drevo.Drevo.open_in_memory() as db:
+    node = db.create_node(drevo.NewNode(kind="task", title="Write tests"))
+    fetched = db.get_node(node.id)
+    assert fetched == node
+```
+
+### Connect two nodes with an edge
+
+```python
+with drevo.Drevo.open_in_memory() as db:
+    a = db.create_node(drevo.NewNode(kind="task", title="Design"))
+    b = db.create_node(drevo.NewNode(kind="task", title="Implement"))
+    edge = db.create_edge(
+        drevo.NewEdge(from_id=a.id, to_id=b.id, kind="blocks")
+    )
+```
+
+### Traverse the graph (BFS)
+
+```python
+with drevo.Drevo.open(path) as db:
+    reachable = db.bfs(
+        start_id=root.id,
+        max_depth=3,
+        direction=drevo.Direction.OUT,
+    )
+    for node in reachable:
+        print(node.title)
+```
+
+### Full-text search over node titles
+
+```python
+with drevo.Drevo.open(path) as db:
+    hits = db.search_fts("authentication bug", limit=10)
+    for hit in hits:
+        print(hit.score, hit.node.title)
+```
+
+### Retrieve a graph-RAG context for an LLM prompt
+
+```python
+from drevo.rag import Retriever
+
+with drevo.Drevo.open(path) as db:
+    retriever = Retriever(db, hops=2, max_nodes=50)
+    context = retriever.retrieve("onboarding checklist", limit=5)
+    prompt = context.to_text(format="markdown")
+```
+
+### Vector search over stored embeddings
+
+```python
+from drevo.rag import vector_search
+
+with drevo.Drevo.open(path) as db:
+    hits = vector_search(db, query=my_embedding, k=5)
+    for hit in hits:
+        print(hit.similarity, hit.node.title)
+```
+
 ## Local Rust build
 
 `drevo-py` is intentionally **not** in `default-members` of the

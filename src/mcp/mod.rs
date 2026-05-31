@@ -22,10 +22,16 @@
 //!   types (`InitializeResult`, `Tool`, `ToolCallResult`, …) with
 //!   serde round-trip tests.
 //! - [`crate::mcp::tools`] — the [`crate::mcp::tools::Tool`] trait,
-//!   the [`crate::mcp::tools::ToolRegistry`], and the seven baseline
+//!   the [`crate::mcp::tools::ToolRegistry`], the seven baseline
 //!   tools that wrap [`crate::db::Drevo`] (`drevo_health_check`,
 //!   `drevo_count_nodes`, `drevo_node_get`, `drevo_node_get_by_uuid`,
-//!   `drevo_search_fts`, `drevo_bfs`, `drevo_list_nodes_by_kind`).
+//!   `drevo_search_fts`, `drevo_bfs`, `drevo_list_nodes_by_kind`), and
+//!   the three `python_api_*` introspection tools (`python_api_list`,
+//!   `python_api_describe`, `python_api_examples`).
+//! - [`crate::mcp::python_api`] — the [`crate::mcp::python_api::ApiCatalog`]
+//!   that parses the `drevo-py` type stubs + README (embedded at compile
+//!   time) into the queryable surface the `python_api_*` tools serve
+//!   (Phase 16 task `00121`).
 //! - [`crate::mcp::server`] — the sync stdio dispatcher. Reads one
 //!   JSON object per line, dispatches via the registry, writes one
 //!   JSON object per line. EOF on stdin = graceful shutdown.
@@ -52,6 +58,7 @@
 //! traversal / properties).
 
 pub mod protocol;
+pub mod python_api;
 pub mod server;
 pub mod tools;
 
