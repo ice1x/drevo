@@ -120,7 +120,11 @@ fn full_handshake_succeeds_against_real_binary() {
         &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
     );
     let tools = list["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 7, "baseline tool count must be 7");
+    assert_eq!(
+        tools.len(),
+        10,
+        "seven baseline + three python_api introspection tools"
+    );
     let names: Vec<&str> = tools
         .iter()
         .map(|t| t["name"].as_str().expect("name"))

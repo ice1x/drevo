@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_baseline_seven() {
+    fn tools_list_returns_all_registered_tools() {
         let mut s = new_test_server();
         let out = drive(
             &mut s,
@@ -319,10 +319,12 @@ mod tests {
         );
         let v: Value = serde_json::from_str(&out[0]).expect("response is JSON");
         let tools = v["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 7);
+        // Seven baseline drevo_* tools + three python_api_* tools.
+        assert_eq!(tools.len(), 10);
         // Lock the alphabetical order — first tool name should be
-        // `drevo_bfs`.
+        // `drevo_bfs`, last `python_api_list`.
         assert_eq!(tools[0]["name"], "drevo_bfs");
+        assert_eq!(tools[tools.len() - 1]["name"], "python_api_list");
     }
 
     #[test]

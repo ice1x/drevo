@@ -46,6 +46,7 @@ use crate::db::Drevo;
 use crate::model::Direction;
 
 use super::protocol::{JsonRpcError, Tool as ToolMeta};
+use super::python_api::ApiCatalog;
 
 /// Static MCP tool definition + dynamic dispatcher.
 ///
@@ -103,6 +104,9 @@ impl ToolRegistry {
         r.register(SearchFts);
         r.register(Bfs);
         r.register(ListNodesByKind);
+        r.register(PythonApiList);
+        r.register(PythonApiDescribe);
+        r.register(PythonApiExamples);
         r
     }
 
@@ -463,6 +467,192 @@ impl Tool for ListNodesByKind {
     }
 }
 
+// ── Python-API introspection tools (task 00121) ────────────────────────
+//
+// These three tools answer "where is the Python API documented?" — in
+// the queryable [`ApiCatalog`], not a hand-maintained markdown file.
+// They are the only tools in this module that do NOT touch the `&Drevo`
+// handle: the catalog is derived at compile time from the `drevo-py`
+// type stubs + README, so it is identical for every database and needs
+// no live data. The handle argument is accepted (the [`Tool`] trait
+// requires it) and ignored.
+
+/// `python_api_list` — enumerate Python API symbols, optionally
+/// filtered by a dotted-name prefix.
+pub struct PythonApiList;
+
+#[derive(Debug, Deserialize)]
+struct PythonApiListArgs {
+    #[serde(default)]
+    prefix: String,
+}
+
+impl Tool for PythonApiList {
+    fn descriptor(&self) -> ToolMeta {
+        ToolMeta {
+            name: "python_api_list".to_string(),
+            description: "Enumerate symbols of the drevo-py Python API \
+                (classes, methods, functions, attributes, constants). \
+                Optionally filter by a dotted-name prefix such as \
+                \"drevo.Drevo\" or \"Retriever\"; empty lists everything. \
+                Result: {\"count\": u64, \"symbols\": [{name, kind, signature}]}."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prefix": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Dotted-name prefix filter (case-insensitive); empty for all"
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn call(&self, _drevo: &Drevo, arguments: &Value) -> Result<Value, JsonRpcError> {
+        let args: PythonApiListArgs = serde_json::from_value(arguments.clone())
+            .map_err(|e| JsonRpcError::invalid_params(format!("python_api_list: {e}")))?;
+        let catalog = ApiCatalog::builtin();
+        let symbols: Vec<Value> = catalog
+            .list(&args.prefix)
+            .into_iter()
+            .map(|s| {
+                json!({
+                    "name": s.name,
+                    "kind": s.kind.as_str(),
+                    "signature": s.signature,
+                })
+            })
+            .collect();
+        Ok(json!({ "count": symbols.len() as u64, "symbols": symbols }))
+    }
+}
+
+/// `python_api_describe` — return the signature + docstring for one
+/// Python API symbol, resolved by qualified, suffix, or simple name.
+pub struct PythonApiDescribe;
+
+#[derive(Debug, Deserialize)]
+struct PythonApiDescribeArgs {
+    name: String,
+}
+
+impl Tool for PythonApiDescribe {
+    fn descriptor(&self) -> ToolMeta {
+        ToolMeta {
+            name: "python_api_describe".to_string(),
+            description:
+                "Describe one symbol of the drevo-py Python API: \
+                its kind, signature, and docstring. Accepts a qualified \
+                name (\"drevo.Drevo.create_node\"), a class-qualified name \
+                (\"Drevo.create_node\"), or a bare name (\"create_node\"). \
+                On a miss returns {\"found\": false, \"suggestions\": [..]}; \
+                on a hit {\"found\": true, \"symbol\": {name, kind, signature, docstring, parent}}."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Symbol name (qualified, class-qualified, or bare)"
+                    }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn call(&self, _drevo: &Drevo, arguments: &Value) -> Result<Value, JsonRpcError> {
+        let args: PythonApiDescribeArgs = serde_json::from_value(arguments.clone())
+            .map_err(|e| JsonRpcError::invalid_params(format!("python_api_describe: {e}")))?;
+        let catalog = ApiCatalog::builtin();
+        match catalog.describe(&args.name) {
+            Some(symbol) => Ok(json!({
+                "found": true,
+                "symbol": {
+                    "name": symbol.name,
+                    "kind": symbol.kind.as_str(),
+                    "signature": symbol.signature,
+                    "docstring": symbol.docstring,
+                    "parent": symbol.parent,
+                }
+            })),
+            None => Ok(json!({
+                "found": false,
+                "suggestions": catalog.suggest(&args.name, 5),
+            })),
+        }
+    }
+}
+
+/// `python_api_examples` — fuzzy-search the curated usage examples for
+/// snippets matching a free-text intent.
+pub struct PythonApiExamples;
+
+#[derive(Debug, Deserialize)]
+struct PythonApiExamplesArgs {
+    intent: String,
+    #[serde(default = "default_examples_limit")]
+    limit: usize,
+}
+
+fn default_examples_limit() -> usize {
+    5
+}
+
+impl Tool for PythonApiExamples {
+    fn descriptor(&self) -> ToolMeta {
+        ToolMeta {
+            name: "python_api_examples".to_string(),
+            description: "Fuzzy-search drevo-py usage examples by intent \
+                (e.g. \"create a node\", \"retrieve a RAG context\", \
+                \"vector search\"). Returns the best-matching code \
+                snippets, ranked by token overlap. \
+                Result: {\"count\": u64, \"examples\": [{title, code, source}]}."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "intent": {
+                        "type": "string",
+                        "description": "Free-text description of what you want to do"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 5,
+                        "description": "Maximum number of examples to return"
+                    }
+                },
+                "required": ["intent"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn call(&self, _drevo: &Drevo, arguments: &Value) -> Result<Value, JsonRpcError> {
+        let args: PythonApiExamplesArgs = serde_json::from_value(arguments.clone())
+            .map_err(|e| JsonRpcError::invalid_params(format!("python_api_examples: {e}")))?;
+        let catalog = ApiCatalog::builtin();
+        let examples: Vec<Value> = catalog
+            .search_examples(&args.intent, args.limit)
+            .into_iter()
+            .map(|ex| {
+                json!({
+                    "title": ex.title,
+                    "code": ex.code,
+                    "source": ex.source,
+                })
+            })
+            .collect();
+        Ok(json!({ "count": examples.len() as u64, "examples": examples }))
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /// Parse a hyphenated UUID string into the 16-byte form drevo
@@ -516,9 +706,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_registry_has_seven_tools() {
+    fn default_registry_has_ten_tools() {
         let r = ToolRegistry::default_tools();
-        assert_eq!(r.len(), 7, "baseline tool count locked at 7");
+        assert_eq!(
+            r.len(),
+            10,
+            "seven baseline + three python_api introspection tools"
+        );
         assert!(!r.is_empty());
     }
 
@@ -542,6 +736,9 @@ mod tests {
             "drevo_node_get",
             "drevo_node_get_by_uuid",
             "drevo_search_fts",
+            "python_api_describe",
+            "python_api_examples",
+            "python_api_list",
         ] {
             assert!(
                 r.get(expected).is_some(),
@@ -672,5 +869,89 @@ mod tests {
             .call(&drevo, &json!({"start_id": 1, "direction": "sideways"}))
             .expect_err("must reject bad direction");
         assert_eq!(err.code, -32602);
+    }
+
+    // ── Python-API introspection tools ─────────────────────────────────
+    //
+    // These do not consult the handle, but the `Tool::call` contract
+    // takes one, so we build a throwaway in-memory Drevo to drive them.
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn python_api_list_enumerates_and_filters() {
+        let drevo = Drevo::open_in_memory().expect("open in-memory");
+        let tool = PythonApiList;
+
+        // Empty prefix → the whole surface.
+        let all = tool.call(&drevo, &json!({})).expect("call");
+        let count = all["count"].as_u64().expect("count");
+        assert!(count >= 30, "expected the full surface, got {count}");
+        let symbols = all["symbols"].as_array().expect("symbols array");
+        assert_eq!(symbols.len() as u64, count);
+        // Each entry carries name + kind + signature.
+        let first = &symbols[0];
+        assert!(first["name"].is_string());
+        assert!(first["kind"].is_string());
+        assert!(first["signature"].is_string());
+
+        // Prefix filter narrows to a namespace.
+        let rag = tool
+            .call(&drevo, &json!({"prefix": "drevo.rag"}))
+            .expect("call");
+        let rag_syms = rag["symbols"].as_array().expect("array");
+        assert!(!rag_syms.is_empty());
+        assert!(rag_syms
+            .iter()
+            .all(|s| s["name"].as_str().unwrap().starts_with("drevo.rag")));
+    }
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn python_api_describe_hit_and_miss() {
+        let drevo = Drevo::open_in_memory().expect("open in-memory");
+        let tool = PythonApiDescribe;
+
+        let hit = tool
+            .call(&drevo, &json!({"name": "create_node"}))
+            .expect("call");
+        assert_eq!(hit["found"], true);
+        assert_eq!(hit["symbol"]["name"], "drevo.Drevo.create_node");
+        assert_eq!(hit["symbol"]["kind"], "method");
+        assert!(hit["symbol"]["signature"]
+            .as_str()
+            .unwrap()
+            .starts_with("def create_node("));
+
+        let miss = tool
+            .call(&drevo, &json!({"name": "create_nodez"}))
+            .expect("call");
+        assert_eq!(miss["found"], false);
+        assert!(miss["suggestions"].is_array());
+    }
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn python_api_describe_missing_name_is_invalid_params() {
+        let drevo = Drevo::open_in_memory().expect("open in-memory");
+        let tool = PythonApiDescribe;
+        let err = tool
+            .call(&drevo, &json!({"wrong": "x"}))
+            .expect_err("must fail");
+        assert_eq!(err.code, -32602);
+    }
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn python_api_examples_searches_by_intent() {
+        let drevo = Drevo::open_in_memory().expect("open in-memory");
+        let tool = PythonApiExamples;
+        let result = tool
+            .call(&drevo, &json!({"intent": "create a node", "limit": 3}))
+            .expect("call");
+        let examples = result["examples"].as_array().expect("examples array");
+        assert!(!examples.is_empty(), "intent should match a README example");
+        let top = &examples[0];
+        assert!(top["code"].as_str().unwrap().contains("create_node"));
+        assert!(top["source"].as_str().unwrap().ends_with("README.md"));
     }
 }
