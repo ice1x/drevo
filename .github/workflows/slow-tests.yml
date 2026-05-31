@@ -114,3 +114,14 @@ jobs:
       # Doctests are not run by nextest; mirror ci.yml's coverage.
       - name: cargo test --doc --all-features
         run: cargo test --doc --all-features
+
+      # Phase 10.5 task 00123 — layer-1 agentic workload baseline.
+      # `#[ignore]` by default so it never touches the PR path; this
+      # scheduled self-hosted job is its nightly-CI home (see the task's
+      # README entry). Runs the 30-minute floor by default; dispatch with
+      # `DREVO_SOAK_SECS=28800` for the roadmap's 8-hour soak. Advisory —
+      # the job-level `continue-on-error: true` above means a perf-envelope
+      # breach annotates the run rather than hard-failing an unrelated branch.
+      - name: agentic workload baseline soak (layer 1)
+        run: cargo nextest run --run-ignored ignored-only --no-fail-fast
+          -E 'test(rust_api_agentic_workload_soak)' --nocapture
