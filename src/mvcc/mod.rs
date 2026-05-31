@@ -71,12 +71,34 @@
 //! the discipline into forward progress — it re-snapshots and replays the
 //! transaction body until it commits or the retry budget is exhausted.
 //!
+//! # Configurable isolation levels (task `00084`)
+//!
+//! The primitives above give exactly one behaviour — snapshot isolation. The
+//! [`isolation`](crate::mvcc::isolation) module turns that into the three configurable
+//! [`IsolationLevel`](crate::mvcc::IsolationLevel)s an SQL-style engine offers,
+//! by controlling *when* a transaction's read snapshot is captured and *what*
+//! is validated at commit:
+//!
+//! * [`ReadCommitted`](crate::mvcc::IsolationLevel::ReadCommitted) re-snapshots
+//!   before every statement (non-repeatable reads, latest committed data);
+//! * [`SnapshotIsolation`](crate::mvcc::IsolationLevel::SnapshotIsolation)
+//!   holds one snapshot for the transaction's life (repeatable reads);
+//! * [`Serializable`](crate::mvcc::IsolationLevel::Serializable) adds
+//!   commit-time read-set validation that refuses to commit when a key the
+//!   transaction read was modified by a concurrent committer
+//!   ([`MvccError::SerializationFailure`](crate::mvcc::MvccError::SerializationFailure)),
+//!   closing the write-skew gap.
+//!
+//! [`Transaction`](crate::mvcc::Transaction) is the RAII handle that applies a
+//! level's policy; [`run_transaction`](crate::mvcc::run_transaction) wraps the
+//! begin → body → commit → retry loop. Write-write conflict detection (task
+//! `00083`) is always on at every level.
+//!
 //! # What lands later in Phase 13
 //!
-//! * **`00084` isolation levels** — choose between re-snapshotting per
-//!   statement (Read Committed) and once per transaction (Snapshot
-//!   Isolation), plus a serializable check, and wire the engine into the
-//!   [`Drevo`](crate::db::Drevo) mutation paths.
+//! * Wiring the standalone MVCC engine into the [`Drevo`](crate::db::Drevo)
+//!   redb-backed mutation paths — the module remains a self-contained engine,
+//!   as it has since `00081`.
 //!
 //! These all build directly on the primitives defined here.
 
@@ -87,6 +109,11 @@ pub mod error;
 /// ([`GcWorker`](crate::mvcc::GcWorker)).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gc;
+/// Configurable transaction isolation levels
+/// ([`IsolationLevel`](crate::mvcc::IsolationLevel),
+/// [`Transaction`](crate::mvcc::Transaction),
+/// [`run_transaction`](crate::mvcc::run_transaction)).
+pub mod isolation;
 /// Optimistic concurrency control retry loop
 /// ([`run_with_retry`](crate::mvcc::run_with_retry)).
 pub mod occ;
@@ -106,6 +133,7 @@ pub mod version;
 pub use error::{MvccError, Result};
 #[cfg(not(target_arch = "wasm32"))]
 pub use gc::GcWorker;
+pub use isolation::{run_transaction, IsolationLevel, Transaction};
 pub use occ::run_with_retry;
 pub use store::{VacuumReport, VersionedStore};
 pub use transaction::{Snapshot, SnapshotGuard, TransactionManager, Xid, XidStatus, INVALID_XID};

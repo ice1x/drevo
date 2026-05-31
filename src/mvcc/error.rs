@@ -47,9 +47,35 @@ pub enum MvccError {
         conflicting: super::Xid,
     },
 
-    /// [`run_with_retry`](super::occ::run_with_retry) exhausted its retry
-    /// budget: every attempt hit a [`WriteConflict`](Self::WriteConflict)
-    /// under sustained contention. Carries how many attempts were made.
+    /// A serialization failure detected by the **Serializable** isolation
+    /// level of task `00084`: at commit time a key this transaction *read*
+    /// was found to have been modified by another transaction that committed
+    /// after this transaction's snapshot was taken. Snapshot Isolation alone
+    /// would let this through as a write-skew anomaly; the serializable
+    /// read-set validation refuses it (first-committer-wins) so the schedule
+    /// stays serializable. The loser must abort and retry against a fresh
+    /// snapshot — see [`run_transaction`](super::isolation::run_transaction).
+    ///
+    /// Distinct from [`WriteConflict`](Self::WriteConflict), which is a
+    /// write-write race on a key this transaction *wrote*; this is a
+    /// read-write antidependency on a key this transaction only *read*.
+    ///
+    /// `conflicting` is the id of the transaction that won the race.
+    #[error(
+        "serialization failure: a key read by this transaction was concurrently \
+         modified by committed transaction {conflicting}"
+    )]
+    SerializationFailure {
+        /// The concurrent transaction that modified a key in the read set.
+        conflicting: super::Xid,
+    },
+
+    /// [`run_with_retry`](super::occ::run_with_retry) /
+    /// [`run_transaction`](super::isolation::run_transaction) exhausted its
+    /// retry budget: every attempt hit a
+    /// [`WriteConflict`](Self::WriteConflict) or a
+    /// [`SerializationFailure`](Self::SerializationFailure) under sustained
+    /// contention. Carries how many attempts were made.
     #[error("optimistic retry gave up after {attempts} attempt(s) under contention")]
     RetriesExhausted {
         /// The total number of attempts made before giving up.

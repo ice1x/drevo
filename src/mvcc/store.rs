@@ -22,7 +22,7 @@
 //! here is correct snapshot-isolated visibility, which everything above
 //! builds on.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 
@@ -250,6 +250,117 @@ where
                 Ok(true)
             }
             None => Ok(false),
+        }
+    }
+
+    /// Decide whether a key this transaction *read* was modified by a
+    /// concurrent **committed** transaction — the read-write antidependency
+    /// check the Serializable isolation level (task `00084`) runs at commit.
+    ///
+    /// Like [`conflicting_writer`](Self::conflicting_writer) it inspects only
+    /// the chain head (the newest version is authored by whoever last touched
+    /// the key), but the filter differs in one decisive way: it flags **only
+    /// committed** concurrent modifications, not in-flight ones. That is what
+    /// makes serializable commits *first-committer-wins* — an in-flight writer
+    /// has not yet created an anomaly, and whichever transaction commits second
+    /// will observe the first one's now-committed write in its own read set and
+    /// abort then. Flagging in-flight writers here instead would abort the
+    /// *first* committer against a racer that might yet roll back.
+    ///
+    /// The deciding transaction is the head's `xmin` when it is live or its
+    /// `xmax` when it is a tombstone. It is a serialization hazard iff it is a
+    /// *different* transaction (`reader` did not author it), is not
+    /// [`INVALID_XID`], is **committed**, and is **not** already visible to
+    /// `snapshot` (a commit that landed before the snapshot is the value the
+    /// reader legitimately saw, not a concurrent change).
+    ///
+    /// Returns `Some(xid)` naming the concurrent committer, or `None` when the
+    /// read is still serializable.
+    fn read_conflict(
+        &self,
+        chain: &[Version<V>],
+        reader: Xid,
+        snapshot: &Snapshot,
+    ) -> Result<Option<Xid>> {
+        let Some(head) = chain.last() else {
+            return Ok(None);
+        };
+        let decider = if head.is_live() {
+            head.xmin()
+        } else {
+            head.xmax()
+        };
+        if decider == INVALID_XID || decider == reader {
+            return Ok(None);
+        }
+        // A change visible to our snapshot is the value we legitimately read.
+        if snapshot.sees_effect(decider, &self.mgr)? {
+            return Ok(None);
+        }
+        // Only a *committed* concurrent change is a serialization hazard.
+        if matches!(self.mgr.status(decider)?, XidStatus::Committed) {
+            return Ok(Some(decider));
+        }
+        Ok(None)
+    }
+
+    /// Validate `reads` against concurrent committers and, if clean, commit
+    /// `xid` — the Serializable commit path (task `00084`).
+    ///
+    /// Acquires the store write lock once, walks every key in the read set
+    /// through [`read_conflict`](Self::read_conflict), and:
+    ///
+    /// * if any read-set key was modified by a concurrent committed
+    ///   transaction, aborts `xid` and returns
+    ///   [`MvccError::SerializationFailure`]; the caller should retry against a
+    ///   fresh snapshot;
+    /// * otherwise commits `xid` **while still holding the write lock**, so two
+    ///   serializable transactions can never both validate clean and then both
+    ///   commit — their validate-then-commit critical sections are serialized
+    ///   against each other.
+    ///
+    /// Lock order is the established store→manager (the write lock is held
+    /// while [`read_conflict`](Self::read_conflict) and the commit consult the
+    /// manager), so it cannot deadlock with readers, writers, or the vacuum.
+    ///
+    /// # Errors
+    ///
+    /// * [`MvccError::SerializationFailure`] if a read-set key was concurrently
+    ///   committed over (after aborting `xid`).
+    /// * [`MvccError::NotInProgress`] if `xid` is not in progress.
+    /// * [`MvccError::LockPoisoned`] on a poisoned lock.
+    pub(super) fn commit_serializable(
+        &self,
+        xid: Xid,
+        snapshot: &Snapshot,
+        reads: &HashSet<K>,
+    ) -> Result<()> {
+        let chains = self.write()?;
+        let mut conflict = None;
+        for key in reads {
+            if let Some(chain) = chains.get(key) {
+                if let Some(winner) = self.read_conflict(chain, xid, snapshot)? {
+                    conflict = Some(winner);
+                    break;
+                }
+            }
+        }
+        match conflict {
+            Some(winner) => {
+                drop(chains);
+                // The doomed transaction must not linger as in-progress.
+                let _ = self.mgr.abort(xid);
+                Err(MvccError::SerializationFailure {
+                    conflicting: winner,
+                })
+            }
+            None => {
+                // Commit under the write lock to serialize against other
+                // serializable validators.
+                self.mgr.commit(xid)?;
+                drop(chains);
+                Ok(())
+            }
         }
     }
 

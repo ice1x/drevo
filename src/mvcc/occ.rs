@@ -43,9 +43,11 @@ use super::transaction::{Snapshot, TransactionManager, Xid};
 /// * The body returns `Ok(value)` → the transaction is **committed** and
 ///   `value` is returned.
 /// * The body returns
-///   [`Err(WriteConflict)`](crate::mvcc::MvccError::WriteConflict) → the transaction
-///   is **aborted** and the attempt is retried against a new snapshot, up to
-///   `max_retries` extra attempts (so `max_retries + 1` attempts total).
+///   [`Err(WriteConflict)`](crate::mvcc::MvccError::WriteConflict) or
+///   [`Err(SerializationFailure)`](crate::mvcc::MvccError::SerializationFailure)
+///   → the transaction is **aborted** and the attempt is retried against a new
+///   snapshot, up to `max_retries` extra attempts (so `max_retries + 1`
+///   attempts total).
 /// * The body returns any other `Err` → the transaction is aborted and the
 ///   error propagates unchanged.
 ///
@@ -79,7 +81,7 @@ where
                 mgr.commit(xid)?;
                 return Ok(value);
             }
-            Err(MvccError::WriteConflict { .. }) => {
+            Err(MvccError::WriteConflict { .. }) | Err(MvccError::SerializationFailure { .. }) => {
                 // Roll back this doomed attempt so it never becomes visible,
                 // then loop to re-snapshot against the winner's commit.
                 mgr.abort(xid)?;
