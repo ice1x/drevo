@@ -146,7 +146,26 @@ typedef struct Drevo Drevo;
  */
 typedef struct Drevo drevo_t;
 
+/**
+ * A monotonically increasing transaction identifier.
+ *
+ * Real transactions start at `1`; [`INVALID_XID`] (`0`) is reserved as a
+ * sentinel meaning "no transaction" — it is the `xmax` of a live tuple
+ * version (one that has never been deleted) and is never handed out by
+ * [`TransactionManager::begin`].
+ */
+typedef uint64_t Xid;
 
+
+
+/**
+ * The reserved sentinel transaction id (`0`).
+ *
+ * Used as the `xmax` of a version that is still live and as the "no owner"
+ * marker. [`TransactionManager::begin`] always returns a value `>= 1`, so a
+ * real transaction can never collide with it.
+ */
+#define INVALID_XID 0
 
 /**
  * Open a disk-backed database at the given path.
