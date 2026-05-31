@@ -1,0 +1,35 @@
+# Neo4j Community 5.x for the task 00124 live parity diff.
+#
+# Brings up a throwaway Neo4j on the canonical Bolt port 7687 (and the
+# Browser on 7474) so `live_parity_against_neo4j` in
+# `tests/cypher_neo4j_parity.rs` can run the curated corpus against a real
+# reference engine and diff the answers against drevo's golden baseline.
+#
+# This is NEVER part of CI — it is an on-demand, developer-driven reference.
+# Bring it up, run the ignored test, tear it down:
+#
+#   docker compose -f tests/cypher_neo4j_parity/docker-compose.yml up -d
+#   # wait until `Bolt enabled` appears in the logs / port 7687 accepts
+#   cargo test --test cypher_neo4j_parity -- --ignored --nocapture
+#   docker compose -f tests/cypher_neo4j_parity/docker-compose.yml down -v
+#
+# The credentials below match the ones hard-coded in the test's
+# `cypher_shell()` helper (neo4j / drevoparity). Pinned to a specific 5.x
+# patch so parity results are reproducible rather than tracking `5` latest.
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: drevo-parity-neo4j
+    ports:
+      - "7687:7687" # Bolt
+      - "7474:7474" # HTTP / Browser
+    environment:
+      NEO4J_AUTH: "neo4j/drevoparity"
+      # Single-instance dev defaults; no clustering, modest heap.
+      NEO4J_server_memory_heap_initial__size: "512m"
+      NEO4J_server_memory_heap_max__size: "512m"
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p drevoparity 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12

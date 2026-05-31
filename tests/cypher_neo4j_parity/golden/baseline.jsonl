@@ -1,0 +1,24 @@
+{"columns":["p.name"],"id":"match_return_all_person_names","rows":[["Alice"],["Bob"],["Carol"]],"schema":1,"tags":["match","return"]}
+{"columns":["p.name"],"id":"where_numeric_gt","rows":[["Alice"],["Carol"]],"schema":1,"tags":["where"]}
+{"columns":["p.name"],"id":"where_bool_eq","rows":[["Alice"],["Carol"]],"schema":1,"tags":["where","bool"]}
+{"columns":["p.name"],"id":"where_in_list","rows":[["Alice"],["Carol"]],"schema":1,"tags":["where","where-in-list"]}
+{"columns":["t.title"],"id":"where_string_starts_with","rows":[["Add index"]],"schema":1,"tags":["where","string"]}
+{"columns":["p.name","p.age"],"id":"order_by_desc","rows":[["Carol",41],["Alice",30],["Bob",25]],"schema":1,"tags":["order-by"]}
+{"columns":["t.title"],"id":"order_by_skip_limit","rows":[["Write docs"]],"schema":1,"tags":["order-by","skip-limit"]}
+{"columns":["p.active"],"id":"distinct_labels_kind","rows":[[false],[true]],"schema":1,"tags":["distinct"]}
+{"columns":["expr"],"id":"agg_count","rows":[[3]],"schema":1,"tags":["agg"]}
+{"columns":["expr"],"id":"agg_avg_age","rows":[[32.0]],"schema":1,"tags":["agg","float"]}
+{"columns":["expr","expr","expr"],"id":"agg_sum_min_max","rows":[[6,1,3]],"schema":1,"tags":["agg"]}
+{"columns":["names"],"id":"agg_collect","rows":[[["Alice","Bob","Carol"]]],"schema":1,"tags":["agg","collect"]}
+{"columns":["done","n"],"id":"agg_group_by_done","rows":[[false,2],[true,1]],"schema":1,"tags":["agg","group-by"]}
+{"columns":["p.name","t.title"],"id":"traversal_assigned_tasks","rows":[["Alice","Fix parser"],["Bob","Add index"],["Carol","Write docs"]],"schema":1,"tags":["match","traversal"]}
+{"columns":["r.hours"],"id":"relationship_property","rows":[[3],[5],[8]],"schema":1,"tags":["match","rel-prop"]}
+{"columns":["p.name","proj.name"],"id":"optional_match_owned_project","rows":[["Alice","Drevo"],["Bob",null],["Carol",null]],"schema":1,"tags":["optional"]}
+{"columns":["p.name"],"id":"optional_match_is_null","rows":[["Alice"],["Bob"],["Carol"]],"schema":1,"tags":["optional","null"]}
+{"columns":["p.name"],"id":"with_filter_after_aggregation","rows":[["Alice"],["Bob"],["Carol"]],"schema":1,"tags":["with","agg"]}
+{"columns":["x.title"],"id":"varlen_blocks_path","rows":[["Write docs"]],"schema":1,"tags":["varlen"]}
+{"columns":["p.name","next_age"],"id":"return_arithmetic_expr","rows":[["Alice",31],["Bob",26],["Carol",42]],"schema":1,"tags":["return","expr"]}
+{"columns":["p.name"],"id":"merge_existing_returns_one","rows":[["Alice"]],"schema":1,"tags":["merge","write"]}
+{"columns":["t.priority"],"id":"set_property_returns_updated","rows":[[5]],"schema":1,"tags":["set","write"]}
+{"columns":[],"id":"delete_task_then_count","rows":[],"schema":1,"tags":["delete","write"]}
+{"columns":["expr"],"id":"count_tasks_by_done_filter","rows":[[2]],"schema":1,"tags":["where","agg"]}
