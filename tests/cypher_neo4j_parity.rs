@@ -63,9 +63,15 @@ use serde_json::Value as Json;
 // Schema-versioned dataset
 // ---------------------------------------------------------------------------
 
-/// Bump when [`DATASET`] changes so a stale golden set is caught (the version
-/// is written into every golden line and asserted on load).
-const SCHEMA_VERSION: u32 = 1;
+/// Bump when [`DATASET`] *or* the normalisation contract changes so a stale
+/// golden set is caught (the version is written into every golden line and
+/// asserted on load).
+///
+/// v2: `normalize` now canonicalises nested list values (sorts `collect()`
+/// results and label sets by content) to kill the `agg_collect` flakiness — a
+/// v1 golden stored a single non-deterministic element order and must be
+/// regenerated.
+const SCHEMA_VERSION: u32 = 2;
 
 /// The single shared graph, created with one multi-pattern `CREATE`. Loaded
 /// fresh into a per-query database so write queries (`MERGE`/`SET`/`DELETE`)
@@ -294,9 +300,49 @@ fn has_order_by(cypher: &str) -> bool {
     cypher.to_uppercase().contains("ORDER BY")
 }
 
-/// Build a [`Normalized`] from raw columns + rows, applying the
-/// non-determinism sort when the query has no `ORDER BY`.
-fn normalize(columns: Vec<String>, mut rows: Vec<Vec<Json>>, ordered: bool) -> Normalized {
+/// Recursively canonicalise a JSON value for order-insensitive comparison:
+/// every array is sorted by the serialized form of its (already-canonicalised)
+/// elements, and object values are canonicalised in place.
+///
+/// Cypher's `collect()` does not guarantee element order and node label sets
+/// are unordered, so the same multiset can legitimately surface in different
+/// orders across two engines — or across two drevo runs, since the collected
+/// order follows non-deterministic node-iteration order. Sorting list values
+/// makes the parity diff compare cells by *content*, mirroring the row-level
+/// canonicalisation in [`normalize`]. Without this, the `agg_collect` corpus
+/// query (`RETURN collect(p.name)`) drifted from the golden ~1 run in 5.
+fn canonicalize_json(j: Json) -> Json {
+    match j {
+        Json::Array(xs) => {
+            let mut items: Vec<Json> = xs.into_iter().map(canonicalize_json).collect();
+            items.sort_by(|a, b| {
+                serde_json::to_string(a)
+                    .unwrap_or_default()
+                    .cmp(&serde_json::to_string(b).unwrap_or_default())
+            });
+            Json::Array(items)
+        }
+        Json::Object(map) => {
+            // `serde_json::Map` keeps keys sorted (no `preserve_order` feature),
+            // so only the values need recursing.
+            Json::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, canonicalize_json(v)))
+                    .collect(),
+            )
+        }
+        scalar => scalar,
+    }
+}
+
+/// Build a [`Normalized`] from raw columns + rows. Every cell is canonicalised
+/// (nested list/label-set order sorted away — see [`canonicalize_json`]) before
+/// the row-level non-determinism sort is applied for queries without `ORDER BY`.
+fn normalize(columns: Vec<String>, rows: Vec<Vec<Json>>, ordered: bool) -> Normalized {
+    let mut rows: Vec<Vec<Json>> = rows
+        .into_iter()
+        .map(|row| row.into_iter().map(canonicalize_json).collect())
+        .collect();
     if !ordered {
         rows.sort_by(|a, b| {
             serde_json::to_string(a)
@@ -580,6 +626,47 @@ fn unordered_rows_are_canonically_sorted() {
     assert_eq!(
         unordered.rows,
         vec![vec![json!(1)], vec![json!(2)], vec![json!(3)]]
+    );
+}
+
+#[test]
+fn collected_list_values_compare_equal_regardless_of_element_order() {
+    // Regression for the flaky `agg_collect` parity drift: Cypher's `collect()`
+    // does not pin element order, so drevo's node-iteration order made the
+    // collected list non-deterministic across runs. `normalize` must canonicalise
+    // nested list values so a list compares equal to any permutation of itself.
+    // `ordered = true` disables the row-level sort, isolating the cell-level
+    // canonicalisation as the only thing that can make these equal.
+    let a = normalize(
+        vec!["names".into()],
+        vec![vec![json!(["Alice", "Bob", "Carol"])]],
+        true,
+    );
+    let b = normalize(
+        vec!["names".into()],
+        vec![vec![json!(["Carol", "Alice", "Bob"])]],
+        true,
+    );
+    assert_eq!(
+        a.rows, b.rows,
+        "collected lists must compare equal regardless of element order"
+    );
+
+    // Canonicalisation recurses: lists nested inside lists and inside object
+    // values (e.g. a node's unordered `labels` set) are sorted too.
+    let nested_a = normalize(
+        vec!["x".into()],
+        vec![vec![json!([[3, 1, 2], {"labels": ["B", "A"]}])]],
+        true,
+    );
+    let nested_b = normalize(
+        vec!["x".into()],
+        vec![vec![json!([{"labels": ["A", "B"]}, [2, 3, 1]])]],
+        true,
+    );
+    assert_eq!(
+        nested_a.rows, nested_b.rows,
+        "nested list/label-set order must canonicalise away recursively"
     );
 }
 
