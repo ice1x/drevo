@@ -1332,3 +1332,88 @@ fn docker_publish_overrides_docker_config_to_avoid_macos_keychain() {
          the -25308 failure."
     );
 }
+
+// ---- task 00129: slow-test re-enablement contract ------------------------
+//
+// Task 00129 deleted the temporary `ci-fast` nextest profile so the PR
+// `test` job runs every integration-test binary again (proptest fixtures,
+// `*_bench_tests`, `wal_crash_recovery_tests`, the light compaction cells).
+// The ONLY exception is the two heaviest redb-churn compaction cells, kept
+// `#[ignore]`d so they never sit in the serialised self-hosted-runner queue.
+//
+// The README deliberately did NOT lock the *disable* (so it stayed easy to
+// remove). These two tests instead lock the *path-(c) safety net* that
+// replaced it: the heavy cells must be (a) marked `#[ignore]` so they are off
+// the PR path AND (b) have a nightly home in `slow-tests.yml`. Together they
+// prevent the failure mode 00129 was written to avoid — a gated test rotting
+// into a permanent skip that no CI job ever runs.
+
+/// The two heaviest redb-churn compaction cells must carry `#[ignore]` so
+/// they stay off the PR-gating `test` job.
+const IGNORED_COMPACTION_CELLS: [&str; 2] = [
+    "redb_backend_size_bytes_returns_file_size",
+    "redb_compact_reclaims_after_heavy_churn",
+];
+
+#[test]
+fn heavy_compaction_cells_are_ignored_for_pr_path() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("compaction_tests.rs");
+    let body = fs::read_to_string(&path).expect("tests/compaction_tests.rs exists");
+    let lines: Vec<&str> = body.lines().collect();
+
+    for cell in IGNORED_COMPACTION_CELLS {
+        let needle = format!("fn {cell}(");
+        let fn_idx = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with(&needle))
+            .unwrap_or_else(|| {
+                panic!("compaction_tests.rs must still define `fn {cell}` (task 00129 cell)")
+            });
+        // Walk back over the attribute/comment block immediately above the
+        // `fn` and require an `#[ignore` somewhere in it (before the previous
+        // item ends — i.e. before a blank line that is not itself part of the
+        // attribute block). Scanning the 12 lines above the fn is plenty.
+        let start = fn_idx.saturating_sub(12);
+        let has_ignore = lines[start..fn_idx]
+            .iter()
+            .any(|l| l.trim_start().starts_with("#[ignore"));
+        assert!(
+            has_ignore,
+            "compaction_tests.rs::{cell} MUST be `#[ignore]`d (task 00129): it \
+             is one of the two heaviest redb-churn cells and is kept off the \
+             PR `test` job. If you intend to re-enable it on PRs, also update \
+             `slow_tests_yml_runs_the_ignored_compaction_cells` and the 00129 \
+             README entry."
+        );
+    }
+}
+
+#[test]
+fn slow_tests_yml_runs_the_ignored_compaction_cells() {
+    // The ignored compaction cells need a home that actually runs them,
+    // otherwise they rot into a permanent skip. `slow-tests.yml` must carry a
+    // step that runs the ignored tests of the `compaction_tests` binary via
+    // `--run-ignored ignored-only` (NOT `--run-ignored all`, which would drag
+    // in the 30-minute agentic-workload soaks and the Docker/Neo4j-live
+    // ignored tests).
+    let slow_yml = workflows_dir().join("slow-tests.yml");
+    let body = fs::read_to_string(&slow_yml).expect("slow-tests.yml exists");
+
+    let has_ignored_run = body.lines().any(|line| {
+        let t = line.trim_start();
+        t.starts_with("run:")
+            && t.contains("nextest")
+            && t.contains("--run-ignored ignored-only")
+            && t.contains("binary(compaction_tests)")
+    });
+    assert!(
+        has_ignored_run,
+        "slow-tests.yml MUST run the `#[ignore]`d compaction cells via a step \
+         like `cargo nextest run --run-ignored ignored-only ... -E \
+         'binary(compaction_tests)'`. Without it, the cells \
+         `heavy_compaction_cells_are_ignored_for_pr_path` keeps off the PR \
+         path would never run in any CI job (task 00129 path c)."
+    );
+}

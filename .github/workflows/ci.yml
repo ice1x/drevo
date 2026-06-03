@@ -157,14 +157,18 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      # `--profile ci-fast` activates `.config/nextest.toml`'s temporary
-      # slow-binary gate (proptest_*, compaction_tests, wal_crash_recovery_tests,
-      # *_bench_tests). The full suite still runs locally and on the
-      # nightly bench.yml workflow. Re-enablement is tracked by README
-      # task `00129`; the contract is locked by
-      # `tests/ci_self_hosted_runner_tests.rs`.
-      - name: Run unit + integration tests (nextest, ci-fast profile)
-        run: cargo nextest run --no-fail-fast --profile ci-fast
+      # Task `00129` re-enabled the slow integration-test binaries on the PR
+      # path: the temporary `ci-fast` nextest profile (and `.config/nextest.toml`)
+      # is gone, so this default-profile run exercises every test binary —
+      # the proptest fixtures, the `*_bench_tests`, and `wal_crash_recovery_tests`
+      # all gate every PR again. The only cells kept off the PR path are the
+      # two heaviest redb-churn compaction tests, now marked `#[ignore]`
+      # (`redb_backend_size_bytes_returns_file_size`, the 5 000-write file-growth
+      # probe, and `redb_compact_reclaims_after_heavy_churn`); they run on
+      # `slow-tests.yml` via `--run-ignored all`. nextest does not run
+      # `#[ignore]`d tests by default, so no profile flag is needed here.
+      - name: Run unit + integration tests (nextest)
+        run: cargo nextest run --no-fail-fast
       # Phase 11 task `00073` — Bolt-over-TLS lives behind the
       # `bolt-tls` Cargo feature, which is NOT in the default set
       # (rustls + tokio-rustls + rustls-pemfile add ~10 transitive
@@ -176,7 +180,7 @@ jobs:
       # tests; the rest of the suite is already covered by the
       # full-suite step above.
       - name: Run bolt-tls feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features bolt-tls --profile ci-fast -E 'binary(bolt_tls_tests) | (kind(lib) & test(bolt::tls))'
+        run: cargo nextest run --no-fail-fast --features bolt-tls -E 'binary(bolt_tls_tests) | (kind(lib) & test(bolt::tls))'
       # Phase 11 task `00074` — Bolt authentication. The argon2-backed
       # `UserStore` lives behind the `bolt-auth` Cargo feature (NOT in
       # the default set), so re-run nextest with the feature on over the
@@ -184,7 +188,7 @@ jobs:
       # auth tests in `bolt_session_tests` are already covered by the
       # full-suite step above; this step adds the argon2 path.
       - name: Run bolt-auth feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features bolt-auth --profile ci-fast -E 'binary(bolt_auth_tests) | (kind(lib) & test(bolt::auth))'
+        run: cargo nextest run --no-fail-fast --features bolt-auth -E 'binary(bolt_auth_tests) | (kind(lib) & test(bolt::auth))'
       - name: Run doctests
         run: cargo test --doc --all-features
 

@@ -5,25 +5,25 @@
 #
 # What this runs
 # --------------
-# `cargo nextest run --no-fail-fast` against the DEFAULT profile (no
-# `--profile ci-fast`). That picks up every integration-test binary,
-# including the eight that the PR-gating `test` job in ci.yml
-# currently filters out via the `ci-fast` profile:
+# `cargo nextest run --no-fail-fast` against the DEFAULT profile. As of
+# task `00129` the temporary `ci-fast` profile is gone, so ci.yml's
+# PR-gating `test` job ALREADY runs this full set (proptest fixtures,
+# `*_bench_tests`, `wal_crash_recovery_tests`, and the light compaction
+# cells) on every PR. This scheduled run is therefore defence-in-depth on
+# a quiet, uncontended host — not the only home for those binaries.
 #
-#   * proptest_graph_invariants
-#   * proptest_fts_tokenizer
-#   * proptest_model_serialization
-#   * compaction_tests
-#   * wal_crash_recovery_tests
-#   * fts_bench_tests
-#   * graph_bench_tests
-#   * traversal_bench_tests
+# The ONE thing this workflow runs that the PR path does not is the pair
+# of heaviest redb-churn compaction cells, which 00129 left `#[ignore]`d
+# to keep them off the serialised self-hosted-runner queue:
 #
-# Until task `00129` lifts the ci-fast disable, this workflow is the
-# canary that catches regressions in those eight binaries between PR
-# pushes. Local development also exercises them on every `cargo
-# nextest run` (no profile), so this is a backstop, not the primary
-# signal.
+#   * compaction_tests::redb_backend_size_bytes_returns_file_size
+#       — 5 000 fsync'd 1 KiB writes (file-growth probe)
+#   * compaction_tests::redb_compact_reclaims_after_heavy_churn
+#       — 500 inserts + 500 deletes + a full compaction
+#
+# The dedicated `--run-ignored ignored-only` step below is their nightly
+# home. Local development reaches them with `cargo nextest run
+# --run-ignored all` (or `cargo test -- --ignored`).
 #
 # Triggers
 # --------
@@ -105,11 +105,23 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # No `--profile ci-fast` here — that's exactly the point.
-      # The default profile exercises every integration-test binary,
-      # including the eight that ci.yml's `test` job filters out.
+      # Full default-profile run. Since task 00129 removed the `ci-fast`
+      # profile, ci.yml's PR `test` job already runs this same set on every
+      # PR; this scheduled run is now defence-in-depth (a quiet, uncontended
+      # host) rather than the only home for the previously-gated binaries.
       - name: cargo nextest run --no-fail-fast (default profile)
         run: cargo nextest run --no-fail-fast
+
+      # The two heaviest redb-churn compaction cells are `#[ignore]`d so they
+      # stay off the serialised PR path (task 00129). `--run-ignored
+      # ignored-only -E 'binary(compaction_tests)'` runs EXACTLY those two
+      # ignored tests here — their nightly home — without dragging in the
+      # 30-minute `#[ignore]`d agentic-workload soaks or the Docker/Neo4j-live
+      # ignored tests. This is the regression signal that keeps the ignored
+      # cells from rotting into a permanent skip; locked by
+      # `tests/ci_self_hosted_runner_tests.rs`.
+      - name: Heavy redb compaction cells (ignored on PR path — task 00129)
+        run: cargo nextest run --run-ignored ignored-only --no-fail-fast -E 'binary(compaction_tests)'
 
       # Doctests are not run by nextest; mirror ci.yml's coverage.
       - name: cargo test --doc --all-features
