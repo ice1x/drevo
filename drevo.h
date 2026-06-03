@@ -127,6 +127,35 @@
 #define FAILURE 127
 
 /**
+ * Default fraction of rows passing an equality predicate (`n.p = v`) when the
+ * catalogue holds no distinct-value count for the property.
+ */
+#define DEFAULT_EQUALITY_SELECTIVITY 0.1
+
+/**
+ * Default fraction of rows passing a range predicate (`<`, `<=`, `>`, `>=`).
+ */
+#define DEFAULT_RANGE_SELECTIVITY (1.0 / 3.0)
+
+/**
+ * Default fraction of rows passing a string-match predicate (`STARTS WITH`,
+ * `ENDS WITH`, `CONTAINS`, `=~`).
+ */
+#define DEFAULT_STRING_MATCH_SELECTIVITY 0.1
+
+/**
+ * Default fraction of rows passing an `IS NULL` predicate (most properties
+ * are present, so a null match is rare).
+ */
+#define DEFAULT_NULL_SELECTIVITY 0.1
+
+/**
+ * Fallback fraction for any predicate shape the estimator does not model
+ * (an opaque function call, a property-to-property comparison, …).
+ */
+#define DEFAULT_PREDICATE_SELECTIVITY 0.25
+
+/**
  * A negotiated Bolt protocol version: `major.minor`. Wire format is
  * `[0x00, 0x00, minor, major]` per the Bolt v4 spec.
  */
