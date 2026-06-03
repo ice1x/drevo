@@ -263,7 +263,14 @@ fn redb_compact_reports_file_sizes() {
     }
 }
 
+// `#[ignore]` (task 00129): churns 500 fsync'd node inserts + 500 deletes
+// and then runs a full redb compaction — the second-heaviest redb-write cell
+// in the suite. Excluded from the PR-gating `test` job so it never sits in
+// the serialised self-hosted-runner queue; still exercised on every
+// `slow-tests.yml` run (`cargo nextest run --run-ignored all`) and on a local
+// `cargo nextest run --run-ignored all`.
 #[test]
+#[ignore = "heavy redb churn + compaction; runs in slow-tests.yml via --run-ignored all (task 00129)"]
 fn redb_compact_reclaims_after_heavy_churn() {
     let (_dir, path) = open_temp();
     // Phase 1: inflate the file with many nodes, then delete most of them
@@ -432,7 +439,14 @@ fn redb_compact_on_empty_database_succeeds() {
 // Backend-level direct API tests — exercising the trait method
 // ---------------------------------------------------------------
 
+// `#[ignore]` (task 00129): writes 5 000 fsync'd 1 KiB values to force the
+// redb file past its pre-allocated region — the single heaviest redb-write
+// cell in the whole suite and the one explicitly called out in the 00129
+// re-enablement plan. Its value is a file-size sanity check, low per-PR
+// signal for a high per-PR cost, so it is excluded from the PR-gating `test`
+// job and runs on every `slow-tests.yml` run (`--run-ignored all`) instead.
 #[test]
+#[ignore = "5000 fsync'd writes (file-growth probe); runs in slow-tests.yml via --run-ignored all (task 00129)"]
 fn redb_backend_size_bytes_returns_file_size() {
     let (_dir, path) = open_temp();
     let backend = RedbBackend::open(&path).unwrap();
