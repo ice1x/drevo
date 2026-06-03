@@ -95,6 +95,13 @@ pub mod model;
 pub mod mvcc;
 /// Extracted env-var parser, validator, and bind/serve loop for the
 /// `drevo-server` binary. Compiled only with the `http` feature.
+/// Phase 14 task `00085` — cost-based query planner foundation: graph
+/// statistics ([`planner::GraphStatistics`]) + cardinality estimation
+/// ([`planner::CardinalityEstimator`]) + the annotated plan tree
+/// ([`planner::PlanNode`], with [`planner::PlanNode::explain`]) + a bounded
+/// plan cache ([`planner::PlanCache`]). Dependency-free, always compiled,
+/// WASM-safe; not yet wired into the executor (that is `00086`).
+pub mod planner;
 #[cfg(feature = "http")]
 pub mod server;
 pub mod storage;
