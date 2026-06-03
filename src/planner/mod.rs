@@ -13,18 +13,23 @@
 //!   estimates for scans, expands, and `WHERE` filters.
 //! * [`plan`](crate::planner::plan) — the annotated [`PlanNode`] operator tree,
 //!   the [`plan_query`]/[`plan_single_query`] builders that produce a naive
-//!   left-deep plan from parsed Cypher, and [`PlanNode::explain`], the
-//!   `EXPLAIN`-style rendering Phase 14's definition of done is built on.
+//!   left-deep plan from parsed Cypher, the cost-based
+//!   [`optimize_query`]/[`optimize_single_query`] builders (and the
+//!   [`PlanOptimizer`] handle) that reorder patterns, select index seeks, and
+//!   order joins (task `00086`), and [`PlanNode::explain`], the `EXPLAIN`-style
+//!   rendering Phase 14's definition of done is built on.
 //! * [`cache`](crate::planner::cache) — the bounded, thread-safe [`PlanCache`]
 //!   that memoises planned queries.
 //!
-//! **Scope (`00085`).** Like the MVCC engine in its early tasks, the planner is
-//! a self-contained module: it reads a [`GraphStatistics`] snapshot and parsed
-//! [`crate::cypher::ast`] trees, but is **not yet wired into the executor**.
-//! Estimates are coarse (documented `DEFAULT_*` constants stand in for missing
-//! statistics) and the plan keeps operators in source order. Consuming the
-//! plan to actually reorder/optimise execution — and feeding the collector
-//! from a live [`crate::db::Drevo`] scan — is the next task (`00086`).
+//! **Scope (`00085`/`00086`).** Like the MVCC engine in its early tasks, the
+//! planner is a self-contained module: it reads a [`GraphStatistics`] snapshot
+//! and parsed [`crate::cypher::ast`] trees, but is **not yet wired into the
+//! executor**. `00085` delivered the statistics, cardinality estimates, naive
+//! plan, and cache; `00086` adds the cost-based optimiser
+//! ([`optimize_query`]/[`optimize_single_query`]). Estimates remain coarse
+//! (documented `DEFAULT_*` constants stand in for missing statistics).
+//! Consuming the optimised plan to actually drive execution — and feeding the
+//! collector from a live [`crate::db::Drevo`] scan — is later-task work.
 //!
 //! Dependency-free, always compiled, and WASM-safe (`std::sync` only, no
 //! spawned threads).
@@ -36,6 +41,9 @@
 //! [`PlanNode::explain`]: crate::planner::plan::PlanNode::explain
 //! [`plan_query`]: crate::planner::plan::plan_query
 //! [`plan_single_query`]: crate::planner::plan::plan_single_query
+//! [`optimize_query`]: crate::planner::plan::optimize_query
+//! [`optimize_single_query`]: crate::planner::plan::optimize_single_query
+//! [`PlanOptimizer`]: crate::planner::plan::PlanOptimizer
 //! [`PlanCache`]: crate::planner::cache::PlanCache
 
 pub mod cache;
@@ -48,5 +56,8 @@ pub use cardinality::{
     CardinalityEstimator, DEFAULT_EQUALITY_SELECTIVITY, DEFAULT_NULL_SELECTIVITY,
     DEFAULT_PREDICATE_SELECTIVITY, DEFAULT_RANGE_SELECTIVITY, DEFAULT_STRING_MATCH_SELECTIVITY,
 };
-pub use plan::{plan_query, plan_single_query, Operator, PlanNode};
+pub use plan::{
+    optimize_query, optimize_single_query, plan_query, plan_single_query, Operator, PlanNode,
+    PlanOptimizer,
+};
 pub use stats::{GraphStatistics, StatisticsCollector};

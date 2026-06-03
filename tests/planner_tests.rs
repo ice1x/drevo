@@ -1,12 +1,15 @@
-//! Integration tests for the Phase 14 `00085` cost-based query planner.
+//! Integration tests for the Phase 14 cost-based query planner (`00085`) and
+//! its optimiser (`00086`).
 //!
 //! These exercise the planner end-to-end against statistics collected from a
 //! *real* [`Drevo`] graph: ingest a domain graph (bug tracker, task manager,
 //! CBT journal) while tallying a [`StatisticsCollector`] in the same pass, then
 //! plan representative Cypher queries and assert the cardinality estimates,
-//! `EXPLAIN` rendering, and plan-cache behaviour. The planner itself stays
-//! decoupled from the executor (task `00085` scope) — here it is fed through
-//! the public `Drevo` API exactly as the executor-wiring task (`00086`) will.
+//! `EXPLAIN` rendering, plan-cache behaviour, and — for `00086` — that the
+//! optimiser anchors at the rarer label, seeks property indexes, and orders
+//! disconnected components cheapest-first. The planner itself stays decoupled
+//! from the executor — here it is fed through the public `Drevo` API exactly as
+//! the executor-wiring task will.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -14,7 +17,19 @@ use std::sync::Arc;
 use drevo::cypher::parser::parse;
 use drevo::db::Drevo;
 use drevo::model::{NewEdge, NewNode, Properties};
-use drevo::planner::{plan_query, GraphStatistics, Operator, PlanCache, StatisticsCollector};
+use drevo::planner::{
+    optimize_query, plan_query, GraphStatistics, Operator, PlanCache, PlanNode, PlanOptimizer,
+    StatisticsCollector,
+};
+
+/// The deepest left-most leaf of a plan (its driving scan/seek).
+fn driving_leaf(plan: &PlanNode) -> &PlanNode {
+    let mut node = plan;
+    while let Some(child) = node.children().first() {
+        node = child;
+    }
+    node
+}
 
 /// A node `kind` (drevo's label) plus an optional `status` property to record.
 struct NodeSpec {
@@ -299,6 +314,71 @@ fn unicode_labels_and_properties_are_tracked() {
     let stats = collector.finish();
     assert_eq!(stats.nodes_with_label("Задача"), Some(3));
     assert_eq!(stats.distinct_values("Задача", "status"), Some(3));
+}
+
+// --- Cost-based optimiser (task `00086`) --------------------------------
+
+#[test]
+fn optimizer_anchors_at_the_rarer_label() {
+    let (_db, stats) = bug_tracker();
+    // 5 Engineers vs 12 Bugs: anchor at Engineer and expand back to Bug.
+    let ast = parse("MATCH (b:Bug)-[:ASSIGNED_TO]->(e:Engineer) RETURN e").expect("parses");
+    let plan = optimize_query(&ast, &stats);
+    let leaf = driving_leaf(&plan);
+    match leaf.operator() {
+        Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Engineer"]),
+        other => panic!("expected NodeByLabelScan(Engineer), got {other:?}"),
+    }
+    assert!((leaf.estimated_rows() - 5.0).abs() < 1e-9);
+}
+
+#[test]
+fn optimizer_is_no_more_expensive_than_naive() {
+    let (_db, stats) = bug_tracker();
+    let q = "MATCH (b:Bug)-[:ASSIGNED_TO]->(e:Engineer) RETURN e";
+    let ast = parse(q).expect("parses");
+    let naive = plan_query(&ast, &stats);
+    let optimized = optimize_query(&ast, &stats);
+    assert!(
+        optimized.estimated_cost() <= naive.estimated_cost(),
+        "optimized cost {} should not exceed naive {}",
+        optimized.estimated_cost(),
+        naive.estimated_cost()
+    );
+}
+
+#[test]
+fn optimizer_seeks_a_property_index_on_a_live_graph() {
+    let (_db, stats) = bug_tracker();
+    let ast = parse("MATCH (b:Bug {status: 'open'}) RETURN b").expect("parses");
+    let plan = optimize_query(&ast, &stats);
+    let leaf = driving_leaf(&plan);
+    match leaf.operator() {
+        Operator::NodeIndexSeek {
+            label, property, ..
+        } => {
+            assert_eq!(label, "Bug");
+            assert_eq!(property, "status");
+        }
+        other => panic!("expected NodeIndexSeek, got {other:?}"),
+    }
+    // 12 bugs / 3 distinct statuses = 4.
+    assert!((leaf.estimated_rows() - 4.0).abs() < 1e-9);
+}
+
+#[test]
+fn optimizer_orders_disconnected_components_cheapest_first() {
+    let (_db, stats) = bug_tracker();
+    let optimizer = PlanOptimizer::new(&stats);
+    let ast = parse("MATCH (b:Bug), (e:Engineer) RETURN b, e").expect("parses");
+    let plan = optimizer.optimize_query(&ast);
+    // Projection -> CartesianProduct -> [cheaper Engineer scan, Bug scan].
+    let cartesian = &plan.children()[0];
+    assert!(matches!(cartesian.operator(), Operator::CartesianProduct));
+    match cartesian.children()[0].operator() {
+        Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Engineer"]),
+        other => panic!("expected cheaper Engineer scan on the left, got {other:?}"),
+    }
 }
 
 #[test]

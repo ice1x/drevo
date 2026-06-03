@@ -8,19 +8,29 @@
 //! `WHERE` filter, project the `RETURN`. Every operator is annotated by the
 //! [`CardinalityEstimator`] as it is built.
 //!
-//! This is the *un-optimised* plan: operators stay in source order. Choosing a
-//! cheaper order (pattern reordering, index selection, join strategies) is the
-//! next task (`00086`); this task delivers the plan representation, the cost
-//! annotations, and the [`PlanNode::explain`] rendering the phase's
+//! [`plan_single_query`] / [`plan_query`] produce the *un-optimised* plan:
+//! operators stay in source order. The cost-based optimiser added in task
+//! `00086` — [`optimize_single_query`] / [`optimize_query`], also wrapped by
+//! [`PlanOptimizer`] — produces a cheaper plan from the same statistics by
+//! **anchoring the scan at the most selective node** and expanding outward
+//! (pattern reordering), **seeking an index** when a node carries an equality
+//! on a statistically-known property ([`Operator::NodeIndexSeek`], index
+//! selection), and **ordering disconnected pattern components cheapest-first**
+//! (join ordering). Both planners share the [`PlanNode`] representation, the
+//! cost annotations, and the [`PlanNode::explain`] rendering the phase's
 //! `EXPLAIN`-style output is built on.
+//!
+//! [`optimize_single_query`]: crate::planner::plan::optimize_single_query
+//! [`optimize_query`]: crate::planner::plan::optimize_query
+//! [`PlanOptimizer`]: crate::planner::plan::PlanOptimizer
 
 use crate::cypher::ast::{
-    BinaryOp, Clause, Direction, Expression, NodePattern, PathPattern, PathSegment, ProjectionItem,
-    Query, SingleQuery, UnaryOp,
+    BinaryOp, Clause, Direction, Expression, NamedPattern, NodePattern, PathPattern, PathSegment,
+    ProjectionItem, Query, RelationshipPattern, SingleQuery, UnaryOp,
 };
-use crate::planner::cardinality::CardinalityEstimator;
+use crate::planner::cardinality::{CardinalityEstimator, DEFAULT_EQUALITY_SELECTIVITY};
 use crate::planner::stats::GraphStatistics;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Assumed average list length for an `UNWIND` when no better estimate exists.
 const DEFAULT_UNWIND_LENGTH: f64 = 10.0;
@@ -53,6 +63,20 @@ pub enum Operator {
         variable: String,
         /// Labels constraining the scan.
         labels: Vec<String>,
+    },
+    /// Seek nodes by an equality on a statistically-known property
+    /// (`MATCH (n:Label {property: value})`), the index-selection alternative
+    /// to a [`NodeByLabelScan`](Operator::NodeByLabelScan) followed by a
+    /// [`Filter`](Operator::Filter).
+    NodeIndexSeek {
+        /// Variable bound to each matched node.
+        variable: String,
+        /// Label whose property index is used.
+        label: String,
+        /// Property the equality is on.
+        property: String,
+        /// Rendered sought value, for the `EXPLAIN` output.
+        value: String,
     },
     /// Expand a relationship from an already-bound node to a new one.
     Expand {
@@ -197,6 +221,7 @@ impl Operator {
         match self {
             Operator::AllNodesScan { .. } => "AllNodesScan",
             Operator::NodeByLabelScan { .. } => "NodeByLabelScan",
+            Operator::NodeIndexSeek { .. } => "NodeIndexSeek",
             Operator::Expand { .. } => "Expand",
             Operator::Filter { .. } => "Filter",
             Operator::CartesianProduct => "CartesianProduct",
@@ -217,6 +242,12 @@ impl Operator {
             Operator::NodeByLabelScan { variable, labels } => {
                 format!("({variable}{})", render_labels(labels))
             }
+            Operator::NodeIndexSeek {
+                variable,
+                label,
+                property,
+                value,
+            } => format!("({variable}:{label} {{{property} = {value}}})"),
             Operator::Expand {
                 from,
                 rel_variable,
@@ -251,11 +282,73 @@ impl Operator {
 /// Plan a parsed [`Query`], handling `UNION` by summing the per-arm row
 /// estimates under a [`Operator::Union`] node. A single-arm query plans
 /// directly to its arm's plan.
+///
+/// This is the *naive* planner: operators stay in source order. See
+/// [`optimize_query`] for the cost-based alternative.
 pub fn plan_query(query: &Query, stats: &GraphStatistics) -> PlanNode {
+    build_query(query, stats, false)
+}
+
+/// Plan a single (`UNION`-free) Cypher query into an annotated [`PlanNode`],
+/// keeping operators in source order. See [`optimize_single_query`] for the
+/// cost-based alternative.
+pub fn plan_single_query(query: &SingleQuery, stats: &GraphStatistics) -> PlanNode {
+    build_single_query(query, stats, false)
+}
+
+/// Cost-based counterpart to [`plan_query`] (task `00086`): produces a cheaper
+/// plan from the same statistics by anchoring scans at the most selective node,
+/// seeking property indexes, and ordering disconnected components
+/// cheapest-first. `UNION` arms are each optimised independently.
+pub fn optimize_query(query: &Query, stats: &GraphStatistics) -> PlanNode {
+    build_query(query, stats, true)
+}
+
+/// Cost-based counterpart to [`plan_single_query`] (task `00086`). See
+/// [`optimize_query`] for the optimisations applied.
+pub fn optimize_single_query(query: &SingleQuery, stats: &GraphStatistics) -> PlanNode {
+    build_single_query(query, stats, true)
+}
+
+/// A cost-based query optimiser bound to a [`GraphStatistics`] snapshot.
+///
+/// A thin handle over [`optimize_query`] / [`optimize_single_query`] for callers
+/// that plan several queries against the same statistics. It holds no mutable
+/// state, so a single optimiser can be shared across threads.
+#[derive(Debug, Clone, Copy)]
+pub struct PlanOptimizer<'s> {
+    stats: &'s GraphStatistics,
+}
+
+impl<'s> PlanOptimizer<'s> {
+    /// Create an optimiser backed by `stats`.
+    pub fn new(stats: &'s GraphStatistics) -> Self {
+        Self { stats }
+    }
+
+    /// The statistics snapshot this optimiser plans against.
+    pub fn statistics(&self) -> &GraphStatistics {
+        self.stats
+    }
+
+    /// Produce a cost-based plan for a parsed [`Query`]. See [`optimize_query`].
+    pub fn optimize_query(&self, query: &Query) -> PlanNode {
+        optimize_query(query, self.stats)
+    }
+
+    /// Produce a cost-based plan for a single [`SingleQuery`]. See
+    /// [`optimize_single_query`].
+    pub fn optimize_single_query(&self, query: &SingleQuery) -> PlanNode {
+        optimize_single_query(query, self.stats)
+    }
+}
+
+/// Shared `UNION` handling for the naive and optimised planners.
+fn build_query(query: &Query, stats: &GraphStatistics, optimize: bool) -> PlanNode {
     let mut arms: Vec<PlanNode> = query
         .parts
         .iter()
-        .map(|part| plan_single_query(&part.query, stats))
+        .map(|part| build_single_query(&part.query, stats, optimize))
         .collect();
     match arms.len() {
         0 => PlanNode::empty_result(),
@@ -273,22 +366,25 @@ pub fn plan_query(query: &Query, stats: &GraphStatistics) -> PlanNode {
     }
 }
 
-/// Plan a single (`UNION`-free) Cypher query into an annotated [`PlanNode`].
-pub fn plan_single_query(query: &SingleQuery, stats: &GraphStatistics) -> PlanNode {
+fn build_single_query(query: &SingleQuery, stats: &GraphStatistics, optimize: bool) -> PlanNode {
     let mut builder = PlanBuilder {
         estimator: CardinalityEstimator::new(stats),
         bindings: HashMap::new(),
         anon: 0,
+        optimize,
     };
     builder.build(query)
 }
 
 /// Threads the cardinality estimator and variable→label bindings through the
-/// clause walk while building the plan tree.
+/// clause walk while building the plan tree. `optimize` selects the cost-based
+/// pattern planning (anchor selection, index seeks, join ordering) over the
+/// naive source-order planning.
 struct PlanBuilder<'s> {
     estimator: CardinalityEstimator<'s>,
     bindings: HashMap<String, Vec<String>>,
     anon: usize,
+    optimize: bool,
 }
 
 impl PlanBuilder<'_> {
@@ -297,11 +393,15 @@ impl PlanBuilder<'_> {
         for clause in &query.clauses {
             match clause {
                 Clause::Match(m) => {
-                    let mut plan = current.take();
-                    for pattern in &m.patterns {
-                        plan = Some(self.plan_path(plan, &pattern.path));
-                    }
-                    let mut plan = plan.unwrap_or_else(PlanNode::empty_result);
+                    let mut plan = if self.optimize {
+                        self.plan_match_optimized(current.take(), &m.patterns)
+                    } else {
+                        let mut plan = current.take();
+                        for pattern in &m.patterns {
+                            plan = Some(self.plan_path(plan, &pattern.path));
+                        }
+                        plan.unwrap_or_else(PlanNode::empty_result)
+                    };
                     if let Some(predicate) = &m.where_clause {
                         plan = self.filter(plan, predicate);
                     }
@@ -418,6 +518,290 @@ impl PlanBuilder<'_> {
         (PlanNode::unary(operator, rows, rows, input), to_var)
     }
 
+    // ---- Cost-based optimisation (task `00086`) ----
+
+    /// Plan a `MATCH` clause's patterns with cost-based optimisation. Each path
+    /// is anchored at its most selective node and expanded outward; when the
+    /// clause starts fresh and its patterns share no variables, the independent
+    /// components are ordered cheapest-first under a left-deep cartesian product
+    /// (join ordering). Otherwise the patterns are planned in source order so
+    /// variable continuation across patterns is preserved.
+    fn plan_match_optimized(
+        &mut self,
+        current: Option<PlanNode>,
+        patterns: &[NamedPattern],
+    ) -> PlanNode {
+        if current.is_none() && patterns.len() > 1 && patterns_are_disjoint(patterns) {
+            let mut subs: Vec<PlanNode> = patterns
+                .iter()
+                .map(|p| self.plan_fresh_path_opt(&p.path))
+                .collect();
+            subs.sort_by(|a, b| {
+                a.estimated_rows
+                    .partial_cmp(&b.estimated_rows)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mut iter = subs.into_iter();
+            let mut acc = iter.next().unwrap_or_else(PlanNode::empty_result);
+            for sub in iter {
+                acc = self.cartesian(acc, sub);
+            }
+            return acc;
+        }
+        let mut plan = current;
+        for pattern in patterns {
+            plan = Some(self.plan_path_opt(plan, &pattern.path));
+        }
+        plan.unwrap_or_else(PlanNode::empty_result)
+    }
+
+    /// Optimised counterpart to [`plan_path`](Self::plan_path): a fresh path is
+    /// anchored at its cheapest node; a path whose head re-uses an already-bound
+    /// variable continues expanding from it; a disconnected path joins via a
+    /// cartesian product.
+    fn plan_path_opt(&mut self, current: Option<PlanNode>, path: &PathPattern) -> PlanNode {
+        match current {
+            None => self.plan_fresh_path_opt(path),
+            Some(existing) => {
+                if self.is_bound(&path.head) {
+                    let from = path.head.variable.clone().unwrap_or_default();
+                    self.expand_chain_from_bound(existing, &from, path)
+                } else {
+                    let fresh = self.plan_fresh_path_opt(path);
+                    self.cartesian(existing, fresh)
+                }
+            }
+        }
+    }
+
+    /// Plan a fresh (no prior binding) path: pick the most selective node as the
+    /// scan/seek anchor, then expand outward — rightward in source direction and
+    /// leftward with the relationship directions flipped (the same edges,
+    /// traversed backwards).
+    fn plan_fresh_path_opt(&mut self, path: &PathPattern) -> PlanNode {
+        // 1. Gather node patterns and assign stable variable names + bindings.
+        let mut nodes: Vec<&NodePattern> = Vec::with_capacity(path.tail.len() + 1);
+        nodes.push(&path.head);
+        for seg in &path.tail {
+            nodes.push(&seg.node);
+        }
+        let vars: Vec<String> = nodes
+            .iter()
+            .map(|np| self.name_for(np.variable.as_ref()))
+            .collect();
+        for (var, np) in vars.iter().zip(&nodes) {
+            self.bindings.insert(var.clone(), np.labels.clone());
+        }
+
+        // 2. Score each node by the cheapest cardinality it can be reached at —
+        //    an index seek when an equality on a known property is available,
+        //    otherwise the label/all-nodes scan. The lowest wins (ties keep the
+        //    earliest node, preferring the source-order head).
+        let seeks: Vec<Option<IndexSeek>> = nodes
+            .iter()
+            .map(|np| self.indexed_inline_seek(np))
+            .collect();
+        let mut anchor = 0usize;
+        let mut best = f64::INFINITY;
+        for (i, np) in nodes.iter().enumerate() {
+            let base = self.estimator.estimate_node_scan(&np.labels);
+            let eff = match &seeks[i] {
+                Some(seek) => base * seek.selectivity,
+                None => base,
+            };
+            if eff < best {
+                best = eff;
+                anchor = i;
+            }
+        }
+
+        // 3. Build the anchor operator (seek or scan) + its residual filters.
+        let mut plan = self.anchor_node(&vars[anchor], nodes[anchor], seeks[anchor].as_ref());
+
+        // 4. Expand rightward from the anchor (original directions).
+        for i in (anchor + 1)..nodes.len() {
+            let seg = &path.tail[i - 1];
+            let dir = seg.relationship.direction;
+            plan = self.expand_between(
+                plan,
+                &vars[i - 1],
+                &seg.relationship,
+                dir,
+                &vars[i],
+                nodes[i],
+            );
+        }
+        // 5. Expand leftward (directions flipped — the edge is traversed back).
+        for i in (0..anchor).rev() {
+            let seg = &path.tail[i];
+            let dir = flip_direction(seg.relationship.direction);
+            plan = self.expand_between(
+                plan,
+                &vars[i + 1],
+                &seg.relationship,
+                dir,
+                &vars[i],
+                nodes[i],
+            );
+        }
+        plan
+    }
+
+    /// Expand the tail of `path` in source order from an already-bound head; no
+    /// anchor reordering is possible because the head is fixed by its binding.
+    fn expand_chain_from_bound(
+        &mut self,
+        plan: PlanNode,
+        head_var: &str,
+        path: &PathPattern,
+    ) -> PlanNode {
+        let mut plan = self.apply_inline_filters(plan, head_var, &path.head, None);
+        let mut from = head_var.to_string();
+        for seg in &path.tail {
+            let to_var = self.name_for(seg.node.variable.as_ref());
+            self.bindings
+                .insert(to_var.clone(), seg.node.labels.clone());
+            let dir = seg.relationship.direction;
+            plan = self.expand_between(plan, &from, &seg.relationship, dir, &to_var, &seg.node);
+            from = to_var;
+        }
+        plan
+    }
+
+    /// Build the anchor operator: a [`NodeIndexSeek`](Operator::NodeIndexSeek)
+    /// when an equality on a known property is available, otherwise a scan.
+    /// Inline equality properties other than the sought one become filters.
+    fn anchor_node(&self, var: &str, np: &NodePattern, seek: Option<&IndexSeek>) -> PlanNode {
+        let base = self.estimator.estimate_node_scan(&np.labels);
+        let plan = match seek {
+            Some(seek) => PlanNode::leaf(
+                Operator::NodeIndexSeek {
+                    variable: var.to_string(),
+                    label: seek.label.clone(),
+                    property: seek.property.clone(),
+                    value: seek.value.clone(),
+                },
+                base * seek.selectivity,
+            ),
+            None => {
+                let operator = if np.labels.is_empty() {
+                    Operator::AllNodesScan {
+                        variable: var.to_string(),
+                    }
+                } else {
+                    Operator::NodeByLabelScan {
+                        variable: var.to_string(),
+                        labels: np.labels.clone(),
+                    }
+                };
+                PlanNode::leaf(operator, base)
+            }
+        };
+        let skip = seek.map(|s| s.property.as_str());
+        self.apply_inline_filters(plan, var, np, skip)
+    }
+
+    /// Build an expand operator between two already-named variables, then apply
+    /// the destination node's inline equality properties as filters.
+    fn expand_between(
+        &self,
+        input: PlanNode,
+        from_var: &str,
+        rel: &RelationshipPattern,
+        direction: Direction,
+        to_var: &str,
+        to_node: &NodePattern,
+    ) -> PlanNode {
+        let rows = self
+            .estimator
+            .estimate_expand(input.estimated_rows, &rel.types, direction);
+        let operator = Operator::Expand {
+            from: from_var.to_string(),
+            rel_variable: rel.variable.clone(),
+            rel_types: rel.types.clone(),
+            direction,
+            to_variable: to_var.to_string(),
+            to_labels: to_node.labels.clone(),
+        };
+        let plan = PlanNode::unary(operator, rows, rows, input);
+        self.apply_inline_filters(plan, to_var, to_node, None)
+    }
+
+    /// Wrap `plan` in one [`Filter`](Operator::Filter) per inline constant
+    /// equality property of `np`, skipping the property named in `skip` (the one
+    /// already consumed by an index seek). Inline properties are otherwise
+    /// invisible to the planner, so this is also where the optimiser accounts
+    /// for their selectivity.
+    fn apply_inline_filters(
+        &self,
+        mut plan: PlanNode,
+        var: &str,
+        np: &NodePattern,
+        skip: Option<&str>,
+    ) -> PlanNode {
+        let Some(map) = &np.properties else {
+            return plan;
+        };
+        for (key, value) in &map.entries {
+            if Some(key.as_str()) == skip || !is_constant_value(value) {
+                continue;
+            }
+            let selectivity = self.inline_equality_selectivity(var, key);
+            let rows = plan.estimated_rows * selectivity;
+            let added = plan.estimated_rows;
+            let predicate = format!("{var}.{key} = {}", describe_expression(value));
+            plan = PlanNode::unary(Operator::Filter { predicate }, rows, added, plan);
+        }
+        plan
+    }
+
+    /// The most selective inline equality on a statistically-known property of
+    /// `np` (the index the optimiser would seek), if any. Among candidates the
+    /// rarest value (largest distinct count → smallest selectivity) wins.
+    fn indexed_inline_seek(&self, np: &NodePattern) -> Option<IndexSeek> {
+        let map = np.properties.as_ref()?;
+        let mut best: Option<IndexSeek> = None;
+        for (key, value) in &map.entries {
+            if !is_constant_value(value) {
+                continue;
+            }
+            for label in &np.labels {
+                let Some(distinct) = self.estimator.statistics().distinct_values(label, key) else {
+                    continue;
+                };
+                if distinct == 0 {
+                    continue;
+                }
+                let selectivity = 1.0 / distinct as f64;
+                if best.as_ref().is_none_or(|b| selectivity < b.selectivity) {
+                    best = Some(IndexSeek {
+                        label: label.clone(),
+                        property: key.clone(),
+                        value: describe_expression(value),
+                        selectivity,
+                    });
+                }
+            }
+        }
+        best
+    }
+
+    /// Selectivity of `var.property = <const>` using the catalogue's
+    /// distinct-value count (taking the rarest applicable label), or the default
+    /// equality selectivity when unknown.
+    fn inline_equality_selectivity(&self, var: &str, property: &str) -> f64 {
+        let distinct = self.bindings.get(var).and_then(|labels| {
+            labels
+                .iter()
+                .filter_map(|l| self.estimator.statistics().distinct_values(l, property))
+                .max()
+        });
+        match distinct {
+            Some(d) if d > 0 => 1.0 / d as f64,
+            _ => DEFAULT_EQUALITY_SELECTIVITY,
+        }
+    }
+
     fn cartesian(&self, left: PlanNode, right: PlanNode) -> PlanNode {
         let rows = left.estimated_rows * right.estimated_rows;
         let cost = left.estimated_cost + right.estimated_cost + rows;
@@ -515,6 +899,70 @@ fn literal_count(expr: Option<&Expression>) -> Option<u64> {
         Some(Expression::Integer(n, _)) if *n >= 0 => Some(*n as u64),
         _ => None,
     }
+}
+
+/// A chosen index seek: an equality on `label`.`property` with the given
+/// rendered `value` and resulting `selectivity` (`1 / distinct_values`).
+struct IndexSeek {
+    label: String,
+    property: String,
+    value: String,
+    selectivity: f64,
+}
+
+/// Flip an expansion direction — traversing the same edge backwards.
+fn flip_direction(direction: Direction) -> Direction {
+    match direction {
+        Direction::Outgoing => Direction::Incoming,
+        Direction::Incoming => Direction::Outgoing,
+        Direction::Undirected => Direction::Undirected,
+    }
+}
+
+/// Whether `patterns` share no named variable, so they may be planned as
+/// independent components and reordered. A repeated variable means the patterns
+/// are joined and must keep their source order for correct continuation.
+fn patterns_are_disjoint(patterns: &[NamedPattern]) -> bool {
+    let mut seen: HashSet<String> = HashSet::new();
+    for pattern in patterns {
+        let vars = path_variables(&pattern.path);
+        if vars.iter().any(|v| seen.contains(v)) {
+            return false;
+        }
+        seen.extend(vars);
+    }
+    true
+}
+
+/// The set of named node and relationship variables in a path pattern.
+fn path_variables(path: &PathPattern) -> HashSet<String> {
+    let mut vars = HashSet::new();
+    if let Some(v) = &path.head.variable {
+        vars.insert(v.clone());
+    }
+    for seg in &path.tail {
+        if let Some(v) = &seg.relationship.variable {
+            vars.insert(v.clone());
+        }
+        if let Some(v) = &seg.node.variable {
+            vars.insert(v.clone());
+        }
+    }
+    vars
+}
+
+/// Whether `expr` is a constant the optimiser can treat as a fixed value for an
+/// equality (a literal or a query parameter).
+fn is_constant_value(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::Integer(..)
+            | Expression::Float(..)
+            | Expression::String(..)
+            | Expression::True(_)
+            | Expression::False(_)
+            | Expression::Parameter(..)
+    )
 }
 
 /// Render `:Label1:Label2` (empty for no labels).
@@ -803,5 +1251,197 @@ mod tests {
         assert!(incoming.contains("<-[:ASSIGNED_TO]-"), "got:\n{incoming}");
         let undirected = plan("MATCH (a)-[:KNOWS]-(b) RETURN a").explain();
         assert!(undirected.contains(")-[:KNOWS]-("), "got:\n{undirected}");
+    }
+
+    // ---- Cost-based optimiser (task `00086`) ----
+
+    /// Optimise a query against the shared test [`stats`].
+    fn opt(query: &str) -> PlanNode {
+        let ast = parse(query).expect("query parses");
+        optimize_query(&ast, &stats())
+    }
+
+    /// The deepest left-most leaf of a plan (the driving scan/seek).
+    fn driving_leaf(plan: &PlanNode) -> &PlanNode {
+        let mut node = plan;
+        while let Some(child) = node.children().first() {
+            node = child;
+        }
+        node
+    }
+
+    /// Count the scan/seek operators in a plan tree.
+    fn scan_count(plan: &PlanNode) -> usize {
+        let here = matches!(
+            plan.operator(),
+            Operator::AllNodesScan { .. }
+                | Operator::NodeByLabelScan { .. }
+                | Operator::NodeIndexSeek { .. }
+        ) as usize;
+        here + plan.children().iter().map(scan_count).sum::<usize>()
+    }
+
+    #[test]
+    fn optimizer_anchors_at_the_more_selective_node() {
+        // Naive scans Person (600); the optimiser anchors at the rarer Task
+        // (200) and expands back to Person.
+        let p = opt("MATCH (a:Person)-[:ASSIGNED_TO]->(b:Task) RETURN a, b");
+        let leaf = driving_leaf(&p);
+        match leaf.operator() {
+            Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Task"]),
+            other => panic!("expected NodeByLabelScan(Task), got {other:?}"),
+        }
+        approx(leaf.estimated_rows(), 200.0);
+    }
+
+    #[test]
+    fn optimized_plan_is_cheaper_than_naive_for_reorderable_path() {
+        let q = "MATCH (a:Person)-[:ASSIGNED_TO]->(b:Task) RETURN a, b";
+        let naive = plan(q);
+        let optimized = opt(q);
+        assert!(
+            optimized.estimated_cost() < naive.estimated_cost(),
+            "optimized cost {} should beat naive {}",
+            optimized.estimated_cost(),
+            naive.estimated_cost()
+        );
+    }
+
+    #[test]
+    fn optimizer_reverses_direction_when_expanding_leftward() {
+        // Anchoring at Task means the ASSIGNED_TO edge is traversed backwards.
+        let text = opt("MATCH (a:Person)-[:ASSIGNED_TO]->(b:Task) RETURN a").explain();
+        assert!(text.contains("<-[:ASSIGNED_TO]-"), "got:\n{text}");
+    }
+
+    #[test]
+    fn optimizer_selects_index_seek_for_inline_equality() {
+        let p = opt("MATCH (t:Task {status: 'open'}) RETURN t");
+        let leaf = driving_leaf(&p);
+        match leaf.operator() {
+            Operator::NodeIndexSeek {
+                label,
+                property,
+                value,
+                ..
+            } => {
+                assert_eq!(label, "Task");
+                assert_eq!(property, "status");
+                assert_eq!(value, "'open'");
+            }
+            other => panic!("expected NodeIndexSeek, got {other:?}"),
+        }
+        // 200 Tasks / distinct(Task.status)=4 = 50.
+        approx(leaf.estimated_rows(), 50.0);
+    }
+
+    #[test]
+    fn naive_planner_ignores_inline_properties() {
+        // Contrast: the naive planner does not seek; it scans every Task.
+        let p = plan("MATCH (t:Task {status: 'open'}) RETURN t");
+        let leaf = driving_leaf(&p);
+        assert!(matches!(leaf.operator(), Operator::NodeByLabelScan { .. }));
+        approx(leaf.estimated_rows(), 200.0);
+    }
+
+    #[test]
+    fn index_seek_does_not_re_filter_the_sought_property() {
+        // The sought property must not also appear as a Filter.
+        let text = opt("MATCH (t:Task {status: 'open'}) RETURN t").explain();
+        assert!(text.contains("+NodeIndexSeek"), "got:\n{text}");
+        assert!(!text.contains("+Filter"), "got:\n{text}");
+    }
+
+    #[test]
+    fn inline_property_on_non_anchor_node_becomes_a_filter() {
+        // Task seeks (50 rows) so it anchors; Person.name is unindexed and
+        // arrives via expand, so it becomes a default-selectivity filter.
+        let p = opt(
+            "MATCH (t:Task {status: 'open'})-[:ASSIGNED_TO]->(p:Person {name: 'Ada'}) RETURN p",
+        );
+        let text = p.explain();
+        assert!(text.contains("+NodeIndexSeek"), "got:\n{text}");
+        assert!(text.contains("+Filter p.name = 'Ada'"), "got:\n{text}");
+    }
+
+    #[test]
+    fn optimizer_orders_disconnected_components_cheapest_first() {
+        // Naive cartesian puts Person first; the optimiser drives with Task.
+        let p = opt("MATCH (a:Person), (b:Task) RETURN a, b");
+        // Projection -> CartesianProduct -> [left, right].
+        let cartesian = &p.children()[0];
+        assert!(matches!(cartesian.operator(), Operator::CartesianProduct));
+        let left = &cartesian.children()[0];
+        match left.operator() {
+            Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Task"]),
+            other => panic!("expected cheaper Task scan on the left, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn optimizer_preserves_source_order_when_patterns_share_a_variable() {
+        // (a)-->(b), (b)-->(c) shares `b`; reordering would break continuation,
+        // so the optimiser keeps one driving scan and continues from `b`.
+        let p = opt("MATCH (a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c) RETURN c");
+        assert_eq!(scan_count(&p), 1, "expected a single driving scan");
+    }
+
+    #[test]
+    fn trivial_query_optimizes_to_the_same_plan() {
+        // Nothing to reorder: the optimised plan equals the naive one.
+        let q = "MATCH (n:Person) RETURN n";
+        assert_eq!(opt(q), plan(q));
+    }
+
+    #[test]
+    fn explain_renders_index_seek() {
+        let text = opt("MATCH (t:Task {status: 'open'}) RETURN t").explain();
+        assert!(
+            text.contains("+NodeIndexSeek (t:Task {status = 'open'})"),
+            "got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn plan_optimizer_handle_optimizes_each_union_arm() {
+        let s = stats();
+        let optimizer = PlanOptimizer::new(&s);
+        let ast = parse("MATCH (n:Person) RETURN n UNION MATCH (t:Task {status: 'open'}) RETURN t")
+            .expect("query parses");
+        let p = optimizer.optimize_query(&ast);
+        assert!(matches!(p.operator(), Operator::Union));
+        // The second arm seeks the Task.status index.
+        let second_arm_text = p.children()[1].explain();
+        assert!(
+            second_arm_text.contains("+NodeIndexSeek"),
+            "got:\n{second_arm_text}"
+        );
+    }
+
+    #[test]
+    fn non_indexed_inline_property_uses_default_equality_selectivity() {
+        // Person.name has no distinct-value statistic → default 0.1.
+        let p = opt("MATCH (p:Person {name: 'Ada'}) RETURN p");
+        let filter = &p.children()[0];
+        assert!(matches!(filter.operator(), Operator::Filter { .. }));
+        // 600 Persons * DEFAULT_EQUALITY_SELECTIVITY (0.1) = 60.
+        approx(filter.estimated_rows(), 60.0);
+    }
+
+    #[test]
+    fn parameter_equality_seeks_the_index() {
+        // An equality against a query parameter is still a seekable constant.
+        let p = opt("MATCH (t:Task {status: $s}) RETURN t");
+        let leaf = driving_leaf(&p);
+        match leaf.operator() {
+            Operator::NodeIndexSeek {
+                property, value, ..
+            } => {
+                assert_eq!(property, "status");
+                assert_eq!(value, "$s");
+            }
+            other => panic!("expected NodeIndexSeek, got {other:?}"),
+        }
+        approx(leaf.estimated_rows(), 50.0);
     }
 }
