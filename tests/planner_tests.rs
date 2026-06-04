@@ -381,6 +381,99 @@ fn optimizer_orders_disconnected_components_cheapest_first() {
     }
 }
 
+// --- Supernode handling (task `00087`) ----------------------------------
+
+/// Build a graph with a single **hub** `Tag` linked to every other node, while
+/// the average degree stays low. Returns the live db and the collected
+/// statistics, including the per-node degree distribution. The hub Tag is
+/// connected to 50 Posts, 50 Comments and 50 Users (degree 150); every other
+/// node has degree 1, so the average is ≈ 1 but the maximum is 150 — a
+/// supernode under the derived threshold.
+fn tag_hub_graph() -> (Drevo, GraphStatistics) {
+    let db = Drevo::open_in_memory().expect("open db");
+    let mut collector = StatisticsCollector::new();
+
+    // Create a node in `db` without recording it (degree is recorded later via
+    // `record_node_degree`, which would otherwise double-count it).
+    let create = |db: &Drevo, kind: &str, seq: u64| -> u64 {
+        db.create_node(NewNode {
+            kind: kind.to_string(),
+            title: format!("{kind} {seq}"),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .expect("create node")
+        .id
+    };
+
+    let hub = create(&db, "Tag", 0);
+
+    let mut seq = 1u64;
+    let mut spokes = 0u64;
+    for kind in ["Post", "Comment", "User"] {
+        for _ in 0..50 {
+            let n = create(&db, kind, seq);
+            seq += 1;
+            add_edge(&db, &mut collector, n, hub, "TAGGED");
+            // Each spoke has degree 1 (its single TAGGED edge to the hub).
+            collector.record_node_degree(&[kind], 1);
+            spokes += 1;
+        }
+    }
+    // The hub's degree is the number of spokes pointing at it.
+    collector.record_node_degree(&["Tag"], spokes);
+
+    (db, collector.finish())
+}
+
+#[test]
+fn collected_degree_statistics_identify_the_hub() {
+    let (_db, stats) = tag_hub_graph();
+    // 1 hub + 150 spokes.
+    assert_eq!(stats.total_nodes(), 151);
+    assert_eq!(stats.total_relationships(), 150);
+    assert_eq!(stats.max_degree(), 150);
+    assert_eq!(stats.max_degree_for_label("Tag"), Some(150));
+    assert_eq!(stats.max_degree_for_label("Post"), Some(1));
+    // avg degree ≈ 0.99 → derived threshold floored at 100; the hub (150)
+    // clears it, the spokes (1) do not.
+    assert!(stats.label_has_supernode("Tag"));
+    assert!(!stats.label_has_supernode("Post"));
+    assert_eq!(stats.supernode_count(), 1);
+}
+
+#[test]
+fn optimizer_avoids_driving_out_of_the_hub_on_a_live_graph() {
+    let (_db, stats) = tag_hub_graph();
+    // Tag (1) is far rarer than Post (50): a count-only optimiser anchors at
+    // Tag, but its single hop fans out across all 150 edges. Supernode handling
+    // drives from Post and expands into the hub instead.
+    let ast = parse("MATCH (p:Post)-[:TAGGED]->(t:Tag) RETURN p, t").expect("parses");
+    let plan = optimize_query(&ast, &stats);
+    let leaf = driving_leaf(&plan);
+    match leaf.operator() {
+        Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Post"]),
+        other => panic!("expected to drive from Post, avoiding the Tag hub, got {other:?}"),
+    }
+    assert!((leaf.estimated_rows() - 50.0).abs() < 1e-9);
+}
+
+#[test]
+fn supernode_handling_does_not_change_the_hub_free_plan() {
+    // The bug tracker has no hub, so supernode handling is inert: the optimised
+    // plan still anchors at the rarer Engineer exactly as in 00086.
+    let (_db, stats) = bug_tracker();
+    assert_eq!(stats.max_degree(), 0, "no degree info collected → no hub");
+    let ast = parse("MATCH (b:Bug)-[:ASSIGNED_TO]->(e:Engineer) RETURN e").expect("parses");
+    let plan = optimize_query(&ast, &stats);
+    let leaf = driving_leaf(&plan);
+    match leaf.operator() {
+        Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Engineer"]),
+        other => panic!("expected NodeByLabelScan(Engineer), got {other:?}"),
+    }
+}
+
 #[test]
 fn self_loop_relationship_is_counted() {
     let db = Drevo::open_in_memory().expect("open db");

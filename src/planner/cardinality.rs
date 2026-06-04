@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 
 use crate::cypher::ast::{BinaryOp, Direction, Expression, UnaryOp};
-use crate::planner::stats::GraphStatistics;
+use crate::planner::stats::{GraphStatistics, DEFAULT_SUPERNODE_THRESHOLD_FACTOR};
 
 /// Default fraction of rows passing an equality predicate (`n.p = v`) when the
 /// catalogue holds no distinct-value count for the property.
@@ -114,6 +114,41 @@ impl<'s> CardinalityEstimator<'s> {
             Direction::Outgoing | Direction::Incoming => fanout,
         };
         input_rows * directional
+    }
+
+    /// Estimate the rows produced by expanding a relationship from `input_rows`
+    /// already-bound rows **in the worst case** — when the expansion drives out
+    /// of a supernode (task `00087`).
+    ///
+    /// Where [`estimate_expand`](Self::estimate_expand) uses the *average*
+    /// degree, this uses the graph's *maximum* node degree: the upper bound on
+    /// how many edges a single row can fan out to, regardless of type or
+    /// direction (a node cannot have more edges of one type/direction than it
+    /// has in total). When no maximum degree is known it falls back to
+    /// [`estimate_expand`](Self::estimate_expand).
+    pub fn estimate_expand_worst_case(
+        &self,
+        input_rows: f64,
+        rel_types: &[String],
+        direction: Direction,
+    ) -> f64 {
+        let max_degree = self.stats.max_degree();
+        if max_degree == 0 {
+            return self.estimate_expand(input_rows, rel_types, direction);
+        }
+        input_rows * max_degree as f64
+    }
+
+    /// Whether expanding outward from nodes carrying `anchor_labels` risks
+    /// driving through a supernode (task `00087`): any label is known to contain
+    /// one, or — with no per-label degree information (an unlabelled anchor) —
+    /// the graph's degree distribution is heavily skewed
+    /// (`degree_skew >= `[`DEFAULT_SUPERNODE_THRESHOLD_FACTOR`]).
+    pub fn expand_risks_supernode(&self, anchor_labels: &[String]) -> bool {
+        if self.stats.any_label_has_supernode(anchor_labels) {
+            return true;
+        }
+        anchor_labels.is_empty() && self.stats.degree_skew() >= DEFAULT_SUPERNODE_THRESHOLD_FACTOR
     }
 
     /// Estimate the fraction of rows in `[0.0, 1.0]` that satisfy `predicate`,
@@ -462,6 +497,61 @@ mod tests {
         let est = CardinalityEstimator::new(&s);
         let pred = where_predicate("MATCH (n) WHERE n.status = 'open' RETURN n");
         assert!((est.estimate_filter(600.0, &pred) - 60.0).abs() < 1e-9);
+    }
+
+    // ---- Supernode-aware expansion (task `00087`) ----
+
+    /// Statistics with a single hub: `Tag` nodes are rare but one is linked to
+    /// nearly every node, while the average degree stays low.
+    fn supernode_stats() -> GraphStatistics {
+        let mut s = GraphStatistics::new()
+            .with_total_nodes(10_000)
+            .with_total_relationships(20_000) // avg degree 2.
+            .with_max_degree(9000);
+        s.set_label_count("Post", 9000);
+        s.set_label_count("Tag", 50);
+        s.set_max_degree_for_label("Tag", 9000); // the hub tag
+        s.set_max_degree_for_label("Post", 4); // ordinary
+        s
+    }
+
+    #[test]
+    fn worst_case_expand_uses_max_degree() {
+        let s = supernode_stats();
+        let est = CardinalityEstimator::new(&s);
+        // 10 rows * max degree 9000 = 90_000, independent of type/direction.
+        let rows = est.estimate_expand_worst_case(10.0, &[], Direction::Outgoing);
+        assert!((rows - 90_000.0).abs() < 1e-6);
+        // And far above the average-degree estimate of 10 * 2 = 20.
+        assert!(rows > est.estimate_expand(10.0, &[], Direction::Outgoing));
+    }
+
+    #[test]
+    fn worst_case_expand_falls_back_without_max_degree() {
+        // No degree statistics → behaves exactly like the average estimate.
+        let s = stats();
+        let est = CardinalityEstimator::new(&s);
+        let avg = est.estimate_expand(10.0, &["KNOWS".into()], Direction::Outgoing);
+        let worst = est.estimate_expand_worst_case(10.0, &["KNOWS".into()], Direction::Outgoing);
+        assert!((avg - worst).abs() < 1e-9);
+    }
+
+    #[test]
+    fn expand_risks_supernode_detects_a_hub_label() {
+        let s = supernode_stats();
+        let est = CardinalityEstimator::new(&s);
+        assert!(est.expand_risks_supernode(&["Tag".into()]));
+        assert!(!est.expand_risks_supernode(&["Post".into()]));
+        // Unlabelled anchor over a heavily skewed graph is also a risk.
+        assert!(est.expand_risks_supernode(&[]));
+    }
+
+    #[test]
+    fn expand_risks_supernode_is_false_without_degree_stats() {
+        let s = stats();
+        let est = CardinalityEstimator::new(&s);
+        assert!(!est.expand_risks_supernode(&["Person".into()]));
+        assert!(!est.expand_risks_supernode(&[]));
     }
 
     #[test]

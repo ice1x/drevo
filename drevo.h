@@ -156,6 +156,26 @@
 #define DEFAULT_PREDICATE_SELECTIVITY 0.25
 
 /**
+ * Multiple of the average degree at or above which a node is treated as a
+ * **supernode** when no explicit threshold is configured (task `00087`).
+ *
+ * On real graphs the degree distribution is heavily skewed: a handful of
+ * "hub" nodes (a popular tag, a prolific author, a shared dependency) carry
+ * orders of magnitude more edges than the average. Driving a traversal *out
+ * of* such a node fans out across its entire degree, so the planner needs to
+ * recognise one. A node whose degree is this many times the graph average is
+ * considered a supernode.
+ */
+#define DEFAULT_SUPERNODE_THRESHOLD_FACTOR 100.0
+
+/**
+ * Floor for the derived supernode threshold, so that on small or sparse graphs
+ * — where the average degree is tiny — an ordinary, well-connected node is not
+ * mistaken for a supernode (task `00087`).
+ */
+#define MIN_SUPERNODE_THRESHOLD 100
+
+/**
  * A negotiated Bolt protocol version: `major.minor`. Wire format is
  * `[0x00, 0x00, minor, major]` per the Bolt v4 spec.
  */
