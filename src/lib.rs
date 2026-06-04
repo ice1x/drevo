@@ -102,6 +102,12 @@ pub mod mvcc;
 /// plan cache ([`planner::PlanCache`]). Dependency-free, always compiled,
 /// WASM-safe; not yet wired into the executor (that is `00086`).
 pub mod planner;
+/// Phase 14 task `00088` — persistent property index. A durable
+/// `(property key, value) -> node ids` map maintained on every node
+/// mutation alongside the kind and FTS indexes, turning equality lookups
+/// (`MATCH (n {prop: value})`) into an `O(matches)` prefix scan instead of
+/// an `O(N)` full-node scan. Queried via [`db::Drevo::nodes_by_property`].
+pub mod property_index;
 #[cfg(feature = "http")]
 pub mod server;
 pub mod storage;
