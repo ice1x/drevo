@@ -47,6 +47,7 @@ use crate::fts::tokenizer::extract_trigrams;
 use crate::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
 };
+use crate::property_index;
 #[cfg(feature = "redb-backend")]
 use crate::storage::RedbBackend;
 use crate::storage::{MemoryBackend, StorageBackend};
@@ -535,6 +536,7 @@ impl Drevo {
         self.backend.put(&title_key, &node.id.to_le_bytes())?;
         self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
         fts_index::index_node(&*self.backend, node.id, &node.title, &node.body)?;
+        property_index::index_node(&*self.backend, node.id, &node.properties)?;
         self.backend
             .put(&updated_key(node.updated_at, node.id), &[])?;
         Ok(())
@@ -729,6 +731,7 @@ impl Drevo {
             .put(&node_title_key(&node.title), &node.id.to_le_bytes())?;
         self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
         fts_index::index_node(&*self.backend, node.id, &node.title, &node.body)?;
+        property_index::index_node(&*self.backend, node.id, &node.properties)?;
         self.backend
             .put(&updated_key(node.updated_at, node.id), &[])?;
         Ok(())
@@ -762,6 +765,7 @@ impl Drevo {
         self.backend
             .delete(&node_kind_key(&current.kind, current.id))?;
         fts_index::deindex_node(&*self.backend, current.id, &current.title, &current.body)?;
+        property_index::deindex_node(&*self.backend, current.id, &current.properties)?;
         self.backend
             .delete(&updated_key(current.updated_at, current.id))?;
         self.recreate_node_at_id(pre.clone())
@@ -799,6 +803,7 @@ impl Drevo {
         self.backend.delete(&node_title_key(&node.title))?;
         self.backend.delete(&node_kind_key(&node.kind, id))?;
         fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
+        property_index::deindex_node(&*self.backend, id, &node.properties)?;
         self.backend.delete(&updated_key(node.updated_at, id))?;
         Ok(())
     }
@@ -853,6 +858,9 @@ impl Drevo {
 
         // FTS index
         fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
+
+        // Property index (Phase 14 task 00088)
+        property_index::index_node(&*self.backend, id, &node.properties)?;
 
         // Updated-at index (newest-first ordering)
         self.backend.put(&updated_key(node.updated_at, id), &[])?;
@@ -919,6 +927,7 @@ impl Drevo {
         let old_title = node.title.clone();
         let old_body = node.body.clone();
         let old_kind = node.kind.clone();
+        let old_properties = node.properties.clone();
         let old_updated_at = node.updated_at;
 
         // Check title uniqueness before applying patch
@@ -954,6 +963,14 @@ impl Drevo {
         if node.title != old_title || node.body != old_body {
             fts_index::deindex_node(&*self.backend, id, &old_title, &old_body)?;
             fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
+        }
+
+        // Update property index if the properties map changed (Phase 14
+        // task 00088). Comparing the whole map covers added, removed, and
+        // changed keys in one shot.
+        if node.properties != old_properties {
+            property_index::deindex_node(&*self.backend, id, &old_properties)?;
+            property_index::index_node(&*self.backend, id, &node.properties)?;
         }
 
         // Update updated-at index: remove old entry, add new one
@@ -999,6 +1016,9 @@ impl Drevo {
 
         // Remove FTS index
         fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
+
+        // Remove property index
+        property_index::deindex_node(&*self.backend, id, &node.properties)?;
 
         // Remove updated-at index
         self.backend.delete(&updated_key(node.updated_at, id))?;
@@ -1317,6 +1337,39 @@ impl Drevo {
             }
         }
         Ok(nodes)
+    }
+
+    /// Return every node whose `key` property equals `value`, resolved
+    /// through the persistent property index (Phase 14 task `00088`).
+    ///
+    /// This is the `O(matches)` fast path for equality predicates such as
+    /// the Cypher pattern `MATCH (n {status: "open"})`: it scans only the
+    /// index entries for the requested `(key, value)` pair instead of
+    /// every node in the graph. Matching is on canonical-JSON byte
+    /// equality (see [`crate::property_index`]). Results are ordered by
+    /// node id.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — the property name to match (e.g. `"status"`)
+    /// * `value` — the exact JSON value the property must equal
+    pub fn nodes_by_property(&self, key: &str, value: &serde_json::Value) -> Result<Vec<Node>> {
+        let ids = property_index::node_ids_for_value(&*self.backend, key, value)?;
+        let mut nodes = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(node) = self.get_node(id)? {
+                nodes.push(node);
+            }
+        }
+        Ok(nodes)
+    }
+
+    /// Count the nodes whose `key` property equals `value` without
+    /// materializing them — a selectivity hint for the cost-based planner
+    /// (Phase 14), backed by the same persistent property index as
+    /// [`Self::nodes_by_property`].
+    pub fn count_nodes_by_property(&self, key: &str, value: &serde_json::Value) -> Result<usize> {
+        Ok(property_index::node_ids_for_value(&*self.backend, key, value)?.len())
     }
 
     /// List all edges with the given kind, with pagination.

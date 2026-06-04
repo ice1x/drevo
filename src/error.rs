@@ -60,6 +60,15 @@ pub enum DrevoError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A JSON (de)serialization error occurred while encoding a property
+    /// value for the persistent property index (Phase 14 task `00088`).
+    /// `serde_json::Value`s reachable from `Properties` are always
+    /// encodable, so this is effectively unreachable in practice; it
+    /// exists so the index layer can stay panic-free per `drevo-rust`
+    /// §"Error handling".
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+
     /// A vector operation failed — a malformed embedding, a dimension
     /// mismatch, or a zero-magnitude operand. Raised by the Phase 12
     /// persistence layer (`00078`) when a stored [`crate::vector::Vector`]

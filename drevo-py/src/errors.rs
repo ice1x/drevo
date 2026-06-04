@@ -77,6 +77,7 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
         D::Storage(s) => StorageError::new_err(s.to_string()),
         D::Encode(err) => SerializationError::new_err(("encode", err.to_string())),
         D::Decode(err) => SerializationError::new_err(("decode", err.to_string())),
+        D::Json(err) => SerializationError::new_err(("json", err.to_string())),
         D::Io(err) => StorageError::new_err(err.to_string()),
         D::TransactionAlreadyActive => TransactionError::new_err("transaction already active"),
         D::NoActiveTransaction => TransactionError::new_err("no active transaction"),
@@ -123,6 +124,7 @@ mod tests {
             DrevoError::InvalidWeight(f32::NAN),
             DrevoError::Locked,
             DrevoError::Vector(drevo::vector::VectorError::Empty),
+            DrevoError::Json(serde_json::from_str::<i32>("not json").unwrap_err()),
         ];
         for v in variants {
             let msg = format!("{v}");

@@ -199,6 +199,7 @@ impl IntoResponse for ApiError {
                 DrevoError::Storage(_)
                 | DrevoError::Encode(_)
                 | DrevoError::Decode(_)
+                | DrevoError::Json(_)
                 | DrevoError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             },
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
@@ -937,6 +938,7 @@ mod error_mapping_tests {
                 DrevoError::Encode(_) => "Encode",
                 DrevoError::Decode(_) => "Decode",
                 DrevoError::Io(_) => "Io",
+                DrevoError::Json(_) => "Json",
                 DrevoError::TransactionAlreadyActive => "TransactionAlreadyActive",
                 DrevoError::NoActiveTransaction => "NoActiveTransaction",
                 DrevoError::Vector(_) => "Vector",
