@@ -6,7 +6,9 @@
 //!
 //! * [`stats`](crate::planner::stats) — [`GraphStatistics`], the catalogue
 //!   figures (node/relationship counts, per-label/-type breakdowns,
-//!   per-`(label, property)` distinct-value counts) and the
+//!   per-`(label, property)` distinct-value counts, and — task `00087` — a
+//!   coarse degree distribution: maximum degree overall and per label, plus a
+//!   supernode threshold/count for spotting hub nodes) and the
 //!   [`StatisticsCollector`] that tallies them from a scan.
 //! * [`cardinality`](crate::planner::cardinality) — the
 //!   [`CardinalityEstimator`], which turns those figures into row-count
@@ -21,12 +23,15 @@
 //! * [`cache`](crate::planner::cache) — the bounded, thread-safe [`PlanCache`]
 //!   that memoises planned queries.
 //!
-//! **Scope (`00085`/`00086`).** Like the MVCC engine in its early tasks, the
-//! planner is a self-contained module: it reads a [`GraphStatistics`] snapshot
-//! and parsed [`crate::cypher::ast`] trees, but is **not yet wired into the
-//! executor**. `00085` delivered the statistics, cardinality estimates, naive
-//! plan, and cache; `00086` adds the cost-based optimiser
-//! ([`optimize_query`]/[`optimize_single_query`]). Estimates remain coarse
+//! **Scope (`00085`/`00086`/`00087`).** Like the MVCC engine in its early
+//! tasks, the planner is a self-contained module: it reads a
+//! [`GraphStatistics`] snapshot and parsed [`crate::cypher::ast`] trees, but is
+//! **not yet wired into the executor**. `00085` delivered the statistics,
+//! cardinality estimates, naive plan, and cache; `00086` adds the cost-based
+//! optimiser ([`optimize_query`]/[`optimize_single_query`]); `00087` adds
+//! supernode handling — the optimiser avoids anchoring a traversal at a hub
+//! node (whose first hop would fan out across its whole degree) and costs any
+//! drive-out-of-a-hub with the worst-case fan-out. Estimates remain coarse
 //! (documented `DEFAULT_*` constants stand in for missing statistics).
 //! Consuming the optimised plan to actually drive execution — and feeding the
 //! collector from a live [`crate::db::Drevo`] scan — is later-task work.
@@ -60,4 +65,7 @@ pub use plan::{
     optimize_query, optimize_single_query, plan_query, plan_single_query, Operator, PlanNode,
     PlanOptimizer,
 };
-pub use stats::{GraphStatistics, StatisticsCollector};
+pub use stats::{
+    GraphStatistics, StatisticsCollector, DEFAULT_SUPERNODE_THRESHOLD_FACTOR,
+    MIN_SUPERNODE_THRESHOLD,
+};

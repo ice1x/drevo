@@ -16,9 +16,12 @@
 //! (pattern reordering), **seeking an index** when a node carries an equality
 //! on a statistically-known property ([`Operator::NodeIndexSeek`], index
 //! selection), and **ordering disconnected pattern components cheapest-first**
-//! (join ordering). Both planners share the [`PlanNode`] representation, the
-//! cost annotations, and the [`PlanNode::explain`] rendering the phase's
-//! `EXPLAIN`-style output is built on.
+//! (join ordering). Task `00087` adds **supernode handling**: a candidate
+//! anchor whose label contains a hub node is scored with the worst-case fan-out
+//! of its first hop, so the optimiser drives from the bounded side and expands
+//! *into* the hub rather than out of it. Both planners share the [`PlanNode`]
+//! representation, the cost annotations, and the [`PlanNode::explain`] rendering
+//! the phase's `EXPLAIN`-style output is built on.
 //!
 //! [`optimize_single_query`]: crate::planner::plan::optimize_single_query
 //! [`optimize_query`]: crate::planner::plan::optimize_query
@@ -601,6 +604,15 @@ impl PlanBuilder<'_> {
             .iter()
             .map(|np| self.indexed_inline_seek(np))
             .collect();
+        // Supernode handling (task `00087`): anchoring at a hub looks cheap by
+        // node count, but the first hop then fans out across the hub's entire
+        // degree. When the path has an expansion, a candidate whose label
+        // contains a supernode is scored with that worst-case fan-out factored
+        // in, so the planner drives from the bounded side and expands *into* the
+        // hub instead. With no degree statistics the multiplier is 1.0 and the
+        // choice is unchanged.
+        let has_expansion = !path.tail.is_empty();
+        let skew_penalty = self.estimator.statistics().degree_skew().max(1.0);
         let mut anchor = 0usize;
         let mut best = f64::INFINITY;
         for (i, np) in nodes.iter().enumerate() {
@@ -609,8 +621,18 @@ impl PlanBuilder<'_> {
                 Some(seek) => base * seek.selectivity,
                 None => base,
             };
-            if eff < best {
-                best = eff;
+            let score = if has_expansion
+                && self
+                    .estimator
+                    .statistics()
+                    .any_label_has_supernode(&np.labels)
+            {
+                eff * skew_penalty
+            } else {
+                eff
+            };
+            if score < best {
+                best = score;
                 anchor = i;
             }
         }
@@ -703,6 +725,11 @@ impl PlanBuilder<'_> {
 
     /// Build an expand operator between two already-named variables, then apply
     /// the destination node's inline equality properties as filters.
+    ///
+    /// When the source variable is bound to a label known to contain a supernode
+    /// (task `00087`), the expansion is costed with the *worst-case* fan-out —
+    /// the busiest node's degree — instead of the average, so a plan that drives
+    /// out of a hub is honestly more expensive than one that expands into it.
     fn expand_between(
         &self,
         input: PlanNode,
@@ -712,9 +739,17 @@ impl PlanBuilder<'_> {
         to_var: &str,
         to_node: &NodePattern,
     ) -> PlanNode {
-        let rows = self
-            .estimator
-            .estimate_expand(input.estimated_rows, &rel.types, direction);
+        let from_is_supernode = self
+            .bindings
+            .get(from_var)
+            .is_some_and(|labels| self.estimator.statistics().any_label_has_supernode(labels));
+        let rows = if from_is_supernode {
+            self.estimator
+                .estimate_expand_worst_case(input.estimated_rows, &rel.types, direction)
+        } else {
+            self.estimator
+                .estimate_expand(input.estimated_rows, &rel.types, direction)
+        };
         let operator = Operator::Expand {
             from: from_var.to_string(),
             rel_variable: rel.variable.clone(),
@@ -1441,6 +1476,96 @@ mod tests {
                 assert_eq!(value, "$s");
             }
             other => panic!("expected NodeIndexSeek, got {other:?}"),
+        }
+        approx(leaf.estimated_rows(), 50.0);
+    }
+
+    // ---- Supernode handling (task `00087`) ----
+
+    /// Statistics with a `Tag` hub: 9000 Posts, 50 Tags, but one Tag is linked
+    /// to almost every node (max degree 9000) while the average degree is low.
+    fn supernode_stats() -> GraphStatistics {
+        let mut s = GraphStatistics::new()
+            .with_total_nodes(9050)
+            .with_total_relationships(18_000) // avg degree ≈ 2.
+            .with_max_degree(9000);
+        s.set_label_count("Post", 9000);
+        s.set_label_count("Tag", 50);
+        s.set_relationship_type_count("TAGGED", 18_000);
+        s.set_max_degree_for_label("Tag", 9000); // the hub
+        s.set_max_degree_for_label("Post", 4); // ordinary
+        s
+    }
+
+    /// Optimise a query against the given statistics.
+    fn opt_with(query: &str, stats: &GraphStatistics) -> PlanNode {
+        let ast = parse(query).expect("query parses");
+        optimize_query(&ast, stats)
+    }
+
+    #[test]
+    fn optimizer_avoids_anchoring_at_a_supernode() {
+        // Tag (50) is rarer than Post (9000), so a count-only optimiser would
+        // anchor at Tag — but driving out of the Tag hub fans out across 9000
+        // edges. Supernode handling drives from Post and expands into the Tag.
+        let s = supernode_stats();
+        let p = opt_with("MATCH (p:Post)-[:TAGGED]->(t:Tag) RETURN p, t", &s);
+        let leaf = driving_leaf(&p);
+        match leaf.operator() {
+            Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Post"]),
+            other => panic!("expected to drive from Post (avoiding the hub), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn without_degree_stats_optimizer_anchors_at_the_rarer_label() {
+        // The same shape with no degree statistics falls back to pure
+        // cardinality and anchors at the rarer Tag — the choice supernode
+        // handling overrides above.
+        let mut s = GraphStatistics::new()
+            .with_total_nodes(9050)
+            .with_total_relationships(18_000);
+        s.set_label_count("Post", 9000);
+        s.set_label_count("Tag", 50);
+        s.set_relationship_type_count("TAGGED", 18_000);
+        let p = opt_with("MATCH (p:Post)-[:TAGGED]->(t:Tag) RETURN p, t", &s);
+        let leaf = driving_leaf(&p);
+        match leaf.operator() {
+            Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Tag"]),
+            other => panic!("expected the rarer Tag anchor without degree stats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn driving_into_a_supernode_uses_average_fanout() {
+        // When the hub is on the destination side, the expansion is costed with
+        // the (cheap) average fan-out — only driving *out* of a hub is penalised.
+        let s = supernode_stats();
+        let p = opt_with("MATCH (p:Post)-[:TAGGED]->(t:Tag) RETURN p, t", &s);
+        // Anchor is Post (9000); the single expand into Tag uses average degree
+        // (18000/9050 ≈ 1.99), so the expand row estimate stays near the anchor
+        // count rather than exploding to Post × max_degree.
+        let expand = {
+            let mut node = &p;
+            while !matches!(node.operator(), Operator::Expand { .. }) {
+                node = &node.children()[0];
+            }
+            node
+        };
+        let expected = 9000.0 * (18_000.0 / 9050.0);
+        approx(expand.estimated_rows(), expected);
+    }
+
+    #[test]
+    fn supernode_handling_is_inert_without_an_expansion() {
+        // A lone hub scan (no hop) is never penalised — there is nothing to
+        // fan out — so the plan matches the plain optimiser.
+        let s = supernode_stats();
+        let p = opt_with("MATCH (t:Tag) RETURN t", &s);
+        let leaf = driving_leaf(&p);
+        match leaf.operator() {
+            Operator::NodeByLabelScan { labels, .. } => assert_eq!(labels, &["Tag"]),
+            other => panic!("expected a plain Tag scan, got {other:?}"),
         }
         approx(leaf.estimated_rows(), 50.0);
     }
