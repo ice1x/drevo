@@ -127,6 +127,16 @@
 #define FAILURE 127
 
 /**
+ * A coarse default for the in-memory width of one result row, in bytes, used
+ * when a caller has no better figure. One of the planner's documented
+ * `DEFAULT_*` magic numbers (see [`crate::planner::cardinality`]): a handful
+ * of bound values — node ids, short property scalars — at a conservative
+ * ~64 bytes each. Callers that know their projection width should pass it
+ * directly to [`estimate_peak_memory`] / [`MemoryBudget::admits`].
+ */
+#define DEFAULT_ROW_WIDTH_BYTES 64
+
+/**
  * Default fraction of rows passing an equality predicate (`n.p = v`) when the
  * catalogue holds no distinct-value count for the property.
  */
