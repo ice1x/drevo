@@ -22,8 +22,13 @@
 //!   rendering Phase 14's definition of done is built on.
 //! * [`cache`](crate::planner::cache) — the bounded, thread-safe [`PlanCache`]
 //!   that memoises planned queries.
+//! * [`budget`](crate::planner::budget) — task `00089`'s [`MemoryBudget`] (the
+//!   OOM guard), [`estimate_peak_memory`] (memory-limited admission against a
+//!   plan's working set), and [`Backpressure`] (a high/low-watermark throttle),
+//!   so a query on a large graph fails with a recoverable error rather than
+//!   exhausting process memory.
 //!
-//! **Scope (`00085`/`00086`/`00087`).** Like the MVCC engine in its early
+//! **Scope (`00085`–`00089`).** Like the MVCC engine in its early
 //! tasks, the planner is a self-contained module: it reads a
 //! [`GraphStatistics`] snapshot and parsed [`crate::cypher::ast`] trees, but is
 //! **not yet wired into the executor**. `00085` delivered the statistics,
@@ -31,7 +36,8 @@
 //! optimiser ([`optimize_query`]/[`optimize_single_query`]); `00087` adds
 //! supernode handling — the optimiser avoids anchoring a traversal at a hub
 //! node (whose first hop would fan out across its whole degree) and costs any
-//! drive-out-of-a-hub with the worst-case fan-out. Estimates remain coarse
+//! drive-out-of-a-hub with the worst-case fan-out; `00089` adds the memory
+//! budget, peak-memory admission, and backpressure. Estimates remain coarse
 //! (documented `DEFAULT_*` constants stand in for missing statistics).
 //! Consuming the optimised plan to actually drive execution — and feeding the
 //! collector from a live [`crate::db::Drevo`] scan — is later-task work.
@@ -50,12 +56,20 @@
 //! [`optimize_single_query`]: crate::planner::plan::optimize_single_query
 //! [`PlanOptimizer`]: crate::planner::plan::PlanOptimizer
 //! [`PlanCache`]: crate::planner::cache::PlanCache
+//! [`MemoryBudget`]: crate::planner::budget::MemoryBudget
+//! [`estimate_peak_memory`]: crate::planner::budget::estimate_peak_memory
+//! [`Backpressure`]: crate::planner::budget::Backpressure
 
+pub mod budget;
 pub mod cache;
 pub mod cardinality;
 pub mod plan;
 pub mod stats;
 
+pub use budget::{
+    estimate_peak_memory, Backpressure, BackpressureSignal, BudgetError, MemoryBudget,
+    MemoryReservation, DEFAULT_ROW_WIDTH_BYTES,
+};
 pub use cache::PlanCache;
 pub use cardinality::{
     CardinalityEstimator, DEFAULT_EQUALITY_SELECTIVITY, DEFAULT_NULL_SELECTIVITY,

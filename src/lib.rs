@@ -99,8 +99,11 @@ pub mod mvcc;
 /// statistics ([`planner::GraphStatistics`]) + cardinality estimation
 /// ([`planner::CardinalityEstimator`]) + the annotated plan tree
 /// ([`planner::PlanNode`], with [`planner::PlanNode::explain`]) + a bounded
-/// plan cache ([`planner::PlanCache`]). Dependency-free, always compiled,
-/// WASM-safe; not yet wired into the executor (that is `00086`).
+/// plan cache ([`planner::PlanCache`]). Task `00089` adds the memory budget &
+/// backpressure submodule ([`planner::MemoryBudget`],
+/// [`planner::estimate_peak_memory`], [`planner::Backpressure`]) — the OOM
+/// guard for memory-limited query execution. Dependency-free, always compiled,
+/// WASM-safe; not yet wired into the executor.
 pub mod planner;
 /// Phase 14 task `00088` — persistent property index. A durable
 /// `(property key, value) -> node ids` map maintained on every node
