@@ -5,14 +5,19 @@
 //! and *which queries ran, and did they fail?* This module supplies the
 //! mechanism for both:
 //!
-//! * a dependency-free, lock-free **metrics registry** ([`Registry`]) with the
-//!   three Prometheus metric shapes — [`Counter`], [`Gauge`], [`Histogram`] —
-//!   and a [`Registry::render_prometheus`] renderer that emits the Prometheus
-//!   text exposition format (version `0.0.4`) the `drevo-server` `/metrics`
-//!   route serves;
-//! * a **structured query log** built on a plain-data [`QueryObservation`] that
-//!   both updates the standard counters/histogram bundled in [`DrevoMetrics`]
-//!   and (under the `http` feature, where `tracing` is available) emits a
+//! * a dependency-free, lock-free **metrics registry**
+//!   ([`Registry`](crate::observability::Registry)) with the three Prometheus
+//!   metric shapes — [`Counter`](crate::observability::Counter),
+//!   [`Gauge`](crate::observability::Gauge),
+//!   [`Histogram`](crate::observability::Histogram) — and a
+//!   [`render_prometheus`](crate::observability::Registry::render_prometheus)
+//!   renderer that emits the Prometheus text exposition format (version
+//!   `0.0.4`) the `drevo-server` `/metrics` route serves;
+//! * a **structured query log** built on a plain-data
+//!   [`QueryObservation`](crate::observability::QueryObservation) that both
+//!   updates the standard counters/histogram bundled in
+//!   [`DrevoMetrics`](crate::observability::DrevoMetrics) and (under the
+//!   `http` feature, where `tracing` is available) emits a
 //!   `tracing` event tagged with OpenTelemetry semantic-convention fields
 //!   (`db.system`, `db.operation`, `db.statement`, …) so any
 //!   `tracing-opentelemetry` OTLP layer the operator installs exports it as a
