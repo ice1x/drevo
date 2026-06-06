@@ -25,4 +25,4 @@ pub mod index;
 /// body)`.
 pub mod tokenizer;
 
-pub use tokenizer::{extract_trigrams, normalize, trigrams};
+pub use tokenizer::{extract_raw_trigrams, extract_trigrams, normalize, raw_trigrams, trigrams};

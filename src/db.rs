@@ -43,9 +43,9 @@ use std::sync::Mutex;
 
 use crate::error::{DrevoError, Result};
 use crate::fts::index as fts_index;
-use crate::fts::tokenizer::extract_trigrams;
+use crate::fts::tokenizer::{extract_raw_trigrams, extract_trigrams};
 use crate::model::{
-    Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
+    Direction, Edge, EdgePatch, FtsRanking, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
 };
 use crate::property_index;
 #[cfg(feature = "redb-backend")]
@@ -1437,41 +1437,61 @@ impl Drevo {
         fts_index::intersect_trigrams(&*self.backend, trigrams)
     }
 
-    /// Full-text search with TF-IDF ranking.
+    /// Full-text search ranked by Okapi BM25.
     ///
-    /// Extracts trigrams from the query, finds candidate nodes via posting
-    /// list intersection (AND semantics), scores each candidate using
-    /// TF-IDF, and returns up to `limit` results sorted by descending
-    /// score, then by ascending node id for stability.
+    /// Equivalent to [`Drevo::search_fts_ranked`] with
+    /// [`FtsRanking::default`] (BM25, `k1 = 1.2`, `b = 0.75`). Extracts
+    /// trigrams from the query, finds candidate nodes via posting-list
+    /// intersection (AND semantics), scores each candidate, and returns up
+    /// to `limit` results sorted by descending score, then by ascending
+    /// node id for stability.
     ///
-    /// **TF-IDF formula (as implemented):**
-    /// - TF (term frequency): the trigram set per node is deduplicated, so
-    ///   per-trigram TF is `1 / |node_trigrams|` when the trigram is
-    ///   present, otherwise `0`. (Binary presence normalised by node
-    ///   trigram cardinality — a length-penalty that down-weights long
-    ///   bodies.)
-    /// - IDF (smoothed inverse document frequency):
-    ///   `ln(1 + N / df)` where `N` is the total number of indexed
-    ///   nodes and `df` is the number of nodes containing the trigram.
-    ///   The `+ 1` smoothing keeps the IDF strictly positive when
-    ///   `df == N`, preventing trigrams that appear in *every* node
-    ///   from collapsing to a zero score.
-    /// - Score = sum of `tf * idf` for each query trigram.
+    /// Returns an empty list if the query produces no trigrams or no nodes
+    /// match.
+    pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<ScoredNode>> {
+        self.search_fts_ranked(query, limit, FtsRanking::default())
+    }
+
+    /// Full-text search with a selectable [`FtsRanking`] strategy.
     ///
-    /// Returns an empty list if the query produces no trigrams or no
-    /// nodes match.
+    /// The public [`Drevo::search_fts`] entry point delegates here with
+    /// BM25; pass [`FtsRanking::TfIdf`] to fall back to the legacy
+    /// deterministic, length-insensitive scorer (useful for golden-ranking
+    /// baselines).
+    ///
+    /// **BM25 (default).** Per query trigram `qᵢ`:
+    ///
+    /// ```text
+    /// score += idf(qᵢ) · tf·(k1 + 1) / (tf + k1·(1 − b + b·|d|/avgdl))
+    /// ```
+    ///
+    /// where `tf` is the raw occurrence count of `qᵢ` in the document
+    /// (counting repetition — see [`crate::fts::raw_trigrams`]), `|d|` is
+    /// the document length (total trigram tokens), `avgdl` is the average
+    /// document length across the corpus, and `idf` is the smoothed
+    /// BM25 IDF (see [`crate::fts::index`]). The `k1` term saturates
+    /// runaway term frequencies; the `b` term down-weights long documents.
+    /// Corpus statistics (`N`, `avgdl`) are derived from the persisted
+    /// per-document lengths maintained on every insert/update/delete.
+    ///
+    /// **TF-IDF (legacy).** Binary trigram presence normalized by the
+    /// node's trigram cardinality, weighted by smoothed IDF
+    /// `ln(1 + N/df)`. Score is the sum of `tf · idf` over query trigrams.
     ///
     /// # Performance
     ///
     /// `audit/AUDIT-fts.md` documents a measured ~800 ms vs 50 ms-target
     /// gap on broad single-token queries against ~10k nodes. The
-    /// bottleneck is the per-candidate `extract_trigrams` call here
-    /// combined with `scan_prefix(PREFIX_NODE)` to count `N`. Mitigations
-    /// (cached posting-list lengths, persisted node-count meta key,
-    /// inverted-index compaction) are tracked as a separate follow-up
-    /// refactor in the audit report — out of scope for the audit task
-    /// itself.
-    pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<ScoredNode>> {
+    /// bottleneck is the per-candidate `extract_trigrams` call combined
+    /// with the corpus-wide scan to count `N`/`avgdl`. Further mitigations
+    /// (cached posting-list lengths, inverted-index compaction) remain a
+    /// tracked follow-up.
+    pub fn search_fts_ranked(
+        &self,
+        query: &str,
+        limit: usize,
+        ranking: FtsRanking,
+    ) -> Result<Vec<ScoredNode>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -1487,18 +1507,111 @@ impl Drevo {
             return Ok(Vec::new());
         }
 
+        let mut scored = match ranking {
+            FtsRanking::Bm25 { k1, b } => {
+                self.score_bm25(&query_trigrams, &candidate_ids, k1, b)?
+            }
+            FtsRanking::TfIdf => self.score_tfidf(&query_trigrams, &candidate_ids)?,
+        };
+
+        // Sort by score descending, then by node id ascending for stability
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.node.id.cmp(&b.node.id))
+        });
+
+        scored.truncate(limit);
+        Ok(scored)
+    }
+
+    /// Score candidates with Okapi BM25 (term-frequency saturation +
+    /// document-length normalization). See [`Drevo::search_fts_ranked`].
+    fn score_bm25(
+        &self,
+        query_trigrams: &[String],
+        candidate_ids: &[u64],
+        k1: f32,
+        b: f32,
+    ) -> Result<Vec<ScoredNode>> {
+        let stats = fts_index::corpus_stats(&*self.backend)?;
+        let avgdl = stats.avgdl();
+
+        // Document frequency per query trigram.
+        let mut dfs: Vec<u64> = Vec::with_capacity(query_trigrams.len());
+        for trigram in query_trigrams {
+            dfs.push(fts_index::posting_list_len(&*self.backend, trigram)? as u64);
+        }
+
+        // `N` for the IDF. By construction every posting-bearing node also
+        // has a persisted length, so `doc_count >= df` for a consistent
+        // index. The `max` only matters for a legacy index written before
+        // length stats existed (postings but no `ftslen:`), where it keeps
+        // IDF non-negative instead of silently dropping every result.
+        let n = dfs.iter().copied().max().unwrap_or(0).max(stats.doc_count);
+
+        // Precompute the BM25 IDF for each query trigram.
+        let idf_values: Vec<f32> = dfs.iter().map(|&df| fts_index::bm25_idf(n, df)).collect();
+
+        let mut scored: Vec<ScoredNode> = Vec::with_capacity(candidate_ids.len());
+        for node_id in candidate_ids {
+            let node = match self.get_node(*node_id)? {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Raw (non-deduplicated) trigrams give per-term frequency.
+            let raw = extract_raw_trigrams(&node.title, &node.body);
+            if raw.is_empty() {
+                continue;
+            }
+            // Document length `|d|`: prefer the persisted stat (the same
+            // value `avgdl` is averaged from) and fall back to the recomputed
+            // count for a legacy index that predates length persistence.
+            let doc_len = fts_index::doc_length(&*self.backend, *node_id)?
+                .map(|l| l as f32)
+                .unwrap_or(raw.len() as f32);
+            // Length-normalization factor; falls back to no normalization
+            // when the corpus average is unavailable.
+            let norm = if avgdl > 0.0 {
+                1.0 - b + b * (doc_len / avgdl)
+            } else {
+                1.0
+            };
+
+            let mut score: f32 = 0.0;
+            for (i, qt) in query_trigrams.iter().enumerate() {
+                let tf = raw.iter().filter(|t| *t == qt).count() as f32;
+                if tf == 0.0 {
+                    continue;
+                }
+                score += idf_values[i] * (tf * (k1 + 1.0)) / (tf + k1 * norm);
+            }
+
+            if score > 0.0 {
+                scored.push(ScoredNode { node, score });
+            }
+        }
+        Ok(scored)
+    }
+
+    /// Score candidates with the legacy TF-IDF scorer. Retained for
+    /// deterministic baselines. See [`Drevo::search_fts_ranked`].
+    fn score_tfidf(
+        &self,
+        query_trigrams: &[String],
+        candidate_ids: &[u64],
+    ) -> Result<Vec<ScoredNode>> {
         // Total number of indexed nodes (approximate: count node: prefix entries)
         let all_nodes = self.backend.scan_prefix(PREFIX_NODE)?;
         let total_nodes = all_nodes.len() as f32;
 
         // Precompute IDF for each query trigram
         let mut idf_values: Vec<f32> = Vec::with_capacity(query_trigrams.len());
-        for trigram in &query_trigrams {
+        for trigram in query_trigrams {
             let df = fts_index::posting_list_len(&*self.backend, trigram)? as f32;
-            // Smoothed IDF: ln(1 + N / df) — avoids zero when df == N. We
-            // use `f32::ln_1p` (i.e. `ln(1 + x)`) so the intermediate
-            // `1 + x` stays accurate when `x` is near zero — clippy nursery
-            // `suboptimal_flops` flag, applied in audit 00113.
+            // Smoothed IDF: ln(1 + N / df) — avoids zero when df == N.
             let idf = if df > 0.0 {
                 (total_nodes / df).ln_1p()
             } else {
@@ -1507,15 +1620,14 @@ impl Drevo {
             idf_values.push(idf);
         }
 
-        // Score each candidate
         let mut scored: Vec<ScoredNode> = Vec::with_capacity(candidate_ids.len());
-        for node_id in &candidate_ids {
+        for node_id in candidate_ids {
             let node = match self.get_node(*node_id)? {
                 Some(n) => n,
                 None => continue,
             };
 
-            // Extract the node's own trigrams to compute TF
+            // Extract the node's own (deduplicated) trigrams to compute TF.
             let node_trigrams = extract_trigrams(&node.title, &node.body);
             let node_trigram_count = node_trigrams.len() as f32;
             if node_trigram_count == 0.0 {
@@ -1524,8 +1636,7 @@ impl Drevo {
 
             let mut score: f32 = 0.0;
             for (i, qt) in query_trigrams.iter().enumerate() {
-                // TF: count how many times this query trigram appears in node trigrams
-                // Since trigrams are deduplicated, tf is 0 or 1
+                // Trigrams are deduplicated, so tf is 0 or 1.
                 let tf = if node_trigrams.iter().any(|nt| nt == qt) {
                     1.0 / node_trigram_count
                 } else {
@@ -1538,16 +1649,6 @@ impl Drevo {
                 scored.push(ScoredNode { node, score });
             }
         }
-
-        // Sort by score descending, then by node id ascending for stability
-        scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.node.id.cmp(&b.node.id))
-        });
-
-        scored.truncate(limit);
         Ok(scored)
     }
 
@@ -3111,6 +3212,122 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].node.id, node.id);
         assert_eq!(results[0].node.uuid, node.uuid);
+    }
+
+    // --- BM25 ranking (task 00131) ---
+
+    #[test]
+    fn bm25_term_frequency_saturates() {
+        // BM25's k1 term means the 10th occurrence of a term must not
+        // count 10x. With k1=1.2 the marginal gain per extra occurrence
+        // shrinks, so the score from tf=10 is far less than 10x the tf=1
+        // score after IDF/length effects cancel (both docs equal length-ish).
+        let db = Drevo::open_in_memory().unwrap();
+        // Doc 1: one occurrence; Doc 2: many occurrences, padded so the
+        // length-normalization term is comparable.
+        db.create_node(test_node("note", "rust once", "alpha beta gamma delta"))
+            .unwrap();
+        db.create_node(test_node(
+            "note",
+            "rust rust rust rust rust rust rust rust rust rust",
+            "",
+        ))
+        .unwrap();
+        let results = db.search_fts("rust", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        let many = results.iter().find(|r| r.node.id == 2).unwrap();
+        let once = results.iter().find(|r| r.node.id == 1).unwrap();
+        // More occurrences still score higher, but with diminishing return.
+        assert!(many.score > once.score);
+        assert!(
+            many.score < once.score * 10.0,
+            "k1 saturation should keep tf=10 well under 10x the tf=1 score \
+             (many={}, once={})",
+            many.score,
+            once.score
+        );
+    }
+
+    #[test]
+    fn bm25_length_normalization_prefers_shorter_doc() {
+        // Two docs each contain "rust" once, but one is much longer. With
+        // b=0.75 the shorter (more focused) document should rank higher.
+        let db = Drevo::open_in_memory().unwrap();
+        // Distinct titles (Drevo enforces unique titles), same query term once each.
+        db.create_node(test_node("note", "rust north", "")).unwrap();
+        db.create_node(test_node(
+            "note",
+            "rust south",
+            "this is a very long body about many unrelated subjects such as \
+             cooking gardening astronomy philosophy economics and history",
+        ))
+        .unwrap();
+        let results = db.search_fts("rust", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].node.id, 1,
+            "the shorter document should rank first under BM25 length norm"
+        );
+    }
+
+    #[test]
+    fn bm25_rare_term_outranks_common_term() {
+        // IDF: a term appearing in few docs is more salient.
+        let db = Drevo::open_in_memory().unwrap();
+        for i in 0..12 {
+            db.create_node(test_node("note", &format!("common report {}", i), ""))
+                .unwrap();
+        }
+        db.create_node(test_node("note", "common quasar sighting", ""))
+            .unwrap();
+        let results = db.search_fts("common quasar", 10).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(
+            results[0].node.title, "common quasar sighting",
+            "the doc with the rare term must rank first"
+        );
+    }
+
+    #[test]
+    fn search_fts_ranked_tfidf_flag_preserves_legacy_scorer() {
+        // The deterministic-baseline flag must still return matches.
+        let db = Drevo::open_in_memory().unwrap();
+        db.create_node(test_node("note", "Rust programming", ""))
+            .unwrap();
+        let results = db.search_fts_ranked("rust", 10, FtsRanking::TfIdf).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].score > 0.0);
+    }
+
+    #[test]
+    fn search_fts_default_is_bm25() {
+        // search_fts and search_fts_ranked(.., Bm25) must agree.
+        let db = Drevo::open_in_memory().unwrap();
+        db.create_node(test_node("note", "Rust programming", "rust systems"))
+            .unwrap();
+        db.create_node(test_node("note", "Python scripting", ""))
+            .unwrap();
+        let a = db.search_fts("rust", 10).unwrap();
+        let b = db
+            .search_fts_ranked("rust", 10, FtsRanking::default())
+            .unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn search_fts_doc_length_stats_maintained_on_delete() {
+        // Deleting a node must drop its length stat (cascade-on-delete) so
+        // avgdl reflects only live documents.
+        let db = Drevo::open_in_memory().unwrap();
+        let n = db
+            .create_node(test_node("note", "rust programming", ""))
+            .unwrap();
+        let before = fts_index::corpus_stats(&*db.backend).unwrap();
+        assert_eq!(before.doc_count, 1);
+        db.delete_node(n.id).unwrap();
+        let after = fts_index::corpus_stats(&*db.backend).unwrap();
+        assert_eq!(after.doc_count, 0);
+        assert_eq!(after.total_len, 0);
     }
 
     // --- list_recent ---
