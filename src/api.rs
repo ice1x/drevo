@@ -91,6 +91,7 @@ use crate::error::DrevoError;
 use crate::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
 };
+use crate::observability::DrevoMetrics;
 
 /// Shared application state passed to every HTTP handler.
 ///
@@ -112,6 +113,11 @@ pub struct ApiState {
     /// to every other handler. `/health` and `/ready` consult it to
     /// return 503 once the process enters draining.
     shutting_down: Arc<AtomicBool>,
+    /// Process metrics (Phase 15 task `00130`). Shared across every handler
+    /// (and the request-instrumentation middleware) so request counts,
+    /// latencies, and in-flight gauges accumulate into one registry that the
+    /// `GET /metrics` route renders in the Prometheus exposition format.
+    pub metrics: Arc<DrevoMetrics>,
 }
 
 impl ApiState {
@@ -124,6 +130,7 @@ impl ApiState {
             db,
             started_at: Instant::now(),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            metrics: Arc::new(DrevoMetrics::new()),
         }
     }
 
@@ -819,6 +826,52 @@ fn with_405<S: Clone + Send + Sync + 'static>(
     mr.fallback(method_not_allowed)
 }
 
+/// The Prometheus text exposition `Content-Type` (version `0.0.4`). Scrapers
+/// key off this media type, so it must be exact.
+const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// `GET /metrics` — render the process metrics in the Prometheus text
+/// exposition format (Phase 15 task `00130`).
+///
+/// The process-uptime gauge is refreshed from [`ApiState::started_at`] just
+/// before rendering so the scrape reflects the current uptime without a
+/// background ticker. Always returns 200 with `text/plain; version=0.0.4`.
+async fn metrics(State(state): State<ApiState>) -> Response {
+    state
+        .metrics
+        .uptime_seconds
+        .set(state.started_at.elapsed().as_secs() as i64);
+    let body = state.metrics.render_prometheus();
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
+        body,
+    )
+        .into_response()
+}
+
+/// Per-request instrumentation middleware (Phase 15 task `00130`).
+///
+/// Increments the in-flight gauge for the duration of the request, times the
+/// downstream handler, and records the response status class + latency into the
+/// shared [`DrevoMetrics`]. Runs for every route (including `/metrics` itself,
+/// so scrapes are visible in the request totals — the conventional behaviour).
+async fn track_metrics(
+    State(state): State<ApiState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    state.metrics.request_started();
+    let start = Instant::now();
+    let response = next.run(request).await;
+    let elapsed = start.elapsed().as_secs_f64();
+    state
+        .metrics
+        .record_http(response.status().as_u16(), elapsed);
+    state.metrics.request_finished();
+    response
+}
+
 /// Build the HTTP [`Router`] for a given [`ApiState`].
 ///
 /// Returned router can be served with `axum::serve` on a TCP listener
@@ -851,6 +904,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/health", with_405(get(health)))
         .route("/ready", with_405(get(ready)))
         .route("/status", with_405(get(status)))
+        // ── Phase 15 task `00130` — Prometheus metrics endpoint ─────
+        .route("/metrics", with_405(get(metrics)))
         // ── Phase 15 task `00092` — embedded Web UI ─────────────────
         // Routes serve HTML / JS / CSS baked into the binary via
         // `include_str!` (see `crate::web_ui`). Same-origin with the
@@ -861,6 +916,14 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/ui/app.js", get(crate::web_ui::serve_app_js))
         .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
         .fallback(fallback)
+        // ── Phase 15 task `00130` — per-request metrics instrumentation.
+        // Layered after the routes so it wraps every handler (including the
+        // fallback) and before `with_state` so the middleware can extract the
+        // shared `ApiState`.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            track_metrics,
+        ))
         .with_state(state)
 }
 

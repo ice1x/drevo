@@ -93,6 +93,16 @@ pub mod model;
 /// the rest of Phase 13 (GC `00082`, OCC `00083`, isolation levels
 /// `00084`) builds on. Dependency-free and always compiled.
 pub mod mvcc;
+/// Observability — Phase 15 task `00130`. A dependency-free, lock-free
+/// metrics registry ([`observability::Registry`] with
+/// [`observability::Counter`] / [`observability::Gauge`] /
+/// [`observability::Histogram`]) that renders the Prometheus text exposition
+/// format, plus a structured query log ([`observability::QueryObservation`] /
+/// [`observability::DrevoMetrics::record_query`]) that updates the standard
+/// [`observability::DrevoMetrics`] and emits an OpenTelemetry-semantic
+/// `tracing` event. Always compiled and WASM-safe; the `/metrics` HTTP route
+/// and per-request instrumentation live in [`api`] behind the `http` feature.
+pub mod observability;
 /// Extracted env-var parser, validator, and bind/serve loop for the
 /// `drevo-server` binary. Compiled only with the `http` feature.
 /// Phase 14 task `00085` — cost-based query planner foundation: graph
