@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Tracked here as Phase 16 tasks land. Sections roll into the next
 released entry on a tagged commit.
 
+### Note — task `00134` (Neo4j → drevo migration)
+
+- Importing from Neo4j is **not** part of `drevo-py`: the bindings stay
+  free of any Neo4j knowledge. The importer lives in a separate,
+  one-way-dependent tool, [`neo4j-to-drevo`](../tools/neo4j-to-drevo/),
+  which depends on `drevo`. No change to the `drevo-py` surface.
+
 ### Added — task `00079` (embedding integration helpers — Phase 12)
 
 - **`Drevo` vector bridge.** The PyO3 handle now exposes the durable
