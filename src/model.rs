@@ -193,13 +193,57 @@ pub enum Direction {
 
 /// A search result with a relevance score.
 ///
-/// Returned by [`crate::db::Drevo::search_fts`] — nodes are ranked by TF-IDF score.
+/// Returned by [`crate::db::Drevo::search_fts`] — nodes are ranked by
+/// Okapi BM25 score (see [`FtsRanking`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredNode {
     /// The matching node.
     pub node: Node,
     /// Relevance score (higher = more relevant).
     pub score: f32,
+}
+
+/// Relevance-ranking strategy for full-text search.
+///
+/// [`Drevo::search_fts`](crate::db::Drevo::search_fts) ranks with
+/// [`FtsRanking::default`] (Okapi BM25). The legacy
+/// [`FtsRanking::TfIdf`] scorer is retained so callers that need a
+/// deterministic, length-insensitive baseline (e.g. golden-ranking
+/// regression tests) can opt back into it via
+/// [`Drevo::search_fts_ranked`](crate::db::Drevo::search_fts_ranked).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FtsRanking {
+    /// Okapi BM25: term-frequency saturation (`k1`) plus document-length
+    /// normalization (`b`). Scores
+    /// `Σ idf(qᵢ) · tf·(k1+1) / (tf + k1·(1 − b + b·|d|/avgdl))`.
+    Bm25 {
+        /// Term-frequency saturation parameter (conventional default `1.2`).
+        /// Higher values let repeated terms keep accruing score; lower
+        /// values saturate sooner.
+        k1: f32,
+        /// Document-length normalization parameter in `[0, 1]`
+        /// (conventional default `0.75`). `0` disables length
+        /// normalization; `1` applies it fully.
+        b: f32,
+    },
+    /// Legacy TF-IDF: binary trigram presence normalized by the node's
+    /// trigram cardinality, weighted by smoothed IDF `ln(1 + N/df)`.
+    /// Kept for deterministic-baseline comparisons.
+    TfIdf,
+}
+
+impl FtsRanking {
+    /// BM25 with the conventional `k1 = 1.2`, `b = 0.75` defaults used by
+    /// Lucene, Elasticsearch, and Tantivy.
+    pub const fn bm25_default() -> Self {
+        FtsRanking::Bm25 { k1: 1.2, b: 0.75 }
+    }
+}
+
+impl Default for FtsRanking {
+    fn default() -> Self {
+        FtsRanking::bm25_default()
+    }
 }
 
 /// A subgraph extracted by bounded traversal from a root node.

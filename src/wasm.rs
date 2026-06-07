@@ -420,7 +420,7 @@ impl WasmDrevo {
 
     /// Full-text search over node titles and bodies.
     ///
-    /// Returns an array of `{ node, score }` objects, ranked by TF-IDF.
+    /// Returns an array of `{ node, score }` objects, ranked by BM25.
     #[wasm_bindgen]
     pub fn search_fts(&self, query: &str, limit: u32) -> Result<JsValue, JsValue> {
         let db = self.db_ref()?;

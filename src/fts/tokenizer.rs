@@ -91,6 +91,63 @@ pub fn extract_trigrams(title: &str, body: &str) -> Vec<String> {
     trigrams(&combined)
 }
 
+/// Extract **raw** trigrams from text — like [`trigrams`] but **without
+/// deduplication**, preserving every sliding-window occurrence in document
+/// order.
+///
+/// Where [`trigrams`] returns the *set* of distinct trigrams (which the
+/// inverted index and document-frequency counts need), `raw_trigrams`
+/// returns the *bag* of trigrams. This is what term-frequency-aware
+/// ranking (BM25, task `00131`) consumes: the number of times a trigram
+/// occurs in a document drives the `k1` saturation term, and the total
+/// number of trigram tokens is the document length `|d|` used for the `b`
+/// length-normalization term.
+///
+/// CJK bigrams are emitted with the same rule as [`trigrams`].
+pub fn raw_trigrams(text: &str) -> Vec<String> {
+    let normalized = normalize(text);
+    let chars: Vec<char> = normalized.chars().collect();
+
+    if chars.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+
+    // Standard trigrams (3-char sliding window), with repetition.
+    if chars.len() >= 3 {
+        for window in chars.windows(3) {
+            out.push(window.iter().collect::<String>());
+        }
+    }
+
+    // CJK bigrams: for consecutive CJK characters, add 2-char windows.
+    for window in chars.windows(2) {
+        if is_cjk(window[0]) && is_cjk(window[1]) {
+            out.push(window.iter().collect::<String>());
+        }
+    }
+
+    out
+}
+
+/// Extract raw (non-deduplicated) trigrams from the title and body fields
+/// combined, mirroring [`extract_trigrams`] but keeping every occurrence.
+///
+/// Used by BM25 ranking (task `00131`) to compute per-document term
+/// frequencies and document length `|d|`.
+pub fn extract_raw_trigrams(title: &str, body: &str) -> Vec<String> {
+    let combined = if body.is_empty() {
+        title.to_string()
+    } else if title.is_empty() {
+        body.to_string()
+    } else {
+        format!("{} {}", title, body)
+    };
+
+    raw_trigrams(&combined)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +293,73 @@ mod tests {
     #[test]
     fn extract_trigrams_both_empty() {
         assert!(extract_trigrams("", "").is_empty());
+    }
+
+    // --- raw_trigrams tests ---
+
+    #[test]
+    fn raw_trigrams_preserves_repetition() {
+        // "aaaa" -> windows: "aaa", "aaa" (two occurrences, not deduped)
+        let result = raw_trigrams("aaaa");
+        assert_eq!(result, vec!["aaa", "aaa"]);
+    }
+
+    #[test]
+    fn raw_trigrams_basic_order() {
+        // Document order, not sorted (contrast with `trigrams`).
+        assert_eq!(raw_trigrams("hello"), vec!["hel", "ell", "llo"]);
+    }
+
+    #[test]
+    fn raw_trigrams_count_matches_window_count() {
+        // "abcabc" normalized has 6 chars -> 4 trigram windows.
+        assert_eq!(raw_trigrams("abcabc").len(), 4);
+    }
+
+    #[test]
+    fn raw_trigrams_term_frequency() {
+        // "rust rust" contains the trigram "rus" twice.
+        let raw = raw_trigrams("rust rust");
+        let rus = raw.iter().filter(|t| *t == "rus").count();
+        assert_eq!(rus, 2, "tf of 'rus' must reflect repetition");
+    }
+
+    #[test]
+    fn raw_trigrams_too_short() {
+        assert!(raw_trigrams("hi").is_empty());
+        assert!(raw_trigrams("").is_empty());
+    }
+
+    #[test]
+    fn raw_trigrams_cjk_bigrams_with_repetition() {
+        // "你好你好" -> bigrams "你好","好你","你好" + trigrams "你好你","好你好"
+        let raw = raw_trigrams("你好你好");
+        let nihao = raw.iter().filter(|t| *t == "你好").count();
+        assert_eq!(nihao, 2);
+    }
+
+    #[test]
+    fn raw_trigrams_superset_of_distinct() {
+        // The distinct set is exactly the dedup of the raw bag.
+        let raw = raw_trigrams("programming programming");
+        let mut distinct: Vec<String> = raw.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct, trigrams("programming programming"));
+        assert!(raw.len() > distinct.len());
+    }
+
+    #[test]
+    fn extract_raw_trigrams_combines_fields() {
+        let result = extract_raw_trigrams("abc", "abc");
+        // "abc abc" keeps both "abc" windows.
+        let abc = result.iter().filter(|t| *t == "abc").count();
+        assert_eq!(abc, 2);
+    }
+
+    #[test]
+    fn extract_raw_trigrams_empty_body() {
+        assert_eq!(extract_raw_trigrams("hello", ""), raw_trigrams("hello"));
     }
 
     // --- is_cjk tests ---

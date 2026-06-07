@@ -34,7 +34,7 @@
 //! Task 00041 added the full-text search endpoint:
 //!
 //! - `POST /search/fts` — JSON body `{query, limit?}`, returns
-//!   `{results: [ScoredNode]}` ranked by TF-IDF
+//!   `{results: [ScoredNode]}` ranked by Okapi BM25 (task `00131`)
 //!
 //! Task 00055 (Phase 9 hardening) added JSON import / export endpoints
 //! for backups and cross-deployment migration:
@@ -624,11 +624,11 @@ pub struct SearchFtsRequest {
 /// JSON envelope for `POST /search/fts` responses.
 #[derive(Debug, Serialize)]
 pub struct SearchFtsResponse {
-    /// Scored nodes ranked by descending TF-IDF score.
+    /// Scored nodes ranked by descending BM25 score.
     pub results: Vec<ScoredNode>,
 }
 
-/// Handler for `POST /search/fts`. Runs TF-IDF ranked full-text search
+/// Handler for `POST /search/fts`. Runs BM25-ranked full-text search
 /// over the node title/body trigram index and returns up to `limit`
 /// scored matches. A missing `query` field is rejected with 400.
 async fn search_fts(
