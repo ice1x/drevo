@@ -21,8 +21,17 @@
 /// Trigram inverted-index storage operations
 /// (build / extend / remove / intersect posting lists).
 pub mod index;
+/// Keyword extraction: top-`k` salient terms via word tokenization,
+/// stopword removal, and BM25 IDF salience (task `00132`).
+pub(crate) mod keywords;
+/// Porter stemmer (1980) — pure-Rust, used optionally by keyword extraction.
+pub(crate) mod stemmer;
+/// English stopword list for keyword extraction.
+pub(crate) mod stopwords;
 /// Pure tokenizer: `normalize` → `trigrams` → `extract_trigrams(title,
-/// body)`.
+/// body)` plus the word-level `words` tokenizer for keyword extraction.
 pub mod tokenizer;
 
-pub use tokenizer::{extract_raw_trigrams, extract_trigrams, normalize, raw_trigrams, trigrams};
+pub use tokenizer::{
+    extract_raw_trigrams, extract_trigrams, normalize, raw_trigrams, trigrams, words,
+};

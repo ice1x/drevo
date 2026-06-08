@@ -148,6 +148,36 @@ pub fn extract_raw_trigrams(title: &str, body: &str) -> Vec<String> {
     raw_trigrams(&combined)
 }
 
+/// Split text into lowercase **word** tokens, preserving document order and
+/// repetition.
+///
+/// This is the *word-level* tokenizer used by keyword extraction (task
+/// `00132`), deliberately distinct from the character-trigram tokenizer that
+/// powers the FTS inverted index. A token is a maximal run of alphanumeric or
+/// CJK characters; everything else (whitespace, punctuation) is a separator.
+/// Tokens shorter than two characters are dropped — single letters and stray
+/// digits carry no keyword signal and only add noise to the ranking.
+///
+/// Unlike [`trigrams`], occurrences are **not** deduplicated: the caller needs
+/// per-word term frequencies, so "graph graph" yields `["graph", "graph"]`.
+pub fn words(text: &str) -> Vec<String> {
+    let lowered = text.to_lowercase();
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for c in lowered.chars() {
+        if is_keepable(c) {
+            current.push(c);
+        } else if !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out.retain(|w| w.chars().count() >= 2);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +390,56 @@ mod tests {
     #[test]
     fn extract_raw_trigrams_empty_body() {
         assert_eq!(extract_raw_trigrams("hello", ""), raw_trigrams("hello"));
+    }
+
+    // --- words tests ---
+
+    #[test]
+    fn words_basic_split() {
+        assert_eq!(words("hello world"), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn words_lowercases() {
+        assert_eq!(words("Graph DATABASE"), vec!["graph", "database"]);
+    }
+
+    #[test]
+    fn words_strips_punctuation() {
+        assert_eq!(
+            words("anxiety, depression; cbt!"),
+            vec!["anxiety", "depression", "cbt"]
+        );
+    }
+
+    #[test]
+    fn words_preserves_repetition_and_order() {
+        // Contrast with `trigrams`, which dedups and sorts.
+        assert_eq!(words("graph graph node"), vec!["graph", "graph", "node"]);
+    }
+
+    #[test]
+    fn words_drops_single_chars() {
+        // "a" and "I" carry no keyword signal.
+        assert_eq!(words("a graph i node"), vec!["graph", "node"]);
+    }
+
+    #[test]
+    fn words_keeps_digits_in_tokens() {
+        assert_eq!(words("neo4j v2 release"), vec!["neo4j", "v2", "release"]);
+    }
+
+    #[test]
+    fn words_empty_and_punctuation_only() {
+        assert!(words("").is_empty());
+        assert!(words("!@#$ %^&*").is_empty());
+    }
+
+    #[test]
+    fn words_cjk_runs() {
+        // CJK runs are kept as tokens (English-first; CJK word segmentation
+        // is a follow-up). A 2+ char run survives the length filter.
+        assert_eq!(words("hello 世界"), vec!["hello", "世界"]);
     }
 
     // --- is_cjk tests ---
