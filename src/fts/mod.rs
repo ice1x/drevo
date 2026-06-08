@@ -18,6 +18,9 @@
 //! strategy trait, broad-query performance mitigations, NFC
 //! normalization).
 
+/// Keyword-similarity grouping & faceting: collapse near-duplicate
+/// keywords (lexical or semantic) into facets (task `00133`).
+pub mod facet;
 /// Trigram inverted-index storage operations
 /// (build / extend / remove / intersect posting lists).
 pub mod index;
@@ -32,6 +35,7 @@ pub(crate) mod stopwords;
 /// body)` plus the word-level `words` tokenizer for keyword extraction.
 pub mod tokenizer;
 
+pub use facet::{Facet, FacetCollapse};
 pub use tokenizer::{
     extract_raw_trigrams, extract_trigrams, normalize, raw_trigrams, trigrams, words,
 };

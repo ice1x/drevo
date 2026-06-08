@@ -42,6 +42,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::error::{DrevoError, Result};
+use crate::fts::facet::{build_facets, Facet, FacetCollapse};
 use crate::fts::index as fts_index;
 use crate::fts::tokenizer::{extract_raw_trigrams, extract_trigrams};
 use crate::model::{
@@ -1653,6 +1654,55 @@ impl Drevo {
     }
 
     // ---------------------------------------------------------------
+    // Keyword faceting (task 00133)
+    // ---------------------------------------------------------------
+
+    /// Group every node of `kind` by the keywords extracted from one of its
+    /// text fields, optionally collapsing near-duplicate keywords.
+    ///
+    /// For each node the top-`k` salient keywords of `property` are
+    /// extracted (the `keywords()` extractor), then collapsed into facets per
+    /// the chosen `collapse` axis (see [`FacetCollapse`]). This is the
+    /// single-call form of the cross-cutting "group my graph by extracted
+    /// keyword" query, returning `[{facet, members, count}]` sorted by
+    /// descending document count (then label).
+    ///
+    /// `property` selects the source text: the reserved names `"title"` and
+    /// `"body"` read the node's title/body; any other name reads that
+    /// `properties` key (a string value verbatim, any other JSON value via
+    /// its `to_string`). A node missing/empty in that field contributes
+    /// nothing rather than erroring, so a heterogeneous `kind` does not
+    /// abort (mirrors the `keywords()` NULL discipline, task `00132`).
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` — node classification to scan.
+    /// * `property` — source text field (`"title"`, `"body"`, or a property
+    ///   key).
+    /// * `k` — keywords extracted per node before collapsing.
+    /// * `collapse` — the similarity axis (none / lexical / semantic).
+    pub fn facets(
+        &self,
+        kind: &str,
+        property: &str,
+        k: usize,
+        collapse: &FacetCollapse<'_>,
+    ) -> Result<Vec<Facet>> {
+        let nodes = self.list_nodes_by_kind(kind, usize::MAX, 0)?;
+        let mut per_doc: Vec<(u64, Vec<String>)> = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let Some(text) = node_property_text(&node, property) else {
+                continue;
+            };
+            let keywords = crate::fts::keywords::extract_keywords(&*self.backend, &text, k, false)?;
+            if !keywords.is_empty() {
+                per_doc.push((node.id, keywords));
+            }
+        }
+        Ok(build_facets(&per_doc, collapse))
+    }
+
+    // ---------------------------------------------------------------
     // Graph Traversal
     // ---------------------------------------------------------------
 
@@ -2463,6 +2513,25 @@ fn node_kind_key(kind: &str, node_id: u64) -> Vec<u8> {
     key.push(b':');
     key.extend_from_slice(&node_id.to_le_bytes());
     key
+}
+
+/// Resolve the faceting source text for a node and a `property` name.
+///
+/// `"title"` / `"body"` map to the node's title/body; any other name reads
+/// that `properties` key (a JSON string verbatim, any other value via its
+/// `to_string`). Returns `None` when the field is absent or empty so the
+/// node simply contributes no keywords (see [`Drevo::facets`]).
+fn node_property_text(node: &Node, property: &str) -> Option<String> {
+    let text = match property {
+        "title" => node.title.clone(),
+        "body" => node.body.clone(),
+        other => match node.properties.get(other)? {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Null => return None,
+            value => value.to_string(),
+        },
+    };
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Build the scan prefix for a node kind: `node_kind:{kind}:`.

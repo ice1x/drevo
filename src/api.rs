@@ -88,6 +88,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::Drevo;
 use crate::dump::ImportReport;
 use crate::error::DrevoError;
+use crate::fts::facet::{Facet, FacetCollapse, DEFAULT_TRIGRAM_THRESHOLD};
 use crate::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
 };
@@ -644,6 +645,90 @@ async fn search_fts(
 }
 
 // ---------------------------------------------------------------------
+// Keyword faceting (task 00133)
+// ---------------------------------------------------------------------
+
+/// Query parameters accepted by `GET /facets`.
+///
+/// `kind` is mandatory; everything else has a default. `collapse` selects
+/// the keyword-similarity axis: `none` (default), `lexical`, or `semantic`.
+/// Semantic collapse needs an embedder, which the HTTP server does not host
+/// — it is rejected with 400; use the Rust/Python API with precomputed
+/// embeddings for the semantic axis.
+#[derive(Debug, Deserialize)]
+pub struct FacetsQuery {
+    /// Node classification to scan (required).
+    pub kind: Option<String>,
+    /// Source text field: `title`, `body` (default), or a property key.
+    pub property: Option<String>,
+    /// Keywords extracted per node before collapsing. Defaults to
+    /// [`DEFAULT_FACET_KEYWORDS`], capped at [`MAX_FACET_KEYWORDS`].
+    pub k: Option<usize>,
+    /// Collapse axis: `none` (default) | `lexical` | `semantic`.
+    pub collapse: Option<String>,
+    /// Trigram-Jaccard threshold for `collapse=lexical`
+    /// (default [`crate::fts::facet::DEFAULT_TRIGRAM_THRESHOLD`]).
+    pub threshold: Option<f32>,
+}
+
+/// Default number of keywords extracted per node for faceting.
+pub const DEFAULT_FACET_KEYWORDS: usize = 5;
+
+/// Upper bound on the per-node keyword count for faceting.
+pub const MAX_FACET_KEYWORDS: usize = 50;
+
+/// JSON envelope for `GET /facets` responses.
+#[derive(Debug, Serialize)]
+pub struct FacetsResponse {
+    /// Facets sorted by descending document count, then label.
+    pub facets: Vec<Facet>,
+}
+
+/// Handler for `GET /facets?kind=&property=&k=&collapse=&threshold=`.
+///
+/// Groups every node of `kind` by the keywords extracted from `property`,
+/// optionally collapsing near-duplicate keywords (lexical axis). Returns
+/// `{facets: [{facet, members, count}]}`.
+async fn facets(
+    State(state): State<ApiState>,
+    query: Result<Query<FacetsQuery>, QueryRejection>,
+) -> Result<Json<FacetsResponse>, ApiError> {
+    let Query(FacetsQuery {
+        kind,
+        property,
+        k,
+        collapse,
+        threshold,
+    }) = query?;
+    let kind =
+        kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
+    let property = property.unwrap_or_else(|| "body".to_string());
+    let k = k.unwrap_or(DEFAULT_FACET_KEYWORDS).min(MAX_FACET_KEYWORDS);
+
+    let collapse = match collapse.as_deref().unwrap_or("none") {
+        "none" => FacetCollapse::None,
+        "lexical" => FacetCollapse::Lexical {
+            trigram_threshold: threshold.unwrap_or(DEFAULT_TRIGRAM_THRESHOLD),
+        },
+        "semantic" => {
+            return Err(ApiError::BadRequest(
+                "collapse=semantic requires an embedder, which is not configured on the HTTP \
+                 server; use the Rust/Python API with precomputed keyword embeddings"
+                    .to_string(),
+            ))
+        }
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "unknown collapse mode '{other}' (expected none|lexical|semantic)"
+            )))
+        }
+    };
+
+    let facets = state.db.facets(&kind, &property, k, &collapse)?;
+    Ok(Json(FacetsResponse { facets }))
+}
+
+// ---------------------------------------------------------------------
 // Admin endpoints (task 00042)
 // ---------------------------------------------------------------------
 
@@ -898,6 +983,8 @@ pub fn build_router(state: ApiState) -> Router {
         )
         .route("/paths/shortest", with_405(get(get_shortest_path)))
         .route("/search/fts", with_405(axum::routing::post(search_fts)))
+        // ── Phase 17 task `00133` — keyword faceting endpoint ───────
+        .route("/facets", with_405(get(facets)))
         .route("/export/json", with_405(get(export_json)))
         .route("/import/json", with_405(axum::routing::post(import_json)))
         .route("/export/graphml", with_405(get(export_graphml)))
