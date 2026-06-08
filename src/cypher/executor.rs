@@ -894,10 +894,12 @@ fn is_aggregation_name(name: &[String]) -> bool {
     )
 }
 
-/// The supported scalar (non-aggregation) functions. Currently just
-/// `similar(...)`, drevo's joint graph+vector predicate (`00077`).
+/// The supported scalar (non-aggregation) functions: `similar(...)`,
+/// drevo's joint graph+vector predicate (`00077`), and `keywords(...)`,
+/// BM25-IDF keyword extraction (`00132`).
 fn is_scalar_function_name(name: &[String]) -> bool {
-    name.len() == 1 && name[0].eq_ignore_ascii_case("similar")
+    name.len() == 1
+        && (name[0].eq_ignore_ascii_case("similar") || name[0].eq_ignore_ascii_case("keywords"))
 }
 
 fn contains_aggregation(expr: &Expression) -> bool {
@@ -3010,10 +3012,11 @@ impl<'a> Executor<'a> {
 
     /// Dispatch a non-aggregation (scalar) function call.
     ///
-    /// Only `similar(...)` — drevo's joint graph+vector predicate — is
-    /// recognised today (`00077`). Every other name stays
-    /// [`ExecError::Unsupported`] so callers get a deterministic "not yet"
-    /// rather than a silent wrong answer.
+    /// Recognises `similar(...)` — drevo's joint graph+vector predicate
+    /// (`00077`) — and `keywords(...)` — BM25-IDF keyword extraction
+    /// (`00132`). Every other name stays [`ExecError::Unsupported`] so
+    /// callers get a deterministic "not yet" rather than a silent wrong
+    /// answer.
     fn eval_scalar_function(
         &self,
         name: &[String],
@@ -3024,11 +3027,93 @@ impl<'a> Executor<'a> {
         if name.len() == 1 && name[0].eq_ignore_ascii_case("similar") {
             return self.eval_similar(args, row, span);
         }
+        if name.len() == 1 && name[0].eq_ignore_ascii_case("keywords") {
+            return self.eval_keywords(args, row, span);
+        }
         Err(ExecError::Unsupported {
             feature: format!("function call `{}`", name.join(".")),
             task: "future Phase 10 follow-up".into(),
             span,
         })
+    }
+
+    /// Evaluate `keywords(text, k [, stem])` — the top-`k` salient terms of
+    /// `text`, ranked by term-frequency × BM25 IDF over the indexed corpus.
+    ///
+    /// Returns a `Value::List` of `Value::String`. An optional third boolean
+    /// argument enables Porter stemming (collapsing morphological variants);
+    /// it defaults to `false`.
+    ///
+    /// `NULL` propagation mirrors `similar(...)`: a `NULL` `text` (most
+    /// commonly a node that lacks the property) or a `NULL`/zero `k` yields
+    /// an **empty list**, not an error — so scanning a heterogeneous label
+    /// quietly skips rows with no text instead of aborting. This is also what
+    /// lets the intended faceted idiom
+    /// `MATCH (n) UNWIND keywords(n.body, 5) AS kw RETURN kw, count(*)`
+    /// behave well once the `UNWIND` clause is implemented (a separate
+    /// executor feature; `UNWIND` parses but is not yet executable). Wrong
+    /// argument *types* (non-string text, non-integer `k`, non-boolean stem
+    /// flag) are genuine errors ([`ExecError::InvalidFunctionCall`]).
+    fn eval_keywords(&self, args: &[Expression], row: &Bindings, span: Span) -> ExecResultT<Value> {
+        if args.len() != 2 && args.len() != 3 {
+            return Err(ExecError::InvalidFunctionCall {
+                name: "keywords".into(),
+                message: format!(
+                    "expected 2 or 3 arguments (text, k[, stem]), got {}",
+                    args.len()
+                ),
+                span,
+            });
+        }
+
+        let text = self.eval(&args[0], row)?;
+        let k = self.eval(&args[1], row)?;
+
+        // NULL text / k => no keywords (never an error).
+        let text = match text {
+            Value::Null => return Ok(Value::List(Vec::new())),
+            Value::String(s) => s,
+            other => {
+                return Err(ExecError::InvalidFunctionCall {
+                    name: "keywords".into(),
+                    message: format!("text argument must be a String, got {}", other.type_name()),
+                    span,
+                })
+            }
+        };
+        let k = match k {
+            Value::Null => 0,
+            // A negative count is meaningless; treat it as zero (empty list).
+            Value::Integer(i) => i.max(0) as usize,
+            other => {
+                return Err(ExecError::InvalidFunctionCall {
+                    name: "keywords".into(),
+                    message: format!("k argument must be an Integer, got {}", other.type_name()),
+                    span,
+                })
+            }
+        };
+
+        let stem = match args.get(2) {
+            None => false,
+            Some(expr) => match self.eval(expr, row)? {
+                Value::Null => false,
+                Value::Bool(b) => b,
+                other => {
+                    return Err(ExecError::InvalidFunctionCall {
+                        name: "keywords".into(),
+                        message: format!(
+                            "stem argument must be a Boolean, got {}",
+                            other.type_name()
+                        ),
+                        span,
+                    })
+                }
+            },
+        };
+
+        let terms = crate::fts::keywords::extract_keywords(self.drevo.backend(), &text, k, stem)?;
+        Ok(Value::List(terms.into_iter().map(Value::String).collect()))
     }
 
     /// Evaluate `similar(vector, query, threshold)` — `true` when the
@@ -5149,6 +5234,8 @@ mod tests {
         assert!(is_scalar_function_name(&["similar".to_string()]));
         assert!(is_scalar_function_name(&["SIMILAR".to_string()]));
         assert!(is_scalar_function_name(&["Similar".to_string()]));
+        assert!(is_scalar_function_name(&["keywords".to_string()]));
+        assert!(is_scalar_function_name(&["KEYWORDS".to_string()]));
         assert!(!is_scalar_function_name(&["count".to_string()]));
         assert!(!is_scalar_function_name(&["size".to_string()]));
         // A dotted name is never a built-in scalar function.
