@@ -120,6 +120,14 @@ with drevo.Drevo.open(path) as db:
         print(hit.similarity, hit.node.title)
 ```
 
+### Migrating from Neo4j
+
+Importing an existing Neo4j graph is **not** part of `drevo-py` — the
+database bindings know nothing about Neo4j. That lives in a separate,
+one-way-dependent tool, [`neo4j-to-drevo`](../tools/neo4j-to-drevo/),
+which depends on `drevo` and reads either an APOC JSON dump or a live
+Bolt connection. See its README for the dump → load workflow.
+
 ## Local Rust build
 
 `drevo-py` is intentionally **not** in `default-members` of the

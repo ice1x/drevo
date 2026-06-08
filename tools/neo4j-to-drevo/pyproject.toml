@@ -1,0 +1,66 @@
+# neo4j-to-drevo — standalone migration tool (task 00134).
+#
+# DELIBERATELY a separate package from `drevo-py`: the database and its
+# Python bindings (`drevo`) must know NOTHING about Neo4j. This tool
+# depends on `drevo` (it writes through the public bindings) — the
+# dependency points one way only. The `neo4j` driver is an optional
+# extra needed only for the live-Bolt source; the default offline
+# APOC-dump path is pure standard library.
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neo4j-to-drevo"
+version = "0.1.0"
+description = "Migrate a Neo4j graph (APOC dump or live Bolt) into a drevo database"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "drevo contributors", email = "noreply@ice1x.dev" }]
+keywords = ["neo4j", "drevo", "graph", "migration", "apoc"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
+# Core install needs only the drevo bindings; the offline APOC-dump path
+# is pure stdlib. The live-Bolt source pulls the official driver via the
+# `live` extra.
+dependencies = ["drevo-py"]
+
+[project.optional-dependencies]
+live = ["neo4j>=5,<6"]
+dev = ["pytest>=7", "mypy>=1.10", "ruff>=0.5", "black>=24", "faker>=24"]
+
+[project.scripts]
+neo4j-to-drevo = "neo4j_to_drevo.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ice1x/drevo"
+Repository = "https://github.com/ice1x/drevo"
+
+[tool.setuptools]
+packages = ["neo4j_to_drevo"]
+
+[tool.setuptools.package-data]
+neo4j_to_drevo = ["py.typed"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.black]
+target-version = ["py310", "py311", "py312", "py313"]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
