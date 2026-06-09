@@ -15,6 +15,20 @@
   <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"
           integrity="sha384-MZJgK7n7T0PSb7HxFXxk3PRfeWa6PrPiHsoGmYxsiRDOtNbtoSJ4Vy2dN6Bm6sPa"
           crossorigin="anonymous"></script>
+  <!--
+    Phase 15 task 00093 — kinetics. The fcose ("fast Compound Spring
+    Embedder") physics layout is a Cytoscape extension. Its UMD bundle
+    auto-registers against the global `cytoscape` as long as it loads
+    after the core, and it pulls in `cose-base` → `layout-base`, so the
+    three must load in dependency order: layout-base, cose-base, fcose.
+    All pinned by version, same CDN trust model as the core library.
+  -->
+  <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"
+          crossorigin="anonymous"></script>
 </head>
 <body>
   <header class="topbar">
@@ -37,8 +51,12 @@
       </ol>
     </aside>
 
-    <!-- Graph canvas: Cytoscape.js renders here. -->
-    <section class="graph-canvas" id="cy"></section>
+    <!-- Graph canvas: Cytoscape.js renders here. The tooltip is an
+         absolutely-positioned child that app.js moves + fills on
+         node hover (task 00093). -->
+    <section class="graph-canvas" id="cy">
+      <div id="cy-tooltip" class="cy-tooltip" role="tooltip" aria-hidden="true"></div>
+    </section>
 
     <!-- Right rail: node inspector. Shows when a node is clicked. -->
     <aside class="inspector" id="inspector">
@@ -53,7 +71,7 @@
 
   <footer class="statusbar" id="statusbar">
     <span id="status-text">Ready.</span>
-    <span class="hint">Tip: click a result to load its 2-hop subgraph.</span>
+    <span class="hint">Tip: click a result to load its 2-hop subgraph; double-click a node to expand its neighbours.</span>
   </footer>
 
   <script src="/ui/app.js"></script>
