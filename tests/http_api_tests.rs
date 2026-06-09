@@ -2670,3 +2670,115 @@ async fn get_export_graphml_empty_database_still_well_formed() {
     assert_eq!(xml.matches("<node ").count(), 0);
     assert_eq!(xml.matches("<edge ").count(), 0);
 }
+
+// ---------------------------------------------------------------
+// Keyword faceting endpoint (task 00133): GET /facets
+// ---------------------------------------------------------------
+
+#[tokio::test]
+async fn get_facets_requires_kind() {
+    let app = make_app();
+    let (status, body) = send(&app, "GET", "/facets", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("kind"));
+}
+
+#[tokio::test]
+async fn get_facets_groups_by_keyword_with_none_collapse() {
+    let app = make_app();
+    send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "A", "graph traversal")),
+    )
+    .await;
+    send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "B", "graph storage")),
+    )
+    .await;
+    send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "C", "vector search")),
+    )
+    .await;
+
+    let (status, body) = send(&app, "GET", "/facets?kind=note", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let facets = body["facets"].as_array().expect("facets array");
+    // "graph" appears in two documents, ranked first.
+    assert_eq!(facets[0]["facet"], "graph");
+    assert_eq!(facets[0]["count"], 2);
+}
+
+#[tokio::test]
+async fn get_facets_lexical_collapse_folds_variants() {
+    let app = make_app();
+    send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("entry", "Mon", "anxiety before work")),
+    )
+    .await;
+    send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("entry", "Tue", "lingering anxieties today")),
+    )
+    .await;
+
+    let (status, body) = send(&app, "GET", "/facets?kind=entry&collapse=lexical", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let facets = body["facets"].as_array().expect("facets array");
+    // anxiety / anxieties tie at one document each, so the representative is
+    // the alphabetically-first surface form; locate the facet by membership.
+    let theme = facets
+        .iter()
+        .find(|f| {
+            f["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m == "anxiety")
+        })
+        .expect("a facet containing 'anxiety'");
+    assert_eq!(theme["count"], 2);
+    let members: Vec<&str> = theme["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap())
+        .collect();
+    assert!(members.contains(&"anxieties"));
+    assert!(members.contains(&"anxiety"));
+}
+
+#[tokio::test]
+async fn get_facets_semantic_collapse_is_rejected_on_http() {
+    let app = make_app();
+    send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "A", "some body")),
+    )
+    .await;
+    let (status, body) = send(&app, "GET", "/facets?kind=note&collapse=semantic", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("embedder"));
+}
+
+#[tokio::test]
+async fn get_facets_unknown_collapse_mode_is_rejected() {
+    let app = make_app();
+    let (status, body) = send(&app, "GET", "/facets?kind=note&collapse=bogus", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("collapse"));
+}

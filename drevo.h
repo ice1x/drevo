@@ -50,6 +50,16 @@
 #define MAX_SEARCH_LIMIT 1000
 
 /**
+ * Default number of keywords extracted per node for faceting.
+ */
+#define DEFAULT_FACET_KEYWORDS 5
+
+/**
+ * Upper bound on the per-node keyword count for faceting.
+ */
+#define MAX_FACET_KEYWORDS 50
+
+/**
  * Maximum bytes carried in a single chunk (the 16-bit length field's
  * max value). Messages longer than this are split across multiple
  * chunks.
@@ -125,6 +135,28 @@
  * `FAILURE` response.
  */
 #define FAILURE 127
+
+/**
+ * Default trigram-set Jaccard threshold for [`FacetCollapse::Lexical`].
+ *
+ * `0.34` means two keywords merge on the trigram signal when about a third
+ * of their combined trigrams are shared — loose enough to fold a
+ * single-edit / transposition typo (e.g. *databse* ↔ *database*, Jaccard
+ * ≈ 0.38), tight enough that words sharing only a common prefix stay apart
+ * (*anxiety* ↔ *anxious*, Jaccard ≈ 0.2 — a synonym-ish pair that is the
+ * *semantic* axis's job, not the lexical one). Stemming (always applied in
+ * lexical mode) handles the morphological families regardless of this
+ * value.
+ */
+#define DEFAULT_TRIGRAM_THRESHOLD 0.34
+
+/**
+ * Default cosine threshold for [`FacetCollapse::Semantic`].
+ *
+ * `0.85` is a conservative synonym cutoff for unit-normalized sentence /
+ * word embeddings; lower it to merge more aggressively.
+ */
+#define DEFAULT_COSINE_THRESHOLD 0.85
 
 /**
  * A coarse default for the in-memory width of one result row, in bytes, used
