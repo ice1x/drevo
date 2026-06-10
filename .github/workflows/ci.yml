@@ -98,6 +98,19 @@ jobs:
   check:
     name: Check
     runs-on: self-hosted
+    # timeout-minutes (added 2026-06-10): GitHub's default job timeout is
+    # 360 minutes. On the single self-hosted runner, two concurrent CI
+    # runs' jobs share one `$CARGO_TARGET_DIR`, so a job can block on the
+    # cargo build-dir file lock held by a sibling job. Without an explicit
+    # cap such a job squats the runner for the full 6 hours before being
+    # killed (incident: PR #145's duplicate run — the `test` job hung at
+    # "Compiling drevo" for exactly 360m, starving every other PR). Each
+    # job now caps well above its observed legitimate runtime (Test/Clippy
+    # reach ~90min on this contended runner) but far below 360, so a
+    # lock-blocked or hung job fails fast and frees the runner instead of
+    # holding it for 6h. Locked by
+    # `tests/ci_self_hosted_runner_tests.rs::every_ci_job_declares_a_timeout`.
+    timeout-minutes: 90
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -117,6 +130,10 @@ jobs:
   test:
     name: Test
     runs-on: self-hosted
+    # See the `check` job for the rationale. 120 > the ~96min the full
+    # nextest suite can take on this contended runner; this is the job
+    # that hung for 360m in the PR #145 incident.
+    timeout-minutes: 120
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -195,6 +212,10 @@ jobs:
   clippy:
     name: Clippy
     runs-on: self-hosted
+    # See the `check` job rationale. Clippy compiles three feature sets
+    # (default + bolt-tls + bolt-auth) and has reached ~86min under
+    # contention; 120 leaves margin below the 360 default.
+    timeout-minutes: 120
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -226,6 +247,9 @@ jobs:
   fmt:
     name: Format
     runs-on: self-hosted
+    # See the `check` job rationale. `cargo fmt --check` does no compile;
+    # 20 min is generous slack over its few-second real runtime.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -253,6 +277,9 @@ jobs:
   k8s:
     name: K8s manifests
     runs-on: self-hosted
+    # See the `check` job rationale. Pure `kubectl kustomize` resolution,
+    # no compile; 20 min is ample.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: kubectl kustomize k8s/ (wrapper + base + overlays)
@@ -280,6 +307,8 @@ jobs:
   doc:
     name: Doc
     runs-on: self-hosted
+    # See the `check` job rationale.
+    timeout-minutes: 75
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -293,6 +322,9 @@ jobs:
   msrv:
     name: MSRV
     runs-on: self-hosted
+    # See the `check` job rationale. Two `cargo check`s (native +
+    # wasm32) on the MSRV toolchain.
+    timeout-minutes: 90
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -344,6 +376,9 @@ jobs:
     # CI annotation and let humans triage. The stable harness replay in
     # the `test` job remains a hard gate.
     continue-on-error: true
+    # See the `check` job rationale. cargo-fuzz install + 3×60s smoke
+    # targets; 45 min covers a cold from-source cargo-fuzz build on macOS.
+    timeout-minutes: 45
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
