@@ -2782,3 +2782,72 @@ async fn get_facets_unknown_collapse_mode_is_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"].as_str().unwrap().contains("collapse"));
 }
+
+// ── Phase 15 task 00093 — Web UI kinetics served over HTTP ───────────────
+
+/// Fetch a `/ui` asset over the real router and return `(status,
+/// content_type, body_text)`. The shared `send` helper assumes a JSON
+/// body, but the UI assets are HTML / JS / CSS, so this fetches raw text.
+async fn fetch_text(app: &axum::Router, uri: &str) -> (StatusCode, String, String) {
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .expect("build request");
+    let response = app.clone().oneshot(req).await.expect("router response");
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
+    (
+        status,
+        content_type,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+#[tokio::test]
+async fn ui_index_serves_fcose_kinetics_to_client() {
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/html"));
+    // The kinetics extensions reach the browser, version-pinned.
+    assert!(body.contains("cytoscape-fcose"));
+    assert!(body.contains("fcose@2."));
+    assert!(body.contains("id=\"cy-tooltip\""));
+}
+
+#[tokio::test]
+async fn ui_app_js_serves_kinetics_behaviours_to_client() {
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/app.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    // fcose layout + double-click expansion + dynamic colour + tooltips
+    // all reach the client in one bundle.
+    assert!(body.contains("name: \"fcose\""));
+    assert!(body.contains("expandNode"));
+    assert!(body.contains("subgraph?depth=1"));
+    assert!(body.contains("colorForKind"));
+    assert!(body.contains("cy-tooltip"));
+    assert!(!body.contains("concentric"));
+}
+
+#[tokio::test]
+async fn ui_styles_css_styles_tooltip_for_client() {
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/styles.css").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/css"));
+    assert!(body.contains("#cy-tooltip"));
+}

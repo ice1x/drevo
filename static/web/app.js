@@ -18,6 +18,13 @@
   let currentRootId = null;
   let lastResults = []; // Array of { node, score }
 
+  // Double-tap detection (task 00093): Cytoscape core emits no native
+  // double-tap, so we fold two taps on the same node within this many
+  // milliseconds into an "expand" gesture.
+  const DOUBLE_TAP_MS = 300;
+  let lastTapId = null;
+  let lastTapAt = 0;
+
   // ── DOM refs ────────────────────────────────────────────────────────
   const $form = document.getElementById("search-form");
   const $input = document.getElementById("search-input");
@@ -25,6 +32,36 @@
   const $serverInfo = document.getElementById("server-info");
   const $inspectorBody = document.getElementById("inspector-body");
   const $statusText = document.getElementById("status-text");
+  const $tooltip = document.getElementById("cy-tooltip");
+
+  // ── Dynamic node colour (task 00093) ────────────────────────────────
+  // A handful of common kinds get curated, semantically-suggestive
+  // colours; every other kind is hashed to a stable hue so any schema
+  // — CBT journal, story, tasks, ERP, bug tracker — gets distinct,
+  // repeatable node colours without a hard-coded palette per project.
+  const CURATED_KIND_COLORS = {
+    person: "#76e3a4",
+    project: "#f5a623",
+    task: "#bf6cf2",
+    bug: "#f56565",
+    entry: "#5bd1f9",
+    character: "#f9c95b",
+  };
+  /** Map an arbitrary `kind` string to a stable hex colour. */
+  function colorForKind(kind) {
+    const key = (kind || "").toLowerCase();
+    if (!key) return "#5b8df9"; // node-default (no kind)
+    if (CURATED_KIND_COLORS[key]) return CURATED_KIND_COLORS[key];
+    // FNV-1a-ish string hash → hue on the colour wheel. Fixed
+    // saturation/lightness keeps every colour legible on the dark canvas.
+    let h = 2166136261;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    const hue = Math.abs(h) % 360;
+    return `hsl(${hue}, 62%, 62%)`;
+  }
 
   // ── HTTP helpers ────────────────────────────────────────────────────
   async function apiGet(path) {
@@ -70,18 +107,42 @@
     }
   }
 
+  // ── Layout (task 00093) ────────────────────────────────────────────
+  // fcose = "fast Compound Spring Embedder": a force-directed physics
+  // layout that spreads nodes organically and animates into place.
+  // `randomize: false` reuses current positions on re-runs so an
+  // incremental expand nudges the graph rather than reshuffling it.
+  function fcoseOptions(animate) {
+    return {
+      name: "fcose",
+      animate: animate !== false,
+      animationDuration: 500,
+      randomize: false,
+      fit: true,
+      padding: 28,
+      nodeRepulsion: 6500,
+      idealEdgeLength: 90,
+      nestingFactor: 0.1,
+    };
+  }
+  function runLayout(animate) {
+    if (!cy) return;
+    cy.layout(fcoseOptions(animate)).run();
+  }
+
   // ── Cytoscape init ─────────────────────────────────────────────────
   function initCytoscape() {
     cy = cytoscape({
       container: document.getElementById("cy"),
-      // Conservative defaults — Phase 15 task 00093 will replace this
-      // with fcose physics + dynamic colours + tooltips.
-      layout: { name: "concentric", animate: false, padding: 24 },
+      layout: fcoseOptions(false),
       style: [
         {
           selector: "node",
           style: {
-            "background-color": "#5b8df9",
+            // Dynamic colour: every distinct `kind` gets a stable hue
+            // via colorForKind, so the palette is no longer capped at a
+            // few hard-coded selectors.
+            "background-color": (ele) => colorForKind(ele.data("kind")),
             label: "data(title)",
             color: "#d9dde7",
             "text-valign": "bottom",
@@ -91,23 +152,21 @@
             height: 28,
             "border-width": 1,
             "border-color": "#0f1115",
+            "transition-property": "background-color, border-color, width, height",
+            "transition-duration": "160ms",
           },
-        },
-        {
-          selector: 'node[kind="person"]',
-          style: { "background-color": "#76e3a4" },
-        },
-        {
-          selector: 'node[kind="project"]',
-          style: { "background-color": "#f5a623" },
-        },
-        {
-          selector: 'node[kind="task"]',
-          style: { "background-color": "#bf6cf2" },
         },
         {
           selector: "node.root",
           style: { "border-width": 3, "border-color": "#76e3a4" },
+        },
+        {
+          selector: "node.expanded",
+          style: { "border-color": "#5b8df9" },
+        },
+        {
+          selector: "node:selected",
+          style: { "border-width": 3, "border-color": "#f5f7ff" },
         },
         {
           selector: "edge",
@@ -127,8 +186,20 @@
       wheelSensitivity: 0.2,
     });
 
+    // Single tap → inspect; double tap (same node, within the threshold)
+    // → expand its 1-hop neighbourhood.
     cy.on("tap", "node", (evt) => {
       const node = evt.target;
+      const id = node.id();
+      const now = evt.timeStamp || Date.now();
+      if (lastTapId === id && now - lastTapAt < DOUBLE_TAP_MS) {
+        lastTapId = null;
+        lastTapAt = 0;
+        expandNode(node);
+        return;
+      }
+      lastTapId = id;
+      lastTapAt = now;
       renderInspector(node.data("raw"));
     });
     cy.on("tap", (evt) => {
@@ -136,6 +207,69 @@
         clearInspector();
       }
     });
+
+    // Hover tooltips (task 00093): show title + kind + id near the node.
+    cy.on("mouseover", "node", (evt) => showTooltip(evt.target));
+    cy.on("mousemove", "node", (evt) => positionTooltip(evt.target));
+    cy.on("mouseout", "node", () => hideTooltip());
+    cy.on("pan zoom drag", () => hideTooltip());
+  }
+
+  // ── Tooltips (task 00093) ──────────────────────────────────────────
+  function showTooltip(node) {
+    if (!$tooltip) return;
+    const raw = node.data("raw") || {};
+    const title = raw.title || node.data("title") || `#${node.id()}`;
+    const kind = raw.kind || node.data("kind") || "(no kind)";
+    $tooltip.innerHTML = "";
+    const t = document.createElement("div");
+    t.className = "cy-tooltip-title";
+    t.textContent = title;
+    const k = document.createElement("div");
+    k.className = "cy-tooltip-kind";
+    k.textContent = `${kind} · id ${node.id()}`;
+    $tooltip.appendChild(t);
+    $tooltip.appendChild(k);
+    $tooltip.setAttribute("aria-hidden", "false");
+    $tooltip.classList.add("visible");
+    positionTooltip(node);
+  }
+  function positionTooltip(node) {
+    if (!$tooltip || !$tooltip.classList.contains("visible")) return;
+    const p = node.renderedPosition();
+    // Offset above-right of the node; the canvas is the offset parent.
+    $tooltip.style.left = `${Math.round(p.x + 14)}px`;
+    $tooltip.style.top = `${Math.round(p.y - 10)}px`;
+  }
+  function hideTooltip() {
+    if (!$tooltip) return;
+    $tooltip.classList.remove("visible");
+    $tooltip.setAttribute("aria-hidden", "true");
+  }
+
+  // ── Double-click expansion (task 00093) ────────────────────────────
+  // Fetch the clicked node's 1-hop neighbourhood and merge it into the
+  // current canvas, growing the graph incrementally instead of
+  // replacing it the way a results-list click does.
+  async function expandNode(node) {
+    const nodeId = node.data("raw") ? node.data("raw").id : Number(node.id());
+    hideTooltip();
+    status(`Expanding neighbours of node ${nodeId}…`);
+    try {
+      const sub = await apiGet(`/nodes/${nodeId}/subgraph?depth=1`);
+      const added = mergeSubgraph(sub);
+      node.addClass("expanded");
+      runLayout(true);
+      cy.fit(undefined, 28);
+      status(
+        added === 0
+          ? `Node ${nodeId} has no new neighbours.`
+          : `Expanded node ${nodeId}: +${added} new element${added === 1 ? "" : "s"}.`,
+        "ok"
+      );
+    } catch (e) {
+      status(`Expand failed: ${e.message}`, "error");
+    }
   }
 
   // ── FTS search ──────────────────────────────────────────────────────
@@ -213,9 +347,8 @@
   }
 
   // ── Cytoscape rendering ────────────────────────────────────────────
-  function renderSubgraph(subgraph, rootId) {
-    if (!cy) return;
-    cy.elements().remove();
+  // Map a wire subgraph to Cytoscape element descriptors.
+  function toElements(subgraph, rootId) {
     const nodes = (subgraph.nodes || []).map((n) => ({
       group: "nodes",
       data: {
@@ -236,10 +369,33 @@
         raw: e,
       },
     }));
+    return { nodes, edges };
+  }
+
+  // Replace the canvas with a fresh subgraph (results-list click).
+  function renderSubgraph(subgraph, rootId) {
+    if (!cy) return;
+    cy.elements().remove();
+    const { nodes, edges } = toElements(subgraph, rootId);
     cy.add(nodes);
     cy.add(edges);
-    cy.layout({ name: "concentric", animate: false, padding: 24 }).run();
-    cy.fit(undefined, 24);
+    runLayout(true);
+    cy.fit(undefined, 28);
+  }
+
+  // Merge a subgraph into the existing canvas (double-click expand),
+  // skipping elements already present. Returns the count added.
+  function mergeSubgraph(subgraph) {
+    if (!cy) return 0;
+    const { nodes, edges } = toElements(subgraph, currentRootId);
+    let added = 0;
+    for (const el of [...nodes, ...edges]) {
+      if (cy.getElementById(el.data.id).empty()) {
+        cy.add(el);
+        added++;
+      }
+    }
+    return added;
   }
 
   // ── Inspector ──────────────────────────────────────────────────────

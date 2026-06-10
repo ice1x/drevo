@@ -157,4 +157,107 @@ mod tests {
         assert!(STYLES_CSS.contains(".layout"));
         assert!(STYLES_CSS.contains("grid-template-columns"));
     }
+
+    // ── Phase 15 task 00093 — Web UI kinetics ────────────────────────────
+
+    #[test]
+    fn embedded_index_loads_fcose_layout_extension() {
+        // fcose physics layout is a Cytoscape extension; it (and its
+        // `cose-base` / `layout-base` deps) must be loaded from a pinned
+        // CDN after the core library, otherwise `layout: { name: "fcose" }`
+        // throws "No such layout `fcose` found".
+        assert!(
+            INDEX_HTML.contains("cytoscape-fcose"),
+            "index.html must load the cytoscape-fcose extension"
+        );
+        assert!(
+            INDEX_HTML.contains("fcose@2."),
+            "cytoscape-fcose must be version-pinned (e.g. fcose@2.X.Y) in the CDN URL"
+        );
+        // fcose depends on cose-base which depends on layout-base — both
+        // must be present and ordered before the extension.
+        assert!(
+            INDEX_HTML.contains("cose-base") && INDEX_HTML.contains("layout-base"),
+            "cytoscape-fcose needs cose-base + layout-base loaded first"
+        );
+    }
+
+    #[test]
+    fn embedded_index_has_tooltip_container() {
+        // The hover tooltip is a single absolutely-positioned element
+        // that app.js moves + fills on `mouseover`.
+        assert!(
+            INDEX_HTML.contains("id=\"cy-tooltip\""),
+            "index.html must contain the #cy-tooltip element app.js drives"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_uses_fcose_layout() {
+        // The graph must lay out with fcose physics, not the old
+        // static `concentric` arrangement.
+        assert!(
+            APP_JS.contains("name: \"fcose\""),
+            "app.js must run the fcose layout"
+        );
+        // The legacy concentric layout must be gone so we don't ship two
+        // competing layout calls.
+        assert!(
+            !APP_JS.contains("concentric"),
+            "the placeholder concentric layout must be replaced by fcose"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_double_click_expands_node() {
+        // Double-clicking a node fetches its 1-hop neighbourhood and
+        // merges it into the existing graph (incremental expansion),
+        // rather than replacing the whole canvas like a result click.
+        assert!(
+            APP_JS.contains("expandNode"),
+            "app.js must define an expandNode handler"
+        );
+        assert!(
+            APP_JS.contains("subgraph?depth=1"),
+            "expandNode must request the 1-hop subgraph for incremental growth"
+        );
+        // Cytoscape core has no native double-tap; a manual detector
+        // keyed off a time threshold is the documented pattern.
+        assert!(
+            APP_JS.contains("DOUBLE_TAP_MS"),
+            "app.js must implement double-tap detection via a time threshold"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_colors_nodes_dynamically() {
+        // Node colour is derived from `kind` for *any* kind, not just
+        // the three hard-coded selectors — a hash-to-hue function gives
+        // every distinct kind a stable, distinguishable colour.
+        assert!(
+            APP_JS.contains("colorForKind"),
+            "app.js must derive node colour dynamically from kind"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_shows_tooltips() {
+        // Hovering a node reveals a tooltip; leaving hides it.
+        assert!(
+            APP_JS.contains("mouseover") && APP_JS.contains("mouseout"),
+            "app.js must wire mouseover/mouseout tooltip handlers"
+        );
+        assert!(
+            APP_JS.contains("cy-tooltip"),
+            "app.js must drive the #cy-tooltip element"
+        );
+    }
+
+    #[test]
+    fn embedded_styles_css_styles_tooltip() {
+        assert!(
+            STYLES_CSS.contains("#cy-tooltip"),
+            "styles.css must style the #cy-tooltip element"
+        );
+    }
 }
