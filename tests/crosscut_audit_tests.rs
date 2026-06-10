@@ -260,3 +260,49 @@ fn no_unwrap_or_expect_in_library_source() {
             .join("\n"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Build-profile compile-time optimisation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cargo_toml_dev_profile_trims_debuginfo() {
+    // The default `dev` profile emits full debuginfo (`debug = 2`); on macOS
+    // that adds a per-binary `dsymutil` link step, and with ~25 integration
+    // test binaries it made the `Test` CI job spend most of its time
+    // generating + linking debuginfo rather than running tests (the single
+    // self-hosted runner serialised that cost into multi-hour jobs). The root
+    // manifest must pin `[profile.dev] debug` below full (`0`, `1`, "none",
+    // or "line-tables-only") so every cargo invocation — CI and local —
+    // compiles + links faster. `debug = 1` keeps `file:line` in backtraces.
+    let manifest = read("Cargo.toml");
+
+    // Extract the `[profile.dev]` section body (until the next `[` table).
+    let start = manifest.find("[profile.dev]").expect(
+        "Cargo.toml must declare `[profile.dev]` with a reduced `debug` level — see the \
+                 compile-time rationale comment in Cargo.toml",
+    );
+    let after = &manifest[start + "[profile.dev]".len()..];
+    let body_end = after.find("\n[").unwrap_or(after.len());
+    let body = &after[..body_end];
+
+    let debug_line = body
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim()) // strip inline comments
+        .find(|l| l.starts_with("debug"))
+        .expect("[profile.dev] must set a `debug = ...` key (reduced from the full default)");
+    let value = debug_line
+        .split('=')
+        .nth(1)
+        .map(str::trim)
+        .expect("`debug` must have a value");
+
+    // Reject the full-debuginfo settings; accept any reduced level.
+    let is_full = value == "2" || value == "true" || value == "\"full\"";
+    assert!(
+        !is_full,
+        "[profile.dev] debug = {value} is full debuginfo — that is the slow default this guard \
+         exists to prevent. Use `debug = 1` (line tables) or `0`/\"none\" to keep CI compile + \
+         link fast on the self-hosted runner."
+    );
+}
