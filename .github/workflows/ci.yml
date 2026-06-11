@@ -130,10 +130,14 @@ jobs:
   test:
     name: Test
     runs-on: self-hosted
-    # See the `check` job for the rationale. 120 > the ~96min the full
-    # nextest suite can take on this contended runner; this is the job
-    # that hung for 360m in the PR #145 incident.
-    timeout-minutes: 120
+    # See the `check` job for the rationale. Measured: the full nextest
+    # run alone (compile + ~2000 tests across 25 binaries) consumed ~95min
+    # and was still cut off at a 120m cap on a contended cold run, so 120
+    # was too tight for this job's legitimate worst case. 180 lets a cold
+    # full run finish while still capping a true hang at 3h (vs the 6h
+    # default that bit PR #145). The 24min cargo-nextest *install* that
+    # used to eat into this budget is fixed by the cached-install step below.
+    timeout-minutes: 180
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -171,9 +175,25 @@ jobs:
       #
       # The invariant "this step MUST NOT pass `--all-targets`" is
       # locked by `tests/ci_self_hosted_runner_tests.rs::ci_yml_test_job_does_not_run_benches`.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
+      # Install cargo-nextest, cached on the self-hosted runner.
+      # `taiki-e/install-action@v2` was observed taking ~24 min on a
+      # contended run (it re-resolves / re-verifies every invocation),
+      # which dominated the `Test` job's wall-clock. The self-hosted
+      # runner persists `$HOME/.cargo/bin` between runs, so a `command -v`
+      # guard around the official `get.nexte.st` tarball makes every run
+      # after the first a sub-second no-op — same pattern the `fuzz` job
+      # already uses for `cargo-fuzz`. The download URL is selected by
+      # `$RUNNER_OS` so a future Linux self-hosted runner keeps working.
+      - name: Install cargo-nextest (cached on self-hosted runner)
+        run: |
+          if command -v cargo-nextest >/dev/null 2>&1; then
+            echo "cargo-nextest already installed: $(cargo-nextest --version)"
+          else
+            url="https://get.nexte.st/latest/mac"
+            [ "$RUNNER_OS" = "Linux" ] && url="https://get.nexte.st/latest/linux"
+            curl -LsSf "$url" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+            echo "installed cargo-nextest: $(cargo-nextest --version)"
+          fi
       # Task `00129` re-enabled the slow integration-test binaries on the PR
       # path: the temporary `ci-fast` nextest profile (and `.config/nextest.toml`)
       # is gone, so this default-profile run exercises every test binary —
