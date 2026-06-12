@@ -72,15 +72,22 @@
 
 name: Python CI matrix
 
+# PR-trigger removed 2026-06-10 (CI runner-contention fix): this
+# cibuildwheel matrix is the intrinsically heaviest Python gate (it
+# builds + tests a wheel per platform, pulling the manylinux container
+# for the Linux cell). On the single self-hosted runner it serialised
+# behind every other PR job, and it duplicates the lint/test gate that
+# the lighter `python-ci.yml` already runs on every PR (same
+# pytest/mypy/ruff/black steps via `maturin develop`). So the matrix
+# now runs only on `push:main` + `workflow_dispatch`, exactly like the
+# already-de-PR-triggered `python-wheels.yml` / `docker-publish.yml` /
+# `cross-compile.yml` — the established pattern in the "Active CI
+# operations note" of README.md. PR Python coverage is unchanged
+# (python-ci.yml still gates every PR); what a PR loses is the
+# pre-merge *Linux-wheel-build* check, which is recovered on `push:main`
+# and on the nightly `python-wheels.yml`. Locked by
+# `tests/python_ci_matrix_tests.rs::python_ci_matrix_does_not_run_on_pull_request`.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'drevo-py/**'
-      - '.github/workflows/python.yml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'src/**'
   push:
     branches: [main]
     paths:

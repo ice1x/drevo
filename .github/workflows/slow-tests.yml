@@ -83,6 +83,17 @@ jobs:
     runs-on: self-hosted
     # Advisory, not gating. See header comment.
     continue-on-error: true
+    # timeout-minutes (added 2026-06-11): without it this job inherited
+    # GitHub's 360-min default and ALWAYS hit it — the old 4-step job
+    # (full suite + compaction cells + --all-features doctests + 30-min
+    # soak) exceeded 6h on the contended single runner, so every nightly
+    # run ended in `cancelled` with no signal while squatting the runner
+    # ~6h (plus hours of queue). After trimming to just the ignored-only
+    # steps below (full suite + doctests are already covered by ci.yml's
+    # PR `test` job since 00129, so they were pure redundant defence-in-
+    # depth that never even completed), the job finishes in well under an
+    # hour; 90 is generous headroom and a hard backstop against a hang.
+    timeout-minutes: 90
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -101,16 +112,31 @@ jobs:
       # target/ on local disk; the GHA-cache restore would replace
       # fresher local state with an older snapshot.
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
+      # Cached cargo-nextest install (same as ci.yml's Test job): the
+      # taiki-e action was observed re-resolving for ~24 min on a
+      # contended run; the runner persists $HOME/.cargo/bin, so guard the
+      # official get.nexte.st tarball behind `command -v`.
+      - name: Install cargo-nextest (cached on self-hosted runner)
+        run: |
+          if command -v cargo-nextest >/dev/null 2>&1; then
+            echo "cargo-nextest already installed: $(cargo-nextest --version)"
+          else
+            url="https://get.nexte.st/latest/mac"
+            [ "$RUNNER_OS" = "Linux" ] && url="https://get.nexte.st/latest/linux"
+            curl -LsSf "$url" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+            echo "installed cargo-nextest: $(cargo-nextest --version)"
+          fi
 
-      # Full default-profile run. Since task 00129 removed the `ci-fast`
-      # profile, ci.yml's PR `test` job already runs this same set on every
-      # PR; this scheduled run is now defence-in-depth (a quiet, uncontended
-      # host) rather than the only home for the previously-gated binaries.
-      - name: cargo nextest run --no-fail-fast (default profile)
-        run: cargo nextest run --no-fail-fast
+      # NOTE (2026-06-11): the full default-profile run and the
+      # `cargo test --doc --all-features` step that used to live here were
+      # removed. ci.yml's PR `test` job already runs both on every PR
+      # (since task 00129 dropped the `ci-fast` profile), so re-running
+      # them nightly was pure redundant defence-in-depth — and together
+      # with the soak below they pushed this job past the 6h job timeout,
+      # so it ALWAYS ended `cancelled` and never produced a signal while
+      # squatting the runner for ~6h. This job now runs ONLY the work that
+      # has no PR home: the `#[ignore]`d heavy compaction cells and the
+      # agentic-workload soak.
 
       # The two heaviest redb-churn compaction cells are `#[ignore]`d so they
       # stay off the serialised PR path (task 00129). `--run-ignored
@@ -122,10 +148,6 @@ jobs:
       # `tests/ci_self_hosted_runner_tests.rs`.
       - name: Heavy redb compaction cells (ignored on PR path — task 00129)
         run: cargo nextest run --run-ignored ignored-only --no-fail-fast -E 'binary(compaction_tests)'
-
-      # Doctests are not run by nextest; mirror ci.yml's coverage.
-      - name: cargo test --doc --all-features
-        run: cargo test --doc --all-features
 
       # Phase 10.5 task 00123 — layer-1 agentic workload baseline.
       # `#[ignore]` by default so it never touches the PR path; this

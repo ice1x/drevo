@@ -1417,3 +1417,70 @@ fn slow_tests_yml_runs_the_ignored_compaction_cells() {
          path would never run in any CI job (task 00129 path c)."
     );
 }
+
+#[test]
+fn every_ci_job_declares_a_timeout() {
+    // Incident 2026-06-10 (PR #145 duplicate run): the `test` job hung at
+    // "Compiling drevo" — blocked on the cargo build-dir lock held by a
+    // concurrent job sharing the same `$CARGO_TARGET_DIR` — and, with no
+    // explicit `timeout-minutes`, squatted the single self-hosted runner
+    // for GitHub's full 360-minute default before being killed, starving
+    // every other PR. Every job in ci.yml must declare an explicit
+    // `timeout-minutes` strictly below 360 so a lock-blocked or hung job
+    // fails fast and frees the runner.
+    let ci_yml = workflows_dir().join("ci.yml");
+    let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
+    let lines: Vec<&str> = body.lines().collect();
+
+    // Find the `jobs:` section, then each job is a key indented exactly
+    // two spaces (`  check:`). A job block runs until the next two-space
+    // key or EOF; it must contain a `timeout-minutes:` line.
+    let jobs_start = lines
+        .iter()
+        .position(|l| l.trim_end() == "jobs:")
+        .expect("ci.yml must have a top-level `jobs:` section");
+
+    // Collect (job_name, start_line_index) for every two-space-indented key.
+    let mut jobs: Vec<(String, usize)> = Vec::new();
+    for (idx, line) in lines.iter().enumerate().skip(jobs_start + 1) {
+        let is_two_space_key = line.starts_with("  ")
+            && !line.starts_with("   ")
+            && line.trim_end().ends_with(':')
+            && !line.trim_start().starts_with('#');
+        if is_two_space_key {
+            jobs.push((line.trim().trim_end_matches(':').to_string(), idx));
+        }
+    }
+    assert!(
+        jobs.len() >= 5,
+        "expected to parse several jobs from ci.yml, found {} — parser likely \
+         broke against a workflow reformat",
+        jobs.len()
+    );
+
+    for (i, (name, start)) in jobs.iter().enumerate() {
+        let end = jobs.get(i + 1).map(|(_, s)| *s).unwrap_or(lines.len());
+        let block = &lines[*start..end];
+        let timeout_line = block
+            .iter()
+            .find(|l| l.trim_start().starts_with("timeout-minutes:"));
+        let timeout_line = timeout_line.unwrap_or_else(|| {
+            panic!(
+                "ci.yml job `{name}` MUST declare `timeout-minutes:` — without \
+                 it the job inherits GitHub's 360-minute default and can squat \
+                 the single self-hosted runner for 6h on a build-lock hang (see \
+                 the PR #145 incident in this test's comment)."
+            )
+        });
+        let value: u32 = timeout_line
+            .split(':')
+            .nth(1)
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or_else(|| panic!("ci.yml job `{name}` has an unparseable timeout-minutes"));
+        assert!(
+            value < 360,
+            "ci.yml job `{name}` timeout-minutes={value} must be < 360 (the \
+             default) — the whole point is to cap below the 6h ceiling"
+        );
+    }
+}

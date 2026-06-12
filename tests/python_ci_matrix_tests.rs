@@ -80,15 +80,24 @@ fn python_ci_matrix_workflow_exists() {
 // ── 2. Triggers ────────────────────────────────────────────────────────
 
 #[test]
-fn python_ci_matrix_runs_on_every_pr() {
+fn python_ci_matrix_does_not_run_on_pull_request() {
+    // CI runner-contention fix (2026-06-10): the cibuildwheel matrix is
+    // the intrinsically heaviest Python gate (a wheel build + test per
+    // platform, manylinux container pull for Linux) and on the single
+    // self-hosted runner it serialised behind every other PR job while
+    // duplicating the lint/test gate the lighter `python-ci.yml` already
+    // runs on every PR. So the matrix moved OFF the PR path to
+    // `push:main` + `workflow_dispatch`, mirroring the already-de-PR-
+    // triggered `python-wheels.yml` / `docker-publish.yml` /
+    // `cross-compile.yml`. PR Python coverage is preserved by
+    // `python-ci.yml` (locked by
+    // `python_package_wheels_tests.rs::python_ci_workflow_runs_full_lint_and_test_gate`).
     let wf = read_workflow();
     assert!(
-        wf.contains("pull_request:"),
-        "python.yml must include a `pull_request:` trigger",
-    );
-    assert!(
-        wf.contains("branches: [main]") || wf.contains("- main"),
-        "python.yml `pull_request:` must target `main`",
+        !wf.contains("pull_request:"),
+        "python.yml must NOT include a `pull_request:` trigger — the heavy \
+         cibuildwheel matrix is gated off the PR path to keep the single \
+         self-hosted runner free; the lighter `python-ci.yml` is the PR gate",
     );
 }
 

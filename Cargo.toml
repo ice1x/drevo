@@ -25,6 +25,32 @@ members = [".", "drevo-py"]
 default-members = ["."]
 resolver = "2"
 
+# --- Build profiles ----------------------------------------------------------
+#
+# CI compile-time optimisation (and a local-dev win too). The default `dev`
+# profile emits FULL debuginfo (`debug = 2`); on macOS that triggers a
+# per-binary `dsymutil` pass (`split-debuginfo = "unpacked"`). With ~25
+# integration-test binaries (each `tests/*.rs` links its own binary) the
+# `Test` CI job spent most of its wall-clock *generating + linking debuginfo*,
+# not running tests — and the single self-hosted runner made that the
+# dominant, serialised cost (multi-hour `Test` jobs). `debug = 1` keeps line
+# tables — so panics / backtraces still carry `file:line` — while dropping the
+# expensive type/variable debuginfo, cutting compile + link time materially
+# across every cargo invocation. `[profile.test]` inherits from `dev`, so the
+# unit + integration builds get it too; `[profile.bench]` (release-derived) is
+# untouched, so criterion still measures an optimised binary.
+#
+# Why here and not a CI env var: five workflows
+# (ci / slow-tests / bench / cross-compile / python-ci) share ONE persistent
+# `$CARGO_TARGET_DIR` on the runner. A per-workflow `RUSTFLAGS`/profile flag
+# would give each a different build fingerprint, so they would thrash the
+# shared cache — rebuilding the whole graph from scratch on every alternation.
+# A workspace profile is the single source of truth every cargo invocation
+# honours identically, on CI and locally. Locked by
+# `tests/crosscut_audit_tests.rs::cargo_toml_dev_profile_trims_debuginfo`.
+[profile.dev]
+debug = 1  # line tables only — keeps backtrace file:line, drops full debuginfo
+
 [package]
 name = "drevo"
 version = "0.1.0"
