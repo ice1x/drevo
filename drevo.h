@@ -233,6 +233,17 @@ typedef struct BoltVersion BoltVersion;
 typedef struct Drevo Drevo;
 
 /**
+ * A log sequence number — a strictly increasing identifier stamped on every
+ * [`WalRecord`].
+ *
+ * [`Lsn::ZERO`] is the sentinel for "no record yet": a freshly created log
+ * has [`WriteAheadLog::last_lsn`] equal to `ZERO`, and a freshly created
+ * replica has applied up to `ZERO`. The first appended record is
+ * [`Lsn`]`(1)`.
+ */
+typedef struct Lsn Lsn;
+
+/**
  * Opaque handle exposed to C consumers.
  */
 typedef struct Drevo drevo_t;
@@ -257,6 +268,8 @@ typedef uint64_t Xid;
  * real transaction can never collide with it.
  */
 #define INVALID_XID 0
+
+
 
 /**
  * Open a disk-backed database at the given path.
