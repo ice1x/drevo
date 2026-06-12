@@ -122,7 +122,7 @@ jobs:
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
-        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-${{ github.job }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check --all-targets
@@ -130,14 +130,20 @@ jobs:
   test:
     name: Test
     runs-on: self-hosted
-    # See the `check` job for the rationale. Measured: the full nextest
-    # run alone (compile + ~2000 tests across 25 binaries) consumed ~95min
-    # and was still cut off at a 120m cap on a contended cold run, so 120
-    # was too tight for this job's legitimate worst case. 180 lets a cold
-    # full run finish while still capping a true hang at 3h (vs the 6h
-    # default that bit PR #145). The 24min cargo-nextest *install* that
-    # used to eat into this budget is fixed by the cached-install step below.
-    timeout-minutes: 180
+    # See the `check` job for the rationale. MEASURED ROOT CAUSE: the
+    # *test execution* is fast — all 2857 tests run in ~18 min
+    # (`nextest` reported `1069s`). The multi-hour `Test` step was almost
+    # entirely COMPILATION: every run cold-rebuilt the 104 test binaries
+    # because all ci.yml jobs shared one `$CARGO_TARGET_DIR` and compile
+    # in mutually-incompatible modes (cargo check vs clippy-driver vs
+    # rustdoc vs the MSRV toolchain), so each job invalidated the next
+    # job's cache. The per-job `-${{ github.job }}` target dir above fixes
+    # that: `Test` now keeps its own warm cache across runs, so after a
+    # one-time cold warm-up a typical PR only does an incremental
+    # build + the ~18-min run (~30-60 min total). 240 is sized to let
+    # that ONE cold warm-up complete (cold compile + run) and populate the
+    # isolated cache; it still caps a true hang well under the 6h default.
+    timeout-minutes: 240
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -149,7 +155,7 @@ jobs:
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
-        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-${{ github.job }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       # nextest runs the integration + unit test suite ~2-3x faster than
@@ -247,7 +253,7 @@ jobs:
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
-        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-${{ github.job }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -356,7 +362,7 @@ jobs:
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
-        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-${{ github.job }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - id: msrv
         run: |
@@ -410,7 +416,7 @@ jobs:
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
-        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-${{ github.job }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       # No Swatinem — job-level `CARGO_TARGET_DIR` above persists
