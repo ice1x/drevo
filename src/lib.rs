@@ -54,6 +54,16 @@
 /// [`db::Drevo`] calls. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
 pub mod api;
+/// Authorization & role-based access control — Phase 15 task `00094`. A
+/// dependency-free, always-compiled RBAC engine: [`authz::Action`]s scoped by
+/// [`authz::Scope`], bundled into reusable [`authz::Role`]s (with inheritance
+/// and `reader`/`editor`/`admin` presets), evaluated by the
+/// [`authz::AccessPolicy`] engine under deny-overrides, closed-world semantics
+/// into an authorization [`authz::Decision`]. The authorization half that
+/// pairs with the Bolt authentication layer ([`bolt::auth`], task `00074`).
+/// Keeps its own [`authz::AuthzError`] channel; not yet wired into the
+/// executor / HTTP API / Bolt session. WASM-safe.
+pub mod authz;
 /// Bolt wire protocol — Phase 11. Task `00070` ships the bytes-on-the-
 /// wire layer (PackStream codec, chunked framing, handshake + async
 /// TCP listener). The session layer (HELLO / RUN / PULL / DISCARD /
