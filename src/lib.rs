@@ -131,6 +131,15 @@ pub mod planner;
 /// (`MATCH (n {prop: value})`) into an `O(matches)` prefix scan instead of
 /// an `O(N)` full-node scan. Queried via [`db::Drevo::nodes_by_property`].
 pub mod property_index;
+/// Phase 15 task `00095` — WAL-based MAIN / REPLICA replication. A
+/// [`replication::Primary`] tees every write into a
+/// [`replication::WriteAheadLog`] of [`replication::WalRecord`]s (each stamped
+/// with a monotonic [`replication::Lsn`]); read-only
+/// [`replication::Replica`] followers replay that log in order to serve scaled
+/// reads. Dependency-free, always compiled, WASM-safe; keeps its own
+/// [`replication::ReplicationError`] channel and is not yet wired into the
+/// executor / HTTP / Bolt request path.
+pub mod replication;
 #[cfg(feature = "http")]
 pub mod server;
 pub mod storage;
