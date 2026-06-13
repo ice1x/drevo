@@ -31,6 +31,13 @@
 //!   [`ErrorPolicy`](crate::streaming::ErrorPolicy), tracking offsets for
 //!   at-least-once, idempotent ingestion and routing un-ingestable messages to
 //!   a [`DeadLetter`](crate::streaming::DeadLetter) queue.
+//! * [`SchemaMap`](crate::streaming::SchemaMap) (task `00097`) — the
+//!   change-data-capture bridge: decode the wal2json output of a Postgres
+//!   logical-replication slot into [`CdcChange`](crate::streaming::CdcChange)s
+//!   and map each relational row change into the
+//!   [`IngestEvent`](crate::streaming::IngestEvent)s above under a declarative
+//!   per-table [`TableMapping`](crate::streaming::TableMapping). The produced
+//!   events feed the consumer above unchanged.
 //!
 //! # The ingestion loop
 //!
@@ -64,12 +71,16 @@
 //! keeps its own [`StreamError`](crate::streaming::StreamError) channel rather
 //! than widening the crate-wide `DrevoError`.
 
+mod cdc;
 mod consumer;
 mod error;
 mod event;
 mod sink;
 mod source;
 
+pub use cdc::{
+    CdcChange, CdcError, ChangeOp, ForeignKey, PropertyColumns, SchemaMap, TableMapping,
+};
 pub use consumer::{DeadLetter, ErrorPolicy, IngestConsumer, IngestReport};
 pub use error::{Result, StreamError};
 pub use event::{EntityKey, EventProperties, IngestEvent};
