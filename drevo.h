@@ -218,6 +218,12 @@
 #define MIN_SUPERNODE_THRESHOLD 100
 
 /**
+ * The default batch size used by [`IngestConsumer::new`] when none is
+ * specified.
+ */
+#define IngestConsumer_DEFAULT_BATCH_SIZE 256
+
+/**
  * A negotiated Bolt protocol version: `major.minor`. Wire format is
  * `[0x00, 0x00, minor, major]` per the Bolt v4 spec.
  */
