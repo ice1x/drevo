@@ -143,6 +143,18 @@ pub mod replication;
 #[cfg(feature = "http")]
 pub mod server;
 pub mod storage;
+/// Phase 15 task `00096` — streaming ingestion. A transport-agnostic engine
+/// that turns a broker firehose of change events into graph mutations: an
+/// [`streaming::IngestConsumer`] polls a [`streaming::StreamSource`] (Kafka /
+/// NATS / CDC — drevo ships the in-memory [`streaming::MemorySource`]), decodes
+/// each message into a tagged-JSON [`streaming::IngestEvent`], and applies it to
+/// an [`streaming::IngestSink`] (the reference [`streaming::MemoryGraphSink`])
+/// under an [`streaming::ErrorPolicy`], tracking [`streaming::Offset`]s for
+/// at-least-once, idempotent ingestion with a [`streaming::DeadLetter`] queue.
+/// Dependency-free, always compiled, WASM-safe; keeps its own
+/// [`streaming::StreamError`] channel and is not yet wired into the executor /
+/// HTTP / Bolt request path.
+pub mod streaming;
 pub mod traversal;
 /// Phase 12 task `00075` — vector value type + similarity / distance
 /// functions (cosine, euclidean, dot product) over `f32` embeddings.
