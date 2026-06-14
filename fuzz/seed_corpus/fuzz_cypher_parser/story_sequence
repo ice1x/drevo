@@ -1,0 +1,1 @@
+MATCH (s:Scene)-[:FOLLOWS]->(next:Scene) RETURN s.title, next.title

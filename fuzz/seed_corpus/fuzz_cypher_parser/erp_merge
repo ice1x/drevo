@@ -1,0 +1,1 @@
+MERGE (acc:Account {number: 1001}) ON CREATE SET acc.balance = 0 RETURN acc

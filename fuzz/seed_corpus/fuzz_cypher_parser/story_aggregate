@@ -1,0 +1,1 @@
+MATCH (ch:Character)-[r:APPEARS_IN*1..5]->(sc:Scene) RETURN ch, count(sc) AS appearances

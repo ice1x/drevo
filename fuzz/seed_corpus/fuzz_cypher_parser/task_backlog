@@ -1,0 +1,1 @@
+MATCH (t:Task) WHERE t.status <> "done" RETURN t ORDER BY t.priority SKIP 5 LIMIT 20

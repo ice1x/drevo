@@ -1,0 +1,1 @@
+MATCH (o:Order)-[:CONTAINS]->(li:LineItem) RETURN o.id, sum(li.amount) AS total

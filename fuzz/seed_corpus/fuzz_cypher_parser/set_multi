@@ -1,0 +1,1 @@
+MATCH (n:X) SET n.flag = true, n.count = n.count + 1 RETURN n

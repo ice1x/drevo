@@ -1,8 +1,13 @@
-# drevo-fuzz — coverage-guided FTS tokenizer fuzzing
+# drevo-fuzz — coverage-guided fuzzing
 
-Phase 9 task `00058`. Three [`cargo fuzz`](https://github.com/rust-fuzz/cargo-fuzz)
-targets driven by [`libFuzzer`](https://llvm.org/docs/LibFuzzer.html) against
-the public surface of [`drevo::fts::tokenizer`](../src/fts/tokenizer.rs):
+[`cargo fuzz`](https://github.com/rust-fuzz/cargo-fuzz) targets driven by
+[`libFuzzer`](https://llvm.org/docs/LibFuzzer.html) against drevo's
+algorithmic surfaces. Two families:
+
+## FTS tokenizer (Phase 9 task `00058`)
+
+Three targets against the public surface of
+[`drevo::fts::tokenizer`](../src/fts/tokenizer.rs):
 
 | Target | Tokenizer function | Invariants asserted |
 |---|---|---|
@@ -14,6 +19,29 @@ The exact same assertions are mirrored in
 [`tests/fts_tokenizer_fuzz_harness_tests.rs`](../tests/fts_tokenizer_fuzz_harness_tests.rs)
 so the stable `cargo test` matrix exercises them on every PR; the nightly
 fuzz job extends coverage via libFuzzer's branch-feedback mutator.
+
+## Cypher front end (Phase 15 task `00099`)
+
+Three targets against the lexer/parser of
+[`drevo::cypher`](../src/cypher/), including a **grammar-aware** generator:
+
+| Target | Surface | Input | Invariants asserted |
+|---|---|---|---|
+| `fuzz_cypher_lexer` | `lexer::tokenize(&str)` | arbitrary `&str` | total (never panics); spans in-bounds (`start ≤ end ≤ len`) and monotonic by start offset |
+| `fuzz_cypher_parser` | `parser::parse(&str)` | arbitrary `&str` | total; on success the `Query` is structurally non-empty and the lexer also accepts the source |
+| `fuzz_cypher_grammar` | `parse(generate_query(&[u8]))` | byte **choice stream** | generation is total + non-empty; every generated query lexes **and** parses (the grammar is the supported subset) |
+
+The first two throw arbitrary bytes at the front end (mostly the error
+paths). The third interprets the libFuzzer input as a *choice stream* and
+[`cypher_grammar.rs`](cypher_grammar.rs) turns it into a syntactically
+well-formed query drawn from the parser's supported subset — driving the
+mutator deep into the *accepting* branches a random byte stream rarely
+reaches. That generator is `include!`d by **both** the fuzz target and the
+stable harness so the two cannot drift.
+
+All Cypher invariants — and a deterministic ~3800-input sweep of the
+generator — are replayed under stable `cargo test` in
+[`tests/cypher_fuzz_harness_tests.rs`](../tests/cypher_fuzz_harness_tests.rs).
 
 ## Prerequisites
 
@@ -41,9 +69,14 @@ cargo +nightly fuzz run fuzz_normalize -- -max_total_time=60
 # Replay a single corpus file
 cargo +nightly fuzz run fuzz_normalize fuzz/corpus/fuzz_normalize/<id>
 
-# Same for the other two targets
+# Same for the other FTS targets
 cargo +nightly fuzz run fuzz_trigrams         -- -max_total_time=60
 cargo +nightly fuzz run fuzz_extract_trigrams -- -max_total_time=60
+
+# Cypher front-end targets
+cargo +nightly fuzz run fuzz_cypher_lexer     -- -max_total_time=60
+cargo +nightly fuzz run fuzz_cypher_parser    -- -max_total_time=60
+cargo +nightly fuzz run fuzz_cypher_grammar   -- -max_total_time=60
 ```
 
 `cargo-fuzz` will copy `seed_corpus/<target>/` into `corpus/<target>/` on

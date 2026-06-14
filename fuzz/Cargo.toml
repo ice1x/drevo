@@ -75,3 +75,28 @@ path = "fuzz_targets/fuzz_extract_trigrams.rs"
 test = false
 doc = false
 bench = false
+
+# Phase 15 task `00099` — grammar-aware Cypher fuzzing. Three targets share
+# the `cypher_grammar.rs` generator (the grammar target `include!`s it) and
+# their invariants are replayed on every PR by the stable harness
+# `tests/cypher_fuzz_harness_tests.rs`.
+[[bin]]
+name = "fuzz_cypher_lexer"
+path = "fuzz_targets/fuzz_cypher_lexer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_cypher_parser"
+path = "fuzz_targets/fuzz_cypher_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_cypher_grammar"
+path = "fuzz_targets/fuzz_cypher_grammar.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,1 @@
+MATCH (n) WHERE n.name = 'O''Brien' RETURN n.name

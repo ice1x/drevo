@@ -1,0 +1,2 @@
+// a line comment
+MATCH (n) RETURN n /* block */
