@@ -159,6 +159,25 @@ RETURN dept.title AS department, headcount
 ORDER BY headcount DESC
 ```
 
+### UNWIND
+
+`UNWIND` expands a list into one row per element, binding each element to a new variable.
+Every existing row is multiplied by the list, so it composes with `MATCH`, `WITH`,
+aggregation, and `CREATE`:
+
+```cypher
+UNWIND [1, 2, 3] AS x
+RETURN x
+```
+
+An empty list — and `null` — expand to **zero** rows (so a heterogeneous scan does not
+abort). Combined with `keywords()`, `UNWIND` powers "group by extracted keyword" faceting:
+
+```cypher
+UNWIND ['alice', 'bob', 'carol'] AS name
+CREATE (:Person {name: name})
+```
+
 ---
 
 ## Aggregation
@@ -317,7 +336,6 @@ error rather than a crash or a silent wrong answer.
 
 | Construct | Status |
 |-----------|--------|
-| `UNWIND` | parses, executor returns `Unsupported` |
 | `UNION` / `UNION ALL` | parses, executor returns `Unsupported` |
 | `CALL` / `YIELD` (procedures) | not in grammar |
 | `FOREACH` | not in executor |
