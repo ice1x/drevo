@@ -1,0 +1,1 @@
+MERGE (n:X) ON CREATE SET n.a = 1 ON MATCH SET n.b = 2

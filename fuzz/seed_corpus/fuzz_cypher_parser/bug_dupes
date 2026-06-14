@@ -1,0 +1,1 @@
+MATCH (bug:Bug)-[:DUPLICATE_OF]->(canonical:Bug) RETURN canonical.id, collect(bug.id)

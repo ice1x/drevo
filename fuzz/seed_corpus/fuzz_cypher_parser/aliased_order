@@ -1,0 +1,1 @@
+MATCH (n) RETURN n.a AS x, n.b AS y ORDER BY x ASC, y DESC

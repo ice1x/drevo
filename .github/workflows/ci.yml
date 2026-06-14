@@ -514,6 +514,29 @@ jobs:
           cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
             fuzz_extract_trigrams -- -max_total_time=60
         working-directory: fuzz
+      # Phase 15 task 00099 — grammar-aware Cypher fuzzing. Three more
+      # targets sharing the `cypher_grammar.rs` generator; their invariants
+      # are also replayed on every PR by the stable
+      # `tests/cypher_fuzz_harness_tests.rs` (so a regression is caught even
+      # when this nightly job is skipped).
+      - name: Smoke fuzz_cypher_lexer (60s)
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_cypher_lexer -- -max_total_time=60
+        working-directory: fuzz
+      - name: Smoke fuzz_cypher_parser (60s)
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_cypher_parser -- -max_total_time=60
+        working-directory: fuzz
+      - name: Smoke fuzz_cypher_grammar (60s)
+        run: |
+          set -euo pipefail
+          cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
+            fuzz_cypher_grammar -- -max_total_time=60
+        working-directory: fuzz
       - name: Upload crash artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
