@@ -50,6 +50,17 @@
 //! vector search (Phase 12).
 #![warn(missing_docs)]
 
+/// Built-in global graph algorithms — Phase 15 task `00098`. Adds the two
+/// whole-graph analytics algorithms that complement the local traversals in
+/// [`traversal`]: [`algorithms::pagerank`] (weighted PageRank centrality via
+/// power iteration) and [`algorithms::louvain`] (Louvain community detection by
+/// multi-level modularity optimisation). Both run over an in-memory
+/// [`algorithms::AdjacencyList`] snapshot and are exposed on the database facade
+/// as [`db::Drevo::pagerank`] / [`db::Drevo::louvain_communities`] (mirroring
+/// the existing [`db::Drevo::shortest_path`] Dijkstra wiring). Dependency-free,
+/// always compiled, and WASM-safe; keeps its own [`algorithms::AlgorithmError`]
+/// channel for config validation rather than widening `DrevoError`.
+pub mod algorithms;
 /// HTTP API surface — axum router translating JSON requests into
 /// [`db::Drevo`] calls. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
