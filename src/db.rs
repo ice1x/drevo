@@ -1795,6 +1795,66 @@ impl Drevo {
         })
     }
 
+    /// Compute PageRank centrality over the whole graph — Phase 15 task
+    /// `00098`.
+    ///
+    /// Materialises the entire node + edge set into an in-memory
+    /// [`crate::algorithms::AdjacencyList`] snapshot and runs weighted power
+    /// iteration ([`crate::algorithms::pagerank`]). Edge weights are read from
+    /// [`crate::model::Edge::weight`] and interpreted as non-negative link
+    /// strengths (negatives are clamped to `0.0`). Directed: rank flows along
+    /// outgoing edges; dangling nodes redistribute their rank uniformly.
+    ///
+    /// The `config` is validated at construction
+    /// ([`crate::algorithms::PageRankConfig::new`]); this call itself only
+    /// fails if a storage scan fails. An empty graph yields an empty result.
+    pub fn pagerank(
+        &self,
+        config: &crate::algorithms::PageRankConfig,
+    ) -> Result<crate::algorithms::PageRankResult> {
+        let graph = self.adjacency_snapshot()?;
+        Ok(crate::algorithms::pagerank(&graph, config))
+    }
+
+    /// Detect communities over the whole graph using the Louvain method —
+    /// Phase 15 task `00098`.
+    ///
+    /// Materialises the entire node + edge set into an in-memory
+    /// [`crate::algorithms::AdjacencyList`] snapshot and runs multi-level
+    /// modularity optimisation ([`crate::algorithms::louvain`]). The directed
+    /// graph is projected to undirected first (reciprocal edges sum; self-loops
+    /// are kept); edge weights are interpreted as non-negative.
+    ///
+    /// The `config` is validated at construction
+    /// ([`crate::algorithms::LouvainConfig::new`]); this call itself only fails
+    /// if a storage scan fails. An empty graph yields an empty result.
+    pub fn louvain_communities(
+        &self,
+        config: &crate::algorithms::LouvainConfig,
+    ) -> Result<crate::algorithms::LouvainResult> {
+        let graph = self.adjacency_snapshot()?;
+        Ok(crate::algorithms::louvain(&graph, config))
+    }
+
+    /// Build an in-memory [`crate::algorithms::AdjacencyList`] snapshot of the
+    /// entire graph for the global algorithms ([`Self::pagerank`] /
+    /// [`Self::louvain_communities`]). Nodes are ordered by ascending ID so the
+    /// algorithms' results are deterministic.
+    fn adjacency_snapshot(&self) -> Result<crate::algorithms::AdjacencyList> {
+        let node_ids: Vec<u64> = self
+            .collect_all_nodes()?
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        let edges = self
+            .collect_all_edges()?
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, e.weight));
+        Ok(crate::algorithms::AdjacencyList::from_parts(
+            node_ids, edges,
+        ))
+    }
+
     /// Extract a subgraph of all nodes and edges within `depth` hops
     /// of the root node. Follows edges in **both** directions.
     ///
