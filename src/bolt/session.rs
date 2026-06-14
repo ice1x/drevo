@@ -1053,7 +1053,8 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         | ExecError::InvalidCreate(_)
         | ExecError::InvalidMutation(_)
         | ExecError::TypeMismatch { .. }
-        | ExecError::InvalidFunctionCall { .. } => codes::SEMANTIC_ERROR,
+        | ExecError::InvalidFunctionCall { .. }
+        | ExecError::UnionMismatch { .. } => codes::SEMANTIC_ERROR,
         ExecError::MissingParameter(_) => codes::PARAMETER_MISSING,
         ExecError::Storage(_) => codes::STORAGE,
     };

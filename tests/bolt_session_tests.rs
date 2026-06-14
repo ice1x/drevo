@@ -692,8 +692,9 @@ fn discard_inside_tx_drains_back_to_tx_ready_not_ready() {
         parameters: dict([]),
         extra: dict([]),
     });
-    // Some queries fail (UNION is unsupported pre-00081 in the executor).
-    // Fall back to a guaranteed-working autocommit-equivalent query.
+    // `UNION ALL` executes since task `00136`, so this normally reaches
+    // TxStreaming directly. The recovery path is kept as a defensive
+    // fallback in case the query ever fails again.
     if s.state() != State::TxStreaming {
         // Recover via RESET → BEGIN → simple RUN.
         s.handle(ClientMessage::Reset);

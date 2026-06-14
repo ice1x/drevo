@@ -178,6 +178,30 @@ UNWIND ['alice', 'bob', 'carol'] AS name
 CREATE (:Person {name: name})
 ```
 
+### UNION
+
+`UNION` combines the result rows of two or more queries into one result set. `UNION ALL`
+concatenates every arm's rows in order, keeping duplicates; plain `UNION` additionally
+removes duplicate rows across the combined set:
+
+```cypher
+RETURN 'open' AS state
+UNION ALL
+RETURN 'closed' AS state
+```
+
+Every arm must project the **same column names in the same order**, and a single query may
+not mix `UNION` and `UNION ALL` — either constraint surfaces as `ExecError::UnionMismatch`.
+A common use is gathering rows of the same shape from different labels:
+
+```cypher
+MATCH (p:Person)
+RETURN p.title AS name
+UNION
+MATCH (c:Company)
+RETURN c.title AS name
+```
+
 ---
 
 ## Aggregation
@@ -336,7 +360,6 @@ error rather than a crash or a silent wrong answer.
 
 | Construct | Status |
 |-----------|--------|
-| `UNION` / `UNION ALL` | parses, executor returns `Unsupported` |
 | `CALL` / `YIELD` (procedures) | not in grammar |
 | `FOREACH` | not in executor |
 | Named path binding `p = (a)-[*]->(b)` | parses, executor returns `Unsupported` |

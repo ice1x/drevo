@@ -84,9 +84,15 @@
 //! Variable-length paths in `CREATE` are rejected — they have no
 //! semantic meaning there (how many edges to create?).
 //!
+//! `UNION` / `UNION ALL` combine the result rows of two or more arms as
+//! of task `00136`: `UNION ALL` concatenates every arm's rows in arm
+//! order, `UNION` additionally removes duplicate rows across the combined
+//! set. Every arm must project the same column names in the same order,
+//! and a query may not mix the two operators — both cases surface as
+//! [`ExecError::UnionMismatch`](crate::cypher::executor::ExecError::UnionMismatch).
+//!
 //! Out of scope (tracked under follow-on Phase 10 tasks):
 //!
-//! * `UNION` queries. (`UNWIND` is implemented as of task `00135`.)
 //! * `EXISTS { pattern }` pattern-existence subqueries — the lexer
 //!   already tokenises `EXISTS`, but the parser does not yet treat it
 //!   as an expression form. In modern Cypher `n.prop IS NOT NULL` is
@@ -146,7 +152,7 @@ const VARLEN_DEFAULT_UPPER: usize = 25;
 use crate::cypher::ast::{
     BinaryOp, Clause, CreateClause, Direction as AstDirection, Expression, MapLiteral, MatchClause,
     NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query,
-    RelLength, RelationshipPattern, ReturnClause, UnaryOp, UnwindClause,
+    RelLength, RelationshipPattern, ReturnClause, SingleQuery, UnaryOp, UnionKind, UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
@@ -316,6 +322,18 @@ pub enum ExecError {
         /// Source span of the offending call.
         span: Span,
     },
+    /// The arms of a `UNION` are incompatible. Either the projected
+    /// column names differ between arms (Neo4j requires every arm of a
+    /// `UNION` to return the same column names in the same order), or a
+    /// single query mixed `UNION` and `UNION ALL` (forbidden — a query
+    /// must pick one or the other).
+    #[error("invalid UNION: {message}")]
+    UnionMismatch {
+        /// Explanation of the incompatibility.
+        message: String,
+        /// Source span of the offending `UNION` arm.
+        span: Span,
+    },
     /// Underlying storage / serialization failure.
     #[error("storage error: {0}")]
     Storage(#[from] DrevoError),
@@ -329,7 +347,8 @@ impl ExecError {
             Self::Unsupported { span, .. }
             | Self::UnboundVariable { span, .. }
             | Self::TypeMismatch { span, .. }
-            | Self::InvalidFunctionCall { span, .. } => Some(*span),
+            | Self::InvalidFunctionCall { span, .. }
+            | Self::UnionMismatch { span, .. } => Some(*span),
             Self::MissingParameter(_)
             | Self::InvalidCreate(_)
             | Self::InvalidMutation(_)
@@ -532,15 +551,80 @@ pub fn execute(
     drevo: &Drevo,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    if query.parts.len() > 1 {
-        let span = first_clause_span(&query.parts[1].query.clauses);
-        return Err(ExecError::Unsupported {
-            feature: "UNION".into(),
-            task: "future Phase 10 follow-up".into(),
-            span,
-        });
+    // Fast path — a query with no `UNION` is a single arm, executed
+    // directly with no row combination.
+    if query.parts.len() == 1 {
+        return execute_single(&query.parts[0].query, drevo, params);
     }
-    let single = &query.parts[0].query;
+
+    // Multi-arm `UNION`. The parser guarantees `parts[i].union` is
+    // `Some` for every `i > 0` and the *kind that joins arm `i-1` to arm
+    // `i`*. A query must not mix `UNION` and `UNION ALL`, so collapse the
+    // joining kinds into a single agreed kind (or reject the mix).
+    let mut kind: Option<UnionKind> = None;
+    for part in &query.parts[1..] {
+        // The parser guarantees `union` is `Some` for every arm after the
+        // first; a `None` would be a parser bug, so skip it rather than
+        // panic (no `unwrap`/`expect` in library code).
+        let Some(this) = part.union else { continue };
+        match kind {
+            None => kind = Some(this),
+            Some(prev) if prev != this => {
+                return Err(ExecError::UnionMismatch {
+                    message: "a query cannot mix UNION and UNION ALL — \
+                              use one or the other for every arm"
+                        .into(),
+                    span: first_clause_span(&part.query.clauses),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    let distinct = matches!(kind, Some(UnionKind::Distinct));
+
+    // Execute every arm independently and concatenate the rows in arm
+    // order. Every arm must project the same column names in the same
+    // order; stats accumulate across all arms.
+    let mut columns: Option<Vec<String>> = None;
+    let mut rows: Vec<Vec<Value>> = Vec::new();
+    let mut stats = ExecStats::default();
+    for part in &query.parts {
+        let arm = execute_single(&part.query, drevo, params.clone())?;
+        match &columns {
+            None => columns = Some(arm.columns),
+            Some(expected) if *expected != arm.columns => {
+                return Err(ExecError::UnionMismatch {
+                    message: format!(
+                        "all arms of a UNION must return the same columns — \
+                         expected {expected:?}, this arm returns {:?}",
+                        arm.columns
+                    ),
+                    span: first_clause_span(&part.query.clauses),
+                });
+            }
+            Some(_) => {}
+        }
+        rows.extend(arm.rows);
+        stats = add_stats(stats, arm.stats);
+    }
+
+    if distinct {
+        dedup_rows(&mut rows);
+    }
+
+    Ok(ExecResult {
+        columns: columns.unwrap_or_default(),
+        rows,
+        stats,
+    })
+}
+
+/// Execute one `UNION`-free arm against a fresh executor.
+fn execute_single(
+    single: &SingleQuery,
+    drevo: &Drevo,
+    params: HashMap<String, Value>,
+) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
     // effects run, so a query that would eventually fail on a varlen
     // path or a function call gets the deterministic error even when
@@ -565,6 +649,20 @@ pub fn execute(
     // The trailing RETURN (if any) populated `result_rows`; if no
     // RETURN was present, we hand back an empty rowset with the stats.
     Ok(executor.take_result())
+}
+
+/// Sum two [`ExecStats`] field-by-field — used to aggregate the mutation
+/// counters of every arm of a `UNION` into one summary.
+fn add_stats(a: ExecStats, b: ExecStats) -> ExecStats {
+    ExecStats {
+        nodes_created: a.nodes_created + b.nodes_created,
+        relationships_created: a.relationships_created + b.relationships_created,
+        properties_set: a.properties_set + b.properties_set,
+        nodes_deleted: a.nodes_deleted + b.nodes_deleted,
+        relationships_deleted: a.relationships_deleted + b.relationships_deleted,
+        labels_added: a.labels_added + b.labels_added,
+        labels_removed: a.labels_removed + b.labels_removed,
+    }
 }
 
 fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
@@ -5479,5 +5577,107 @@ mod tests {
             parse("MATCH (d:Doc) WHERE similar(d.embedding, $q, 0.5) RETURN d.title").unwrap();
         let e = execute(&query, &db, params).expect_err("zero vector must error");
         assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
+    }
+
+    // ---- UNION (00136) ----------------------------------------------------
+
+    #[test]
+    fn union_all_concatenates_arm_rows() {
+        let db = drevo();
+        let res = run("RETURN 1 AS n UNION ALL RETURN 2 AS n", &db);
+        assert_eq!(res.columns, vec!["n"]);
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0][0], Value::Integer(1));
+        assert_eq!(res.rows[1][0], Value::Integer(2));
+    }
+
+    #[test]
+    fn union_all_keeps_duplicates() {
+        let db = drevo();
+        let res = run("RETURN 7 AS n UNION ALL RETURN 7 AS n", &db);
+        assert_eq!(res.rows.len(), 2);
+    }
+
+    #[test]
+    fn union_distinct_dedups_across_arms() {
+        let db = drevo();
+        let res = run("RETURN 7 AS n UNION RETURN 7 AS n", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::Integer(7));
+    }
+
+    #[test]
+    fn union_distinct_preserves_first_seen_order() {
+        let db = drevo();
+        let res = run("RETURN 2 AS n UNION RETURN 1 AS n UNION RETURN 2 AS n", &db);
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0][0], Value::Integer(2));
+        assert_eq!(res.rows[1][0], Value::Integer(1));
+    }
+
+    #[test]
+    fn union_mismatched_column_names_errors() {
+        let db = drevo();
+        let e = err("RETURN 1 AS a UNION RETURN 2 AS b", &db);
+        assert!(matches!(e, ExecError::UnionMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn union_swapped_column_order_errors() {
+        let db = drevo();
+        let e = err("RETURN 1 AS a, 2 AS b UNION RETURN 3 AS b, 4 AS a", &db);
+        assert!(matches!(e, ExecError::UnionMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn union_different_column_count_errors() {
+        let db = drevo();
+        let e = err("RETURN 1 AS a UNION RETURN 2 AS a, 3 AS b", &db);
+        assert!(matches!(e, ExecError::UnionMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn mixing_union_and_union_all_errors() {
+        let db = drevo();
+        let e = err(
+            "RETURN 1 AS n UNION RETURN 2 AS n UNION ALL RETURN 3 AS n",
+            &db,
+        );
+        match e {
+            ExecError::UnionMismatch { message, .. } => {
+                assert!(message.contains("mix"), "message was {message:?}");
+            }
+            other => panic!("expected UnionMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn union_mismatch_carries_a_span() {
+        let db = drevo();
+        let e = err("RETURN 1 AS a UNION RETURN 2 AS b", &db);
+        assert!(e.span().is_some());
+    }
+
+    #[test]
+    fn union_arm_unsupported_construct_surfaces() {
+        let db = drevo();
+        let e = err(
+            "RETURN 1 AS n UNION RETURN CASE WHEN true THEN 2 ELSE 3 END AS n",
+            &db,
+        );
+        assert!(matches!(e, ExecError::Unsupported { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn union_accumulates_stats_across_arms() {
+        let db = drevo();
+        let res = run(
+            "CREATE (:Note {title: 'A'}) RETURN 1 AS k \
+             UNION ALL \
+             CREATE (:Note {title: 'B'}) RETURN 2 AS k",
+            &db,
+        );
+        assert_eq!(res.stats.nodes_created, 2);
+        assert_eq!(res.rows.len(), 2);
     }
 }
