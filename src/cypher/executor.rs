@@ -86,7 +86,7 @@
 //!
 //! Out of scope (tracked under follow-on Phase 10 tasks):
 //!
-//! * `UNWIND` clause and `UNION` queries.
+//! * `UNION` queries. (`UNWIND` is implemented as of task `00135`.)
 //! * `EXISTS { pattern }` pattern-existence subqueries — the lexer
 //!   already tokenises `EXISTS`, but the parser does not yet treat it
 //!   as an expression form. In modern Cypher `n.prop IS NOT NULL` is
@@ -146,7 +146,7 @@ const VARLEN_DEFAULT_UPPER: usize = 25;
 use crate::cypher::ast::{
     BinaryOp, Clause, CreateClause, Direction as AstDirection, Expression, MapLiteral, MatchClause,
     NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query,
-    RelLength, RelationshipPattern, ReturnClause, UnaryOp,
+    RelLength, RelationshipPattern, ReturnClause, UnaryOp, UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
@@ -662,11 +662,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
             }
         }
         Clause::Unwind(u) => {
-            return Err(ExecError::Unsupported {
-                feature: "UNWIND".into(),
-                task: "future Phase 10 follow-up".into(),
-                span: u.span,
-            })
+            validate_expr_supported(&u.expression)?;
         }
     }
     Ok(())
@@ -1137,11 +1133,7 @@ impl<'a> Executor<'a> {
             Clause::Set(s) => self.run_set(s),
             Clause::Remove(r) => self.run_remove(r),
             Clause::With(w) => self.run_with(w),
-            Clause::Unwind(u) => Err(ExecError::Unsupported {
-                feature: "UNWIND".into(),
-                task: "future Phase 10 follow-up".into(),
-                span: u.span,
-            }),
+            Clause::Unwind(u) => self.run_unwind(u),
         }
     }
 
@@ -2561,6 +2553,53 @@ impl<'a> Executor<'a> {
             new_bindings = filtered;
         }
 
+        self.bindings = new_bindings;
+        Ok(())
+    }
+
+    // ----- UNWIND ----------------------------------------------------------
+
+    /// `UNWIND list AS x` — expand a list expression into one binding
+    /// row per element, carrying every existing binding forward and
+    /// adding `x` bound to the element.
+    ///
+    /// Semantics mirror Neo4j:
+    /// - `UNWIND [1, 2, 3] AS x` multiplies each input row by the list,
+    ///   preserving element order.
+    /// - `UNWIND [] AS x` drops the input row (zero elements → zero
+    ///   rows).
+    /// - `UNWIND null AS x` likewise yields zero rows — `null` is the
+    ///   empty expansion, not a type error.
+    /// - A non-list, non-null value is an [`ExecError::TypeMismatch`].
+    ///
+    /// A leading `UNWIND` works because [`execute`] seeds `bindings`
+    /// with a single empty row; an `UNWIND` after a `MATCH` that
+    /// produced no rows correctly yields nothing because there is no
+    /// input row to expand (the seed row was already consumed).
+    fn run_unwind(&mut self, u: &UnwindClause) -> ExecResultT<()> {
+        let prior = std::mem::take(&mut self.bindings);
+        let mut new_bindings: Vec<Bindings> = Vec::new();
+        for row in &prior {
+            let value = self.eval(&u.expression, row)?;
+            match value {
+                Value::List(items) => {
+                    for item in items {
+                        let mut next = row.clone();
+                        next.insert(u.alias.clone(), item);
+                        new_bindings.push(next);
+                    }
+                }
+                // `UNWIND null` expands to zero rows (Neo4j semantics).
+                Value::Null => {}
+                other => {
+                    return Err(ExecError::TypeMismatch {
+                        expected: "List".into(),
+                        got: other.type_name().into(),
+                        span: u.expression.span(),
+                    });
+                }
+            }
+        }
         self.bindings = new_bindings;
         Ok(())
     }
@@ -5034,6 +5073,154 @@ mod tests {
             matches!(e, ExecError::UnboundVariable { ref name, .. } if name == "p"),
             "got {:?}",
             e
+        );
+    }
+
+    // ---- UNWIND (00135) -------------------------------------------------
+
+    #[test]
+    fn unwind_list_literal_expands_into_one_row_per_element() {
+        let db = drevo();
+        let res = run("UNWIND [1, 2, 3] AS x RETURN x", &db);
+        assert_eq!(res.columns, vec!["x"]);
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::Integer(1)],
+                vec![Value::Integer(2)],
+                vec![Value::Integer(3)],
+            ]
+        );
+    }
+
+    #[test]
+    fn unwind_preserves_element_order() {
+        let db = drevo();
+        let res = run("UNWIND [3, 1, 2] AS x RETURN x", &db);
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::Integer(3)],
+                vec![Value::Integer(1)],
+                vec![Value::Integer(2)],
+            ]
+        );
+    }
+
+    #[test]
+    fn unwind_empty_list_yields_no_rows() {
+        let db = drevo();
+        let res = run("UNWIND [] AS x RETURN x", &db);
+        assert_eq!(res.columns, vec!["x"]);
+        assert!(res.rows.is_empty());
+    }
+
+    #[test]
+    fn unwind_null_yields_no_rows() {
+        let db = drevo();
+        let res = run("UNWIND null AS x RETURN x", &db);
+        assert!(res.rows.is_empty());
+    }
+
+    #[test]
+    fn unwind_from_parameter_list() {
+        let db = drevo();
+        let mut params = HashMap::new();
+        params.insert(
+            "xs".into(),
+            Value::List(vec![Value::String("a".into()), Value::String("b".into())]),
+        );
+        let res = run_with_params("UNWIND $xs AS x RETURN x", &db, params);
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::String("a".into())],
+                vec![Value::String("b".into())],
+            ]
+        );
+    }
+
+    #[test]
+    fn unwind_multiplies_each_prior_binding_row() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'A'})", &db);
+        run("CREATE (:Person {name: 'B'})", &db);
+        // Two matched people × two list elements = four rows.
+        let res = run(
+            "MATCH (p:Person) UNWIND [1, 2] AS n RETURN p.name AS name, n ORDER BY name, n",
+            &db,
+        );
+        assert_eq!(res.columns, vec!["name", "n"]);
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::String("A".into()), Value::Integer(1)],
+                vec![Value::String("A".into()), Value::Integer(2)],
+                vec![Value::String("B".into()), Value::Integer(1)],
+                vec![Value::String("B".into()), Value::Integer(2)],
+            ]
+        );
+    }
+
+    #[test]
+    fn unwind_after_empty_match_yields_no_rows() {
+        let db = drevo();
+        // No Person nodes exist → MATCH yields zero rows → UNWIND has
+        // nothing to expand, so the leading-row seed must NOT resurrect.
+        let res = run("MATCH (p:Person) UNWIND [1, 2, 3] AS n RETURN n", &db);
+        assert!(res.rows.is_empty());
+    }
+
+    #[test]
+    fn unwind_alias_is_visible_to_downstream_with_and_aggregation() {
+        let db = drevo();
+        let res = run(
+            "UNWIND [1, 2, 2, 3, 3, 3] AS x WITH x, count(*) AS c RETURN x, c ORDER BY x",
+            &db,
+        );
+        assert_eq!(res.columns, vec!["x", "c"]);
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::Integer(1), Value::Integer(1)],
+                vec![Value::Integer(2), Value::Integer(2)],
+                vec![Value::Integer(3), Value::Integer(3)],
+            ]
+        );
+    }
+
+    #[test]
+    fn unwind_feeds_create_one_node_per_element() {
+        let db = drevo();
+        run(
+            "UNWIND ['Alice', 'Bob', 'Carol'] AS nm CREATE (:Person {name: nm})",
+            &db,
+        );
+        let people = db.list_nodes_by_kind("Person", 100, 0).unwrap();
+        assert_eq!(people.len(), 3);
+    }
+
+    #[test]
+    fn unwind_non_list_scalar_is_type_mismatch() {
+        let db = drevo();
+        let e = err("UNWIND 42 AS x RETURN x", &db);
+        assert!(
+            matches!(e, ExecError::TypeMismatch { ref expected, .. } if expected == "List"),
+            "got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn unwind_nested_list_elements_are_preserved() {
+        let db = drevo();
+        let res = run("UNWIND [[1, 2], [3]] AS pair RETURN pair", &db);
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::List(vec![Value::Integer(1), Value::Integer(2)])],
+                vec![Value::List(vec![Value::Integer(3)])],
+            ]
         );
     }
 
