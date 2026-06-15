@@ -176,11 +176,10 @@ fn union_mismatch_reports_a_span() {
 #[test]
 fn unsupported_inside_a_union_arm_still_surfaces() {
     let db = db();
-    // CASE is still unsupported; the upfront sweep must fire per-arm.
-    let err = run_err(
-        "RETURN 1 AS n UNION RETURN CASE WHEN true THEN 2 ELSE 3 END AS n",
-        &db,
-    );
+    // A scalar function with no executor implementation (only `similar` /
+    // `keywords` are recognised) is still unsupported; the upfront sweep
+    // must fire per-arm.
+    let err = run_err("RETURN 1 AS n UNION RETURN toUpper('x') AS n", &db);
     assert!(matches!(err, ExecError::Unsupported { .. }));
 }
 

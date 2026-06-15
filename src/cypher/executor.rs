@@ -876,11 +876,24 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
                 })
             }
         }
-        Expression::Case { span, .. } => Err(ExecError::Unsupported {
-            feature: "CASE expression".into(),
-            task: "future Phase 10 follow-up".into(),
-            span: *span,
-        }),
+        Expression::Case {
+            scrutinee,
+            arms,
+            else_branch,
+            ..
+        } => {
+            if let Some(s) = scrutinee {
+                validate_expr_supported(s)?;
+            }
+            for (when, then) in arms {
+                validate_expr_supported(when)?;
+                validate_expr_supported(then)?;
+            }
+            if let Some(e) = else_branch {
+                validate_expr_supported(e)?;
+            }
+            Ok(())
+        }
         Expression::Star(span) => Err(ExecError::Unsupported {
             feature: "`*` outside `count(*)`".into(),
             task: "future Phase 10 follow-up".into(),
@@ -1139,11 +1152,28 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
-        Expression::Case { span, .. } => Err(ExecError::Unsupported {
-            feature: "CASE expression".into(),
-            task: "future Phase 10 follow-up".into(),
-            span: *span,
-        }),
+        Expression::Case {
+            scrutinee,
+            arms,
+            else_branch,
+            ..
+        } => {
+            // CASE sub-expressions are validated with the non-aggregation
+            // validator: aggregations nested inside a CASE arm are not yet
+            // folded by `eval_with_agg`, so they stay `Unsupported` rather
+            // than silently producing a wrong answer.
+            if let Some(s) = scrutinee {
+                validate_expr_supported(s)?;
+            }
+            for (when, then) in arms {
+                validate_expr_supported(when)?;
+                validate_expr_supported(then)?;
+            }
+            if let Some(e) = else_branch {
+                validate_expr_supported(e)?;
+            }
+            Ok(())
+        }
         Expression::Index { span, .. } | Expression::Slice { span, .. } => {
             Err(ExecError::Unsupported {
                 feature: "list / map indexing".into(),
@@ -3127,11 +3157,12 @@ impl<'a> Executor<'a> {
             Expression::FunctionCall {
                 name, args, span, ..
             } => self.eval_scalar_function(name, args, row, *span),
-            Expression::Case { span, .. } => Err(ExecError::Unsupported {
-                feature: "CASE expression".into(),
-                task: "future Phase 10 follow-up".into(),
-                span: *span,
-            }),
+            Expression::Case {
+                scrutinee,
+                arms,
+                else_branch,
+                ..
+            } => self.eval_case(scrutinee.as_deref(), arms, else_branch.as_deref(), row),
             Expression::Star(span) => Err(ExecError::Unsupported {
                 feature: "`*` outside `count(*)`".into(),
                 task: "future Phase 10 follow-up".into(),
@@ -3144,6 +3175,61 @@ impl<'a> Executor<'a> {
                     span: *span,
                 })
             }
+        }
+    }
+
+    /// Evaluate a `CASE` expression against a single binding row.
+    ///
+    /// * **Generic** form (`scrutinee` is `None`) — each `WHEN` condition is
+    ///   a boolean predicate; the first arm whose condition is `true` wins.
+    ///   `NULL` / `false` conditions are skipped, and a non-boolean condition
+    ///   is an [`ExecError::TypeMismatch`] (matching `WHERE` semantics).
+    /// * **Simple** form (`scrutinee` is `Some`) — the scrutinee is compared
+    ///   for equality against each `WHEN` value; the first equal arm wins.
+    ///   Equality uses Cypher three-valued logic ([`compare`]), so a `NULL`
+    ///   scrutinee (or `NULL` arm value) never matches and falls through.
+    ///
+    /// If no arm matches, the `ELSE` value is returned, or `NULL` when there
+    /// is no `ELSE`.
+    fn eval_case(
+        &self,
+        scrutinee: Option<&Expression>,
+        arms: &[(Expression, Expression)],
+        else_branch: Option<&Expression>,
+        row: &Bindings,
+    ) -> ExecResultT<Value> {
+        match scrutinee {
+            Some(scrut_expr) => {
+                let scrut = self.eval(scrut_expr, row)?;
+                for (when, then) in arms {
+                    let when_val = self.eval(when, row)?;
+                    if matches!(
+                        compare(BinaryOp::Eq, scrut.clone(), when_val, when.span())?,
+                        Value::Bool(true)
+                    ) {
+                        return self.eval(then, row);
+                    }
+                }
+            }
+            None => {
+                for (when, then) in arms {
+                    match self.eval(when, row)? {
+                        Value::Bool(true) => return self.eval(then, row),
+                        Value::Bool(false) | Value::Null => {}
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Boolean".into(),
+                                got: other.type_name().into(),
+                                span: when.span(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        match else_branch {
+            Some(e) => self.eval(e, row),
+            None => Ok(Value::Null),
         }
     }
 
@@ -5661,10 +5747,9 @@ mod tests {
     #[test]
     fn union_arm_unsupported_construct_surfaces() {
         let db = drevo();
-        let e = err(
-            "RETURN 1 AS n UNION RETURN CASE WHEN true THEN 2 ELSE 3 END AS n",
-            &db,
-        );
+        // A scalar function with no executor implementation (only `similar`
+        // and `keywords` are recognised) stays `Unsupported`.
+        let e = err("RETURN 1 AS n UNION RETURN toUpper('x') AS n", &db);
         assert!(matches!(e, ExecError::Unsupported { .. }), "{e:?}");
     }
 
@@ -5679,5 +5764,100 @@ mod tests {
         );
         assert_eq!(res.stats.nodes_created, 2);
         assert_eq!(res.rows.len(), 2);
+    }
+
+    // ---- CASE expression (00137) ------------------------------------------
+
+    #[test]
+    fn case_generic_selects_first_true_arm() {
+        let db = drevo();
+        let res = run(
+            "RETURN CASE WHEN false THEN 'a' WHEN true THEN 'b' ELSE 'c' END AS r",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::String("b".into()));
+    }
+
+    #[test]
+    fn case_generic_else_when_all_false() {
+        let db = drevo();
+        let res = run("RETURN CASE WHEN false THEN 1 ELSE 2 END AS r", &db);
+        assert_eq!(res.rows[0][0], Value::Integer(2));
+    }
+
+    #[test]
+    fn case_generic_no_else_and_no_match_is_null() {
+        let db = drevo();
+        let res = run("RETURN CASE WHEN false THEN 1 END AS r", &db);
+        assert_eq!(res.rows[0][0], Value::Null);
+    }
+
+    #[test]
+    fn case_generic_null_condition_skipped() {
+        let db = drevo();
+        let res = run(
+            "RETURN CASE WHEN null THEN 'a' WHEN true THEN 'b' END AS r",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::String("b".into()));
+    }
+
+    #[test]
+    fn case_generic_non_boolean_condition_is_type_error() {
+        let db = drevo();
+        let e = err("RETURN CASE WHEN 1 THEN 'a' END AS r", &db);
+        assert!(matches!(e, ExecError::TypeMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn case_simple_matches_scrutinee_by_equality() {
+        let db = drevo();
+        let res = run(
+            "WITH 2 AS x RETURN CASE x WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'n' END AS r",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::String("two".into()));
+    }
+
+    #[test]
+    fn case_simple_null_scrutinee_falls_to_else() {
+        let db = drevo();
+        // `null = null` is `null`, so the scrutinee never matches a WHEN arm.
+        let res = run(
+            "WITH null AS x RETURN CASE x WHEN null THEN 'isnull' ELSE 'other' END AS r",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::String("other".into()));
+    }
+
+    #[test]
+    fn case_simple_no_else_and_no_match_is_null() {
+        let db = drevo();
+        let res = run("WITH 9 AS x RETURN CASE x WHEN 1 THEN 'one' END AS r", &db);
+        assert_eq!(res.rows[0][0], Value::Null);
+    }
+
+    #[test]
+    fn case_usable_in_where_clause() {
+        let db = drevo();
+        run("CREATE (:N {title: 'keep', v: 5})", &db);
+        run("CREATE (:N {title: 'drop', v: 1})", &db);
+        let res = run(
+            "MATCH (n:N) WHERE (CASE WHEN n.v > 3 THEN true ELSE false END) RETURN n.title AS t",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("keep".into()));
+    }
+
+    #[test]
+    fn case_aggregation_inside_arm_stays_unsupported() {
+        let db = drevo();
+        // Aggregations nested inside a CASE arm are out of scope for 00137.
+        let e = err(
+            "MATCH (n) RETURN CASE WHEN true THEN count(*) ELSE 0 END AS r",
+            &db,
+        );
+        assert!(matches!(e, ExecError::Unsupported { .. }), "{e:?}");
     }
 }
