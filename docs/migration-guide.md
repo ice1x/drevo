@@ -140,7 +140,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Bolt drivers | ✅ Supported (port 7687). |
 | Core read/write Cypher | ✅ Supported subset (see reference). |
 | `UNWIND` | ✅ Supported (list expansion; composes with `MATCH` / `WITH` / `CREATE`). |
-| `UNION` / `UNION ALL` | ⛔ Parse but not yet executed. |
+| `UNION` / `UNION ALL` | ✅ Supported (arms must share column names; no mixing the two). |
 | `CALL` / stored procedures, `apoc.*` | ⛔ Not in the grammar. |
 | `CASE`, regex `=~`, list indexing | ⛔ Return `Unsupported`. |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
