@@ -426,6 +426,30 @@ RETURN similar([0.10, 0.20, 0.30], [0.11, 0.19, 0.31], 0.80) AS is_similar
 
 ---
 
+## Indexing and slicing
+
+Lists and maps support element access with `[]`.
+
+- **List index** `xs[i]` — zero-based. A **negative** index counts from the end
+  (`xs[-1]` is the last element). An **out-of-range** index yields `null` rather
+  than an error, so a speculative lookup over a short list is simply absent. The
+  index must be an integer.
+- **Map / node / relationship index** `m['key']` — equivalent to property access
+  (`m.key`); an absent key yields `null`. The key must be a string.
+- **List slice** `xs[from..to]` — `from`-inclusive, `to`-exclusive, zero-based,
+  with negative bounds counting from the end and every bound clamped into range.
+  Either bound may be omitted: `xs[..n]`, `xs[n..]`, `xs[..]`.
+
+`null` propagates: a `null` base, a `null` index, or a `null` slice bound makes
+the whole expression `null`. Misuse — a non-integer list index, a non-string map
+key, or indexing/slicing a scalar — is an `ExecError::TypeMismatch`.
+
+```cypher
+RETURN [10, 20, 30][1] AS second, [10, 20, 30][-1] AS last, range(1, 5)[1..3] AS middle
+```
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task
@@ -441,7 +465,6 @@ error rather than a crash or a silent wrong answer.
 | Variable-length paths in `CREATE` | executor returns `Unsupported` |
 | Aggregations nested inside a `CASE` arm | executor returns `Unsupported` |
 | Regex match `=~` | executor returns `Unsupported` |
-| List/map indexing `x[i]` and slicing `x[a..b]` | executor returns `Unsupported` |
 
 When you need one of these today, express the intent through the [Rust](sdk-reference.md#rust-api)
 or [Python](sdk-reference.md#python-sdk) API, which expose the underlying traversal, FTS, and
