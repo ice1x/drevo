@@ -899,12 +899,19 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             task: "future Phase 10 follow-up".into(),
             span: *span,
         }),
-        Expression::Index { span, .. } | Expression::Slice { span, .. } => {
-            Err(ExecError::Unsupported {
-                feature: "list / map indexing".into(),
-                task: "future Phase 10 follow-up".into(),
-                span: *span,
-            })
+        Expression::Index { base, index, .. } => {
+            validate_expr_supported(base)?;
+            validate_expr_supported(index)
+        }
+        Expression::Slice { base, from, to, .. } => {
+            validate_expr_supported(base)?;
+            if let Some(f) = from {
+                validate_expr_supported(f)?;
+            }
+            if let Some(t) = to {
+                validate_expr_supported(t)?;
+            }
+            Ok(())
         }
         Expression::Binary { lhs, rhs, op, span } => {
             if matches!(op, BinaryOp::RegexMatch) {
@@ -1230,12 +1237,24 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
-        Expression::Index { span, .. } | Expression::Slice { span, .. } => {
-            Err(ExecError::Unsupported {
-                feature: "list / map indexing".into(),
-                task: "future Phase 10 follow-up".into(),
-                span: *span,
-            })
+        // Index / slice sub-expressions are validated with the
+        // non-aggregation validator: `eval_with_agg` does not fold an
+        // aggregation nested inside an index (`collect(x)[0]`), so such a
+        // form stays `Unsupported` rather than silently producing a wrong
+        // answer — matching the `CASE` precedent above.
+        Expression::Index { base, index, .. } => {
+            validate_expr_supported(base)?;
+            validate_expr_supported(index)
+        }
+        Expression::Slice { base, from, to, .. } => {
+            validate_expr_supported(base)?;
+            if let Some(f) = from {
+                validate_expr_supported(f)?;
+            }
+            if let Some(t) = to {
+                validate_expr_supported(t)?;
+            }
+            Ok(())
         }
         Expression::Integer(..)
         | Expression::Float(..)
@@ -3224,12 +3243,21 @@ impl<'a> Executor<'a> {
                 task: "future Phase 10 follow-up".into(),
                 span: *span,
             }),
-            Expression::Index { span, .. } | Expression::Slice { span, .. } => {
-                Err(ExecError::Unsupported {
-                    feature: "list / map indexing".into(),
-                    task: "future Phase 10 follow-up".into(),
-                    span: *span,
-                })
+            Expression::Index { base, index, span } => {
+                let base_value = self.eval(base, row)?;
+                let index_value = self.eval(index, row)?;
+                eval_index(base_value, index_value, *span)
+            }
+            Expression::Slice {
+                base,
+                from,
+                to,
+                span,
+            } => {
+                let base_value = self.eval(base, row)?;
+                let from_value = from.as_deref().map(|e| self.eval(e, row)).transpose()?;
+                let to_value = to.as_deref().map(|e| self.eval(e, row)).transpose()?;
+                eval_slice(base_value, from_value, to_value, *span)
             }
         }
     }
@@ -3647,6 +3675,130 @@ fn get_property(base: &Value, name: &str, _span: Span) -> Value {
         Value::Map(map) => map.get(name).cloned().unwrap_or(Value::Null),
         _ => Value::Null,
     }
+}
+
+// ===== List / map indexing & slicing (`00139`) ==============================
+//
+// `expr[index]` and `expr[from..to]` mirror Neo4j's element-access semantics:
+//
+// * **List index** — zero-based; a **negative** index counts from the end
+//   (`xs[-1]` is the last element). An index **out of range** yields `NULL`
+//   (never an error), so a speculative `xs[10]` over a short list is quietly
+//   absent rather than fatal. The index must be an `Integer`.
+// * **Map / node / relationship index** — `m[key]` with a `String` key is
+//   exactly property access (it reuses [`get_property`]), returning `NULL` for
+//   an absent key.
+// * **Slice** — `xs[from..to]` is `from`-inclusive / `to`-exclusive,
+//   zero-based, with negative bounds counting from the end and every bound
+//   **clamped** into range (so `xs[-100..100]` is the whole list and
+//   `from >= to` is the empty list). Either bound may be omitted
+//   (`xs[..n]` / `xs[n..]` / `xs[..]`).
+//
+// `NULL` propagates: a `NULL` base, a `NULL` index, or a `NULL` slice bound all
+// make the whole expression `NULL`. Genuine misuse — a non-integer list index,
+// a non-string map key, or indexing/slicing a scalar — is a recoverable
+// [`ExecError::TypeMismatch`].
+
+/// Evaluate `base[index]` — a single list element or a map/entity field.
+fn eval_index(base: Value, index: Value, span: Span) -> ExecResultT<Value> {
+    // NULL on either side propagates (matches arithmetic / comparison).
+    if matches!(base, Value::Null) || matches!(index, Value::Null) {
+        return Ok(Value::Null);
+    }
+    match base {
+        Value::List(items) => {
+            let Value::Integer(i) = index else {
+                return Err(ExecError::TypeMismatch {
+                    expected: "Integer (list index)".into(),
+                    got: index.type_name().into(),
+                    span,
+                });
+            };
+            Ok(list_element(&items, i))
+        }
+        Value::Map(_) | Value::Node(_) | Value::Relationship(_) => {
+            let Value::String(key) = index else {
+                return Err(ExecError::TypeMismatch {
+                    expected: "String (map key)".into(),
+                    got: index.type_name().into(),
+                    span,
+                });
+            };
+            Ok(get_property(&base, &key, span))
+        }
+        other => Err(ExecError::TypeMismatch {
+            expected: "List or Map".into(),
+            got: other.type_name().into(),
+            span,
+        }),
+    }
+}
+
+/// Resolve a possibly-negative list index to an element, yielding `NULL` when
+/// the (normalised) index falls outside the list.
+fn list_element(items: &[Value], i: i64) -> Value {
+    let len = items.len() as i64;
+    let idx = if i < 0 { i + len } else { i };
+    if idx < 0 || idx >= len {
+        Value::Null
+    } else {
+        items[idx as usize].clone()
+    }
+}
+
+/// Evaluate `base[from..to]`. `from` / `to` are already-evaluated bound values
+/// (or `None` for an omitted bound).
+fn eval_slice(
+    base: Value,
+    from: Option<Value>,
+    to: Option<Value>,
+    span: Span,
+) -> ExecResultT<Value> {
+    if matches!(base, Value::Null) {
+        return Ok(Value::Null);
+    }
+    // A NULL bound makes the whole slice NULL (Neo4j semantics).
+    if matches!(from, Some(Value::Null)) || matches!(to, Some(Value::Null)) {
+        return Ok(Value::Null);
+    }
+    let Value::List(items) = base else {
+        return Err(ExecError::TypeMismatch {
+            expected: "List".into(),
+            got: base.type_name().into(),
+            span,
+        });
+    };
+    let len = items.len() as i64;
+    let lo = match from {
+        Some(v) => clamp_slice_bound(slice_bound(v, span)?, len),
+        None => 0,
+    };
+    let hi = match to {
+        Some(v) => clamp_slice_bound(slice_bound(v, span)?, len),
+        None => len,
+    };
+    if lo >= hi {
+        return Ok(Value::List(Vec::new()));
+    }
+    Ok(Value::List(items[lo as usize..hi as usize].to_vec()))
+}
+
+/// Extract an integer slice bound, rejecting any non-integer value.
+fn slice_bound(v: Value, span: Span) -> ExecResultT<i64> {
+    match v {
+        Value::Integer(i) => Ok(i),
+        other => Err(ExecError::TypeMismatch {
+            expected: "Integer (slice bound)".into(),
+            got: other.type_name().into(),
+            span,
+        }),
+    }
+}
+
+/// Normalise a (possibly negative) slice bound and clamp it into `[0, len]`.
+fn clamp_slice_bound(i: i64, len: i64) -> i64 {
+    let idx = if i < 0 { i + len } else { i };
+    idx.clamp(0, len)
 }
 
 // ===== Built-in scalar functions (`00138`) ==================================
@@ -6920,5 +7072,257 @@ mod tests {
                 vec![Value::String("urgent".into()), Value::Integer(2)],
             ]
         );
+    }
+
+    // ---- List / map indexing & slicing (00139) ----------------------------
+
+    fn list(values: &[i64]) -> Value {
+        Value::List(values.iter().map(|i| Value::Integer(*i)).collect())
+    }
+
+    #[test]
+    fn list_element_zero_based_and_negative() {
+        let xs = vec![Value::Integer(10), Value::Integer(20), Value::Integer(30)];
+        assert_eq!(list_element(&xs, 0), Value::Integer(10));
+        assert_eq!(list_element(&xs, 2), Value::Integer(30));
+        // Negative counts from the end.
+        assert_eq!(list_element(&xs, -1), Value::Integer(30));
+        assert_eq!(list_element(&xs, -3), Value::Integer(10));
+    }
+
+    #[test]
+    fn list_element_out_of_range_is_null() {
+        let xs = vec![Value::Integer(1), Value::Integer(2)];
+        assert_eq!(list_element(&xs, 2), Value::Null);
+        assert_eq!(list_element(&xs, 99), Value::Null);
+        assert_eq!(list_element(&xs, -3), Value::Null);
+        assert_eq!(list_element(&[], 0), Value::Null);
+    }
+
+    #[test]
+    fn eval_index_propagates_null() {
+        let span = zero_span();
+        assert_eq!(
+            eval_index(Value::Null, Value::Integer(0), span).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            eval_index(list(&[1, 2, 3]), Value::Null, span).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn eval_index_non_integer_list_index_is_type_error() {
+        let span = zero_span();
+        let e = eval_index(list(&[1, 2, 3]), Value::String("x".into()), span).unwrap_err();
+        assert!(matches!(e, ExecError::TypeMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn eval_index_map_by_string_key() {
+        let span = zero_span();
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Value::Integer(1));
+        let map = Value::Map(m);
+        assert_eq!(
+            eval_index(map.clone(), Value::String("a".into()), span).unwrap(),
+            Value::Integer(1)
+        );
+        // Absent key -> NULL (no error).
+        assert_eq!(
+            eval_index(map, Value::String("missing".into()), span).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn eval_index_map_by_non_string_key_is_type_error() {
+        let span = zero_span();
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Value::Integer(1));
+        let e = eval_index(Value::Map(m), Value::Integer(0), span).unwrap_err();
+        assert!(matches!(e, ExecError::TypeMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn eval_index_scalar_base_is_type_error() {
+        let span = zero_span();
+        let e = eval_index(Value::Integer(7), Value::Integer(0), span).unwrap_err();
+        assert!(matches!(e, ExecError::TypeMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn clamp_slice_bound_normalises_and_clamps() {
+        assert_eq!(clamp_slice_bound(0, 5), 0);
+        assert_eq!(clamp_slice_bound(3, 5), 3);
+        assert_eq!(clamp_slice_bound(10, 5), 5); // past the end clamps to len
+        assert_eq!(clamp_slice_bound(-1, 5), 4); // negative counts from end
+        assert_eq!(clamp_slice_bound(-100, 5), 0); // far negative clamps to 0
+    }
+
+    #[test]
+    fn eval_slice_basic_inclusive_exclusive() {
+        let span = zero_span();
+        let v = eval_slice(
+            list(&[1, 2, 3, 4, 5]),
+            Some(Value::Integer(1)),
+            Some(Value::Integer(3)),
+            span,
+        )
+        .unwrap();
+        assert_eq!(v, list(&[2, 3]));
+    }
+
+    #[test]
+    fn eval_slice_open_bounds() {
+        let span = zero_span();
+        // [..2]
+        assert_eq!(
+            eval_slice(list(&[1, 2, 3, 4]), None, Some(Value::Integer(2)), span).unwrap(),
+            list(&[1, 2])
+        );
+        // [2..]
+        assert_eq!(
+            eval_slice(list(&[1, 2, 3, 4]), Some(Value::Integer(2)), None, span).unwrap(),
+            list(&[3, 4])
+        );
+        // [..] is the whole list
+        assert_eq!(
+            eval_slice(list(&[1, 2, 3, 4]), None, None, span).unwrap(),
+            list(&[1, 2, 3, 4])
+        );
+    }
+
+    #[test]
+    fn eval_slice_negative_and_clamped_bounds() {
+        let span = zero_span();
+        // [-3..-1] -> elements 3,4
+        assert_eq!(
+            eval_slice(
+                list(&[1, 2, 3, 4, 5]),
+                Some(Value::Integer(-3)),
+                Some(Value::Integer(-1)),
+                span
+            )
+            .unwrap(),
+            list(&[3, 4])
+        );
+        // Out-of-range bounds clamp rather than panic.
+        assert_eq!(
+            eval_slice(
+                list(&[1, 2, 3]),
+                Some(Value::Integer(-100)),
+                Some(Value::Integer(100)),
+                span
+            )
+            .unwrap(),
+            list(&[1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn eval_slice_empty_when_from_ge_to() {
+        let span = zero_span();
+        assert_eq!(
+            eval_slice(
+                list(&[1, 2, 3]),
+                Some(Value::Integer(2)),
+                Some(Value::Integer(2)),
+                span
+            )
+            .unwrap(),
+            Value::List(Vec::new())
+        );
+        assert_eq!(
+            eval_slice(
+                list(&[1, 2, 3]),
+                Some(Value::Integer(3)),
+                Some(Value::Integer(1)),
+                span
+            )
+            .unwrap(),
+            Value::List(Vec::new())
+        );
+    }
+
+    #[test]
+    fn eval_slice_null_base_or_bound_is_null() {
+        let span = zero_span();
+        assert_eq!(
+            eval_slice(Value::Null, None, None, span).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            eval_slice(list(&[1, 2, 3]), Some(Value::Null), None, span).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            eval_slice(list(&[1, 2, 3]), None, Some(Value::Null), span).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn eval_slice_non_list_base_is_type_error() {
+        let span = zero_span();
+        let e = eval_slice(Value::Integer(5), None, None, span).unwrap_err();
+        assert!(matches!(e, ExecError::TypeMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn eval_slice_non_integer_bound_is_type_error() {
+        let span = zero_span();
+        let e = eval_slice(
+            list(&[1, 2, 3]),
+            Some(Value::String("x".into())),
+            None,
+            span,
+        )
+        .unwrap_err();
+        assert!(matches!(e, ExecError::TypeMismatch { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn index_literal_list_through_return() {
+        let db = drevo();
+        let res = run("RETURN [10, 20, 30][1] AS x", &db);
+        assert_eq!(res.rows[0][0], Value::Integer(20));
+    }
+
+    #[test]
+    fn index_property_list_with_parameter() {
+        let db = drevo();
+        run("CREATE (:Doc {title: 'd', tags: ['a', 'b', 'c']})", &db);
+        let mut params = HashMap::new();
+        params.insert("i".to_string(), Value::Integer(2));
+        let res = run_with_params("MATCH (d:Doc) RETURN d.tags[$i] AS t", &db, params);
+        assert_eq!(res.rows[0][0], Value::String("c".into()));
+    }
+
+    #[test]
+    fn slice_property_list_through_return() {
+        let db = drevo();
+        run(
+            "CREATE (:Doc {title: 'd', tags: ['a', 'b', 'c', 'd']})",
+            &db,
+        );
+        let res = run("MATCH (d:Doc) RETURN d.tags[1..3] AS t", &db);
+        assert_eq!(
+            res.rows[0][0],
+            Value::List(vec![Value::String("b".into()), Value::String("c".into())])
+        );
+    }
+
+    #[test]
+    fn index_in_where_filters_rows() {
+        let db = drevo();
+        run("CREATE (:Doc {title: 'keep', tags: ['x', 'y']})", &db);
+        run("CREATE (:Doc {title: 'drop', tags: ['z', 'y']})", &db);
+        let res = run(
+            "MATCH (d:Doc) WHERE d.tags[0] = 'x' RETURN d.title AS title",
+            &db,
+        );
+        assert_eq!(res.rows, vec![vec![Value::String("keep".into())]]);
     }
 }
