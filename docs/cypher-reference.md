@@ -240,6 +240,41 @@ RETURN count(DISTINCT e.team) AS distinct_teams
 
 ---
 
+## Conditional expressions — CASE
+
+`CASE` returns one of several values depending on a condition. It is an *expression*, so it
+may appear anywhere a value is expected: in `RETURN` / `WITH` projections, in `WHERE`, or
+nested inside another expression. There are two forms.
+
+The **generic** form evaluates each boolean `WHEN` condition in order and returns the `THEN`
+value of the first that is `true`. A `NULL` or `false` condition is skipped:
+
+```cypher
+MATCH (o:Order)
+RETURN o.title AS po,
+       CASE WHEN o.total >= 10000 THEN 'gold'
+            WHEN o.total >= 1000 THEN 'silver'
+            ELSE 'standard' END AS tier
+```
+
+The **simple** form compares a scrutinee against each `WHEN` value for equality and returns
+the matching `THEN`. Because `NULL = NULL` is `NULL` (not `true`), a `NULL` scrutinee never
+matches and falls through to `ELSE`:
+
+```cypher
+MATCH (t:Task)
+RETURN t.title AS task,
+       CASE t.priority WHEN 'P1' THEN 1
+                       WHEN 'P2' THEN 8
+                       ELSE 72 END AS sla_hours
+```
+
+When no arm matches and there is no `ELSE`, the result is `NULL`. A generic-form condition
+that is neither boolean nor `NULL` raises `ExecError::TypeMismatch`. Aggregations are not
+yet supported *inside* a `CASE` arm.
+
+---
+
 ## Writing data
 
 ### CREATE
@@ -364,7 +399,7 @@ error rather than a crash or a silent wrong answer.
 | `FOREACH` | not in executor |
 | Named path binding `p = (a)-[*]->(b)` | parses, executor returns `Unsupported` |
 | Variable-length paths in `CREATE` | executor returns `Unsupported` |
-| `CASE … WHEN … THEN … END` | parses, executor returns `Unsupported` |
+| Aggregations nested inside a `CASE` arm | executor returns `Unsupported` |
 | Regex match `=~` | executor returns `Unsupported` |
 | List/map indexing `x[i]` and slicing `x[a..b]` | executor returns `Unsupported` |
 | Standalone scalar functions other than `keywords` / `similar` (`length`, `size`, `toLower`, …) | executor returns `Unsupported` |
