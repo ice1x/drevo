@@ -1001,12 +1001,66 @@ fn is_aggregation_name(name: &[String]) -> bool {
     )
 }
 
-/// The supported scalar (non-aggregation) functions: `similar(...)`,
-/// drevo's joint graph+vector predicate (`00077`), and `keywords(...)`,
+/// The supported scalar (non-aggregation) functions: the built-in
+/// string / numeric / list library ([`is_builtin_scalar_function`],
+/// task `00138`), plus drevo's two domain extensions — `similar(...)`,
+/// the joint graph+vector predicate (`00077`), and `keywords(...)`,
 /// BM25-IDF keyword extraction (`00132`).
 fn is_scalar_function_name(name: &[String]) -> bool {
-    name.len() == 1
-        && (name[0].eq_ignore_ascii_case("similar") || name[0].eq_ignore_ascii_case("keywords"))
+    if name.len() != 1 {
+        return false;
+    }
+    let lower = name[0].to_ascii_lowercase();
+    lower == "similar" || lower == "keywords" || is_builtin_scalar_function(&lower)
+}
+
+/// `true` when `lower` (an already-lowercased function name) is one of the
+/// built-in scalar functions the executor evaluates in [`Executor::call_scalar`].
+///
+/// Kept deliberately in lock-step with the `call_scalar` dispatch: a name
+/// accepted here that `call_scalar` does not handle would surface a confusing
+/// "unsupported" error *after* the upfront validation sweep passed, and a name
+/// `call_scalar` handles but this rejects would be blocked before it ever runs.
+fn is_builtin_scalar_function(lower: &str) -> bool {
+    matches!(
+        lower,
+        // String functions.
+        "tolower"
+            | "toupper"
+            | "trim"
+            | "ltrim"
+            | "rtrim"
+            | "substring"
+            | "replace"
+            | "split"
+            | "left"
+            | "right"
+            | "reverse"
+            | "tostring"
+            // Numeric functions.
+            | "abs"
+            | "ceil"
+            | "floor"
+            | "round"
+            | "sign"
+            | "sqrt"
+            | "tointeger"
+            | "tofloat"
+            | "toboolean"
+            // List / scalar functions.
+            | "size"
+            | "length"
+            | "head"
+            | "last"
+            | "tail"
+            | "coalesce"
+            | "range"
+            | "keys"
+            | "labels"
+            | "type"
+            | "id"
+            | "properties"
+    )
 }
 
 fn contains_aggregation(expr: &Expression) -> bool {
@@ -1060,9 +1114,10 @@ fn contains_aggregation(expr: &Expression) -> bool {
 /// Identical to [`validate_expr_supported`] except that **aggregation**
 /// function calls (`count` / `sum` / `avg` / `min` / `max` / `collect`)
 /// are allowed, and `*` is allowed only as the sole argument of `count`.
-/// Non-aggregation function calls remain rejected with a pointer to the
-/// future scalar-function task, since the executor has no scalar
-/// function library yet (`size`, `toLower`, …).
+/// Non-aggregation function calls are accepted when they name a built-in
+/// scalar function (`size`, `toLower`, … — `00138`) or a drevo extension
+/// (`similar` / `keywords`); every other name is rejected with a pointer to
+/// the future scalar-function task.
 fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
     match expr {
         Expression::FunctionCall {
@@ -1072,8 +1127,9 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             span,
         } => {
             if !is_aggregation_name(name) {
-                // Scalar functions (currently `similar`) are allowed in a
-                // projection; validate their arguments and accept.
+                // Scalar functions (the `00138` built-ins plus `similar` /
+                // `keywords`) are allowed in a projection; validate their
+                // arguments and accept.
                 if is_scalar_function_name(name) {
                     for arg in args {
                         validate_expr_supported(arg)?;
@@ -3236,10 +3292,10 @@ impl<'a> Executor<'a> {
     /// Dispatch a non-aggregation (scalar) function call.
     ///
     /// Recognises `similar(...)` — drevo's joint graph+vector predicate
-    /// (`00077`) — and `keywords(...)` — BM25-IDF keyword extraction
-    /// (`00132`). Every other name stays [`ExecError::Unsupported`] so
-    /// callers get a deterministic "not yet" rather than a silent wrong
-    /// answer.
+    /// (`00077`) — `keywords(...)` — BM25-IDF keyword extraction (`00132`) —
+    /// and the built-in string / numeric / list library ([`call_scalar`],
+    /// `00138`). Every other name stays [`ExecError::Unsupported`] so callers
+    /// get a deterministic "not yet" rather than a silent wrong answer.
     fn eval_scalar_function(
         &self,
         name: &[String],
@@ -3252,6 +3308,16 @@ impl<'a> Executor<'a> {
         }
         if name.len() == 1 && name[0].eq_ignore_ascii_case("keywords") {
             return self.eval_keywords(args, row, span);
+        }
+        if name.len() == 1 {
+            let lower = name[0].to_ascii_lowercase();
+            if is_builtin_scalar_function(&lower) {
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(self.eval(arg, row)?);
+                }
+                return call_scalar(&lower, values, span);
+            }
         }
         Err(ExecError::Unsupported {
             feature: format!("function call `{}`", name.join(".")),
@@ -3580,6 +3646,633 @@ fn get_property(base: &Value, name: &str, _span: Span) -> Value {
         Value::Relationship(rv) => rv.properties.get(name).cloned().unwrap_or(Value::Null),
         Value::Map(map) => map.get(name).cloned().unwrap_or(Value::Null),
         _ => Value::Null,
+    }
+}
+
+// ===== Built-in scalar functions (`00138`) ==================================
+
+/// Maximum number of elements [`scalar_range`] will materialise. `range` is
+/// the one built-in that can request an unbounded allocation from small
+/// inputs (`range(0, 1e18)`); the cap turns that into a recoverable error
+/// instead of an out-of-memory abort.
+const RANGE_MAX_ELEMENTS: i64 = 10_000_000;
+
+/// Dispatch a built-in scalar function by its already-lowercased `name`.
+///
+/// `args` are the fully-evaluated argument [`Value`]s. With the sole
+/// exception of `coalesce` (whose whole purpose is to skip `NULL`s), every
+/// built-in is **NULL-propagating**: if any argument is `NULL` the result is
+/// `NULL`, never an error — so a function applied across a heterogeneous scan
+/// quietly yields `NULL` for the rows whose property is absent rather than
+/// aborting the query. Genuine misuse (wrong arity, an argument of a type the
+/// function cannot accept) is a recoverable [`ExecError::InvalidFunctionCall`].
+fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    // `coalesce` is the one non-propagating built-in: it returns its first
+    // non-NULL argument, so it must see the raw NULLs.
+    if name == "coalesce" {
+        return scalar_coalesce(args, span);
+    }
+    if args.iter().any(|v| matches!(v, Value::Null)) {
+        return Ok(Value::Null);
+    }
+    match name {
+        // ---- String ----
+        "tolower" => str_map(name, args, span, |s| s.to_lowercase()),
+        "toupper" => str_map(name, args, span, |s| s.to_uppercase()),
+        "trim" => str_map(name, args, span, |s| s.trim().to_string()),
+        "ltrim" => str_map(name, args, span, |s| s.trim_start().to_string()),
+        "rtrim" => str_map(name, args, span, |s| s.trim_end().to_string()),
+        "reverse" => scalar_reverse(args, span),
+        "substring" => scalar_substring(args, span),
+        "replace" => scalar_replace(args, span),
+        "split" => scalar_split(args, span),
+        "left" => scalar_left_right(name, args, span, true),
+        "right" => scalar_left_right(name, args, span, false),
+        "tostring" => scalar_tostring(args, span),
+        // ---- Numeric ----
+        "abs" => scalar_abs(args, span),
+        "ceil" => float_map(name, args, span, f64::ceil),
+        "floor" => float_map(name, args, span, f64::floor),
+        "round" => float_map(name, args, span, f64::round),
+        "sqrt" => float_map(name, args, span, f64::sqrt),
+        "sign" => scalar_sign(args, span),
+        "tointeger" => scalar_to_integer(args, span),
+        "tofloat" => scalar_to_float(args, span),
+        "toboolean" => scalar_to_boolean(args, span),
+        // ---- List / scalar ----
+        "size" | "length" => scalar_size(name, args, span),
+        "head" => scalar_head(args, span),
+        "last" => scalar_last(args, span),
+        "tail" => scalar_tail(args, span),
+        "range" => scalar_range(args, span),
+        "keys" => scalar_keys(args, span),
+        "labels" => scalar_labels(args, span),
+        "type" => scalar_type(args, span),
+        "id" => scalar_id(args, span),
+        "properties" => scalar_properties(args, span),
+        // Unreachable: `is_builtin_scalar_function` gates entry, so any name
+        // reaching here is a missing arm rather than user input.
+        other => Err(ExecError::Unsupported {
+            feature: format!("function call `{other}`"),
+            task: "future Phase 10 follow-up".into(),
+            span,
+        }),
+    }
+}
+
+/// Build an `invalid call` error for a built-in scalar function.
+fn fn_err(name: &str, message: impl Into<String>, span: Span) -> ExecError {
+    ExecError::InvalidFunctionCall {
+        name: name.into(),
+        message: message.into(),
+        span,
+    }
+}
+
+/// Assert a built-in received exactly `want` arguments.
+fn expect_arity(name: &str, args: &[Value], want: usize, span: Span) -> ExecResultT<()> {
+    if args.len() != want {
+        return Err(fn_err(
+            name,
+            format!("expected {want} argument(s), got {}", args.len()),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+/// Validate arity == 1 and return the single owned argument. Avoids the
+/// `unwrap`/`expect` the crosscut audit forbids in library code while still
+/// surfacing a recoverable arity error.
+fn take_one(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    let mut iter = args.into_iter();
+    match (iter.next(), iter.next()) {
+        (Some(v), None) => Ok(v),
+        (None, _) => Err(fn_err(name, "expected 1 argument, got 0", span)),
+        (Some(_), Some(_)) => Err(fn_err(name, "expected 1 argument, got 2 or more", span)),
+    }
+}
+
+/// Pull the single string argument of a one-arg string function.
+fn one_string(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<String> {
+    match take_one(name, args, span)? {
+        Value::String(s) => Ok(s),
+        other => Err(fn_err(
+            name,
+            format!("argument must be a String, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+/// One-argument `String -> String` mapping (`toLower`, `trim`, …).
+fn str_map(
+    name: &str,
+    args: Vec<Value>,
+    span: Span,
+    f: impl Fn(&str) -> String,
+) -> ExecResultT<Value> {
+    let s = one_string(name, args, span)?;
+    Ok(Value::String(f(&s)))
+}
+
+/// One-argument `Number -> Float` mapping (`ceil`, `floor`, `round`, `sqrt`).
+fn float_map(
+    name: &str,
+    args: Vec<Value>,
+    span: Span,
+    f: impl Fn(f64) -> f64,
+) -> ExecResultT<Value> {
+    expect_arity(name, &args, 1, span)?;
+    let n = args[0].as_number().ok_or_else(|| {
+        fn_err(
+            name,
+            format!("argument must be a number, got {}", args[0].type_name()),
+            span,
+        )
+    })?;
+    Ok(Value::Float(f(n)))
+}
+
+/// `coalesce(a, b, …)` — the first non-`NULL` argument, or `NULL` if every
+/// argument (and there must be at least one) is `NULL`.
+fn scalar_coalesce(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    if args.is_empty() {
+        return Err(fn_err("coalesce", "expected at least one argument", span));
+    }
+    Ok(args
+        .into_iter()
+        .find(|v| !matches!(v, Value::Null))
+        .unwrap_or(Value::Null))
+}
+
+/// `reverse(x)` — reverses a String (by Unicode scalar value) or a List.
+fn scalar_reverse(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("reverse", args, span)? {
+        Value::String(s) => Ok(Value::String(s.chars().rev().collect())),
+        Value::List(mut items) => {
+            items.reverse();
+            Ok(Value::List(items))
+        }
+        other => Err(fn_err(
+            "reverse",
+            format!(
+                "argument must be a String or List, got {}",
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+/// `substring(original, start[, length])` — a 0-based, codepoint-indexed
+/// slice. A `start` past the end yields the empty string; an omitted `length`
+/// runs to the end. Negative `start` / `length` are rejected (Neo4j parity).
+fn scalar_substring(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    if args.len() != 2 && args.len() != 3 {
+        return Err(fn_err(
+            "substring",
+            format!("expected 2 or 3 arguments, got {}", args.len()),
+            span,
+        ));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => {
+            return Err(fn_err(
+                "substring",
+                format!("first argument must be a String, got {}", other.type_name()),
+                span,
+            ))
+        }
+    };
+    let start = int_arg("substring", &args[1], "start", span)?;
+    if start < 0 {
+        return Err(fn_err("substring", "start must be non-negative", span));
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let start = (start as usize).min(chars.len());
+    let end = match args.get(2) {
+        None => chars.len(),
+        Some(len_val) => {
+            let len = int_arg("substring", len_val, "length", span)?;
+            if len < 0 {
+                return Err(fn_err("substring", "length must be non-negative", span));
+            }
+            start.saturating_add(len as usize).min(chars.len())
+        }
+    };
+    Ok(Value::String(chars[start..end].iter().collect()))
+}
+
+/// `replace(original, search, replacement)` — replaces every non-overlapping
+/// occurrence of `search`. An empty `search` leaves the string unchanged
+/// (Neo4j parity), avoiding the surprising insert-between-every-char outcome.
+fn scalar_replace(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("replace", &args, 3, span)?;
+    let original = string_arg("replace", &args[0], "original", span)?;
+    let search = string_arg("replace", &args[1], "search", span)?;
+    let replacement = string_arg("replace", &args[2], "replacement", span)?;
+    if search.is_empty() {
+        return Ok(Value::String(original.to_string()));
+    }
+    Ok(Value::String(original.replace(search, replacement)))
+}
+
+/// `split(original, delimiter)` — splits into a List of String. An empty
+/// delimiter splits into individual characters (Neo4j parity).
+fn scalar_split(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("split", &args, 2, span)?;
+    let original = string_arg("split", &args[0], "original", span)?;
+    let delimiter = string_arg("split", &args[1], "delimiter", span)?;
+    let parts: Vec<Value> = if delimiter.is_empty() {
+        original
+            .chars()
+            .map(|c| Value::String(c.to_string()))
+            .collect()
+    } else {
+        original
+            .split(delimiter)
+            .map(|p| Value::String(p.to_string()))
+            .collect()
+    };
+    Ok(Value::List(parts))
+}
+
+/// `left(s, n)` / `right(s, n)` — the first / last `n` codepoints, clamped to
+/// the string length. Negative `n` is rejected (Neo4j parity).
+fn scalar_left_right(
+    name: &str,
+    args: Vec<Value>,
+    span: Span,
+    from_left: bool,
+) -> ExecResultT<Value> {
+    expect_arity(name, &args, 2, span)?;
+    let s = string_arg(name, &args[0], "string", span)?;
+    let n = int_arg(name, &args[1], "length", span)?;
+    if n < 0 {
+        return Err(fn_err(name, "length must be non-negative", span));
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let n = (n as usize).min(chars.len());
+    let slice = if from_left {
+        &chars[..n]
+    } else {
+        &chars[chars.len() - n..]
+    };
+    Ok(Value::String(slice.iter().collect()))
+}
+
+/// `toString(x)` — the string form of a Boolean, Integer, Float, or String.
+/// Integral floats render with a trailing `.0` (Neo4j parity: `1.0`, not `1`).
+fn scalar_tostring(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    let out = match take_one("toString", args, span)? {
+        Value::Bool(b) => b.to_string(),
+        Value::Integer(i) => i.to_string(),
+        Value::Float(f) => format_float(f),
+        Value::String(s) => s,
+        other => {
+            return Err(fn_err(
+                "toString",
+                format!("cannot convert {} to a String", other.type_name()),
+                span,
+            ))
+        }
+    };
+    Ok(Value::String(out))
+}
+
+/// `abs(n)` — preserves Integer vs Float. `abs(i64::MIN)` overflows and is a
+/// recoverable error rather than a panic.
+fn scalar_abs(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("abs", &args, 1, span)?;
+    match &args[0] {
+        Value::Integer(i) => i
+            .checked_abs()
+            .map(Value::Integer)
+            .ok_or_else(|| fn_err("abs", "integer overflow", span)),
+        Value::Float(f) => Ok(Value::Float(f.abs())),
+        other => Err(fn_err(
+            "abs",
+            format!("argument must be a number, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+/// `sign(n)` — `-1`, `0`, or `1` as an Integer.
+fn scalar_sign(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("sign", &args, 1, span)?;
+    let n = args[0].as_number().ok_or_else(|| {
+        fn_err(
+            "sign",
+            format!("argument must be a number, got {}", args[0].type_name()),
+            span,
+        )
+    })?;
+    let sign = if n > 0.0 {
+        1
+    } else if n < 0.0 {
+        -1
+    } else {
+        0
+    };
+    Ok(Value::Integer(sign))
+}
+
+/// `toInteger(x)` — converts a number or numeric string to an Integer.
+/// A Float truncates toward zero; an unparseable String or a Boolean yields
+/// `NULL` (Neo4j parity — conversion is lenient, not an error).
+fn scalar_to_integer(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    let out = match take_one("toInteger", args, span)? {
+        Value::Integer(i) => Value::Integer(i),
+        Value::Float(f) if f.is_finite() => Value::Integer(f.trunc() as i64),
+        Value::Float(_) => Value::Null,
+        Value::String(s) => parse_integer(&s),
+        _ => Value::Null,
+    };
+    Ok(out)
+}
+
+/// Parse a string into an Integer `Value`, falling back to truncating a
+/// float-formatted string. Unparseable input yields `NULL`.
+fn parse_integer(s: &str) -> Value {
+    let trimmed = s.trim();
+    if let Ok(i) = trimmed.parse::<i64>() {
+        return Value::Integer(i);
+    }
+    match trimmed.parse::<f64>() {
+        Ok(f) if f.is_finite() => Value::Integer(f.trunc() as i64),
+        _ => Value::Null,
+    }
+}
+
+/// `toFloat(x)` — converts a number or numeric string to a Float. An
+/// unparseable String or a Boolean yields `NULL` (Neo4j parity).
+fn scalar_to_float(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    let out = match take_one("toFloat", args, span)? {
+        Value::Integer(i) => Value::Float(i as f64),
+        Value::Float(f) => Value::Float(f),
+        Value::String(s) => match s.trim().parse::<f64>() {
+            Ok(f) => Value::Float(f),
+            Err(_) => Value::Null,
+        },
+        _ => Value::Null,
+    };
+    Ok(out)
+}
+
+/// `toBoolean(x)` — Boolean passthrough; `"true"`/`"false"` (case-insensitive,
+/// trimmed) from a String; `0`/`1` from an Integer; anything else yields
+/// `NULL` (Neo4j parity).
+fn scalar_to_boolean(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    let out = match take_one("toBoolean", args, span)? {
+        Value::Bool(b) => Value::Bool(b),
+        Value::Integer(0) => Value::Bool(false),
+        Value::Integer(1) => Value::Bool(true),
+        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => Value::Null,
+        },
+        _ => Value::Null,
+    };
+    Ok(out)
+}
+
+/// `size(x)` / `length(x)` — the element count of a List or the codepoint
+/// count of a String, as an Integer.
+fn scalar_size(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity(name, &args, 1, span)?;
+    match &args[0] {
+        Value::List(items) => Ok(Value::Integer(items.len() as i64)),
+        Value::String(s) => Ok(Value::Integer(s.chars().count() as i64)),
+        other => Err(fn_err(
+            name,
+            format!(
+                "argument must be a List or String, got {}",
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+/// `head(list)` — the first element, or `NULL` for an empty list.
+fn scalar_head(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("head", args, span)? {
+        Value::List(items) => Ok(items.into_iter().next().unwrap_or(Value::Null)),
+        other => Err(fn_err(
+            "head",
+            format!("argument must be a List, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+/// `last(list)` — the final element, or `NULL` for an empty list.
+fn scalar_last(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("last", args, span)? {
+        Value::List(items) => Ok(items.into_iter().last().unwrap_or(Value::Null)),
+        other => Err(fn_err(
+            "last",
+            format!("argument must be a List, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+/// `tail(list)` — every element except the first (empty list for a 0/1-element
+/// input).
+fn scalar_tail(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("tail", args, span)? {
+        Value::List(mut items) => {
+            if !items.is_empty() {
+                items.remove(0);
+            }
+            Ok(Value::List(items))
+        }
+        other => Err(fn_err(
+            "tail",
+            format!("argument must be a List, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+/// `range(start, end[, step])` — an inclusive arithmetic sequence of Integers.
+/// `step` defaults to `1` and may not be `0`. The element count is capped at
+/// [`RANGE_MAX_ELEMENTS`] to bound memory.
+fn scalar_range(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    if args.len() != 2 && args.len() != 3 {
+        return Err(fn_err(
+            "range",
+            format!("expected 2 or 3 arguments, got {}", args.len()),
+            span,
+        ));
+    }
+    let start = int_arg("range", &args[0], "start", span)?;
+    let end = int_arg("range", &args[1], "end", span)?;
+    let step = match args.get(2) {
+        None => 1,
+        Some(v) => int_arg("range", v, "step", span)?,
+    };
+    if step == 0 {
+        return Err(fn_err("range", "step must not be zero", span));
+    }
+    let count = range_len(start, end, step);
+    if count > RANGE_MAX_ELEMENTS {
+        return Err(fn_err(
+            "range",
+            format!("range of {count} elements exceeds the {RANGE_MAX_ELEMENTS} limit"),
+            span,
+        ));
+    }
+    let mut out = Vec::with_capacity(count as usize);
+    let mut current = start;
+    for _ in 0..count {
+        out.push(Value::Integer(current));
+        current = current.saturating_add(step);
+    }
+    Ok(Value::List(out))
+}
+
+/// Number of elements `range(start, end, step)` produces (inclusive of `end`
+/// when it lands on a step boundary), or `0` when the step points away from
+/// `end`.
+fn range_len(start: i64, end: i64, step: i64) -> i64 {
+    if (step > 0 && start > end) || (step < 0 && start < end) {
+        return 0;
+    }
+    let span = (end - start) as i128;
+    let stride = step as i128;
+    (span / stride) as i64 + 1
+}
+
+/// `keys(x)` — the property names of a Node, Relationship, or Map, as a List
+/// of String in sorted order (the property maps are themselves sorted).
+fn scalar_keys(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("keys", &args, 1, span)?;
+    let keys: Vec<Value> = match &args[0] {
+        Value::Node(nv) => nv.properties.keys().cloned().map(Value::String).collect(),
+        Value::Relationship(rv) => rv.properties.keys().cloned().map(Value::String).collect(),
+        Value::Map(m) => m.keys().cloned().map(Value::String).collect(),
+        other => {
+            return Err(fn_err(
+                "keys",
+                format!(
+                    "argument must be a Node, Relationship, or Map, got {}",
+                    other.type_name()
+                ),
+                span,
+            ))
+        }
+    };
+    Ok(Value::List(keys))
+}
+
+/// `labels(node)` — the node's labels as a List of String.
+fn scalar_labels(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("labels", &args, 1, span)?;
+    match &args[0] {
+        Value::Node(nv) => Ok(Value::List(
+            nv.labels.iter().cloned().map(Value::String).collect(),
+        )),
+        other => Err(fn_err(
+            "labels",
+            format!("argument must be a Node, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+/// `type(rel)` — the relationship's type as a String.
+fn scalar_type(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("type", &args, 1, span)?;
+    match &args[0] {
+        Value::Relationship(rv) => Ok(Value::String(rv.kind.clone())),
+        other => Err(fn_err(
+            "type",
+            format!("argument must be a Relationship, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+/// `id(x)` — the internal storage id of a Node or Relationship, as an Integer.
+fn scalar_id(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("id", &args, 1, span)?;
+    match &args[0] {
+        Value::Node(nv) => Ok(Value::Integer(nv.id as i64)),
+        Value::Relationship(rv) => Ok(Value::Integer(rv.id as i64)),
+        other => Err(fn_err(
+            "id",
+            format!(
+                "argument must be a Node or Relationship, got {}",
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+/// `properties(x)` — the property Map of a Node or Relationship (a Map argument
+/// is returned unchanged).
+fn scalar_properties(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("properties", args, span)? {
+        Value::Node(nv) => Ok(Value::Map(nv.properties.clone())),
+        Value::Relationship(rv) => Ok(Value::Map(rv.properties.clone())),
+        Value::Map(m) => Ok(Value::Map(m)),
+        other => Err(fn_err(
+            "properties",
+            format!(
+                "argument must be a Node, Relationship, or Map, got {}",
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+/// Coerce a [`Value`] to a borrowed `&str` for a named function argument, or a
+/// recoverable error naming the offending position.
+fn string_arg<'a>(func: &str, value: &'a Value, which: &str, span: Span) -> ExecResultT<&'a str> {
+    match value {
+        Value::String(s) => Ok(s.as_str()),
+        other => Err(fn_err(
+            func,
+            format!(
+                "{which} argument must be a String, got {}",
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+/// Coerce a [`Value`] to an `i64` for a named function argument, or a
+/// recoverable error naming the offending position.
+fn int_arg(func: &str, value: &Value, which: &str, span: Span) -> ExecResultT<i64> {
+    match value {
+        Value::Integer(i) => Ok(*i),
+        other => Err(fn_err(
+            func,
+            format!(
+                "{which} argument must be an Integer, got {}",
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+/// Render a Float the way Cypher's `toString` does: an integral value keeps a
+/// trailing `.0` (`1.0`, not `1`); non-finite values use Rust's `inf`/`NaN`.
+fn format_float(f: f64) -> String {
+    if f.is_finite() && f == f.trunc() {
+        format!("{f:.1}")
+    } else {
+        format!("{f}")
     }
 }
 
@@ -4950,7 +5643,9 @@ mod tests {
     fn unknown_function_still_unsupported() {
         let db = drevo();
         run("CREATE (:Person {name: 'A'})", &db);
-        let e = err("MATCH (n:Person) RETURN size(n.name) AS s", &db);
+        // `nosuchfn` is not a built-in scalar, aggregation, or drevo
+        // extension, so it must stay a deterministic `Unsupported`.
+        let e = err("MATCH (n:Person) RETURN nosuchfn(n.name) AS s", &db);
         assert!(
             matches!(e, ExecError::Unsupported { ref feature, .. } if feature.contains("function call")),
             "got {:?}",
@@ -5607,8 +6302,13 @@ mod tests {
         assert!(is_scalar_function_name(&["Similar".to_string()]));
         assert!(is_scalar_function_name(&["keywords".to_string()]));
         assert!(is_scalar_function_name(&["KEYWORDS".to_string()]));
+        // The `00138` built-ins are recognised (case-insensitively) too.
+        assert!(is_scalar_function_name(&["size".to_string()]));
+        assert!(is_scalar_function_name(&["toUpper".to_string()]));
+        assert!(is_scalar_function_name(&["COALESCE".to_string()]));
+        // Aggregations and unknown names are not scalar functions.
         assert!(!is_scalar_function_name(&["count".to_string()]));
-        assert!(!is_scalar_function_name(&["size".to_string()]));
+        assert!(!is_scalar_function_name(&["nosuchfn".to_string()]));
         // A dotted name is never a built-in scalar function.
         assert!(!is_scalar_function_name(&[
             "apoc".to_string(),
@@ -5747,9 +6447,10 @@ mod tests {
     #[test]
     fn union_arm_unsupported_construct_surfaces() {
         let db = drevo();
-        // A scalar function with no executor implementation (only `similar`
-        // and `keywords` are recognised) stays `Unsupported`.
-        let e = err("RETURN 1 AS n UNION RETURN toUpper('x') AS n", &db);
+        // A function with no executor implementation (an unknown name, since
+        // the `00138` built-ins plus `similar` / `keywords` are now all
+        // recognised) stays `Unsupported` when it appears inside a UNION arm.
+        let e = err("RETURN 1 AS n UNION RETURN nosuchfn('x') AS n", &db);
         assert!(matches!(e, ExecError::Unsupported { .. }), "{e:?}");
     }
 
@@ -5859,5 +6560,365 @@ mod tests {
             &db,
         );
         assert!(matches!(e, ExecError::Unsupported { .. }), "{e:?}");
+    }
+
+    // ---- Scalar functions (00138) ---------------------------------------
+
+    /// Evaluate a single scalar expression via `RETURN <expr> AS v` and
+    /// return the one projected value.
+    fn scalar(source: &str, db: &Drevo) -> Value {
+        let res = run(source, db);
+        assert_eq!(res.rows.len(), 1, "expected one row from {source:?}");
+        res.rows[0][0].clone()
+    }
+
+    #[test]
+    fn string_case_and_trim_functions() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN toLower('HeLLo') AS v", &db),
+            Value::String("hello".into())
+        );
+        assert_eq!(
+            scalar("RETURN toUpper('HeLLo') AS v", &db),
+            Value::String("HELLO".into())
+        );
+        assert_eq!(
+            scalar("RETURN trim('  hi  ') AS v", &db),
+            Value::String("hi".into())
+        );
+        assert_eq!(
+            scalar("RETURN ltrim('  hi  ') AS v", &db),
+            Value::String("hi  ".into())
+        );
+        assert_eq!(
+            scalar("RETURN rtrim('  hi  ') AS v", &db),
+            Value::String("  hi".into())
+        );
+    }
+
+    #[test]
+    fn substring_two_and_three_arg() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN substring('hello', 1) AS v", &db),
+            Value::String("ello".into())
+        );
+        assert_eq!(
+            scalar("RETURN substring('hello', 1, 3) AS v", &db),
+            Value::String("ell".into())
+        );
+        // start past the end yields the empty string, length over-runs clamp.
+        assert_eq!(
+            scalar("RETURN substring('hi', 9) AS v", &db),
+            Value::String("".into())
+        );
+        assert_eq!(
+            scalar("RETURN substring('hi', 1, 99) AS v", &db),
+            Value::String("i".into())
+        );
+    }
+
+    #[test]
+    fn substring_negative_start_is_error() {
+        let db = drevo();
+        let e = err("RETURN substring('hi', -1) AS v", &db);
+        assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn replace_split_left_right_reverse() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN replace('a.b.c', '.', '-') AS v", &db),
+            Value::String("a-b-c".into())
+        );
+        // empty search leaves the string unchanged.
+        assert_eq!(
+            scalar("RETURN replace('abc', '', 'X') AS v", &db),
+            Value::String("abc".into())
+        );
+        assert_eq!(
+            scalar("RETURN split('a,b,c', ',') AS v", &db),
+            Value::List(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into())
+            ])
+        );
+        assert_eq!(
+            scalar("RETURN left('hello', 2) AS v", &db),
+            Value::String("he".into())
+        );
+        assert_eq!(
+            scalar("RETURN right('hello', 2) AS v", &db),
+            Value::String("lo".into())
+        );
+        assert_eq!(
+            scalar("RETURN reverse('abc') AS v", &db),
+            Value::String("cba".into())
+        );
+        assert_eq!(
+            scalar("RETURN reverse([1, 2, 3]) AS v", &db),
+            Value::List(vec![
+                Value::Integer(3),
+                Value::Integer(2),
+                Value::Integer(1)
+            ])
+        );
+    }
+
+    #[test]
+    fn tostring_renders_each_scalar_type() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN toString(42) AS v", &db),
+            Value::String("42".into())
+        );
+        assert_eq!(
+            scalar("RETURN toString(true) AS v", &db),
+            Value::String("true".into())
+        );
+        // an integral float keeps a trailing .0
+        assert_eq!(
+            scalar("RETURN toString(2.0) AS v", &db),
+            Value::String("2.0".into())
+        );
+        assert_eq!(
+            scalar("RETURN toString(1.5) AS v", &db),
+            Value::String("1.5".into())
+        );
+    }
+
+    #[test]
+    fn numeric_functions_preserve_or_widen_type() {
+        let db = drevo();
+        // abs preserves Integer vs Float.
+        assert_eq!(scalar("RETURN abs(-3) AS v", &db), Value::Integer(3));
+        assert_eq!(scalar("RETURN abs(-2.5) AS v", &db), Value::Float(2.5));
+        // ceil / floor / round / sqrt widen to Float.
+        assert_eq!(scalar("RETURN ceil(1.1) AS v", &db), Value::Float(2.0));
+        assert_eq!(scalar("RETURN floor(1.9) AS v", &db), Value::Float(1.0));
+        assert_eq!(scalar("RETURN round(1.5) AS v", &db), Value::Float(2.0));
+        assert_eq!(scalar("RETURN sqrt(9) AS v", &db), Value::Float(3.0));
+        // sign returns an Integer in {-1, 0, 1}.
+        assert_eq!(scalar("RETURN sign(-7) AS v", &db), Value::Integer(-1));
+        assert_eq!(scalar("RETURN sign(0) AS v", &db), Value::Integer(0));
+        assert_eq!(scalar("RETURN sign(7) AS v", &db), Value::Integer(1));
+    }
+
+    #[test]
+    fn to_integer_float_boolean_conversions() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN toInteger('42') AS v", &db),
+            Value::Integer(42)
+        );
+        assert_eq!(scalar("RETURN toInteger(3.9) AS v", &db), Value::Integer(3));
+        // unparseable string => NULL, never an error.
+        assert_eq!(scalar("RETURN toInteger('abc') AS v", &db), Value::Null);
+        assert_eq!(scalar("RETURN toFloat('1.5') AS v", &db), Value::Float(1.5));
+        assert_eq!(scalar("RETURN toFloat(2) AS v", &db), Value::Float(2.0));
+        assert_eq!(scalar("RETURN toFloat('x') AS v", &db), Value::Null);
+        assert_eq!(
+            scalar("RETURN toBoolean('TRUE') AS v", &db),
+            Value::Bool(true)
+        );
+        assert_eq!(scalar("RETURN toBoolean(0) AS v", &db), Value::Bool(false));
+        assert_eq!(scalar("RETURN toBoolean('maybe') AS v", &db), Value::Null);
+    }
+
+    #[test]
+    fn size_length_head_last_tail() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN size([1, 2, 3]) AS v", &db),
+            Value::Integer(3)
+        );
+        assert_eq!(scalar("RETURN size('hello') AS v", &db), Value::Integer(5));
+        assert_eq!(
+            scalar("RETURN length('hello') AS v", &db),
+            Value::Integer(5)
+        );
+        assert_eq!(
+            scalar("RETURN head([7, 8, 9]) AS v", &db),
+            Value::Integer(7)
+        );
+        assert_eq!(
+            scalar("RETURN last([7, 8, 9]) AS v", &db),
+            Value::Integer(9)
+        );
+        assert_eq!(scalar("RETURN head([]) AS v", &db), Value::Null);
+        assert_eq!(
+            scalar("RETURN tail([7, 8, 9]) AS v", &db),
+            Value::List(vec![Value::Integer(8), Value::Integer(9)])
+        );
+        assert_eq!(scalar("RETURN tail([]) AS v", &db), Value::List(vec![]));
+    }
+
+    #[test]
+    fn range_inclusive_with_step() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN range(1, 4) AS v", &db),
+            Value::List(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4)
+            ])
+        );
+        assert_eq!(
+            scalar("RETURN range(0, 10, 5) AS v", &db),
+            Value::List(vec![
+                Value::Integer(0),
+                Value::Integer(5),
+                Value::Integer(10)
+            ])
+        );
+        // descending range with a negative step.
+        assert_eq!(
+            scalar("RETURN range(3, 1, -1) AS v", &db),
+            Value::List(vec![
+                Value::Integer(3),
+                Value::Integer(2),
+                Value::Integer(1)
+            ])
+        );
+        // step pointing away from end yields the empty list.
+        assert_eq!(
+            scalar("RETURN range(1, 5, -1) AS v", &db),
+            Value::List(vec![])
+        );
+    }
+
+    #[test]
+    fn range_zero_step_is_error() {
+        let db = drevo();
+        let e = err("RETURN range(1, 5, 0) AS v", &db);
+        assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn coalesce_returns_first_non_null() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN coalesce(null, null, 'third') AS v", &db),
+            Value::String("third".into())
+        );
+        assert_eq!(scalar("RETURN coalesce(1, 2) AS v", &db), Value::Integer(1));
+        // all-null => NULL (not an error).
+        assert_eq!(scalar("RETURN coalesce(null, null) AS v", &db), Value::Null);
+    }
+
+    #[test]
+    fn null_propagates_through_scalar_functions() {
+        let db = drevo();
+        assert_eq!(scalar("RETURN toUpper(null) AS v", &db), Value::Null);
+        assert_eq!(scalar("RETURN size(null) AS v", &db), Value::Null);
+        assert_eq!(scalar("RETURN abs(null) AS v", &db), Value::Null);
+        assert_eq!(scalar("RETURN substring(null, 0) AS v", &db), Value::Null);
+        assert_eq!(scalar("RETURN head(null) AS v", &db), Value::Null);
+    }
+
+    #[test]
+    fn graph_scalar_functions_over_node_and_relationship() {
+        let db = drevo();
+        run(
+            "CREATE (:Person {name: 'Ada', age: 36})-[:KNOWS {since: 2020}]->(:Person {name: 'Bo'})",
+            &db,
+        );
+        // keys() over a node — sorted property names. Every node carries the
+        // synthesised `title` alias (see `node_to_value`), so `keys()`
+        // surfaces it alongside the user-supplied `name` / `age`, exactly the
+        // property set `n.<prop>` access would see.
+        assert_eq!(
+            scalar("MATCH (n:Person {name: 'Ada'}) RETURN keys(n) AS v", &db),
+            Value::List(vec![
+                Value::String("age".into()),
+                Value::String("name".into()),
+                Value::String("title".into())
+            ])
+        );
+        // labels() over a node.
+        assert_eq!(
+            scalar("MATCH (n:Person {name: 'Ada'}) RETURN labels(n) AS v", &db),
+            Value::List(vec![Value::String("Person".into())])
+        );
+        // type() over a relationship. The path head must be a named node —
+        // the executor looks up each segment's predecessor by variable.
+        assert_eq!(
+            scalar(
+                "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN type(r) AS v",
+                &db
+            ),
+            Value::String("KNOWS".into())
+        );
+        // properties() over a relationship returns its property map.
+        let props = scalar(
+            "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN properties(r) AS v",
+            &db,
+        );
+        match props {
+            Value::Map(m) => assert_eq!(m.get("since"), Some(&Value::Integer(2020))),
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn id_returns_node_storage_id() {
+        let db = drevo();
+        run("CREATE (:Doc {title: 'only'})", &db);
+        // id() is an Integer >= 0; equal to the stored node id.
+        let v = scalar("MATCH (n:Doc) RETURN id(n) AS v", &db);
+        assert!(matches!(v, Value::Integer(_)), "{v:?}");
+    }
+
+    #[test]
+    fn scalar_function_wrong_type_is_invalid_call() {
+        let db = drevo();
+        // size() of an Integer is a type error, not Unsupported.
+        let e = err("RETURN size(5) AS v", &db);
+        assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
+        // labels() of a non-node.
+        let e2 = err("RETURN labels('x') AS v", &db);
+        assert!(
+            matches!(e2, ExecError::InvalidFunctionCall { .. }),
+            "{e2:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_functions_compose_and_nest() {
+        let db = drevo();
+        run("CREATE (:Person {name: '  Ada Lovelace  '})", &db);
+        // size(split(trim(toUpper(...)), ' ')) == number of words.
+        assert_eq!(
+            scalar(
+                "MATCH (n:Person) RETURN size(split(trim(toUpper(n.name)), ' ')) AS v",
+                &db
+            ),
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn scalar_function_alongside_aggregation_groups_by_it() {
+        let db = drevo();
+        run("CREATE (:Tag {label: 'urgent'})", &db);
+        run("CREATE (:Tag {label: 'URGENT'})", &db);
+        run("CREATE (:Tag {label: 'later'})", &db);
+        // toLower(label) becomes the grouping key; count per group.
+        let res = run(
+            "MATCH (t:Tag) RETURN toLower(t.label) AS k, count(*) AS c ORDER BY k",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::String("later".into()), Value::Integer(1)],
+                vec![Value::String("urgent".into()), Value::Integer(2)],
+            ]
+        );
     }
 }

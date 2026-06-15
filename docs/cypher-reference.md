@@ -352,6 +352,46 @@ LIMIT $limit
 
 ---
 
+## Scalar functions
+
+The executor ships a built-in library of standalone scalar functions (task `00138`).
+They are usable anywhere an expression is — `RETURN`, `WHERE`, `WITH`, `CASE`, `ORDER BY`,
+inside `UNWIND`, and as a grouping key alongside an aggregation.
+
+| Family | Functions |
+|--------|-----------|
+| String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
+| Numeric | `abs`, `ceil`, `floor`, `round`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` |
+| List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `id`, `properties` |
+
+**NULL handling.** Every function except `coalesce` is *NULL-propagating*: a `NULL`
+argument yields `NULL`, never an error — so a function applied across a heterogeneous
+scan quietly skips rows whose property is absent rather than aborting the query.
+`coalesce(a, b, …)` is the exception — it returns its first non-`NULL` argument (or
+`NULL` if every argument is `NULL`). `toInteger` / `toFloat` / `toBoolean` are lenient:
+an unparseable string converts to `NULL` rather than erroring.
+
+**Errors.** Wrong arity or an argument of a type the function cannot accept is a
+recoverable `ExecError::InvalidFunctionCall`; an unknown function name stays
+`ExecError::Unsupported`.
+
+```cypher
+RETURN toUpper(trim('  ready  ')) AS shout, size([1, 2, 3]) AS n, coalesce(null, 'fallback') AS pick
+```
+
+```cypher
+UNWIND range(1, 5) AS x
+RETURN x, x * x AS squared
+```
+
+```cypher
+MATCH (n)
+RETURN labels(n) AS kinds, keys(n) AS props
+LIMIT 5
+```
+
+---
+
 ## drevo extension functions
 
 drevo adds two scalar functions that bridge Cypher to its full-text and vector engines.
@@ -402,7 +442,6 @@ error rather than a crash or a silent wrong answer.
 | Aggregations nested inside a `CASE` arm | executor returns `Unsupported` |
 | Regex match `=~` | executor returns `Unsupported` |
 | List/map indexing `x[i]` and slicing `x[a..b]` | executor returns `Unsupported` |
-| Standalone scalar functions other than `keywords` / `similar` (`length`, `size`, `toLower`, …) | executor returns `Unsupported` |
 
 When you need one of these today, express the intent through the [Rust](sdk-reference.md#rust-api)
 or [Python](sdk-reference.md#python-sdk) API, which expose the underlying traversal, FTS, and

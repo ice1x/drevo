@@ -176,10 +176,10 @@ fn union_mismatch_reports_a_span() {
 #[test]
 fn unsupported_inside_a_union_arm_still_surfaces() {
     let db = db();
-    // A scalar function with no executor implementation (only `similar` /
-    // `keywords` are recognised) is still unsupported; the upfront sweep
-    // must fire per-arm.
-    let err = run_err("RETURN 1 AS n UNION RETURN toUpper('x') AS n", &db);
+    // A function with no executor implementation (an unknown name now that the
+    // `00138` built-ins plus `similar` / `keywords` are all recognised) is
+    // still unsupported; the upfront sweep must fire per-arm.
+    let err = run_err("RETURN 1 AS n UNION RETURN nosuchfn('x') AS n", &db);
     assert!(matches!(err, ExecError::Unsupported { .. }));
 }
 

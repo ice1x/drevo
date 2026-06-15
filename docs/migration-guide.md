@@ -142,6 +142,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | `UNWIND` | ✅ Supported (list expansion; composes with `MATCH` / `WITH` / `CREATE`). |
 | `UNION` / `UNION ALL` | ✅ Supported (arms must share column names; no mixing the two). |
 | `CASE … WHEN … THEN … END` | ✅ Supported (generic & simple forms; no aggregations inside an arm). |
+| Scalar functions (`toLower`, `size`, `coalesce`, `range`, `keys`, …) | ✅ Supported (string / numeric / list library; see reference). |
 | `CALL` / stored procedures, `apoc.*` | ⛔ Not in the grammar. |
 | Regex `=~`, list indexing | ⛔ Return `Unsupported`. |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
