@@ -120,6 +120,30 @@ WHERE n.title STARTS WITH 'Intro' AND n.body CONTAINS 'graph'
 RETURN n.title AS title
 ```
 
+**Regex match:** `=~` tests a string against a regular expression. Like Neo4j (Java
+`Matcher::matches`), the pattern must match the **entire** string — anchor-free patterns are
+implicitly anchored at both ends, so `'hello world' =~ 'hello'` is `false` (use `'hello.*'`).
+`NULL` on either side yields `NULL`; a non-string operand is a `TypeMismatch`; an invalid
+pattern is an `InvalidRegex` error.
+
+```cypher
+MATCH (b:Bug)
+WHERE b.reporter =~ '[\\w.]+@[\\w.]+'        // looks like an email address
+RETURN b.title AS bug
+```
+
+The engine supports the common Java/Neo4j subset: literals, `.`, the quantifiers
+`* + ? {n} {n,} {n,m}` (greedy, or lazy with a trailing `?`), character classes `[...]`
+with ranges and negation, the shortcuts `\d \D \w \W \s \S`, anchors `^ $`, alternation
+`|`, grouping `(...)` / non-capturing `(?:...)`, and the inline case-insensitive flag
+`(?i)` (applied to the whole pattern).
+
+```cypher
+MATCH (t:Thought)
+WHERE t.text =~ '(?i).*should.*'             // case-insensitive "should" statements
+RETURN t.text AS thought
+```
+
 **List membership and null tests:** `IN`, `IS NULL`, `IS NOT NULL`.
 
 ```cypher
@@ -464,7 +488,6 @@ error rather than a crash or a silent wrong answer.
 | Named path binding `p = (a)-[*]->(b)` | parses, executor returns `Unsupported` |
 | Variable-length paths in `CREATE` | executor returns `Unsupported` |
 | Aggregations nested inside a `CASE` arm | executor returns `Unsupported` |
-| Regex match `=~` | executor returns `Unsupported` |
 
 When you need one of these today, express the intent through the [Rust](sdk-reference.md#rust-api)
 or [Python](sdk-reference.md#python-sdk) API, which expose the underlying traversal, FTS, and

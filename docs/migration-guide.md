@@ -144,7 +144,8 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | `CASE … WHEN … THEN … END` | ✅ Supported (generic & simple forms; no aggregations inside an arm). |
 | Scalar functions (`toLower`, `size`, `coalesce`, `range`, `keys`, …) | ✅ Supported (string / numeric / list library; see reference). |
 | `CALL` / stored procedures, `apoc.*` | ⛔ Not in the grammar. |
-| Regex `=~`, list indexing | ⛔ Return `Unsupported`. |
+| Regex `=~` | ✅ Supported (full-string match; common Java/Neo4j subset incl. `(?i)`). |
+| List / map indexing & slicing (`xs[0]`, `xs[1..3]`, `m['k']`) | ✅ Supported. |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
 | APOC export → import | ✅ Via this migration tool. |
 

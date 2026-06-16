@@ -26,3 +26,6 @@ pub mod lexer;
 /// Recursive-descent + Pratt parser that turns a `Cypher` source string
 /// into an [`ast::Query`].
 pub mod parser;
+/// A small dependency-free regular-expression engine backing the Cypher
+/// `=~` operator. Task `00140`.
+pub mod regex;

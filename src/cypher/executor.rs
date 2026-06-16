@@ -334,6 +334,15 @@ pub enum ExecError {
         /// Source span of the offending `UNION` arm.
         span: Span,
     },
+    /// The right-hand side of a `=~` regex match was not a valid regular
+    /// expression, or matching exceeded the engine's complexity budget.
+    #[error("invalid regular expression: {message}")]
+    InvalidRegex {
+        /// Explanation of why the regex was rejected.
+        message: String,
+        /// Source span of the offending `=~` expression.
+        span: Span,
+    },
     /// Underlying storage / serialization failure.
     #[error("storage error: {0}")]
     Storage(#[from] DrevoError),
@@ -348,7 +357,8 @@ impl ExecError {
             | Self::UnboundVariable { span, .. }
             | Self::TypeMismatch { span, .. }
             | Self::InvalidFunctionCall { span, .. }
-            | Self::UnionMismatch { span, .. } => Some(*span),
+            | Self::UnionMismatch { span, .. }
+            | Self::InvalidRegex { span, .. } => Some(*span),
             Self::MissingParameter(_)
             | Self::InvalidCreate(_)
             | Self::InvalidMutation(_)
@@ -913,14 +923,7 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
-        Expression::Binary { lhs, rhs, op, span } => {
-            if matches!(op, BinaryOp::RegexMatch) {
-                return Err(ExecError::Unsupported {
-                    feature: "regex match (`=~`)".into(),
-                    task: "future Phase 10 follow-up".into(),
-                    span: *span,
-                });
-            }
+        Expression::Binary { lhs, rhs, .. } => {
             validate_expr_supported(lhs)?;
             validate_expr_supported(rhs)?;
             Ok(())
@@ -1184,14 +1187,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             task: "future Phase 10 follow-up".into(),
             span: *span,
         }),
-        Expression::Binary { lhs, rhs, op, span } => {
-            if matches!(op, BinaryOp::RegexMatch) {
-                return Err(ExecError::Unsupported {
-                    feature: "regex match (`=~`)".into(),
-                    task: "future Phase 10 follow-up".into(),
-                    span: *span,
-                });
-            }
+        Expression::Binary { lhs, rhs, .. } => {
             validate_expr_supported_in_projection(lhs)?;
             validate_expr_supported_in_projection(rhs)?;
             Ok(())
@@ -4561,9 +4557,32 @@ fn eval_binary(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<
         Eq | Ne | Lt | Le | Gt | Ge => compare(op, lhs, rhs, span),
         And | Or | Xor => boolean(op, lhs, rhs, span),
         StartsWith | EndsWith | Contains => string_test(op, lhs, rhs, span),
-        RegexMatch => Err(ExecError::Unsupported {
-            feature: "regex match (`=~`)".into(),
-            task: "future Phase 10 follow-up".into(),
+        RegexMatch => regex_match(lhs, rhs, span),
+    }
+}
+
+/// Evaluate the Cypher `=~` regex-match operator.
+///
+/// Semantics mirror Neo4j: `NULL =~ x` and `x =~ NULL` yield `NULL`
+/// (three-valued logic); both operands must otherwise be strings; the
+/// right-hand side is compiled as a regular expression and the **entire**
+/// left-hand string must match (Java `Matcher::matches` semantics). An
+/// invalid pattern or a pathological match raises [`ExecError::InvalidRegex`].
+fn regex_match(lhs: Value, rhs: Value, span: Span) -> ExecResultT<Value> {
+    if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
+        return Ok(Value::Null);
+    }
+    let (Value::String(text), Value::String(pattern)) = (&lhs, &rhs) else {
+        return Err(ExecError::TypeMismatch {
+            expected: "String =~ String".into(),
+            got: format!("{} =~ {}", lhs.type_name(), rhs.type_name()),
+            span,
+        });
+    };
+    match crate::cypher::regex::full_match(pattern, text) {
+        Ok(matched) => Ok(Value::Bool(matched)),
+        Err(e) => Err(ExecError::InvalidRegex {
+            message: e.to_string(),
             span,
         }),
     }
