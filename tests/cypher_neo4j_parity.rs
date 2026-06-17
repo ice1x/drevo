@@ -282,6 +282,16 @@ fn value_to_json(v: &Value) -> Json {
             "kind": r.kind,
             "properties": map_to_json(&r.properties),
         }),
+        Value::Path(p) => json!({
+            "_type": "path",
+            "length": p.length(),
+            "nodes": p.nodes.iter().map(|n| value_to_json(&Value::Node(n.clone()))).collect::<Vec<_>>(),
+            "relationships": p
+                .relationships
+                .iter()
+                .map(|r| value_to_json(&Value::Relationship(r.clone())))
+                .collect::<Vec<_>>(),
+        }),
     }
 }
 

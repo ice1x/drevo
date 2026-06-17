@@ -136,6 +136,8 @@ pub const FAILURE: u8 = 0x7F;
 // Bolt v4 PackStream graph-type tag bytes.
 const NODE_TAG: u8 = 0x4E;
 const RELATIONSHIP_TAG: u8 = 0x52;
+const UNBOUND_RELATIONSHIP_TAG: u8 = 0x72;
+const PATH_TAG: u8 = 0x50;
 
 // -------------------------------------------------------------------------
 // Client + server message enums.
@@ -1020,6 +1022,91 @@ fn cypher_to_pack(v: CypherValue) -> Value {
                 ],
             }
         }
+        CypherValue::Path(path) => cypher_path_to_pack(&path),
+    }
+}
+
+/// Encode a Cypher [`PathValue`](crate::cypher::executor::PathValue) as a Bolt
+/// `Path` structure (tag `0x50`).
+///
+/// The Bolt wire form is three fields: a list of the **distinct** nodes, a list
+/// of the **distinct** unbound relationships (tag `0x72` — id, type,
+/// properties; endpoints are implied by the index sequence), and a flat list of
+/// integer indices. The index list alternates `rel_index, node_index`: the
+/// relationship index is 1-based into the unbound-relationship list and
+/// **signed** (negative when the hop traverses the relationship against its
+/// stored direction), and the node index is 0-based into the node list.
+fn cypher_path_to_pack(path: &crate::cypher::executor::PathValue) -> Value {
+    // Distinct nodes / relationships, preserving first-seen order.
+    let mut uniq_nodes: Vec<u64> = Vec::new();
+    let node_index = |id: u64, uniq: &mut Vec<u64>| -> i64 {
+        match uniq.iter().position(|&n| n == id) {
+            Some(i) => i as i64,
+            None => {
+                uniq.push(id);
+                (uniq.len() - 1) as i64
+            }
+        }
+    };
+
+    let mut node_structs: Vec<Value> = Vec::new();
+    let mut seen_nodes: Vec<u64> = Vec::new();
+    for nv in &path.nodes {
+        if !seen_nodes.contains(&nv.id) {
+            seen_nodes.push(nv.id);
+            node_structs.push(cypher_to_pack(CypherValue::Node(nv.clone())));
+        }
+    }
+
+    let mut rel_structs: Vec<Value> = Vec::new();
+    let mut rel_ids: Vec<u64> = Vec::new();
+    for rv in &path.relationships {
+        if !rel_ids.contains(&rv.id) {
+            rel_ids.push(rv.id);
+            let props = Value::Dictionary(
+                rv.properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), cypher_to_pack(v.clone())))
+                    .collect(),
+            );
+            rel_structs.push(Value::Structure {
+                tag: UNBOUND_RELATIONSHIP_TAG,
+                fields: vec![
+                    Value::Integer(rv.id as i64),
+                    Value::String(rv.kind.clone()),
+                    props,
+                ],
+            });
+        }
+    }
+
+    // Build the alternating index sequence by walking the path hop by hop.
+    let mut indices: Vec<Value> = Vec::new();
+    // Seed `uniq_nodes` with the head so node index 0 is the path start.
+    if let Some(head) = path.nodes.first() {
+        node_index(head.id, &mut uniq_nodes);
+    }
+    for (hop, rv) in path.relationships.iter().enumerate() {
+        let from = &path.nodes[hop];
+        let to = &path.nodes[hop + 1];
+        let rel_pos = rel_ids.iter().position(|&id| id == rv.id).unwrap_or(0) as i64 + 1;
+        // Positive when this hop goes with the stored direction.
+        let signed = if rv.from_id == from.id {
+            rel_pos
+        } else {
+            -rel_pos
+        };
+        indices.push(Value::Integer(signed));
+        indices.push(Value::Integer(node_index(to.id, &mut uniq_nodes)));
+    }
+
+    Value::Structure {
+        tag: PATH_TAG,
+        fields: vec![
+            Value::List(node_structs),
+            Value::List(rel_structs),
+            Value::List(indices),
+        ],
     }
 }
 
@@ -1088,6 +1175,57 @@ mod tests {
         let mut m = BTreeMap::new();
         m.insert("n".to_string(), Value::Integer(5));
         assert_eq!(extract_n(&m), 5);
+    }
+
+    #[test]
+    fn cypher_path_packs_as_bolt_path_structure() {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        let node = |id: u64| {
+            Arc::new(executor::NodeValue {
+                id,
+                uuid: [0; 16],
+                labels: vec!["N".into()],
+                properties: BTreeMap::new(),
+            })
+        };
+        let path = executor::PathValue {
+            nodes: vec![node(1), node(2)],
+            relationships: vec![Arc::new(executor::RelationshipValue {
+                id: 7,
+                uuid: [0; 16],
+                from_id: 1,
+                to_id: 2,
+                kind: "R".into(),
+                properties: BTreeMap::new(),
+            })],
+        };
+        let packed = cypher_to_pack(CypherValue::Path(Arc::new(path)));
+        match packed {
+            Value::Structure { tag, fields } => {
+                assert_eq!(tag, PATH_TAG);
+                assert_eq!(fields.len(), 3, "nodes, rels, indices");
+                // Two distinct nodes, one unbound relationship.
+                match (&fields[0], &fields[1], &fields[2]) {
+                    (Value::List(ns), Value::List(rs), Value::List(idx)) => {
+                        assert_eq!(ns.len(), 2);
+                        assert_eq!(rs.len(), 1);
+                        // One forward hop: rel index +1, target node index 1.
+                        assert_eq!(idx, &vec![Value::Integer(1), Value::Integer(1)]);
+                        // The unbound relationship omits endpoints (3 fields).
+                        match &rs[0] {
+                            Value::Structure { tag, fields } => {
+                                assert_eq!(*tag, UNBOUND_RELATIONSHIP_TAG);
+                                assert_eq!(fields.len(), 3);
+                            }
+                            other => panic!("expected unbound rel structure, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected three lists, got {other:?}"),
+                }
+            }
+            other => panic!("expected a Path structure, got {other:?}"),
+        }
     }
 
     #[test]

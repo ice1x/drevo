@@ -190,6 +190,9 @@ pub enum Value {
     Node(Arc<NodeValue>),
     /// A bound relationship.
     Relationship(Arc<RelationshipValue>),
+    /// A bound path — an alternating node / relationship sequence produced by
+    /// a named pattern (`MATCH p = (a)-->(b)`). See [`PathValue`].
+    Path(Arc<PathValue>),
 }
 
 /// A node as seen by the Cypher runtime.
@@ -208,6 +211,31 @@ pub struct NodeValue {
     /// Property map sourced from [`crate::model::Node::properties`]
     /// plus the synthesised `title` / `body` aliases (see module docs).
     pub properties: BTreeMap<String, Value>,
+}
+
+/// A path as seen by the Cypher runtime — the value bound by a named pattern
+/// such as `MATCH p = (a)-[:R]->(b)`.
+///
+/// A path is an alternating sequence of nodes and relationships captured in
+/// traversal order: `nodes[0]`, `relationships[0]`, `nodes[1]`, …,
+/// `relationships[k-1]`, `nodes[k]`. The invariant
+/// `nodes.len() == relationships.len() + 1` always holds, and `nodes` is
+/// never empty (a single-node pattern `MATCH p = (a)` yields a length-0 path).
+/// Endpoints that carry no Cypher variable are still recorded, so `nodes(p)`
+/// surfaces anonymous intermediate hops.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathValue {
+    /// Nodes in traversal order; `relationships.len() + 1` entries.
+    pub nodes: Vec<Arc<NodeValue>>,
+    /// Relationships in traversal order; one per hop.
+    pub relationships: Vec<Arc<RelationshipValue>>,
+}
+
+impl PathValue {
+    /// The number of relationships (hops) in the path — Cypher's `length(p)`.
+    pub fn length(&self) -> usize {
+        self.relationships.len()
+    }
 }
 
 /// A relationship as seen by the Cypher runtime.
@@ -387,6 +415,16 @@ impl PartialEq for Value {
             (Self::Map(a), Self::Map(b)) => a == b,
             (Self::Node(a), Self::Node(b)) => a.id == b.id,
             (Self::Relationship(a), Self::Relationship(b)) => a.id == b.id,
+            // Two paths are equal when they traverse the same relationships in
+            // the same order — the relationship ids fix the node sequence too.
+            (Self::Path(a), Self::Path(b)) => {
+                a.relationships.len() == b.relationships.len()
+                    && a.nodes.first().map(|n| n.id) == b.nodes.first().map(|n| n.id)
+                    && a.relationships
+                        .iter()
+                        .zip(b.relationships.iter())
+                        .all(|(x, y)| x.id == y.id)
+            }
             _ => false,
         }
     }
@@ -405,6 +443,7 @@ impl Value {
             Self::Map(_) => "Map",
             Self::Node(_) => "Node",
             Self::Relationship(_) => "Relationship",
+            Self::Path(_) => "Path",
         }
     }
 
@@ -476,10 +515,10 @@ fn value_to_json(v: &Value) -> Option<serde_json::Value> {
             }
             serde_json::Value::Object(out)
         }
-        // Nodes and relationships round-trip as opaque ids — storing a
-        // bound node value into a property map would be a programming
-        // error and is rejected by InvalidCreate at the call site.
-        Value::Node(_) | Value::Relationship(_) => return None,
+        // Nodes, relationships, and paths round-trip as opaque structures —
+        // storing a bound graph value into a property map would be a
+        // programming error and is rejected by InvalidCreate at the call site.
+        Value::Node(_) | Value::Relationship(_) | Value::Path(_) => return None,
     })
 }
 
@@ -541,6 +580,70 @@ fn edge_to_value(edge: &Edge) -> Arc<RelationshipValue> {
         kind: edge.kind.clone(),
         properties,
     })
+}
+
+// ===== Named-path accumulation ==============================================
+//
+// A named pattern (`MATCH p = (a)-->(b)`) binds its variable to an alternating
+// node/relationship [`PathValue`]. The matcher records the path incrementally
+// under this reserved binding key: [`Executor::match_head`] seeds it with the
+// head node, and each matched segment appends the traversed relationship and
+// target node. [`Executor::match_named_pattern`] then renames the entry to the
+// user's variable. The leading double space makes the key impossible to
+// collide with a user-written Cypher identifier.
+
+const PATH_ACCUM_KEY: &str = "  path";
+
+/// Seed the path accumulator in `row` with a single starting node.
+fn seed_path(row: &mut Bindings, head: Arc<NodeValue>) {
+    row.insert(
+        PATH_ACCUM_KEY.to_string(),
+        Value::Path(Arc::new(PathValue {
+            nodes: vec![head],
+            relationships: Vec::new(),
+        })),
+    );
+}
+
+/// Extend the path accumulator in `row` by one hop — relationship `rel`
+/// reaching `node`. A no-op when no accumulator is present.
+fn extend_path(row: &mut Bindings, rel: Arc<RelationshipValue>, node: Arc<NodeValue>) {
+    if let Some(Value::Path(p)) = row.get(PATH_ACCUM_KEY) {
+        let mut nodes = p.nodes.clone();
+        let mut relationships = p.relationships.clone();
+        nodes.push(node);
+        relationships.push(rel);
+        row.insert(
+            PATH_ACCUM_KEY.to_string(),
+            Value::Path(Arc::new(PathValue {
+                nodes,
+                relationships,
+            })),
+        );
+    }
+}
+
+/// Extend the path accumulator in `row` by several hops at once — used by the
+/// variable-length expander, where `rels[i]` reaches `nodes[i]`. The two
+/// slices must be the same length. A no-op when no accumulator is present.
+fn extend_path_multi(
+    row: &mut Bindings,
+    rels: &[Arc<RelationshipValue>],
+    nodes: &[Arc<NodeValue>],
+) {
+    if let Some(Value::Path(p)) = row.get(PATH_ACCUM_KEY) {
+        let mut all_nodes = p.nodes.clone();
+        let mut all_rels = p.relationships.clone();
+        all_nodes.extend(nodes.iter().cloned());
+        all_rels.extend(rels.iter().cloned());
+        row.insert(
+            PATH_ACCUM_KEY.to_string(),
+            Value::Path(Arc::new(PathValue {
+                nodes: all_nodes,
+                relationships: all_rels,
+            })),
+        );
+    }
 }
 
 // ===== Public entry point ===================================================
@@ -1070,6 +1173,9 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             | "type"
             | "id"
             | "properties"
+            // Path functions.
+            | "nodes"
+            | "relationships"
     )
 }
 
@@ -1405,18 +1511,30 @@ impl<'a> Executor<'a> {
         pattern: &NamedPattern,
         existing: &Bindings,
     ) -> ExecResultT<Vec<Bindings>> {
-        if pattern.variable.is_some() {
-            return Err(ExecError::Unsupported {
-                feature: "named path bindings (`p = (a)-->(b)`)".into(),
-                task: "future Phase 10 follow-up".into(),
-                span: pattern.path.head.span,
-            });
+        // A path variable triggers accumulation: `match_head` seeds the
+        // reserved [`PATH_ACCUM_KEY`] entry and each segment extends it, so by
+        // the time the rows return the full alternating node/relationship
+        // sequence is recorded. We then rename that entry to the user's
+        // variable. When there is no variable we skip the bookkeeping entirely.
+        let build_path = pattern.variable.is_some();
+        let mut rows = self.match_path(&pattern.path, existing, build_path)?;
+        if let Some(var) = &pattern.variable {
+            for row in rows.iter_mut() {
+                if let Some(path) = row.remove(PATH_ACCUM_KEY) {
+                    row.insert(var.clone(), path);
+                }
+            }
         }
-        self.match_path(&pattern.path, existing)
+        Ok(rows)
     }
 
-    fn match_path(&self, path: &PathPattern, existing: &Bindings) -> ExecResultT<Vec<Bindings>> {
-        let mut rows = self.match_head(&path.head, existing)?;
+    fn match_path(
+        &self,
+        path: &PathPattern,
+        existing: &Bindings,
+        build_path: bool,
+    ) -> ExecResultT<Vec<Bindings>> {
+        let mut rows = self.match_head(&path.head, existing, build_path)?;
         for segment in &path.tail {
             let mut next: Vec<Bindings> = Vec::new();
             // Previous endpoint is the node bound by the last completed
@@ -1425,14 +1543,19 @@ impl<'a> Executor<'a> {
             // path again from `head` (cheap — pattern lengths are short).
             for row in rows.drain(..) {
                 let prev_node = last_bound_node(&row, path, segment_index_for(path, segment))?;
-                next.extend(self.match_segment(&prev_node, segment, &row)?);
+                next.extend(self.match_segment(&prev_node, segment, &row, build_path)?);
             }
             rows = next;
         }
         Ok(rows)
     }
 
-    fn match_head(&self, head: &NodePattern, existing: &Bindings) -> ExecResultT<Vec<Bindings>> {
+    fn match_head(
+        &self,
+        head: &NodePattern,
+        existing: &Bindings,
+        build_path: bool,
+    ) -> ExecResultT<Vec<Bindings>> {
         // If the head's variable is already bound, just verify it
         // matches the requested label/properties — otherwise enumerate.
         if let Some(name) = &head.variable {
@@ -1441,7 +1564,11 @@ impl<'a> Executor<'a> {
                     if !node_matches_pattern(nv, head, self)? {
                         return Ok(vec![]);
                     }
-                    return Ok(vec![existing.clone()]);
+                    let mut row = existing.clone();
+                    if build_path {
+                        seed_path(&mut row, nv.clone());
+                    }
+                    return Ok(vec![row]);
                 } else {
                     return Err(ExecError::TypeMismatch {
                         expected: "Node".into(),
@@ -1456,6 +1583,9 @@ impl<'a> Executor<'a> {
         let mut out = Vec::with_capacity(candidates.len());
         for nv in candidates {
             let mut bindings = existing.clone();
+            if build_path {
+                seed_path(&mut bindings, nv.clone());
+            }
             if let Some(name) = &head.variable {
                 bindings.insert(name.clone(), Value::Node(nv));
             }
@@ -1501,6 +1631,7 @@ impl<'a> Executor<'a> {
         prev_node: &Arc<NodeValue>,
         segment: &crate::cypher::ast::PathSegment,
         existing: &Bindings,
+        build_path: bool,
     ) -> ExecResultT<Vec<Bindings>> {
         let rel_pattern = &segment.relationship;
         // Variable-length path? Hand off to the BFS expander. The
@@ -1524,6 +1655,7 @@ impl<'a> Executor<'a> {
                 existing,
                 varlen_lo.unwrap_or(1),
                 varlen_hi,
+                build_path,
             );
         }
         let dir = rel_pattern.direction;
@@ -1596,6 +1728,9 @@ impl<'a> Executor<'a> {
                 }
                 bindings.insert(name.clone(), Value::Node(target.clone()));
             }
+            if build_path {
+                extend_path(&mut bindings, edge_to_value(&edge), target.clone());
+            }
             out.push(bindings);
         }
         Ok(out)
@@ -1621,6 +1756,7 @@ impl<'a> Executor<'a> {
         existing: &Bindings,
         lo: i64,
         hi: Option<i64>,
+        build_path: bool,
     ) -> ExecResultT<Vec<Bindings>> {
         let rel_pattern = &segment.relationship;
         let dir = rel_pattern.direction;
@@ -1630,16 +1766,20 @@ impl<'a> Executor<'a> {
         // BFS frontier entries — each represents one in-progress path
         // ending at `node`, with the relationships already traversed
         // recorded for trail-uniqueness and for the optional rel
-        // variable binding.
+        // variable binding. `used_nodes` mirrors `used_edges` (the node
+        // reached by each hop, excluding `src`) so a named path can record
+        // every intermediate endpoint.
         struct VarlenState {
             node: Arc<NodeValue>,
             used_edges: Vec<Arc<RelationshipValue>>,
+            used_nodes: Vec<Arc<NodeValue>>,
             used_ids: Vec<u64>,
         }
 
         let mut frontier: Vec<VarlenState> = vec![VarlenState {
             node: src.clone(),
             used_edges: Vec::new(),
+            used_nodes: Vec::new(),
             used_ids: Vec::new(),
         }];
         let mut results: Vec<Bindings> = Vec::new();
@@ -1692,6 +1832,11 @@ impl<'a> Executor<'a> {
                         }
                         bindings.insert(name.clone(), Value::Node(state.node.clone()));
                     }
+                    if build_path {
+                        // Append this segment's hops to the path accumulated up
+                        // to `src` by `match_head` / earlier segments.
+                        extend_path_multi(&mut bindings, &state.used_edges, &state.used_nodes);
+                    }
                     results.push(bindings);
                 }
             }
@@ -1734,12 +1879,15 @@ impl<'a> Executor<'a> {
                         None => continue,
                     };
                     let mut next_used_edges = state.used_edges.clone();
+                    let mut next_used_nodes = state.used_nodes.clone();
                     let mut next_used_ids = state.used_ids.clone();
                     next_used_edges.push(edge_to_value(&edge));
+                    next_used_nodes.push(next_node.clone());
                     next_used_ids.push(edge.id);
                     next_frontier.push(VarlenState {
                         node: next_node,
                         used_edges: next_used_edges,
+                        used_nodes: next_used_nodes,
                         used_ids: next_used_ids,
                     });
                 }
@@ -1765,14 +1913,10 @@ impl<'a> Executor<'a> {
         let mut new_bindings = Vec::with_capacity(self.bindings.len());
         for mut row in std::mem::take(&mut self.bindings).into_iter() {
             for pattern in &c.patterns {
-                if pattern.variable.is_some() {
-                    return Err(ExecError::Unsupported {
-                        feature: "named path bindings on CREATE".into(),
-                        task: "future Phase 10 follow-up".into(),
-                        span: pattern.path.head.span,
-                    });
+                let path_value = self.create_path(&pattern.path, &mut row)?;
+                if let Some(var) = &pattern.variable {
+                    row.insert(var.clone(), Value::Path(Arc::new(path_value)));
                 }
-                self.create_path(&pattern.path, &mut row)?;
             }
             new_bindings.push(row);
         }
@@ -1780,15 +1924,25 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    fn create_path(&mut self, path: &PathPattern, row: &mut Bindings) -> ExecResultT<()> {
+    /// Create the nodes and relationships of a pattern, returning the
+    /// resulting [`PathValue`] so a named `CREATE p = …` can bind it.
+    fn create_path(&mut self, path: &PathPattern, row: &mut Bindings) -> ExecResultT<PathValue> {
         let head_value = self.ensure_node_for_create(&path.head, row)?;
+        let mut nodes = vec![head_value.clone()];
+        let mut relationships = Vec::new();
         let mut prev_node = head_value;
         for segment in &path.tail {
             let target_value = self.ensure_node_for_create(&segment.node, row)?;
-            self.create_relationship(&prev_node, &segment.relationship, &target_value, row)?;
+            let rel =
+                self.create_relationship(&prev_node, &segment.relationship, &target_value, row)?;
+            relationships.push(rel);
+            nodes.push(target_value.clone());
             prev_node = target_value;
         }
-        Ok(())
+        Ok(PathValue {
+            nodes,
+            relationships,
+        })
     }
 
     fn ensure_node_for_create(
@@ -1891,7 +2045,7 @@ impl<'a> Executor<'a> {
         rel: &RelationshipPattern,
         to_node: &Arc<NodeValue>,
         row: &mut Bindings,
-    ) -> ExecResultT<()> {
+    ) -> ExecResultT<Arc<RelationshipValue>> {
         if rel.length.is_some() {
             return Err(ExecError::Unsupported {
                 feature: "variable-length CREATE".into(),
@@ -1934,10 +2088,11 @@ impl<'a> Executor<'a> {
         };
         let stored = self.drevo.create_edge(new_edge)?;
         self.stats.relationships_created += 1;
+        let rv = edge_to_value(&stored);
         if let Some(name) = &rel.variable {
-            row.insert(name.clone(), Value::Relationship(edge_to_value(&stored)));
+            row.insert(name.clone(), Value::Relationship(rv.clone()));
         }
-        Ok(())
+        Ok(rv)
     }
 
     // ----- SET / REMOVE / DELETE / MERGE -----------------------------------
@@ -2054,18 +2209,27 @@ impl<'a> Executor<'a> {
         }
         let prior = std::mem::take(&mut self.bindings);
         let mut new_bindings: Vec<Bindings> = Vec::new();
+        let path_var = m.pattern.variable.as_ref();
         for existing in prior.into_iter() {
             // Try to MATCH the pattern first.
-            let matched = self.match_path(&m.pattern.path, &existing)?;
+            let matched = self.match_path(&m.pattern.path, &existing, path_var.is_some())?;
             if !matched.is_empty() {
                 for mut row in matched {
+                    if let Some(var) = path_var {
+                        if let Some(path) = row.remove(PATH_ACCUM_KEY) {
+                            row.insert(var.clone(), path);
+                        }
+                    }
                     self.apply_set_items(&m.on_match, &mut row)?;
                     new_bindings.push(row);
                 }
             } else {
                 // No match — CREATE the pattern and run ON CREATE actions.
                 let mut row = existing.clone();
-                self.create_path(&m.pattern.path, &mut row)?;
+                let created = self.create_path(&m.pattern.path, &mut row)?;
+                if let Some(var) = path_var {
+                    row.insert(var.clone(), Value::Path(Arc::new(created)));
+                }
                 self.apply_set_items(&m.on_create, &mut row)?;
                 new_bindings.push(row);
             }
@@ -3576,10 +3740,19 @@ fn last_bound_node(
             return Ok(nv.clone());
         }
     }
-    // Anonymous pattern — find the most recent node value we did bind.
-    // This is fine for chains of size 1 since `match_head` always emits
-    // at least one row for anonymous variables; longer chains require
-    // a variable name and are guarded above.
+    // Anonymous predecessor — for a *named* path the accumulator records
+    // every endpoint (bound or not), so its last node is exactly the
+    // predecessor we need. This lets `MATCH p = (:A)-->()-->(:B)` thread
+    // through anonymous intermediate nodes.
+    if let Some(Value::Path(p)) = row.get(PATH_ACCUM_KEY) {
+        if let Some(nv) = p.nodes.last() {
+            return Ok(nv.clone());
+        }
+    }
+    // Anonymous predecessor in an *unnamed* multi-hop pattern: there is no
+    // bound value to thread. Chains of size 1 are fine (the head is taken
+    // directly); longer anonymous chains require either a variable name or a
+    // named path binding.
     Err(ExecError::InvalidCreate(
         "internal: anonymous intermediate node in multi-hop path".into(),
     ))
@@ -3858,6 +4031,8 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "type" => scalar_type(args, span),
         "id" => scalar_id(args, span),
         "properties" => scalar_properties(args, span),
+        "nodes" => scalar_nodes(args, span),
+        "relationships" => scalar_relationships(args, span),
         // Unreachable: `is_builtin_scalar_function` gates entry, so any name
         // reaching here is a missing arm rather than user input.
         other => Err(ExecError::Unsupported {
@@ -4195,12 +4370,48 @@ fn scalar_size(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match &args[0] {
         Value::List(items) => Ok(Value::Integer(items.len() as i64)),
         Value::String(s) => Ok(Value::Integer(s.chars().count() as i64)),
+        // `length(path)` is the number of relationships (hops) — Neo4j's
+        // canonical use of `length`. `size(path)` resolves the same way here.
+        Value::Path(p) => Ok(Value::Integer(p.length() as i64)),
         other => Err(fn_err(
             name,
             format!(
-                "argument must be a List or String, got {}",
+                "argument must be a List, String, or Path, got {}",
                 other.type_name()
             ),
+            span,
+        )),
+    }
+}
+
+/// `nodes(path)` — the nodes of a path as a List, in traversal order.
+fn scalar_nodes(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("nodes", args, span)? {
+        Value::Path(p) => Ok(Value::List(
+            p.nodes.iter().cloned().map(Value::Node).collect(),
+        )),
+        other => Err(fn_err(
+            "nodes",
+            format!("argument must be a Path, got {}", other.type_name()),
+            span,
+        )),
+    }
+}
+
+/// `relationships(path)` — the relationships of a path as a List, in
+/// traversal order.
+fn scalar_relationships(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("relationships", args, span)? {
+        Value::Path(p) => Ok(Value::List(
+            p.relationships
+                .iter()
+                .cloned()
+                .map(Value::Relationship)
+                .collect(),
+        )),
+        other => Err(fn_err(
+            "relationships",
+            format!("argument must be a Path, got {}", other.type_name()),
             span,
         )),
     }
@@ -7343,5 +7554,130 @@ mod tests {
             &db,
         );
         assert_eq!(res.rows, vec![vec![Value::String("keep".into())]]);
+    }
+
+    // ---- Named paths (`00141`) -------------------------------------------
+
+    fn single_path(res: &ExecResult) -> Arc<PathValue> {
+        assert_eq!(res.rows.len(), 1, "expected one row");
+        match &res.rows[0][0] {
+            Value::Path(p) => p.clone(),
+            other => panic!("expected a Path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_path_is_a_path_value_with_correct_arity() {
+        let db = drevo();
+        run("CREATE (:A {title: 'x'})-[:R]->(:B {title: 'y'})", &db);
+        let res = run("MATCH p = (:A)-[:R]->(:B) RETURN p", &db);
+        let p = single_path(&res);
+        assert_eq!(p.nodes.len(), 2);
+        assert_eq!(p.relationships.len(), 1);
+        assert_eq!(p.length(), 1);
+        // The node/relationship endpoints are internally consistent.
+        assert_eq!(p.relationships[0].from_id, p.nodes[0].id);
+        assert_eq!(p.relationships[0].to_id, p.nodes[1].id);
+    }
+
+    #[test]
+    fn named_path_type_name_is_path() {
+        let db = drevo();
+        run("CREATE (:A {title: 'x'})-[:R]->(:B {title: 'y'})", &db);
+        let res = run("MATCH p = (:A)-[:R]->(:B) RETURN p", &db);
+        assert_eq!(res.rows[0][0].type_name(), "Path");
+    }
+
+    #[test]
+    fn length_of_named_path_counts_relationships() {
+        let db = drevo();
+        run(
+            "CREATE (a:N {title: 'a'})-[:R]->(b:N {title: 'b'})-[:R]->(c:N {title: 'c'})",
+            &db,
+        );
+        let res = run(
+            "MATCH p = (:N)-[:R]->(:N)-[:R]->(:N) RETURN length(p) AS len",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::Integer(2));
+    }
+
+    #[test]
+    fn nodes_and_relationships_functions_return_lists() {
+        let db = drevo();
+        run("CREATE (a:N {title: 'a'})-[:R]->(b:N {title: 'b'})", &db);
+        let res = run(
+            "MATCH p = (:N)-[:R]->(:N) RETURN nodes(p) AS ns, relationships(p) AS rs",
+            &db,
+        );
+        match (&res.rows[0][0], &res.rows[0][1]) {
+            (Value::List(ns), Value::List(rs)) => {
+                assert_eq!(ns.len(), 2);
+                assert_eq!(rs.len(), 1);
+                assert!(matches!(ns[0], Value::Node(_)));
+                assert!(matches!(rs[0], Value::Relationship(_)));
+            }
+            other => panic!("expected two Lists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_named_path_binds_and_persists() {
+        let db = drevo();
+        let res = run(
+            "CREATE p = (:Step {title: 'a'})-[:THEN]->(:Step {title: 'b'}) RETURN length(p) AS len",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::Integer(1));
+        assert_eq!(res.stats.nodes_created, 2);
+        assert_eq!(res.stats.relationships_created, 1);
+    }
+
+    #[test]
+    fn path_functions_return_null_on_null() {
+        let db = drevo();
+        let res = run(
+            "RETURN nodes(NULL) AS a, relationships(NULL) AS b, length(NULL) AS c",
+            &db,
+        );
+        assert_eq!(res.rows[0], vec![Value::Null, Value::Null, Value::Null]);
+    }
+
+    #[test]
+    fn nodes_of_scalar_is_invalid_call() {
+        let db = drevo();
+        let e = err("RETURN nodes(1)", &db);
+        assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn two_paths_are_equal_when_same_relationships() {
+        // Path equality fixes DISTINCT collapsing of identical paths.
+        let a = Value::Path(Arc::new(PathValue {
+            nodes: vec![
+                Arc::new(NodeValue {
+                    id: 1,
+                    uuid: [0; 16],
+                    labels: vec![],
+                    properties: BTreeMap::new(),
+                }),
+                Arc::new(NodeValue {
+                    id: 2,
+                    uuid: [0; 16],
+                    labels: vec![],
+                    properties: BTreeMap::new(),
+                }),
+            ],
+            relationships: vec![Arc::new(RelationshipValue {
+                id: 9,
+                uuid: [0; 16],
+                from_id: 1,
+                to_id: 2,
+                kind: "R".into(),
+                properties: BTreeMap::new(),
+            })],
+        }));
+        let b = a.clone();
+        assert_eq!(a, b);
     }
 }
