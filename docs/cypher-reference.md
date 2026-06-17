@@ -93,6 +93,31 @@ MATCH (start:Chapter)-[:FLOWS_TO*1..3]->(later:Chapter)
 RETURN start.title AS from_chapter, later.title AS to_chapter
 ```
 
+### Named paths
+
+Prefixing a pattern with `variable =` binds the whole pattern to a **path** value — an
+alternating sequence of nodes and relationships in traversal order (task `00141`). The path
+captures **every** endpoint it traverses, including anonymous intermediate nodes that carry
+no variable of their own. Named paths work for both fixed- and variable-length patterns, and
+for `CREATE` and `MERGE`.
+
+Three functions consume a path:
+
+- `length(p)` — the number of relationships (hops).
+- `nodes(p)` — the nodes as a list, in path order (`length(p) + 1` of them).
+- `relationships(p)` — the relationships as a list, in path order.
+
+```cypher
+MATCH p = (a:Task)-[:DEPENDS_ON*1..3]->(b:Task)
+RETURN length(p) AS hops, size(nodes(p)) AS visited
+ORDER BY hops
+```
+
+```cypher
+CREATE p = (:Step {title: 'draft'})-[:THEN]->(:Step {title: 'review'})
+RETURN length(p) AS steps
+```
+
 ---
 
 ## Filtering — WHERE
@@ -387,6 +412,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
 | Numeric | `abs`, `ceil`, `floor`, `round`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` |
 | List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `id`, `properties` |
+| Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
 
 **NULL handling.** Every function except `coalesce` is *NULL-propagating*: a `NULL`
 argument yields `NULL`, never an error — so a function applied across a heterogeneous
@@ -485,7 +511,6 @@ error rather than a crash or a silent wrong answer.
 |-----------|--------|
 | `CALL` / `YIELD` (procedures) | not in grammar |
 | `FOREACH` | not in executor |
-| Named path binding `p = (a)-[*]->(b)` | parses, executor returns `Unsupported` |
 | Variable-length paths in `CREATE` | executor returns `Unsupported` |
 | Aggregations nested inside a `CASE` arm | executor returns `Unsupported` |
 
