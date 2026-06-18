@@ -1,0 +1,22 @@
+# cargo-nextest configuration.
+#
+# Resource cap for the self-hosted CI runner — which is also a daily-driver
+# Mac. The full nextest suite opens many redb databases in parallel; at the
+# default parallelism (`num-cpus`, 10 logical cores on the runner) the
+# combined CPU + RAM load can make the *whole machine* unresponsive when CI
+# runs alongside interactive use (the desktop beach-balls and apps won't
+# launch — a hard freeze requiring a power-cycle). Capping the number of
+# concurrently-running test processes leaves headroom for the OS / UI and
+# for the parallel `cargo build` that precedes the run.
+#
+# 6 leaves ~4 cores' worth of slack on the 10-core runner while barely
+# affecting wall-time: nextest is link- and I/O-bound here, not test-CPU-
+# bound, so fewer test threads cost little. Lower this if the machine still
+# struggles under load; raise it on a dedicated (non-desktop) runner.
+#
+# Build-time parallelism is capped separately via `CARGO_BUILD_JOBS` in
+# `.github/workflows/ci.yml`. Both caps are locked by
+# `tests/ci_self_hosted_runner_tests.rs` so a future edit can't silently
+# revert them.
+[profile.default]
+test-threads = 6

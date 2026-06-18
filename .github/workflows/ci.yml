@@ -61,6 +61,18 @@ env:
   # nextest needs no specific env; documented here to make the contract
   # explicit for future contributors who might wonder.
   CARGO_INCREMENTAL: 1
+  # Cap parallel compilation on the self-hosted runner, which is also a
+  # daily-driver Mac (10 logical cores). At the default `jobs = num-cpus`,
+  # a full workspace `cargo build` spawns up to 10 parallel rustc/codegen
+  # processes; combined with the runner's own work, the parallel test run,
+  # and interactive desktop use, that has wedged the whole machine into an
+  # unresponsive, beach-balling freeze (power-cycle required). Capping to 8
+  # leaves 2 cores' worth of headroom for the OS / UI during a build while
+  # barely slowing compilation. Test-process parallelism is capped
+  # separately in `.config/nextest.toml` (`test-threads`). Both caps are
+  # locked by `tests/ci_self_hosted_runner_tests.rs` so a future edit can't
+  # silently revert them.
+  CARGO_BUILD_JOBS: "8"
   # NOTE: `CARGO_TARGET_DIR` is set by a setup step inside each
   # compile-heavy job below — `echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE
   # /drevo-cargo-target" >> $GITHUB_ENV`. GHA's `runner.*` expression
