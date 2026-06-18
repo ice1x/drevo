@@ -1323,19 +1323,21 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             else_branch,
             ..
         } => {
-            // CASE sub-expressions are validated with the non-aggregation
-            // validator: aggregations nested inside a CASE arm are not yet
-            // folded by `eval_with_agg`, so they stay `Unsupported` rather
-            // than silently producing a wrong answer.
+            // CASE sub-expressions are validated with the *projection*
+            // validator so that an aggregation nested inside any arm
+            // (scrutinee, WHEN, THEN, or ELSE) is accepted — `eval_with_agg`
+            // folds it over the group (`00142`). The projection validator
+            // still rejects an aggregation nested *inside another*
+            // aggregation, matching Neo4j.
             if let Some(s) = scrutinee {
-                validate_expr_supported(s)?;
+                validate_expr_supported_in_projection(s)?;
             }
             for (when, then) in arms {
-                validate_expr_supported(when)?;
-                validate_expr_supported(then)?;
+                validate_expr_supported_in_projection(when)?;
+                validate_expr_supported_in_projection(then)?;
             }
             if let Some(e) = else_branch {
-                validate_expr_supported(e)?;
+                validate_expr_supported_in_projection(e)?;
             }
             Ok(())
         }
@@ -1343,7 +1345,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
         // non-aggregation validator: `eval_with_agg` does not fold an
         // aggregation nested inside an index (`collect(x)[0]`), so such a
         // form stays `Unsupported` rather than silently producing a wrong
-        // answer — matching the `CASE` precedent above.
+        // answer. (`CASE` arms, by contrast, *are* folded — see `00142`.)
         Expression::Index { base, index, .. } => {
             validate_expr_supported(base)?;
             validate_expr_supported(index)
@@ -3182,6 +3184,23 @@ impl<'a> Executor<'a> {
                 }
                 Ok(Value::List(out))
             }
+            // A `CASE` whose arms contain an aggregation (`00142`). Each
+            // sub-expression is folded over the group via `eval_with_agg`,
+            // so `CASE WHEN count(*) > 1 THEN 'many' ELSE 'one' END`
+            // chooses on the aggregated count. A `CASE` with no aggregation
+            // anywhere is a group key and never reaches this path (it is
+            // evaluated by `eval` instead).
+            Expression::Case {
+                scrutinee,
+                arms,
+                else_branch,
+                ..
+            } => self.eval_case_with_agg(
+                scrutinee.as_deref(),
+                arms,
+                else_branch.as_deref(),
+                group_rows,
+            ),
             // Leaf / non-aggregation forms — fall back to a
             // representative binding. We pick the first one in the
             // group; for pure-aggregation queries the group may be
@@ -3473,6 +3492,58 @@ impl<'a> Executor<'a> {
         }
         match else_branch {
             Some(e) => self.eval(e, row),
+            None => Ok(Value::Null),
+        }
+    }
+
+    /// Evaluate a `CASE` expression whose arms may contain aggregations
+    /// (`00142`), folding every sub-expression over the bindings of one
+    /// group via [`eval_with_agg`](Self::eval_with_agg).
+    ///
+    /// Semantics are identical to [`eval_case`](Self::eval_case) — generic
+    /// (boolean `WHEN`) and simple (scrutinee-equality) forms, three-valued
+    /// `WHEN` handling, `NULL` on no-match-without-`ELSE` — the only
+    /// difference is that each scrutinee / `WHEN` / `THEN` / `ELSE` is
+    /// reduced across the group rather than read from a single row, so a
+    /// nested `count(*)` / `sum(x)` / … contributes its aggregated value.
+    fn eval_case_with_agg(
+        &self,
+        scrutinee: Option<&Expression>,
+        arms: &[(Expression, Expression)],
+        else_branch: Option<&Expression>,
+        group_rows: &[Bindings],
+    ) -> ExecResultT<Value> {
+        match scrutinee {
+            Some(scrut_expr) => {
+                let scrut = self.eval_with_agg(scrut_expr, group_rows)?;
+                for (when, then) in arms {
+                    let when_val = self.eval_with_agg(when, group_rows)?;
+                    if matches!(
+                        compare(BinaryOp::Eq, scrut.clone(), when_val, when.span())?,
+                        Value::Bool(true)
+                    ) {
+                        return self.eval_with_agg(then, group_rows);
+                    }
+                }
+            }
+            None => {
+                for (when, then) in arms {
+                    match self.eval_with_agg(when, group_rows)? {
+                        Value::Bool(true) => return self.eval_with_agg(then, group_rows),
+                        Value::Bool(false) | Value::Null => {}
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Boolean".into(),
+                                got: other.type_name().into(),
+                                span: when.span(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        match else_branch {
+            Some(e) => self.eval_with_agg(e, group_rows),
             None => Ok(Value::Null),
         }
     }
@@ -6933,15 +7004,118 @@ mod tests {
         assert_eq!(res.rows[0][0], Value::String("keep".into()));
     }
 
+    // ---- Aggregations nested inside a CASE arm (00142) -------------------
+
     #[test]
-    fn case_aggregation_inside_arm_stays_unsupported() {
+    fn case_generic_then_aggregation_folds_over_group() {
         let db = drevo();
-        // Aggregations nested inside a CASE arm are out of scope for 00137.
-        let e = err(
-            "MATCH (n) RETURN CASE WHEN true THEN count(*) ELSE 0 END AS r",
+        run("CREATE (:N), (:N), (:N)", &db);
+        // count(*) inside a THEN folds over the (single) group of 3 rows.
+        let res = run(
+            "MATCH (n:N) RETURN CASE WHEN true THEN count(*) ELSE 0 END AS r",
             &db,
         );
-        assert!(matches!(e, ExecError::Unsupported { .. }), "{e:?}");
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::Integer(3));
+    }
+
+    #[test]
+    fn case_generic_aggregation_in_when_condition() {
+        let db = drevo();
+        run("CREATE (:N), (:N), (:N)", &db);
+        let res = run(
+            "MATCH (n:N) RETURN CASE WHEN count(*) > 2 THEN 'many' ELSE 'few' END AS r",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::String("many".into()));
+    }
+
+    #[test]
+    fn case_aggregation_picks_else_on_empty_group() {
+        let db = drevo();
+        // No N nodes exist — the pure-aggregation group is synthetic and
+        // count(*) is 0, so the CASE selects the ELSE branch.
+        let res = run(
+            "MATCH (n:N) RETURN CASE WHEN count(*) > 0 THEN 'some' ELSE 'none' END AS r",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("none".into()));
+    }
+
+    #[test]
+    fn case_aggregation_in_else_branch() {
+        let db = drevo();
+        run("CREATE (:N {v: 10}), (:N {v: 20})", &db);
+        let res = run(
+            "MATCH (n:N) RETURN CASE WHEN false THEN 0 ELSE sum(n.v) END AS r",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::Integer(30));
+    }
+
+    #[test]
+    fn case_with_group_key_evaluates_aggregation_per_group() {
+        let db = drevo();
+        run(
+            "CREATE (:T {status: 'open'}), (:T {status: 'open'}), (:T {status: 'done'})",
+            &db,
+        );
+        // Group by status; the CASE column folds count(*) per group.
+        let mut res = run(
+            "MATCH (t:T) RETURN t.status AS s, \
+             CASE WHEN count(*) > 1 THEN 'many' ELSE 'one' END AS label \
+             ORDER BY s",
+            &db,
+        );
+        let rows = std::mem::take(&mut res.rows);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], Value::String("done".into()));
+        assert_eq!(rows[0][1], Value::String("one".into()));
+        assert_eq!(rows[1][0], Value::String("open".into()));
+        assert_eq!(rows[1][1], Value::String("many".into()));
+    }
+
+    #[test]
+    fn case_simple_form_with_aggregation_scrutinee() {
+        let db = drevo();
+        run("CREATE (:N), (:N)", &db);
+        // Simple form: scrutinee count(*) compared by equality to WHEN values.
+        let res = run(
+            "MATCH (n:N) RETURN CASE count(*) WHEN 2 THEN 'pair' WHEN 1 THEN 'single' ELSE 'other' END AS r",
+            &db,
+        );
+        assert_eq!(res.rows[0][0], Value::String("pair".into()));
+    }
+
+    #[test]
+    fn case_nested_aggregation_inside_aggregation_is_rejected() {
+        let db = drevo();
+        // An aggregation directly nested inside another aggregation stays
+        // rejected even when reached through a CASE arm, matching Neo4j.
+        let e = err(
+            "MATCH (n) RETURN sum(CASE WHEN true THEN count(*) ELSE 0 END) AS r",
+            &db,
+        );
+        assert!(matches!(e, ExecError::InvalidMutation(_)), "{e:?}");
+    }
+
+    #[test]
+    fn case_aggregation_in_arm_usable_in_with_filter() {
+        let db = drevo();
+        run(
+            "CREATE (:T {status: 'open'}), (:T {status: 'open'}), (:T {status: 'done'})",
+            &db,
+        );
+        // The CASE-with-aggregation column survives a post-aggregation WHERE.
+        let res = run(
+            "MATCH (t:T) \
+             WITH t.status AS s, CASE WHEN count(*) > 1 THEN 'many' ELSE 'one' END AS label \
+             WHERE label = 'many' RETURN s",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("open".into()));
     }
 
     // ---- Scalar functions (00138) ---------------------------------------

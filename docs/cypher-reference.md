@@ -319,8 +319,24 @@ RETURN t.title AS task,
 ```
 
 When no arm matches and there is no `ELSE`, the result is `NULL`. A generic-form condition
-that is neither boolean nor `NULL` raises `ExecError::TypeMismatch`. Aggregations are not
-yet supported *inside* a `CASE` arm.
+that is neither boolean nor `NULL` raises `ExecError::TypeMismatch`.
+
+A `CASE` arm may contain an **aggregation** (`count`, `sum`, `avg`, `min`, `max`, `collect`).
+The aggregation folds over the current group, exactly like a bare aggregating column, so the
+whole `CASE` column is an aggregating projection (the other, non-aggregating projection items
+form the group key):
+
+```cypher
+MATCH (t:Task)
+RETURN t.status AS status,
+       CASE WHEN count(*) > 5 THEN 'overloaded'
+            ELSE 'normal' END AS load
+```
+
+Here `count(*)` is folded per `status` group and the `CASE` chooses a label from the
+aggregated count. An aggregation may appear in the scrutinee, any `WHEN`, any `THEN`, or the
+`ELSE`. As everywhere else in Cypher, an aggregation nested *directly inside another*
+aggregation (e.g. `sum(CASE WHEN … THEN count(*) END)`) is rejected.
 
 ---
 
@@ -512,7 +528,6 @@ error rather than a crash or a silent wrong answer.
 | `CALL` / `YIELD` (procedures) | not in grammar |
 | `FOREACH` | not in executor |
 | Variable-length paths in `CREATE` | executor returns `Unsupported` |
-| Aggregations nested inside a `CASE` arm | executor returns `Unsupported` |
 
 When you need one of these today, express the intent through the [Rust](sdk-reference.md#rust-api)
 or [Python](sdk-reference.md#python-sdk) API, which expose the underlying traversal, FTS, and
