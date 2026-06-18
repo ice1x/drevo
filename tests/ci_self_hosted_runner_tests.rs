@@ -505,6 +505,88 @@ fn ci_yml_declares_concurrency_cancel_in_progress() {
     );
 }
 
+/// Repository root (the drevo crate manifest sits at the workspace root).
+fn repo_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Parse the integer assigned to `key` on a `key = N` / `key: "N"` line,
+/// tolerating optional quotes and surrounding whitespace. Returns the first
+/// match found in `body`.
+fn parse_capped_int(body: &str, key: &str) -> Option<u32> {
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            let rest = rest.trim_start();
+            let rest = rest.strip_prefix([':', '=']).unwrap_or(rest);
+            let value = rest.trim().trim_matches('"').trim_matches('\'').trim();
+            if let Ok(n) = value.parse::<u32>() {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn nextest_config_caps_test_threads_below_runner_core_count() {
+    // The self-hosted runner is also a daily-driver Mac (10 logical cores).
+    // Running the full nextest suite at the default `num-cpus` parallelism
+    // alongside interactive use has frozen the whole machine. `.config/
+    // nextest.toml` must cap `test-threads` to a bounded value that leaves
+    // headroom for the OS / UI. This invariant locks the cap in so a future
+    // edit can't silently restore unbounded parallelism. See the file's
+    // header comment for the full rationale.
+    let path = repo_root().join(".config").join("nextest.toml");
+    let body = fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "{} must exist and cap test-threads (CI-runner resource guard): {e}",
+            path.display()
+        )
+    });
+    let threads = parse_capped_int(&body, "test-threads").unwrap_or_else(|| {
+        panic!(
+            "{} must set a numeric `test-threads = N` under [profile.default] \
+             to bound test-process parallelism on the self-hosted runner",
+            path.display()
+        )
+    });
+    // 10 logical cores on the runner; a cap must leave real headroom and be
+    // a sane positive value.
+    assert!(
+        (1..=8).contains(&threads),
+        "nextest `test-threads` must be a bounded cap (1..=8) that leaves \
+         CPU/RAM headroom on the 10-core self-hosted runner; found {threads}"
+    );
+}
+
+#[test]
+fn ci_yml_caps_cargo_build_jobs_below_runner_core_count() {
+    // Compile-time parallelism is the other half of the freeze: a full
+    // `cargo build` at `jobs = num-cpus` spawns up to 10 parallel rustc
+    // processes on the 10-core runner. ci.yml must cap `CARGO_BUILD_JOBS`
+    // so a build leaves headroom for the desktop. Locked here so the cap
+    // can't silently regress.
+    let ci_yml = workflows_dir().join("ci.yml");
+    let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
+    assert!(
+        body.contains("CARGO_BUILD_JOBS"),
+        "ci.yml must set `CARGO_BUILD_JOBS` to cap parallel compilation on \
+         the self-hosted runner — without it a full `cargo build` saturates \
+         every core and can wedge the daily-driver machine into a freeze."
+    );
+    let jobs = parse_capped_int(&body, "CARGO_BUILD_JOBS")
+        .unwrap_or_else(|| panic!("ci.yml `CARGO_BUILD_JOBS` must be set to a numeric value"));
+    assert!(
+        (1..=8).contains(&jobs),
+        "ci.yml `CARGO_BUILD_JOBS` must be a bounded cap (1..=8) that leaves \
+         headroom on the 10-core self-hosted runner; found {jobs}"
+    );
+}
+
 /// The docs-only path set — these glob patterns MUST appear in
 /// `paths-ignore:` of EVERY "heavy" PR-gating workflow (ci.yml,
 /// cross-compile.yml, docker-publish.yml) AND in `ci-skip.yml`'s
