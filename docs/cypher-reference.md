@@ -422,6 +422,30 @@ ON MATCH SET s.touched = true
 RETURN s.name AS stage
 ```
 
+### FOREACH
+
+`FOREACH (var IN list | …)` runs one or more update clauses once per element of `list`,
+binding each element to `var`. It is a bulk-update clause: it never changes the outer
+query's cardinality, and `var` is scoped to the body — it is not visible afterwards. The
+body is restricted to update clauses (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, and
+nested `FOREACH`); read clauses such as `MATCH` are not permitted inside.
+
+```cypher
+CREATE (p:Project {title: 'Launch'})
+FOREACH (name IN ['design', 'build', 'ship'] |
+  CREATE (p)-[:HAS_SUBTASK]->(:Task {title: name}))
+```
+
+A common idiom collects matched nodes with `WITH … collect(…)` and updates each in one
+pass. A `null` list iterates zero times (mirroring `UNWIND null`); any other non-list value
+is a type error.
+
+```cypher
+MATCH (t:Task)
+WITH collect(t) AS tasks
+FOREACH (n IN tasks | SET n.status = 'done')
+```
+
 ---
 
 ## Parameters
@@ -546,7 +570,6 @@ error rather than a crash or a silent wrong answer.
 | Construct | Status |
 |-----------|--------|
 | `CALL` / `YIELD` (procedures) | not in grammar |
-| `FOREACH` | not in executor |
 | Variable-length paths in `CREATE` | executor returns `Unsupported` |
 
 When you need one of these today, express the intent through the [Rust](sdk-reference.md#rust-api)
