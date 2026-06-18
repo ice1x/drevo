@@ -136,6 +136,37 @@ pub fn parse(source: &str) -> ParseResult<Query> {
     Ok(query)
 }
 
+/// `true` when `clause` is an update clause permitted inside a
+/// `FOREACH` body (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, or a
+/// nested `FOREACH`). Read clauses are excluded.
+fn is_update_clause(clause: &Clause) -> bool {
+    matches!(
+        clause,
+        Clause::Create(_)
+            | Clause::Merge(_)
+            | Clause::Set(_)
+            | Clause::Remove(_)
+            | Clause::Delete(_)
+            | Clause::Foreach(_)
+    )
+}
+
+/// The keyword that introduced `clause`, for diagnostics.
+fn clause_keyword(clause: &Clause) -> &'static str {
+    match clause {
+        Clause::Match(_) => "MATCH",
+        Clause::Create(_) => "CREATE",
+        Clause::Merge(_) => "MERGE",
+        Clause::Delete(_) => "DELETE",
+        Clause::Set(_) => "SET",
+        Clause::Remove(_) => "REMOVE",
+        Clause::With(_) => "WITH",
+        Clause::Return(_) => "RETURN",
+        Clause::Unwind(_) => "UNWIND",
+        Clause::Foreach(_) => "FOREACH",
+    }
+}
+
 /// Internal parser state.
 struct Parser {
     tokens: Vec<Token>,
@@ -345,8 +376,9 @@ impl Parser {
             TokenKind::With => self.parse_with(),
             TokenKind::Return => self.parse_return(),
             TokenKind::Unwind => self.parse_unwind(),
+            TokenKind::Foreach => self.parse_foreach(),
             _ => Err(ParseError::Expected {
-                expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, OPTIONAL, DETACH)".to_string(),
+                expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, FOREACH, OPTIONAL, DETACH)".to_string(),
                 found: format!("{}", self.peek_kind()),
                 span: self.peek_span(),
             }),
@@ -561,6 +593,57 @@ impl Parser {
         Ok(Clause::Unwind(UnwindClause {
             expression,
             alias,
+            span,
+        }))
+    }
+
+    /// `FOREACH (variable IN list | update_clause [update_clause …])`.
+    ///
+    /// The body is one or more update clauses (`CREATE` / `MERGE` / `SET`
+    /// / `REMOVE` / `DELETE` / nested `FOREACH`). Read clauses (`MATCH`,
+    /// `RETURN`, `WITH`, `UNWIND`) are rejected here at parse time so the
+    /// grammar mirrors Neo4j, which only permits updates inside `FOREACH`.
+    fn parse_foreach(&mut self) -> ParseResult<Clause> {
+        let span = self.peek_span();
+        self.consume(); // FOREACH
+        self.eat(&TokenKind::LParen, "( after FOREACH")?;
+        let (variable, _) = self.consume_strict_identifier()?;
+        self.eat(&TokenKind::In, "IN in FOREACH")?;
+        let list = self.parse_expression()?;
+        self.eat(&TokenKind::Pipe, "| in FOREACH")?;
+        let mut clauses = Vec::new();
+        while !matches!(self.peek_kind(), TokenKind::RParen) {
+            if matches!(self.peek_kind(), TokenKind::Eof) {
+                return Err(ParseError::Expected {
+                    expected: ") to close FOREACH body".to_string(),
+                    found: format!("{}", self.peek_kind()),
+                    span: self.peek_span(),
+                });
+            }
+            let clause = self.parse_clause()?;
+            if !is_update_clause(&clause) {
+                return Err(ParseError::Expected {
+                    expected:
+                        "update clause inside FOREACH (CREATE, MERGE, SET, REMOVE, DELETE, FOREACH)"
+                            .to_string(),
+                    found: clause_keyword(&clause).to_string(),
+                    span,
+                });
+            }
+            clauses.push(clause);
+        }
+        self.eat(&TokenKind::RParen, ") to close FOREACH")?;
+        if clauses.is_empty() {
+            return Err(ParseError::Expected {
+                expected: "at least one update clause inside FOREACH".to_string(),
+                found: ")".to_string(),
+                span,
+            });
+        }
+        Ok(Clause::Foreach(ForeachClause {
+            variable,
+            list,
+            clauses,
             span,
         }))
     }
@@ -1467,5 +1550,66 @@ mod tests {
         };
         let props = m.patterns[0].path.head.properties.as_ref().unwrap();
         assert_eq!(props.entries.len(), 1);
+    }
+
+    // ---- FOREACH (00144) ------------------------------------------------
+
+    #[test]
+    fn parses_foreach_with_single_update_clause() {
+        let q = p("FOREACH (x IN [1, 2] | CREATE (:Task {title: 'a'}))");
+        let f = match &q.parts[0].query.clauses[0] {
+            Clause::Foreach(f) => f,
+            other => panic!("expected FOREACH, got {other:?}"),
+        };
+        assert_eq!(f.variable, "x");
+        assert!(matches!(f.list, Expression::List { .. }));
+        assert_eq!(f.clauses.len(), 1);
+        assert!(matches!(f.clauses[0], Clause::Create(_)));
+    }
+
+    #[test]
+    fn parses_foreach_with_multiple_update_clauses() {
+        let q = p("FOREACH (x IN [1] | CREATE (n:Task {title: 'a'}) SET n.done = true)");
+        let f = match &q.parts[0].query.clauses[0] {
+            Clause::Foreach(f) => f,
+            other => panic!("expected FOREACH, got {other:?}"),
+        };
+        assert_eq!(f.clauses.len(), 2);
+        assert!(matches!(f.clauses[0], Clause::Create(_)));
+        assert!(matches!(f.clauses[1], Clause::Set(_)));
+    }
+
+    #[test]
+    fn parses_nested_foreach() {
+        let q = p("FOREACH (r IN [[1]] | FOREACH (c IN r | CREATE (:Cell {title: 'a'})))");
+        let f = match &q.parts[0].query.clauses[0] {
+            Clause::Foreach(f) => f,
+            other => panic!("expected FOREACH, got {other:?}"),
+        };
+        assert!(matches!(f.clauses[0], Clause::Foreach(_)));
+    }
+
+    #[test]
+    fn foreach_rejects_read_clause_in_body() {
+        let err = parse("FOREACH (x IN [1] | MATCH (n) SET n.done = true)").unwrap_err();
+        assert!(matches!(err, ParseError::Expected { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn foreach_rejects_empty_body() {
+        let err = parse("FOREACH (x IN [1] | )").unwrap_err();
+        assert!(matches!(err, ParseError::Expected { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn foreach_requires_closing_paren() {
+        let err = parse("FOREACH (x IN [1] | CREATE (:Task {title: 'a'})").unwrap_err();
+        assert!(matches!(err, ParseError::Expected { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn foreach_requires_pipe_separator() {
+        let err = parse("FOREACH (x IN [1] CREATE (:Task {title: 'a'}))").unwrap_err();
+        assert!(matches!(err, ParseError::Expected { .. }), "got {err:?}");
     }
 }

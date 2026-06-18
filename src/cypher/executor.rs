@@ -150,9 +150,10 @@ use std::sync::Arc;
 const VARLEN_DEFAULT_UPPER: usize = 25;
 
 use crate::cypher::ast::{
-    BinaryOp, Clause, CreateClause, Direction as AstDirection, Expression, MapLiteral, MatchClause,
-    NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query,
-    RelLength, RelationshipPattern, ReturnClause, SingleQuery, UnaryOp, UnionKind, UnwindClause,
+    BinaryOp, Clause, CreateClause, Direction as AstDirection, Expression, ForeachClause,
+    MapLiteral, MatchClause, NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern,
+    ProjectionItem, Query, RelLength, RelationshipPattern, ReturnClause, SingleQuery, UnaryOp,
+    UnionKind, UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
@@ -875,6 +876,12 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
         Clause::Unwind(u) => {
             validate_expr_supported(&u.expression)?;
         }
+        Clause::Foreach(f) => {
+            validate_expr_supported(&f.list)?;
+            for inner in &f.clauses {
+                validate_clause_supported(inner)?;
+            }
+        }
     }
     Ok(())
 }
@@ -1383,6 +1390,7 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
             Clause::With(w) => w.span,
             Clause::Return(r) => r.span,
             Clause::Unwind(u) => u.span,
+            Clause::Foreach(f) => f.span,
         }
     } else {
         Span {
@@ -1441,6 +1449,7 @@ impl<'a> Executor<'a> {
             Clause::Remove(r) => self.run_remove(r),
             Clause::With(w) => self.run_with(w),
             Clause::Unwind(u) => self.run_unwind(u),
+            Clause::Foreach(f) => self.run_foreach(f),
         }
     }
 
@@ -1568,7 +1577,7 @@ impl<'a> Executor<'a> {
         if let Some(name) = &head.variable {
             if let Some(value) = existing.get(name) {
                 if let Value::Node(nv) = value {
-                    if !node_matches_pattern(nv, head, self)? {
+                    if !node_matches_pattern(nv, head, existing, self)? {
                         return Ok(vec![]);
                     }
                     let mut row = existing.clone();
@@ -1586,7 +1595,7 @@ impl<'a> Executor<'a> {
             }
         }
 
-        let candidates = self.enumerate_nodes(head)?;
+        let candidates = self.enumerate_nodes(head, existing)?;
         let mut out = Vec::with_capacity(candidates.len());
         for nv in candidates {
             let mut bindings = existing.clone();
@@ -1601,7 +1610,11 @@ impl<'a> Executor<'a> {
         Ok(out)
     }
 
-    fn enumerate_nodes(&self, pattern: &NodePattern) -> ExecResultT<Vec<Arc<NodeValue>>> {
+    fn enumerate_nodes(
+        &self,
+        pattern: &NodePattern,
+        row: &Bindings,
+    ) -> ExecResultT<Vec<Arc<NodeValue>>> {
         // For a single label we can prefer `list_nodes_by_kind` (drevo's
         // primary-kind index) as a fast path, but the pattern label may
         // match a secondary label — added via `SET n:Label` and stored
@@ -1625,7 +1638,7 @@ impl<'a> Executor<'a> {
         let mut out = Vec::with_capacity(nodes.len());
         for node in &nodes {
             let nv = node_to_value(node);
-            if !node_matches_pattern(&nv, pattern, self)? {
+            if !node_matches_pattern(&nv, pattern, row, self)? {
                 continue;
             }
             out.push(nv);
@@ -1677,7 +1690,7 @@ impl<'a> Executor<'a> {
             AstDirection::Undirected => self.drevo.edges_of(prev_node.id, ModelDirection::Both)?,
         };
         for edge in edges {
-            if !edge_matches_pattern(&edge, rel_pattern, self)? {
+            if !edge_matches_pattern(&edge, rel_pattern, existing, self)? {
                 continue;
             }
             // Identify the "other" endpoint of this relationship for
@@ -1698,7 +1711,7 @@ impl<'a> Executor<'a> {
                 Some(n) => node_to_value(&n),
                 None => continue,
             };
-            if !node_matches_pattern(&target, &segment.node, self)? {
+            if !node_matches_pattern(&target, &segment.node, existing, self)? {
                 continue;
             }
             // Confirm previously-bound variables (if any) still agree.
@@ -1794,7 +1807,7 @@ impl<'a> Executor<'a> {
         for depth in 0..=upper {
             if depth >= lower {
                 for state in &frontier {
-                    if !node_matches_pattern(&state.node, &segment.node, self)? {
+                    if !node_matches_pattern(&state.node, &segment.node, existing, self)? {
                         continue;
                     }
                     let mut bindings = existing.clone();
@@ -1868,7 +1881,7 @@ impl<'a> Executor<'a> {
                     if state.used_ids.contains(&edge.id) {
                         continue;
                     }
-                    if !edge_matches_pattern(&edge, rel_pattern, self)? {
+                    if !edge_matches_pattern(&edge, rel_pattern, existing, self)? {
                         continue;
                     }
                     match dir {
@@ -2974,6 +2987,51 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
+    /// `FOREACH (var IN list | update_clause …)` — for every current
+    /// binding row, evaluate `list` and run the body update clauses once
+    /// per element with `var` bound to it.
+    ///
+    /// `FOREACH` is a pure side-effecting clause: it never changes the
+    /// outer cardinality. Each outer row passes through unchanged, and any
+    /// variables the body introduces (e.g. `CREATE (n …)`) are scoped to
+    /// the iteration and discarded afterwards — only the graph mutations
+    /// persist. A `null` list is a no-op (zero iterations), mirroring
+    /// `UNWIND null`; any other non-list value is a type error.
+    fn run_foreach(&mut self, f: &ForeachClause) -> ExecResultT<()> {
+        let outer = std::mem::take(&mut self.bindings);
+        let mut result = Vec::with_capacity(outer.len());
+        for row in outer {
+            let value = self.eval(&f.list, &row)?;
+            let items = match value {
+                Value::List(items) => items,
+                // `FOREACH (x IN null | …)` iterates zero times.
+                Value::Null => Vec::new(),
+                other => {
+                    return Err(ExecError::TypeMismatch {
+                        expected: "List".into(),
+                        got: other.type_name().into(),
+                        span: f.list.span(),
+                    });
+                }
+            };
+            for item in items {
+                // Build a single-row context for this element: the outer
+                // bindings plus the loop variable. Body clauses run
+                // against it; whatever they leave in `self.bindings` is
+                // thrown away (variable scoping), graph writes persist.
+                let mut sub_row = row.clone();
+                sub_row.insert(f.variable.clone(), item);
+                self.bindings = vec![sub_row];
+                for inner in &f.clauses {
+                    self.run_clause(inner)?;
+                }
+            }
+            result.push(row);
+        }
+        self.bindings = result;
+        Ok(())
+    }
+
     /// Expand `RETURN *` into the bound variable names; return
     /// (column_names, expression_per_column).
     fn resolve_projections(
@@ -3793,6 +3851,7 @@ fn synth_title(label: &str) -> String {
 fn node_matches_pattern(
     nv: &Arc<NodeValue>,
     pattern: &NodePattern,
+    row: &Bindings,
     executor: &Executor<'_>,
 ) -> ExecResultT<bool> {
     // All requested labels must be present (Cypher MATCH semantics).
@@ -3803,7 +3862,13 @@ fn node_matches_pattern(
     }
     if let Some(map) = &pattern.properties {
         for (k, expr) in &map.entries {
-            let expected = executor.eval(expr, &HashMap::new())?;
+            // Property filters evaluate against the current binding row so a
+            // filter may reference an already-bound variable (e.g. a FOREACH
+            // loop variable in `MERGE (l:Label {title: lbl})`, or an outer
+            // node in `MATCH (b {ref: a.id})`). Literals and `$params` are
+            // row-independent, so this is a strict superset of the prior
+            // empty-row behaviour.
+            let expected = executor.eval(expr, row)?;
             let actual = nv.properties.get(k).cloned().unwrap_or(Value::Null);
             if actual != expected {
                 return Ok(false);
@@ -3816,6 +3881,7 @@ fn node_matches_pattern(
 fn edge_matches_pattern(
     edge: &Edge,
     pattern: &RelationshipPattern,
+    row: &Bindings,
     executor: &Executor<'_>,
 ) -> ExecResultT<bool> {
     if !pattern.types.is_empty() && !pattern.types.iter().any(|t| t == &edge.kind) {
@@ -3824,7 +3890,9 @@ fn edge_matches_pattern(
     if let Some(map) = &pattern.properties {
         let rv = edge_to_value(edge);
         for (k, expr) in &map.entries {
-            let expected = executor.eval(expr, &HashMap::new())?;
+            // See `node_matches_pattern`: evaluate against the binding row so
+            // a relationship-property filter can reference bound variables.
+            let expected = executor.eval(expr, row)?;
             let actual = rv.properties.get(k).cloned().unwrap_or(Value::Null);
             if actual != expected {
                 return Ok(false);
@@ -6625,6 +6693,226 @@ mod tests {
                 vec![Value::List(vec![Value::Integer(1), Value::Integer(2)])],
                 vec![Value::List(vec![Value::Integer(3)])],
             ]
+        );
+    }
+
+    // ---- FOREACH (00144) ------------------------------------------------
+
+    #[test]
+    fn foreach_over_literal_list_creates_one_node_per_element() {
+        let db = drevo();
+        let res = run(
+            "FOREACH (x IN [1, 2, 3] | CREATE (:Task {title: 'task-' + toString(x)}))",
+            &db,
+        );
+        assert_eq!(res.stats.nodes_created, 3);
+        let tasks = db.list_nodes_by_kind("Task", 100, 0).unwrap();
+        assert_eq!(tasks.len(), 3);
+    }
+
+    #[test]
+    fn foreach_over_empty_list_is_a_noop() {
+        let db = drevo();
+        let res = run(
+            "FOREACH (x IN [] | CREATE (:Task {title: toString(x)}))",
+            &db,
+        );
+        assert_eq!(res.stats.nodes_created, 0);
+        assert!(db.list_nodes_by_kind("Task", 100, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn foreach_over_null_is_a_noop() {
+        let db = drevo();
+        // Mirrors `UNWIND null` — a null list iterates zero times rather
+        // than raising a type error.
+        let res = run(
+            "FOREACH (x IN null | CREATE (:Task {title: toString(x)}))",
+            &db,
+        );
+        assert_eq!(res.stats.nodes_created, 0);
+        assert!(db.list_nodes_by_kind("Task", 100, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn foreach_over_non_list_scalar_is_type_mismatch() {
+        let db = drevo();
+        let e = err("FOREACH (x IN 42 | CREATE (:Task {title: 'x'}))", &db);
+        assert!(
+            matches!(e, ExecError::TypeMismatch { ref expected, .. } if expected == "List"),
+            "got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn foreach_sets_property_on_every_matched_node() {
+        let db = drevo();
+        run(
+            "CREATE (:Task {title: 'A'}) CREATE (:Task {title: 'B'})",
+            &db,
+        );
+        // Collect the matched nodes into a list, then SET a property on
+        // each via FOREACH.
+        run(
+            "MATCH (t:Task) WITH collect(t) AS ts FOREACH (n IN ts | SET n.done = true)",
+            &db,
+        );
+        let tasks = db.list_nodes_by_kind("Task", 100, 0).unwrap();
+        assert_eq!(tasks.len(), 2);
+        for t in tasks {
+            assert_eq!(
+                t.properties.get("done").and_then(|v| v.as_bool()),
+                Some(true)
+            );
+        }
+    }
+
+    #[test]
+    fn foreach_runs_multiple_update_clauses_per_element() {
+        let db = drevo();
+        let res = run(
+            "FOREACH (x IN [1, 2] | CREATE (n:Task {title: 'item-' + toString(x)}) SET n.flag = true)",
+            &db,
+        );
+        assert_eq!(res.stats.nodes_created, 2);
+        assert_eq!(res.stats.properties_set, 2);
+        let tasks = db.list_nodes_by_kind("Task", 100, 0).unwrap();
+        assert!(tasks
+            .iter()
+            .all(|t| t.properties.get("flag").and_then(|v| v.as_bool()) == Some(true)));
+    }
+
+    #[test]
+    fn foreach_loop_variable_is_not_visible_after_the_clause() {
+        let db = drevo();
+        // `x` is scoped to the FOREACH body; referencing it in a trailing
+        // RETURN must fail as an unbound variable rather than leaking the
+        // last element of the list.
+        let e = err(
+            "FOREACH (x IN [1, 2, 3] | CREATE (:Task {title: toString(x)})) RETURN x",
+            &db,
+        );
+        assert!(
+            matches!(e, ExecError::UnboundVariable { ref name, .. } if name == "x"),
+            "got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn foreach_references_outer_bound_variable() {
+        let db = drevo();
+        run("CREATE (:Project {title: 'Launch'})", &db);
+        // For the matched project, create a subtask per title and link it.
+        run(
+            "MATCH (p:Project {title: 'Launch'}) \
+             FOREACH (name IN ['design', 'build', 'ship'] | \
+               CREATE (p)-[:HAS_SUBTASK]->(:Task {title: name}))",
+            &db,
+        );
+        let subtasks = db.list_nodes_by_kind("Task", 100, 0).unwrap();
+        assert_eq!(subtasks.len(), 3);
+        let res = run(
+            "MATCH (:Project {title: 'Launch'})-[:HAS_SUBTASK]->(t:Task) RETURN count(t)",
+            &db,
+        );
+        assert_eq!(res.rows, vec![vec![Value::Integer(3)]]);
+    }
+
+    #[test]
+    fn foreach_nested_iterates_the_cross_product() {
+        let db = drevo();
+        run(
+            "FOREACH (row IN [[1, 2], [3, 4]] | \
+               FOREACH (cell IN row | CREATE (:Cell {title: 'c' + toString(cell)})))",
+            &db,
+        );
+        let cells = db.list_nodes_by_kind("Cell", 100, 0).unwrap();
+        assert_eq!(cells.len(), 4);
+    }
+
+    #[test]
+    fn foreach_preserves_outer_cardinality() {
+        let db = drevo();
+        run(
+            "CREATE (:Task {title: 'A'}) CREATE (:Task {title: 'B'})",
+            &db,
+        );
+        // Two matched rows; FOREACH creates a child each but must not
+        // multiply or collapse the outer rows — RETURN still sees both.
+        let res = run(
+            "MATCH (t:Task) FOREACH (n IN [1] | SET t.touched = true) RETURN t.title ORDER BY t.title",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![Value::String("A".into())],
+                vec![Value::String("B".into())],
+            ]
+        );
+    }
+
+    #[test]
+    fn foreach_over_an_empty_match_runs_zero_iterations() {
+        let db = drevo();
+        // No Project nodes → MATCH yields zero rows → FOREACH body never
+        // runs, even though its list is non-empty.
+        run(
+            "MATCH (p:Project) FOREACH (name IN ['a', 'b'] | CREATE (p)-[:HAS_SUBTASK]->(:Task {title: name}))",
+            &db,
+        );
+        assert!(db.list_nodes_by_kind("Task", 100, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn foreach_merge_keyed_by_loop_variable_is_idempotent() {
+        let db = drevo();
+        run("CREATE (:Bug {title: 'crash'})", &db);
+        // MERGE inside FOREACH, keyed on the loop variable — the canonical
+        // "tag each from a list" idiom. Running it twice must not duplicate.
+        let q = "MATCH (b:Bug {title: 'crash'}) \
+                 FOREACH (lbl IN ['regression', 'p1'] | \
+                   MERGE (l:Label {title: lbl}) \
+                   MERGE (b)-[:TAGGED]->(l))";
+        run(q, &db);
+        run(q, &db);
+        let res = run(
+            "MATCH (:Bug {title: 'crash'})-[:TAGGED]->(l:Label) RETURN count(l)",
+            &db,
+        );
+        assert_eq!(res.rows, vec![vec![Value::Integer(2)]]);
+    }
+
+    #[test]
+    fn match_node_property_filter_resolves_a_bound_variable() {
+        let db = drevo();
+        run(
+            "CREATE (:Tag {title: 'urgent'}) CREATE (:Item {title: 'I1', tag: 'urgent'}) \
+             CREATE (:Item {title: 'I2', tag: 'low'})",
+            &db,
+        );
+        // The second pattern's property filter references `t.title`, a value
+        // bound by the first MATCH — previously this raised UnboundVariable
+        // because filters evaluated against an empty row.
+        let res = run(
+            "MATCH (t:Tag {title: 'urgent'}) MATCH (i:Item {tag: t.title}) RETURN i.title",
+            &db,
+        );
+        assert_eq!(res.rows, vec![vec![Value::String("I1".into())]]);
+    }
+
+    #[test]
+    fn foreach_body_rejects_read_clause_at_parse_time() {
+        // A read clause inside FOREACH is a grammar error — the body is
+        // restricted to update clauses.
+        let e = parse("FOREACH (x IN [1] | MATCH (n:Task) SET n.done = true)")
+            .expect_err("expected parse error");
+        assert!(
+            matches!(e, crate::cypher::parser::ParseError::Expected { .. }),
+            "got {:?}",
+            e
         );
     }
 

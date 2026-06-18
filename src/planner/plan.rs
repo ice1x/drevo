@@ -445,7 +445,8 @@ impl PlanBuilder<'_> {
                 | Clause::Merge(_)
                 | Clause::Set(_)
                 | Clause::Remove(_)
-                | Clause::Delete(_) => {}
+                | Clause::Delete(_)
+                | Clause::Foreach(_) => {}
             }
         }
         current.unwrap_or_else(PlanNode::empty_result)

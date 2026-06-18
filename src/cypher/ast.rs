@@ -75,6 +75,8 @@ pub enum Clause {
     Return(ReturnClause),
     /// `UNWIND expr AS name`.
     Unwind(UnwindClause),
+    /// `FOREACH (var IN list | update_clause …)`.
+    Foreach(ForeachClause),
 }
 
 /// `MATCH` / `OPTIONAL MATCH` clause.
@@ -267,6 +269,27 @@ pub struct UnwindClause {
     /// Variable bound to each element.
     pub alias: String,
     /// Source span of the `UNWIND` keyword.
+    pub span: Span,
+}
+
+/// `FOREACH (variable IN list | update_clause …)`.
+///
+/// An update clause that iterates `list`, binding `variable` to each
+/// element in turn and running the nested update `clauses` for that
+/// element. Cypher restricts the body to update clauses (`CREATE`,
+/// `MERGE`, `SET`, `REMOVE`, `DELETE`, and nested `FOREACH`) — read
+/// clauses such as `MATCH` / `RETURN` / `WITH` are not allowed inside.
+/// `FOREACH` never changes the outer query's cardinality; the loop
+/// variable is scoped to the body and is not visible afterwards.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForeachClause {
+    /// Loop variable bound to each list element.
+    pub variable: String,
+    /// List expression iterated over.
+    pub list: Expression,
+    /// Update clauses run once per list element, in source order.
+    pub clauses: Vec<Clause>,
+    /// Source span of the `FOREACH` keyword.
     pub span: Span,
 }
 
