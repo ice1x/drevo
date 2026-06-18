@@ -70,6 +70,26 @@ WHERE n.active = true OR n.role = 'lead'
 RETURN n.title AS name
 ```
 
+### Anonymous nodes
+
+Any node in a pattern may omit its variable — including the **head** (first) node and
+intermediate nodes in a multi-hop path (task `00143`). An anonymous node still matches and
+filters by its label and inline properties; it just binds nothing for later use. This is the
+idiomatic way to say "from *any* such node, reach…":
+
+```cypher
+MATCH (:Task)-[:ASSIGNED_TO]->(person:Person)
+RETURN DISTINCT person.title AS assignee
+```
+
+```cypher
+MATCH (:Book {title: 'Dune'})-[:HAS_CHAPTER]->()-[:NEXT]->(c:Chapter)
+RETURN c.title AS second_chapter
+```
+
+A bare `()` head with no label or properties matches every node, so `MATCH ()-[:KNOWS]->(b)`
+returns the target of every `:KNOWS` relationship.
+
 ### OPTIONAL MATCH
 
 `OPTIONAL MATCH` is a left-outer join: when the pattern does not match, its variables bind

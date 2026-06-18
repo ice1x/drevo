@@ -146,6 +146,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | `CALL` / stored procedures, `apoc.*` | ⛔ Not in the grammar. |
 | Regex `=~` | ✅ Supported (full-string match; common Java/Neo4j subset incl. `(?i)`). |
 | List / map indexing & slicing (`xs[0]`, `xs[1..3]`, `m['k']`) | ✅ Supported. |
+| Anonymous nodes in `MATCH` (`(:Label)-->(b)`, `()-->(b)`, `(a)-->()-->(c)`) | ✅ Supported (head & intermediate). |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
 | APOC export → import | ✅ Via this migration tool. |
 

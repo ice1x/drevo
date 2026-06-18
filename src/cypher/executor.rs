@@ -1536,20 +1536,23 @@ impl<'a> Executor<'a> {
         existing: &Bindings,
         build_path: bool,
     ) -> ExecResultT<Vec<Bindings>> {
+        // Each in-progress row carries the *actual* endpoint node reached so
+        // far, threaded forward directly rather than re-derived from the
+        // bindings. This is what lets an **anonymous** head or intermediate
+        // node — which binds no variable to look up later — still chain into
+        // the next segment: `match_head` hands back the head node it just
+        // matched, and every segment returns its target node as the new
+        // endpoint. (Pattern lengths are short, so the extra `Arc` clone per
+        // row is negligible.)
         let mut rows = self.match_head(&path.head, existing, build_path)?;
         for segment in &path.tail {
-            let mut next: Vec<Bindings> = Vec::new();
-            // Previous endpoint is the node bound by the last completed
-            // segment — either the head node or the tail of the
-            // previously matched segment. Look it up by traversing the
-            // path again from `head` (cheap — pattern lengths are short).
-            for row in rows.drain(..) {
-                let prev_node = last_bound_node(&row, path, segment_index_for(path, segment))?;
+            let mut next: Vec<(Bindings, Arc<NodeValue>)> = Vec::new();
+            for (row, prev_node) in rows.drain(..) {
                 next.extend(self.match_segment(&prev_node, segment, &row, build_path)?);
             }
             rows = next;
         }
-        Ok(rows)
+        Ok(rows.into_iter().map(|(bindings, _)| bindings).collect())
     }
 
     fn match_head(
@@ -1557,9 +1560,11 @@ impl<'a> Executor<'a> {
         head: &NodePattern,
         existing: &Bindings,
         build_path: bool,
-    ) -> ExecResultT<Vec<Bindings>> {
+    ) -> ExecResultT<Vec<(Bindings, Arc<NodeValue>)>> {
         // If the head's variable is already bound, just verify it
         // matches the requested label/properties — otherwise enumerate.
+        // Each returned row is paired with the head node it matched so the
+        // caller can thread it into the next segment.
         if let Some(name) = &head.variable {
             if let Some(value) = existing.get(name) {
                 if let Value::Node(nv) = value {
@@ -1570,7 +1575,7 @@ impl<'a> Executor<'a> {
                     if build_path {
                         seed_path(&mut row, nv.clone());
                     }
-                    return Ok(vec![row]);
+                    return Ok(vec![(row, nv.clone())]);
                 } else {
                     return Err(ExecError::TypeMismatch {
                         expected: "Node".into(),
@@ -1589,9 +1594,9 @@ impl<'a> Executor<'a> {
                 seed_path(&mut bindings, nv.clone());
             }
             if let Some(name) = &head.variable {
-                bindings.insert(name.clone(), Value::Node(nv));
+                bindings.insert(name.clone(), Value::Node(nv.clone()));
             }
-            out.push(bindings);
+            out.push((bindings, nv));
         }
         Ok(out)
     }
@@ -1634,7 +1639,7 @@ impl<'a> Executor<'a> {
         segment: &crate::cypher::ast::PathSegment,
         existing: &Bindings,
         build_path: bool,
-    ) -> ExecResultT<Vec<Bindings>> {
+    ) -> ExecResultT<Vec<(Bindings, Arc<NodeValue>)>> {
         let rel_pattern = &segment.relationship;
         // Variable-length path? Hand off to the BFS expander. The
         // single-hop fast path below still handles the common
@@ -1733,7 +1738,7 @@ impl<'a> Executor<'a> {
             if build_path {
                 extend_path(&mut bindings, edge_to_value(&edge), target.clone());
             }
-            out.push(bindings);
+            out.push((bindings, target));
         }
         Ok(out)
     }
@@ -1759,7 +1764,7 @@ impl<'a> Executor<'a> {
         lo: i64,
         hi: Option<i64>,
         build_path: bool,
-    ) -> ExecResultT<Vec<Bindings>> {
+    ) -> ExecResultT<Vec<(Bindings, Arc<NodeValue>)>> {
         let rel_pattern = &segment.relationship;
         let dir = rel_pattern.direction;
         let upper = hi.map(|h| h as usize).unwrap_or(VARLEN_DEFAULT_UPPER);
@@ -1784,7 +1789,7 @@ impl<'a> Executor<'a> {
             used_nodes: Vec::new(),
             used_ids: Vec::new(),
         }];
-        let mut results: Vec<Bindings> = Vec::new();
+        let mut results: Vec<(Bindings, Arc<NodeValue>)> = Vec::new();
 
         for depth in 0..=upper {
             if depth >= lower {
@@ -1839,7 +1844,7 @@ impl<'a> Executor<'a> {
                         // to `src` by `match_head` / earlier segments.
                         extend_path_multi(&mut bindings, &state.used_edges, &state.used_nodes);
                     }
-                    results.push(bindings);
+                    results.push((bindings, state.node.clone()));
                 }
             }
             if depth == upper {
@@ -3785,50 +3790,6 @@ fn synth_title(label: &str) -> String {
     format!("__cypher__:{}:{}", label, uuid.as_simple())
 }
 
-fn segment_index_for(path: &PathPattern, segment: &crate::cypher::ast::PathSegment) -> usize {
-    for (i, s) in path.tail.iter().enumerate() {
-        if std::ptr::eq(s, segment) {
-            return i;
-        }
-    }
-    0
-}
-
-fn last_bound_node(
-    row: &Bindings,
-    path: &PathPattern,
-    segment_idx: usize,
-) -> ExecResultT<Arc<NodeValue>> {
-    // For segment_idx=0 the predecessor is `path.head`; otherwise it's
-    // the destination of the previous segment.
-    let target_pattern = if segment_idx == 0 {
-        &path.head
-    } else {
-        &path.tail[segment_idx - 1].node
-    };
-    if let Some(name) = &target_pattern.variable {
-        if let Some(Value::Node(nv)) = row.get(name) {
-            return Ok(nv.clone());
-        }
-    }
-    // Anonymous predecessor — for a *named* path the accumulator records
-    // every endpoint (bound or not), so its last node is exactly the
-    // predecessor we need. This lets `MATCH p = (:A)-->()-->(:B)` thread
-    // through anonymous intermediate nodes.
-    if let Some(Value::Path(p)) = row.get(PATH_ACCUM_KEY) {
-        if let Some(nv) = p.nodes.last() {
-            return Ok(nv.clone());
-        }
-    }
-    // Anonymous predecessor in an *unnamed* multi-hop pattern: there is no
-    // bound value to thread. Chains of size 1 are fine (the head is taken
-    // directly); longer anonymous chains require either a variable name or a
-    // named path binding.
-    Err(ExecError::InvalidCreate(
-        "internal: anonymous intermediate node in multi-hop path".into(),
-    ))
-}
-
 fn node_matches_pattern(
     nv: &Arc<NodeValue>,
     pattern: &NodePattern,
@@ -5189,6 +5150,117 @@ mod tests {
         );
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0][0], Value::String("T2".into()));
+    }
+
+    // ---- anonymous head / intermediate nodes in MATCH (task 00143) --------
+
+    #[test]
+    fn match_anonymous_labeled_head_single_hop() {
+        // `MATCH (:Person)-->(b)` — the head binds no variable but is still
+        // a real node that must be threaded into the relationship segment.
+        let db = drevo();
+        run(
+            "CREATE (:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})",
+            &db,
+        );
+        let res = run("MATCH (:Person)-[:KNOWS]->(b) RETURN b.name AS name", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("Bob".into()));
+    }
+
+    #[test]
+    fn match_bare_anonymous_head_single_hop() {
+        // `MATCH ()-->(b)` — a totally bare anonymous head (no label) is the
+        // most permissive form; every relationship's target should surface.
+        let db = drevo();
+        run(
+            "CREATE (:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})",
+            &db,
+        );
+        let res = run("MATCH ()-[:KNOWS]->(b) RETURN b.name AS name", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("Bob".into()));
+    }
+
+    #[test]
+    fn match_anonymous_intermediate_in_unnamed_multi_hop() {
+        // `MATCH (a)-->()-->(c)` — the middle node is anonymous and the path
+        // is unnamed (no accumulator), so the endpoint must be threaded
+        // directly hop-to-hop.
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})-[:KNOWS]->(c:Person {name: 'Carol'})",
+            &db,
+        );
+        let res = run(
+            "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->()-[:KNOWS]->(c) RETURN c.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("Carol".into()));
+    }
+
+    #[test]
+    fn match_anonymous_head_with_anonymous_intermediate() {
+        // Both head and intermediate anonymous: `MATCH (:Person)-->()-->(c)`.
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})-[:KNOWS]->(c:Person {name: 'Carol'})",
+            &db,
+        );
+        let res = run(
+            "MATCH (:Person)-[:KNOWS]->()-[:KNOWS]->(c) RETURN c.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("Carol".into()));
+    }
+
+    #[test]
+    fn match_anonymous_head_varlen() {
+        // Anonymous head feeding a variable-length segment.
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})-[:KNOWS]->(c:Person {name: 'Carol'})",
+            &db,
+        );
+        let res = run(
+            "MATCH (:Person {name: 'Alice'})-[:KNOWS*1..2]->(reached) RETURN reached.name AS name ORDER BY name",
+            &db,
+        );
+        let names: Vec<Value> = res.rows.iter().map(|r| r[0].clone()).collect();
+        assert_eq!(
+            names,
+            vec![Value::String("Bob".into()), Value::String("Carol".into())]
+        );
+    }
+
+    #[test]
+    fn match_anonymous_head_no_match_yields_empty_not_error() {
+        // No relationship of the requested type — empty result, never the
+        // old spurious `InvalidCreate`.
+        let db = drevo();
+        run("CREATE (:Person {name: 'Alice'})", &db);
+        let res = run("MATCH (:Person)-[:KNOWS]->(b) RETURN b.name AS name", &db);
+        assert!(res.rows.is_empty());
+    }
+
+    #[test]
+    fn match_named_path_through_anonymous_head_still_binds_path() {
+        // The named-path accumulator (00141) keeps working with the new
+        // threading: a named path over an anonymous head binds the full
+        // alternating node/relationship sequence.
+        let db = drevo();
+        run(
+            "CREATE (:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})",
+            &db,
+        );
+        let res = run(
+            "MATCH p = (:Person)-[:KNOWS]->(b) RETURN length(p) AS hops",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::Integer(1));
     }
 
     // ---- RETURN -----------------------------------------------------------
