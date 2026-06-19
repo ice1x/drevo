@@ -158,17 +158,28 @@ fn erp_secondary_labels_appear_in_label_listing() {
 #[test]
 fn erp_relationship_types_are_distinct_and_sorted() {
     let db = db();
-    // Avoid `CONTAINS` here — it is a reserved Cypher keyword, and using a
-    // keyword as a relationship type lowercases it (a pre-existing parser
-    // quirk unrelated to CALL/YIELD).
+    // `CONTAINS` is a reserved Cypher keyword (string predicate); used as a
+    // relationship type it must round-trip with its written casing — see the
+    // `consume_name` keyword-casing fix and `keyword_rel_type_*` regressions.
     exec(
-        "CREATE (o:Order)-[:HAS_ITEM]->(:LineItem), \
+        "CREATE (o:Order)-[:CONTAINS]->(:LineItem), \
          (o)-[:PLACED_BY]->(:Customer), \
-         (o)-[:HAS_ITEM]->(:LineItem)",
+         (o)-[:CONTAINS]->(:LineItem)",
         &db,
     );
     let kinds = strings(&run("CALL db.relationshipTypes()", &db));
-    assert_eq!(kinds, vec!["HAS_ITEM", "PLACED_BY"]);
+    assert_eq!(kinds, vec!["CONTAINS", "PLACED_BY"]);
+}
+
+#[test]
+fn keyword_relationship_type_round_trips_through_call() {
+    // Regression for the keyword-casing fix, via the exact path that
+    // surfaced it: a `:CONTAINS` edge must appear as `CONTAINS` (not the
+    // lowercased `contains`) in `CALL db.relationshipTypes()`.
+    let db = db();
+    exec("CREATE (a:N)-[:CONTAINS]->(b:N)", &db);
+    let kinds = strings(&run("CALL db.relationshipTypes()", &db));
+    assert_eq!(kinds, vec!["CONTAINS"]);
 }
 
 // ---- Bug tracker -----------------------------------------------------------

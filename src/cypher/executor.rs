@@ -5401,6 +5401,20 @@ mod tests {
     }
 
     #[test]
+    fn keyword_rel_type_round_trips_through_storage() {
+        // `CONTAINS` is a reserved Cypher keyword (string predicate). Used
+        // as a relationship type it must be stored verbatim, not lowercased
+        // (regression: consume_name used to .to_lowercase() keyword names).
+        // The read side uses a type-less `-[r]->` pattern so no consume_name
+        // lowercasing can mask the bug; type(r) returns the stored kind.
+        let db = drevo();
+        run("CREATE (a:N)-[:CONTAINS]->(b:N)", &db);
+        let res = run("MATCH (a)-[r]->(b) RETURN type(r) AS t", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("CONTAINS".into()));
+    }
+
+    #[test]
     fn match_anonymous_target_label_filters_pairs() {
         let db = drevo();
         run(
