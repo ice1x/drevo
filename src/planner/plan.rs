@@ -441,12 +441,16 @@ impl PlanBuilder<'_> {
                 // Write clauses do not change the read cardinality the planner
                 // reasons about in this task; they pass the current plan
                 // through unchanged.
+                // `CALL` produces rows from a procedure rather than from a
+                // graph scan; the cost model has no procedure statistics, so
+                // it passes the current plan through like the write clauses.
                 Clause::Create(_)
                 | Clause::Merge(_)
                 | Clause::Set(_)
                 | Clause::Remove(_)
                 | Clause::Delete(_)
-                | Clause::Foreach(_) => {}
+                | Clause::Foreach(_)
+                | Clause::Call(_) => {}
             }
         }
         current.unwrap_or_else(PlanNode::empty_result)
