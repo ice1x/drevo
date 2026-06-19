@@ -164,6 +164,7 @@ fn clause_keyword(clause: &Clause) -> &'static str {
         Clause::Return(_) => "RETURN",
         Clause::Unwind(_) => "UNWIND",
         Clause::Foreach(_) => "FOREACH",
+        Clause::Call(_) => "CALL",
     }
 }
 
@@ -377,8 +378,9 @@ impl Parser {
             TokenKind::Return => self.parse_return(),
             TokenKind::Unwind => self.parse_unwind(),
             TokenKind::Foreach => self.parse_foreach(),
+            TokenKind::Call => self.parse_call(),
             _ => Err(ParseError::Expected {
-                expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, FOREACH, OPTIONAL, DETACH)".to_string(),
+                expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, FOREACH, CALL, OPTIONAL, DETACH)".to_string(),
                 found: format!("{}", self.peek_kind()),
                 span: self.peek_span(),
             }),
@@ -646,6 +648,76 @@ impl Parser {
             clauses,
             span,
         }))
+    }
+
+    /// `CALL proc.name(arg, …) [YIELD col [AS alias], … [WHERE pred]]`.
+    ///
+    /// The procedure name is one or more dot-separated identifiers
+    /// (`db.labels`). Arguments are an ordinary comma-separated expression
+    /// list (empty for the built-in introspection procedures). `YIELD`,
+    /// when present, names the output columns to bring into scope, each
+    /// optionally renamed with `AS`, and may be followed by a `WHERE`
+    /// predicate that filters the yielded rows.
+    fn parse_call(&mut self) -> ParseResult<Clause> {
+        let span = self.peek_span();
+        self.consume(); // CALL
+        let (first, _) = self.consume_strict_identifier()?;
+        let mut name = vec![first];
+        while matches!(self.peek_kind(), TokenKind::Dot) {
+            self.consume(); // .
+            let (segment, _) = self.consume_strict_identifier()?;
+            name.push(segment);
+        }
+        self.eat(&TokenKind::LParen, "( after procedure name")?;
+        let mut args = Vec::new();
+        if !matches!(self.peek_kind(), TokenKind::RParen) {
+            args.push(self.parse_expression()?);
+            while matches!(self.peek_kind(), TokenKind::Comma) {
+                self.consume();
+                args.push(self.parse_expression()?);
+            }
+        }
+        self.eat(&TokenKind::RParen, ") to close procedure arguments")?;
+
+        let (yields, where_clause) = if matches!(self.peek_kind(), TokenKind::Yield) {
+            self.consume(); // YIELD
+            let mut items = Vec::new();
+            items.push(self.parse_yield_item()?);
+            while matches!(self.peek_kind(), TokenKind::Comma) {
+                self.consume();
+                items.push(self.parse_yield_item()?);
+            }
+            let where_clause = if matches!(self.peek_kind(), TokenKind::Where) {
+                self.consume();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            (Some(items), where_clause)
+        } else {
+            (None, None)
+        };
+
+        Ok(Clause::Call(CallClause {
+            name,
+            args,
+            yields,
+            where_clause,
+            span,
+        }))
+    }
+
+    /// One `YIELD` item: `col [AS alias]`.
+    fn parse_yield_item(&mut self) -> ParseResult<YieldItem> {
+        let (name, span) = self.consume_strict_identifier()?;
+        let alias = if matches!(self.peek_kind(), TokenKind::As) {
+            self.consume();
+            let (alias, _) = self.consume_strict_identifier()?;
+            Some(alias)
+        } else {
+            None
+        };
+        Ok(YieldItem { name, alias, span })
     }
 
     // ---- Projection helpers --------------------------------------------
@@ -1610,6 +1682,60 @@ mod tests {
     #[test]
     fn foreach_requires_pipe_separator() {
         let err = parse("FOREACH (x IN [1] CREATE (:Task {title: 'a'}))").unwrap_err();
+        assert!(matches!(err, ParseError::Expected { .. }), "got {err:?}");
+    }
+
+    // ---- CALL / YIELD (00145) ---------------------------------------------
+
+    fn first_call(src: &str) -> CallClause {
+        match p(src).parts[0].query.clauses[0].clone() {
+            Clause::Call(c) => c,
+            other => panic!("expected CALL, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_standalone_call_dotted_name() {
+        let c = first_call("CALL db.labels()");
+        assert_eq!(c.name, vec!["db", "labels"]);
+        assert!(c.args.is_empty());
+        assert!(c.yields.is_none());
+        assert!(c.where_clause.is_none());
+    }
+
+    #[test]
+    fn parses_call_with_yield_items() {
+        let c = first_call("CALL db.labels() YIELD label RETURN label");
+        let yields = c.yields.expect("yields");
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0].name, "label");
+        assert!(yields[0].alias.is_none());
+    }
+
+    #[test]
+    fn parses_call_yield_with_alias() {
+        let c = first_call("CALL db.labels() YIELD label AS l RETURN l");
+        let yields = c.yields.expect("yields");
+        assert_eq!(yields[0].alias.as_deref(), Some("l"));
+    }
+
+    #[test]
+    fn parses_call_yield_where() {
+        let c = first_call("CALL db.labels() YIELD label WHERE label = 'X' RETURN label");
+        assert!(c.where_clause.is_some());
+    }
+
+    #[test]
+    fn parses_call_with_arguments() {
+        // Arguments parse generically even though the built-ins take none;
+        // arity is an executor-level concern.
+        let c = first_call("CALL some.proc(1, 'two')");
+        assert_eq!(c.args.len(), 2);
+    }
+
+    #[test]
+    fn call_requires_parentheses() {
+        let err = parse("CALL db.labels").unwrap_err();
         assert!(matches!(err, ParseError::Expected { .. }), "got {err:?}");
     }
 }

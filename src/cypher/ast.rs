@@ -77,6 +77,8 @@ pub enum Clause {
     Unwind(UnwindClause),
     /// `FOREACH (var IN list | update_clause …)`.
     Foreach(ForeachClause),
+    /// `CALL proc.name(args) [YIELD col [AS alias] … [WHERE pred]]`.
+    Call(CallClause),
 }
 
 /// `MATCH` / `OPTIONAL MATCH` clause.
@@ -290,6 +292,43 @@ pub struct ForeachClause {
     /// Update clauses run once per list element, in source order.
     pub clauses: Vec<Clause>,
     /// Source span of the `FOREACH` keyword.
+    pub span: Span,
+}
+
+/// `CALL proc.name(args) [YIELD …]` — invoke a built-in procedure.
+///
+/// drevo ships a small set of read-only schema-introspection procedures
+/// (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`). A procedure
+/// emits a fixed set of *output columns*; `YIELD` selects which of those
+/// columns to bind into the row stream (optionally renamed with `AS` and
+/// filtered with a trailing `WHERE`). A standalone `CALL` with no `YIELD`
+/// projects every output column directly as the query result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallClause {
+    /// Dotted procedure name as segments (`["db", "labels"]`).
+    pub name: Vec<String>,
+    /// Argument expressions inside the parentheses (empty for the
+    /// built-in introspection procedures).
+    pub args: Vec<Expression>,
+    /// `YIELD` items, or `None` when the source omitted `YIELD`
+    /// (a standalone call projecting all output columns).
+    pub yields: Option<Vec<YieldItem>>,
+    /// Optional `WHERE` predicate after `YIELD` (only valid with
+    /// `yields = Some(_)`; the parser enforces this).
+    pub where_clause: Option<Expression>,
+    /// Source span of the `CALL` keyword.
+    pub span: Span,
+}
+
+/// One item in a `CALL … YIELD` list: `col [AS alias]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct YieldItem {
+    /// Output column name produced by the procedure.
+    pub name: String,
+    /// Optional rename (`YIELD col AS alias`); the bound variable is
+    /// `alias` when present, otherwise `name`.
+    pub alias: Option<String>,
+    /// Source span of the yielded column name.
     pub span: Span,
 }
 

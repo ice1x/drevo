@@ -448,6 +448,50 @@ FOREACH (n IN tasks | SET n.status = 'done')
 
 ---
 
+## Procedures
+
+drevo ships a small set of read-only, built-in procedures invoked with the `CALL` clause.
+These mirror Neo4j's schema-introspection procedures so existing tooling and drivers can
+discover a graph's shape. There is no support for user-defined, `apoc.*`, or `gds.*`
+procedures.
+
+| Procedure | Output column | Returns |
+|-----------|---------------|---------|
+| `db.labels()` | `label` | every distinct node label (the primary kind plus any secondary `:Extra` labels), sorted |
+| `db.relationshipTypes()` | `relationshipType` | every distinct relationship type, sorted |
+| `db.propertyKeys()` | `propertyKey` | every distinct property key across nodes and relationships, sorted (the reserved `_labels` key is never exposed) |
+
+### CALL
+
+A standalone `CALL` projects the procedure's output column(s) directly as the query result:
+
+```cypher
+CALL db.labels()
+```
+
+`YIELD` brings the named output columns into scope for the rest of the query, optionally
+renamed with `AS` and filtered with a trailing `WHERE`:
+
+```cypher
+CALL db.labels() YIELD label
+WHERE label <> 'Internal'
+RETURN label
+```
+
+Because `YIELD` produces ordinary rows, downstream clauses — including aggregation — work as
+usual:
+
+```cypher
+CALL db.propertyKeys() YIELD propertyKey AS key
+RETURN count(key) AS distinct_keys
+```
+
+A `CALL` to an unknown procedure, with the wrong number of arguments, or a `YIELD` of a column
+the procedure does not produce, fails with `ExecError::InvalidProcedureCall` — a deterministic,
+named error rather than a panic or a wrong answer.
+
+---
+
 ## Parameters
 
 Parameters are written `$name` (or `$0`, `$1`, …) and supplied as a `HashMap<String, Value>`
@@ -569,8 +613,8 @@ error rather than a crash or a silent wrong answer.
 
 | Construct | Status |
 |-----------|--------|
-| `CALL` / `YIELD` (procedures) | not in grammar |
-| Variable-length paths in `CREATE` | executor returns `Unsupported` |
+| User-defined / `apoc.*` / `gds.*` procedures | only the built-in `db.*` introspection procedures exist — see [CALL](#call) |
+| Variable-length paths in `CREATE` | executor returns `Unsupported` (semantically meaningless — how many edges?) |
 
 When you need one of these today, express the intent through the [Rust](sdk-reference.md#rust-api)
 or [Python](sdk-reference.md#python-sdk) API, which expose the underlying traversal, FTS, and

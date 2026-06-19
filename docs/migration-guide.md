@@ -144,7 +144,8 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | `UNION` / `UNION ALL` | ✅ Supported (arms must share column names; no mixing the two). |
 | `CASE … WHEN … THEN … END` | ✅ Supported (generic & simple forms; aggregations may appear inside an arm). |
 | Scalar functions (`toLower`, `size`, `coalesce`, `range`, `keys`, …) | ✅ Supported (string / numeric / list library; see reference). |
-| `CALL` / stored procedures, `apoc.*` | ⛔ Not in the grammar. |
+| `CALL` / `YIELD` — built-in `db.*` introspection (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`) | ✅ Supported (standalone or `YIELD … WHERE`). |
+| User-defined / `apoc.*` / `gds.*` procedures | ⛔ Only the built-in `db.*` procedures exist. |
 | Regex `=~` | ✅ Supported (full-string match; common Java/Neo4j subset incl. `(?i)`). |
 | List / map indexing & slicing (`xs[0]`, `xs[1..3]`, `m['k']`) | ✅ Supported. |
 | Anonymous nodes in `MATCH` (`(:Label)-->(b)`, `()-->(b)`, `(a)-->()-->(c)`) | ✅ Supported (head & intermediate). |

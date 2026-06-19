@@ -150,10 +150,10 @@ use std::sync::Arc;
 const VARLEN_DEFAULT_UPPER: usize = 25;
 
 use crate::cypher::ast::{
-    BinaryOp, Clause, CreateClause, Direction as AstDirection, Expression, ForeachClause,
-    MapLiteral, MatchClause, NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern,
-    ProjectionItem, Query, RelLength, RelationshipPattern, ReturnClause, SingleQuery, UnaryOp,
-    UnionKind, UnwindClause,
+    BinaryOp, CallClause, Clause, CreateClause, Direction as AstDirection, Expression,
+    ForeachClause, MapLiteral, MatchClause, NamedPattern, NodePattern, OrderDirection, OrderItem,
+    PathPattern, ProjectionItem, Query, RelLength, RelationshipPattern, ReturnClause, SingleQuery,
+    UnaryOp, UnionKind, UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
@@ -351,6 +351,21 @@ pub enum ExecError {
         /// Source span of the offending call.
         span: Span,
     },
+    /// A `CALL` clause named a procedure that does not exist, passed the
+    /// wrong number of arguments, or `YIELD`ed a column the procedure does
+    /// not produce. drevo ships only a small set of read-only built-in
+    /// procedures (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`),
+    /// so the error names the offending procedure and what was wrong.
+    #[error("invalid procedure call `{name}`: {message}")]
+    InvalidProcedureCall {
+        /// Procedure name as written (`"db.labels"`).
+        name: String,
+        /// Explanation of what was wrong (unknown name, wrong arity,
+        /// unknown yield column).
+        message: String,
+        /// Source span of the offending `CALL`.
+        span: Span,
+    },
     /// The arms of a `UNION` are incompatible. Either the projected
     /// column names differ between arms (Neo4j requires every arm of a
     /// `UNION` to return the same column names in the same order), or a
@@ -386,6 +401,7 @@ impl ExecError {
             | Self::UnboundVariable { span, .. }
             | Self::TypeMismatch { span, .. }
             | Self::InvalidFunctionCall { span, .. }
+            | Self::InvalidProcedureCall { span, .. }
             | Self::UnionMismatch { span, .. }
             | Self::InvalidRegex { span, .. } => Some(*span),
             Self::MissingParameter(_)
@@ -880,6 +896,50 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
             validate_expr_supported(&f.list)?;
             for inner in &f.clauses {
                 validate_clause_supported(inner)?;
+            }
+        }
+        Clause::Call(c) => {
+            for arg in &c.args {
+                validate_expr_supported(arg)?;
+            }
+            // Resolve the procedure upfront so an unknown name, wrong
+            // arity, or a `YIELD` of a non-existent column is reported
+            // deterministically before any side effects run — even on an
+            // empty graph.
+            let name = c.name.join(".");
+            let columns =
+                procedure_columns(&name).ok_or_else(|| ExecError::InvalidProcedureCall {
+                    name: name.clone(),
+                    message: "no such procedure — built-in procedures are \
+                          db.labels, db.relationshipTypes, db.propertyKeys"
+                        .into(),
+                    span: c.span,
+                })?;
+            if !c.args.is_empty() {
+                return Err(ExecError::InvalidProcedureCall {
+                    name,
+                    message: format!("expected 0 arguments, got {}", c.args.len()),
+                    span: c.span,
+                });
+            }
+            if let Some(items) = &c.yields {
+                for item in items {
+                    if !columns.contains(&item.name.as_str()) {
+                        return Err(ExecError::InvalidProcedureCall {
+                            name,
+                            message: format!(
+                                "procedure does not yield a column `{}` \
+                                 (available: {})",
+                                item.name,
+                                columns.join(", ")
+                            ),
+                            span: item.span,
+                        });
+                    }
+                }
+            }
+            if let Some(pred) = &c.where_clause {
+                validate_expr_supported(pred)?;
             }
         }
     }
@@ -1391,6 +1451,7 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
             Clause::Return(r) => r.span,
             Clause::Unwind(u) => u.span,
             Clause::Foreach(f) => f.span,
+            Clause::Call(c) => c.span,
         }
     } else {
         Span {
@@ -1450,6 +1511,7 @@ impl<'a> Executor<'a> {
             Clause::With(w) => self.run_with(w),
             Clause::Unwind(u) => self.run_unwind(u),
             Clause::Foreach(f) => self.run_foreach(f),
+            Clause::Call(c) => self.run_call(c),
         }
     }
 
@@ -2987,6 +3049,127 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
+    /// `CALL proc.name(args) [YIELD col [AS alias] … [WHERE pred]]`.
+    ///
+    /// Invokes a built-in read-only procedure and folds its output rows
+    /// into the binding stream. With `YIELD`, each yielded column is bound
+    /// (under its `AS` alias when present) as the cross-product of the
+    /// prior rows with the procedure output — exactly like `UNWIND` — and
+    /// an optional `WHERE` filters the result. Without `YIELD`, the call
+    /// is a standalone query whose result columns are the procedure's full
+    /// output signature.
+    fn run_call(&mut self, c: &CallClause) -> ExecResultT<()> {
+        let name = c.name.join(".");
+        // `procedure_columns` / arity / yield-column validity were all
+        // checked in the upfront sweep, so resolution here cannot fail on
+        // a known procedure; fall back to the same error for safety.
+        let columns = procedure_columns(&name).ok_or_else(|| ExecError::InvalidProcedureCall {
+            name: name.clone(),
+            message: "no such procedure".into(),
+            span: c.span,
+        })?;
+        let output = self.invoke_procedure(&name, c.span)?;
+
+        match &c.yields {
+            Some(items) => {
+                // Map each yielded column name to its position in the
+                // procedure's output signature.
+                let prior = std::mem::take(&mut self.bindings);
+                let mut new_bindings: Vec<Bindings> = Vec::new();
+                for row in &prior {
+                    for out_row in &output {
+                        let mut next = row.clone();
+                        for item in items {
+                            let idx = columns
+                                .iter()
+                                .position(|col| *col == item.name)
+                                .unwrap_or(0);
+                            let key = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                            next.insert(key, out_row[idx].clone());
+                        }
+                        match &c.where_clause {
+                            None => new_bindings.push(next),
+                            Some(pred) => match self.eval(pred, &next)? {
+                                Value::Bool(true) => new_bindings.push(next),
+                                Value::Bool(false) | Value::Null => {}
+                                other => {
+                                    return Err(ExecError::TypeMismatch {
+                                        expected: "Boolean".into(),
+                                        got: other.type_name().into(),
+                                        span: pred.span(),
+                                    });
+                                }
+                            },
+                        }
+                    }
+                }
+                self.bindings = new_bindings;
+            }
+            None => {
+                // Standalone call — project every output column directly
+                // as the query result, mirroring Neo4j's bare `CALL`.
+                self.result_columns = columns.iter().map(|c| c.to_string()).collect();
+                self.result_rows = output;
+            }
+        }
+        Ok(())
+    }
+
+    /// Run a built-in procedure and return its output rows, each a
+    /// positional vector aligned with [`procedure_columns`].
+    fn invoke_procedure(&self, name: &str, span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        match name {
+            "db.labels" => {
+                let mut labels: Vec<String> = Vec::new();
+                for node in self.drevo.collect_all_nodes()? {
+                    for label in node_labels_from_storage(&node) {
+                        if !labels.contains(&label) {
+                            labels.push(label);
+                        }
+                    }
+                }
+                labels.sort();
+                Ok(labels.into_iter().map(|l| vec![Value::String(l)]).collect())
+            }
+            "db.relationshipTypes" => {
+                let mut kinds: Vec<String> = Vec::new();
+                for edge in self.drevo.collect_all_edges()? {
+                    if !kinds.contains(&edge.kind) {
+                        kinds.push(edge.kind);
+                    }
+                }
+                kinds.sort();
+                Ok(kinds.into_iter().map(|k| vec![Value::String(k)]).collect())
+            }
+            "db.propertyKeys" => {
+                let mut keys: Vec<String> = Vec::new();
+                for node in self.drevo.collect_all_nodes()? {
+                    for key in node_to_value(&node).properties.keys() {
+                        if !keys.contains(key) {
+                            keys.push(key.clone());
+                        }
+                    }
+                }
+                for edge in self.drevo.collect_all_edges()? {
+                    for key in edge_to_value(&edge).properties.keys() {
+                        if !keys.contains(key) {
+                            keys.push(key.clone());
+                        }
+                    }
+                }
+                keys.sort();
+                Ok(keys.into_iter().map(|k| vec![Value::String(k)]).collect())
+            }
+            // Unreachable for a procedure that passed the upfront sweep,
+            // but keep a deterministic error rather than a panic.
+            _ => Err(ExecError::InvalidProcedureCall {
+                name: name.to_string(),
+                message: "no such procedure".into(),
+                span,
+            }),
+        }
+    }
+
     /// `FOREACH (var IN list | update_clause …)` — for every current
     /// binding row, evaluate `list` and run the body update clauses once
     /// per element with `var` bound to it.
@@ -3814,6 +3997,22 @@ impl<'a> Executor<'a> {
 }
 
 // ===== Pure helpers =========================================================
+
+/// The output column signature of a built-in `CALL` procedure, or `None`
+/// if `name` is not a known procedure.
+///
+/// drevo ships only read-only schema-introspection procedures. Each
+/// returns a single column; the slice order defines the positional layout
+/// [`Executor::invoke_procedure`] produces and the standalone (`YIELD`-less)
+/// result columns.
+fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "db.labels" => Some(&["label"]),
+        "db.relationshipTypes" => Some(&["relationshipType"]),
+        "db.propertyKeys" => Some(&["propertyKey"]),
+        _ => None,
+    }
+}
 
 fn node_labels_from_storage(node: &Node) -> Vec<String> {
     let mut labels = vec![node.kind.clone()];
@@ -7092,6 +7291,152 @@ mod tests {
             matches!(e, ExecError::Unsupported { ref feature, .. } if feature.contains("variable-length CREATE")),
             "got {:?}",
             e
+        );
+    }
+
+    // ---- CALL / YIELD procedures (00145) ----------------------------------
+
+    /// Collect a single-column result's rows as `String`s, for terse
+    /// assertions on the introspection procedures.
+    fn string_column(res: &ExecResult) -> Vec<String> {
+        res.rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::String(s) => s.clone(),
+                other => panic!("expected String, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn call_db_labels_standalone_lists_sorted_distinct_labels() {
+        let db = drevo();
+        run("CREATE (:Person), (:Person), (:Company)", &db);
+        let res = run("CALL db.labels()", &db);
+        assert_eq!(res.columns, vec!["label"]);
+        assert_eq!(string_column(&res), vec!["Company", "Person"]);
+    }
+
+    #[test]
+    fn call_db_labels_includes_secondary_labels() {
+        let db = drevo();
+        run("CREATE (n:Person:Employee)", &db);
+        let res = run("CALL db.labels()", &db);
+        assert_eq!(string_column(&res), vec!["Employee", "Person"]);
+    }
+
+    #[test]
+    fn call_db_labels_on_empty_graph_yields_no_rows() {
+        let db = drevo();
+        let res = run("CALL db.labels()", &db);
+        assert_eq!(res.columns, vec!["label"]);
+        assert!(res.rows.is_empty());
+    }
+
+    #[test]
+    fn call_db_relationship_types_lists_sorted_distinct_kinds() {
+        let db = drevo();
+        run("CREATE (a:N)-[:KNOWS]->(b:N)-[:LIKES]->(c:N)", &db);
+        run("CREATE (d:N)-[:KNOWS]->(e:N)", &db);
+        let res = run("CALL db.relationshipTypes()", &db);
+        assert_eq!(res.columns, vec!["relationshipType"]);
+        assert_eq!(string_column(&res), vec!["KNOWS", "LIKES"]);
+    }
+
+    #[test]
+    fn call_db_property_keys_unions_node_and_edge_keys() {
+        let db = drevo();
+        run(
+            "CREATE (a:N {name: 'x', age: 1})-[:R {since: 2020}]->(b:N {name: 'y'})",
+            &db,
+        );
+        let res = run("CALL db.propertyKeys()", &db);
+        assert_eq!(res.columns, vec!["propertyKey"]);
+        // Sorted, distinct across nodes + edges. drevo auto-assigns a
+        // unique `title` to every node (to keep the title-uniqueness
+        // invariant), so `title` is always a real, queryable property key.
+        // The reserved `_labels` key is never surfaced.
+        let keys = string_column(&res);
+        assert_eq!(keys, vec!["age", "name", "since", "title"]);
+        assert!(!keys.contains(&"_labels".to_string()));
+    }
+
+    #[test]
+    fn call_yield_binds_column_for_downstream_return() {
+        let db = drevo();
+        run("CREATE (:Person), (:Company)", &db);
+        let res = run("CALL db.labels() YIELD label RETURN label", &db);
+        assert_eq!(res.columns, vec!["label"]);
+        assert_eq!(string_column(&res), vec!["Company", "Person"]);
+    }
+
+    #[test]
+    fn call_yield_alias_renames_bound_variable() {
+        let db = drevo();
+        run("CREATE (:Person)", &db);
+        let res = run("CALL db.labels() YIELD label AS l RETURN l", &db);
+        assert_eq!(res.columns, vec!["l"]);
+        assert_eq!(string_column(&res), vec!["Person"]);
+    }
+
+    #[test]
+    fn call_yield_where_filters_rows() {
+        let db = drevo();
+        run("CREATE (:Person), (:Company), (:Project)", &db);
+        let res = run(
+            "CALL db.labels() YIELD label WHERE label = 'Person' RETURN label",
+            &db,
+        );
+        assert_eq!(string_column(&res), vec!["Person"]);
+    }
+
+    #[test]
+    fn call_yield_feeds_aggregation() {
+        let db = drevo();
+        run("CREATE (:Person), (:Company), (:Project)", &db);
+        let res = run("CALL db.labels() YIELD label RETURN count(label) AS n", &db);
+        assert_eq!(res.rows[0][0], Value::Integer(3));
+    }
+
+    #[test]
+    fn call_unknown_procedure_is_invalid_procedure_call() {
+        let db = drevo();
+        let e = err("CALL db.bogus()", &db);
+        assert!(
+            matches!(e, ExecError::InvalidProcedureCall { ref name, .. } if name == "db.bogus"),
+            "got {e:?}"
+        );
+    }
+
+    #[test]
+    fn call_with_arguments_is_rejected() {
+        let db = drevo();
+        let e = err("CALL db.labels('extra')", &db);
+        assert!(
+            matches!(e, ExecError::InvalidProcedureCall { ref message, .. } if message.contains("0 arguments")),
+            "got {e:?}"
+        );
+    }
+
+    #[test]
+    fn call_yield_unknown_column_is_rejected() {
+        let db = drevo();
+        let e = err("CALL db.labels() YIELD nope RETURN nope", &db);
+        assert!(
+            matches!(e, ExecError::InvalidProcedureCall { ref message, .. } if message.contains("does not yield")),
+            "got {e:?}"
+        );
+    }
+
+    #[test]
+    fn call_unknown_procedure_rejected_on_empty_graph_before_side_effects() {
+        // The upfront sweep must surface the error deterministically even
+        // when the graph is empty (no rows to produce).
+        let db = drevo();
+        let e = err("CALL db.bogus() YIELD x RETURN x", &db);
+        assert!(
+            matches!(e, ExecError::InvalidProcedureCall { .. }),
+            "got {e:?}"
         );
     }
 
