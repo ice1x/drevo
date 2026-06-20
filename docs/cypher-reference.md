@@ -694,6 +694,48 @@ RETURN single(x IN [1, 2, 3, 4] WHERE x % 2 = 0) AS exactly_one_even
 
 ---
 
+## reduce
+
+`reduce(accumulator = init, var IN list | expr)` folds a list into a single
+value. It is the third member of the list-expression family: where a
+[list comprehension](#list-comprehensions) maps a list to a list and a
+[list predicate](#list-predicate-functions) collapses a list to a boolean,
+`reduce` collapses a list to an *arbitrary* value — a sum, a product, a running
+maximum, a concatenated string.
+
+The seed `init` is evaluated once in the current scope to prime `accumulator`.
+Each element of `list` is then bound to `var`, and the running total to
+`accumulator`, in a child scope; `expr` computes the next accumulator value.
+The final accumulator is the result.
+
+```cypher
+RETURN reduce(total = 0, n IN [1, 2, 3, 4] | total + n) AS sum
+```
+
+Semantics:
+
+- **Left fold** — elements are folded left to right, so a non-commutative `expr`
+  (e.g. string concatenation) sees them in list order.
+- **Empty list** — yields the seed unchanged.
+- **Scope** — both `accumulator` and `var` shadow any outer binding of the same
+  name *only inside* the fold; `expr` may freely reference outer bindings
+  alongside them.
+- **`null` list** — a `null` source makes the whole `reduce` `null` (mirrors
+  `UNWIND` / `IN` / the comprehension and predicate forms). A `null` produced by
+  `expr` simply becomes the accumulator and folds onward.
+- **Type** — a non-list source is an `ExecError::TypeMismatch`.
+- **Aggregations** are not allowed inside `reduce` (the loop variable is
+  per-element, not per-group); use `collect` / `UNWIND` for that.
+
+A common shape is folding a `collect`ed property list — for example summing
+line-item subtotals into an order total:
+
+```cypher
+RETURN reduce(toc = 'Chapters:', t IN ['Dawn', 'Noon', 'Dusk'] | toc + ' ' + t) AS toc
+```
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task

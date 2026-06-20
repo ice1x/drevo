@@ -588,6 +588,28 @@ pub enum Expression {
         /// Span of the function-name keyword.
         span: Span,
     },
+    /// `reduce(acc = init, var IN list | expr)` — a left fold over a list.
+    ///
+    /// Evaluates `init` in the current scope to seed `accumulator`, then walks
+    /// `list` left to right binding each element to `variable` and the running
+    /// total to `accumulator` in a child scope; `expr` computes the next
+    /// accumulator value. The final accumulator is the result. An empty list
+    /// yields the seed unchanged, and a `null` list propagates to `null`
+    /// (mirroring the list comprehension / predicate family).
+    Reduce {
+        /// The accumulator variable, rebound to `expr`'s value each iteration.
+        accumulator: String,
+        /// The seed expression, evaluated once in the outer scope.
+        init: Box<Expression>,
+        /// The loop variable bound to each list element in turn.
+        variable: String,
+        /// The source list expression.
+        list: Box<Expression>,
+        /// The fold expression, evaluated per element in the child scope.
+        expr: Box<Expression>,
+        /// Span of the `reduce` keyword.
+        span: Span,
+    },
     /// `count(*)` — the only context in which `*` is a valid sub-expression.
     Star(Span),
 }
@@ -641,7 +663,8 @@ impl Expression {
             | Self::Slice { span, .. }
             | Self::Case { span, .. }
             | Self::ListComprehension { span, .. }
-            | Self::ListPredicate { span, .. } => *span,
+            | Self::ListPredicate { span, .. }
+            | Self::Reduce { span, .. } => *span,
             Self::Map(m) => m.span,
         }
     }
