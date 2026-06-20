@@ -130,7 +130,7 @@ pub type ParseResult<T> = std::result::Result<T, ParseError>;
 /// ```
 pub fn parse(source: &str) -> ParseResult<Query> {
     let tokens = tokenize(source)?;
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(source, tokens);
     let query = parser.parse_query()?;
     parser.ensure_eof()?;
     Ok(query)
@@ -170,13 +170,22 @@ fn clause_keyword(clause: &Clause) -> &'static str {
 
 /// Internal parser state.
 struct Parser {
+    /// The original query text, kept so identifier-position keywords can be
+    /// recovered with their *written* casing via their token span (the
+    /// lexer is case-insensitive on keywords, so the `TokenKind` alone has
+    /// lost the original casing). See [`Parser::consume_name`].
+    source: String,
     tokens: Vec<Token>,
     pos: usize,
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+    fn new(source: &str, tokens: Vec<Token>) -> Self {
+        Self {
+            source: source.to_string(),
+            tokens,
+            pos: 0,
+        }
     }
 
     // ---- Token-stream primitives ----------------------------------------
@@ -280,14 +289,19 @@ impl Parser {
                 Ok((s, tok.span))
             }
             kind if kind.is_keyword() => {
-                let s = format!("{kind}");
-                // The Display impl for keywords uses upper-case canonical
-                // form. For property names we want what the user wrote;
-                // but since the lexer is case-insensitive on keywords, the
-                // canonical form is fine — Neo4j itself reports the same.
-                // (Soft-keyword normalization is the parser's choice.)
+                // A reserved keyword used in an identifier position (label,
+                // relationship type, property / map key). The lexer matches
+                // keywords case-insensitively, so the `TokenKind` has lost
+                // the original casing — recover the *written* text from the
+                // source by the token's byte span. This keeps `[:CONTAINS]`
+                // a `CONTAINS` relationship type and `n.In` an `In` property
+                // (Neo4j preserves the written casing of labels / types /
+                // property keys; only keyword *recognition* is
+                // case-insensitive). Spans are byte offsets and keywords are
+                // ASCII, so the slice is always on a char boundary.
+                let text = self.source[tok.span.start..tok.span.end].to_string();
                 self.consume();
-                Ok((s.to_lowercase(), tok.span))
+                Ok((text, tok.span))
             }
             _ => Err(ParseError::ExpectedIdentifier { span: tok.span }),
         }
@@ -1737,5 +1751,52 @@ mod tests {
     fn call_requires_parentheses() {
         let err = parse("CALL db.labels").unwrap_err();
         assert!(matches!(err, ParseError::Expected { .. }), "got {err:?}");
+    }
+
+    // ---- keyword-as-identifier casing -------------------------------------
+    // A reserved keyword used in an *identifier* position (label, rel-type,
+    // property/map key) must round-trip with its written casing — keyword
+    // recognition is case-insensitive, but the name is whatever the source
+    // wrote. Regression: `consume_name` used to `.to_lowercase()` the
+    // canonical keyword form, so `[:CONTAINS]` became `contains`.
+
+    #[test]
+    fn keyword_rel_type_preserves_written_casing() {
+        let q = p("CREATE (a)-[:CONTAINS]->(b)");
+        let c = match &q.parts[0].query.clauses[0] {
+            Clause::Create(c) => c,
+            _ => panic!(),
+        };
+        let rel = &c.patterns[0].path.tail[0].relationship;
+        assert_eq!(rel.types, vec!["CONTAINS".to_string()]);
+    }
+
+    #[test]
+    fn keyword_label_preserves_written_casing() {
+        // `Contains` (mixed case of the CONTAINS keyword) as a label.
+        let q = p("MATCH (n:Contains) RETURN n");
+        let m = match &q.parts[0].query.clauses[0] {
+            Clause::Match(m) => m,
+            _ => panic!(),
+        };
+        assert_eq!(m.patterns[0].path.head.labels, vec!["Contains".to_string()]);
+    }
+
+    #[test]
+    fn keyword_property_name_preserves_mixed_casing() {
+        // `In` (mixed case of the IN keyword) as a property name keeps
+        // exactly what was written, not a lowercased form.
+        let q = p("RETURN n.In");
+        let r = match &q.parts[0].query.clauses[0] {
+            Clause::Return(r) => r,
+            _ => panic!(),
+        };
+        match &r.items[0] {
+            ProjectionItem::Expression {
+                expr: Expression::Property { name, .. },
+                ..
+            } => assert_eq!(name, "In"),
+            _ => panic!(),
+        }
     }
 }
