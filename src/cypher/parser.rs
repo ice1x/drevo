@@ -1301,16 +1301,74 @@ impl Parser {
     fn parse_list_literal(&mut self) -> ParseResult<Expression> {
         let span = self.peek_span();
         self.consume(); // [
-        let mut items = Vec::new();
-        if !matches!(self.peek_kind(), TokenKind::RBracket) {
+        if matches!(self.peek_kind(), TokenKind::RBracket) {
+            self.consume();
+            return Ok(Expression::List {
+                items: Vec::new(),
+                span,
+            });
+        }
+        // Parse the first element. For a list comprehension this naturally
+        // parses the `variable IN list` prefix as an `In` expression (IN binds
+        // tighter than the `WHERE` / `|` that follow); `parse_expression`
+        // stops at `WHERE` / `|` since neither is an expression operator.
+        let first = self.parse_expression()?;
+        // `[var IN list WHERE pred | proj]` — a list comprehension is signalled
+        // by a `WHERE` or `|` immediately after the `var IN list` prefix.
+        if matches!(self.peek_kind(), TokenKind::Where | TokenKind::Pipe) {
+            return self.finish_list_comprehension(first, span);
+        }
+        let mut items = vec![first];
+        while matches!(self.peek_kind(), TokenKind::Comma) {
+            self.consume();
             items.push(self.parse_expression()?);
-            while matches!(self.peek_kind(), TokenKind::Comma) {
-                self.consume();
-                items.push(self.parse_expression()?);
-            }
         }
         self.eat(&TokenKind::RBracket, "`]` to close list literal")?;
         Ok(Expression::List { items, span })
+    }
+
+    /// Finish parsing a list comprehension once the leading `var IN list`
+    /// prefix (`first`) has been recognised by a trailing `WHERE` / `|`.
+    ///
+    /// `first` must be `variable IN listExpr` with `variable` a bare
+    /// identifier; otherwise the bracket form is malformed.
+    fn finish_list_comprehension(
+        &mut self,
+        first: Expression,
+        span: Span,
+    ) -> ParseResult<Expression> {
+        let Expression::In { expr, list, .. } = first else {
+            return Err(ParseError::Malformed {
+                message: "list comprehension must start with `variable IN list`".to_string(),
+                span,
+            });
+        };
+        let Expression::Variable(variable, _) = *expr else {
+            return Err(ParseError::Malformed {
+                message: "list comprehension variable must be a simple identifier".to_string(),
+                span,
+            });
+        };
+        let predicate = if matches!(self.peek_kind(), TokenKind::Where) {
+            self.consume();
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+        let projection = if matches!(self.peek_kind(), TokenKind::Pipe) {
+            self.consume();
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+        self.eat(&TokenKind::RBracket, "`]` to close list comprehension")?;
+        Ok(Expression::ListComprehension {
+            variable,
+            list,
+            predicate,
+            projection,
+            span,
+        })
     }
 
     fn parse_case(&mut self) -> ParseResult<Expression> {
@@ -1797,6 +1855,100 @@ mod tests {
                 ..
             } => assert_eq!(name, "In"),
             _ => panic!(),
+        }
+    }
+
+    /// Extract the first `RETURN` projection expression from a query.
+    fn first_return_expr(q: &Query) -> &Expression {
+        match &q.parts[0].query.clauses[0] {
+            Clause::Return(r) => match &r.items[0] {
+                ProjectionItem::Expression { expr, .. } => expr,
+                _ => panic!("expected expression projection"),
+            },
+            _ => panic!("expected RETURN clause"),
+        }
+    }
+
+    #[test]
+    fn list_comprehension_filter_and_projection() {
+        let q = p("RETURN [x IN [1, 2, 3] WHERE x > 1 | x * 10]");
+        match first_return_expr(&q) {
+            Expression::ListComprehension {
+                variable,
+                list,
+                predicate,
+                projection,
+                ..
+            } => {
+                assert_eq!(variable, "x");
+                assert!(matches!(list.as_ref(), Expression::List { .. }));
+                assert!(predicate.is_some());
+                assert!(projection.is_some());
+            }
+            other => panic!("expected list comprehension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_comprehension_filter_only_has_no_projection() {
+        let q = p("RETURN [x IN [1, 2, 3] WHERE x > 1]");
+        match first_return_expr(&q) {
+            Expression::ListComprehension {
+                predicate,
+                projection,
+                ..
+            } => {
+                assert!(predicate.is_some());
+                assert!(projection.is_none());
+            }
+            other => panic!("expected list comprehension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_comprehension_projection_only_has_no_predicate() {
+        let q = p("RETURN [x IN [1, 2, 3] | x + 1]");
+        match first_return_expr(&q) {
+            Expression::ListComprehension {
+                predicate,
+                projection,
+                ..
+            } => {
+                assert!(predicate.is_none());
+                assert!(projection.is_some());
+            }
+            other => panic!("expected list comprehension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bracket_in_expression_without_where_or_pipe_is_a_list_literal() {
+        // `[x IN list]` with neither `WHERE` nor `|` is an ordinary list
+        // literal whose single element is the membership test `x IN list`,
+        // not a comprehension.
+        let q = p("RETURN [1 IN [1, 2]]");
+        match first_return_expr(&q) {
+            Expression::List { items, .. } => {
+                assert_eq!(items.len(), 1);
+                assert!(matches!(items[0], Expression::In { .. }));
+            }
+            other => panic!("expected list literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_comprehension_non_identifier_variable_is_malformed() {
+        // The element on the left of `IN` must be a bare identifier.
+        let err = parse("RETURN [n.x IN [1, 2] | n.x]").unwrap_err();
+        assert!(matches!(err, ParseError::Malformed { .. }));
+    }
+
+    #[test]
+    fn empty_list_literal_still_parses() {
+        let q = p("RETURN []");
+        match first_return_expr(&q) {
+            Expression::List { items, .. } => assert!(items.is_empty()),
+            other => panic!("expected empty list literal, got {other:?}"),
         }
     }
 }

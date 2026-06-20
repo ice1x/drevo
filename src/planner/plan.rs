@@ -1104,7 +1104,8 @@ fn describe_expression(expr: &Expression) -> String {
         Expression::Map(_)
         | Expression::Index { .. }
         | Expression::Slice { .. }
-        | Expression::Case { .. } => "…".to_string(),
+        | Expression::Case { .. }
+        | Expression::ListComprehension { .. } => "…".to_string(),
     }
 }
 

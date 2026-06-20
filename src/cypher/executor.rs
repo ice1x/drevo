@@ -1117,6 +1117,26 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
+        // A list comprehension is supported as long as its sub-expressions
+        // are. Aggregations are *not* allowed inside a comprehension (the
+        // loop variable is per-element, not per-group), so every part is
+        // checked with the non-aggregation validator — `collect(x)` inside a
+        // comprehension stays `Unsupported` rather than silently misfolding.
+        Expression::ListComprehension {
+            list,
+            predicate,
+            projection,
+            ..
+        } => {
+            validate_expr_supported(list)?;
+            if let Some(pred) = predicate {
+                validate_expr_supported(pred)?;
+            }
+            if let Some(proj) = projection {
+                validate_expr_supported(proj)?;
+            }
+            Ok(())
+        }
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -1424,6 +1444,25 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             }
             if let Some(t) = to {
                 validate_expr_supported(t)?;
+            }
+            Ok(())
+        }
+        // A list comprehension is a group key (it never *contains* an
+        // aggregation — see `validate_expr_supported`), so its sub-expressions
+        // are validated with the non-aggregation validator, mirroring the
+        // Index / Slice handling above.
+        Expression::ListComprehension {
+            list,
+            predicate,
+            projection,
+            ..
+        } => {
+            validate_expr_supported(list)?;
+            if let Some(pred) = predicate {
+                validate_expr_supported(pred)?;
+            }
+            if let Some(proj) = projection {
+                validate_expr_supported(proj)?;
             }
             Ok(())
         }
@@ -3684,7 +3723,78 @@ impl<'a> Executor<'a> {
                 let to_value = to.as_deref().map(|e| self.eval(e, row)).transpose()?;
                 eval_slice(base_value, from_value, to_value, *span)
             }
+            Expression::ListComprehension {
+                variable,
+                list,
+                predicate,
+                projection,
+                span,
+            } => self.eval_list_comprehension(
+                variable,
+                list,
+                predicate.as_deref(),
+                projection.as_deref(),
+                row,
+                *span,
+            ),
         }
+    }
+
+    /// Evaluate a list comprehension `[var IN list WHERE pred | proj]`.
+    ///
+    /// The `list` expression is evaluated in the current `row`; a `Null` list
+    /// propagates to `Null` (matching `UNWIND` / `IN` null handling) and a
+    /// non-list is a recoverable [`ExecError::TypeMismatch`]. Each element is
+    /// bound to `variable` in a *child* scope (a clone of `row` with the loop
+    /// variable inserted, so it shadows any outer binding only for the duration
+    /// of the comprehension), the optional `predicate` filters elements under
+    /// `WHERE`'s three-valued logic (`true` keeps, `false`/`null` drops, a
+    /// non-boolean is a type error), and `projection` (or the element itself
+    /// when absent) is collected into the result list.
+    #[allow(clippy::too_many_arguments)]
+    fn eval_list_comprehension(
+        &self,
+        variable: &str,
+        list: &Expression,
+        predicate: Option<&Expression>,
+        projection: Option<&Expression>,
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        let items = match self.eval(list, row)? {
+            Value::List(items) => items,
+            Value::Null => return Ok(Value::Null),
+            other => {
+                return Err(ExecError::TypeMismatch {
+                    expected: "List".into(),
+                    got: other.type_name().into(),
+                    span,
+                })
+            }
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let mut scope = row.clone();
+            scope.insert(variable.to_string(), item.clone());
+            if let Some(pred) = predicate {
+                match self.eval(pred, &scope)? {
+                    Value::Bool(true) => {}
+                    Value::Bool(false) | Value::Null => continue,
+                    other => {
+                        return Err(ExecError::TypeMismatch {
+                            expected: "Bool".into(),
+                            got: other.type_name().into(),
+                            span,
+                        })
+                    }
+                }
+            }
+            match projection {
+                Some(proj) => out.push(self.eval(proj, &scope)?),
+                None => out.push(item),
+            }
+        }
+        Ok(Value::List(out))
     }
 
     /// Evaluate a `CASE` expression against a single binding row.
