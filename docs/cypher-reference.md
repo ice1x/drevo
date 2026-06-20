@@ -604,6 +604,49 @@ RETURN [10, 20, 30][1] AS second, [10, 20, 30][-1] AS last, range(1, 5)[1..3] AS
 
 ---
 
+## List comprehensions
+
+A **list comprehension** `[var IN list WHERE predicate | projection]` transforms a
+list into a list without leaving the row. It is the in-expression counterpart to
+[`UNWIND`](#unwind) + [`collect`](#aggregation): where `UNWIND` flattens a list
+into rows and `collect` folds rows back, a comprehension maps and filters a list
+in place.
+
+Each element of `list` is bound to `var` in a child scope, the optional `WHERE`
+`predicate` keeps the elements for which it holds, and the optional `| projection`
+is collected for each survivor (when there is no `| projection`, the element
+itself is kept). At least one of `WHERE` / `|` must be present — without either,
+`[…]` is an ordinary [list literal](#literals).
+
+```cypher
+RETURN [x IN [1, 2, 3, 4, 5] WHERE x % 2 = 0 | x * x] AS even_squares
+```
+
+Semantics:
+
+- **Scope** — `var` shadows any outer binding of the same name *only inside* the
+  comprehension; the projection may freely reference outer bindings alongside
+  `var` (`[x IN xs | x + base]`).
+- **`null` list** — a `null` source (most often a node missing the property)
+  makes the whole comprehension `null`, so a heterogeneous scan does not abort
+  (mirrors `UNWIND` / `IN`).
+- **Three-valued filter** — a `predicate` that is `false` *or* `null` drops the
+  element; a non-boolean predicate is an `ExecError::TypeMismatch`.
+- **Type** — a non-list source is an `ExecError::TypeMismatch`; element order is
+  preserved.
+- **Aggregations** are not allowed inside a comprehension (the loop variable is
+  per-element, not per-group); use `collect` / `UNWIND` for that.
+
+Comprehensions compose everywhere an expression does — over a node's list
+property, feeding `size(...)`, inside `WHERE … IN […]`, nested, or alongside an
+aggregation in the same `RETURN`:
+
+```cypher
+RETURN size([x IN range(1, 10) WHERE x % 3 = 0]) AS multiples_of_three
+```
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task

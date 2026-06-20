@@ -549,6 +549,26 @@ pub enum Expression {
         /// Span of the `CASE` keyword.
         span: Span,
     },
+    /// `[var IN list WHERE predicate | projection]` — a list comprehension.
+    ///
+    /// Evaluates `list`, binds each element to `var` in a child scope, keeps
+    /// the elements for which `predicate` holds (when present), and collects
+    /// `projection` of each survivor (or the element itself when there is no
+    /// `| projection`). At least one of `predicate` / `projection` is always
+    /// present — without either the bracket form is an ordinary list literal.
+    ListComprehension {
+        /// The loop variable bound to each list element in turn.
+        variable: String,
+        /// The source list expression.
+        list: Box<Expression>,
+        /// Optional `WHERE` filter, evaluated in the child scope.
+        predicate: Option<Box<Expression>>,
+        /// Optional `| projection`, evaluated in the child scope. `None`
+        /// keeps the element unchanged (filter-only comprehension).
+        projection: Option<Box<Expression>>,
+        /// Span of the leading `[`.
+        span: Span,
+    },
     /// `count(*)` — the only context in which `*` is a valid sub-expression.
     Star(Span),
 }
@@ -575,7 +595,8 @@ impl Expression {
             | Self::In { span, .. }
             | Self::Index { span, .. }
             | Self::Slice { span, .. }
-            | Self::Case { span, .. } => *span,
+            | Self::Case { span, .. }
+            | Self::ListComprehension { span, .. } => *span,
             Self::Map(m) => m.span,
         }
     }
