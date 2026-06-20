@@ -151,9 +151,9 @@ const VARLEN_DEFAULT_UPPER: usize = 25;
 
 use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, Direction as AstDirection, Expression,
-    ForeachClause, MapLiteral, MatchClause, NamedPattern, NodePattern, OrderDirection, OrderItem,
-    PathPattern, ProjectionItem, Query, RelLength, RelationshipPattern, ReturnClause, SingleQuery,
-    UnaryOp, UnionKind, UnwindClause,
+    ForeachClause, ListPredicateKind, MapLiteral, MatchClause, NamedPattern, NodePattern,
+    OrderDirection, OrderItem, PathPattern, ProjectionItem, Query, RelLength, RelationshipPattern,
+    ReturnClause, SingleQuery, UnaryOp, UnionKind, UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
@@ -1137,6 +1137,15 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
+        // A list predicate (`all`/`any`/`none`/`single`) is supported when its
+        // sub-expressions are; like a comprehension it loops a per-element
+        // variable, so both parts use the non-aggregation validator.
+        Expression::ListPredicate {
+            list, predicate, ..
+        } => {
+            validate_expr_supported(list)?;
+            validate_expr_supported(predicate)
+        }
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -1465,6 +1474,14 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
                 validate_expr_supported(proj)?;
             }
             Ok(())
+        }
+        // A list predicate is likewise a group key — see the comprehension arm
+        // above; both parts use the non-aggregation validator.
+        Expression::ListPredicate {
+            list, predicate, ..
+        } => {
+            validate_expr_supported(list)?;
+            validate_expr_supported(predicate)
         }
         Expression::Integer(..)
         | Expression::Float(..)
@@ -3737,6 +3754,13 @@ impl<'a> Executor<'a> {
                 row,
                 *span,
             ),
+            Expression::ListPredicate {
+                kind,
+                variable,
+                list,
+                predicate,
+                span,
+            } => self.eval_list_predicate(*kind, variable, list, predicate, row, *span),
         }
     }
 
@@ -3795,6 +3819,108 @@ impl<'a> Executor<'a> {
             }
         }
         Ok(Value::List(out))
+    }
+
+    /// Evaluate a list predicate `kind(var IN list WHERE pred)`
+    /// (`all` / `any` / `none` / `single`).
+    ///
+    /// The `list` is evaluated in the current `row`; a `Null` list propagates
+    /// to `Null` (mirroring `UNWIND` / `IN` / the list comprehension) and a
+    /// non-list is a recoverable [`ExecError::TypeMismatch`]. Each element is
+    /// bound to `variable` in a child scope and `pred` is evaluated under
+    /// `WHERE`'s three-valued logic — `true`, `false`, or `Null` (unknown);
+    /// a non-boolean is a type error. The per-element results are folded with
+    /// three-valued quantifier semantics so an unknown can make the whole
+    /// predicate `Null`:
+    ///
+    /// * `all`    — `false` if any element is `false`, else `Null` if any is
+    ///   unknown, else `true` (empty list → `true`).
+    /// * `any`    — `true` if any element is `true`, else `Null` if any is
+    ///   unknown, else `false` (empty list → `false`).
+    /// * `none`   — the negation of `any` (empty list → `true`).
+    /// * `single` — `true` iff exactly one element is `true` *and* no element
+    ///   is unknown; more than one `true` is `false`; an unknown that could
+    ///   tip the count yields `Null` (empty list → `false`).
+    fn eval_list_predicate(
+        &self,
+        kind: ListPredicateKind,
+        variable: &str,
+        list: &Expression,
+        predicate: &Expression,
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        let items = match self.eval(list, row)? {
+            Value::List(items) => items,
+            Value::Null => return Ok(Value::Null),
+            other => {
+                return Err(ExecError::TypeMismatch {
+                    expected: "List".into(),
+                    got: other.type_name().into(),
+                    span,
+                })
+            }
+        };
+        let mut trues = 0usize;
+        let mut falses = 0usize;
+        let mut nulls = 0usize;
+        for item in items {
+            let mut scope = row.clone();
+            scope.insert(variable.to_string(), item);
+            match self.eval(predicate, &scope)? {
+                Value::Bool(true) => trues += 1,
+                Value::Bool(false) => falses += 1,
+                Value::Null => nulls += 1,
+                other => {
+                    return Err(ExecError::TypeMismatch {
+                        expected: "Bool".into(),
+                        got: other.type_name().into(),
+                        span,
+                    })
+                }
+            }
+        }
+        let result = match kind {
+            ListPredicateKind::All => {
+                if falses > 0 {
+                    Value::Bool(false)
+                } else if nulls > 0 {
+                    Value::Null
+                } else {
+                    Value::Bool(true)
+                }
+            }
+            ListPredicateKind::Any => {
+                if trues > 0 {
+                    Value::Bool(true)
+                } else if nulls > 0 {
+                    Value::Null
+                } else {
+                    Value::Bool(false)
+                }
+            }
+            ListPredicateKind::None => {
+                if trues > 0 {
+                    Value::Bool(false)
+                } else if nulls > 0 {
+                    Value::Null
+                } else {
+                    Value::Bool(true)
+                }
+            }
+            ListPredicateKind::Single => {
+                if trues > 1 {
+                    Value::Bool(false)
+                } else if nulls > 0 {
+                    // An unknown could change the true-count, so the exact-one
+                    // verdict is itself unknown.
+                    Value::Null
+                } else {
+                    Value::Bool(trues == 1)
+                }
+            }
+        };
+        Ok(result)
     }
 
     /// Evaluate a `CASE` expression against a single binding row.
@@ -8682,5 +8808,183 @@ mod tests {
         }));
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    // ---- list predicate functions (all/any/none/single) -------------------
+
+    #[test]
+    fn list_predicate_all_true_when_every_element_satisfies() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN all(x IN [1, 2, 3] WHERE x > 0)", &db),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn list_predicate_all_false_when_one_element_fails() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN all(x IN [1, 2, -3] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn list_predicate_any_true_when_some_element_satisfies() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN any(x IN [-1, -2, 3] WHERE x > 0)", &db),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn list_predicate_any_false_when_no_element_satisfies() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN any(x IN [-1, -2, -3] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn list_predicate_none_true_when_no_element_satisfies() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN none(x IN [-1, -2, -3] WHERE x > 0)", &db),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            scalar("RETURN none(x IN [-1, 2, -3] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn list_predicate_single_true_only_for_exactly_one_match() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN single(x IN [-1, 2, -3] WHERE x > 0)", &db),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            scalar("RETURN single(x IN [-1, 2, 3] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            scalar("RETURN single(x IN [-1, -2, -3] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn list_predicate_empty_list_uses_identity_values() {
+        let db = drevo();
+        assert_eq!(
+            scalar("RETURN all(x IN [] WHERE x > 0)", &db),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            scalar("RETURN any(x IN [] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            scalar("RETURN none(x IN [] WHERE x > 0)", &db),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            scalar("RETURN single(x IN [] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn list_predicate_null_list_propagates_null() {
+        let db = drevo();
+        for kw in ["all", "any", "none", "single"] {
+            assert_eq!(
+                scalar(&format!("RETURN {kw}(x IN null WHERE x > 0)"), &db),
+                Value::Null,
+                "{kw} over a null list should be null"
+            );
+        }
+    }
+
+    #[test]
+    fn list_predicate_three_valued_logic_with_null_element() {
+        let db = drevo();
+        // No false, but an unknown → all is unknown.
+        assert_eq!(
+            scalar("RETURN all(x IN [1, null, 3] WHERE x > 0)", &db),
+            Value::Null
+        );
+        // No true, but an unknown → any is unknown.
+        assert_eq!(
+            scalar("RETURN any(x IN [-1, null, -3] WHERE x > 0)", &db),
+            Value::Null
+        );
+        // none is the negation of any.
+        assert_eq!(
+            scalar("RETURN none(x IN [-1, null, -3] WHERE x > 0)", &db),
+            Value::Null
+        );
+        // A definite false short-circuits all regardless of the unknown.
+        assert_eq!(
+            scalar("RETURN all(x IN [1, null, -3] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+        // A definite true short-circuits any regardless of the unknown.
+        assert_eq!(
+            scalar("RETURN any(x IN [-1, null, 3] WHERE x > 0)", &db),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn list_predicate_single_is_null_when_unknown_could_tip_the_count() {
+        let db = drevo();
+        // Exactly one true so far, but an unknown could make it two.
+        assert_eq!(
+            scalar("RETURN single(x IN [1, null, -3] WHERE x > 0)", &db),
+            Value::Null
+        );
+        // Two definite trues already → false, the unknown cannot rescue it.
+        assert_eq!(
+            scalar("RETURN single(x IN [1, 2, null] WHERE x > 0)", &db),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn list_predicate_non_list_is_type_mismatch() {
+        let db = drevo();
+        assert!(matches!(
+            err("RETURN all(x IN 5 WHERE x > 0)", &db),
+            ExecError::TypeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn list_predicate_non_boolean_predicate_is_type_mismatch() {
+        let db = drevo();
+        assert!(matches!(
+            err("RETURN any(x IN [1, 2] WHERE x)", &db),
+            ExecError::TypeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn list_predicate_reads_outer_scope_and_filters_in_where() {
+        let db = drevo();
+        run("CREATE (:Sprint {name: 'S1', points: [1, 3, 5]})", &db);
+        run("CREATE (:Sprint {name: 'S2', points: [2, 4, 8]})", &db);
+        // Only sprints all of whose point estimates are odd.
+        let res = run(
+            "MATCH (s:Sprint) WHERE all(p IN s.points WHERE p % 2 = 1) RETURN s.name AS name",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::String("S1".into()));
     }
 }

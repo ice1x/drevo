@@ -647,6 +647,53 @@ RETURN size([x IN range(1, 10) WHERE x % 3 = 0]) AS multiples_of_three
 
 ---
 
+## List predicate functions
+
+The **list predicate functions** `all`, `any`, `none`, and `single` collapse a
+list into a single boolean by folding a predicate across its elements. They take
+the same `var IN list WHERE predicate` form as a [list comprehension](#list-comprehensions)
+— but the `WHERE` is **mandatory** and there is no `| projection`, because the
+result is a truth value rather than a list. They are the idiomatic way to filter
+rows by a *collection* property:
+
+```cypher
+RETURN all(x IN [2, 4, 6] WHERE x % 2 = 0) AS every_even
+```
+
+| Function | `true` when … | Empty list |
+|----------|---------------|------------|
+| `all(x IN list WHERE p)`    | `p` holds for **every** element  | `true`  |
+| `any(x IN list WHERE p)`    | `p` holds for **some** element   | `false` |
+| `none(x IN list WHERE p)`   | `p` holds for **no** element     | `true`  |
+| `single(x IN list WHERE p)` | `p` holds for **exactly one** element | `false` |
+
+Semantics:
+
+- **Scope** — each element is bound to `var` in a child scope; the predicate may
+  reference outer bindings alongside `var` (`all(x IN xs WHERE x > base)`).
+- **`null` list** — a `null` source (most often a node missing the property)
+  makes the whole predicate `null` (mirrors `UNWIND` / `IN` / list comprehension),
+  so a heterogeneous scan does not abort.
+- **Three-valued logic** — a `null` predicate result is *unknown*, not `false`,
+  and folds accordingly: `all` is `null` when no element is `false` but some is
+  unknown; `any` is `null` when no element is `true` but some is unknown; `none`
+  is the negation of `any`; `single` is `null` when an unknown could change the
+  match count. A definite `false` (for `all`) or `true` (for `any`) short-circuits
+  regardless of any unknown.
+- **Type** — a non-list source, or a non-boolean predicate, is an
+  `ExecError::TypeMismatch`.
+- **Aggregations** are not allowed inside the predicate (the loop variable is
+  per-element, not per-group).
+
+They compose anywhere an expression does — most often a `WHERE` over a node's
+list property:
+
+```cypher
+RETURN single(x IN [1, 2, 3, 4] WHERE x % 2 = 0) AS exactly_one_even
+```
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task

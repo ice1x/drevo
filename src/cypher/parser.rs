@@ -168,6 +168,19 @@ fn clause_keyword(clause: &Clause) -> &'static str {
     }
 }
 
+/// Map a bare identifier to a list predicate quantifier, case-insensitively.
+///
+/// Only `any` / `none` / `single` are matched here; `all` is a dedicated
+/// keyword token and is dispatched separately in `parse_prefix`.
+fn list_predicate_kind(name: &str) -> Option<ListPredicateKind> {
+    match name.to_ascii_lowercase().as_str() {
+        "any" => Some(ListPredicateKind::Any),
+        "none" => Some(ListPredicateKind::None),
+        "single" => Some(ListPredicateKind::Single),
+        _ => None,
+    }
+}
+
 /// Internal parser state.
 struct Parser {
     /// The original query text, kept so identifier-position keywords can be
@@ -1225,6 +1238,14 @@ impl Parser {
             TokenKind::LBracket => self.parse_list_literal()?,
             TokenKind::LBrace => Expression::Map(self.parse_map_literal()?),
             TokenKind::Case => self.parse_case()?,
+            // `all(x IN list WHERE pred)` — `ALL` is a keyword token (it also
+            // appears in `UNION ALL`), so the identifier path below never sees
+            // it; the predicate form is the only use of `ALL` in expression
+            // position.
+            TokenKind::All if matches!(self.peek_at(1), TokenKind::LParen) => {
+                self.consume(); // ALL
+                self.parse_list_predicate(ListPredicateKind::All, tok_span)?
+            }
             TokenKind::Identifier(_) => self.parse_identifier_or_call()?,
             TokenKind::Eof => {
                 return Err(ParseError::ExpectedExpression { span: tok_span });
@@ -1371,6 +1392,32 @@ impl Parser {
         })
     }
 
+    /// Parse a list predicate function `kind(var IN list WHERE pred)` once the
+    /// function-name token has been consumed and the cursor sits on `(`.
+    ///
+    /// The `WHERE predicate` is mandatory (unlike a list comprehension's
+    /// optional filter), matching Neo4j — `all(x IN list)` is a parse error.
+    fn parse_list_predicate(
+        &mut self,
+        kind: ListPredicateKind,
+        span: Span,
+    ) -> ParseResult<Expression> {
+        self.eat(&TokenKind::LParen, "`(` after list predicate function")?;
+        let (variable, _) = self.consume_strict_identifier()?;
+        self.eat(&TokenKind::In, "`IN` in list predicate")?;
+        let list = self.parse_expression()?;
+        self.eat(&TokenKind::Where, "`WHERE` in list predicate")?;
+        let predicate = self.parse_expression()?;
+        self.eat(&TokenKind::RParen, "`)` to close list predicate")?;
+        Ok(Expression::ListPredicate {
+            kind,
+            variable,
+            list: Box::new(list),
+            predicate: Box::new(predicate),
+            span,
+        })
+    }
+
     fn parse_case(&mut self) -> ParseResult<Expression> {
         let span = self.peek_span();
         self.consume(); // CASE
@@ -1410,6 +1457,18 @@ impl Parser {
 
     fn parse_identifier_or_call(&mut self) -> ParseResult<Expression> {
         let (first, first_span) = self.consume_strict_identifier()?;
+        // List predicate functions `any` / `none` / `single` (the `all`
+        // variant is a keyword token, handled in `parse_prefix`). They take
+        // the `var IN list WHERE pred` form rather than ordinary comma-
+        // separated arguments, so they are dispatched before the generic
+        // call path. Detection is by bare name immediately followed by `(`;
+        // `any`/`none`/`single` are not otherwise valid drevo functions, so
+        // there is no ambiguity with a scalar call.
+        if matches!(self.peek_kind(), TokenKind::LParen) {
+            if let Some(kind) = list_predicate_kind(&first) {
+                return self.parse_list_predicate(kind, first_span);
+            }
+        }
         // Dotted function name: name `.` name `.` name ... `(`
         // We use a peek to decide: if the next non-dotted-name token is `(`
         // we treat this as a function call; otherwise this is a variable
@@ -1941,6 +2000,78 @@ mod tests {
         // The element on the left of `IN` must be a bare identifier.
         let err = parse("RETURN [n.x IN [1, 2] | n.x]").unwrap_err();
         assert!(matches!(err, ParseError::Malformed { .. }));
+    }
+
+    #[test]
+    fn list_predicate_all_parses_with_kind_and_parts() {
+        // `all` is a keyword token, dispatched in `parse_prefix`.
+        let q = p("RETURN all(x IN [1, 2, 3] WHERE x > 0)");
+        match first_return_expr(&q) {
+            Expression::ListPredicate {
+                kind,
+                variable,
+                list,
+                ..
+            } => {
+                assert_eq!(*kind, ListPredicateKind::All);
+                assert_eq!(variable, "x");
+                assert!(matches!(list.as_ref(), Expression::List { .. }));
+            }
+            other => panic!("expected list predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_predicate_any_none_single_parse_kinds() {
+        for (src, want) in [
+            ("RETURN any(x IN xs WHERE x > 0)", ListPredicateKind::Any),
+            ("RETURN none(x IN xs WHERE x > 0)", ListPredicateKind::None),
+            (
+                "RETURN single(x IN xs WHERE x > 0)",
+                ListPredicateKind::Single,
+            ),
+        ] {
+            let q = p(src);
+            match first_return_expr(&q) {
+                Expression::ListPredicate { kind, .. } => assert_eq!(*kind, want),
+                other => panic!("expected list predicate for {src}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn list_predicate_name_is_case_insensitive() {
+        for src in [
+            "RETURN ALL(x IN xs WHERE x)",
+            "RETURN Any(x IN xs WHERE x)",
+            "RETURN NONE(x IN xs WHERE x)",
+            "RETURN Single(x IN xs WHERE x)",
+        ] {
+            let q = p(src);
+            assert!(
+                matches!(first_return_expr(&q), Expression::ListPredicate { .. }),
+                "expected list predicate for {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_predicate_where_is_mandatory() {
+        // Unlike a list comprehension's optional filter, the predicate
+        // functions require `WHERE`.
+        assert!(parse("RETURN any(x IN [1, 2])").is_err());
+        assert!(parse("RETURN all(x IN [1, 2])").is_err());
+    }
+
+    #[test]
+    fn bare_any_without_paren_is_a_variable() {
+        // `any` only triggers the predicate form when immediately followed by
+        // `(`; otherwise it is an ordinary identifier (variable / property).
+        let q = p("RETURN any");
+        assert!(matches!(
+            first_return_expr(&q),
+            Expression::Variable(name, _) if name == "any"
+        ));
     }
 
     #[test]
