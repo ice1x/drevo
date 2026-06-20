@@ -1105,7 +1105,8 @@ fn describe_expression(expr: &Expression) -> String {
         | Expression::Index { .. }
         | Expression::Slice { .. }
         | Expression::Case { .. }
-        | Expression::ListComprehension { .. } => "…".to_string(),
+        | Expression::ListComprehension { .. }
+        | Expression::ListPredicate { .. } => "…".to_string(),
     }
 }
 

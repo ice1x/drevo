@@ -148,6 +148,8 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | User-defined / `apoc.*` / `gds.*` procedures | ⛔ Only the built-in `db.*` procedures exist. |
 | Regex `=~` | ✅ Supported (full-string match; common Java/Neo4j subset incl. `(?i)`). |
 | List / map indexing & slicing (`xs[0]`, `xs[1..3]`, `m['k']`) | ✅ Supported. |
+| List comprehension (`[x IN list WHERE p \| proj]`) | ✅ Supported (filter / project / both; `null` list → `null`). |
+| List predicates (`all` / `any` / `none` / `single` `(x IN list WHERE p)`) | ✅ Supported (three-valued; `null` list → `null`). |
 | Anonymous nodes in `MATCH` (`(:Label)-->(b)`, `()-->(b)`, `(a)-->()-->(c)`) | ✅ Supported (head & intermediate). |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
 | APOC export → import | ✅ Via this migration tool. |

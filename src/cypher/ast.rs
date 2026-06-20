@@ -569,8 +569,52 @@ pub enum Expression {
         /// Span of the leading `[`.
         span: Span,
     },
+    /// `kind(var IN list WHERE predicate)` — a list predicate function
+    /// (`all` / `any` / `none` / `single`).
+    ///
+    /// Evaluates `list`, binds each element to `var` in a child scope, and
+    /// folds the three-valued `predicate` result across the elements per the
+    /// [`ListPredicateKind`] quantifier. The `WHERE predicate` is mandatory
+    /// (unlike a list comprehension's optional filter).
+    ListPredicate {
+        /// Which quantifier — `all` / `any` / `none` / `single`.
+        kind: ListPredicateKind,
+        /// The loop variable bound to each list element in turn.
+        variable: String,
+        /// The source list expression.
+        list: Box<Expression>,
+        /// The `WHERE` predicate, evaluated in the child scope.
+        predicate: Box<Expression>,
+        /// Span of the function-name keyword.
+        span: Span,
+    },
     /// `count(*)` — the only context in which `*` is a valid sub-expression.
     Star(Span),
+}
+
+/// The quantifier of a [`Expression::ListPredicate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListPredicateKind {
+    /// `all(x IN list WHERE pred)` — `true` iff `pred` holds for every element.
+    All,
+    /// `any(x IN list WHERE pred)` — `true` iff `pred` holds for some element.
+    Any,
+    /// `none(x IN list WHERE pred)` — `true` iff `pred` holds for no element.
+    None,
+    /// `single(x IN list WHERE pred)` — `true` iff `pred` holds for exactly one.
+    Single,
+}
+
+impl ListPredicateKind {
+    /// The lower-case Cypher keyword for this quantifier.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Any => "any",
+            Self::None => "none",
+            Self::Single => "single",
+        }
+    }
 }
 
 impl Expression {
@@ -596,7 +640,8 @@ impl Expression {
             | Self::Index { span, .. }
             | Self::Slice { span, .. }
             | Self::Case { span, .. }
-            | Self::ListComprehension { span, .. } => *span,
+            | Self::ListComprehension { span, .. }
+            | Self::ListPredicate { span, .. } => *span,
             Self::Map(m) => m.span,
         }
     }
