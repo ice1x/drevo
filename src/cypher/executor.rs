@@ -1146,6 +1146,16 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             validate_expr_supported(list)?;
             validate_expr_supported(predicate)
         }
+        // `reduce` loops a per-element variable plus a per-fold accumulator, so
+        // (like a comprehension) aggregations are not meaningful inside it; all
+        // three sub-expressions use the non-aggregation validator.
+        Expression::Reduce {
+            init, list, expr, ..
+        } => {
+            validate_expr_supported(init)?;
+            validate_expr_supported(list)?;
+            validate_expr_supported(expr)
+        }
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -1482,6 +1492,15 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
         } => {
             validate_expr_supported(list)?;
             validate_expr_supported(predicate)
+        }
+        // `reduce` is likewise a group key (it never contains an aggregation);
+        // its sub-expressions use the non-aggregation validator.
+        Expression::Reduce {
+            init, list, expr, ..
+        } => {
+            validate_expr_supported(init)?;
+            validate_expr_supported(list)?;
+            validate_expr_supported(expr)
         }
         Expression::Integer(..)
         | Expression::Float(..)
@@ -3761,6 +3780,14 @@ impl<'a> Executor<'a> {
                 predicate,
                 span,
             } => self.eval_list_predicate(*kind, variable, list, predicate, row, *span),
+            Expression::Reduce {
+                accumulator,
+                init,
+                variable,
+                list,
+                expr,
+                span,
+            } => self.eval_reduce(accumulator, init, variable, list, expr, row, *span),
         }
     }
 
@@ -3921,6 +3948,49 @@ impl<'a> Executor<'a> {
             }
         };
         Ok(result)
+    }
+
+    /// Evaluate a `reduce(acc = init, var IN list | expr)` left fold.
+    ///
+    /// The seed `init` is evaluated once in the current `row` to prime the
+    /// accumulator. The `list` is then evaluated in `row`; a `Null` list
+    /// propagates to `Null` (mirroring `UNWIND` / `IN` / the comprehension and
+    /// predicate forms) and a non-list is a recoverable
+    /// [`ExecError::TypeMismatch`]. Each element is bound to `variable` and the
+    /// running accumulator to `accumulator` in a *child* scope (a clone of
+    /// `row`, so both names shadow any outer binding only for the duration of
+    /// the fold), and `expr` computes the next accumulator value. The final
+    /// accumulator is returned; an empty list yields the seed unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn eval_reduce(
+        &self,
+        accumulator: &str,
+        init: &Expression,
+        variable: &str,
+        list: &Expression,
+        expr: &Expression,
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        let mut acc = self.eval(init, row)?;
+        let items = match self.eval(list, row)? {
+            Value::List(items) => items,
+            Value::Null => return Ok(Value::Null),
+            other => {
+                return Err(ExecError::TypeMismatch {
+                    expected: "List".into(),
+                    got: other.type_name().into(),
+                    span,
+                })
+            }
+        };
+        for item in items {
+            let mut scope = row.clone();
+            scope.insert(accumulator.to_string(), acc);
+            scope.insert(variable.to_string(), item);
+            acc = self.eval(expr, &scope)?;
+        }
+        Ok(acc)
     }
 
     /// Evaluate a `CASE` expression against a single binding row.

@@ -222,8 +222,19 @@ jobs:
       # probe, and `redb_compact_reclaims_after_heavy_churn`); they run on
       # `slow-tests.yml` via `--run-ignored all`. nextest does not run
       # `#[ignore]`d tests by default, so no profile flag is needed here.
-      - name: Run unit + integration tests (nextest)
-        run: cargo nextest run --no-fail-fast
+      # NOTE (2026-06-21): switched from `cargo nextest run` to sequential
+      # `cargo test` on this self-hosted macOS runner. nextest's list phase
+      # execs every test binary (~122 × 2 `--list` invocations) near-
+      # simultaneously; that burst of first-execs of freshly-built binaries
+      # overwhelms the macOS security stack (syspolicyd + XProtect on-exec
+      # scan), wedging processes pre-main with no output until the 4h job
+      # timeout. `--test-threads` only caps the run phase, not the list phase,
+      # so it does not help. `cargo test` launches one binary at a time (no
+      # burst) and completes reliably. `--tests` keeps doctests/benches out
+      # (doctests run in the dedicated step below). See KG incident
+      # incident_2026_06_21_ci_test_hang_security_stack.
+      - name: Run unit + integration tests (cargo test, sequential)
+        run: cargo test --tests --no-fail-fast
       # Phase 11 task `00073` — Bolt-over-TLS lives behind the
       # `bolt-tls` Cargo feature, which is NOT in the default set
       # (rustls + tokio-rustls + rustls-pemfile add ~10 transitive

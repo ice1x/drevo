@@ -1418,6 +1418,34 @@ impl Parser {
         })
     }
 
+    /// Parse a `reduce(acc = init, var IN list | expr)` fold once the `reduce`
+    /// name has been consumed and the cursor sits on `(`.
+    ///
+    /// The accumulator and loop variables must be bare identifiers; the `=`,
+    /// `,`, `IN` and `|` separators are all mandatory, matching Neo4j — any
+    /// missing piece surfaces as a parse error.
+    fn parse_reduce(&mut self, span: Span) -> ParseResult<Expression> {
+        self.eat(&TokenKind::LParen, "`(` after `reduce`")?;
+        let (accumulator, _) = self.consume_strict_identifier()?;
+        self.eat(&TokenKind::Eq, "`=` after the reduce accumulator")?;
+        let init = self.parse_expression()?;
+        self.eat(&TokenKind::Comma, "`,` after the reduce initial value")?;
+        let (variable, _) = self.consume_strict_identifier()?;
+        self.eat(&TokenKind::In, "`IN` in reduce")?;
+        let list = self.parse_expression()?;
+        self.eat(&TokenKind::Pipe, "`|` before the reduce expression")?;
+        let expr = self.parse_expression()?;
+        self.eat(&TokenKind::RParen, "`)` to close reduce")?;
+        Ok(Expression::Reduce {
+            accumulator,
+            init: Box::new(init),
+            variable,
+            list: Box::new(list),
+            expr: Box::new(expr),
+            span,
+        })
+    }
+
     fn parse_case(&mut self) -> ParseResult<Expression> {
         let span = self.peek_span();
         self.consume(); // CASE
@@ -1467,6 +1495,14 @@ impl Parser {
         if matches!(self.peek_kind(), TokenKind::LParen) {
             if let Some(kind) = list_predicate_kind(&first) {
                 return self.parse_list_predicate(kind, first_span);
+            }
+            // `reduce(acc = init, var IN list | expr)` — like the list
+            // predicates, this is a bare name immediately followed by `(`
+            // that takes a bespoke form rather than comma-separated arguments,
+            // so it is dispatched before the generic call path. `reduce` is not
+            // otherwise a valid drevo function, so there is no ambiguity.
+            if first.eq_ignore_ascii_case("reduce") {
+                return self.parse_reduce(first_span);
             }
         }
         // Dotted function name: name `.` name `.` name ... `(`
@@ -2061,6 +2097,63 @@ mod tests {
         // functions require `WHERE`.
         assert!(parse("RETURN any(x IN [1, 2])").is_err());
         assert!(parse("RETURN all(x IN [1, 2])").is_err());
+    }
+
+    #[test]
+    fn reduce_parses_all_parts() {
+        let q = p("RETURN reduce(s = 0, x IN [1, 2, 3] | s + x)");
+        match first_return_expr(&q) {
+            Expression::Reduce {
+                accumulator,
+                init,
+                variable,
+                list,
+                expr,
+                ..
+            } => {
+                assert_eq!(accumulator, "s");
+                assert!(matches!(init.as_ref(), Expression::Integer(0, _)));
+                assert_eq!(variable, "x");
+                assert!(matches!(list.as_ref(), Expression::List { .. }));
+                assert!(matches!(expr.as_ref(), Expression::Binary { .. }));
+            }
+            other => panic!("expected reduce, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reduce_name_is_case_insensitive() {
+        for src in [
+            "RETURN REDUCE(s = 0, x IN xs | s + x)",
+            "RETURN Reduce(s = 0, x IN xs | s + x)",
+        ] {
+            let q = p(src);
+            assert!(
+                matches!(first_return_expr(&q), Expression::Reduce { .. }),
+                "expected reduce for {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn reduce_requires_each_separator() {
+        // `=`, `,`, `IN` and `|` are all mandatory.
+        assert!(parse("RETURN reduce(s 0, x IN xs | s + x)").is_err());
+        assert!(parse("RETURN reduce(s = 0 x IN xs | s + x)").is_err());
+        assert!(parse("RETURN reduce(s = 0, x xs | s + x)").is_err());
+        assert!(parse("RETURN reduce(s = 0, x IN xs s + x)").is_err());
+        assert!(parse("RETURN reduce(s = 0, x IN xs | s + x").is_err());
+    }
+
+    #[test]
+    fn bare_reduce_without_paren_is_a_variable() {
+        // `reduce` only triggers the fold form when immediately followed by
+        // `(`; otherwise it is an ordinary identifier.
+        let q = p("RETURN reduce");
+        assert!(matches!(
+            first_return_expr(&q),
+            Expression::Variable(name, _) if name == "reduce"
+        ));
     }
 
     #[test]
