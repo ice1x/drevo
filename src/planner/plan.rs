@@ -1110,7 +1110,8 @@ fn describe_expression(expr: &Expression) -> String {
         | Expression::Reduce { .. }
         | Expression::MapProjection { .. }
         | Expression::PatternComprehension { .. }
-        | Expression::PatternPredicate { .. } => "…".to_string(),
+        | Expression::PatternPredicate { .. }
+        | Expression::ExistsSubquery { .. } => "…".to_string(),
     }
 }
 

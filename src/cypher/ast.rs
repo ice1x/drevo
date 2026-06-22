@@ -661,6 +661,28 @@ pub enum Expression {
         /// Span of the leading `(`.
         span: Span,
     },
+    /// `EXISTS { [MATCH] pattern [WHERE predicate] }` — an existential subquery.
+    ///
+    /// `true` iff at least one match of the enclosed `pattern` survives the
+    /// optional inner `WHERE` `predicate`, relative to the current row. The
+    /// brace-delimited, richer sibling of [`Self::PatternPredicate`]: the braces
+    /// disambiguate the pattern from a grouped expression, so (unlike a bare
+    /// pattern predicate) a single node `EXISTS { (n) }` is legal, an optional
+    /// leading `MATCH` keyword is accepted, and an inner `WHERE` may filter the
+    /// matches before the existence test. Like the pattern predicate, the
+    /// pattern is anchored on already-bound variables, variables it introduces
+    /// stay scoped to the subquery, and a head variable already bound to `null`
+    /// (an unmatched `OPTIONAL MATCH` node) makes the subquery `null` under
+    /// three-valued logic rather than a type error.
+    ExistsSubquery {
+        /// The path pattern, matched relative to the current row.
+        pattern: Box<PathPattern>,
+        /// Optional inner `WHERE` filter, evaluated in each match's binding
+        /// scope; only matches for which it holds count toward existence.
+        predicate: Option<Box<Expression>>,
+        /// Span of the leading `EXISTS`.
+        span: Span,
+    },
     /// `count(*)` — the only context in which `*` is a valid sub-expression.
     Star(Span),
 }
@@ -731,7 +753,8 @@ impl Expression {
             | Self::Reduce { span, .. }
             | Self::MapProjection { span, .. }
             | Self::PatternComprehension { span, .. }
-            | Self::PatternPredicate { span, .. } => *span,
+            | Self::PatternPredicate { span, .. }
+            | Self::ExistsSubquery { span, .. } => *span,
             Self::Map(m) => m.span,
         }
     }
