@@ -1312,11 +1312,67 @@ impl Parser {
                         }
                     }
                 }
+                // `base { .key, .*, key: expr, var }` — a map projection. A
+                // `{` only reaches the postfix loop *after* a primary; a
+                // standalone map literal is consumed by `parse_prefix`'s
+                // `LBrace` arm before this loop runs, so claiming `{` here is
+                // purely additive (an expression followed by `{` was a parse
+                // error before this task).
+                TokenKind::LBrace => {
+                    expr = self.parse_map_projection(expr)?;
+                }
                 _ => break,
             }
         }
 
         Ok(expr)
+    }
+
+    /// Parse a map projection `base { selector, … }` once `base` has been
+    /// parsed and the cursor sits on the opening `{`.
+    ///
+    /// Selectors are, in any mix: `.key` (property), `.*` (all properties),
+    /// `key: expr` (literal entry), or a bare `var` (shorthand for `var: var`).
+    /// An empty `{}` projects to an empty map.
+    fn parse_map_projection(&mut self, base: Expression) -> ParseResult<Expression> {
+        let span = self.peek_span();
+        self.eat(&TokenKind::LBrace, "`{` to open map projection")?;
+        let mut selectors = Vec::new();
+        if !matches!(self.peek_kind(), TokenKind::RBrace) {
+            selectors.push(self.parse_map_projection_selector()?);
+            while matches!(self.peek_kind(), TokenKind::Comma) {
+                self.consume();
+                selectors.push(self.parse_map_projection_selector()?);
+            }
+        }
+        self.eat(&TokenKind::RBrace, "`}` to close map projection")?;
+        Ok(Expression::MapProjection {
+            base: Box::new(base),
+            selectors,
+            span,
+        })
+    }
+
+    fn parse_map_projection_selector(&mut self) -> ParseResult<MapProjectionSelector> {
+        // `.key` (property) or `.*` (all properties).
+        if matches!(self.peek_kind(), TokenKind::Dot) {
+            self.consume();
+            if matches!(self.peek_kind(), TokenKind::Star) {
+                self.consume();
+                return Ok(MapProjectionSelector::AllProperties);
+            }
+            let (name, _) = self.consume_name()?;
+            return Ok(MapProjectionSelector::Property(name));
+        }
+        // `key: expr` (literal entry) or bare `var` (variable shorthand).
+        let (name, _) = self.consume_name()?;
+        if matches!(self.peek_kind(), TokenKind::Colon) {
+            self.consume();
+            let value = self.parse_expression()?;
+            Ok(MapProjectionSelector::Literal(name, value))
+        } else {
+            Ok(MapProjectionSelector::Variable(name))
+        }
     }
 
     fn parse_list_literal(&mut self) -> ParseResult<Expression> {
@@ -2174,5 +2230,86 @@ mod tests {
             Expression::List { items, .. } => assert!(items.is_empty()),
             other => panic!("expected empty list literal, got {other:?}"),
         }
+    }
+
+    // ===== Map projection (`00149`) =====================================
+
+    #[test]
+    fn map_projection_parses_mixed_selectors() {
+        let q = p("RETURN n {.name, .age, role: 'admin', extra} AS m");
+        match first_return_expr(&q) {
+            Expression::MapProjection {
+                base, selectors, ..
+            } => {
+                assert!(matches!(base.as_ref(), Expression::Variable(v, _) if v == "n"));
+                assert_eq!(selectors.len(), 4);
+                assert!(matches!(&selectors[0], MapProjectionSelector::Property(k) if k == "name"));
+                assert!(matches!(&selectors[1], MapProjectionSelector::Property(k) if k == "age"));
+                match &selectors[2] {
+                    MapProjectionSelector::Literal(k, expr) => {
+                        assert_eq!(k, "role");
+                        assert!(matches!(expr, Expression::String(s, _) if s == "admin"));
+                    }
+                    other => panic!("expected literal selector, got {other:?}"),
+                }
+                assert!(
+                    matches!(&selectors[3], MapProjectionSelector::Variable(v) if v == "extra")
+                );
+            }
+            other => panic!("expected map projection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_projection_all_properties_selector() {
+        let q = p("RETURN n {.*} AS m");
+        match first_return_expr(&q) {
+            Expression::MapProjection { selectors, .. } => {
+                assert_eq!(selectors.len(), 1);
+                assert!(matches!(selectors[0], MapProjectionSelector::AllProperties));
+            }
+            other => panic!("expected map projection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_map_projection_parses() {
+        // `n {}` is a projection with no selectors (projects to an empty map);
+        // a leading `{` is consumed by the prefix path, so the bare `{}` form
+        // requires a preceding base — exactly this case.
+        let q = p("RETURN n {} AS m");
+        match first_return_expr(&q) {
+            Expression::MapProjection { selectors, .. } => assert!(selectors.is_empty()),
+            other => panic!("expected map projection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_projection_chains_off_a_property_base() {
+        // The base may itself be a postfix expression (`a.b { … }`).
+        let q = p("RETURN a.inner {.x} AS m");
+        match first_return_expr(&q) {
+            Expression::MapProjection {
+                base, selectors, ..
+            } => {
+                assert!(matches!(base.as_ref(), Expression::Property { .. }));
+                assert_eq!(selectors.len(), 1);
+            }
+            other => panic!("expected map projection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn standalone_brace_is_still_a_map_literal() {
+        // A `{` in *prefix* position is a map literal, untouched by the new
+        // postfix branch.
+        let q = p("RETURN {a: 1, b: 2}");
+        assert!(matches!(first_return_expr(&q), Expression::Map(_)));
+    }
+
+    #[test]
+    fn map_projection_unclosed_brace_is_an_error() {
+        assert!(parse("RETURN n {.name").is_err());
+        assert!(parse("RETURN n {.name,}").is_err());
     }
 }

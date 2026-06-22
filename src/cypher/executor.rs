@@ -151,9 +151,9 @@ const VARLEN_DEFAULT_UPPER: usize = 25;
 
 use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, Direction as AstDirection, Expression,
-    ForeachClause, ListPredicateKind, MapLiteral, MatchClause, NamedPattern, NodePattern,
-    OrderDirection, OrderItem, PathPattern, ProjectionItem, Query, RelLength, RelationshipPattern,
-    ReturnClause, SingleQuery, UnaryOp, UnionKind, UnwindClause,
+    ForeachClause, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause, NamedPattern,
+    NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query, RelLength,
+    RelationshipPattern, ReturnClause, SingleQuery, UnaryOp, UnionKind, UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
@@ -1156,6 +1156,21 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             validate_expr_supported(list)?;
             validate_expr_supported(expr)
         }
+        // A map projection is supported when its base and any literal-entry
+        // sub-expressions are. Like the comprehension family, an aggregation
+        // is not meaningful inside a projection selector, so every part uses
+        // the non-aggregation validator.
+        Expression::MapProjection {
+            base, selectors, ..
+        } => {
+            validate_expr_supported(base)?;
+            for selector in selectors {
+                if let MapProjectionSelector::Literal(_, expr) = selector {
+                    validate_expr_supported(expr)?;
+                }
+            }
+            Ok(())
+        }
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -1501,6 +1516,21 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             validate_expr_supported(init)?;
             validate_expr_supported(list)?;
             validate_expr_supported(expr)
+        }
+        // A map projection is a group key (it never *contains* an aggregation —
+        // see `validate_expr_supported`); its base and literal-entry
+        // sub-expressions use the non-aggregation validator, mirroring the
+        // comprehension / Index / Slice handling above.
+        Expression::MapProjection {
+            base, selectors, ..
+        } => {
+            validate_expr_supported(base)?;
+            for selector in selectors {
+                if let MapProjectionSelector::Literal(_, expr) = selector {
+                    validate_expr_supported(expr)?;
+                }
+            }
+            Ok(())
         }
         Expression::Integer(..)
         | Expression::Float(..)
@@ -3788,7 +3818,86 @@ impl<'a> Executor<'a> {
                 expr,
                 span,
             } => self.eval_reduce(accumulator, init, variable, list, expr, row, *span),
+            Expression::MapProjection {
+                base,
+                selectors,
+                span,
+            } => self.eval_map_projection(base, selectors, row, *span),
         }
+    }
+
+    /// Evaluate a map projection `base { .key, .*, key: expr, var }`.
+    ///
+    /// `base` is evaluated in the current `row`. A `Null` base propagates to
+    /// `Null` (so projecting an unmatched `OPTIONAL MATCH` variable yields
+    /// `null`, not an error); a non-map / non-entity base is a recoverable
+    /// [`ExecError::TypeMismatch`]. Selectors are applied in source order into
+    /// a [`BTreeMap`], so a later selector overwrites an earlier key:
+    ///
+    /// * `.key` copies property `key` off the base (absent → `Null`),
+    /// * `.*` copies every property of the base,
+    /// * `key: expr` adds a computed entry (`expr` evaluated in `row`),
+    /// * `var` is shorthand for `var: var` — the in-scope variable `var`
+    ///   (unbound → [`ExecError::UnboundVariable`]).
+    fn eval_map_projection(
+        &self,
+        base: &Expression,
+        selectors: &[MapProjectionSelector],
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        let base_value = self.eval(base, row)?;
+        // A `Null` base projects to `Null` (mirrors property access on null).
+        if matches!(base_value, Value::Null) {
+            return Ok(Value::Null);
+        }
+        let mut out: BTreeMap<String, Value> = BTreeMap::new();
+        for selector in selectors {
+            match selector {
+                MapProjectionSelector::Property(key) => {
+                    out.insert(key.clone(), get_property(&base_value, key, span));
+                }
+                MapProjectionSelector::AllProperties => {
+                    let props =
+                        base_properties(&base_value).ok_or_else(|| ExecError::TypeMismatch {
+                            expected: "Node, Relationship, or Map".into(),
+                            got: base_value.type_name().into(),
+                            span,
+                        })?;
+                    for (k, v) in props {
+                        out.insert(k.clone(), v.clone());
+                    }
+                }
+                MapProjectionSelector::Literal(key, expr) => {
+                    out.insert(key.clone(), self.eval(expr, row)?);
+                }
+                MapProjectionSelector::Variable(name) => {
+                    let value =
+                        row.get(name)
+                            .cloned()
+                            .ok_or_else(|| ExecError::UnboundVariable {
+                                name: name.clone(),
+                                span,
+                            })?;
+                    out.insert(name.clone(), value);
+                }
+            }
+        }
+        // A `.key` / `key: expr` / `var` projection does not require the base to
+        // be a map (`var` ignores it entirely); only `.*` does, and it has been
+        // type-checked above. But a scalar base with *only* such selectors is
+        // still a misuse — Neo4j requires a map-like base — so reject it.
+        if !matches!(
+            base_value,
+            Value::Map(_) | Value::Node(_) | Value::Relationship(_)
+        ) {
+            return Err(ExecError::TypeMismatch {
+                expected: "Node, Relationship, or Map".into(),
+                got: base_value.type_name().into(),
+                span,
+            });
+        }
+        Ok(Value::Map(out))
     }
 
     /// Evaluate a list comprehension `[var IN list WHERE pred | proj]`.
@@ -4448,6 +4557,19 @@ fn get_property(base: &Value, name: &str, _span: Span) -> Value {
         Value::Relationship(rv) => rv.properties.get(name).cloned().unwrap_or(Value::Null),
         Value::Map(map) => map.get(name).cloned().unwrap_or(Value::Null),
         _ => Value::Null,
+    }
+}
+
+/// The full property map of a map-like value — a node, relationship, or map.
+///
+/// Returns `None` for any other value, which the `.*` map-projection selector
+/// turns into a [`ExecError::TypeMismatch`].
+fn base_properties(base: &Value) -> Option<&BTreeMap<String, Value>> {
+    match base {
+        Value::Node(nv) => Some(&nv.properties),
+        Value::Relationship(rv) => Some(&rv.properties),
+        Value::Map(map) => Some(map),
+        _ => None,
     }
 }
 
@@ -9056,5 +9178,177 @@ mod tests {
         );
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0][0], Value::String("S1".into()));
+    }
+
+    // ---- Map projection (`00149`) ----------------------------------------
+
+    /// The single `Map` value of a one-row, one-column result.
+    fn one_map(res: &ExecResult) -> BTreeMap<String, Value> {
+        assert_eq!(res.rows.len(), 1, "expected one row");
+        assert_eq!(res.rows[0].len(), 1, "expected one column");
+        match &res.rows[0][0] {
+            Value::Map(m) => m.clone(),
+            other => panic!("expected a Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_projection_property_selectors_copy_named_properties() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Ann', age: 30, city: 'NYC'})", &db);
+        let m = one_map(&run("MATCH (p:Person) RETURN p {.name, .age} AS m", &db));
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get("name"), Some(&Value::String("Ann".into())));
+        assert_eq!(m.get("age"), Some(&Value::Integer(30)));
+        assert!(!m.contains_key("city"));
+    }
+
+    #[test]
+    fn map_projection_absent_property_is_null() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Ann'})", &db);
+        let m = one_map(&run(
+            "MATCH (p:Person) RETURN p {.name, .nickname} AS m",
+            &db,
+        ));
+        assert_eq!(m.get("name"), Some(&Value::String("Ann".into())));
+        assert_eq!(m.get("nickname"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn map_projection_all_properties_copies_every_property() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Ann', age: 30})", &db);
+        let m = one_map(&run("MATCH (p:Person) RETURN p {.*} AS m", &db));
+        assert_eq!(m.get("name"), Some(&Value::String("Ann".into())));
+        assert_eq!(m.get("age"), Some(&Value::Integer(30)));
+    }
+
+    #[test]
+    fn map_projection_literal_entry_is_evaluated_in_scope() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Ann', age: 30})", &db);
+        // A literal entry's expression sees the current row — `p.age * 2`.
+        let m = one_map(&run(
+            "MATCH (p:Person) RETURN p {.name, doubled: p.age * 2, role: 'admin'} AS m",
+            &db,
+        ));
+        assert_eq!(m.get("name"), Some(&Value::String("Ann".into())));
+        assert_eq!(m.get("doubled"), Some(&Value::Integer(60)));
+        assert_eq!(m.get("role"), Some(&Value::String("admin".into())));
+    }
+
+    #[test]
+    fn map_projection_variable_selector_is_shorthand() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Ann'})", &db);
+        let m = one_map(&run(
+            "MATCH (p:Person) WITH p, 99 AS extra RETURN p {.name, extra} AS m",
+            &db,
+        ));
+        assert_eq!(m.get("name"), Some(&Value::String("Ann".into())));
+        assert_eq!(m.get("extra"), Some(&Value::Integer(99)));
+    }
+
+    #[test]
+    fn map_projection_unbound_variable_selector_errors() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Ann'})", &db);
+        assert!(matches!(
+            err("MATCH (p:Person) RETURN p {.name, missing} AS m", &db),
+            ExecError::UnboundVariable { .. }
+        ));
+    }
+
+    #[test]
+    fn map_projection_later_selector_overwrites_earlier_key() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Ann'})", &db);
+        // `.name` then `name: 'override'` — the literal wins.
+        let m = one_map(&run(
+            "MATCH (p:Person) RETURN p {.name, name: 'override'} AS m",
+            &db,
+        ));
+        assert_eq!(m.get("name"), Some(&Value::String("override".into())));
+    }
+
+    #[test]
+    fn map_projection_over_a_map_literal_base() {
+        let db = drevo();
+        let m = one_map(&run("RETURN {a: 1, b: 2, c: 3} {.a, .c} AS m", &db));
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get("a"), Some(&Value::Integer(1)));
+        assert_eq!(m.get("c"), Some(&Value::Integer(3)));
+    }
+
+    #[test]
+    fn map_projection_null_base_propagates_to_null() {
+        let db = drevo();
+        // An unmatched OPTIONAL MATCH binds `z` to null; projecting yields null.
+        let res = run("OPTIONAL MATCH (z:Nope) RETURN z {.name} AS m", &db);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::Null);
+    }
+
+    #[test]
+    fn map_projection_scalar_base_is_type_mismatch() {
+        let db = drevo();
+        assert!(matches!(
+            err("RETURN 7 {.name} AS m", &db),
+            ExecError::TypeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn map_projection_all_properties_on_scalar_base_is_type_mismatch() {
+        let db = drevo();
+        assert!(matches!(
+            err("WITH 7 AS n RETURN n {.*} AS m", &db),
+            ExecError::TypeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn map_projection_empty_selectors_yields_empty_map() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Ann'})", &db);
+        let m = one_map(&run("MATCH (p:Person) RETURN p {} AS m", &db));
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn map_projection_is_a_group_key_alongside_aggregation() {
+        let db = drevo();
+        run("CREATE (:Item {cat: 'a', n: 1})", &db);
+        run("CREATE (:Item {cat: 'a', n: 2})", &db);
+        run("CREATE (:Item {cat: 'b', n: 5})", &db);
+        // `i {.cat}` is a non-aggregating projection, so it forms the GROUP BY
+        // key while `sum(i.n)` aggregates within each group.
+        let res = run(
+            "MATCH (i:Item) RETURN i {.cat} AS key, sum(i.n) AS total",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 2, "two distinct cat groups");
+        // Collect (cat → total) by reaching into the projected key map.
+        let mut totals: Vec<(String, i64)> = res
+            .rows
+            .iter()
+            .map(|row| {
+                let cat = match &row[0] {
+                    Value::Map(m) => match m.get("cat") {
+                        Some(Value::String(s)) => s.clone(),
+                        other => panic!("expected cat string, got {other:?}"),
+                    },
+                    other => panic!("expected map key, got {other:?}"),
+                };
+                let total = match &row[1] {
+                    Value::Integer(i) => *i,
+                    other => panic!("expected integer total, got {other:?}"),
+                };
+                (cat, total)
+            })
+            .collect();
+        totals.sort();
+        assert_eq!(totals, vec![("a".to_string(), 3), ("b".to_string(), 5)]);
     }
 }

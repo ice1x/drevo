@@ -1107,7 +1107,8 @@ fn describe_expression(expr: &Expression) -> String {
         | Expression::Case { .. }
         | Expression::ListComprehension { .. }
         | Expression::ListPredicate { .. }
-        | Expression::Reduce { .. } => "…".to_string(),
+        | Expression::Reduce { .. }
+        | Expression::MapProjection { .. } => "…".to_string(),
     }
 }
 

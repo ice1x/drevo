@@ -736,6 +736,54 @@ RETURN reduce(toc = 'Chapters:', t IN ['Dawn', 'Noon', 'Dusk'] | toc + ' ' + t) 
 
 ---
 
+## Map projection
+
+A map projection `base { selector, … }` builds a new map by projecting selected
+entries off `base` — a node, a relationship, or a map value. It is the shaping
+idiom for returning a tailored record per row without naming every property by
+hand:
+
+```cypher
+MATCH (t:Task)
+RETURN t {.title, .priority, kind: 'work-item'} AS card
+```
+
+Four selector forms compose in any mix:
+
+- **`.key`** — copy property `key` from the base. An absent property projects to
+  `null` (never an error).
+- **`.*`** — copy *every* property of the base.
+- **`key: expr`** — a computed entry; `expr` is evaluated in the current row, so
+  it can reference any in-scope variable (`subtotal: l.qty * l.unit_price`).
+- **`var`** — shorthand for `var: var`, the in-scope variable `var`.
+
+```cypher
+MATCH (l:Line)
+RETURN l {.sku, .qty, subtotal: l.qty * l.unit_price, currency: 'USD'} AS line
+```
+
+Semantics:
+
+- **Source order** — selectors apply left to right into a sorted map, so a later
+  selector *overwrites* an earlier entry with the same key.
+- **`null` base** — a `null` base makes the whole projection `null`, so projecting
+  an unmatched [`OPTIONAL MATCH`](#optional-match) variable is `null` rather than
+  an error.
+- **Type** — a scalar (non-map, non-entity) base is an `ExecError::TypeMismatch`.
+- **As a group key** — a map projection that contains no aggregation is an
+  ordinary grouping expression, so `RETURN n {.category} AS k, count(*)` groups by
+  the projected map.
+
+A map projection composes anywhere an expression is allowed — including inside
+`collect`, which gathers one projected record per row:
+
+```cypher
+MATCH (t:Tag)
+RETURN collect(t {.label, .weight}) AS tags
+```
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task

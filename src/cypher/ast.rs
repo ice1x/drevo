@@ -610,8 +610,37 @@ pub enum Expression {
         /// Span of the `reduce` keyword.
         span: Span,
     },
+    /// `base { selector, … }` — a map projection.
+    ///
+    /// Builds a new map by projecting selected entries off `base` (a node,
+    /// relationship, or map value). Each [`MapProjectionSelector`] contributes
+    /// one or more keys: a property selector (`.key`) copies that property, the
+    /// all-properties selector (`.*`) copies every property of `base`, a literal
+    /// entry (`key: expr`) adds a computed entry, and a variable selector
+    /// (`var`) is shorthand for `var: var`. A `null` base propagates to `null`.
+    MapProjection {
+        /// The map / node / relationship being projected.
+        base: Box<Expression>,
+        /// Selectors in source order; later keys overwrite earlier ones.
+        selectors: Vec<MapProjectionSelector>,
+        /// Span of the opening `{`.
+        span: Span,
+    },
     /// `count(*)` — the only context in which `*` is a valid sub-expression.
     Star(Span),
+}
+
+/// One selector inside a [`Expression::MapProjection`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapProjectionSelector {
+    /// `.key` — copy property `key` from the base (absent → `null`).
+    Property(String),
+    /// `.*` — copy every property of the base.
+    AllProperties,
+    /// `key: expr` — a computed entry, `expr` evaluated in the current scope.
+    Literal(String, Expression),
+    /// `var` — shorthand for `var: var`, the in-scope variable `var`.
+    Variable(String),
 }
 
 /// The quantifier of a [`Expression::ListPredicate`].
@@ -664,7 +693,8 @@ impl Expression {
             | Self::Case { span, .. }
             | Self::ListComprehension { span, .. }
             | Self::ListPredicate { span, .. }
-            | Self::Reduce { span, .. } => *span,
+            | Self::Reduce { span, .. }
+            | Self::MapProjection { span, .. } => *span,
             Self::Map(m) => m.span,
         }
     }
