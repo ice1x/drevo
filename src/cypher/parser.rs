@@ -1385,6 +1385,18 @@ impl Parser {
                 span,
             });
         }
+        // Pattern comprehension `[ (a)-[:R]->(b) WHERE pred | proj ]` — its first
+        // token is `(`, the start of a node pattern. A list literal whose first
+        // element is parenthesised (`[(1+2)]`, `[(a)]`, `[(a {x:1})]`) also opens
+        // with `(`, so we *speculatively* parse a path pattern and only commit
+        // when it has at least one relationship and is followed by `WHERE` / `|`;
+        // otherwise the cursor is restored and the bracket falls through to the
+        // ordinary expression / list-literal path below.
+        if matches!(self.peek_kind(), TokenKind::LParen) {
+            if let Some(expr) = self.try_parse_pattern_comprehension(span)? {
+                return Ok(expr);
+            }
+        }
         // Parse the first element. For a list comprehension this naturally
         // parses the `variable IN list` prefix as an `In` expression (IN binds
         // tighter than the `WHERE` / `|` that follow); `parse_expression`
@@ -1446,6 +1458,56 @@ impl Parser {
             projection,
             span,
         })
+    }
+
+    /// Speculatively parse a pattern comprehension `[ pattern WHERE? | proj ]`
+    /// when the cursor (just past the opening `[`) sits on `(`.
+    ///
+    /// The bracket is only a pattern comprehension when the leading `(`
+    /// introduces a genuine **path** — a node pattern followed by at least one
+    /// relationship — that is in turn followed by `WHERE` or `|`. A
+    /// parenthesised expression element of a list literal (`[(1+2)]`, `[(a)]`,
+    /// `[(a {x:1})]`) parses as a node pattern with no relationship, so it fails
+    /// the "at least one relationship" test; on any non-match the speculative
+    /// cursor is rolled back to `checkpoint` and `Ok(None)` is returned so the
+    /// caller resumes ordinary list-literal parsing. Once the commit point
+    /// (a valid path + `WHERE` / `|`) is reached, a later syntax error is a real
+    /// error rather than a roll-back signal — `| projection` is mandatory.
+    fn try_parse_pattern_comprehension(&mut self, span: Span) -> ParseResult<Option<Expression>> {
+        let checkpoint = self.pos;
+        let pattern = match self.parse_path_pattern() {
+            Ok(p) => p,
+            Err(_) => {
+                self.pos = checkpoint;
+                return Ok(None);
+            }
+        };
+        // A pattern comprehension needs an actual relationship and a trailing
+        // `WHERE` / `|`; anything else is a parenthesised list-literal element.
+        if pattern.tail.is_empty()
+            || !matches!(self.peek_kind(), TokenKind::Where | TokenKind::Pipe)
+        {
+            self.pos = checkpoint;
+            return Ok(None);
+        }
+        let predicate = if matches!(self.peek_kind(), TokenKind::Where) {
+            self.consume();
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+        self.eat(
+            &TokenKind::Pipe,
+            "`|` before the pattern-comprehension projection",
+        )?;
+        let projection = Box::new(self.parse_expression()?);
+        self.eat(&TokenKind::RBracket, "`]` to close pattern comprehension")?;
+        Ok(Some(Expression::PatternComprehension {
+            pattern: Box::new(pattern),
+            predicate,
+            projection,
+            span,
+        }))
     }
 
     /// Parse a list predicate function `kind(var IN list WHERE pred)` once the
@@ -2311,5 +2373,79 @@ mod tests {
     fn map_projection_unclosed_brace_is_an_error() {
         assert!(parse("RETURN n {.name").is_err());
         assert!(parse("RETURN n {.name,}").is_err());
+    }
+
+    #[test]
+    fn pattern_comprehension_parses_predicate_and_projection() {
+        let q = p("RETURN [(p)-[:KNOWS]->(f) WHERE f.age > 30 | f.name] AS ns");
+        match first_return_expr(&q) {
+            Expression::PatternComprehension {
+                pattern,
+                predicate,
+                projection,
+                ..
+            } => {
+                assert_eq!(pattern.tail.len(), 1, "one relationship segment");
+                assert_eq!(pattern.head.variable.as_deref(), Some("p"));
+                assert!(predicate.is_some());
+                assert!(matches!(projection.as_ref(), Expression::Property { .. }));
+            }
+            other => panic!("expected pattern comprehension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_comprehension_projection_only_has_no_predicate() {
+        let q = p("RETURN [(p)-[:KNOWS]->(f) | f.name] AS ns");
+        match first_return_expr(&q) {
+            Expression::PatternComprehension { predicate, .. } => assert!(predicate.is_none()),
+            other => panic!("expected pattern comprehension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_comprehension_supports_a_multi_hop_path() {
+        let q = p("RETURN [(p)-[:KNOWS]->()-[:KNOWS]->(ff) | ff.name] AS ns");
+        match first_return_expr(&q) {
+            Expression::PatternComprehension { pattern, .. } => {
+                assert_eq!(pattern.tail.len(), 2, "two relationship segments");
+            }
+            other => panic!("expected pattern comprehension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bracket_with_parenthesised_element_is_a_list_literal_not_a_comprehension() {
+        // A list literal whose single element is a parenthesised expression
+        // also opens with `(`; without a relationship + `|` it stays a literal.
+        let q = p("RETURN [(1 + 2)]");
+        match first_return_expr(&q) {
+            Expression::List { items, .. } => {
+                assert_eq!(items.len(), 1);
+                assert!(matches!(items[0], Expression::Binary { .. }));
+            }
+            other => panic!("expected list literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bracket_with_lone_node_pattern_falls_through_to_variable_list() {
+        // `[(a)]` is a list literal `[a]` — a bare node has no relationship, so
+        // it is not a pattern comprehension; the speculative parse rolls back.
+        let q = p("RETURN [(a)]");
+        match first_return_expr(&q) {
+            Expression::List { items, .. } => {
+                assert_eq!(items.len(), 1);
+                assert!(matches!(items[0], Expression::Variable(..)));
+            }
+            other => panic!("expected list literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_comprehension_without_projection_pipe_is_an_error() {
+        // The `| projection` is mandatory — a path + `WHERE` with no `|` fails.
+        assert!(parse("RETURN [(p)-[:KNOWS]->(f) WHERE f.age > 1]").is_err());
+        assert!(parse("RETURN [(p)-[:KNOWS]->(f)]").is_err());
     }
 }

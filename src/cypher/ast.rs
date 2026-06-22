@@ -626,6 +626,27 @@ pub enum Expression {
         /// Span of the opening `{`.
         span: Span,
     },
+    /// `[ pattern WHERE predicate | projection ]` — a pattern comprehension.
+    ///
+    /// Builds a list by matching `pattern` (a path with at least one
+    /// relationship) relative to the current row — anchored on any variables
+    /// the surrounding query has already bound — keeping the matches for which
+    /// `predicate` holds (when present), and collecting `projection` over each
+    /// survivor. Unlike a [list comprehension](Expression::ListComprehension)
+    /// the `| projection` is mandatory; a path with no match yields an empty
+    /// list, and a head variable already bound to `null` (an unmatched
+    /// `OPTIONAL MATCH` node) also yields an empty list rather than an error.
+    PatternComprehension {
+        /// The path pattern, matched relative to the current row. Must contain
+        /// at least one relationship (a bare node is not a pattern).
+        pattern: Box<PathPattern>,
+        /// Optional `WHERE` filter, evaluated in each match's binding scope.
+        predicate: Option<Box<Expression>>,
+        /// The `| projection`, evaluated in each match's binding scope.
+        projection: Box<Expression>,
+        /// Span of the leading `[`.
+        span: Span,
+    },
     /// `count(*)` — the only context in which `*` is a valid sub-expression.
     Star(Span),
 }
@@ -694,7 +715,8 @@ impl Expression {
             | Self::ListComprehension { span, .. }
             | Self::ListPredicate { span, .. }
             | Self::Reduce { span, .. }
-            | Self::MapProjection { span, .. } => *span,
+            | Self::MapProjection { span, .. }
+            | Self::PatternComprehension { span, .. } => *span,
             Self::Map(m) => m.span,
         }
     }

@@ -151,6 +151,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | List comprehension (`[x IN list WHERE p \| proj]`) | ✅ Supported (filter / project / both; `null` list → `null`). |
 | Map projection (`n {.title, .*, k: expr, var}`) | ✅ Supported (node / relationship / map base; `null` base → `null`). |
 | List predicates (`all` / `any` / `none` / `single` `(x IN list WHERE p)`) | ✅ Supported (three-valued; `null` list → `null`). |
+| Pattern comprehension (`[(a)-[:R]->(b) WHERE p \| proj]`) | ✅ Supported (anchored on bound vars; no match / `null` anchor → `[]`). |
 | Anonymous nodes in `MATCH` (`(:Label)-->(b)`, `()-->(b)`, `(a)-->()-->(c)`) | ✅ Supported (head & intermediate). |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
 | APOC export → import | ✅ Via this migration tool. |
