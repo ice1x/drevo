@@ -1186,6 +1186,10 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             }
             validate_expr_supported(projection)
         }
+        // A pattern predicate is matched at runtime exactly like a `MATCH`
+        // pattern (see `eval_pattern_predicate`), so it carries no
+        // expression-level sub-parts to validate here.
+        Expression::PatternPredicate { .. } => Ok(()),
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -1561,6 +1565,10 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             }
             validate_expr_supported(projection)
         }
+        // A pattern predicate is a group key (it never *contains* an
+        // aggregation — its match is a runtime existence test), so it needs no
+        // recursion, mirroring the comprehension / map-projection handling.
+        Expression::PatternPredicate { .. } => Ok(()),
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -3864,6 +3872,9 @@ impl<'a> Executor<'a> {
                 row,
                 *span,
             ),
+            Expression::PatternPredicate { pattern, .. } => {
+                self.eval_pattern_predicate(pattern, row)
+            }
         }
     }
 
@@ -3988,6 +3999,28 @@ impl<'a> Executor<'a> {
             out.push(self.eval(projection, &binding)?);
         }
         Ok(Value::List(out))
+    }
+
+    /// Evaluate a pattern predicate `(a)-[:R]->(b)` — `true` iff at least one
+    /// match of the path pattern exists relative to `row`.
+    ///
+    /// Existence is decided with the same [`match_path`](Self::match_path)
+    /// primitive that drives `MATCH` and pattern comprehensions: the pattern is
+    /// anchored on already-bound variables, extended into the graph, and the
+    /// predicate is `true` as soon as one extended binding row survives (the
+    /// matches themselves are discarded — only their existence matters, and the
+    /// variables the pattern introduces stay scoped to the predicate). A head
+    /// variable already bound to `null` — an unmatched `OPTIONAL MATCH` node —
+    /// yields `null` under three-valued logic (matching Neo4j) rather than the
+    /// `TypeMismatch` that anchoring a `MATCH` on a non-node would raise.
+    fn eval_pattern_predicate(&self, pattern: &PathPattern, row: &Bindings) -> ExecResultT<Value> {
+        if let Some(name) = &pattern.head.variable {
+            if matches!(row.get(name), Some(Value::Null)) {
+                return Ok(Value::Null);
+            }
+        }
+        let exists = !self.match_path(pattern, row, false)?.is_empty();
+        Ok(Value::Bool(exists))
     }
 
     /// Evaluate a list comprehension `[var IN list WHERE pred | proj]`.

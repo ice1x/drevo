@@ -1230,10 +1230,20 @@ impl Parser {
                 }
             }
             TokenKind::LParen => {
-                self.consume();
-                let inner = self.parse_expression()?;
-                self.eat(&TokenKind::RParen, "`)` to close grouped expression")?;
-                inner
+                // A `(` opens either a grouped expression (`(a + 1)`) or a
+                // pattern predicate (`(a)-[:R]->(b)` — an existence test). Both
+                // start with `(`, so we *speculatively* parse a path pattern and
+                // only commit when it has at least one relationship; otherwise
+                // the cursor is rolled back and the `(` falls through to the
+                // ordinary grouped-expression path.
+                if let Some(expr) = self.try_parse_pattern_predicate(tok_span)? {
+                    expr
+                } else {
+                    self.consume();
+                    let inner = self.parse_expression()?;
+                    self.eat(&TokenKind::RParen, "`)` to close grouped expression")?;
+                    inner
+                }
             }
             TokenKind::LBracket => self.parse_list_literal()?,
             TokenKind::LBrace => Expression::Map(self.parse_map_literal()?),
@@ -1506,6 +1516,40 @@ impl Parser {
             pattern: Box::new(pattern),
             predicate,
             projection,
+            span,
+        }))
+    }
+
+    /// Speculatively parse a pattern predicate `(a)-[:R]->(b)` when the cursor
+    /// sits on `(` in expression position.
+    ///
+    /// A `(` opens both a grouped expression (`(a + 1)`, `(a)`, `(a).name`) and
+    /// a pattern predicate (an existence test over a path). Only a path with at
+    /// least one **relationship** is a predicate; a bare parenthesised node —
+    /// which is what a grouped expression looks like to [`parse_path_pattern`] —
+    /// fails the "at least one relationship" test, so on any non-match the
+    /// speculative cursor is rolled back to `checkpoint` and `Ok(None)` is
+    /// returned so the caller resumes ordinary grouped-expression parsing. This
+    /// mirrors [`try_parse_pattern_comprehension`](Self::try_parse_pattern_comprehension)'s
+    /// commit rule, keeping the change purely additive: any `(` that previously
+    /// parsed as grouping still does.
+    fn try_parse_pattern_predicate(&mut self, span: Span) -> ParseResult<Option<Expression>> {
+        let checkpoint = self.pos;
+        let pattern = match self.parse_path_pattern() {
+            Ok(p) => p,
+            Err(_) => {
+                self.pos = checkpoint;
+                return Ok(None);
+            }
+        };
+        // Only a genuine path (≥ 1 relationship) is a predicate; a bare
+        // parenthesised node is grouping, so roll back and fall through.
+        if pattern.tail.is_empty() {
+            self.pos = checkpoint;
+            return Ok(None);
+        }
+        Ok(Some(Expression::PatternPredicate {
+            pattern: Box::new(pattern),
             span,
         }))
     }
@@ -2443,9 +2487,89 @@ mod tests {
     }
 
     #[test]
+    fn pattern_predicate_in_where_parses_as_a_path() {
+        let q = p("MATCH (p) WHERE (p)-[:KNOWS]->(f) RETURN p");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::PatternPredicate { pattern, .. } => {
+                assert_eq!(pattern.tail.len(), 1, "one relationship segment");
+                assert_eq!(pattern.head.variable.as_deref(), Some("p"));
+            }
+            other => panic!("expected pattern predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn negated_pattern_predicate_parses_under_not() {
+        let q = p("MATCH (p) WHERE NOT (p)-[:KNOWS]->() RETURN p");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::Unary {
+                op: UnaryOp::Not,
+                expr,
+                ..
+            } => assert!(matches!(expr.as_ref(), Expression::PatternPredicate { .. })),
+            other => panic!("expected NOT over a pattern predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_hop_pattern_predicate_parses() {
+        let q = p("MATCH (p) WHERE (p)-[:KNOWS]->()-[:KNOWS]->() RETURN p");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::PatternPredicate { pattern, .. } => {
+                assert_eq!(pattern.tail.len(), 2, "two relationship segments");
+            }
+            other => panic!("expected pattern predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parenthesised_node_without_relationship_is_still_grouping() {
+        // `(a)` has no relationship, so the speculative pattern parse rolls back
+        // and `(a).x` is an ordinary grouped variable with a property access.
+        let q = p("RETURN (a).x");
+        assert!(matches!(first_return_expr(&q), Expression::Property { .. }));
+    }
+
+    #[test]
+    fn parenthesised_arithmetic_is_still_grouping() {
+        let q = p("RETURN (1 + 2) * 3");
+        // The grouped `(1 + 2)` is the LHS of a `*`, so the top node is a Binary
+        // multiply — not a pattern predicate.
+        match first_return_expr(&q) {
+            Expression::Binary { op, .. } => assert_eq!(*op, BinaryOp::Mul),
+            other => panic!("expected grouped arithmetic, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pattern_comprehension_without_projection_pipe_is_an_error() {
-        // The `| projection` is mandatory — a path + `WHERE` with no `|` fails.
+        // The `| projection` is mandatory — once a path + `WHERE` commits to a
+        // comprehension, a missing `|` is a real error (not a roll-back signal).
         assert!(parse("RETURN [(p)-[:KNOWS]->(f) WHERE f.age > 1]").is_err());
-        assert!(parse("RETURN [(p)-[:KNOWS]->(f)]").is_err());
+    }
+
+    #[test]
+    fn bracketed_path_without_pipe_is_a_list_of_a_pattern_predicate() {
+        // `[(p)-[:KNOWS]->(f)]` has no `WHERE`/`|`, so the comprehension parse
+        // rolls back; the element then parses as a *pattern predicate* (a path
+        // is a boolean existence test in expression position), giving a
+        // single-element list — additive on the prior parse-error behaviour.
+        let q = p("RETURN [(p)-[:KNOWS]->(f)]");
+        match first_return_expr(&q) {
+            Expression::List { items, .. } => {
+                assert_eq!(items.len(), 1);
+                assert!(matches!(items[0], Expression::PatternPredicate { .. }));
+            }
+            other => panic!("expected list of a pattern predicate, got {other:?}"),
+        }
     }
 }

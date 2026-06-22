@@ -647,6 +647,20 @@ pub enum Expression {
         /// Span of the leading `[`.
         span: Span,
     },
+    /// A pattern predicate `(a)-[:R]->(b)` in a boolean position — `true` iff
+    /// at least one match of the path pattern exists relative to the current
+    /// row. The predicate-valued sibling of [`Self::PatternComprehension`]:
+    /// where a pattern comprehension shapes a list off the graph, this tests
+    /// existence. Like the comprehension, the path must contain at least one
+    /// relationship (a bare parenthesised node is ordinary grouping).
+    PatternPredicate {
+        /// The path pattern, matched relative to the current row. Anchored on
+        /// any already-bound variables; variables it introduces are scoped to
+        /// the predicate. Must contain at least one relationship.
+        pattern: Box<PathPattern>,
+        /// Span of the leading `(`.
+        span: Span,
+    },
     /// `count(*)` — the only context in which `*` is a valid sub-expression.
     Star(Span),
 }
@@ -716,7 +730,8 @@ impl Expression {
             | Self::ListPredicate { span, .. }
             | Self::Reduce { span, .. }
             | Self::MapProjection { span, .. }
-            | Self::PatternComprehension { span, .. } => *span,
+            | Self::PatternComprehension { span, .. }
+            | Self::PatternPredicate { span, .. } => *span,
             Self::Map(m) => m.span,
         }
     }
