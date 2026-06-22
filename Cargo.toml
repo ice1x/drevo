@@ -185,6 +185,10 @@ harness = false
 name = "traversal_bench"
 harness = false
 
+[[bench]]
+name = "comparison_bench"
+harness = false
+
 # `getrandom` has no direct `use getrandom::...` site in this crate — it is
 # declared as an optional dependency solely so that the `wasm` feature can
 # write `getrandom/wasm_js` and surface the browser-RNG feature flag on the
