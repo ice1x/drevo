@@ -1171,6 +1171,21 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
+        // A pattern comprehension loops a per-match binding scope, so (like the
+        // comprehension family) an aggregation inside it is not meaningful — its
+        // optional predicate and mandatory projection use the non-aggregation
+        // validator. The pattern itself is matched at runtime, exactly like a
+        // `MATCH` pattern, so it needs no expression-level validation here.
+        Expression::PatternComprehension {
+            predicate,
+            projection,
+            ..
+        } => {
+            if let Some(pred) = predicate {
+                validate_expr_supported(pred)?;
+            }
+            validate_expr_supported(projection)
+        }
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -1531,6 +1546,20 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
                 }
             }
             Ok(())
+        }
+        // A pattern comprehension is a group key (it never *contains* an
+        // aggregation — see `validate_expr_supported`); its predicate and
+        // projection use the non-aggregation validator, mirroring the
+        // comprehension / map-projection handling above.
+        Expression::PatternComprehension {
+            predicate,
+            projection,
+            ..
+        } => {
+            if let Some(pred) = predicate {
+                validate_expr_supported(pred)?;
+            }
+            validate_expr_supported(projection)
         }
         Expression::Integer(..)
         | Expression::Float(..)
@@ -3823,6 +3852,18 @@ impl<'a> Executor<'a> {
                 selectors,
                 span,
             } => self.eval_map_projection(base, selectors, row, *span),
+            Expression::PatternComprehension {
+                pattern,
+                predicate,
+                projection,
+                span,
+            } => self.eval_pattern_comprehension(
+                pattern,
+                predicate.as_deref(),
+                projection,
+                row,
+                *span,
+            ),
         }
     }
 
@@ -3898,6 +3939,55 @@ impl<'a> Executor<'a> {
             });
         }
         Ok(Value::Map(out))
+    }
+
+    /// Evaluate a pattern comprehension `[ pattern WHERE pred | proj ]`.
+    ///
+    /// The `pattern` is matched relative to the current `row` via the same
+    /// [`match_path`](Self::match_path) primitive that drives `MATCH`, so it is
+    /// anchored on any variables already bound in `row` (the typical use:
+    /// `(p)-[:WROTE]->(c)` where `p` comes from the surrounding query). Each
+    /// match extends `row` with the pattern's freshly bound variables; the
+    /// optional `predicate` filters those binding rows under `WHERE`'s
+    /// three-valued logic (`true` keeps, `false`/`null` drops, a non-boolean is
+    /// a recoverable [`ExecError::TypeMismatch`]) and `projection` is collected
+    /// over each survivor into the result list. No match yields an empty list,
+    /// and a head variable already bound to `null` — an unmatched
+    /// `OPTIONAL MATCH` node — also yields an empty list rather than the
+    /// `TypeMismatch` that anchoring a `MATCH` on a non-node would raise.
+    fn eval_pattern_comprehension(
+        &self,
+        pattern: &PathPattern,
+        predicate: Option<&Expression>,
+        projection: &Expression,
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        // A `null` anchor (e.g. an unmatched OPTIONAL MATCH head) → empty list,
+        // matching Neo4j, instead of letting `match_head` raise a TypeMismatch.
+        if let Some(name) = &pattern.head.variable {
+            if matches!(row.get(name), Some(Value::Null)) {
+                return Ok(Value::List(Vec::new()));
+            }
+        }
+        let mut out = Vec::new();
+        for binding in self.match_path(pattern, row, false)? {
+            if let Some(pred) = predicate {
+                match self.eval(pred, &binding)? {
+                    Value::Bool(true) => {}
+                    Value::Bool(false) | Value::Null => continue,
+                    other => {
+                        return Err(ExecError::TypeMismatch {
+                            expected: "Bool".into(),
+                            got: other.type_name().into(),
+                            span,
+                        })
+                    }
+                }
+            }
+            out.push(self.eval(projection, &binding)?);
+        }
+        Ok(Value::List(out))
     }
 
     /// Evaluate a list comprehension `[var IN list WHERE pred | proj]`.
@@ -9350,5 +9440,156 @@ mod tests {
             .collect();
         totals.sort();
         assert_eq!(totals, vec![("a".to_string(), 3), ("b".to_string(), 5)]);
+    }
+
+    // ===== Pattern comprehension (task 00150) ==============================
+
+    /// The single `List` value of a one-row, one-column result.
+    fn one_list(res: &ExecResult) -> Vec<Value> {
+        assert_eq!(res.rows.len(), 1, "expected one row");
+        assert_eq!(res.rows[0].len(), 1, "expected one column");
+        match &res.rows[0][0] {
+            Value::List(items) => items.clone(),
+            other => panic!("expected a List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_comprehension_collects_projection_off_each_match() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Ann'})
+             CREATE (b:Person {name: 'Bob'})
+             CREATE (a)-[:KNOWS]->(b)",
+            &db,
+        );
+        let list = one_list(&run(
+            "MATCH (a:Person {name: 'Ann'}) RETURN [(a)-[:KNOWS]->(f) | f.name] AS r",
+            &db,
+        ));
+        assert_eq!(list, vec![Value::String("Bob".into())]);
+    }
+
+    #[test]
+    fn pattern_comprehension_where_filters_matches() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Ann'})
+             CREATE (b:Person {name: 'Bob', age: 40})
+             CREATE (c:Person {name: 'Cal', age: 20})
+             CREATE (a)-[:KNOWS]->(b)
+             CREATE (a)-[:KNOWS]->(c)",
+            &db,
+        );
+        let list = one_list(&run(
+            "MATCH (a:Person {name: 'Ann'})
+             RETURN [(a)-[:KNOWS]->(f) WHERE f.age > 30 | f.name] AS r",
+            &db,
+        ));
+        assert_eq!(list, vec![Value::String("Bob".into())]);
+    }
+
+    #[test]
+    fn pattern_comprehension_no_match_is_empty_list() {
+        let db = drevo();
+        run("CREATE (:Person {name: 'Loner'})", &db);
+        let list = one_list(&run(
+            "MATCH (a:Person) RETURN [(a)-[:KNOWS]->(f) | f.name] AS r",
+            &db,
+        ));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn pattern_comprehension_null_head_is_empty_list() {
+        let db = drevo();
+        // No match for the OPTIONAL node → `m` is null → comprehension is [].
+        let res = run(
+            "OPTIONAL MATCH (m:Nope) RETURN [(m)-[:KNOWS]->(f) | f.name] AS r",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::List(vec![]));
+    }
+
+    #[test]
+    fn pattern_comprehension_non_bool_predicate_is_type_mismatch() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Ann'})
+             CREATE (b:Person {name: 'Bob', age: 40})
+             CREATE (a)-[:KNOWS]->(b)",
+            &db,
+        );
+        assert!(matches!(
+            err(
+                "MATCH (a:Person {name: 'Ann'}) RETURN [(a)-[:KNOWS]->(f) WHERE f.age | f.name] AS r",
+                &db
+            ),
+            ExecError::TypeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn pattern_comprehension_preserves_duplicate_matches() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Ann'})
+             CREATE (b:Person {name: 'Bob'})
+             CREATE (a)-[:KNOWS]->(b)
+             CREATE (a)-[:KNOWS]->(b)",
+            &db,
+        );
+        let list = one_list(&run(
+            "MATCH (a:Person {name: 'Ann'}) RETURN [(a)-[:KNOWS]->(f) | f.name] AS r",
+            &db,
+        ));
+        assert_eq!(
+            list,
+            vec![Value::String("Bob".into()), Value::String("Bob".into())]
+        );
+    }
+
+    #[test]
+    fn pattern_comprehension_anchors_per_row() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Ann'})
+             CREATE (b:Person {name: 'Bob'})
+             CREATE (a)-[:KNOWS]->(b)",
+            &db,
+        );
+        let res = run(
+            "MATCH (p:Person)
+             RETURN p.name AS who, [(p)-[:KNOWS]->(f) | f.name] AS r
+             ORDER BY who",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(
+            res.rows[0][1],
+            Value::List(vec![Value::String("Bob".into())])
+        );
+        assert_eq!(res.rows[1][1], Value::List(vec![]));
+    }
+
+    #[test]
+    fn pattern_comprehension_projection_may_be_a_map_projection() {
+        let db = drevo();
+        run(
+            "CREATE (a:Person {name: 'Ann'})
+             CREATE (b:Person {name: 'Bob', age: 40})
+             CREATE (a)-[:KNOWS]->(b)",
+            &db,
+        );
+        let list = one_list(&run(
+            "MATCH (a:Person {name: 'Ann'}) RETURN [(a)-[:KNOWS]->(f) | f {.name}] AS r",
+            &db,
+        ));
+        assert_eq!(list.len(), 1);
+        match &list[0] {
+            Value::Map(m) => assert_eq!(m.get("name"), Some(&Value::String("Bob".into()))),
+            other => panic!("expected map element, got {other:?}"),
+        }
     }
 }

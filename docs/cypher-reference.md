@@ -784,6 +784,55 @@ RETURN collect(t {.label, .weight}) AS tags
 
 ---
 
+## Pattern comprehension
+
+A pattern comprehension `[ pattern WHERE predicate | projection ]` builds a list
+by matching a graph `pattern` relative to the current row and projecting an
+expression over each match. Where a [list comprehension](#list-comprehensions)
+shapes a list you already have, a pattern comprehension shapes a list straight
+off the graph — gathering a per-row collection without a second `MATCH`:
+
+```cypher
+MATCH (p:Person)
+RETURN p.name AS name, [(p)-[:KNOWS]->(f) | f.name] AS friends
+```
+
+The `pattern` is an ordinary path with at least one relationship. It is
+**anchored** on whatever variables the surrounding query has already bound — `p`
+above — so each row only sees its own matches. Both the optional `WHERE` and the
+mandatory `| projection` are evaluated in each match's binding scope, so they can
+reference the freshly bound pattern variables (`f`, and a relationship variable
+when present):
+
+```cypher
+MATCH (a:Account)
+RETURN [(a)-[t:TRANSFER]->(b) WHERE t.amount > 100 | b.id] AS large_payees
+```
+
+Semantics:
+
+- **Anchored & per-row** — the pattern extends the current row, exactly like the
+  same pattern in a `MATCH` would; it never reaches rows from other groups.
+- **No match → empty list** — a pattern that matches nothing yields `[]`, never
+  `null`. Match order (and duplicates, e.g. parallel edges) is preserved.
+- **`WHERE`** — filters matches under three-valued logic (`true` keeps,
+  `false`/`null` drops); a non-boolean predicate is an `ExecError::TypeMismatch`.
+- **`null` anchor** — if the head variable is already bound to `null` (an
+  unmatched [`OPTIONAL MATCH`](#optional-match) node), the comprehension is `[]`
+  rather than an error.
+- **As a group key** — a pattern comprehension contains no aggregation, so it is
+  an ordinary grouping expression alongside `count(*)` / `sum(...)`.
+
+The `projection` is any expression, so a pattern comprehension composes with
+[map projection](#map-projection) to gather tailored records per match:
+
+```cypher
+MATCH (o:Order)
+RETURN [(o)-[c:CONTAINS]->(i) | i {.sku, qty: c.qty}] AS lines
+```
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task

@@ -1108,7 +1108,8 @@ fn describe_expression(expr: &Expression) -> String {
         | Expression::ListComprehension { .. }
         | Expression::ListPredicate { .. }
         | Expression::Reduce { .. }
-        | Expression::MapProjection { .. } => "…".to_string(),
+        | Expression::MapProjection { .. }
+        | Expression::PatternComprehension { .. } => "…".to_string(),
     }
 }
 
