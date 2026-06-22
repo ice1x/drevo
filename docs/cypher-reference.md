@@ -833,6 +833,55 @@ RETURN [(o)-[c:CONTAINS]->(i) | i {.sku, qty: c.qty}] AS lines
 
 ---
 
+## Pattern predicate
+
+A **pattern predicate** is a path pattern `(a)-[:R]->(b)` used in a boolean
+position — a `WHERE` filter, a `RETURN` column, or any expression slot. It tests
+whether **at least one** match of the pattern exists relative to the current row.
+Where a [pattern comprehension](#pattern-comprehension) *shapes a list* off the
+graph, a pattern predicate *tests existence* of one:
+
+```cypher
+MATCH (p:Person)
+WHERE (p)-[:KNOWS]->()
+RETURN p.name
+```
+
+Like a comprehension's pattern, it is **anchored** on the variables already bound
+(`p` above), so each row only tests its own neighbourhood. Variables the pattern
+introduces are scoped to the predicate — they are not exported to the row. The
+pattern can constrain by relationship type, by the target's label, and span
+multiple hops:
+
+```cypher
+MATCH (s:Supplier)
+WHERE (s)-[:SUPPLIES]->(:Part)
+RETURN s.name
+```
+
+It composes with `NOT`, `AND` / `OR`, and other predicates, and can be returned
+directly as a boolean:
+
+```cypher
+MATCH (b:Bug)
+RETURN b.id AS id, NOT (b)-[:ASSIGNED_TO]->() AS unassigned
+```
+
+Semantics:
+
+- **Existence test** — `true` as soon as one match exists; the matches are
+  discarded (only their existence matters).
+- **Anchored & per-row** — the pattern extends the current row, exactly like the
+  same pattern in a `MATCH` would.
+- **`null` anchor** — if the head variable is already bound to `null` (an
+  unmatched [`OPTIONAL MATCH`](#optional-match) node), the predicate is `null`
+  under three-valued logic — so a `WHERE` drops the row — rather than an error.
+- **Grouping is unaffected** — only a path with at least one relationship is a
+  predicate; a bare parenthesised expression (`(a.age + 1)`, `(1 + 2) * 3`,
+  `(a).name`) is still ordinary grouping.
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task
