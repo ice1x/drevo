@@ -892,7 +892,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
 #### Per-domain audit tasks
 
-- [ ] `00103` **Storage layer audit** — `src/storage/*` (~820 LOC). Verify against `drevo-database` §"Storage Backend Abstraction" + §"Indexes":
+- [x] `00103` **Storage layer audit** — `src/storage/*` (~820 LOC). Verify against `drevo-database` §"Storage Backend Abstraction" + §"Indexes":
   - LSP — `MemoryBackend` and `RedbBackend` are observationally identical (`drevo-architecture` §SOLID "L"). Run the existing macro-parameterised test suite (`drevo-tdd` §"Storage tests parameterized by backend") and add a proptest that compares an arbitrary operation sequence between the two backends.
   - `scan_prefix` MUST return lexicographically-ordered keys on both backends (`drevo-database` "storage abstraction" doc-contract).
   - `flush()` semantics are documented and divergent paths are gated correctly (memory backend may snapshot to disk; redb is a no-op).
@@ -900,14 +900,14 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - `#[cfg(not(target_arch = "wasm32"))]` gates correctly on FS-touching paths (`drevo-rust` §"WASM Bindings"; common pitfall #3).
   - **Refactor targets**: backend parity proptest; structured mutex-poisoning error; document `scan_prefix` ordering on the trait.
 
-- [ ] `00104` **Error hierarchy audit** — `src/error.rs`, `src/storage/error.rs` + every `?` site in the codebase (~75 LOC of types + ~hundreds of call sites). Verify against `drevo-rust` §"Error Handling" + `drevo-architecture` §"Error Propagation Architecture":
+- [x] `00104` **Error hierarchy audit** — `src/error.rs`, `src/storage/error.rs` + every `?` site in the codebase (~75 LOC of types + ~hundreds of call sites). Verify against `drevo-rust` §"Error Handling" + `drevo-architecture` §"Error Propagation Architecture":
   - Single error enum per crate via `thiserror` (`drevo-rust`). Currently the codebase has `DrevoError` AND `StorageError`. Decide: keep two-layer (Storage → DrevoError → HTTP) per the layered diagram, or collapse to one — and align with the *Immediate subtasks* item "Rename `StorageError` to `DrevoError` or reconcile error hierarchy" that has been open since phase 1.
   - No `StorageError::Backend(String)` stringly-typed errors (`drevo-architecture` anti-pattern #3): replace with `Redb(redb::Error)` / `Io(io::Error)` structured variants.
   - Every `?` site uses propagation, not manual `match` conversion (`drevo-rust`).
   - HTTP layer (`api.rs`) maps every `DrevoError` variant to a status code — no variant falls through to a default 500 (`drevo-rust` §"Error layering across boundaries").
   - **Refactor targets**: structured `StorageError` variants; close the open *immediate subtask*; exhaustive `ApiError::Db(_) → status` match (clippy `-W non_exhaustive_omitted_patterns`).
 
-- [ ] `00105` **Model layer audit** — `src/model.rs` (~615 LOC). Verify against `drevo-database` §"Data Model" + `drevo-rust` §"Serialization":
+- [x] `00105` **Model layer audit** — `src/model.rs` (~615 LOC). Verify against `drevo-database` §"Data Model" + `drevo-rust` §"Serialization":
   - Invariant: UUID immutability (`drevo-database` invariant #4) — proptest a `create → update → get` cycle and assert UUID unchanged.
   - `properties: HashMap<String, serde_json::Value>` serde round-trip on native + WASM (`drevo-database` "data model"; `drevo-rust` §"Serialization").
   - `NewNode` / `NodePatch` / `NewEdge` / `EdgePatch` patch semantics documented per field; partial-update edge cases (None vs Some(empty)) covered by tests.
@@ -955,7 +955,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
   - `cbindgen` header generation is in sync with the Rust signatures.
   - **Refactor targets**: `with_panic_guard!` macro wrapping every entry; `cargo miri` smoke tests for the C surface; document the double-free behaviour.
 
-- [ ] `00111` **WASM audit** — `src/wasm.rs` (~432 LOC). Verify against `drevo-rust` §"WASM Bindings" + `drevo-database` §"WASM Boundary":
+- [x] `00111` **WASM audit** — `src/wasm.rs` (~432 LOC). Verify against `drevo-rust` §"WASM Bindings" + `drevo-database` §"WASM Boundary":
   - JSON parity with native: every type that crosses the boundary serialises identically (`drevo-rust` §"JSON over the boundary"). Add a parity proptest that round-trips the same JSON through both code paths.
   - Errors become JS exceptions via `JsValue::from_str` (`drevo-rust`). No `panic!` in the WASM path.
   - `getrandom/wasm_js` feature is enabled and UUID v7 entropy works in browser (`drevo-rust` §"`getrandom` for UUID v7").
