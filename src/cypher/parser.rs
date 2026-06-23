@@ -1256,6 +1256,15 @@ impl Parser {
                 self.consume(); // ALL
                 self.parse_list_predicate(ListPredicateKind::All, tok_span)?
             }
+            // `EXISTS { [MATCH] pattern [WHERE pred] }` — an existential
+            // subquery. `EXISTS` is a reserved keyword token, so it never
+            // reaches the identifier path; the brace form is its only use in
+            // expression position (the deprecated `exists(n.prop)` function form
+            // is replaced by `n.prop IS NOT NULL`).
+            TokenKind::Exists => {
+                self.consume(); // EXISTS
+                self.parse_exists_subquery(tok_span)?
+            }
             TokenKind::Identifier(_) => self.parse_identifier_or_call()?,
             TokenKind::Eof => {
                 return Err(ParseError::ExpectedExpression { span: tok_span });
@@ -1552,6 +1561,38 @@ impl Parser {
             pattern: Box::new(pattern),
             span,
         }))
+    }
+
+    /// Parse an existential subquery `EXISTS { [MATCH] pattern [WHERE pred] }`
+    /// once the `EXISTS` keyword has been consumed.
+    ///
+    /// The braces are mandatory (the deprecated `exists(n.prop)` function form
+    /// is not supported — `n.prop IS NOT NULL` replaces it). Inside, a leading
+    /// `MATCH` keyword is optional and equivalent, a single path pattern is
+    /// required, and an optional `WHERE` filters the matches before the
+    /// existence test. Because the braces already delimit the pattern, a bare
+    /// node (`EXISTS { (n) }`) is legal here — there is no grouping ambiguity to
+    /// resolve as there is for a bare [pattern predicate](Self::try_parse_pattern_predicate).
+    fn parse_exists_subquery(&mut self, span: Span) -> ParseResult<Expression> {
+        self.eat(&TokenKind::LBrace, "`{` after EXISTS")?;
+        // An optional leading `MATCH` keyword — `EXISTS { MATCH (a)-->(b) }` is
+        // equivalent to `EXISTS { (a)-->(b) }`.
+        if matches!(self.peek_kind(), TokenKind::Match) {
+            self.consume();
+        }
+        let pattern = self.parse_path_pattern()?;
+        let predicate = if matches!(self.peek_kind(), TokenKind::Where) {
+            self.consume();
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+        self.eat(&TokenKind::RBrace, "`}` to close EXISTS subquery")?;
+        Ok(Expression::ExistsSubquery {
+            pattern: Box::new(pattern),
+            predicate,
+            span,
+        })
     }
 
     /// Parse a list predicate function `kind(var IN list WHERE pred)` once the
@@ -2529,6 +2570,81 @@ mod tests {
             }
             other => panic!("expected pattern predicate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn exists_subquery_in_where_parses_with_pattern_and_no_predicate() {
+        let q = p("MATCH (p) WHERE EXISTS { (p)-[:KNOWS]->(f) } RETURN p");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::ExistsSubquery {
+                pattern, predicate, ..
+            } => {
+                assert_eq!(pattern.tail.len(), 1, "one relationship segment");
+                assert_eq!(pattern.head.variable.as_deref(), Some("p"));
+                assert!(predicate.is_none(), "no inner WHERE");
+            }
+            other => panic!("expected existential subquery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exists_subquery_with_match_keyword_and_inner_where_parses() {
+        let q = p("MATCH (p) WHERE EXISTS { MATCH (p)-[:KNOWS]->(f) WHERE f.age > 18 } RETURN p");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::ExistsSubquery {
+                pattern, predicate, ..
+            } => {
+                assert_eq!(pattern.tail.len(), 1, "one relationship segment");
+                assert!(predicate.is_some(), "inner WHERE present");
+            }
+            other => panic!("expected existential subquery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exists_subquery_accepts_a_bare_node_pattern() {
+        // Unlike a bare pattern predicate, the braces disambiguate, so a single
+        // node `EXISTS { (n) }` is a legal subquery (not grouping).
+        let q = p("MATCH (n) WHERE EXISTS { (n) } RETURN n");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::ExistsSubquery { pattern, .. } => {
+                assert!(pattern.tail.is_empty(), "bare node — no relationship");
+                assert_eq!(pattern.head.variable.as_deref(), Some("n"));
+            }
+            other => panic!("expected existential subquery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn negated_exists_subquery_parses_under_not() {
+        let q = p("MATCH (p) WHERE NOT EXISTS { (p)-[:KNOWS]->() } RETURN p");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::Unary {
+                op: UnaryOp::Not,
+                expr,
+                ..
+            } => assert!(matches!(expr.as_ref(), Expression::ExistsSubquery { .. })),
+            other => panic!("expected NOT over an existential subquery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exists_without_brace_is_a_parse_error() {
+        // Only the brace form is supported; the deprecated `exists(...)`
+        // function form is not.
+        assert!(parse("MATCH (n) WHERE EXISTS (n)-[:R]->() RETURN n").is_err());
     }
 
     #[test]

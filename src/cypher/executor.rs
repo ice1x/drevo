@@ -91,14 +91,17 @@
 //! and a query may not mix the two operators — both cases surface as
 //! [`ExecError::UnionMismatch`](crate::cypher::executor::ExecError::UnionMismatch).
 //!
-//! Out of scope (tracked under follow-on Phase 10 tasks):
+//! `EXISTS { [MATCH] pattern [WHERE predicate] }` is an existential
+//! subquery as of task `00152` — `true` iff at least one match of the
+//! enclosed pattern survives the optional inner `WHERE`, relative to the
+//! current row. The brace-delimited, richer sibling of the bare pattern
+//! predicate (`00151`): the braces let a single node (`EXISTS { (n) }`)
+//! be a subquery rather than grouping, an optional leading `MATCH`
+//! keyword is accepted, and the inner `WHERE` filters matches before the
+//! existence test. (The deprecated `exists(n.prop)` *function* form is
+//! not supported — `n.prop IS NOT NULL`, shipped in `00065`, replaces it.)
 //!
-//! * `EXISTS { pattern }` pattern-existence subqueries — the lexer
-//!   already tokenises `EXISTS`, but the parser does not yet treat it
-//!   as an expression form. In modern Cypher `n.prop IS NOT NULL` is
-//!   the property-existence replacement, which `00065` already ships.
-//!
-//! Anything in that list surfaces as
+//! Anything still unsupported surfaces as
 //! [`ExecError::Unsupported`](crate::cypher::executor::ExecError::Unsupported)
 //! with a pointer to the task that will ship it, so embedders get a
 //! deterministic, actionable error rather than silent wrong answers.
@@ -1190,6 +1193,16 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
         // pattern (see `eval_pattern_predicate`), so it carries no
         // expression-level sub-parts to validate here.
         Expression::PatternPredicate { .. } => Ok(()),
+        // An existential subquery matches its pattern at runtime like a `MATCH`;
+        // its optional inner `WHERE` is evaluated per match (no aggregation),
+        // so it uses the non-aggregation validator, mirroring the comprehension
+        // family.
+        Expression::ExistsSubquery { predicate, .. } => {
+            if let Some(pred) = predicate {
+                validate_expr_supported(pred)?;
+            }
+            Ok(())
+        }
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -1569,6 +1582,15 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
         // aggregation — its match is a runtime existence test), so it needs no
         // recursion, mirroring the comprehension / map-projection handling.
         Expression::PatternPredicate { .. } => Ok(()),
+        // An existential subquery is likewise a group key (it never *contains*
+        // an aggregation); its optional inner `WHERE` uses the non-aggregation
+        // validator, mirroring the comprehension / map-projection handling.
+        Expression::ExistsSubquery { predicate, .. } => {
+            if let Some(pred) = predicate {
+                validate_expr_supported(pred)?;
+            }
+            Ok(())
+        }
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -3875,6 +3897,11 @@ impl<'a> Executor<'a> {
             Expression::PatternPredicate { pattern, .. } => {
                 self.eval_pattern_predicate(pattern, row)
             }
+            Expression::ExistsSubquery {
+                pattern,
+                predicate,
+                span,
+            } => self.eval_exists_subquery(pattern, predicate.as_deref(), row, *span),
         }
     }
 
@@ -4021,6 +4048,53 @@ impl<'a> Executor<'a> {
         }
         let exists = !self.match_path(pattern, row, false)?.is_empty();
         Ok(Value::Bool(exists))
+    }
+
+    /// Evaluate an existential subquery `EXISTS { [MATCH] pattern [WHERE pred] }`
+    /// — `true` iff at least one match of `pattern` survives the optional inner
+    /// `predicate`, relative to `row`.
+    ///
+    /// Like [`eval_pattern_predicate`](Self::eval_pattern_predicate), existence
+    /// is decided with the same [`match_path`](Self::match_path) primitive that
+    /// drives `MATCH`: the pattern is anchored on already-bound variables and
+    /// extended into the graph, with the variables it introduces staying scoped
+    /// to the subquery. The richer surface over a bare pattern predicate is the
+    /// optional inner `WHERE`, applied per match in that match's binding scope
+    /// under `WHERE`'s three-valued logic (`true` keeps, `false`/`null` drops, a
+    /// non-boolean is a recoverable [`ExecError::TypeMismatch`]); the subquery is
+    /// `true` as soon as one extended binding row survives it. A head variable
+    /// already bound to `null` — an unmatched `OPTIONAL MATCH` node — yields
+    /// `null` (matching Neo4j) rather than the `TypeMismatch` that anchoring a
+    /// `MATCH` on a non-node would raise.
+    fn eval_exists_subquery(
+        &self,
+        pattern: &PathPattern,
+        predicate: Option<&Expression>,
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        if let Some(name) = &pattern.head.variable {
+            if matches!(row.get(name), Some(Value::Null)) {
+                return Ok(Value::Null);
+            }
+        }
+        for binding in self.match_path(pattern, row, false)? {
+            match predicate {
+                None => return Ok(Value::Bool(true)),
+                Some(pred) => match self.eval(pred, &binding)? {
+                    Value::Bool(true) => return Ok(Value::Bool(true)),
+                    Value::Bool(false) | Value::Null => continue,
+                    other => {
+                        return Err(ExecError::TypeMismatch {
+                            expected: "Bool".into(),
+                            got: other.type_name().into(),
+                            span,
+                        })
+                    }
+                },
+            }
+        }
+        Ok(Value::Bool(false))
     }
 
     /// Evaluate a list comprehension `[var IN list WHERE pred | proj]`.

@@ -882,6 +882,48 @@ Semantics:
 
 ---
 
+## EXISTS subquery
+
+An **existential subquery** `EXISTS { [MATCH] pattern [WHERE predicate] }` is the
+brace-delimited, richer sibling of the bare [pattern predicate](#pattern-predicate).
+It tests whether **at least one** match of the enclosed pattern exists relative to
+the current row, with three additions the braces make possible:
+
+- an optional leading `MATCH` keyword (`EXISTS { MATCH (a)-->(b) }` is equivalent
+  to `EXISTS { (a)-->(b) }`),
+- an optional inner `WHERE` that filters the matches *before* the existence test,
+- a **bare node** is legal — because the braces delimit the pattern, there is no
+  grouping ambiguity to resolve, so `EXISTS { (n) }` is a subquery (a bare `(n)`
+  in expression position would be grouping).
+
+```cypher
+MATCH (t:Task)
+WHERE EXISTS { (t)-[:DEPENDS_ON]->(dep) WHERE dep.status = 'open' }
+RETURN t.title
+```
+
+Like a pattern predicate it is **anchored** on the variables already bound, the
+variables it introduces stay scoped to the subquery, it composes with `NOT` /
+`AND` / `OR`, and it can be returned directly as a boolean:
+
+```cypher
+MATCH (c:Customer)
+WHERE NOT EXISTS { (c)-[:PLACED]->(:Order) }
+RETURN c.name
+```
+
+Semantics:
+
+- **Existence test** — `true` as soon as one match survives the optional inner
+  `WHERE`; the matches are otherwise discarded.
+- **`null` anchor** — if the head variable is already bound to `null` (an
+  unmatched [`OPTIONAL MATCH`](#optional-match) node), the subquery is `null`
+  under three-valued logic rather than an error.
+- **Function form not supported** — the deprecated `exists(n.prop)` *function*
+  form is not accepted; use `n.prop IS NOT NULL` (see [WHERE](#filtering--where)).
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task
