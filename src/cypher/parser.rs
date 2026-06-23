@@ -859,8 +859,49 @@ impl Parser {
         } else {
             None
         };
-        let path = self.parse_path_pattern()?;
-        Ok(NamedPattern { variable, path })
+        // Optional `shortestPath( … )` / `allShortestPaths( … )` wrapper.
+        // Both are ordinary identifiers (not keywords); we claim the
+        // wrapper form only on the exact name immediately followed by `(`,
+        // so a node variable or label literally named `shortestpath` is
+        // unaffected.
+        let shortest = self.peek_shortest_kind();
+        let path = if shortest.is_some() {
+            self.consume(); // shortestPath / allShortestPaths
+            self.eat(
+                &TokenKind::LParen,
+                "`(` after shortestPath/allShortestPaths",
+            )?;
+            let path = self.parse_path_pattern()?;
+            self.eat(
+                &TokenKind::RParen,
+                "`)` to close shortestPath/allShortestPaths",
+            )?;
+            path
+        } else {
+            self.parse_path_pattern()?
+        };
+        Ok(NamedPattern {
+            variable,
+            path,
+            shortest,
+        })
+    }
+
+    /// Peek for a `shortestPath(` / `allShortestPaths(` wrapper at the
+    /// current position without consuming anything. Matching is
+    /// case-insensitive (Cypher function names are) and requires the name
+    /// to be immediately followed by `(`.
+    fn peek_shortest_kind(&self) -> Option<ShortestKind> {
+        if let TokenKind::Identifier(name) = self.peek_kind() {
+            if matches!(self.peek_at(1), TokenKind::LParen) {
+                return match name.to_ascii_lowercase().as_str() {
+                    "shortestpath" => Some(ShortestKind::Single),
+                    "allshortestpaths" => Some(ShortestKind::All),
+                    _ => None,
+                };
+            }
+        }
+        None
     }
 
     fn parse_path_pattern(&mut self) -> ParseResult<PathPattern> {
@@ -2829,5 +2870,76 @@ mod tests {
             }
             other => panic!("expected list of a pattern predicate, got {other:?}"),
         }
+    }
+
+    // ---- shortestPath / allShortestPaths (00155) ------------------------
+
+    fn first_match(q: &Query) -> &MatchClause {
+        match &q.parts[0].query.clauses[0] {
+            Clause::Match(m) => m,
+            other => panic!("expected MATCH, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_shortest_path_named_binding() {
+        let q = p("MATCH (a), (b), p = shortestPath((a)-[*]-(b)) RETURN p");
+        let m = first_match(&q);
+        // Three comma-separated patterns; only the third is a shortest search.
+        assert_eq!(m.patterns.len(), 3);
+        assert_eq!(m.patterns[0].shortest, None);
+        assert_eq!(m.patterns[1].shortest, None);
+        let sp = &m.patterns[2];
+        assert_eq!(sp.shortest, Some(ShortestKind::Single));
+        assert_eq!(sp.variable.as_deref(), Some("p"));
+        // The wrapped path is a single variable-length leg `(a)-[*]-(b)`.
+        assert_eq!(sp.path.head.variable.as_deref(), Some("a"));
+        assert_eq!(sp.path.tail.len(), 1);
+        assert!(sp.path.tail[0].relationship.length.is_some());
+        assert_eq!(sp.path.tail[0].node.variable.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn parses_all_shortest_paths() {
+        let q = p("MATCH (a), (b), p = allShortestPaths((a)-[:KNOWS*..5]-(b)) RETURN p");
+        let sp = &first_match(&q).patterns[2];
+        assert_eq!(sp.shortest, Some(ShortestKind::All));
+        assert_eq!(
+            sp.path.tail[0].relationship.types,
+            vec!["KNOWS".to_string()]
+        );
+    }
+
+    #[test]
+    fn shortest_path_function_name_is_case_insensitive() {
+        let q = p("MATCH p = SHORTESTPATH((a)-[*]-(b)) RETURN p");
+        assert_eq!(
+            first_match(&q).patterns[0].shortest,
+            Some(ShortestKind::Single)
+        );
+    }
+
+    #[test]
+    fn shortest_path_without_binding_variable() {
+        // The path variable is optional; `MATCH shortestPath(...)` parses too.
+        let q = p("MATCH shortestPath((a)-[*]-(b)) RETURN a");
+        let sp = &first_match(&q).patterns[0];
+        assert_eq!(sp.shortest, Some(ShortestKind::Single));
+        assert!(sp.variable.is_none());
+    }
+
+    #[test]
+    fn bare_identifier_named_shortestpath_is_not_a_wrapper() {
+        // A node variable that happens to be spelled `shortestpath` is an
+        // ordinary variable — the wrapper is only claimed before a `(`.
+        let q = p("MATCH (shortestpath) RETURN shortestpath");
+        let sp = &first_match(&q).patterns[0];
+        assert_eq!(sp.shortest, None);
+        assert_eq!(sp.path.head.variable.as_deref(), Some("shortestpath"));
+    }
+
+    #[test]
+    fn shortest_path_missing_close_paren_is_an_error() {
+        assert!(parse("MATCH p = shortestPath((a)-[*]-(b) RETURN p").is_err());
     }
 }
