@@ -307,6 +307,32 @@ MATCH (e:Employee)
 RETURN count(DISTINCT e.team) AS distinct_teams
 ```
 
+### Statistical aggregations
+
+Four further aggregations fold a numeric group to a statistic, exactly like
+`avg`. Each null-skips its input and rejects a non-numeric value with a
+recoverable error.
+
+| Function | Returns |
+|----------|---------|
+| `stDev(expr)` | **sample** standard deviation (divides by `n − 1`; `0.0` for fewer than two values) |
+| `stDevP(expr)` | **population** standard deviation (divides by `n`; `0.0` for an empty group) |
+| `percentileCont(expr, p)` | the **continuous** percentile at fraction `p ∈ [0, 1]`, linearly interpolating between the two closest ranks (always a `Float`) |
+| `percentileDisc(expr, p)` | the **discrete** percentile: the nearest actual value at fraction `p` (no interpolation, so the stored `Integer` / `Float` type is preserved) |
+
+```cypher
+MATCH (o:Order)
+RETURN stDevP(o.total)              AS spread,
+       percentileCont(o.total, 0.5) AS median,
+       percentileDisc(o.total, 0.9) AS p90
+```
+
+`percentileCont` / `percentileDisc` over an empty (all-null) group are `null`;
+the fraction must be a number in `[0.0, 1.0]` (anything else is an error). All
+four are ordinary aggregations, so any non-aggregated projection item is the
+`GROUP BY` key and they coexist with `count` / `sum` / `avg` / … in one
+`RETURN`.
+
 ---
 
 ## Conditional expressions — CASE
