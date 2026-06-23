@@ -560,6 +560,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 |--------|-----------|
 | String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
 | Numeric | `abs`, `ceil`, `floor`, `round`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` |
+| List conversion | `toIntegerList(list)`, `toFloatList(list)`, `toBooleanList(list)`, `toStringList(list)` — element-wise conversion; an unconvertible (or `NULL`) element becomes `NULL`, preserving list length |
 | Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
 | List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `id`, `properties` |
 | Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
@@ -569,7 +570,12 @@ argument yields `NULL`, never an error — so a function applied across a hetero
 scan quietly skips rows whose property is absent rather than aborting the query.
 `coalesce(a, b, …)` is the exception — it returns its first non-`NULL` argument (or
 `NULL` if every argument is `NULL`). `toInteger` / `toFloat` / `toBoolean` are lenient:
-an unparseable string converts to `NULL` rather than erroring.
+an unparseable string converts to `NULL` rather than erroring. The list-conversion
+functions (`toIntegerList` / `toFloatList` / `toBooleanList` / `toStringList`) apply the
+same lenient rules to every element, so an unconvertible element becomes a `NULL` slot
+rather than aborting the whole list — the result always matches the input length. (Unlike
+the scalar `toString`, which errors on a non-stringifiable value, `toStringList` is lenient
+and yields `NULL` for such an element.)
 
 **Errors.** Wrong arity or an argument of a type the function cannot accept is a
 recoverable `ExecError::InvalidFunctionCall`; an unknown function name stays
