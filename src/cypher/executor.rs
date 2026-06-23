@@ -1203,6 +1203,16 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
+        // A counting subquery matches its pattern at runtime like a `MATCH` and
+        // its optional inner `WHERE` is evaluated per match (no aggregation), so
+        // it uses the non-aggregation validator, mirroring the existential
+        // subquery.
+        Expression::CountSubquery { predicate, .. } => {
+            if let Some(pred) = predicate {
+                validate_expr_supported(pred)?;
+            }
+            Ok(())
+        }
         Expression::Integer(..)
         | Expression::Float(..)
         | Expression::String(..)
@@ -1586,6 +1596,16 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
         // an aggregation); its optional inner `WHERE` uses the non-aggregation
         // validator, mirroring the comprehension / map-projection handling.
         Expression::ExistsSubquery { predicate, .. } => {
+            if let Some(pred) = predicate {
+                validate_expr_supported(pred)?;
+            }
+            Ok(())
+        }
+        // A counting subquery is likewise a group key (it never *contains* an
+        // aggregation — its `count` is a per-row match tally, not a fold over
+        // the outer rows); its optional inner `WHERE` uses the non-aggregation
+        // validator, mirroring the existential subquery.
+        Expression::CountSubquery { predicate, .. } => {
             if let Some(pred) = predicate {
                 validate_expr_supported(pred)?;
             }
@@ -3902,6 +3922,11 @@ impl<'a> Executor<'a> {
                 predicate,
                 span,
             } => self.eval_exists_subquery(pattern, predicate.as_deref(), row, *span),
+            Expression::CountSubquery {
+                pattern,
+                predicate,
+                span,
+            } => self.eval_count_subquery(pattern, predicate.as_deref(), row, *span),
         }
     }
 
@@ -4095,6 +4120,54 @@ impl<'a> Executor<'a> {
             }
         }
         Ok(Value::Bool(false))
+    }
+
+    /// Evaluate a counting subquery `COUNT { [MATCH] pattern [WHERE pred] }`
+    /// — the **number** of matches of `pattern` that survive the optional inner
+    /// `predicate`, relative to `row`.
+    ///
+    /// The integer-valued sibling of
+    /// [`eval_exists_subquery`](Self::eval_exists_subquery): it uses the same
+    /// [`match_path`](Self::match_path) primitive that drives `MATCH`, anchoring
+    /// the pattern on already-bound variables, with the variables it introduces
+    /// scoped to the subquery. Rather than short-circuiting on the first match,
+    /// it counts every extended binding row for which the optional inner `WHERE`
+    /// holds (three-valued logic: `true` counts, `false`/`null` does not, a
+    /// non-boolean is a recoverable [`ExecError::TypeMismatch`]) and returns the
+    /// total as an [`Value::Integer`]. A head variable already bound to `null` —
+    /// an unmatched `OPTIONAL MATCH` node — yields `null` (matching Neo4j) rather
+    /// than the `TypeMismatch` that anchoring a `MATCH` on a non-node would
+    /// raise; no match yields `0`.
+    fn eval_count_subquery(
+        &self,
+        pattern: &PathPattern,
+        predicate: Option<&Expression>,
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        if let Some(name) = &pattern.head.variable {
+            if matches!(row.get(name), Some(Value::Null)) {
+                return Ok(Value::Null);
+            }
+        }
+        let mut count: i64 = 0;
+        for binding in self.match_path(pattern, row, false)? {
+            match predicate {
+                None => count += 1,
+                Some(pred) => match self.eval(pred, &binding)? {
+                    Value::Bool(true) => count += 1,
+                    Value::Bool(false) | Value::Null => continue,
+                    other => {
+                        return Err(ExecError::TypeMismatch {
+                            expected: "Bool".into(),
+                            got: other.type_name().into(),
+                            span,
+                        })
+                    }
+                },
+            }
+        }
+        Ok(Value::Integer(count))
     }
 
     /// Evaluate a list comprehension `[var IN list WHERE pred | proj]`.

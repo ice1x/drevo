@@ -1595,6 +1595,38 @@ impl Parser {
         })
     }
 
+    /// Parse a counting subquery `COUNT { [MATCH] pattern [WHERE pred] }` once
+    /// the `COUNT` identifier has been consumed and the cursor sits on `{`.
+    ///
+    /// Structurally identical to [`parse_exists_subquery`](Self::parse_exists_subquery)
+    /// — the braces are mandatory and disambiguate the pattern from a grouped
+    /// expression (so a bare node `COUNT { (n) }` is legal), a leading `MATCH`
+    /// keyword is optional and equivalent, a single path pattern is required,
+    /// and an optional inner `WHERE` filters the matches before they are
+    /// counted. The only difference from `EXISTS` is the produced AST node and
+    /// its runtime value (an integer count rather than a boolean).
+    fn parse_count_subquery(&mut self, span: Span) -> ParseResult<Expression> {
+        self.eat(&TokenKind::LBrace, "`{` after COUNT")?;
+        // An optional leading `MATCH` keyword — `COUNT { MATCH (a)-->(b) }` is
+        // equivalent to `COUNT { (a)-->(b) }`.
+        if matches!(self.peek_kind(), TokenKind::Match) {
+            self.consume();
+        }
+        let pattern = self.parse_path_pattern()?;
+        let predicate = if matches!(self.peek_kind(), TokenKind::Where) {
+            self.consume();
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+        self.eat(&TokenKind::RBrace, "`}` to close COUNT subquery")?;
+        Ok(Expression::CountSubquery {
+            pattern: Box::new(pattern),
+            predicate,
+            span,
+        })
+    }
+
     /// Parse a list predicate function `kind(var IN list WHERE pred)` once the
     /// function-name token has been consumed and the cursor sits on `(`.
     ///
@@ -1688,6 +1720,16 @@ impl Parser {
 
     fn parse_identifier_or_call(&mut self) -> ParseResult<Expression> {
         let (first, first_span) = self.consume_strict_identifier()?;
+        // `COUNT { [MATCH] pattern [WHERE pred] }` — a counting subquery. Unlike
+        // `EXISTS`, `count` is not a reserved keyword token (it is the ordinary
+        // aggregation identifier `count(*)`), so the brace form is detected here
+        // by a bare `count` name immediately followed by `{`. A `count(` call
+        // (the aggregation) and a bare `count` variable both keep the `(` /
+        // non-`{` paths below, so claiming `count {` is purely additive — an
+        // identifier followed by `{` was a parse error before this task.
+        if first.eq_ignore_ascii_case("count") && matches!(self.peek_kind(), TokenKind::LBrace) {
+            return self.parse_count_subquery(first_span);
+        }
         // List predicate functions `any` / `none` / `single` (the `all`
         // variant is a keyword token, handled in `parse_prefix`). They take
         // the `var IN list WHERE pred` form rather than ordinary comma-
@@ -2645,6 +2687,106 @@ mod tests {
         // Only the brace form is supported; the deprecated `exists(...)`
         // function form is not.
         assert!(parse("MATCH (n) WHERE EXISTS (n)-[:R]->() RETURN n").is_err());
+    }
+
+    #[test]
+    fn count_subquery_in_where_parses_with_pattern_and_no_predicate() {
+        let q = p("MATCH (p) WHERE COUNT { (p)-[:KNOWS]->(f) } > 1 RETURN p");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        // The predicate is `COUNT { … } > 1`; the left side is the subquery.
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::Binary { lhs, .. } => match lhs.as_ref() {
+                Expression::CountSubquery {
+                    pattern, predicate, ..
+                } => {
+                    assert_eq!(pattern.tail.len(), 1, "one relationship segment");
+                    assert_eq!(pattern.head.variable.as_deref(), Some("p"));
+                    assert!(predicate.is_none(), "no inner WHERE");
+                }
+                other => panic!("expected counting subquery, got {other:?}"),
+            },
+            other => panic!("expected a comparison, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn count_subquery_with_match_keyword_and_inner_where_parses() {
+        let q =
+            p("MATCH (p) WHERE COUNT { MATCH (p)-[:KNOWS]->(f) WHERE f.age > 18 } > 0 RETURN p");
+        let Clause::Match(m) = &q.parts[0].query.clauses[0] else {
+            panic!("expected MATCH");
+        };
+        match m.where_clause.as_ref().expect("a WHERE predicate") {
+            Expression::Binary { lhs, .. } => match lhs.as_ref() {
+                Expression::CountSubquery {
+                    pattern, predicate, ..
+                } => {
+                    assert_eq!(pattern.tail.len(), 1, "one relationship segment");
+                    assert!(predicate.is_some(), "inner WHERE present");
+                }
+                other => panic!("expected counting subquery, got {other:?}"),
+            },
+            other => panic!("expected a comparison, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn count_subquery_accepts_a_bare_node_pattern_in_return() {
+        // The braces disambiguate, so a single node `COUNT { (n) }` is a legal
+        // subquery (not grouping). Used here directly as a RETURN column.
+        let q = p("MATCH (n) RETURN COUNT { (n) }");
+        let Clause::Return(r) = &q.parts[0].query.clauses[1] else {
+            panic!("expected RETURN");
+        };
+        let ProjectionItem::Expression { expr, .. } = &r.items[0] else {
+            panic!("expected an expression projection");
+        };
+        match expr {
+            Expression::CountSubquery { pattern, .. } => {
+                assert!(pattern.tail.is_empty(), "bare node — no relationship");
+                assert_eq!(pattern.head.variable.as_deref(), Some("n"));
+            }
+            other => panic!("expected counting subquery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn count_star_aggregation_still_parses_as_a_function_call() {
+        // The brace form must not steal the `count(*)` / `count(x)` aggregation:
+        // a `count` immediately followed by `(` stays an ordinary function call.
+        let q = p("MATCH (n) RETURN count(*)");
+        let Clause::Return(r) = &q.parts[0].query.clauses[1] else {
+            panic!("expected RETURN");
+        };
+        let ProjectionItem::Expression { expr, .. } = &r.items[0] else {
+            panic!("expected an expression projection");
+        };
+        match expr {
+            Expression::FunctionCall { name, args, .. } => {
+                assert_eq!(name, &["count".to_string()]);
+                assert!(matches!(args.as_slice(), [Expression::Star(_)]));
+            }
+            other => panic!("expected count(*) function call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn count_subquery_without_brace_is_a_bare_variable() {
+        // `count` not followed by `{` or `(` is an ordinary identifier — neither
+        // the aggregation nor the subquery is claimed.
+        let q = p("MATCH (count) RETURN count");
+        let Clause::Return(r) = &q.parts[0].query.clauses[1] else {
+            panic!("expected RETURN");
+        };
+        let ProjectionItem::Expression { expr, .. } = &r.items[0] else {
+            panic!("expected an expression projection");
+        };
+        assert!(matches!(
+            expr,
+            Expression::Variable(name, _) if name == "count"
+        ));
     }
 
     #[test]

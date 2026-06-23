@@ -924,6 +924,47 @@ Semantics:
 
 ---
 
+## COUNT subquery
+
+A **counting subquery** `COUNT { [MATCH] pattern [WHERE predicate] }` is the
+integer-valued sibling of the [EXISTS subquery](#exists-subquery): where
+`EXISTS { p }` tests whether **at least one** match exists, `COUNT { p }` returns
+**how many** there are. `COUNT { p } > 0` is exactly `EXISTS { p }`.
+
+It shares the EXISTS subquery's surface — the braces disambiguate the pattern
+from a grouped expression, an optional leading `MATCH` keyword is accepted, an
+optional inner `WHERE` filters the matches before they are counted, and a bare
+node `COUNT { (n) }` is legal — but it can be used anywhere an integer is
+expected: a `WHERE` comparison, a `RETURN` column, `ORDER BY`, or arithmetic.
+
+```cypher
+MATCH (p:Person)
+RETURN p.name AS name, COUNT { (p)-[:KNOWS]->() } AS friends
+ORDER BY friends DESC
+```
+
+```cypher
+MATCH (t:Task)
+WHERE COUNT { (t)-[:DEPENDS_ON]->(dep) WHERE dep.status = 'open' } >= 2
+RETURN t.title
+```
+
+Semantics:
+
+- **Match count** — the number of matches of the pattern that survive the
+  optional inner `WHERE`, anchored on the variables already bound (each row
+  counts only its own matches); the subquery-introduced variables stay scoped to
+  the subquery. No match yields `0`, never `null`.
+- **`null` anchor** — if the head variable is already bound to `null` (an
+  unmatched [`OPTIONAL MATCH`](#optional-match) node), the subquery is `null`
+  under three-valued logic rather than an error (so it is distinct from an
+  honest `0`).
+- **Not the `count(*)` aggregation** — a counting subquery is a per-row scalar (a
+  group key), not a fold over the result rows. `count(*)` / `count(expr)` keep
+  their [aggregation](#aggregations) meaning; the two can coexist in one query.
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task
