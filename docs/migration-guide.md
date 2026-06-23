@@ -144,6 +144,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | `UNION` / `UNION ALL` | ✅ Supported (arms must share column names; no mixing the two). |
 | `CASE … WHEN … THEN … END` | ✅ Supported (generic & simple forms; aggregations may appear inside an arm). |
 | Scalar functions (`toLower`, `size`, `coalesce`, `range`, `keys`, …) | ✅ Supported (string / numeric / list library; see reference). |
+| Trigonometric & logarithmic functions (`sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `log10`, `pi`, `e`, `degrees`, `radians`, `haversin`, …) | ✅ Supported (always return a `Float`; NULL-propagating; out-of-domain inputs yield `NaN` / `Infinity` per IEEE-754, matching Neo4j). |
 | Statistical aggregations (`stDev`, `stDevP`, `percentileCont`, `percentileDisc`) | ✅ Supported (alongside `count` / `sum` / `avg` / `min` / `max` / `collect`; null-skipping; percentile fraction in `[0, 1]`). |
 | `CALL` / `YIELD` — built-in `db.*` introspection (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`) | ✅ Supported (standalone or `YIELD … WHERE`). |
 | User-defined / `apoc.*` / `gds.*` procedures | ⛔ Only the built-in `db.*` procedures exist. |

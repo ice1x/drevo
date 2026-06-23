@@ -208,6 +208,43 @@ fn fuzz_cypher_grammar_seed_corpus_holds_invariants() {
     }
 }
 
+/// Regression for a libFuzzer find on `fuzz_cypher_parser`: deeply nested
+/// input (`RETURN (((…)))`, a long `[[[…]]]` list, a `NOT NOT NOT …` chain)
+/// drove the recursive-descent expression parser into an unbounded recursion
+/// that overflowed the stack and aborted the process (SIGABRT) — a violation
+/// of the parser-totality contract. The parser now bounds expression nesting
+/// at `MAX_EXPRESSION_DEPTH` and returns a recoverable
+/// `ParseError::NestingTooDeep` instead of recursing without limit.
+///
+/// Each case is run through `assert_parser_invariants` (which tolerates a
+/// recoverable error) so the assertion is simply: it returns rather than
+/// aborts. The bodies that build the input must themselves stay shallow, so we
+/// build the nested strings directly.
+#[test]
+fn deeply_nested_input_is_total_not_a_stack_overflow() {
+    // Far beyond any real query and far beyond the depth limit, across the
+    // distinct recursion vectors that all funnel through parse_expression_bp.
+    for n in [200_usize, 10_000, 200_000] {
+        let grouped = format!("RETURN {}1{}", "(".repeat(n), ")".repeat(n));
+        assert_parser_invariants(&format!("grouped-{n}"), &grouped);
+
+        let nested_list = format!("RETURN {}1{}", "[".repeat(n), "]".repeat(n));
+        assert_parser_invariants(&format!("list-{n}"), &nested_list);
+
+        let prefix_not = format!("RETURN {}true", "NOT ".repeat(n));
+        assert_parser_invariants(&format!("not-{n}"), &prefix_not);
+
+        let unary_minus = format!("RETURN {}1", "-".repeat(n));
+        assert_parser_invariants(&format!("minus-{n}"), &unary_minus);
+    }
+
+    // Sanity: nesting within the limit still parses successfully — the guard
+    // only rejects pathological depth, never ordinary expressions.
+    assert!(parse("RETURN ((((1 + 2) * 3)))").is_ok());
+    assert!(parse("RETURN [1, [2, [3, [4]]]]").is_ok());
+    assert!(parse("RETURN NOT NOT NOT true").is_ok());
+}
+
 /// Exhaustive-ish deterministic sweep over the generator's choice space.
 ///
 /// The seed corpus only pins a handful of representative byte streams; this

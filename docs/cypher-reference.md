@@ -560,6 +560,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 |--------|-----------|
 | String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
 | Numeric | `abs`, `ceil`, `floor`, `round`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` |
+| Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
 | List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `id`, `properties` |
 | Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
 
@@ -587,6 +588,35 @@ RETURN x, x * x AS squared
 MATCH (n)
 RETURN labels(n) AS kinds, keys(n) AS props
 LIMIT 5
+```
+
+### Trigonometric & logarithmic functions
+
+Task `00156` completes the numeric family with Neo4j's trigonometric and
+logarithmic functions. Each returns a `Float`; an integer argument widens
+automatically. Angles are in **radians** (use `radians(x)` / `degrees(x)` to
+convert).
+
+| Family | Functions |
+|--------|-----------|
+| Constants | `e()`, `pi()` (zero-argument) |
+| Exponential / logarithmic | `exp(x)` (eˣ), `log(x)` (natural log), `log10(x)` |
+| Trigonometric | `sin(x)`, `cos(x)`, `tan(x)`, `cot(x)` |
+| Inverse trigonometric | `asin(x)`, `acos(x)`, `atan(x)`, `atan2(y, x)` |
+| Angle helpers | `degrees(x)`, `radians(x)`, `haversin(x)` |
+
+Like the rest of the library they are **NULL-propagating** (a `NULL` argument
+yields `NULL`) and reject a non-numeric argument with
+`ExecError::InvalidFunctionCall`. **Domain edges follow IEEE-754, not errors:**
+`log(-1)` and `asin(2)` return `NaN`, `log(0)` returns `-Infinity` — exactly as
+Neo4j does, so a heterogeneous scan never aborts on an out-of-domain value.
+
+```cypher
+RETURN round(degrees(pi())) AS half_turn, exp(0) AS one, log10(1000) AS three
+```
+
+```cypher
+RETURN sin(0) AS zero, cos(0) AS one, atan2(1, 1) AS quarter_pi
 ```
 
 ---
