@@ -154,6 +154,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Pattern comprehension (`[(a)-[:R]->(b) WHERE p \| proj]`) | ✅ Supported (anchored on bound vars; no match / `null` anchor → `[]`). |
 | Pattern predicate (`WHERE (a)-[:R]->(b)`, `NOT (a)-[:R]->()`) | ✅ Supported (existence test; anchored on bound vars; `null` anchor → `null`). |
 | Existential subquery (`EXISTS { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (optional `MATCH` keyword + inner `WHERE`; bare node legal; `null` anchor → `null`). The deprecated `exists(n.prop)` function form is not — use `n.prop IS NOT NULL`. |
+| Counting subquery (`COUNT { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (integer match count; same surface as `EXISTS { … }`; `null` anchor → `null`; distinct from the `count(*)` aggregation). |
 | Anonymous nodes in `MATCH` (`(:Label)-->(b)`, `()-->(b)`, `(a)-->()-->(c)`) | ✅ Supported (head & intermediate). |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
 | APOC export → import | ✅ Via this migration tool. |

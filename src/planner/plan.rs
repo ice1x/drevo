@@ -1111,7 +1111,8 @@ fn describe_expression(expr: &Expression) -> String {
         | Expression::MapProjection { .. }
         | Expression::PatternComprehension { .. }
         | Expression::PatternPredicate { .. }
-        | Expression::ExistsSubquery { .. } => "…".to_string(),
+        | Expression::ExistsSubquery { .. }
+        | Expression::CountSubquery { .. } => "…".to_string(),
     }
 }
 

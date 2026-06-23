@@ -683,6 +683,33 @@ pub enum Expression {
         /// Span of the leading `EXISTS`.
         span: Span,
     },
+    /// `COUNT { [MATCH] pattern [WHERE predicate] }` — a counting subquery.
+    ///
+    /// Returns the **number** of matches of the enclosed `pattern` that survive
+    /// the optional inner `WHERE` `predicate`, relative to the current row. The
+    /// integer-valued sibling of [`Self::ExistsSubquery`]: where `EXISTS { … }`
+    /// tests whether at least one match exists, `COUNT { … }` counts them
+    /// (`COUNT { p } > 0` is exactly `EXISTS { p }`). Like the existential
+    /// subquery, the braces disambiguate the pattern from a grouped expression,
+    /// so a single node `COUNT { (n) }` is legal, an optional leading `MATCH`
+    /// keyword is accepted, and an inner `WHERE` may filter the matches before
+    /// they are counted. The pattern is anchored on already-bound variables,
+    /// variables it introduces stay scoped to the subquery, and a head variable
+    /// already bound to `null` (an unmatched `OPTIONAL MATCH` node) makes the
+    /// subquery `null` rather than a type error.
+    ///
+    /// It is distinct from the `count(*)` / `count(expr)` **aggregation**: a
+    /// counting subquery is a per-row scalar (a group key), not a fold over the
+    /// outer result rows.
+    CountSubquery {
+        /// The path pattern, matched relative to the current row.
+        pattern: Box<PathPattern>,
+        /// Optional inner `WHERE` filter, evaluated in each match's binding
+        /// scope; only matches for which it holds are counted.
+        predicate: Option<Box<Expression>>,
+        /// Span of the leading `COUNT`.
+        span: Span,
+    },
     /// `count(*)` — the only context in which `*` is a valid sub-expression.
     Star(Span),
 }
@@ -754,7 +781,8 @@ impl Expression {
             | Self::MapProjection { span, .. }
             | Self::PatternComprehension { span, .. }
             | Self::PatternPredicate { span, .. }
-            | Self::ExistsSubquery { span, .. } => *span,
+            | Self::ExistsSubquery { span, .. }
+            | Self::CountSubquery { span, .. } => *span,
             Self::Map(m) => m.span,
         }
     }
