@@ -92,6 +92,21 @@ pub enum ParseError {
     #[error("empty Cypher query")]
     Empty,
 
+    /// Expression nesting exceeded the parser's fixed depth limit
+    /// (`MAX_EXPRESSION_DEPTH`). Recursive-descent
+    /// parsing of arbitrarily deep input (`((((…))))`, `NOT NOT NOT …`,
+    /// `[[[[…]]]]`) would otherwise overflow the stack; this recoverable error
+    /// keeps the parser *total* (it never panics / aborts) on adversarial
+    /// input. The bound is far beyond any hand-written query.
+    #[error(
+        "expression nests too deeply (limit {MAX_EXPRESSION_DEPTH}) at line {}, column {}",
+        .span.line, .span.column
+    )]
+    NestingTooDeep {
+        /// Span at which the depth limit was hit.
+        span: Span,
+    },
+
     /// A lexical error surfaced through the parser.
     #[error(transparent)]
     Lex(#[from] LexError),
@@ -105,7 +120,8 @@ impl ParseError {
             | Self::ExpectedIdentifier { span }
             | Self::ExpectedExpression { span }
             | Self::Malformed { span, .. }
-            | Self::UnexpectedEof { span } => Some(*span),
+            | Self::UnexpectedEof { span }
+            | Self::NestingTooDeep { span } => Some(*span),
             Self::Empty => None,
             Self::Lex(e) => Some(e.span()),
         }
@@ -182,6 +198,17 @@ fn list_predicate_kind(name: &str) -> Option<ListPredicateKind> {
 }
 
 /// Internal parser state.
+/// Maximum expression-nesting depth before the recursive-descent parser bails
+/// with a recoverable [`ParseError::NestingTooDeep`] rather than overflowing
+/// the stack. Each nesting level (`(`, a prefix operator, a list element, a
+/// subquery predicate) costs one frame through [`Parser::parse_expression_bp`],
+/// and the speculative pattern-parsing paths make those frames stack-hungry, so
+/// adversarial input like `(((…)))` would abort the process around a few
+/// hundred levels. `64` is orders of magnitude beyond any hand-written query
+/// yet leaves ample head-room on the small (2 MiB) stacks used by test threads
+/// and the libFuzzer harness.
+const MAX_EXPRESSION_DEPTH: usize = 64;
+
 struct Parser {
     /// The original query text, kept so identifier-position keywords can be
     /// recovered with their *written* casing via their token span (the
@@ -190,6 +217,11 @@ struct Parser {
     source: String,
     tokens: Vec<Token>,
     pos: usize,
+    /// Current expression-recursion depth, bounded by [`MAX_EXPRESSION_DEPTH`].
+    /// Incremented on entry to [`Parser::parse_expression_bp`] and decremented
+    /// on exit, so it tracks live recursion regardless of the `?` early-return
+    /// paths.
+    depth: usize,
 }
 
 impl Parser {
@@ -198,6 +230,7 @@ impl Parser {
             source: source.to_string(),
             tokens,
             pos: 0,
+            depth: 0,
         }
     }
 
@@ -1146,7 +1179,27 @@ impl Parser {
 
     /// Pratt parser. `min_bp` is the minimum binding power the right side
     /// must beat to continue absorbing operators.
+    ///
+    /// This is the single funnel for all expression recursion — grouped
+    /// expressions `(…)`, prefix operators, list elements, subquery
+    /// predicates, and infix right-hand sides all re-enter here — so the
+    /// [`MAX_EXPRESSION_DEPTH`] guard is applied at this one place. The body
+    /// lives in [`Parser::parse_expression_bp_inner`]; this wrapper only
+    /// maintains the depth counter so every `?` early-return still decrements.
     fn parse_expression_bp(&mut self, min_bp: u8) -> ParseResult<Expression> {
+        self.depth += 1;
+        if self.depth > MAX_EXPRESSION_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::NestingTooDeep {
+                span: self.peek_span(),
+            });
+        }
+        let result = self.parse_expression_bp_inner(min_bp);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_expression_bp_inner(&mut self, min_bp: u8) -> ParseResult<Expression> {
         let mut lhs = self.parse_prefix()?;
 
         // Postfix forms with high precedence (`.`, `[`, `(`) are handled
