@@ -1273,8 +1273,25 @@ fn is_aggregation_name(name: &[String]) -> bool {
     }
     matches!(
         name[0].to_ascii_lowercase().as_str(),
-        "count" | "sum" | "avg" | "min" | "max" | "collect"
+        "count"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "collect"
+            | "stdev"
+            | "stdevp"
+            | "percentilecont"
+            | "percentiledisc"
     )
+}
+
+/// `true` when `lower` (an already-lowercased aggregation name) is one of the
+/// two-argument percentile aggregations — `percentileCont` / `percentileDisc`,
+/// which take `(value, fraction)`. Every other aggregation takes exactly one
+/// argument (or `count(*)`).
+fn is_percentile_aggregation(lower: &str) -> bool {
+    matches!(lower, "percentilecont" | "percentiledisc")
 }
 
 /// The supported scalar (non-aggregation) functions: the built-in
@@ -1434,22 +1451,34 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
                 }
                 return Ok(());
             }
-            if args.len() != 1 {
+            // The percentile aggregations take `(value, fraction)`; every
+            // other aggregation takes exactly one argument.
+            let expected_arity = if is_percentile_aggregation(&lower) {
+                2
+            } else {
+                1
+            };
+            if args.len() != expected_arity {
                 return Err(ExecError::InvalidMutation(format!(
-                    "aggregate `{}` takes exactly one argument",
-                    lower
+                    "aggregate `{}` takes exactly {} argument{}",
+                    lower,
+                    expected_arity,
+                    if expected_arity == 1 { "" } else { "s" }
                 )));
             }
-            if contains_aggregation(&args[0]) {
-                return Err(ExecError::InvalidMutation(format!(
-                    "nested aggregations are not allowed inside `{}`",
-                    lower
-                )));
+            for arg in args {
+                if contains_aggregation(arg) {
+                    return Err(ExecError::InvalidMutation(format!(
+                        "nested aggregations are not allowed inside `{}`",
+                        lower
+                    )));
+                }
             }
-            // The inner argument must be a plain expression — no
-            // further function calls (no scalar function library yet)
-            // and no bare `*`.
-            validate_expr_supported(&args[0])
+            // Every argument must be a plain expression — no bare `*`.
+            for arg in args {
+                validate_expr_supported(arg)?;
+            }
+            Ok(())
         }
         Expression::Star(span) => Err(ExecError::Unsupported {
             feature: "`*` outside `count(*)`".into(),
@@ -3750,8 +3779,100 @@ impl<'a> Executor<'a> {
                 Ok(best.unwrap_or(Value::Null))
             }
             "collect" => Ok(Value::List(values)),
+            "stdev" | "stdevp" => {
+                let nums = numeric_fold_values(&values, span)?;
+                let n = nums.len();
+                // `stDev` (sample) divides by `n - 1`, which is special-cased
+                // to `0.0` for `n < 2`; `stDevP` (population) divides by `n`,
+                // `0.0` for the empty group. Both match Neo4j.
+                if n == 0 || (func == "stdev" && n < 2) {
+                    return Ok(Value::Float(0.0));
+                }
+                let mean = nums.iter().sum::<f64>() / n as f64;
+                let ss: f64 = nums.iter().map(|x| (x - mean) * (x - mean)).sum();
+                let divisor = if func == "stdev" {
+                    (n - 1) as f64
+                } else {
+                    n as f64
+                };
+                Ok(Value::Float((ss / divisor).sqrt()))
+            }
+            "percentilecont" | "percentiledisc" => {
+                let fraction = self.eval_percentile_fraction(&func, args, group_rows, span)?;
+                // Sort the (numeric) values ascending; an empty group is `null`.
+                let mut sorted = values;
+                for v in &sorted {
+                    if v.as_number().is_none() {
+                        return Err(ExecError::TypeMismatch {
+                            expected: "Integer or Float".into(),
+                            got: v.type_name().into(),
+                            span,
+                        });
+                    }
+                }
+                if sorted.is_empty() {
+                    return Ok(Value::Null);
+                }
+                sorted.sort_by(|a, b| {
+                    a.as_number()
+                        .partial_cmp(&b.as_number())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                if func == "percentiledisc" {
+                    // Pick the actual stored value, preserving its type.
+                    Ok(sorted[percentile_disc_index(fraction, sorted.len())].clone())
+                } else {
+                    let nums: Vec<f64> = sorted
+                        .iter()
+                        .map(|v| v.as_number().unwrap_or(0.0))
+                        .collect();
+                    Ok(Value::Float(percentile_cont(&nums, fraction)))
+                }
+            }
             _ => unreachable!("is_aggregation_name gated this call"),
         }
+    }
+
+    /// Evaluate and validate the percentile fraction (`args[1]`) of a
+    /// `percentileCont` / `percentileDisc` call. It is a per-aggregation
+    /// constant evaluated once (against any group row — it is row-invariant in
+    /// practice, a literal or `$param`), and must be a number in `[0.0, 1.0]`;
+    /// anything else is a recoverable [`ExecError::InvalidFunctionCall`].
+    fn eval_percentile_fraction(
+        &self,
+        func: &str,
+        args: &[Expression],
+        group_rows: &[Bindings],
+        span: Span,
+    ) -> ExecResultT<f64> {
+        if args.len() != 2 {
+            return Err(ExecError::InvalidFunctionCall {
+                name: func.to_string(),
+                message: format!("`{func}` takes exactly two arguments (value, fraction)"),
+                span,
+            });
+        }
+        let empty: Bindings = HashMap::new();
+        let scope = group_rows.first().unwrap_or(&empty);
+        let raw = self.eval(&args[1], scope)?;
+        let fraction = raw
+            .as_number()
+            .ok_or_else(|| ExecError::InvalidFunctionCall {
+                name: func.to_string(),
+                message: format!(
+                    "percentile fraction must be a number between 0.0 and 1.0, got {}",
+                    raw.type_name()
+                ),
+                span,
+            })?;
+        if !(0.0..=1.0).contains(&fraction) {
+            return Err(ExecError::InvalidFunctionCall {
+                name: func.to_string(),
+                message: format!("percentile fraction must be between 0.0 and 1.0, got {fraction}"),
+                span,
+            });
+        }
+        Ok(fraction)
     }
 
     // ----- Expression evaluation ------------------------------------------
@@ -5723,6 +5844,62 @@ fn dedup_values(values: &mut Vec<Value>) {
     *values = out;
 }
 
+/// Coerce a folded aggregation group's values to `f64`, rejecting any
+/// non-numeric element with a recoverable [`ExecError::TypeMismatch`] (the
+/// same discipline `avg` / `sum` apply).
+fn numeric_fold_values(values: &[Value], span: Span) -> ExecResultT<Vec<f64>> {
+    values
+        .iter()
+        .map(|v| {
+            v.as_number().ok_or_else(|| ExecError::TypeMismatch {
+                expected: "Integer or Float".into(),
+                got: v.type_name().into(),
+                span,
+            })
+        })
+        .collect()
+}
+
+/// The index into an ascending-sorted, non-empty group for a discrete
+/// percentile at `fraction ∈ [0, 1]`. Mirrors Neo4j's `percentileDisc`: at an
+/// exact rank boundary the lower value wins (subtract one unless the index is
+/// already zero), and `fraction == 1.0` selects the last element.
+fn percentile_disc_index(fraction: f64, count: usize) -> usize {
+    debug_assert!(count > 0);
+    if fraction >= 1.0 {
+        return count - 1;
+    }
+    let float_idx = fraction * count as f64;
+    let mut idx = float_idx as usize;
+    // On an exact integer boundary (and not the first slot) the lower value
+    // is the percentile, so step back one.
+    if float_idx == idx as f64 && idx != 0 {
+        idx -= 1;
+    }
+    idx.min(count - 1)
+}
+
+/// The continuous percentile at `fraction ∈ [0, 1]` over an ascending-sorted,
+/// non-empty slice, linearly interpolating between the two nearest ranks.
+/// Mirrors Neo4j's `percentileCont`.
+fn percentile_cont(sorted: &[f64], fraction: f64) -> f64 {
+    let count = sorted.len();
+    debug_assert!(count > 0);
+    if fraction >= 1.0 {
+        return sorted[count - 1];
+    }
+    let float_idx = fraction * (count - 1) as f64;
+    let lo = float_idx.floor() as usize;
+    let lo_val = sorted[lo];
+    let hi = lo + 1;
+    if hi < count {
+        let frac = float_idx - lo as f64;
+        lo_val * (1.0 - frac) + sorted[hi] * frac
+    } else {
+        lo_val
+    }
+}
+
 fn eval_unary(op: UnaryOp, value: Value, span: Span) -> ExecResultT<Value> {
     match op {
         UnaryOp::Neg => match value {
@@ -7141,6 +7318,87 @@ mod tests {
             "got {:?}",
             e
         );
+    }
+
+    #[test]
+    fn stdevp_and_stdev_fold_a_group() {
+        let db = drevo();
+        for v in [2, 4, 4, 4, 5, 5, 7, 9] {
+            run(&format!("CREATE (:M {{v: {}}})", v), &db);
+        }
+        // Population stdev of the textbook sample is exactly 2.0.
+        let res = run("MATCH (n:M) RETURN stDevP(n.v) AS sd", &db);
+        match res.rows[0][0] {
+            Value::Float(f) => assert!((f - 2.0).abs() < 1e-9, "got {f}"),
+            ref other => panic!("expected Float, got {other:?}"),
+        }
+        // Sample stdev uses the n-1 divisor: sqrt(32/7).
+        let res = run("MATCH (n:M) RETURN stDev(n.v) AS sd", &db);
+        match res.rows[0][0] {
+            Value::Float(f) => assert!((f - (32.0f64 / 7.0).sqrt()).abs() < 1e-9, "got {f}"),
+            ref other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn percentile_disc_preserves_integer_and_cont_interpolates() {
+        let db = drevo();
+        for v in [1, 2, 3, 4] {
+            run(&format!("CREATE (:M {{v: {}}})", v), &db);
+        }
+        // Discrete median keeps the Integer type.
+        let res = run("MATCH (n:M) RETURN percentileDisc(n.v, 0.5) AS p", &db);
+        assert_eq!(res.rows[0][0], Value::Integer(2));
+        // Continuous median interpolates to a Float halfway between 2 and 3.
+        let res = run("MATCH (n:M) RETURN percentileCont(n.v, 0.5) AS p", &db);
+        assert_eq!(res.rows[0][0], Value::Float(2.5));
+    }
+
+    #[test]
+    fn percentile_fraction_out_of_range_is_invalid() {
+        let db = drevo();
+        run("CREATE (:M {v: 1})", &db);
+        let e = err("MATCH (n:M) RETURN percentileCont(n.v, 2.0) AS p", &db);
+        assert!(
+            matches!(e, ExecError::InvalidFunctionCall { ref message, .. } if message.contains("between 0.0 and 1.0")),
+            "got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn percentile_wrong_arity_is_rejected() {
+        let db = drevo();
+        run("CREATE (:M {v: 1})", &db);
+        // The one-arg form is missing the mandatory fraction.
+        let e = err("MATCH (n:M) RETURN percentileDisc(n.v) AS p", &db);
+        assert!(
+            matches!(e, ExecError::InvalidMutation(ref s) if s.contains("takes exactly 2 arguments")),
+            "got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn percentile_disc_index_matches_neo4j_boundaries() {
+        // Over four values: exact rank boundaries step back to the lower value.
+        assert_eq!(percentile_disc_index(0.0, 4), 0);
+        assert_eq!(percentile_disc_index(0.5, 4), 1);
+        assert_eq!(percentile_disc_index(0.75, 4), 2);
+        assert_eq!(percentile_disc_index(1.0, 4), 3);
+        // Single-element group always resolves to index 0.
+        assert_eq!(percentile_disc_index(0.5, 1), 0);
+    }
+
+    #[test]
+    fn percentile_cont_interpolation_is_linear() {
+        let xs = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(percentile_cont(&xs, 0.0), 1.0);
+        assert_eq!(percentile_cont(&xs, 0.5), 2.5);
+        assert_eq!(percentile_cont(&xs, 0.75), 3.25);
+        assert_eq!(percentile_cont(&xs, 1.0), 4.0);
+        // A single element is its own percentile at any fraction.
+        assert_eq!(percentile_cont(&[7.0], 0.3), 7.0);
     }
 
     #[test]
