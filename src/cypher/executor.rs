@@ -156,7 +156,7 @@ use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, Direction as AstDirection, Expression,
     ForeachClause, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause, NamedPattern,
     NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query, RelLength,
-    RelationshipPattern, ReturnClause, SingleQuery, UnaryOp, UnionKind, UnwindClause,
+    RelationshipPattern, ReturnClause, ShortestKind, SingleQuery, UnaryOp, UnionKind, UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
@@ -417,6 +417,10 @@ impl ExecError {
 
 /// Convenience alias for executor results.
 pub type ExecResultT<T> = Result<T, ExecError>;
+
+/// One discovered path as `(relationships, nodes-after-source)`, both in
+/// traversal order — the shape [`Executor::bfs_shortest_paths`] returns.
+type ShortestPath = (Vec<Arc<RelationshipValue>>, Vec<Arc<NodeValue>>);
 
 // ===== Value helpers ========================================================
 
@@ -805,6 +809,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                 validate_expr_supported(expr)?;
             }
             for pattern in &m.patterns {
+                validate_shortest_supported(pattern)?;
                 validate_path_supported(&pattern.path, /*creating=*/ false)?;
             }
         }
@@ -984,6 +989,44 @@ fn validate_path_supported(path: &PathPattern, creating: bool) -> ExecResultT<()
                 validate_expr_supported(expr)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// The source spelling of a [`ShortestKind`], for error messages.
+fn shortest_fn_name(kind: ShortestKind) -> &'static str {
+    match kind {
+        ShortestKind::Single => "shortestPath",
+        ShortestKind::All => "allShortestPaths",
+    }
+}
+
+/// Validate the shape of a `shortestPath(...)` / `allShortestPaths(...)`
+/// pattern: Neo4j requires exactly one relationship between two nodes, and
+/// that relationship must be variable-length (`-[*]-`, `-[*..n]-`, …). A
+/// no-op for an ordinary (non-shortest) pattern.
+fn validate_shortest_supported(pattern: &NamedPattern) -> ExecResultT<()> {
+    let Some(kind) = pattern.shortest else {
+        return Ok(());
+    };
+    let name = shortest_fn_name(kind);
+    let path = &pattern.path;
+    let segment = match path.tail.as_slice() {
+        [seg] => seg,
+        _ => {
+            return Err(ExecError::InvalidFunctionCall {
+                name: name.into(),
+                message: "requires exactly one relationship between two nodes".into(),
+                span: path.head.span,
+            });
+        }
+    };
+    if segment.relationship.length.is_none() {
+        return Err(ExecError::InvalidFunctionCall {
+            name: name.into(),
+            message: "requires a variable-length relationship, e.g. -[*]-".into(),
+            span: segment.relationship.span,
+        });
     }
     Ok(())
 }
@@ -1797,6 +1840,11 @@ impl<'a> Executor<'a> {
         pattern: &NamedPattern,
         existing: &Bindings,
     ) -> ExecResultT<Vec<Bindings>> {
+        // A `shortestPath(...)` / `allShortestPaths(...)` wrapper searches for
+        // the shortest connecting path(s) rather than enumerating every match.
+        if let Some(kind) = pattern.shortest {
+            return self.match_shortest_pattern(pattern, kind, existing);
+        }
         // A path variable triggers accumulation: `match_head` seeds the
         // reserved [`PATH_ACCUM_KEY`] entry and each segment extends it, so by
         // the time the rows return the full alternating node/relationship
@@ -1812,6 +1860,225 @@ impl<'a> Executor<'a> {
             }
         }
         Ok(rows)
+    }
+
+    /// Match a `shortestPath(...)` / `allShortestPaths(...)` pattern.
+    ///
+    /// The wrapped pattern is a single variable-length leg `(a)-[*]-(b)`
+    /// (validated upfront by [`validate_shortest_supported`], re-checked here
+    /// defensively). Both endpoints are resolved exactly like an ordinary
+    /// MATCH — a bound variable is reused, an unbound one is enumerated — then
+    /// a breadth-first search finds the shortest connecting path(s). For
+    /// `shortestPath` the first path at the minimum length is returned; for
+    /// `allShortestPaths` every path of that minimum length yields a row.
+    fn match_shortest_pattern(
+        &self,
+        pattern: &NamedPattern,
+        kind: ShortestKind,
+        existing: &Bindings,
+    ) -> ExecResultT<Vec<Bindings>> {
+        let path = &pattern.path;
+        let segment = match path.tail.as_slice() {
+            [seg] => seg,
+            _ => {
+                return Err(ExecError::InvalidFunctionCall {
+                    name: shortest_fn_name(kind).into(),
+                    message: "requires exactly one relationship between two nodes".into(),
+                    span: path.head.span,
+                });
+            }
+        };
+        let rel = &segment.relationship;
+        let (lo, hi) = match &rel.length {
+            Some(RelLength::Exact(n)) => (*n, Some(*n)),
+            Some(RelLength::Any) => (1, None),
+            Some(RelLength::Range { from, to }) => (from.unwrap_or(1), *to),
+            None => {
+                return Err(ExecError::InvalidFunctionCall {
+                    name: shortest_fn_name(kind).into(),
+                    message: "requires a variable-length relationship, e.g. -[*]-".into(),
+                    span: rel.span,
+                });
+            }
+        };
+        let lower = lo.max(0) as usize;
+        let upper = hi.map(|h| h as usize).unwrap_or(VARLEN_DEFAULT_UPPER);
+
+        // Resolve the source endpoints. `match_head` verifies a bound head
+        // variable and enumerates an unbound one, binding it into the row;
+        // the search builds its own path so we skip path accumulation here.
+        let head_rows = self.match_head(&path.head, existing, /*build_path=*/ false)?;
+        let path_var = pattern.variable.as_ref();
+        let mut out: Vec<Bindings> = Vec::new();
+
+        for (row, source) in head_rows {
+            // Resolve the target endpoint(s): a bound tail variable searches
+            // to exactly that node, an unbound one to every matching node.
+            let targets: Vec<Arc<NodeValue>> = match &segment.node.variable {
+                Some(name) => match row.get(name) {
+                    Some(Value::Node(nv)) => {
+                        if !node_matches_pattern(nv, &segment.node, &row, self)? {
+                            continue;
+                        }
+                        vec![nv.clone()]
+                    }
+                    Some(other) => {
+                        return Err(ExecError::TypeMismatch {
+                            expected: "Node".into(),
+                            got: other.type_name().into(),
+                            span: segment.node.span,
+                        });
+                    }
+                    None => self.enumerate_nodes(&segment.node, &row)?,
+                },
+                None => self.enumerate_nodes(&segment.node, &row)?,
+            };
+
+            for target in targets {
+                let found =
+                    self.bfs_shortest_paths(&source, &target, rel, &row, lower, upper, kind)?;
+                for (rels, nodes) in found {
+                    let mut bindings = row.clone();
+                    if let Some(name) = &segment.node.variable {
+                        bindings.insert(name.clone(), Value::Node(target.clone()));
+                    }
+                    if let Some(name) = &rel.variable {
+                        let list: Vec<Value> = rels
+                            .iter()
+                            .map(|e| Value::Relationship(e.clone()))
+                            .collect();
+                        bindings.insert(name.clone(), Value::List(list));
+                    }
+                    if let Some(var) = path_var {
+                        let mut all_nodes = Vec::with_capacity(nodes.len() + 1);
+                        all_nodes.push(source.clone());
+                        all_nodes.extend(nodes.iter().cloned());
+                        bindings.insert(
+                            var.clone(),
+                            Value::Path(Arc::new(PathValue {
+                                nodes: all_nodes,
+                                relationships: rels,
+                            })),
+                        );
+                    }
+                    out.push(bindings);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Breadth-first search for the shortest path(s) from `source` to
+    /// `target` over a variable-length relationship pattern `rel`.
+    ///
+    /// Returns the traversed `(relationships, intermediate-and-target nodes)`
+    /// of each shortest path (the source node is *not* included in the node
+    /// list — the caller prepends it). Cypher "trail" uniqueness applies (no
+    /// relationship is reused within one path). BFS expands one hop per
+    /// level, so the first level (at or above `lower`) that reaches `target`
+    /// is the minimum length: [`ShortestKind::Single`] returns the first such
+    /// path, [`ShortestKind::All`] every path at that level.
+    #[allow(clippy::too_many_arguments)]
+    fn bfs_shortest_paths(
+        &self,
+        source: &Arc<NodeValue>,
+        target: &Arc<NodeValue>,
+        rel: &RelationshipPattern,
+        existing: &Bindings,
+        lower: usize,
+        upper: usize,
+        kind: ShortestKind,
+    ) -> ExecResultT<Vec<ShortestPath>> {
+        let dir = rel.direction;
+
+        struct State {
+            node: Arc<NodeValue>,
+            rels: Vec<Arc<RelationshipValue>>,
+            nodes: Vec<Arc<NodeValue>>,
+            used_ids: Vec<u64>,
+        }
+
+        let mut frontier: Vec<State> = vec![State {
+            node: source.clone(),
+            rels: Vec::new(),
+            nodes: Vec::new(),
+            used_ids: Vec::new(),
+        }];
+
+        for depth in 0..=upper {
+            if depth >= lower {
+                let mut found: Vec<ShortestPath> = Vec::new();
+                for state in &frontier {
+                    if state.node.id == target.id {
+                        found.push((state.rels.clone(), state.nodes.clone()));
+                        if matches!(kind, ShortestKind::Single) {
+                            return Ok(found);
+                        }
+                    }
+                }
+                // BFS reaches the minimum length first, so the first level
+                // with any hit holds *all* shortest paths.
+                if !found.is_empty() {
+                    return Ok(found);
+                }
+            }
+            if depth == upper {
+                break;
+            }
+            let mut next: Vec<State> = Vec::new();
+            for state in &frontier {
+                let edges = match dir {
+                    AstDirection::Outgoing => self
+                        .drevo
+                        .edges_of(state.node.id, ModelDirection::Outgoing)?,
+                    AstDirection::Incoming => self
+                        .drevo
+                        .edges_of(state.node.id, ModelDirection::Incoming)?,
+                    AstDirection::Undirected => {
+                        self.drevo.edges_of(state.node.id, ModelDirection::Both)?
+                    }
+                };
+                for edge in edges {
+                    if state.used_ids.contains(&edge.id) {
+                        continue;
+                    }
+                    if !edge_matches_pattern(&edge, rel, existing, self)? {
+                        continue;
+                    }
+                    match dir {
+                        AstDirection::Outgoing if edge.from_id != state.node.id => continue,
+                        AstDirection::Incoming if edge.to_id != state.node.id => continue,
+                        _ => {}
+                    }
+                    let other_id = if edge.from_id == state.node.id {
+                        edge.to_id
+                    } else {
+                        edge.from_id
+                    };
+                    let next_node = match self.drevo.get_node(other_id)? {
+                        Some(n) => node_to_value(&n),
+                        None => continue,
+                    };
+                    let mut rels = state.rels.clone();
+                    let mut nodes = state.nodes.clone();
+                    let mut used_ids = state.used_ids.clone();
+                    rels.push(edge_to_value(&edge));
+                    nodes.push(next_node.clone());
+                    used_ids.push(edge.id);
+                    next.push(State {
+                        node: next_node,
+                        rels,
+                        nodes,
+                        used_ids,
+                    });
+                }
+            }
+            frontier = next;
+            if frontier.is_empty() {
+                break;
+            }
+        }
+        Ok(Vec::new())
     }
 
     fn match_path(
@@ -10028,6 +10295,92 @@ mod tests {
         match &list[0] {
             Value::Map(m) => assert_eq!(m.get("name"), Some(&Value::String("Bob".into()))),
             other => panic!("expected map element, got {other:?}"),
+        }
+    }
+
+    // ---- shortestPath / allShortestPaths (00155) ------------------------
+
+    /// A 4-node diamond `a → b → d`, `a → c → d` plus tail `d → e`.
+    fn shortest_diamond() -> Drevo {
+        let db = drevo();
+        run(
+            "CREATE (a:N {name:'a'}) CREATE (b:N {name:'b'}) CREATE (c:N {name:'c'})
+             CREATE (d:N {name:'d'}) CREATE (e:N {name:'e'})
+             CREATE (a)-[:R]->(b) CREATE (b)-[:R]->(d)
+             CREATE (a)-[:R]->(c) CREATE (c)-[:R]->(d) CREATE (d)-[:R]->(e)",
+            &db,
+        );
+        db
+    }
+
+    #[test]
+    fn shortest_path_picks_minimum_length() {
+        let db = shortest_diamond();
+        let res = run(
+            "MATCH (a:N {name:'a'}), (e:N {name:'e'})
+             MATCH p = shortestPath((a)-[*]-(e))
+             RETURN length(p)",
+            &db,
+        );
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][0], Value::Integer(3));
+    }
+
+    #[test]
+    fn shortest_path_yields_one_row_all_shortest_yields_all_ties() {
+        let db = shortest_diamond();
+        let single = run(
+            "MATCH (a:N {name:'a'}), (d:N {name:'d'})
+             MATCH p = shortestPath((a)-[*]-(d)) RETURN length(p)",
+            &db,
+        );
+        assert_eq!(
+            single.rows.len(),
+            1,
+            "shortestPath collapses ties to one row"
+        );
+
+        let all = run(
+            "MATCH (a:N {name:'a'}), (d:N {name:'d'})
+             MATCH p = allShortestPaths((a)-[*]-(d)) RETURN length(p)",
+            &db,
+        );
+        assert_eq!(all.rows.len(), 2, "two equally-short paths a-b-d and a-c-d");
+        assert!(all.rows.iter().all(|r| r[0] == Value::Integer(2)));
+    }
+
+    #[test]
+    fn shortest_path_fixed_length_relationship_is_invalid_function_call() {
+        let db = shortest_diamond();
+        match err(
+            "MATCH (a:N {name:'a'}), (b:N {name:'b'})
+             MATCH p = shortestPath((a)-[:R]->(b)) RETURN p",
+            &db,
+        ) {
+            ExecError::InvalidFunctionCall { name, message, .. } => {
+                assert_eq!(name, "shortestPath");
+                assert!(message.contains("variable-length"), "got: {message}");
+            }
+            other => panic!("expected InvalidFunctionCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shortest_path_validate_rejects_multiple_relationships() {
+        let db = shortest_diamond();
+        match err(
+            "MATCH (a:N {name:'a'}), (d:N {name:'d'})
+             MATCH p = allShortestPaths((a)-[*]-(x)-[*]-(d)) RETURN p",
+            &db,
+        ) {
+            ExecError::InvalidFunctionCall { name, message, .. } => {
+                assert_eq!(name, "allShortestPaths");
+                assert!(
+                    message.contains("exactly one relationship"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected InvalidFunctionCall, got {other:?}"),
         }
     }
 }

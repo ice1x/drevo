@@ -138,6 +138,25 @@ CREATE p = (:Step {title: 'draft'})-[:THEN]->(:Step {title: 'review'})
 RETURN length(p) AS steps
 ```
 
+### Shortest paths
+
+`shortestPath((a)-[*]-(b))` finds **one** shortest path between two nodes;
+`allShortestPaths((a)-[*]-(b))` returns **every** path of that minimum length (one row each).
+Both wrap a single **variable-length** relationship and are usually bound to a path variable,
+so `length`, `nodes`, and `relationships` read the result like any [named path](#named-paths).
+The endpoints are normally bound by a preceding pattern; the search is breadth-first, so the
+first path found is provably the shortest.
+
+```cypher
+MATCH (a:Person {name: 'Ann'})-[:KNOWS]->(b:Person {name: 'Bob'})
+MATCH (b)-[:KNOWS]->(c:Person {name: 'Cara'})
+MATCH p = shortestPath((a)-[:KNOWS*]-(c))
+RETURN length(p) AS degrees_of_separation, [x IN nodes(p) | x.name] AS via
+```
+
+The wrapped relationship must be variable-length (`-[*]-`, `-[:KNOWS*..5]-`, …) and there
+must be exactly one of it; anything else is a recoverable `ExecError::InvalidFunctionCall`.
+
 ---
 
 ## Filtering — WHERE

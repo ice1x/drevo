@@ -334,13 +334,28 @@ pub struct YieldItem {
 
 /// A pattern with an optional path-binding variable.
 ///
-/// Source form: `[variable =] (a)-[r]->(b)-…`.
+/// Source form: `[variable =] (a)-[r]->(b)-…`, or a shortest-path search
+/// `[variable =] shortestPath((a)-[*]-(b))` / `allShortestPaths((a)-[*]-(b))`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamedPattern {
     /// Optional path variable (`p = (a)-->(b)`).
     pub variable: Option<String>,
     /// The path itself.
     pub path: PathPattern,
+    /// `Some(..)` when the pattern is wrapped in `shortestPath(...)` or
+    /// `allShortestPaths(...)` — the executor then searches for the
+    /// shortest connecting path(s) instead of enumerating every match.
+    pub shortest: Option<ShortestKind>,
+}
+
+/// Which shortest-path search wraps a [`NamedPattern`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortestKind {
+    /// `shortestPath(...)` — a single shortest path (the first found among
+    /// any of equal minimum length).
+    Single,
+    /// `allShortestPaths(...)` — one row per path of the minimum length.
+    All,
 }
 
 /// A path pattern — head node plus zero or more `(rel, node)` legs.
