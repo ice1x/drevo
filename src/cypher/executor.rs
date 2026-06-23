@@ -1383,6 +1383,23 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             | "tointeger"
             | "tofloat"
             | "toboolean"
+            // Trigonometric / logarithmic functions (task `00156`).
+            | "e"
+            | "exp"
+            | "log"
+            | "log10"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "cot"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "atan2"
+            | "degrees"
+            | "radians"
+            | "pi"
+            | "haversin"
             // List / scalar functions.
             | "size"
             | "length"
@@ -5405,6 +5422,26 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "tointeger" => scalar_to_integer(args, span),
         "tofloat" => scalar_to_float(args, span),
         "toboolean" => scalar_to_boolean(args, span),
+        // ---- Trigonometric / logarithmic (task `00156`) ----
+        // Each folds a number to a `Float`; integer arguments widen and domain
+        // edges (`log(-1)`, `asin(2)`, …) follow IEEE-754 (`NaN` / ±`Infinity`),
+        // matching Neo4j, which returns the float rather than erroring.
+        "e" => scalar_const("e", args, span, std::f64::consts::E),
+        "pi" => scalar_const("pi", args, span, std::f64::consts::PI),
+        "exp" => float_map(name, args, span, f64::exp),
+        "log" => float_map(name, args, span, f64::ln),
+        "log10" => float_map(name, args, span, f64::log10),
+        "sin" => float_map(name, args, span, f64::sin),
+        "cos" => float_map(name, args, span, f64::cos),
+        "tan" => float_map(name, args, span, f64::tan),
+        "cot" => float_map(name, args, span, |x| 1.0 / x.tan()),
+        "asin" => float_map(name, args, span, f64::asin),
+        "acos" => float_map(name, args, span, f64::acos),
+        "atan" => float_map(name, args, span, f64::atan),
+        "atan2" => scalar_atan2(args, span),
+        "degrees" => float_map(name, args, span, f64::to_degrees),
+        "radians" => float_map(name, args, span, f64::to_radians),
+        "haversin" => float_map(name, args, span, |x| (1.0 - x.cos()) / 2.0),
         // ---- List / scalar ----
         "size" | "length" => scalar_size(name, args, span),
         "head" => scalar_head(args, span),
@@ -5500,6 +5537,35 @@ fn float_map(
         )
     })?;
     Ok(Value::Float(f(n)))
+}
+
+/// Zero-argument numeric constant (`pi()`, `e()`). Validates the empty arity
+/// and returns the constant as a `Float`.
+fn scalar_const(name: &str, args: Vec<Value>, span: Span, value: f64) -> ExecResultT<Value> {
+    expect_arity(name, &args, 0, span)?;
+    Ok(Value::Float(value))
+}
+
+/// `atan2(y, x)` — the two-argument arctangent, returning the angle (in
+/// radians) of the point `(x, y)` from the positive x-axis. Both arguments
+/// must be numbers; the result is always a `Float`.
+fn scalar_atan2(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("atan2", &args, 2, span)?;
+    let y = args[0].as_number().ok_or_else(|| {
+        fn_err(
+            "atan2",
+            format!("argument must be a number, got {}", args[0].type_name()),
+            span,
+        )
+    })?;
+    let x = args[1].as_number().ok_or_else(|| {
+        fn_err(
+            "atan2",
+            format!("argument must be a number, got {}", args[1].type_name()),
+            span,
+        )
+    })?;
+    Ok(Value::Float(y.atan2(x)))
 }
 
 /// `coalesce(a, b, …)` — the first non-`NULL` argument, or `NULL` if every
@@ -9417,6 +9483,80 @@ mod tests {
                 vec![Value::String("later".into()), Value::Integer(1)],
                 vec![Value::String("urgent".into()), Value::Integer(2)],
             ]
+        );
+    }
+
+    // ---- Trigonometric / logarithmic functions (00156) -------------------
+
+    /// Pull the `f64` out of a scalar `Float` projection.
+    fn scalar_float(source: &str, db: &Drevo) -> f64 {
+        match scalar(source, db) {
+            Value::Float(f) => f,
+            other => panic!("expected Float from {source:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn math_constants_and_one_arg_folds() {
+        let db = drevo();
+        assert!((scalar_float("RETURN pi() AS v", &db) - std::f64::consts::PI).abs() < 1e-12);
+        assert!((scalar_float("RETURN e() AS v", &db) - std::f64::consts::E).abs() < 1e-12);
+        // exp/log are inverses; integer args widen to Float.
+        assert!((scalar_float("RETURN exp(0) AS v", &db) - 1.0).abs() < 1e-12);
+        assert!((scalar_float("RETURN log10(1000) AS v", &db) - 3.0).abs() < 1e-9);
+        assert!((scalar_float("RETURN sin(0) AS v", &db)).abs() < 1e-12);
+        assert!((scalar_float("RETURN cos(0) AS v", &db) - 1.0).abs() < 1e-12);
+        assert!((scalar_float("RETURN cot(pi() / 4) AS v", &db) - 1.0).abs() < 1e-9);
+        assert!((scalar_float("RETURN degrees(pi()) AS v", &db) - 180.0).abs() < 1e-9);
+        assert!((scalar_float("RETURN haversin(pi()) AS v", &db) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn atan2_takes_two_arguments() {
+        let db = drevo();
+        assert!(
+            (scalar_float("RETURN atan2(1, 1) AS v", &db) - std::f64::consts::FRAC_PI_4).abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn math_domain_edges_are_floats_not_errors() {
+        let db = drevo();
+        // log of a negative / asin out of range are NaN, never an error.
+        assert!(scalar_float("RETURN log(-1) AS v", &db).is_nan());
+        assert!(scalar_float("RETURN asin(2) AS v", &db).is_nan());
+    }
+
+    #[test]
+    fn math_function_null_argument_propagates() {
+        let db = drevo();
+        assert_eq!(scalar("RETURN sin(null) AS v", &db), Value::Null);
+        assert_eq!(scalar("RETURN atan2(null, 1) AS v", &db), Value::Null);
+    }
+
+    #[test]
+    fn math_function_non_numeric_is_invalid_call() {
+        let db = drevo();
+        let e = err("RETURN cos('x') AS v", &db);
+        assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
+        let e2 = err("RETURN atan2(1, 's') AS v", &db);
+        assert!(
+            matches!(e2, ExecError::InvalidFunctionCall { .. }),
+            "{e2:?}"
+        );
+    }
+
+    #[test]
+    fn math_function_wrong_arity_is_invalid_call() {
+        let db = drevo();
+        // pi/e take zero args; sin one; atan2 two.
+        let e = err("RETURN pi(1) AS v", &db);
+        assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
+        let e2 = err("RETURN atan2(1) AS v", &db);
+        assert!(
+            matches!(e2, ExecError::InvalidFunctionCall { .. }),
+            "{e2:?}"
         );
     }
 
