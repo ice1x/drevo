@@ -561,6 +561,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
 | Numeric | `abs`, `ceil`, `floor`, `round`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` |
 | List conversion | `toIntegerList(list)`, `toFloatList(list)`, `toBooleanList(list)`, `toStringList(list)` — element-wise conversion; an unconvertible (or `NULL`) element becomes `NULL`, preserving list length |
+| Lenient conversion | `toIntegerOrNull(x)`, `toFloatOrNull(x)`, `toBooleanOrNull(x)`, `toStringOrNull(x)` — fully-lenient scalar conversion; any value that cannot be converted yields `NULL` instead of an error (unlike the strict `toString`, which errors on a non-stringifiable value) |
 | Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
 | List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `id`, `properties` |
 | Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
@@ -575,7 +576,13 @@ functions (`toIntegerList` / `toFloatList` / `toBooleanList` / `toStringList`) a
 same lenient rules to every element, so an unconvertible element becomes a `NULL` slot
 rather than aborting the whole list — the result always matches the input length. (Unlike
 the scalar `toString`, which errors on a non-stringifiable value, `toStringList` is lenient
-and yields `NULL` for such an element.)
+and yields `NULL` for such an element.) The `*OrNull` conversions
+(`toIntegerOrNull` / `toFloatOrNull` / `toBooleanOrNull` / `toStringOrNull`) are
+*fully lenient*: any value they cannot convert — an unparseable string, a List,
+a Map, a node — yields `NULL` rather than an error. `toStringOrNull` is the one
+whose behaviour differs from its strict sibling: scalar `toString` errors on a
+non-stringifiable value, whereas `toStringOrNull` returns `NULL`. The idiomatic
+use is `coalesce(toIntegerOrNull(x), default)` for a safe parse-with-fallback.
 
 **Errors.** Wrong arity or an argument of a type the function cannot accept is a
 recoverable `ExecError::InvalidFunctionCall`; an unknown function name stays

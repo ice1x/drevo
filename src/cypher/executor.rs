@@ -1389,6 +1389,13 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             | "tofloatlist"
             | "tobooleanlist"
             | "tostringlist"
+            // Fully-lenient scalar conversions (task `00158`) — the Neo4j 5
+            // `*OrNull` siblings of `toInteger` / `toFloat` / `toBoolean` /
+            // `toString` that yield `NULL` for any unconvertible value.
+            | "tointegerornull"
+            | "tofloatornull"
+            | "tobooleanornull"
+            | "tostringornull"
             // Trigonometric / logarithmic functions (task `00156`).
             | "e"
             | "exp"
@@ -5433,6 +5440,19 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "tofloatlist" => scalar_to_list(name, args, span, convert_to_float_value),
         "tobooleanlist" => scalar_to_list(name, args, span, convert_to_boolean_value),
         "tostringlist" => scalar_to_list(name, args, span, convert_to_string_value),
+        // ---- Fully-lenient scalar conversions (`*OrNull`, task `00158`) ----
+        // Each applies the same lenient per-value conversion the list variants
+        // use, returning `NULL` for any value it cannot convert. `toStringOrNull`
+        // is the one with behaviour distinct from its strict sibling: scalar
+        // `toString` errors on a non-stringifiable type, this yields `NULL`.
+        "tointegerornull" => {
+            scalar_or_null("toIntegerOrNull", args, span, convert_to_integer_value)
+        }
+        "tofloatornull" => scalar_or_null("toFloatOrNull", args, span, convert_to_float_value),
+        "tobooleanornull" => {
+            scalar_or_null("toBooleanOrNull", args, span, convert_to_boolean_value)
+        }
+        "tostringornull" => scalar_or_null("toStringOrNull", args, span, convert_to_string_value),
         // ---- Trigonometric / logarithmic (task `00156`) ----
         // Each folds a number to a `Float`; integer arguments widen and domain
         // edges (`log(-1)`, `asin(2)`, …) follow IEEE-754 (`NaN` / ±`Infinity`),
@@ -5882,6 +5902,21 @@ fn scalar_to_list(
             span,
         )),
     }
+}
+
+/// `toIntegerOrNull` / `toFloatOrNull` / `toBooleanOrNull` / `toStringOrNull`
+/// (task `00158`) — the fully-lenient Neo4j 5 siblings of the scalar
+/// conversions. Each applies the same per-value converter the list-conversion
+/// functions use, so any value that cannot be converted yields `NULL` rather
+/// than an error. A `NULL` argument is already short-circuited to `NULL` by
+/// [`call_scalar`]; only the arity check remains here.
+fn scalar_or_null(
+    name: &str,
+    args: Vec<Value>,
+    span: Span,
+    convert: fn(&Value) -> Value,
+) -> ExecResultT<Value> {
+    Ok(convert(&take_one(name, args, span)?))
 }
 
 /// `size(x)` / `length(x)` — the element count of a List or the codepoint
@@ -9399,6 +9434,53 @@ mod tests {
         // NULL argument => NULL; non-list argument => recoverable error.
         assert_eq!(scalar("RETURN toIntegerList(null) AS v", &db), Value::Null);
         match err("RETURN toFloatList(42) AS v", &db) {
+            ExecError::InvalidFunctionCall { .. } => {}
+            other => panic!("expected InvalidFunctionCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn or_null_conversions_are_fully_lenient() {
+        let db = drevo();
+        // Happy paths mirror the strict scalar conversions.
+        assert_eq!(
+            scalar("RETURN toIntegerOrNull('42') AS v", &db),
+            Value::Integer(42)
+        );
+        assert_eq!(
+            scalar("RETURN toFloatOrNull(2) AS v", &db),
+            Value::Float(2.0)
+        );
+        assert_eq!(
+            scalar("RETURN toBooleanOrNull('TRUE') AS v", &db),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            scalar("RETURN toStringOrNull(42) AS v", &db),
+            Value::String("42".into())
+        );
+        // Unconvertible inputs yield NULL, never an error — including the cases
+        // where the strict scalar `toString` would error (a List / Map).
+        assert_eq!(
+            scalar("RETURN toIntegerOrNull('abc') AS v", &db),
+            Value::Null
+        );
+        assert_eq!(scalar("RETURN toFloatOrNull('x') AS v", &db), Value::Null);
+        assert_eq!(
+            scalar("RETURN toBooleanOrNull('maybe') AS v", &db),
+            Value::Null
+        );
+        assert_eq!(
+            scalar("RETURN toStringOrNull([1, 2]) AS v", &db),
+            Value::Null
+        );
+        // NULL argument propagates to NULL.
+        assert_eq!(
+            scalar("RETURN toIntegerOrNull(null) AS v", &db),
+            Value::Null
+        );
+        // Wrong arity is still a recoverable error.
+        match err("RETURN toStringOrNull(1, 2) AS v", &db) {
             ExecError::InvalidFunctionCall { .. } => {}
             other => panic!("expected InvalidFunctionCall, got {other:?}"),
         }

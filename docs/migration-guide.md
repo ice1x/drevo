@@ -146,6 +146,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Scalar functions (`toLower`, `size`, `coalesce`, `range`, `keys`, …) | ✅ Supported (string / numeric / list library; see reference). |
 | Trigonometric & logarithmic functions (`sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `log10`, `pi`, `e`, `degrees`, `radians`, `haversin`, …) | ✅ Supported (always return a `Float`; NULL-propagating; out-of-domain inputs yield `NaN` / `Infinity` per IEEE-754, matching Neo4j). |
 | List conversion functions (`toIntegerList`, `toFloatList`, `toBooleanList`, `toStringList`) | ✅ Supported (element-wise conversion; an unconvertible or `NULL` element becomes a `NULL` slot, preserving list length; a non-list argument errors). |
+| Lenient conversion functions (`toIntegerOrNull`, `toFloatOrNull`, `toBooleanOrNull`, `toStringOrNull`) | ✅ Supported (fully lenient; any unconvertible value yields `NULL` instead of erroring — including the List/Map inputs the strict `toString` rejects). |
 | Statistical aggregations (`stDev`, `stDevP`, `percentileCont`, `percentileDisc`) | ✅ Supported (alongside `count` / `sum` / `avg` / `min` / `max` / `collect`; null-skipping; percentile fraction in `[0, 1]`). |
 | `CALL` / `YIELD` — built-in `db.*` introspection (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`) | ✅ Supported (standalone or `YIELD … WHERE`). |
 | User-defined / `apoc.*` / `gds.*` procedures | ⛔ Only the built-in `db.*` procedures exist. |
