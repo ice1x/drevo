@@ -1383,6 +1383,12 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             | "tointeger"
             | "tofloat"
             | "toboolean"
+            // List value-conversion functions (task `00157`) — element-wise
+            // siblings of the scalar conversions above.
+            | "tointegerlist"
+            | "tofloatlist"
+            | "tobooleanlist"
+            | "tostringlist"
             // Trigonometric / logarithmic functions (task `00156`).
             | "e"
             | "exp"
@@ -5422,6 +5428,11 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "tointeger" => scalar_to_integer(args, span),
         "tofloat" => scalar_to_float(args, span),
         "toboolean" => scalar_to_boolean(args, span),
+        // ---- List value-conversion (task `00157`) ----
+        "tointegerlist" => scalar_to_list(name, args, span, convert_to_integer_value),
+        "tofloatlist" => scalar_to_list(name, args, span, convert_to_float_value),
+        "tobooleanlist" => scalar_to_list(name, args, span, convert_to_boolean_value),
+        "tostringlist" => scalar_to_list(name, args, span, convert_to_string_value),
         // ---- Trigonometric / logarithmic (task `00156`) ----
         // Each folds a number to a `Float`; integer arguments widen and domain
         // edges (`log(-1)`, `asin(2)`, …) follow IEEE-754 (`NaN` / ±`Infinity`),
@@ -5758,14 +5769,24 @@ fn scalar_sign(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
 /// A Float truncates toward zero; an unparseable String or a Boolean yields
 /// `NULL` (Neo4j parity — conversion is lenient, not an error).
 fn scalar_to_integer(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
-    let out = match take_one("toInteger", args, span)? {
-        Value::Integer(i) => Value::Integer(i),
+    Ok(convert_to_integer_value(&take_one(
+        "toInteger",
+        args,
+        span,
+    )?))
+}
+
+/// Lenient single-value Integer conversion shared by `toInteger` and
+/// `toIntegerList`: a Float truncates toward zero, a numeric String parses,
+/// and anything else (Boolean, List, Map, `NULL`, …) yields `NULL`.
+fn convert_to_integer_value(v: &Value) -> Value {
+    match v {
+        Value::Integer(i) => Value::Integer(*i),
         Value::Float(f) if f.is_finite() => Value::Integer(f.trunc() as i64),
         Value::Float(_) => Value::Null,
-        Value::String(s) => parse_integer(&s),
+        Value::String(s) => parse_integer(s),
         _ => Value::Null,
-    };
-    Ok(out)
+    }
 }
 
 /// Parse a string into an Integer `Value`, falling back to truncating a
@@ -5784,24 +5805,38 @@ fn parse_integer(s: &str) -> Value {
 /// `toFloat(x)` — converts a number or numeric string to a Float. An
 /// unparseable String or a Boolean yields `NULL` (Neo4j parity).
 fn scalar_to_float(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
-    let out = match take_one("toFloat", args, span)? {
-        Value::Integer(i) => Value::Float(i as f64),
-        Value::Float(f) => Value::Float(f),
+    Ok(convert_to_float_value(&take_one("toFloat", args, span)?))
+}
+
+/// Lenient single-value Float conversion shared by `toFloat` and `toFloatList`.
+fn convert_to_float_value(v: &Value) -> Value {
+    match v {
+        Value::Integer(i) => Value::Float(*i as f64),
+        Value::Float(f) => Value::Float(*f),
         Value::String(s) => match s.trim().parse::<f64>() {
             Ok(f) => Value::Float(f),
             Err(_) => Value::Null,
         },
         _ => Value::Null,
-    };
-    Ok(out)
+    }
 }
 
 /// `toBoolean(x)` — Boolean passthrough; `"true"`/`"false"` (case-insensitive,
 /// trimmed) from a String; `0`/`1` from an Integer; anything else yields
 /// `NULL` (Neo4j parity).
 fn scalar_to_boolean(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
-    let out = match take_one("toBoolean", args, span)? {
-        Value::Bool(b) => Value::Bool(b),
+    Ok(convert_to_boolean_value(&take_one(
+        "toBoolean",
+        args,
+        span,
+    )?))
+}
+
+/// Lenient single-value Boolean conversion shared by `toBoolean` and
+/// `toBooleanList`.
+fn convert_to_boolean_value(v: &Value) -> Value {
+    match v {
+        Value::Bool(b) => Value::Bool(*b),
         Value::Integer(0) => Value::Bool(false),
         Value::Integer(1) => Value::Bool(true),
         Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
@@ -5810,8 +5845,43 @@ fn scalar_to_boolean(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
             _ => Value::Null,
         },
         _ => Value::Null,
-    };
-    Ok(out)
+    }
+}
+
+/// Lenient single-value String conversion used by `toStringList`. Unlike the
+/// scalar `toString` (which *errors* on a non-stringifiable type), the list
+/// variant follows Neo4j and yields `NULL` for an unconvertible element so the
+/// returned list keeps its length.
+fn convert_to_string_value(v: &Value) -> Value {
+    match v {
+        Value::Bool(b) => Value::String(b.to_string()),
+        Value::Integer(i) => Value::String(i.to_string()),
+        Value::Float(f) => Value::String(format_float(*f)),
+        Value::String(s) => Value::String(s.clone()),
+        _ => Value::Null,
+    }
+}
+
+/// `toIntegerList` / `toFloatList` / `toBooleanList` / `toStringList` — apply a
+/// lenient single-value conversion to every element of a List. An element that
+/// cannot be converted (including a `NULL` element) becomes `NULL`, so the
+/// result always has the same length as the input. A non-`List` argument is a
+/// recoverable error (a `NULL` argument is already short-circuited to `NULL`
+/// by [`call_scalar`]).
+fn scalar_to_list(
+    name: &str,
+    args: Vec<Value>,
+    span: Span,
+    convert: fn(&Value) -> Value,
+) -> ExecResultT<Value> {
+    match take_one(name, args, span)? {
+        Value::List(items) => Ok(Value::List(items.iter().map(convert).collect())),
+        other => Err(fn_err(
+            name,
+            format!("argument must be a List, got {}", other.type_name()),
+            span,
+        )),
+    }
 }
 
 /// `size(x)` / `length(x)` — the element count of a List or the codepoint
@@ -9290,6 +9360,48 @@ mod tests {
         );
         assert_eq!(scalar("RETURN toBoolean(0) AS v", &db), Value::Bool(false));
         assert_eq!(scalar("RETURN toBoolean('maybe') AS v", &db), Value::Null);
+    }
+
+    #[test]
+    fn list_value_conversions_are_elementwise_and_lenient() {
+        let db = drevo();
+        // Each element converts via the scalar rules; unconvertible elements
+        // (and NULL elements) become NULL while preserving list length.
+        assert_eq!(
+            scalar(
+                r#"RETURN toIntegerList([1, 2.9, "3", "x", null]) AS v"#,
+                &db
+            ),
+            Value::List(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Null,
+                Value::Null,
+            ])
+        );
+        assert_eq!(
+            scalar(r#"RETURN toFloatList([1, "2.5", true]) AS v"#, &db),
+            Value::List(vec![Value::Float(1.0), Value::Float(2.5), Value::Null])
+        );
+        assert_eq!(
+            scalar(r#"RETURN toBooleanList(["true", 0, "no"]) AS v"#, &db),
+            Value::List(vec![Value::Bool(true), Value::Bool(false), Value::Null])
+        );
+        assert_eq!(
+            scalar(r#"RETURN toStringList([1, 2.5, [3]]) AS v"#, &db),
+            Value::List(vec![
+                Value::String("1".into()),
+                Value::String("2.5".into()),
+                Value::Null,
+            ])
+        );
+        // NULL argument => NULL; non-list argument => recoverable error.
+        assert_eq!(scalar("RETURN toIntegerList(null) AS v", &db), Value::Null);
+        match err("RETURN toFloatList(42) AS v", &db) {
+            ExecError::InvalidFunctionCall { .. } => {}
+            other => panic!("expected InvalidFunctionCall, got {other:?}"),
+        }
     }
 
     #[test]
