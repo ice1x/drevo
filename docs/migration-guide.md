@@ -149,6 +149,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Lenient conversion functions (`toIntegerOrNull`, `toFloatOrNull`, `toBooleanOrNull`, `toStringOrNull`) | ✅ Supported (fully lenient; any unconvertible value yields `NULL` instead of erroring — including the List/Map inputs the strict `toString` rejects). |
 | Statistical aggregations (`stDev`, `stDevP`, `percentileCont`, `percentileDisc`) | ✅ Supported (alongside `count` / `sum` / `avg` / `min` / `max` / `collect`; null-skipping; percentile fraction in `[0, 1]`). |
 | Container predicate (`isEmpty(x)`) | ✅ Supported (empty-test over a String / List / Map; NULL-propagating; a non-container argument errors). Fills the gap `size` leaves — `size` rejects a Map, so `size(m) = 0` cannot express it. |
+| `round(value[, precision[, mode]])` | ✅ Supported (all three overloads; `mode` is one of `UP` / `DOWN` / `CEILING` / `FLOOR` / `HALF_UP` / `HALF_DOWN` / `HALF_EVEN`, case-insensitive). Rounds on decimal digits, so `round(1.255, 2) = 1.26` matches Neo4j's `BigDecimal` rather than a binary-scaling `1.25`. Negative `precision` rounds left of the point; NULL-propagating; non-finite values pass through. |
 | `CALL` / `YIELD` — built-in `db.*` introspection (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`) | ✅ Supported (standalone or `YIELD … WHERE`). |
 | User-defined / `apoc.*` / `gds.*` procedures | ⛔ Only the built-in `db.*` procedures exist. |
 | Regex `=~` | ✅ Supported (full-string match; common Java/Neo4j subset incl. `(?i)`). |

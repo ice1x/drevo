@@ -5433,7 +5433,7 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "abs" => scalar_abs(args, span),
         "ceil" => float_map(name, args, span, f64::ceil),
         "floor" => float_map(name, args, span, f64::floor),
-        "round" => float_map(name, args, span, f64::round),
+        "round" => scalar_round(args, span),
         "sqrt" => float_map(name, args, span, f64::sqrt),
         "sign" => scalar_sign(args, span),
         "tointeger" => scalar_to_integer(args, span),
@@ -5602,6 +5602,202 @@ fn scalar_atan2(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         )
     })?;
     Ok(Value::Float(y.atan2(x)))
+}
+
+/// The rounding strategy of the three-argument [`scalar_round`] — the Cypher /
+/// Java `RoundingMode` set. The `HALF_*` variants differ only in how an exact
+/// halfway value is broken; the others ignore the magnitude of the dropped
+/// remainder entirely.
+#[derive(Clone, Copy)]
+enum RoundingMode {
+    /// Away from zero whenever any digit is dropped.
+    Up,
+    /// Toward zero — truncate the dropped digits.
+    Down,
+    /// Toward positive infinity.
+    Ceiling,
+    /// Toward negative infinity.
+    Floor,
+    /// Nearest neighbour; ties away from zero (the default).
+    HalfUp,
+    /// Nearest neighbour; ties toward zero.
+    HalfDown,
+    /// Nearest neighbour; ties to the even digit (banker's rounding).
+    HalfEven,
+}
+
+impl RoundingMode {
+    /// Parse the Cypher mode keyword, case-insensitively. Returns `None` for an
+    /// unrecognised mode so the caller can raise a precise error.
+    fn from_name(s: &str) -> Option<Self> {
+        match s.to_ascii_uppercase().as_str() {
+            "UP" => Some(Self::Up),
+            "DOWN" => Some(Self::Down),
+            "CEILING" => Some(Self::Ceiling),
+            "FLOOR" => Some(Self::Floor),
+            "HALF_UP" => Some(Self::HalfUp),
+            "HALF_DOWN" => Some(Self::HalfDown),
+            "HALF_EVEN" => Some(Self::HalfEven),
+            _ => None,
+        }
+    }
+
+    /// Decide whether the retained digits must be incremented, given the first
+    /// dropped digit (`round_digit`), whether any non-zero digit follows it
+    /// (`any_after`), the sign of the value (`neg`), and the parity of the last
+    /// retained digit (`last_kept_odd`, for `HALF_EVEN`).
+    fn should_increment(
+        self,
+        neg: bool,
+        round_digit: u8,
+        any_after: bool,
+        last_kept_odd: bool,
+    ) -> bool {
+        let any_dropped = round_digit != 0 || any_after;
+        match self {
+            Self::Up => any_dropped,
+            Self::Down => false,
+            Self::Ceiling => !neg && any_dropped,
+            Self::Floor => neg && any_dropped,
+            Self::HalfUp => round_digit >= 5,
+            Self::HalfDown => round_digit > 5 || (round_digit == 5 && any_after),
+            Self::HalfEven => round_digit > 5 || (round_digit == 5 && (any_after || last_kept_odd)),
+        }
+    }
+}
+
+/// `round(value [, precision [, mode]])` — round a number to a chosen number of
+/// decimal places using a selectable rounding mode (task `00160`).
+///
+/// * `round(value)` rounds to the nearest integer, ties away from zero
+///   (`HALF_UP`) — the long-standing one-argument behaviour.
+/// * `round(value, precision)` rounds to `precision` decimal places, still
+///   `HALF_UP`. A negative `precision` rounds to the left of the decimal point
+///   (`round(1234.5, -2) = 1200.0`).
+/// * `round(value, precision, mode)` selects the rounding mode — one of `UP`,
+///   `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN`, `HALF_EVEN`
+///   (case-insensitive), matching Java's `RoundingMode` / Neo4j.
+///
+/// The result is always a `Float`. A non-finite `value` (`NaN` / ±`Infinity`)
+/// is returned unchanged. NULL propagation is handled by [`call_scalar`].
+fn scalar_round(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    if args.is_empty() || args.len() > 3 {
+        return Err(fn_err(
+            "round",
+            format!("expected 1 to 3 arguments, got {}", args.len()),
+            span,
+        ));
+    }
+    let value = args[0].as_number().ok_or_else(|| {
+        fn_err(
+            "round",
+            format!("argument must be a number, got {}", args[0].type_name()),
+            span,
+        )
+    })?;
+    let precision = match args.get(1) {
+        None => 0,
+        Some(v) => int_arg("round", v, "precision", span)?,
+    };
+    let mode = match args.get(2) {
+        None => RoundingMode::HalfUp,
+        Some(v) => {
+            let name = string_arg("round", v, "mode", span)?;
+            RoundingMode::from_name(name).ok_or_else(|| {
+                fn_err(
+                    "round",
+                    format!(
+                        "unknown rounding mode `{name}` (expected one of UP, DOWN, \
+                         CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN)"
+                    ),
+                    span,
+                )
+            })?
+        }
+    };
+    Ok(Value::Float(round_decimal(value, precision, mode)))
+}
+
+/// Round `value` to `precision` decimal places under `mode`, operating on the
+/// *decimal* digits of the number rather than scaling the binary float.
+///
+/// Scaling by `10^precision` and rounding the product is the obvious approach,
+/// but it inherits binary representation error: `1.255` is stored as the double
+/// `1.2549999…`, so `(1.255 * 100).round() / 100` yields `1.25`, not the `1.26`
+/// a user (and Neo4j's `BigDecimal`) expects. Instead we take the shortest
+/// decimal string that round-trips to this double (Rust's `Display`, which is
+/// always plain — never scientific — notation), round those digits exactly, and
+/// reparse — recovering the intended decimal result.
+fn round_decimal(value: f64, precision: i64, mode: RoundingMode) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    let neg = value.is_sign_negative();
+    // Magnitude as a plain decimal string, e.g. "1.255" or "1250".
+    let s = format!("{}", value.abs());
+    let (int_str, frac_str) = match s.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (s.as_str(), ""),
+    };
+    let mut digits: Vec<u8> = int_str
+        .bytes()
+        .chain(frac_str.bytes())
+        .map(|b| b - b'0')
+        .collect();
+    let int_len = int_str.len() as i64;
+
+    // Number of leading digits to retain: the digit at the `precision`-th place
+    // after the point is the last kept one, so we keep `int_len + precision`.
+    let keep = int_len + precision;
+    // Left-pad with zeros so the cut index is always at least 1 (gives carry a
+    // digit to land in when rounding e.g. 0.6 up at the units place).
+    let pad = if keep < 1 { (1 - keep) as usize } else { 0 };
+    if pad > 0 {
+        let mut padded = vec![0u8; pad];
+        padded.append(&mut digits);
+        digits = padded;
+    }
+    let cut = (keep + pad as i64) as usize;
+    if cut >= digits.len() {
+        // The value has no digit finer than `precision`; nothing to round off.
+        return value;
+    }
+
+    let round_digit = digits[cut];
+    let any_after = digits[cut + 1..].iter().any(|&d| d != 0);
+    let mut kept = digits[..cut].to_vec();
+    let last_kept_odd = kept[cut - 1] % 2 == 1;
+    if mode.should_increment(neg, round_digit, any_after, last_kept_odd) {
+        increment_digits(&mut kept);
+    }
+
+    // value = sign * kept * 10^(-precision); build that as an exponent string and
+    // let the float parser do the (correctly-rounded) decimal→binary conversion.
+    let mut out = String::with_capacity(kept.len() + 6);
+    if neg {
+        out.push('-');
+    }
+    for &d in &kept {
+        out.push((b'0' + d) as char);
+    }
+    out.push('e');
+    out.push_str(&(-precision).to_string());
+    out.parse::<f64>().unwrap_or(value)
+}
+
+/// Add one to a big-endian decimal digit string in place, propagating the carry
+/// and prepending a new leading `1` if the most-significant digit overflows
+/// (`[9, 9] → [1, 0, 0]`).
+fn increment_digits(digits: &mut Vec<u8>) {
+    for d in digits.iter_mut().rev() {
+        if *d == 9 {
+            *d = 0;
+        } else {
+            *d += 1;
+            return;
+        }
+    }
+    digits.insert(0, 1);
 }
 
 /// `coalesce(a, b, …)` — the first non-`NULL` argument, or `NULL` if every
@@ -9537,6 +9733,39 @@ mod tests {
             ExecError::InvalidFunctionCall { .. } => {}
             other => panic!("expected InvalidFunctionCall, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn round_decimal_unit_modes_and_precision() {
+        use super::{round_decimal, RoundingMode};
+        // Decimal-faithful HALF_UP at a precision the binary float can't hold
+        // exactly: a naive `(x * 100).round() / 100` would yield 1.25.
+        assert!((round_decimal(1.255, 2, RoundingMode::HalfUp) - 1.26).abs() < 1e-9);
+        // Each mode breaking the same 1.25 tie at 1 decimal place.
+        assert!((round_decimal(1.25, 1, RoundingMode::HalfDown) - 1.2).abs() < 1e-9);
+        assert!((round_decimal(2.5, 0, RoundingMode::HalfEven) - 2.0).abs() < 1e-9);
+        assert!((round_decimal(3.5, 0, RoundingMode::HalfEven) - 4.0).abs() < 1e-9);
+        // Directed modes ignore the remainder's magnitude.
+        assert!((round_decimal(1.21, 1, RoundingMode::Up) - 1.3).abs() < 1e-9);
+        assert!((round_decimal(1.29, 1, RoundingMode::Down) - 1.2).abs() < 1e-9);
+        assert!((round_decimal(-1.21, 1, RoundingMode::Floor) - -1.3).abs() < 1e-9);
+        assert!((round_decimal(-1.29, 1, RoundingMode::Ceiling) - -1.2).abs() < 1e-9);
+        // Negative precision rounds to the left of the point; carry can grow the
+        // digit string (9.99 → 10.0).
+        assert!((round_decimal(1234.5, -2, RoundingMode::HalfUp) - 1200.0).abs() < 1e-9);
+        assert!((round_decimal(9.99, 1, RoundingMode::Up) - 10.0).abs() < 1e-9);
+        // Non-finite values pass through untouched.
+        assert!(round_decimal(f64::NAN, 2, RoundingMode::HalfUp).is_nan());
+        assert!(round_decimal(f64::INFINITY, 2, RoundingMode::HalfUp).is_infinite());
+    }
+
+    #[test]
+    fn round_mode_keyword_parsing_is_case_insensitive() {
+        use super::RoundingMode;
+        assert!(RoundingMode::from_name("half_even").is_some());
+        assert!(RoundingMode::from_name("CEILING").is_some());
+        assert!(RoundingMode::from_name("Floor").is_some());
+        assert!(RoundingMode::from_name("sideways").is_none());
     }
 
     #[test]

@@ -559,7 +559,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | Family | Functions |
 |--------|-----------|
 | String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
-| Numeric | `abs`, `ceil`, `floor`, `round`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` |
+| Numeric | `abs`, `ceil`, `floor`, `round(x[, precision[, mode]])`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` — see [round()](#rounding-with-round) for the precision / mode overloads |
 | List conversion | `toIntegerList(list)`, `toFloatList(list)`, `toBooleanList(list)`, `toStringList(list)` — element-wise conversion; an unconvertible (or `NULL`) element becomes `NULL`, preserving list length |
 | Lenient conversion | `toIntegerOrNull(x)`, `toFloatOrNull(x)`, `toBooleanOrNull(x)`, `toStringOrNull(x)` — fully-lenient scalar conversion; any value that cannot be converted yields `NULL` instead of an error (unlike the strict `toString`, which errors on a non-stringifiable value) |
 | Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
@@ -631,6 +631,36 @@ RETURN round(degrees(pi())) AS half_turn, exp(0) AS one, log10(1000) AS three
 
 ```cypher
 RETURN sin(0) AS zero, cos(0) AS one, atan2(1, 1) AS quarter_pi
+```
+
+### Rounding with `round()`
+
+Task `00160` extends `round` from its single-argument form to Neo4j's three
+overloads. The result is always a `Float`.
+
+| Form | Meaning |
+|------|---------|
+| `round(value)` | Nearest integer, ties away from zero (`HALF_UP`). |
+| `round(value, precision)` | Round to `precision` decimal places, still `HALF_UP`. A **negative** `precision` rounds to the left of the decimal point (`round(1234.5, -2) = 1200.0`). |
+| `round(value, precision, mode)` | Round to `precision` decimal places under `mode` — one of `UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN`, `HALF_EVEN` (case-insensitive), matching Java's `RoundingMode`. |
+
+The rounding modes are: `UP` (away from zero), `DOWN` (toward zero / truncate),
+`CEILING` (toward +∞), `FLOOR` (toward −∞), and the three tie-breakers `HALF_UP`
+(ties away from zero), `HALF_DOWN` (ties toward zero), and `HALF_EVEN` (ties to
+the even digit — banker's rounding). Rounding is performed on the number's
+**decimal** digits, so `round(1.255, 2)` is `1.26` (the intuitive decimal
+answer) rather than the `1.25` a naive binary `value * 100` scaling would give.
+
+Like the rest of the library `round` is **NULL-propagating** (a `NULL` in any
+argument yields `NULL`); a non-numeric `value`, non-Integer `precision`,
+non-String `mode`, an unknown `mode` keyword, or wrong arity is a recoverable
+`ExecError::InvalidFunctionCall`. A non-finite `value` (`NaN` / ±`Infinity`) is
+returned unchanged.
+
+```cypher
+RETURN round(2.71828, 2) AS pe,
+       round(1234.5, -2) AS thousands,
+       round(2.5, 0, 'HALF_EVEN') AS banker
 ```
 
 ---
