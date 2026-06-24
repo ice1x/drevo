@@ -564,6 +564,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | Lenient conversion | `toIntegerOrNull(x)`, `toFloatOrNull(x)`, `toBooleanOrNull(x)`, `toStringOrNull(x)` — fully-lenient scalar conversion; any value that cannot be converted yields `NULL` instead of an error (unlike the strict `toString`, which errors on a non-stringifiable value) |
 | Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
 | List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `id`, `properties` |
+| Container predicate | `isEmpty(x)` — `true` when the container `x` holds no elements; accepts a String, a List, or a Map. Fills the gap left by `size`, which rejects a Map (so `size(m) = 0` cannot express it). A non-container argument errors |
 | Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
 
 **NULL handling.** Every function except `coalesce` is *NULL-propagating*: a `NULL`
