@@ -1433,6 +1433,11 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             // Path functions.
             | "nodes"
             | "relationships"
+            // Non-deterministic value functions (task `00161`) — the two
+            // zero-argument generators Neo4j exposes: `rand()` (uniform Float
+            // in `[0,1)`) and `randomUUID()` (a fresh version-4 UUID string).
+            | "rand"
+            | "randomuuid"
     )
 }
 
@@ -5491,6 +5496,12 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "isempty" => scalar_is_empty(args, span),
         "nodes" => scalar_nodes(args, span),
         "relationships" => scalar_relationships(args, span),
+        // ---- Non-deterministic value functions (task `00161`) ----
+        // Both take zero arguments (so the NULL-propagation guard above is a
+        // no-op) and re-draw on every evaluation, matching Neo4j's per-row
+        // semantics.
+        "rand" => scalar_rand(args, span),
+        "randomuuid" => scalar_random_uuid(args, span),
         // Unreachable: `is_builtin_scalar_function` gates entry, so any name
         // reaching here is a missing arm rather than user input.
         other => Err(ExecError::Unsupported {
@@ -5580,6 +5591,61 @@ fn float_map(
 fn scalar_const(name: &str, args: Vec<Value>, span: Span, value: f64) -> ExecResultT<Value> {
     expect_arity(name, &args, 0, span)?;
     Ok(Value::Float(value))
+}
+
+thread_local! {
+    /// Per-thread PRNG state for `rand()`. Seeded lazily from the wall clock on
+    /// first use, then advanced by [`next_rand_u64`] on every draw so successive
+    /// `rand()` evaluations within one query yield independent values. A
+    /// per-thread, non-cryptographic generator mirrors Neo4j's `rand()`, which
+    /// is backed by `ThreadLocalRandom` rather than a secure source.
+    static RAND_STATE: std::cell::Cell<u64> = std::cell::Cell::new(rand_seed());
+}
+
+/// Derive an initial PRNG seed from the wall clock, OR-ing in `1` so the state
+/// is never zero (splitmix64 tolerates any seed, but a non-zero start avoids a
+/// trivially-predictable first run). Falls back to the splitmix64 golden-ratio
+/// constant if the clock predates the Unix epoch.
+fn rand_seed() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    nanos | 1
+}
+
+/// Advance the thread-local [splitmix64](https://prng.di.unimi.it/splitmix64.c)
+/// state and return the next 64-bit draw. The same well-distributed mixer the
+/// HNSW index uses for level sampling.
+fn next_rand_u64() -> u64 {
+    RAND_STATE.with(|state| {
+        let z = state.get().wrapping_add(0x9E37_79B9_7F4A_7C15);
+        state.set(z);
+        let mut z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    })
+}
+
+/// `rand()` — a uniformly-distributed random `Float` in the half-open interval
+/// `[0.0, 1.0)`. Takes no arguments and re-draws on every evaluation (per row).
+fn scalar_rand(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("rand", &args, 0, span)?;
+    // Use the top 53 bits — the f64 mantissa width — so every representable
+    // double in `[0,1)` is reachable and the quotient never rounds up to `1.0`.
+    let bits = next_rand_u64() >> 11;
+    Ok(Value::Float(bits as f64 / (1u64 << 53) as f64))
+}
+
+/// `randomUUID()` — a randomly-generated version-4 UUID rendered as the
+/// canonical 36-character `8-4-4-4-12` lowercase-hex string. Takes no arguments
+/// and mints a fresh, practically-unique value on every evaluation. Backed by
+/// the OS CSPRNG (via the `uuid` crate's `getrandom` source), mirroring Neo4j's
+/// `randomUUID()`, which draws from `SecureRandom`.
+fn scalar_random_uuid(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("randomUUID", &args, 0, span)?;
+    Ok(Value::String(uuid::Uuid::new_v4().to_string()))
 }
 
 /// `atan2(y, x)` — the two-argument arctangent, returning the angle (in
@@ -9462,6 +9528,63 @@ mod tests {
         let res = run(source, db);
         assert_eq!(res.rows.len(), 1, "expected one row from {source:?}");
         res.rows[0][0].clone()
+    }
+
+    #[test]
+    fn rand_helper_stays_in_unit_interval_and_advances() {
+        // `scalar_rand` must always land in [0,1) and the thread-local state
+        // must advance, so two consecutive draws (almost surely) differ.
+        let mut prev = None;
+        let mut distinct = 0usize;
+        for _ in 0..1000 {
+            match super::scalar_rand(Vec::new(), zero_span()).unwrap() {
+                Value::Float(f) => {
+                    assert!((0.0..1.0).contains(&f), "rand() out of [0,1): {f}");
+                    if Some(f.to_bits()) != prev {
+                        distinct += 1;
+                    }
+                    prev = Some(f.to_bits());
+                }
+                other => panic!("expected Float, got {other:?}"),
+            }
+        }
+        // A stuck generator would yield `distinct == 1`; splitmix64 advances.
+        assert!(distinct > 900, "rand() barely advanced: {distinct} changes");
+    }
+
+    #[test]
+    fn rand_and_randomuuid_reject_arguments() {
+        assert!(matches!(
+            super::scalar_rand(vec![Value::Integer(1)], zero_span()),
+            Err(ExecError::InvalidFunctionCall { .. })
+        ));
+        assert!(matches!(
+            super::scalar_random_uuid(vec![Value::Integer(1)], zero_span()),
+            Err(ExecError::InvalidFunctionCall { .. })
+        ));
+    }
+
+    #[test]
+    fn random_uuid_helper_emits_canonical_v4() {
+        for _ in 0..256 {
+            match super::scalar_random_uuid(Vec::new(), zero_span()).unwrap() {
+                Value::String(s) => {
+                    assert_eq!(s.len(), 36, "uuid len: {s:?}");
+                    let b = s.as_bytes();
+                    assert_eq!(b[14], b'4', "version nibble must be 4: {s:?}");
+                    assert!(
+                        matches!(b[19], b'8' | b'9' | b'a' | b'b'),
+                        "variant nibble must be 8/9/a/b: {s:?}"
+                    );
+                    assert!(
+                        s.chars()
+                            .all(|c| c == '-' || c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                        "uuid must be lowercase hex/hyphen: {s:?}"
+                    );
+                }
+                other => panic!("expected String, got {other:?}"),
+            }
+        }
     }
 
     #[test]
