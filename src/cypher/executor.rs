@@ -1426,6 +1426,10 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             | "type"
             | "id"
             | "properties"
+            // Container predicate (task `00159`) — empty-test over the three
+            // container types (String / List / Map). Fills the gap `size`
+            // leaves: `size` rejects a Map, so `size(m) = 0` cannot express it.
+            | "isempty"
             // Path functions.
             | "nodes"
             | "relationships"
@@ -5484,6 +5488,7 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "type" => scalar_type(args, span),
         "id" => scalar_id(args, span),
         "properties" => scalar_properties(args, span),
+        "isempty" => scalar_is_empty(args, span),
         "nodes" => scalar_nodes(args, span),
         "relationships" => scalar_relationships(args, span),
         // Unreachable: `is_builtin_scalar_function` gates entry, so any name
@@ -5933,6 +5938,28 @@ fn scalar_size(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
             name,
             format!(
                 "argument must be a List, String, or Path, got {}",
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+/// `isEmpty(x)` — `true` when the container `x` holds no elements, for the
+/// three Neo4j container types: a String (no characters), a List (no items),
+/// or a Map (no entries). A `NULL` argument propagates to `NULL` before this
+/// helper is reached (see [`call_scalar`]); any non-container value is a
+/// recoverable `InvalidFunctionCall`. This fills the gap left by [`scalar_size`],
+/// which rejects a Map and so cannot express `size(m) = 0`.
+fn scalar_is_empty(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("isEmpty", args, span)? {
+        Value::String(s) => Ok(Value::Bool(s.is_empty())),
+        Value::List(items) => Ok(Value::Bool(items.is_empty())),
+        Value::Map(entries) => Ok(Value::Bool(entries.is_empty())),
+        other => Err(fn_err(
+            "isEmpty",
+            format!(
+                "argument must be a String, List, or Map, got {}",
                 other.type_name()
             ),
             span,
@@ -9481,6 +9508,32 @@ mod tests {
         );
         // Wrong arity is still a recoverable error.
         match err("RETURN toStringOrNull(1, 2) AS v", &db) {
+            ExecError::InvalidFunctionCall { .. } => {}
+            other => panic!("expected InvalidFunctionCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_empty_over_the_three_container_types() {
+        let db = drevo();
+        // Empty containers => true; non-empty => false; across String/List/Map.
+        assert_eq!(scalar("RETURN isEmpty('') AS v", &db), Value::Bool(true));
+        assert_eq!(scalar("RETURN isEmpty('x') AS v", &db), Value::Bool(false));
+        assert_eq!(scalar("RETURN isEmpty([]) AS v", &db), Value::Bool(true));
+        assert_eq!(scalar("RETURN isEmpty([1]) AS v", &db), Value::Bool(false));
+        assert_eq!(scalar("RETURN isEmpty({}) AS v", &db), Value::Bool(true));
+        assert_eq!(
+            scalar("RETURN isEmpty({a: 1}) AS v", &db),
+            Value::Bool(false)
+        );
+        // NULL argument propagates to NULL.
+        assert_eq!(scalar("RETURN isEmpty(null) AS v", &db), Value::Null);
+        // A non-container argument is a recoverable error, as is wrong arity.
+        match err("RETURN isEmpty(5) AS v", &db) {
+            ExecError::InvalidFunctionCall { .. } => {}
+            other => panic!("expected InvalidFunctionCall, got {other:?}"),
+        }
+        match err("RETURN isEmpty('a', 'b') AS v", &db) {
             ExecError::InvalidFunctionCall { .. } => {}
             other => panic!("expected InvalidFunctionCall, got {other:?}"),
         }

@@ -148,6 +148,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | List conversion functions (`toIntegerList`, `toFloatList`, `toBooleanList`, `toStringList`) | ✅ Supported (element-wise conversion; an unconvertible or `NULL` element becomes a `NULL` slot, preserving list length; a non-list argument errors). |
 | Lenient conversion functions (`toIntegerOrNull`, `toFloatOrNull`, `toBooleanOrNull`, `toStringOrNull`) | ✅ Supported (fully lenient; any unconvertible value yields `NULL` instead of erroring — including the List/Map inputs the strict `toString` rejects). |
 | Statistical aggregations (`stDev`, `stDevP`, `percentileCont`, `percentileDisc`) | ✅ Supported (alongside `count` / `sum` / `avg` / `min` / `max` / `collect`; null-skipping; percentile fraction in `[0, 1]`). |
+| Container predicate (`isEmpty(x)`) | ✅ Supported (empty-test over a String / List / Map; NULL-propagating; a non-container argument errors). Fills the gap `size` leaves — `size` rejects a Map, so `size(m) = 0` cannot express it. |
 | `CALL` / `YIELD` — built-in `db.*` introspection (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`) | ✅ Supported (standalone or `YIELD … WHERE`). |
 | User-defined / `apoc.*` / `gds.*` procedures | ⛔ Only the built-in `db.*` procedures exist. |
 | Regex `=~` | ✅ Supported (full-string match; common Java/Neo4j subset incl. `(?i)`). |
