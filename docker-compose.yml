@@ -1,15 +1,18 @@
 # drevo — Docker Compose deployment
 #
-# Task 00047: single-service compose file for local development and
-# small single-host deployments. Builds the image from the local
-# Dockerfile, publishes the HTTP API on 8080, and persists the redb
-# database file in a named volume mounted at /data.
+# Task 00047 / 00163: single-service compose file for local development and
+# small single-host deployments. Builds the image from the local Dockerfile,
+# publishes the HTTP API + embedded Web UI on 8080, and BIND-MOUNTS a host
+# folder to /data so the redb database file lives on the host (inspectable,
+# survives `docker compose down`). Host path = ${DREVO_DATA_DIR:-./data}; the
+# container runs as the host user so it can take redb's write lock on it.
 #
 # Usage:
-#   docker compose up -d         # build + start in background
-#   docker compose logs -f       # follow logs
-#   docker compose down          # stop and remove containers (volume kept)
-#   docker compose down -v       # stop and wipe persistent data
+#   mkdir -p ./data                              # or point DREVO_DATA_DIR elsewhere
+#   DREVO_UID=$(id -u) DREVO_GID=$(id -g) \
+#     DREVO_DATA_DIR=~/drevo_data docker compose up -d
+#   curl localhost:8080/health ; open http://localhost:8080/ui
+#   docker compose down          # stop; the host data folder is left untouched
 #
 # Note: the top-level `version:` key is intentionally omitted — modern
 # Compose Spec (docker-compose v2+) treats it as obsolete.
@@ -24,12 +27,17 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+    # Run as the host user so the non-root image user can read/write the
+    # bind-mounted redb file (redb takes a write lock even for read traffic).
+    user: "${DREVO_UID:-1000}:${DREVO_GID:-1000}"
     environment:
       DREVO_HOST: "0.0.0.0"
       DREVO_PORT: "8080"
       DREVO_DATA_DIR: "/data"
     volumes:
-      - drevo-data:/data
+      # Bind-mount a host folder (not a named volume): the redb file lives on
+      # the host at ${DREVO_DATA_DIR:-./data}/drevo.redb.
+      - ${DREVO_DATA_DIR:-./data}:/data
     healthcheck:
       # GET /health is intentionally cheap and DB-independent (task 00042),
       # so it stays green even when the DB is under contention.
@@ -38,7 +46,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-
-volumes:
-  drevo-data:
-    driver: local
