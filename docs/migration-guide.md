@@ -151,6 +151,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Container predicate (`isEmpty(x)`) | ✅ Supported (empty-test over a String / List / Map; NULL-propagating; a non-container argument errors). Fills the gap `size` leaves — `size` rejects a Map, so `size(m) = 0` cannot express it. |
 | `round(value[, precision[, mode]])` | ✅ Supported (all three overloads; `mode` is one of `UP` / `DOWN` / `CEILING` / `FLOOR` / `HALF_UP` / `HALF_DOWN` / `HALF_EVEN`, case-insensitive). Rounds on decimal digits, so `round(1.255, 2) = 1.26` matches Neo4j's `BigDecimal` rather than a binary-scaling `1.25`. Negative `precision` rounds left of the point; NULL-propagating; non-finite values pass through. |
 | Non-deterministic functions (`rand()`, `randomUUID()`) | ✅ Supported (both zero-argument; re-draw per row). `rand()` returns a uniform `Float` in `[0,1)`; `randomUUID()` returns a version-4 UUID string. Passing any argument errors. |
+| Numeric predicate (`isNaN(n)`) | ✅ Supported (`true` for the IEEE-754 NaN value, `false` for any other number — an `Integer` is never NaN and `±Infinity` are numbers, not NaN; NULL-propagating; a non-numeric argument errors). The only NaN test, since `NaN = NaN` is false. |
 | `CALL` / `YIELD` — built-in `db.*` introspection (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`) | ✅ Supported (standalone or `YIELD … WHERE`). |
 | User-defined / `apoc.*` / `gds.*` procedures | ⛔ Only the built-in `db.*` procedures exist. |
 | Regex `=~` | ✅ Supported (full-string match; common Java/Neo4j subset incl. `(?i)`). |
