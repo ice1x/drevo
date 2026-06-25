@@ -565,6 +565,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
 | List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `id`, `properties` |
 | Container predicate | `isEmpty(x)` — `true` when the container `x` holds no elements; accepts a String, a List, or a Map. Fills the gap left by `size`, which rejects a Map (so `size(m) = 0` cannot express it). A non-container argument errors |
+| Numeric predicate | `isNaN(n)` — `true` when `n` is the IEEE-754 NaN value, `false` for any other number (an `Integer` is never NaN, and `±Infinity` are numbers, not NaN). The only way to test for NaN, since `NaN = NaN` is *false*. See [isNaN()](#testing-for-nan-with-isnan) |
 | Non-deterministic | `rand()` — uniform `Float` in `[0.0, 1.0)`; `randomUUID()` — a fresh version-4 UUID string. Both take **no arguments** and re-draw on every evaluation (per row). See [Non-deterministic functions](#non-deterministic-functions) |
 | Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
 
@@ -688,6 +689,41 @@ RETURN toInteger(rand() * 6) + 1 AS die, randomUUID() AS ref
 // Stamp a stable reference on each newly-created node.
 CREATE (b:Bug {title: 'login crash', ref: randomUUID()})
 RETURN b.ref
+```
+
+---
+
+### Testing for NaN with `isNaN()`
+
+Task `00162` adds `isNaN(n)`, the boolean predicate that tells the IEEE-754 NaN
+value apart from every other number. It is the **only** way to test for NaN in
+Cypher: per IEEE-754, `NaN = NaN` is *false*, so an equality comparison can
+never catch it.
+
+| Argument | Result |
+|----------|--------|
+| A `Float` that is NaN | `true` |
+| Any other `Float`, including `±Infinity` | `false` |
+| An `Integer` (never NaN) | `false` |
+| `NULL` | `NULL` (NULL-propagating) |
+| A non-numeric value (String, Bool, List, Map) | recoverable `ExecError::InvalidFunctionCall` |
+
+NaN arises from the [trigonometric / logarithmic](#trigonometric--logarithmic-functions)
+domain edges (`sqrt(-1)`, `log(-1)`, `asin(2)`, …) and from float division of
+zero by zero (`0.0/0.0`). `isNaN` is the guard that keeps such an undefined
+result from silently flowing into a report:
+
+```cypher
+// Guard a ratio whose denominator may be zero.
+WITH 0.0 AS reopened, 0.0 AS resolved
+RETURN isNaN(reopened / resolved) AS rate_undefined
+```
+
+```cypher
+// Keep only the rows whose computed value is NaN.
+UNWIND [sqrt(-1.0), sqrt(4.0), 0.0 / 0.0] AS x
+WITH x WHERE isNaN(x)
+RETURN count(*) AS nan_count
 ```
 
 ---

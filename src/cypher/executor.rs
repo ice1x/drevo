@@ -1430,6 +1430,10 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             // container types (String / List / Map). Fills the gap `size`
             // leaves: `size` rejects a Map, so `size(m) = 0` cannot express it.
             | "isempty"
+            // Numeric predicate (task `00162`) — `isNaN(n)` tells the IEEE-754
+            // NaN value apart from every other number. The only way to test
+            // for NaN in Cypher, since `NaN = NaN` is false.
+            | "isnan"
             // Path functions.
             | "nodes"
             | "relationships"
@@ -5494,6 +5498,7 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "id" => scalar_id(args, span),
         "properties" => scalar_properties(args, span),
         "isempty" => scalar_is_empty(args, span),
+        "isnan" => scalar_is_nan(args, span),
         "nodes" => scalar_nodes(args, span),
         "relationships" => scalar_relationships(args, span),
         // ---- Non-deterministic value functions (task `00161`) ----
@@ -6050,6 +6055,28 @@ fn scalar_sign(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         0
     };
     Ok(Value::Integer(sign))
+}
+
+/// `isNaN(n)` — `true` when `n` is the IEEE-754 NaN value, `false` for any
+/// other number. An `Integer` is never NaN, and `±Infinity` are numbers (not
+/// NaN), so both yield `false`. A non-numeric argument is a recoverable error.
+///
+/// This is the only way to test for NaN in Cypher: per IEEE-754 `NaN = NaN`
+/// is *false*, so an equality comparison can never catch it. It pairs with the
+/// trigonometric / logarithmic library (task `00156`), whose domain edges
+/// (`sqrt(-1)`, `log(-1)`, `asin(2)`, …) and float division (`0.0/0.0`)
+/// produce exactly the NaN this detects. `NULL` propagates in `call_scalar`.
+fn scalar_is_nan(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("isNaN", &args, 1, span)?;
+    match &args[0] {
+        Value::Integer(_) => Ok(Value::Bool(false)),
+        Value::Float(f) => Ok(Value::Bool(f.is_nan())),
+        other => Err(fn_err(
+            "isNaN",
+            format!("argument must be a number, got {}", other.type_name()),
+            span,
+        )),
+    }
 }
 
 /// `toInteger(x)` — converts a number or numeric string to an Integer.
@@ -9585,6 +9612,45 @@ mod tests {
                 other => panic!("expected String, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn is_nan_helper_classifies_values() {
+        // NaN floats -> true; ordinary floats, infinities, and integers -> false.
+        assert_eq!(
+            super::scalar_is_nan(vec![Value::Float(f64::NAN)], zero_span()).unwrap(),
+            Value::Bool(true)
+        );
+        for v in [
+            Value::Float(0.0),
+            Value::Float(2.5),
+            Value::Float(f64::INFINITY),
+            Value::Float(f64::NEG_INFINITY),
+            Value::Integer(0),
+            Value::Integer(42),
+        ] {
+            assert_eq!(
+                super::scalar_is_nan(vec![v.clone()], zero_span()).unwrap(),
+                Value::Bool(false),
+                "isNaN({v:?}) should be false"
+            );
+        }
+    }
+
+    #[test]
+    fn is_nan_helper_rejects_non_numeric_and_bad_arity() {
+        assert!(matches!(
+            super::scalar_is_nan(vec![Value::String("x".into())], zero_span()),
+            Err(ExecError::InvalidFunctionCall { .. })
+        ));
+        assert!(matches!(
+            super::scalar_is_nan(vec![], zero_span()),
+            Err(ExecError::InvalidFunctionCall { .. })
+        ));
+        assert!(matches!(
+            super::scalar_is_nan(vec![Value::Float(1.0), Value::Float(2.0)], zero_span()),
+            Err(ExecError::InvalidFunctionCall { .. })
+        ));
     }
 
     #[test]
