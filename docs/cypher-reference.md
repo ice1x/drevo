@@ -565,6 +565,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
 | List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `id`, `properties` |
 | Container predicate | `isEmpty(x)` — `true` when the container `x` holds no elements; accepts a String, a List, or a Map. Fills the gap left by `size`, which rejects a Map (so `size(m) = 0` cannot express it). A non-container argument errors |
+| Non-deterministic | `rand()` — uniform `Float` in `[0.0, 1.0)`; `randomUUID()` — a fresh version-4 UUID string. Both take **no arguments** and re-draw on every evaluation (per row). See [Non-deterministic functions](#non-deterministic-functions) |
 | Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
 
 **NULL handling.** Every function except `coalesce` is *NULL-propagating*: a `NULL`
@@ -661,6 +662,32 @@ returned unchanged.
 RETURN round(2.71828, 2) AS pe,
        round(1234.5, -2) AS thousands,
        round(2.5, 0, 'HALF_EVEN') AS banker
+```
+
+### Non-deterministic functions
+
+Task `00161` adds the two zero-argument value generators Neo4j exposes. Both
+re-draw on **every evaluation**, so used inside `UNWIND` / a scan they yield a
+fresh value per row.
+
+| Function | Result | Notes |
+|----------|--------|-------|
+| `rand()` | Uniform `Float` in `[0.0, 1.0)` | Backed by a fast per-thread non-cryptographic generator, mirroring Neo4j's `ThreadLocalRandom`. The result never reaches `1.0`. |
+| `randomUUID()` | A version-4 UUID as a 36-char `8-4-4-4-12` lowercase-hex `String` | Backed by the OS CSPRNG, mirroring Neo4j's `SecureRandom`. Practically unique across draws. |
+
+Both take **no arguments** — passing any is a recoverable
+`ExecError::InvalidFunctionCall`. They compose like any other expression:
+
+```cypher
+// Roll a six-sided die and mint an external id per row.
+UNWIND range(1, 3) AS i
+RETURN toInteger(rand() * 6) + 1 AS die, randomUUID() AS ref
+```
+
+```cypher
+// Stamp a stable reference on each newly-created node.
+CREATE (b:Bug {title: 'login crash', ref: randomUUID()})
+RETURN b.ref
 ```
 
 ---
