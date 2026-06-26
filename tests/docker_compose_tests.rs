@@ -1,8 +1,8 @@
 //! docker-compose.yml structure and convention tests.
 //!
-//! Task 00047: verify the docker-compose.yml at the project root exposes
-//! drevo as a single service with the expected volume mount, port
-//! mapping, and environment defaults.
+//! Task 00047 / 00163: verify the docker-compose.yml at the project root
+//! exposes drevo as a single service with the expected host bind-mount (00163
+//! replaced the named volume), port mapping, and environment defaults.
 //!
 //! These tests parse docker-compose.yml as text so they work without a
 //! YAML parser dependency or a running Docker daemon — mirroring the
@@ -93,37 +93,26 @@ fn docker_compose_mounts_data_volume() {
 }
 
 #[test]
-fn docker_compose_declares_named_volume() {
+fn docker_compose_bind_mounts_host_data_dir() {
     let content = read_compose();
-    // We expect a top-level `volumes:` section that names the data volume.
-    // Look for a line starting with `volumes:` whose indent is zero (top
-    // level), then check that a `drevo-data` (or similar) key is named.
-    let mut in_top_level_volumes = false;
-    let mut found = false;
-    for line in content.lines() {
-        if line.starts_with("volumes:") {
-            in_top_level_volumes = true;
-            continue;
-        }
-        if in_top_level_volumes {
-            if line.starts_with(|c: char| !c.is_whitespace()) && !line.trim().is_empty() {
-                // Left the volumes section
-                in_top_level_volumes = false;
-                continue;
-            }
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("drevo-data:")
-                || trimmed.starts_with("drevo_data:")
-                || trimmed.starts_with("data:")
-            {
-                found = true;
-                break;
-            }
-        }
-    }
+    // Task 00163: the named volume was replaced with a HOST bind-mount so the
+    // redb file lives on the host (inspectable, survives `compose down`) and a
+    // single drevo-server owns it. The mount maps a configurable host dir to
+    // /data, and the service runs as the host user so the non-root image can
+    // take redb's write lock on the bind-mounted folder.
     assert!(
-        found,
-        "docker-compose.yml must declare a named top-level volume (drevo-data / drevo_data / data) for /data persistence"
+        content.contains("${DREVO_DATA_DIR:-./data}:/data"),
+        "docker-compose.yml must bind-mount the configurable host data dir into /data"
+    );
+    assert!(
+        content.contains("${DREVO_UID:-1000}:${DREVO_GID:-1000}"),
+        "docker-compose.yml must run as the host user (DREVO_UID:DREVO_GID) to write the bind-mounted redb file"
+    );
+    // The old named volume must be gone — a named volume would shadow the
+    // bind-mount and hide the host file.
+    assert!(
+        !content.contains("drevo-data:"),
+        "docker-compose.yml must not declare the old `drevo-data` named volume (use a host bind-mount)"
     );
 }
 
