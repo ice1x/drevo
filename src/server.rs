@@ -42,6 +42,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::api::{build_router, ApiState};
+use crate::bolt::listener::accept_and_run_session;
 use crate::db::Drevo;
 
 /// Default bind address — every interface (container convention).
@@ -268,13 +269,51 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     }
 
     tracing::info!(path = %db_path.display(), "opening database");
-    let db = Drevo::open(&db_path).map_err(|source| RunError::DatabaseOpen {
-        path: db_path.clone(),
-        source,
-    })?;
-    let state = ApiState::new(Arc::new(db));
+    let db = Arc::new(
+        Drevo::open(&db_path).map_err(|source| RunError::DatabaseOpen {
+            path: db_path.clone(),
+            source,
+        })?,
+    );
+    let state = ApiState::new(Arc::clone(&db));
     let shutdown_state = state.clone();
     let router = build_router(state);
+
+    // Optional Bolt protocol listener (Neo4j-compatible), opt-in via the
+    // `DREVO_BOLT_PORT` env var. It shares the SAME `Drevo` handle as the HTTP
+    // server: redb is single-process, so HTTP + Web UI + Bolt must live in one
+    // process on one handle (you cannot run a second process against the same
+    // file). Runs without authentication (Authenticator = None). Sessions end
+    // when the process exits — no separate graceful drain.
+    if let Some(bolt_port) = std::env::var("DREVO_BOLT_PORT")
+        .ok()
+        .and_then(|raw| raw.parse::<u16>().ok())
+    {
+        let bolt_addr = SocketAddr::new(addr.ip(), bolt_port);
+        let bolt_listener = tokio::net::TcpListener::bind(bolt_addr)
+            .await
+            .map_err(|source| RunError::Bind {
+                addr: bolt_addr,
+                source,
+            })?;
+        tracing::info!(%bolt_addr, "bolt listening");
+        let bolt_db = Arc::clone(&db);
+        tokio::spawn(async move {
+            loop {
+                match bolt_listener.accept().await {
+                    Ok((socket, _peer)) => {
+                        let conn_db = Arc::clone(&bolt_db);
+                        tokio::spawn(async move {
+                            if let Err(err) = accept_and_run_session(socket, &conn_db).await {
+                                tracing::warn!(error = %err, "bolt session ended with error");
+                            }
+                        });
+                    }
+                    Err(err) => tracing::warn!(error = %err, "bolt accept failed"),
+                }
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

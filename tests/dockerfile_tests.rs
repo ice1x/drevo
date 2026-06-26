@@ -68,6 +68,23 @@ fn dockerfile_exposes_port_8080() {
 }
 
 #[test]
+fn dockerfile_enables_bolt_by_default() {
+    // Task 00163: the container serves the Neo4j-compatible Bolt listener by
+    // default (DREVO_BOLT_PORT set) and exposes its port.
+    let content = read_dockerfile();
+    assert!(
+        content.lines().any(|l| l.contains("DREVO_BOLT_PORT")),
+        "Dockerfile must set DREVO_BOLT_PORT so the container serves Bolt"
+    );
+    assert!(
+        content
+            .lines()
+            .any(|l| l.trim_start().starts_with("EXPOSE") && l.contains("7687")),
+        "Dockerfile must EXPOSE the Bolt port 7687"
+    );
+}
+
+#[test]
 fn dockerfile_has_volume_data() {
     let content = read_dockerfile();
     let has_volume = content

@@ -58,8 +58,12 @@ USER drevo
 ENV DREVO_HOST=0.0.0.0
 ENV DREVO_PORT=8080
 ENV DREVO_DATA_DIR=/data
+# Enable the Neo4j-compatible Bolt listener by default in the container
+# (task 00163) so Neo4j drivers / Cypher tools can connect. It shares the same
+# single drevo-server process + redb handle as the HTTP API.
+ENV DREVO_BOLT_PORT=7687
 
-EXPOSE 8080
+EXPOSE 8080 7687
 
 # Use exec form so the binary receives SIGTERM directly from Docker
 ENTRYPOINT ["drevo-server"]

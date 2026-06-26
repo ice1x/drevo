@@ -26,7 +26,8 @@ services:
     container_name: drevo
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8080:8080" # HTTP API + Web UI
+      - "7687:7687" # Bolt (Neo4j-compatible; DREVO_BOLT_PORT set in the image)
     # Run as the host user so the non-root image user can read/write the
     # bind-mounted redb file (redb takes a write lock even for read traffic).
     user: "${DREVO_UID:-1000}:${DREVO_GID:-1000}"

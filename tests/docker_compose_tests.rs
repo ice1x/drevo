@@ -76,6 +76,16 @@ fn docker_compose_maps_port_8080() {
 }
 
 #[test]
+fn docker_compose_maps_bolt_port_7687() {
+    // Task 00163: the container also serves the Neo4j-compatible Bolt port.
+    let content = read_compose();
+    assert!(
+        content.contains("7687:7687"),
+        "docker-compose.yml must publish the Bolt port 7687"
+    );
+}
+
+#[test]
 fn docker_compose_mounts_data_volume() {
     let content = read_compose();
     // The named volume side and the in-container path must both be present.
