@@ -83,6 +83,22 @@ fn id_from_key(key: &[u8], prefix_len: usize) -> Option<u64> {
     Some(u64::from_le_bytes(arr))
 }
 
+/// Build (but do not write) the property index entries for a node — every
+/// key is `node_id`-scoped, so a bulk insert can fold many nodes' entries
+/// into one transaction. Shared by [`index_node`] and the batch node-create
+/// path ([`crate::db::Drevo::create_nodes`]).
+pub fn node_index_entries(
+    node_id: u64,
+    properties: &Properties,
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(properties.len());
+    for (key, value) in properties.iter() {
+        let value_bytes = encode_value(value)?;
+        entries.push((property_key(key, &value_bytes, node_id), Vec::new()));
+    }
+    Ok(entries)
+}
+
 /// Add an index entry for every property of a node. Called by every
 /// node-insertion path in [`crate::db::Drevo`] alongside the FTS indexer.
 pub fn index_node(
@@ -90,9 +106,8 @@ pub fn index_node(
     node_id: u64,
     properties: &Properties,
 ) -> Result<()> {
-    for (key, value) in properties.iter() {
-        let value_bytes = encode_value(value)?;
-        backend.put(&property_key(key, &value_bytes, node_id), &[])?;
+    for (key, value) in node_index_entries(node_id, properties)? {
+        backend.put(&key, &value)?;
     }
     Ok(())
 }
