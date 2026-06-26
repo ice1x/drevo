@@ -309,6 +309,29 @@ impl Drevo {
         })
     }
 
+    /// Batch-create many nodes in a single storage transaction.
+    ///
+    /// Bridges [`drevo::db::Drevo::create_nodes`]: folds every node's record
+    /// and secondary-index writes into one redb transaction, so a bulk import
+    /// costs one fsync instead of N. Title uniqueness is enforced against the
+    /// store and within the batch; the first collision aborts the whole call
+    /// (`DuplicateTitleError`) before anything is written.
+    fn create_nodes(
+        &self,
+        py: Python<'_>,
+        new_nodes: Vec<types::NewNode>,
+    ) -> PyResult<Vec<types::Node>> {
+        let owned: Vec<_> = new_nodes.into_iter().map(|n| n.inner).collect();
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                let nodes = py
+                    .allow_threads(move || db.create_nodes(owned))
+                    .map_err(map_err)?;
+                Ok(nodes.into_iter().map(types::Node::new).collect())
+            })
+        })
+    }
+
     fn get_node(&self, py: Python<'_>, id: u64) -> PyResult<Option<types::Node>> {
         guarded(|| {
             with_db(&self.inner, |db| {
@@ -381,6 +404,28 @@ impl Drevo {
                     .allow_threads(|| db.create_edge(new_edge.inner.clone()))
                     .map_err(map_err)?;
                 Ok(types::Edge::new(edge))
+            })
+        })
+    }
+
+    /// Batch-create many edges in a single storage transaction.
+    ///
+    /// Bridges [`drevo::db::Drevo::create_edges`]: the edge sibling of
+    /// [`Self::create_nodes`]. Every edge's endpoints must already exist
+    /// (create the nodes first); the first invalid edge aborts the call
+    /// (`NodeNotFoundError` / `InvalidWeightError`) before any write.
+    fn create_edges(
+        &self,
+        py: Python<'_>,
+        new_edges: Vec<types::NewEdge>,
+    ) -> PyResult<Vec<types::Edge>> {
+        let owned: Vec<_> = new_edges.into_iter().map(|e| e.inner).collect();
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                let edges = py
+                    .allow_threads(move || db.create_edges(owned))
+                    .map_err(map_err)?;
+                Ok(edges.into_iter().map(types::Edge::new).collect())
             })
         })
     }
