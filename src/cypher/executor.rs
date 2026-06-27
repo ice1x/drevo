@@ -1442,6 +1442,15 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             // in `[0,1)`) and `randomUUID()` (a fresh version-4 UUID string).
             | "rand"
             | "randomuuid"
+            // Temporal value functions (task `00163`) — `timestamp()` (epoch
+            // milliseconds as an Integer) and `datetime()` (the current UTC
+            // instant as an ISO-8601 String; drevo's Cypher has no dedicated
+            // temporal value type). Zero-argument and non-deterministic, like
+            // `rand`/`randomUUID`. Needed by Neo4j-compatible clients that
+            // stamp `created_at` / `updated_at` on writes (e.g. the Bolt
+            // drop-in of the knowledge-graph MCP).
+            | "timestamp"
+            | "datetime"
     )
 }
 
@@ -5507,6 +5516,8 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         // semantics.
         "rand" => scalar_rand(args, span),
         "randomuuid" => scalar_random_uuid(args, span),
+        "timestamp" => scalar_timestamp(args, span),
+        "datetime" => scalar_datetime(args, span),
         // Unreachable: `is_builtin_scalar_function` gates entry, so any name
         // reaching here is a missing arm rather than user input.
         other => Err(ExecError::Unsupported {
@@ -5651,6 +5662,60 @@ fn scalar_rand(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
 fn scalar_random_uuid(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("randomUUID", &args, 0, span)?;
     Ok(Value::String(uuid::Uuid::new_v4().to_string()))
+}
+
+/// `timestamp()` — the current wall-clock time as milliseconds since the Unix
+/// epoch (an `Integer`). Zero-argument and non-deterministic (re-read on every
+/// evaluation), mirroring Neo4j's `timestamp()`.
+fn scalar_timestamp(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("timestamp", &args, 0, span)?;
+    Ok(Value::Integer(unix_millis_now()))
+}
+
+/// `datetime()` — the current UTC instant as an ISO-8601 string
+/// (`YYYY-MM-DDThh:mm:ss.sssZ`). drevo's Cypher has no dedicated temporal value
+/// type, so the zero-argument `datetime()` constructor returns the canonical
+/// ISO-8601 *string*: storable, Bolt-serialisable, and lexicographically
+/// ordering like the instant itself — enough for the common "stamp
+/// `created_at` / `updated_at`" use. Non-deterministic, like `timestamp()`.
+fn scalar_datetime(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("datetime", &args, 0, span)?;
+    Ok(Value::String(iso8601_utc(unix_millis_now())))
+}
+
+/// Current wall-clock time in milliseconds since the Unix epoch. A clock set
+/// before 1970 clamps to `0` rather than panicking.
+fn unix_millis_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Format a Unix-epoch millisecond instant as an ISO-8601 UTC string
+/// (`YYYY-MM-DDThh:mm:ss.sssZ`) with no external date dependency — Howard
+/// Hinnant's `civil_from_days` algorithm over the proleptic Gregorian calendar.
+fn iso8601_utc(epoch_ms: i64) -> String {
+    let secs = epoch_ms.div_euclid(1000);
+    let millis = epoch_ms.rem_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (hh, mm, ss) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+
+    // civil_from_days: days since 1970-01-01 -> (year, month, day).
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097; // day-of-era, [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day-of-year, [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { year + 1 } else { year };
+
+    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }
 
 /// `atan2(y, x)` — the two-argument arctangent, returning the angle (in
@@ -9589,6 +9654,65 @@ mod tests {
             super::scalar_random_uuid(vec![Value::Integer(1)], zero_span()),
             Err(ExecError::InvalidFunctionCall { .. })
         ));
+    }
+
+    #[test]
+    fn datetime_and_timestamp_are_builtins() {
+        assert!(super::is_builtin_scalar_function("datetime"));
+        assert!(super::is_builtin_scalar_function("timestamp"));
+    }
+
+    #[test]
+    fn timestamp_and_datetime_reject_arguments() {
+        assert!(matches!(
+            super::scalar_timestamp(vec![Value::Integer(1)], zero_span()),
+            Err(ExecError::InvalidFunctionCall { .. })
+        ));
+        assert!(matches!(
+            super::scalar_datetime(vec![Value::Integer(1)], zero_span()),
+            Err(ExecError::InvalidFunctionCall { .. })
+        ));
+    }
+
+    #[test]
+    fn timestamp_returns_recent_epoch_millis() {
+        match super::scalar_timestamp(Vec::new(), zero_span()).unwrap() {
+            Value::Integer(ms) => {
+                assert!(ms > 1_600_000_000_000, "expected recent epoch ms, got {ms}")
+            }
+            other => panic!("expected Integer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn datetime_returns_iso8601_string() {
+        match super::scalar_datetime(Vec::new(), zero_span()).unwrap() {
+            Value::String(s) => {
+                assert_eq!(s.len(), 24, "iso8601 len: {s:?}");
+                assert!(s.ends_with('Z'), "{s:?}");
+                assert_eq!(&s[4..5], "-");
+                assert_eq!(&s[10..11], "T");
+            }
+            other => panic!("expected String, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iso8601_utc_known_instants() {
+        assert_eq!(super::iso8601_utc(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(
+            super::iso8601_utc(1_609_459_200_000),
+            "2021-01-01T00:00:00.000Z"
+        );
+        assert_eq!(
+            super::iso8601_utc(1_609_459_200_000 + 3_661_001),
+            "2021-01-01T01:01:01.001Z"
+        );
+        // Leap day.
+        assert_eq!(
+            super::iso8601_utc(1_456_704_000_000),
+            "2016-02-29T00:00:00.000Z"
+        );
     }
 
     #[test]
