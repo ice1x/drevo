@@ -153,6 +153,24 @@ fn dockerfile_copies_binary_from_builder() {
 }
 
 #[test]
+fn dockerfile_copies_static_web_assets() {
+    // The embedded Web UI (task 00092) is compiled INTO the binary via
+    // `include_str!("../static/web/…")` in src/web_ui.rs, so the builder stage
+    // must COPY `static/` into the build context or the release build fails
+    // with "couldn't read static/web/styles.css". Regression source: task
+    // 00163 — the container had never been built end-to-end and silently
+    // lacked this COPY.
+    let content = read_dockerfile();
+    let has_copy = content
+        .lines()
+        .any(|l| l.trim_start().starts_with("COPY") && l.contains("static/"));
+    assert!(
+        has_copy,
+        "Dockerfile must COPY static/ into the builder (web_ui include_str! assets)"
+    );
+}
+
+#[test]
 fn dockerignore_exists() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(".dockerignore");
     assert!(path.exists(), ".dockerignore must exist at project root");
