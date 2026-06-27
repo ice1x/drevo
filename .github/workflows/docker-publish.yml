@@ -114,22 +114,32 @@ jobs:
       # Docker Publish was red on every push to main from before #90
       # through bce8ade because of this exact error.
       #
-      # Fix: point DOCKER_CONFIG at a per-run temp directory containing
-      # a `config.json` of just `{}`. With no `credsStore` key, docker
-      # writes the auth blob as plain JSON inside DOCKER_CONFIG —
-      # ephemeral, never touches the Keychain, GC'd with the workspace.
+      # NOTE: a `{}` (or `{"credsStore":""}`) config does NOT help — Docker
+      # Desktop RE-INJECTS `credsStore: osxkeychain` on `docker login`. Fix:
+      # skip `docker login` entirely and pre-bake the base64 `auths` blob into
+      # the per-run DOCKER_CONFIG below; reading auths from the file invokes no
+      # credential helper, so the Keychain is never touched.
       # Placed BEFORE buildx setup so the buildx instance also lives
       # inside DOCKER_CONFIG and the post-job `docker buildx rm` step
       # finds it without falling back to the user config.
       #
       # Pinned by
       # `tests/ci_self_hosted_runner_tests.rs::docker_publish_overrides_docker_config_to_avoid_macos_keychain`.
-      - name: Use ephemeral DOCKER_CONFIG (bypass macOS keychain)
+      - name: Set up ephemeral DOCKER_CONFIG with GHCR auth (no keychain)
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           DC="${RUNNER_TEMP:-/tmp}/docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$DC"
-          echo '{}' > "$DC/config.json"
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            auth=$(printf '%s' "${GHCR_USER}:${GHCR_TOKEN}" | base64 | tr -d '\n')
+            printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$auth" > "$DC/config.json"
+          else
+            printf '{}' > "$DC/config.json"
+          fi
           echo "DOCKER_CONFIG=$DC" >> "$GITHUB_ENV"
 
       # QEMU first — buildx needs the binfmt_misc handlers registered
@@ -142,17 +152,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Skip the login step on pull_request events — fork PRs do not
-      # receive `packages: write` on the GITHUB_TOKEN and the step
-      # would fail with a 403. The build step below still runs and
-      # validates the Dockerfile on every PR.
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      # No `docker login` step — GHCR auth is pre-baked into DOCKER_CONFIG
+      # above (avoids the macOS keychain credsStore). On pull_request nothing
+      # is pushed, so the absent auth is fine; the build step still validates
+      # the image.
 
       - name: Extract Docker metadata
         id: meta
