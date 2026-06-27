@@ -714,6 +714,7 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 - [ ] `00101` Benchmark vs competitors — KuzuDB, Memgraph, Neo4j comparison runs in CI
 - [x] `00102` **Comprehensive docs — user guide, admin guide, SDK reference, Cypher reference, migration guide** — adds a user-facing [`docs/`](docs/) tree, the companion to this design-oriented README, organised by audience: [`docs/user-guide.md`](docs/user-guide.md) (data model, the four ways to reach the engine, and an end-to-end workflow for each of the five target scenarios), [`docs/cypher-reference.md`](docs/cypher-reference.md) (the exact supported Cypher subset — clauses, `WHERE`, aggregation, variable-length paths, the `keywords()`/`similar()` extensions, and an honest "not yet supported" edge), [`docs/sdk-reference.md`](docs/sdk-reference.md) (Rust API, Python SDK + graph-RAG helpers, HTTP routes, Bolt, MCP tools, Cargo features — signatures grounded in `src/db.rs`/`model.rs` and the `.pyi` stubs), [`docs/admin-guide.md`](docs/admin-guide.md) (binaries, env-var config, Docker/Kustomize deploy, Prometheus `/metrics`, redb single-file backup, `bolt-auth`/`bolt-tls`, and the replication/streaming/CDC substrate — explicitly flagged as library-level, not a server flag), and [`docs/migration-guide.md`](docs/migration-guide.md) (the three-phase `neo4j-to-drevo` dump→dry-run→import flow, label-set→`kind` mapping, and the post-migration Bolt/Cypher compatibility surface). **The docs are executable specification, not prose**: [`tests/docs_examples.rs`](tests/docs_examples.rs) extracts every fenced `cypher` block in the reference, `parse`s and `execute`s it on a fresh in-memory database, and fails CI if a documented construct ever stops working; it also asserts the docs tree is structurally whole and that every relative cross-link resolves. No production code change — the suite *locks* the docs against drift the way `00099` locked the parser against panics. Cites: `drevo-tdd` §"three test layers".
 - [x] `00130` **Observability — Prometheus `/metrics` + structured query log** — production deployments need to answer *how much traffic, how fast?* and *which queries ran, did they fail?* without a debugger attached. Adds the always-compiled, dependency-free [`observability`](src/observability/mod.rs) module: a lock-free metrics [`Registry`](src/observability/mod.rs) with the three Prometheus shapes ([`Counter`](src/observability/mod.rs)/[`Gauge`](src/observability/mod.rs)/[`Histogram`](src/observability/mod.rs)) and a [`render_prometheus`](src/observability/mod.rs) renderer emitting the text exposition format (v0.0.4), the standard [`DrevoMetrics`](src/observability/mod.rs) bundle (`drevo_http_requests_total{status}`, `drevo_http_request_duration_seconds`, `drevo_http_requests_in_flight`, `drevo_queries_total{status}`, `drevo_query_duration_seconds`, `drevo_process_uptime_seconds`, `drevo_build_info{version}`), and a structured query log ([`QueryObservation`](src/observability/mod.rs) → [`record_query`](src/observability/mod.rs)) that updates the counters/histogram and emits a `tracing` event tagged with OpenTelemetry database semantic-convention fields. Wired into the HTTP layer ([`api`](src/api.rs)) behind the `http` feature: a `GET /metrics` route plus a per-request instrumentation middleware. **OTLP wire export is deliberately out of scope** — pulling tonic/gRPC/protobuf into the default dependency graph would break the crate's "embeddable, no external system deps" property, so the OTEL-semantic spans are emitted ready for an opt-in `tracing-opentelemetry` exporter follow-up. (Late-added Phase 15 task; uses the next free id `00130` because the originally-suggested `00103` was already taken by the Phase 8.5 storage-audit task.)
+- [x] `00163` **Containerised drevo + external FastMCP MCP server** — packages drevo for the "Neo4j-like, runs out of the box" experience the embedded `drevo-mcp` (`00090`) does **not** give, in two halves. **(1) Container** — [`docker-compose.yml`](docker-compose.yml) now **bind-mounts a host folder** (`${DREVO_DATA_DIR:-./data}` → `/data`, replacing the named volume) and runs the image as the host user (`${DREVO_UID}:${DREVO_GID}`, so the non-root container can take redb's write lock on the mounted folder); `drevo-server` is the **single owner** of the file and serves the HTTP API **and the embedded Web UI (`/ui`) by default** on `:8080` against the host's `drevo.redb`. **(2) External FastMCP server** — new standalone package [`tools/drevo-mcp/`](tools/drevo-mcp/): a [FastMCP](https://github.com/jlowin/fastmcp) stdio server (`python -m drevo_mcp`) that is an **HTTP client** of the running container (base URL from `DREVO_HTTP_URL`), exposing eight read-only tools (`health`, `node_get`, `list_nodes_by_kind`, `search_fts`, `neighbors`, `subgraph`, `shortest_path`, `count_nodes`), each mapping to one endpoint in [`src/api.rs`](src/api.rs). Because it **never opens the redb file**, it removes the single-process-lock contention that made the embedded `drevo-server` and the `drevo-mcp` binary mutually exclusive on one file — so the Web UI and the MCP server run against the same data at once. Supersedes the embedded path of `00090`/`00121` for **multi-client** deployments (the embedded binary stays valid for a single-process app). Tests (all Python, off the cargo path): [`tools/drevo-mcp/tests/`](tools/drevo-mcp/tests/) — `test_client.py` (every endpoint: URL / params / body / error mapping via `pytest-httpx`), `test_tools.py` (each tool delegates + all eight register on the FastMCP instance), `test_compose.py` (locks the bind-mount + host-user + no-named-volume edits); `pytest` green, `mypy --strict` + `ruff` + `black` clean. Verified end-to-end against the migration corpus: `count_nodes` → `{"count": 2209}` through `python -m drevo_mcp` → HTTP → `drevo-server`, no lock conflict. See the [Quick Start — Container + External MCP](#quick-start--container--external-mcp-fastmcp) guide. **Out of scope:** Bolt-transport MCP; write tools (read-only first, like `00090`); publishing the image to a registry; an O(1) `/stats` count endpoint (`count_nodes` counts `/export/json` for now).
 
 **Definition of done:** `docker run ghcr.io/ice1x/drevo` ships with Bolt + HTTP + Web UI + MCP integrated; Python SDK is published to PyPI (delivered by Phase 16, see below); the comparison table above is updated with measured numbers from task `00101`.
 
@@ -1257,7 +1258,76 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 
 ---
 
+## Quick Start — Container + External MCP (FastMCP)
+
+Run drevo as a **server in a container** (the single owner of the redb file, serving
+the HTTP API **and** the Web UI) and attach an **external [FastMCP](https://github.com/jlowin/fastmcp)
+MCP server** — a *separate process* that talks to the container over HTTP — so an AI
+client can read the graph in conversation. Because the MCP server never opens the redb
+file, it never fights the container for redb's single-process lock; the Web UI and the
+MCP server query the same data at once. (Task `00163`; the FastMCP server lives in
+[`tools/drevo-mcp/`](tools/drevo-mcp/).)
+
+### 1. Bring up the container
+
+```bash
+# Put your redb file in a host folder, or point DREVO_DATA_DIR at an existing one.
+mkdir -p ./data && cp /path/to/drevo.redb ./data/      # or: export DREVO_DATA_DIR=~/drevo_data
+
+# Run as your own user so the container can take redb's write lock on the host folder.
+DREVO_UID=$(id -u) DREVO_GID=$(id -g) \
+  DREVO_DATA_DIR=${DREVO_DATA_DIR:-./data} docker compose up -d --build
+
+curl -s localhost:8080/health      # {"status":"ok"}
+open http://localhost:8080/ui      # the embedded graph Web UI (served by default)
+```
+
+The container bind-mounts the host folder to `/data` and serves `<folder>/drevo.redb`.
+
+### 2. Configure the MCP server
+
+```bash
+pip install -e tools/drevo-mcp                 # FastMCP server; an httpx client of the HTTP API
+export DREVO_HTTP_URL=http://localhost:8080    # default; set if the container is elsewhere
+
+# Smoke-test the wire without an MCP client:
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  | python -m drevo_mcp
+```
+
+It exposes read-only tools: `health`, `node_get`, `list_nodes_by_kind`, `search_fts`,
+`neighbors`, `subgraph`, `shortest_path`, `count_nodes`.
+
+### 3. Connect an MCP client
+
+Add a connector to the client's MCP config — Claude Desktop
+(`~/Library/Application Support/Claude/claude_desktop_config.json`), the Claude Code CLI
+(`~/.claude/settings.json`), or Cline — then restart the client:
+
+```json
+"drevo": {
+  "command": "python",
+  "args": ["-m", "drevo_mcp"],
+  "env": { "DREVO_HTTP_URL": "http://localhost:8080" }
+}
+```
+
+This **external FastMCP** connector replaces the embedded Rust `drevo-mcp` binary
+(`00090`) for multi-client use: the container owns the file and the MCP process is just
+an HTTP client, so there is no redb lock conflict between the Web UI and the MCP server.
+
+---
+
 ## MCP Server (Planned)
+
+> For the **external FastMCP server** (an HTTP client that holds no redb lock) plus a
+> containerised, Web-UI-by-default deployment, see
+> [Quick Start — Container + External MCP](#quick-start--container--external-mcp-fastmcp)
+> (task `00163`, shipped). The embedded binary below remains the right choice for a
+> single-process app that opens the redb file directly.
 
 A planned `drevo-mcp` stdio binary will expose drevo as a [Model Context Protocol](https://modelcontextprotocol.io) server for Cline, Claude Code, and other MCP-compatible AI clients. The binary uses embedded storage (no Docker required) and is configured via the host's MCP settings file:
 

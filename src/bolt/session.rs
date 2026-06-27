@@ -456,7 +456,12 @@ impl<'a> Session<'a> {
         Self {
             drevo,
             state: State::Connected,
-            server_agent: format!("drevo/{}", env!("CARGO_PKG_VERSION")),
+            // The `server` agent MUST start with `Neo4j/` — the official Neo4j
+            // drivers reject any other product with `UnsupportedServerProduct`.
+            // drevo's Bolt surface is a deliberate Neo4j-compatible drop-in, so
+            // we report a Neo4j-version-prefixed agent (drevo's own version is
+            // kept as a suffix and remains available via the HTTP `/status`).
+            server_agent: format!("Neo4j/5.26.0-drevo-{}", env!("CARGO_PKG_VERSION")),
             connection_id: format!("drevo-bolt-{id}"),
             pending: None,
             authenticator,
@@ -1176,6 +1181,25 @@ mod tests {
         let mut m = BTreeMap::new();
         m.insert("n".to_string(), Value::Integer(5));
         assert_eq!(extract_n(&m), 5);
+    }
+
+    #[test]
+    fn server_agent_is_neo4j_compatible() {
+        // The official Neo4j drivers reject any server whose `server` agent
+        // does not start with `Neo4j/` (UnsupportedServerProduct). drevo's
+        // Bolt surface is a Neo4j-compatible drop-in, so the agent must carry
+        // that prefix while still identifying drevo.
+        let db = crate::db::Drevo::open_in_memory().unwrap();
+        let session = Session::new(&db);
+        let agent = session.server_agent();
+        assert!(
+            agent.starts_with("Neo4j/"),
+            "bolt agent must start with `Neo4j/` for driver compatibility, got {agent:?}"
+        );
+        assert!(
+            agent.contains("drevo"),
+            "bolt agent should still identify drevo, got {agent:?}"
+        );
     }
 
     #[test]

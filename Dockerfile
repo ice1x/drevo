@@ -1,5 +1,7 @@
-# Stage 1: Builder — compile the server binary in a full Rust toolchain
-FROM rust:1.85-slim-bookworm AS builder
+# Stage 1: Builder — compile the server binary in a full Rust toolchain.
+# Pinned to 1.88: the workspace's `time` dependency raised its MSRV to 1.88,
+# so the previous rust:1.85 base failed the release build (task 00163).
+FROM rust:1.88-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
@@ -30,6 +32,12 @@ COPY benches/ benches/
 # Locked by `tests/dockerfile_tests.rs::dockerfile_copies_every_workspace_member_dir`.
 COPY drevo-py/ drevo-py/
 
+# The embedded Web UI (Phase 15 task 00092) is compiled INTO the binary via
+# `include_str!("../static/web/…")` in src/web_ui.rs, so these assets must be in
+# the build context or the release compile fails with "couldn't read
+# static/web/styles.css" (task 00163).
+COPY static/ static/
+
 # Build only the server binary in release mode.
 # cbindgen feature is excluded — no C header needed in the container.
 RUN cargo build --release --bin drevo-server \
@@ -58,8 +66,12 @@ USER drevo
 ENV DREVO_HOST=0.0.0.0
 ENV DREVO_PORT=8080
 ENV DREVO_DATA_DIR=/data
+# Enable the Neo4j-compatible Bolt listener by default in the container
+# (task 00163) so Neo4j drivers / Cypher tools can connect. It shares the same
+# single drevo-server process + redb handle as the HTTP API.
+ENV DREVO_BOLT_PORT=7687
 
-EXPOSE 8080
+EXPOSE 8080 7687
 
 # Use exec form so the binary receives SIGTERM directly from Docker
 ENTRYPOINT ["drevo-server"]

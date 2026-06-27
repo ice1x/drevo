@@ -870,6 +870,57 @@ impl Drevo {
         Ok(node)
     }
 
+    /// Batch-create many nodes in a **single** storage transaction.
+    ///
+    /// Functionally equivalent to calling [`Self::create_node`] for each
+    /// input, but folds every node's record + secondary-index writes
+    /// (uuid / title / kind / FTS / property / updated-at) into one
+    /// [`StorageBackend::put_batch`] — a single redb `begin_write`/`commit`.
+    /// So N nodes cost **one** fsync instead of N, which is what makes a
+    /// bulk import (e.g. `tools/neo4j-to-drevo`) fast instead of fsync-bound.
+    ///
+    /// Title uniqueness is enforced both against the store and within the
+    /// batch; the first collision fails the whole call before anything is
+    /// written (the id counter may still have advanced, exactly as the
+    /// per-node path leaves gaps on a mid-sequence error).
+    ///
+    /// # Errors
+    ///
+    /// - [`DrevoError::DuplicateTitle`] if any title already exists or repeats
+    ///   within the batch.
+    pub fn create_nodes(&self, new_nodes: Vec<NewNode>) -> Result<Vec<Node>> {
+        let mut writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut nodes: Vec<Node> = Vec::with_capacity(new_nodes.len());
+        let mut batch_titles: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for new_node in new_nodes {
+            let title_key = node_title_key(&new_node.title);
+            if batch_titles.contains(&new_node.title) || self.backend.get(&title_key)?.is_some() {
+                return Err(DrevoError::DuplicateTitle(new_node.title));
+            }
+            batch_titles.insert(new_node.title.clone());
+
+            let id = self.alloc_node_id();
+            let node = new_node.into_node(id);
+
+            writes.push((node_key(id), serialize_node(&node)?));
+            writes.push((node_uuid_key(&node.uuid), id.to_le_bytes().to_vec()));
+            writes.push((title_key, id.to_le_bytes().to_vec()));
+            writes.push((node_kind_key(&node.kind, id), Vec::new()));
+            writes.extend(fts_index::node_index_entries(id, &node.title, &node.body));
+            writes.extend(property_index::node_index_entries(id, &node.properties)?);
+            writes.push((updated_key(node.updated_at, id), Vec::new()));
+
+            nodes.push(node);
+        }
+
+        self.backend.put_batch(&writes)?;
+        for node in &nodes {
+            self.record_undo(UndoOp::CreatedNode(node.id));
+        }
+        Ok(nodes)
+    }
+
     /// Retrieve a node by its auto-increment ID.
     ///
     /// Returns `None` if the node does not exist.
@@ -1189,6 +1240,52 @@ impl Drevo {
 
         self.record_undo(UndoOp::CreatedEdge(id));
         Ok(edge)
+    }
+
+    /// Batch-create many edges in a **single** storage transaction.
+    ///
+    /// The edge sibling of [`Self::create_nodes`]: folds every edge's record
+    /// plus its uuid / adjacency (`out:`/`in:`) / kind index writes into one
+    /// [`StorageBackend::put_batch`]. Each edge's endpoints must already
+    /// exist (create the nodes first, e.g. via [`Self::create_nodes`]); the
+    /// first invalid edge fails the whole call before any write.
+    ///
+    /// # Errors
+    ///
+    /// - [`DrevoError::InvalidWeight`] if any weight is non-finite.
+    /// - [`DrevoError::NodeNotFound`] if any endpoint does not exist.
+    pub fn create_edges(&self, new_edges: Vec<NewEdge>) -> Result<Vec<Edge>> {
+        let mut writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut edges: Vec<Edge> = Vec::with_capacity(new_edges.len());
+
+        for new_edge in new_edges {
+            if !new_edge.weight.is_finite() {
+                return Err(DrevoError::InvalidWeight(new_edge.weight));
+            }
+            if self.get_node(new_edge.from_id)?.is_none() {
+                return Err(DrevoError::NodeNotFound(new_edge.from_id));
+            }
+            if self.get_node(new_edge.to_id)?.is_none() {
+                return Err(DrevoError::NodeNotFound(new_edge.to_id));
+            }
+
+            let id = self.alloc_edge_id();
+            let edge = new_edge.into_edge(id);
+
+            writes.push((edge_key(id), serialize_edge(&edge)?));
+            writes.push((edge_uuid_key(&edge.uuid), id.to_le_bytes().to_vec()));
+            writes.push((out_edge_key(edge.from_id, id), Vec::new()));
+            writes.push((in_edge_key(edge.to_id, id), Vec::new()));
+            writes.push((edge_kind_key(&edge.kind, id), Vec::new()));
+
+            edges.push(edge);
+        }
+
+        self.backend.put_batch(&writes)?;
+        for edge in &edges {
+            self.record_undo(UndoOp::CreatedEdge(edge.id));
+        }
+        Ok(edges)
     }
 
     /// Retrieve an edge by its auto-increment ID.

@@ -213,6 +213,11 @@ def _resolve_weight(rel: SourceRelationship, config: MigrationConfig) -> float:
 
 # ── engine ───────────────────────────────────────────────────────────
 
+#: How many nodes/edges to fold into one batched write (a single redb
+#: transaction). Bounds memory and transaction size for large imports while
+#: still collapsing per-item fsyncs (N fsyncs -> ceil(N / _BATCH_SIZE)).
+_BATCH_SIZE = 1000
+
 
 def migrate(
     source: GraphSource,
@@ -233,15 +238,42 @@ def migrate(
     report = MigrationReport()
     used_titles: set[str] = set()
 
+    # Nodes first, in batches, so each chunk commits in one redb transaction
+    # and the source-id -> drevo-id map is fully built before edges are wired.
+    node_batch: list[tuple[str, NewNode]] = []
+
+    def _flush_nodes() -> None:
+        if not node_batch:
+            return
+        created = db.create_nodes([new_node for _src, new_node in node_batch])
+        for (src_id, _new_node), node in zip(node_batch, created):
+            report.id_map[src_id] = node.id
+            report.nodes_created += 1
+        node_batch.clear()
+
     for node in source.nodes():
         kind = _resolve_kind(node, cfg)
         title = _resolve_title(node, cfg, used_titles)
         body = _resolve_field(node.properties, cfg.body_properties) or ""
         properties = _coerce_properties(node.properties)
         properties[cfg.labels_property] = list(node.labels)
-        created = db.create_node(NewNode(kind=kind, title=title, body=body, properties=properties))
-        report.id_map[node.id] = created.id
-        report.nodes_created += 1
+        node_batch.append(
+            (node.id, NewNode(kind=kind, title=title, body=body, properties=properties))
+        )
+        if len(node_batch) >= _BATCH_SIZE:
+            _flush_nodes()
+    _flush_nodes()
+
+    # Edges next, in batches. Dangling endpoints are filtered here (skip/raise)
+    # so each batch handed to create_edges has only valid, existing endpoints.
+    edge_batch: list[NewEdge] = []
+
+    def _flush_edges() -> None:
+        if not edge_batch:
+            return
+        db.create_edges(edge_batch)
+        report.edges_created += len(edge_batch)
+        edge_batch.clear()
 
     for rel in source.relationships():
         from_id = report.id_map.get(rel.start)
@@ -254,7 +286,7 @@ def migrate(
                 report.errors.append(message)
                 continue
             raise KeyError(message)
-        db.create_edge(
+        edge_batch.append(
             NewEdge(
                 from_id=from_id,
                 to_id=to_id,
@@ -263,6 +295,8 @@ def migrate(
                 properties=_coerce_properties(rel.properties),
             )
         )
-        report.edges_created += 1
+        if len(edge_batch) >= _BATCH_SIZE:
+            _flush_edges()
+    _flush_edges()
 
     return report

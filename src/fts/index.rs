@@ -53,29 +53,39 @@ fn fts_len_key(node_id: u64) -> Vec<u8> {
 // because the node_id is at the end of the key. Instead, we re-extract
 // trigrams from the text and delete entries one by one.
 
-/// Add FTS index entries for a node.
+/// Build (but do not write) the FTS index entries for a node: one
+/// `fts:{trigram}:{node_id}` posting per distinct trigram, plus the
+/// `ftslen:{node_id}` length entry when non-empty.
 ///
-/// Extracts the **distinct** trigrams from the title and body and stores
-/// one `fts:{trigram}:{node_id}` posting per trigram. Additionally records
-/// the document length (the **raw** trigram-token count, counting
-/// repetition) under `ftslen:{node_id}` so BM25 ranking (task `00131`) has
-/// the per-document `|d|` and can derive `avgdl`. The length entry is
-/// written only when the document has at least one trigram token, so empty
-/// or too-short documents do not pollute the average.
+/// Every key is `node_id`-scoped and there is no shared per-trigram posting
+/// *value*, so a bulk insert can concatenate many nodes' entries and commit
+/// them in one transaction with no cross-node merge. Shared by [`index_node`]
+/// and the batch node-create path ([`crate::db::Drevo::create_nodes`]).
+pub(crate) fn node_index_entries(node_id: u64, title: &str, body: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let trigrams = extract_trigrams(title, body);
+    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(trigrams.len() + 1);
+    for trigram in &trigrams {
+        entries.push((fts_key(trigram, node_id), Vec::new()));
+    }
+
+    let doc_len = extract_raw_trigrams(title, body).len();
+    if doc_len > 0 {
+        entries.push((
+            fts_len_key(node_id),
+            (doc_len as u32).to_le_bytes().to_vec(),
+        ));
+    }
+    entries
+}
+
 pub(crate) fn index_node(
     backend: &dyn StorageBackend,
     node_id: u64,
     title: &str,
     body: &str,
 ) -> Result<()> {
-    let trigrams = extract_trigrams(title, body);
-    for trigram in &trigrams {
-        backend.put(&fts_key(trigram, node_id), &[])?;
-    }
-
-    let doc_len = extract_raw_trigrams(title, body).len();
-    if doc_len > 0 {
-        backend.put(&fts_len_key(node_id), &(doc_len as u32).to_le_bytes())?;
+    for (key, value) in node_index_entries(node_id, title, body) {
+        backend.put(&key, &value)?;
     }
     Ok(())
 }

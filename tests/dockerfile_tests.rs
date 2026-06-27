@@ -68,6 +68,23 @@ fn dockerfile_exposes_port_8080() {
 }
 
 #[test]
+fn dockerfile_enables_bolt_by_default() {
+    // Task 00163: the container serves the Neo4j-compatible Bolt listener by
+    // default (DREVO_BOLT_PORT set) and exposes its port.
+    let content = read_dockerfile();
+    assert!(
+        content.lines().any(|l| l.contains("DREVO_BOLT_PORT")),
+        "Dockerfile must set DREVO_BOLT_PORT so the container serves Bolt"
+    );
+    assert!(
+        content
+            .lines()
+            .any(|l| l.trim_start().starts_with("EXPOSE") && l.contains("7687")),
+        "Dockerfile must EXPOSE the Bolt port 7687"
+    );
+}
+
+#[test]
 fn dockerfile_has_volume_data() {
     let content = read_dockerfile();
     let has_volume = content
@@ -132,6 +149,24 @@ fn dockerfile_copies_binary_from_builder() {
     assert!(
         has_copy,
         "Dockerfile must COPY --from=builder the drevo-server binary"
+    );
+}
+
+#[test]
+fn dockerfile_copies_static_web_assets() {
+    // The embedded Web UI (task 00092) is compiled INTO the binary via
+    // `include_str!("../static/web/…")` in src/web_ui.rs, so the builder stage
+    // must COPY `static/` into the build context or the release build fails
+    // with "couldn't read static/web/styles.css". Regression source: task
+    // 00163 — the container had never been built end-to-end and silently
+    // lacked this COPY.
+    let content = read_dockerfile();
+    let has_copy = content
+        .lines()
+        .any(|l| l.trim_start().starts_with("COPY") && l.contains("static/"));
+    assert!(
+        has_copy,
+        "Dockerfile must COPY static/ into the builder (web_ui include_str! assets)"
     );
 }
 
