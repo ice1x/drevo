@@ -122,24 +122,38 @@
   // ── Layout (task 00093) ────────────────────────────────────────────
   // fcose = "fast Compound Spring Embedder": a force-directed physics
   // layout that spreads nodes organically and animates into place.
-  // `randomize: false` reuses current positions on re-runs so an
-  // incremental expand nudges the graph rather than reshuffling it.
-  function fcoseOptions(animate) {
+  //
+  // `randomize` controls the seed: a FRESH render (search result, Cypher
+  // result, overview sample) randomises so the physics has somewhere to
+  // pull from — crucial when the result has FEW OR NO edges (e.g.
+  // `MATCH (n) RETURN n`), where there are no springs and only node
+  // repulsion + gravity spread the nodes. An incremental expand passes
+  // `randomize: false` so it nudges the existing graph instead of
+  // reshuffling it. `packComponents: false` stops fcose from grid-packing
+  // disconnected nodes into an overlapping clump; repulsion + gravity then
+  // spread even an edgeless result. `nodeDimensionsIncludeLabels` keeps the
+  // titles from colliding.
+  function fcoseOptions(animate, randomize) {
     return {
       name: "fcose",
       animate: animate !== false,
       animationDuration: 500,
-      randomize: false,
+      randomize: randomize === true,
       fit: true,
-      padding: 28,
-      nodeRepulsion: 6500,
-      idealEdgeLength: 90,
+      padding: 30,
+      nodeRepulsion: 9000,
+      idealEdgeLength: 95,
       nestingFactor: 0.1,
+      gravity: 0.3,
+      gravityRange: 3.8,
+      packComponents: false,
+      nodeSeparation: 110,
+      nodeDimensionsIncludeLabels: true,
     };
   }
-  function runLayout(animate) {
+  function runLayout(animate, randomize) {
     if (!cy) return;
-    cy.layout(fcoseOptions(animate)).run();
+    cy.layout(fcoseOptions(animate, randomize)).run();
   }
 
   // ── Cytoscape init ─────────────────────────────────────────────────
@@ -271,7 +285,8 @@
       const sub = await apiGet(`/nodes/${nodeId}/subgraph?depth=1`);
       const added = mergeSubgraph(sub);
       node.addClass("expanded");
-      runLayout(true);
+      // Incremental → keep current positions, just nudge the new nodes in.
+      runLayout(true, false);
       cy.fit(undefined, 28);
       status(
         added === 0
@@ -496,7 +511,8 @@
     const { nodes, edges } = toElements(subgraph, rootId);
     cy.add(nodes);
     cy.add(edges);
-    runLayout(true);
+    // Fresh render → randomise the seed so even an edgeless result spreads.
+    runLayout(true, true);
     cy.fit(undefined, 28);
   }
 
