@@ -2821,9 +2821,10 @@ async fn ui_index_serves_fcose_kinetics_to_client() {
     let (status, content_type, body) = fetch_text(&app, "/ui").await;
     assert_eq!(status, StatusCode::OK);
     assert!(content_type.contains("text/html"));
-    // The kinetics extensions reach the browser, version-pinned.
+    // The kinetics extensions reach the browser, vendored same-origin
+    // (not a CDN — see src/web_ui.rs / PR #189).
     assert!(body.contains("cytoscape-fcose"));
-    assert!(body.contains("fcose@2."));
+    assert!(body.contains("/ui/vendor/cytoscape-fcose.js"));
     assert!(body.contains("id=\"cy-tooltip\""));
 }
 

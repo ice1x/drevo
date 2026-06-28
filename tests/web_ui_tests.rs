@@ -186,12 +186,38 @@ async fn ui_html_includes_node_inspector() {
 }
 
 #[tokio::test]
-async fn ui_html_references_cytoscape_cdn() {
+async fn ui_html_references_vendored_cytoscape() {
+    // Cytoscape is vendored same-origin (see src/web_ui.rs) — the HTML
+    // must point at /ui/vendor/, never a public CDN, so the WebUI works
+    // offline / behind a CDN-blocking browser.
     let app = make_app();
     let (_status, _ct, bytes) = get(&app, "/ui").await;
     let body = String::from_utf8(bytes).expect("utf-8");
-    assert!(body.contains("cytoscape@3."));
-    assert!(body.contains("cytoscape.min.js"));
+    assert!(body.contains("/ui/vendor/cytoscape.min.js"));
+    assert!(!body.contains("src=\"http"), "no external <script src>");
+}
+
+#[tokio::test]
+async fn ui_serves_vendored_javascript_bundles() {
+    // Each vendored library must be reachable over the real router with a
+    // JavaScript content-type and a non-trivial body. A 404 here is the
+    // exact failure mode (canvas stuck on "connecting…") this route set
+    // exists to prevent.
+    let app = make_app();
+    for path in [
+        "/ui/vendor/cytoscape.min.js",
+        "/ui/vendor/layout-base.js",
+        "/ui/vendor/cose-base.js",
+        "/ui/vendor/cytoscape-fcose.js",
+    ] {
+        let (status, ct, bytes) = get(&app, path).await;
+        assert_eq!(status, StatusCode::OK, "{path} must be served");
+        assert!(
+            ct.contains("javascript"),
+            "{path} must have a JavaScript content-type, got `{ct}`"
+        );
+        assert!(bytes.len() > 10_000, "{path} body looks truncated");
+    }
 }
 
 // ── Non-UI routes unchanged ────────────────────────────────────────────

@@ -1002,6 +1002,24 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/ui/", get(crate::web_ui::redirect_ui_slash))
         .route("/ui/app.js", get(crate::web_ui::serve_app_js))
         .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
+        // Vendored Cytoscape.js + fcose layout (served same-origin so the
+        // WebUI needs no CDN — see src/web_ui.rs).
+        .route(
+            "/ui/vendor/cytoscape.min.js",
+            get(crate::web_ui::serve_vendor_cytoscape),
+        )
+        .route(
+            "/ui/vendor/layout-base.js",
+            get(crate::web_ui::serve_vendor_layout_base),
+        )
+        .route(
+            "/ui/vendor/cose-base.js",
+            get(crate::web_ui::serve_vendor_cose_base),
+        )
+        .route(
+            "/ui/vendor/cytoscape-fcose.js",
+            get(crate::web_ui::serve_vendor_fcose),
+        )
         .fallback(fallback)
         // ── Phase 15 task `00130` — per-request metrics instrumentation.
         // Layered after the routes so it wraps every handler (including the

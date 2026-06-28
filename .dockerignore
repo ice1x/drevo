@@ -10,3 +10,15 @@ target/
 # `tests/dockerfile_tests.rs::dockerignore_does_not_shadow_cargo_targets`.
 tests/
 drevo.h
+
+# Local-only untracked junk that must NEVER enter the build context.
+# `actions-runner/` is this machine's live self-hosted GitHub Actions
+# runner — it grows to tens of GB (~64 GB observed), and because it is
+# untracked it would otherwise be streamed to the Docker daemon, hanging
+# `docker build` for minutes on "load build context". None of these paths
+# exist in a clean CI checkout, so excluding them only speeds up LOCAL
+# builds and never affects the published image. (Not a cargo target dir
+# nor a workspace member, so `dockerfile_tests.rs` stays green.)
+actions-runner/
+migr_tmp/
+.DS_Store

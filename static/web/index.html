@@ -6,29 +6,27 @@
   <title>drevo browser</title>
   <link rel="stylesheet" href="/ui/styles.css" />
   <!--
-    Cytoscape.js loaded from a pinned CDN — same trust model as the
-    Neo4j Browser (HTML loaded from server, JS lib pinned to a known
-    version on a public CDN). No build step, no bundler, no npm tree.
-    To go fully offline, swap the src for a local static copy and
-    add /ui/cytoscape.min.js to the embedded asset map in src/web_ui.rs.
+    Cytoscape.js (v3.30.2) is VENDORED same-origin under /ui/vendor/ and
+    baked into the drevo-server binary — it is NOT loaded from a public
+    CDN. A CDN load (the old unpkg.com setup) silently breaks the WebUI
+    wherever the CDN is unreachable: offline boxes, locked-down networks,
+    and privacy browsers (Brave Shields blocks unpkg by default), leaving
+    the graph canvas stuck on "connecting…". Same-origin assets make the
+    container self-contained. No build step, no bundler, no npm tree.
+    The bundles live in static/web/vendor/ and are wired in src/web_ui.rs.
   -->
-  <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"
-          integrity="sha384-MZJgK7n7T0PSb7HxFXxk3PRfeWa6PrPiHsoGmYxsiRDOtNbtoSJ4Vy2dN6Bm6sPa"
-          crossorigin="anonymous"></script>
+  <script src="/ui/vendor/cytoscape.min.js"></script>
   <!--
     Phase 15 task 00093 — kinetics. The fcose ("fast Compound Spring
     Embedder") physics layout is a Cytoscape extension. Its UMD bundle
     auto-registers against the global `cytoscape` as long as it loads
     after the core, and it pulls in `cose-base` → `layout-base`, so the
     three must load in dependency order: layout-base, cose-base, fcose.
-    All pinned by version, same CDN trust model as the core library.
+    All vendored locally (v2.0.1 / v2.2.0 / v2.2.0).
   -->
-  <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"
-          crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"
-          crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"
-          crossorigin="anonymous"></script>
+  <script src="/ui/vendor/layout-base.js"></script>
+  <script src="/ui/vendor/cose-base.js"></script>
+  <script src="/ui/vendor/cytoscape-fcose.js"></script>
 </head>
 <body>
   <header class="topbar">

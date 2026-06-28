@@ -12,11 +12,20 @@
 //! - `GET /ui` → `index.html` (`text/html; charset=utf-8`)
 //! - `GET /ui/app.js` → `app.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/styles.css` → `styles.css` (`text/css; charset=utf-8`)
+//! - `GET /ui/vendor/cytoscape.min.js` → Cytoscape.js core
+//! - `GET /ui/vendor/layout-base.js` → fcose dep
+//! - `GET /ui/vendor/cose-base.js` → fcose dep
+//! - `GET /ui/vendor/cytoscape-fcose.js` → fcose physics layout extension
 //!
-//! Cytoscape.js itself is loaded from a CDN inside `index.html`
-//! (the same pinned-CDN trust model the Neo4j Browser uses). If
-//! offline use becomes a requirement, drop a `cytoscape.min.js`
-//! into `static/web/` and add a fourth route here.
+//! Cytoscape.js and its `fcose` layout extension are **vendored** under
+//! `static/web/vendor/` and baked into the binary alongside the rest of
+//! the UI — they are NOT loaded from a public CDN. Earlier revisions
+//! pulled them from `unpkg.com`, but that breaks the WebUI in any
+//! environment where the CDN is unreachable: offline boxes, locked-down
+//! networks, and privacy browsers (Brave Shields blocks `unpkg.com` by
+//! default), leaving the graph canvas stuck on "connecting…". Serving the
+//! libraries same-origin makes the container fully self-contained — the
+//! WebUI works the instant `/ui` loads, no third-party request required.
 //!
 //! ## Why embed via `include_str!` instead of `ServeDir`?
 //!
@@ -49,6 +58,18 @@ const APP_JS: &str = include_str!("../static/web/app.js");
 /// `styles.css` body — embedded at compile time.
 const STYLES_CSS: &str = include_str!("../static/web/styles.css");
 
+/// Cytoscape.js core (`cytoscape@3.30.2`) — vendored, embedded at compile time.
+const VENDOR_CYTOSCAPE: &str = include_str!("../static/web/vendor/cytoscape.min.js");
+
+/// `layout-base@2.0.1` — fcose transitive dep, embedded at compile time.
+const VENDOR_LAYOUT_BASE: &str = include_str!("../static/web/vendor/layout-base.js");
+
+/// `cose-base@2.2.0` — fcose dep (needs `layout-base`), embedded at compile time.
+const VENDOR_COSE_BASE: &str = include_str!("../static/web/vendor/cose-base.js");
+
+/// `cytoscape-fcose@2.2.0` — fcose physics layout, embedded at compile time.
+const VENDOR_FCOSE: &str = include_str!("../static/web/vendor/cytoscape-fcose.js");
+
 /// `GET /ui` → serve the HTML shell.
 pub async fn serve_index() -> Response {
     asset_response(INDEX_HTML, "text/html; charset=utf-8")
@@ -64,12 +85,48 @@ pub async fn serve_styles_css() -> Response {
     asset_response(STYLES_CSS, "text/css; charset=utf-8")
 }
 
+/// `GET /ui/vendor/cytoscape.min.js` → serve the vendored Cytoscape core.
+pub async fn serve_vendor_cytoscape() -> Response {
+    vendor_response(VENDOR_CYTOSCAPE)
+}
+
+/// `GET /ui/vendor/layout-base.js` → serve the vendored fcose dep.
+pub async fn serve_vendor_layout_base() -> Response {
+    vendor_response(VENDOR_LAYOUT_BASE)
+}
+
+/// `GET /ui/vendor/cose-base.js` → serve the vendored fcose dep.
+pub async fn serve_vendor_cose_base() -> Response {
+    vendor_response(VENDOR_COSE_BASE)
+}
+
+/// `GET /ui/vendor/cytoscape-fcose.js` → serve the vendored fcose layout.
+pub async fn serve_vendor_fcose() -> Response {
+    vendor_response(VENDOR_FCOSE)
+}
+
 /// Redirect `GET /ui/` (trailing slash) to `/ui` so links inside
 /// `index.html` resolve against a stable prefix. Without this,
 /// `<script src="/ui/app.js">` is correct from `/ui` but loads
 /// `/ui/ui/app.js` if the browser arrived at `/ui/`.
 pub async fn redirect_ui_slash() -> Redirect {
     Redirect::permanent("/ui")
+}
+
+/// Serve a vendored JavaScript library. Unlike [`asset_response`]'s
+/// `no-cache`, the third-party bundles are large (~700 KB combined) and
+/// version-pinned, so a short positive TTL avoids re-downloading them on
+/// every navigation while still letting a version bump propagate within
+/// the hour after a rebuild.
+fn vendor_response(body: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 fn asset_response(body: &'static str, content_type: &'static str) -> Response {
@@ -121,17 +178,55 @@ mod tests {
     }
 
     #[test]
-    fn embedded_index_loads_cytoscape_from_cdn() {
-        // The Cytoscape.js library is loaded from a CDN. Keep the
-        // version-pinned reference under test so a future copy-paste
-        // doesn't unpin it.
+    fn embedded_index_loads_cytoscape_from_local_vendor() {
+        // Cytoscape.js is vendored same-origin under /ui/vendor/, NOT
+        // pulled from a public CDN — see the module docs for why (Brave
+        // Shields / offline / locked-down networks broke the CDN load).
         assert!(
-            INDEX_HTML.contains("cytoscape.min.js"),
-            "index.html must reference cytoscape.min.js"
+            INDEX_HTML.contains("/ui/vendor/cytoscape.min.js"),
+            "index.html must load the vendored Cytoscape core from /ui/vendor/"
+        );
+    }
+
+    #[test]
+    fn embedded_index_has_no_external_asset_sources() {
+        // Guard against a future copy-paste re-introducing a CDN-loaded
+        // <script>/<link>. Any third-party (or protocol-relative) origin
+        // re-creates the "connecting…" failure on networks that block it.
+        // We check actual `src=`/`href=` values, not prose comments (which
+        // legitimately mention unpkg.com to explain *why* it was dropped).
+        for ext in [
+            "src=\"http",
+            "src='http",
+            "src=\"//",
+            "href=\"http",
+            "href='http",
+            "href=\"//",
+        ] {
+            assert!(
+                !INDEX_HTML.contains(ext),
+                "index.html must not load assets from an external origin (`{ext}`) — vendor them locally"
+            );
+        }
+    }
+
+    #[test]
+    fn vendored_libraries_are_embedded_and_nonempty() {
+        // The four bundles must actually be baked into the binary, in the
+        // dependency order app.js relies on (core, then layout-base →
+        // cose-base → fcose).
+        assert!(
+            VENDOR_CYTOSCAPE.len() > 100_000 && VENDOR_CYTOSCAPE.contains("cytoscape"),
+            "Cytoscape core bundle missing or truncated"
         );
         assert!(
-            INDEX_HTML.contains("cytoscape@3."),
-            "Cytoscape.js must be version-pinned (e.g. cytoscape@3.X.Y) in the CDN URL"
+            VENDOR_LAYOUT_BASE.len() > 10_000,
+            "layout-base bundle missing"
+        );
+        assert!(VENDOR_COSE_BASE.len() > 10_000, "cose-base bundle missing");
+        assert!(
+            VENDOR_FCOSE.len() > 10_000 && VENDOR_FCOSE.contains("fcose"),
+            "cytoscape-fcose bundle missing or truncated"
         );
     }
 
@@ -163,22 +258,28 @@ mod tests {
     #[test]
     fn embedded_index_loads_fcose_layout_extension() {
         // fcose physics layout is a Cytoscape extension; it (and its
-        // `cose-base` / `layout-base` deps) must be loaded from a pinned
-        // CDN after the core library, otherwise `layout: { name: "fcose" }`
+        // `cose-base` / `layout-base` deps) must be loaded same-origin
+        // after the core library, otherwise `layout: { name: "fcose" }`
         // throws "No such layout `fcose` found".
         assert!(
-            INDEX_HTML.contains("cytoscape-fcose"),
-            "index.html must load the cytoscape-fcose extension"
-        );
-        assert!(
-            INDEX_HTML.contains("fcose@2."),
-            "cytoscape-fcose must be version-pinned (e.g. fcose@2.X.Y) in the CDN URL"
+            INDEX_HTML.contains("/ui/vendor/cytoscape-fcose.js"),
+            "index.html must load the vendored cytoscape-fcose extension"
         );
         // fcose depends on cose-base which depends on layout-base — both
         // must be present and ordered before the extension.
         assert!(
-            INDEX_HTML.contains("cose-base") && INDEX_HTML.contains("layout-base"),
+            INDEX_HTML.contains("/ui/vendor/cose-base.js")
+                && INDEX_HTML.contains("/ui/vendor/layout-base.js"),
             "cytoscape-fcose needs cose-base + layout-base loaded first"
+        );
+        // Load order matters: core, then layout-base, cose-base, fcose.
+        let core = INDEX_HTML.find("/ui/vendor/cytoscape.min.js").unwrap();
+        let lb = INDEX_HTML.find("/ui/vendor/layout-base.js").unwrap();
+        let cb = INDEX_HTML.find("/ui/vendor/cose-base.js").unwrap();
+        let fc = INDEX_HTML.find("/ui/vendor/cytoscape-fcose.js").unwrap();
+        assert!(
+            core < lb && lb < cb && cb < fc,
+            "vendored scripts must load in order: core, layout-base, cose-base, fcose"
         );
     }
 
