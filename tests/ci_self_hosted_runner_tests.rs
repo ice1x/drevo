@@ -1343,75 +1343,42 @@ fn extract_ndk_install_block(workflow: &str) -> String {
 // runner is). The workflow has been red on every push to main since
 // before #90 because of this exact error.
 //
-// Fix: before `docker/login-action` runs, point `DOCKER_CONFIG` at a
-// per-run temp directory containing a `config.json` with an empty
-// `credsStore` (and no `credsStore` key), which makes `docker login`
-// write the auth blob as plain JSON in that temp dir. The credential
-// lives only for the duration of the job, never touches the Keychain,
-// and is discarded with the workspace.
+// A `{}` / `{"credsStore":""}` config does NOT help: Docker Desktop
+// re-injects `credsStore: osxkeychain` on `docker login`. Fix: skip
+// `docker login` entirely and pre-bake the base64 `auths` blob into a
+// per-run `DOCKER_CONFIG/config.json`. Reading auths from the file uses
+// no credential helper, so the Keychain is never touched; the temp
+// config is discarded with the workspace.
 
 #[test]
 fn docker_publish_overrides_docker_config_to_avoid_macos_keychain() {
     let w = fs::read_to_string(workflows_dir().join("docker-publish.yml"))
         .expect("docker-publish.yml must exist");
 
-    // The fix must (a) export DOCKER_CONFIG to a path under a temp /
-    // workspace dir and (b) seed an empty (or credsStore-less)
-    // config.json there. We check for both invariants because either
-    // alone leaks back to the macOS keychain:
-    //   - DOCKER_CONFIG without a config.json → docker falls back to
-    //     ~/.docker/config.json (which has credsStore=osxkeychain).
-    //   - config.json with credsStore set → docker writes through it.
+    // (a) DOCKER_CONFIG must be exported to a per-run dir so docker / buildx
+    // use it instead of the user's ~/.docker/config.json (credsStore=osxkeychain).
     assert!(
         w.contains("DOCKER_CONFIG="),
-        "docker-publish.yml must export `DOCKER_CONFIG=<per-run dir>` \
-         before `docker/login-action` runs — otherwise `docker login` \
-         writes credentials through the macOS osxkeychain credsStore \
-         and fails with `User interaction is not allowed. (-25308)` on \
-         the headless self-hosted runner (observed on every push to \
-         main since before #90)."
+        "docker-publish.yml must export `DOCKER_CONFIG=<per-run dir>` so docker \
+         does not fall back to the user's ~/.docker/config.json (which has \
+         `credsStore: osxkeychain` on the self-hosted Mac) and fail -25308."
     );
 
-    // The setup step must come before the login step so the env var is
-    // in scope when docker/login-action runs.
-    let docker_config_idx = w
-        .find("DOCKER_CONFIG=")
-        .expect("checked above that the export exists");
-    // Match the `uses:` directive (not bare prose mentions in
-    // docstrings — the workflow comment block explaining WHY this
-    // override exists naturally references `docker/login-action` by
-    // name).
-    let login_idx = w.find("uses: docker/login-action").expect(
-        "login step (`uses: docker/login-action@vN`) is required and pinned by another test",
+    // (b) Auth must be PRE-BAKED as an `auths` blob, never via `docker login` /
+    // `docker/login-action`: Docker Desktop re-injects `credsStore: osxkeychain`
+    // on login even into a `{}` config, so login fails headless with
+    // `User interaction is not allowed. (-25308)`. Writing auths to the file
+    // invokes no credential helper.
+    assert!(
+        !w.contains("uses: docker/login-action"),
+        "docker-publish.yml must NOT use `docker/login-action` — it triggers the \
+         macOS osxkeychain credsStore and fails -25308 on the headless runner. \
+         Pre-bake an `auths` blob into DOCKER_CONFIG instead."
     );
     assert!(
-        docker_config_idx < login_idx,
-        "the step that exports `DOCKER_CONFIG=` must be ordered BEFORE \
-         the `docker/login-action` step — otherwise login runs against \
-         the default `~/.docker/config.json` (which has \
-         `credsStore: osxkeychain` on macOS) and fails -25308. The \
-         export currently appears at byte {docker_config_idx} but \
-         login-action is at byte {login_idx}."
-    );
-
-    // The seeded config.json must not opt back into a credsStore. An
-    // empty object `{}` (or one without a credsStore key) is what makes
-    // `docker login` fall back to plain-text auth in the file.
-    let has_credsstore_optout = w.contains("\"credsStore\":\"\"")
-        || w.contains("\"credsStore\": \"\"")
-        || w.contains("'credsStore':''")
-        || w.contains("echo '{}'")
-        || w.contains("echo \"{}\"")
-        || w.contains("printf '{}'")
-        || w.contains("printf \"{}\"");
-    assert!(
-        has_credsstore_optout,
-        "docker-publish.yml's DOCKER_CONFIG setup step must seed a \
-         config.json that disables `credsStore` (write `{{}}` or set \
-         `\"credsStore\": \"\"`). Without it, `docker login` still \
-         consults the user's ~/.docker/config.json (or its own default) \
-         and writes through the osxkeychain credsStore, re-introducing \
-         the -25308 failure."
+        w.contains("\"auths\""),
+        "docker-publish.yml must pre-bake an `auths` blob into \
+         DOCKER_CONFIG/config.json for GHCR auth (no `docker login`)."
     );
 }
 

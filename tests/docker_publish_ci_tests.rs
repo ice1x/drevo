@@ -272,11 +272,21 @@ fn docker_publish_image_namespace_matches_k8s_deployment() {
 // ------------------------------------------------------------------
 
 #[test]
-fn docker_publish_uses_docker_login_action() {
+fn docker_publish_authenticates_without_login_action_or_keychain() {
+    // Auth is pre-baked as a base64 `auths` blob into DOCKER_CONFIG instead of
+    // `docker/login-action` / `docker login`: Docker Desktop on the self-hosted
+    // macOS runner re-injects credsStore=osxkeychain on login (even into a `{}`
+    // config), which fails headless with `User interaction is not allowed.
+    // (-25308)`. Reading auths from the file invokes no credential helper.
     let w = read_workflow();
     assert!(
-        w.contains("docker/login-action"),
-        "workflow must use `docker/login-action` to authenticate against ghcr.io"
+        !w.contains("uses: docker/login-action"),
+        "workflow must NOT use docker/login-action — it triggers the macOS osxkeychain credsStore \
+         (the comment block may still reference it by name to explain why)"
+    );
+    assert!(
+        w.contains("\"auths\""),
+        "workflow must pre-bake an `auths` blob into DOCKER_CONFIG/config.json for GHCR auth"
     );
 }
 
