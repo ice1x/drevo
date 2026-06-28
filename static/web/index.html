@@ -27,6 +27,15 @@
   <script src="/ui/vendor/layout-base.js"></script>
   <script src="/ui/vendor/cose-base.js"></script>
   <script src="/ui/vendor/cytoscape-fcose.js"></script>
+  <!--
+    Live force layout for Neo4j-Browser-style drag: WebCola (the constraint
+    solver, sets the global `cola`) + cytoscape-cola (registers the `cola`
+    layout). fcose lays the graph out statically; while you DRAG a node we
+    run cola as a live simulation so its connected neighbours tug along, then
+    stop it on release. Load order: core (above) → cola → cytoscape-cola.
+  -->
+  <script src="/ui/vendor/cola.min.js"></script>
+  <script src="/ui/vendor/cytoscape-cola.js"></script>
 </head>
 <body>
   <header class="topbar">

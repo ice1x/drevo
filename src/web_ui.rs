@@ -70,6 +70,15 @@ const VENDOR_COSE_BASE: &str = include_str!("../static/web/vendor/cose-base.js")
 /// `cytoscape-fcose@2.2.0` — fcose physics layout, embedded at compile time.
 const VENDOR_FCOSE: &str = include_str!("../static/web/vendor/cytoscape-fcose.js");
 
+/// `webcola@3.4.0` — the WebCola constraint-solver, embedded at compile time.
+/// Backs the live force layout (`cytoscape-cola`) used for Neo4j-Browser-style
+/// drag interaction: dragging a node tugs its neighbours via the running sim.
+const VENDOR_COLA: &str = include_str!("../static/web/vendor/cola.min.js");
+
+/// `cytoscape-cola@2.5.1` — the Cytoscape adapter for WebCola, embedded at
+/// compile time. Registers the `cola` layout; needs the `cola` global first.
+const VENDOR_CYTOSCAPE_COLA: &str = include_str!("../static/web/vendor/cytoscape-cola.js");
+
 /// `GET /ui` → serve the HTML shell.
 pub async fn serve_index() -> Response {
     asset_response(INDEX_HTML, "text/html; charset=utf-8")
@@ -103,6 +112,16 @@ pub async fn serve_vendor_cose_base() -> Response {
 /// `GET /ui/vendor/cytoscape-fcose.js` → serve the vendored fcose layout.
 pub async fn serve_vendor_fcose() -> Response {
     vendor_response(VENDOR_FCOSE)
+}
+
+/// `GET /ui/vendor/cola.min.js` → serve the vendored WebCola solver.
+pub async fn serve_vendor_cola() -> Response {
+    vendor_response(VENDOR_COLA)
+}
+
+/// `GET /ui/vendor/cytoscape-cola.js` → serve the vendored cola adapter.
+pub async fn serve_vendor_cytoscape_cola() -> Response {
+    vendor_response(VENDOR_CYTOSCAPE_COLA)
 }
 
 /// Redirect `GET /ui/` (trailing slash) to `/ui` so links inside
@@ -227,6 +246,52 @@ mod tests {
         assert!(
             VENDOR_FCOSE.len() > 10_000 && VENDOR_FCOSE.contains("fcose"),
             "cytoscape-fcose bundle missing or truncated"
+        );
+        // cola (WebCola + adapter) backs the live drag simulation.
+        assert!(VENDOR_COLA.len() > 10_000, "cola (webcola) bundle missing");
+        assert!(
+            VENDOR_CYTOSCAPE_COLA.len() > 5_000 && VENDOR_CYTOSCAPE_COLA.contains("cola"),
+            "cytoscape-cola bundle missing or truncated"
+        );
+    }
+
+    #[test]
+    fn embedded_index_loads_cola_for_live_drag() {
+        // The live-drag force layout needs WebCola + the cytoscape-cola
+        // adapter, vendored same-origin and loaded after the Cytoscape core.
+        assert!(
+            INDEX_HTML.contains("/ui/vendor/cola.min.js")
+                && INDEX_HTML.contains("/ui/vendor/cytoscape-cola.js"),
+            "index.html must load the vendored cola libraries for live drag"
+        );
+        let core = INDEX_HTML.find("/ui/vendor/cytoscape.min.js").unwrap();
+        let cola = INDEX_HTML.find("/ui/vendor/cola.min.js").unwrap();
+        let adapter = INDEX_HTML.find("/ui/vendor/cytoscape-cola.js").unwrap();
+        assert!(
+            core < cola && cola < adapter,
+            "cola must load after the core, and the adapter after cola"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_live_drag_runs_cola_simulation() {
+        // Dragging a node must run a live cola force simulation so connected
+        // neighbours tug along (Neo4j-Browser parity), keyed off `drag`/`free`.
+        assert!(
+            APP_JS.contains("name: \"cola\""),
+            "app.js must run the cola layout for live drag"
+        );
+        assert!(
+            APP_JS.contains("startLiveLayout") && APP_JS.contains("stopLiveLayout"),
+            "app.js must start/stop the live simulation"
+        );
+        assert!(
+            APP_JS.contains("\"drag\"") && APP_JS.contains("\"free\""),
+            "app.js must drive the live simulation off node drag/free events"
+        );
+        assert!(
+            APP_JS.contains("infinite: true"),
+            "the live cola layout must run continuously (infinite) during drag"
         );
     }
 

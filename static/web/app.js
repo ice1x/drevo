@@ -156,6 +156,49 @@
     cy.layout(fcoseOptions(animate, randomize)).run();
   }
 
+  // ── Live force simulation for drag (cola) ──────────────────────────────
+  // fcose gives a nice static spread; cola gives the *interactive* physics.
+  // While a node is being dragged we run cola as an infinite simulation so
+  // the dragged node (fixed to the cursor by cytoscape-cola) pulls its
+  // connected neighbours along, exactly like the Neo4j Browser. We stop it on
+  // release. `liveLayout` holds the running handle so we can stop/replace it.
+  let liveLayout = null;
+  function colaLiveOptions() {
+    return {
+      name: "cola",
+      infinite: true, // keep solving so the drag is live, not a one-shot
+      fit: false, // re-fitting every tick while dragging is nauseating
+      animate: true,
+      randomize: false, // start from the current (fcose) positions
+      edgeLength: 95, // ideal spring length (matches fcose idealEdgeLength)
+      nodeSpacing: 12,
+      handleDisconnected: true,
+      // Let the user keep grabbing nodes while the sim runs.
+      ungrabifyWhileSimulating: false,
+    };
+  }
+  function startLiveLayout() {
+    if (!cy) return;
+    stopLiveLayout();
+    try {
+      liveLayout = cy.layout(colaLiveOptions());
+      liveLayout.run();
+    } catch (e) {
+      // cola unavailable → fall back to plain (static) dragging.
+      liveLayout = null;
+    }
+  }
+  function stopLiveLayout() {
+    if (liveLayout) {
+      try {
+        liveLayout.stop();
+      } catch (e) {
+        /* ignore */
+      }
+      liveLayout = null;
+    }
+  }
+
   // ── Cytoscape init ─────────────────────────────────────────────────
   function initCytoscape() {
     cy = cytoscape({
@@ -239,6 +282,16 @@
     cy.on("mousemove", "node", (evt) => positionTooltip(evt.target));
     cy.on("mouseout", "node", () => hideTooltip());
     cy.on("pan zoom drag", () => hideTooltip());
+
+    // Live drag physics (Neo4j-Browser-style): start a running cola force
+    // simulation the moment a node actually starts moving, so its connected
+    // neighbours tug along; stop it when the node is released so the graph is
+    // calm when idle. Keyed off `drag` (not `grab`) so a plain click/tap does
+    // not reheat the layout.
+    cy.on("drag", "node", () => {
+      if (!liveLayout) startLiveLayout();
+    });
+    cy.on("free", "node", () => stopLiveLayout());
   }
 
   // ── Tooltips (task 00093) ──────────────────────────────────────────
@@ -526,6 +579,7 @@
   // Replace the canvas with a fresh subgraph (results-list click).
   function renderSubgraph(subgraph, rootId) {
     if (!cy) return;
+    stopLiveLayout(); // don't leave a cola sim running on removed elements
     cy.elements().remove();
     const { nodes, edges } = toElements(subgraph, rootId);
     cy.add(nodes);

@@ -209,6 +209,8 @@ async fn ui_serves_vendored_javascript_bundles() {
         "/ui/vendor/layout-base.js",
         "/ui/vendor/cose-base.js",
         "/ui/vendor/cytoscape-fcose.js",
+        "/ui/vendor/cola.min.js",
+        "/ui/vendor/cytoscape-cola.js",
     ] {
         let (status, ct, bytes) = get(&app, path).await;
         assert_eq!(status, StatusCode::OK, "{path} must be served");
