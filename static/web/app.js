@@ -353,11 +353,30 @@
     }
   }
 
+  // Neo4j-Browser-style "Connect result nodes": a query like
+  // `MATCH (n) RETURN n` returns nodes but no relationships, so the canvas
+  // would show a disconnected grid. Augment the result with the edges that
+  // exist *between the returned nodes* (taken from the cached graph dump),
+  // unioned with any relationships the query itself returned (deduped).
+  function connectResultNodes(nodes, returnedEdges) {
+    const byId = new Map();
+    for (const e of returnedEdges || []) byId.set(e.id, e);
+    if (nodes.length > 1 && graphCache) {
+      const idSet = new Set(nodes.map((n) => n.id));
+      for (const e of inducedEdges(idSet)) {
+        if (!byId.has(e.id)) byId.set(e.id, e);
+      }
+    }
+    return [...byId.values()];
+  }
+
   function renderCypherResult(resp) {
     const graph = resp.graph || { nodes: [], edges: [] };
-    // Draw whatever nodes/relationships the query touched.
+    const edges = connectResultNodes(graph.nodes, graph.edges);
+    // Draw whatever nodes/relationships the query touched, plus the edges
+    // that connect the returned nodes to each other.
     if (graph.nodes.length > 0) {
-      renderSubgraph({ nodes: graph.nodes, edges: graph.edges }, null);
+      renderSubgraph({ nodes: graph.nodes, edges }, null);
     } else if (cy) {
       cy.elements().remove();
     }
@@ -373,8 +392,8 @@
     status(
       `${resp.rows.length} row${resp.rows.length === 1 ? "" : "s"} · graph: ${
         graph.nodes.length
-      } node${graph.nodes.length === 1 ? "" : "s"}, ${graph.edges.length} edge${
-        graph.edges.length === 1 ? "" : "s"
+      } node${graph.nodes.length === 1 ? "" : "s"}, ${edges.length} edge${
+        edges.length === 1 ? "" : "s"
       }${writeNote}.`,
       "ok"
     );

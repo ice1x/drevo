@@ -459,5 +459,12 @@ mod tests {
             APP_JS.contains(".graph"),
             "app.js must render the /cypher graph projection"
         );
+        // "Connect result nodes" (Neo4j Browser parity): a node-only result
+        // must still be wired with the edges that exist between the returned
+        // nodes, so `MATCH (n) RETURN n` is not a disconnected grid.
+        assert!(
+            APP_JS.contains("connectResultNodes"),
+            "app.js must connect result nodes with their inter-node edges"
+        );
     }
 }
