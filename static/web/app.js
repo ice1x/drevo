@@ -306,6 +306,111 @@
     }
   }
 
+  // ── Cypher query mode (Neo4j-Browser-style) ────────────────────────
+  // The top bar is dual-mode: an input that begins with a Cypher clause
+  // keyword runs against POST /cypher (the same executor Bolt uses);
+  // anything else is a full-text search. This lets `MATCH (n) RETURN n
+  // LIMIT 10` Just Work the way it does in the Neo4j Browser.
+  const CYPHER_RE =
+    /^\s*(MATCH|OPTIONAL\s+MATCH|CREATE|MERGE|RETURN|WITH|UNWIND|CALL|DETACH\s+DELETE|DELETE|SET|REMOVE|FOREACH)\b/i;
+  function looksLikeCypher(text) {
+    return CYPHER_RE.test(text);
+  }
+
+  async function runCypher(query) {
+    status("Running Cypher…");
+    try {
+      // Own fetch (not apiPost) so we can surface the executor's error
+      // text — /cypher returns the parse/exec message as the body on 400.
+      const r = await fetch("/cypher", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        status(`Cypher error: ${text}`, "error");
+        return;
+      }
+      renderCypherResult(JSON.parse(text));
+    } catch (e) {
+      status(`Cypher failed: ${e.message}`, "error");
+    }
+  }
+
+  function renderCypherResult(resp) {
+    const graph = resp.graph || { nodes: [], edges: [] };
+    // Draw whatever nodes/relationships the query touched.
+    if (graph.nodes.length > 0) {
+      renderSubgraph({ nodes: graph.nodes, edges: graph.edges }, null);
+    } else if (cy) {
+      cy.elements().remove();
+    }
+    renderCypherRows(resp.columns || [], resp.rows || []);
+    const s = resp.stats || {};
+    const writes =
+      (s.nodes_created || 0) +
+      (s.relationships_created || 0) +
+      (s.properties_set || 0) +
+      (s.nodes_deleted || 0) +
+      (s.relationships_deleted || 0);
+    const writeNote = writes > 0 ? ` · ${writes} write${writes === 1 ? "" : "s"}` : "";
+    status(
+      `${resp.rows.length} row${resp.rows.length === 1 ? "" : "s"} · graph: ${
+        graph.nodes.length
+      } node${graph.nodes.length === 1 ? "" : "s"}, ${graph.edges.length} edge${
+        graph.edges.length === 1 ? "" : "s"
+      }${writeNote}.`,
+      "ok"
+    );
+  }
+
+  // Render the tabular result in the left rail. Node/edge-valued cells show
+  // a readable label; scalars show their JSON. A node cell stays clickable
+  // to load its 2-hop neighbourhood, like a search result.
+  function renderCypherRows(columns, rows) {
+    $results.innerHTML = "";
+    if (rows.length === 0) {
+      const li = document.createElement("li");
+      li.className = "results-empty";
+      li.textContent = "Query returned no rows.";
+      $results.appendChild(li);
+      return;
+    }
+    const table = document.createElement("table");
+    table.className = "cypher-table";
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    for (const c of columns) {
+      const th = document.createElement("th");
+      th.textContent = c;
+      htr.appendChild(th);
+    }
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      for (const cell of row) {
+        const td = document.createElement("td");
+        if (cell && typeof cell === "object" && typeof cell.id === "number" && "kind" in cell) {
+          // A node (or edge) value — show a clickable label.
+          td.className = "cell-node";
+          td.textContent = cell.title || `${cell.kind || "node"} #${cell.id}`;
+          if (!("from_id" in cell)) {
+            td.addEventListener("click", () => selectResult(cell.id, null));
+          }
+        } else {
+          td.textContent = JSON.stringify(cell);
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    $results.appendChild(table);
+  }
+
   function renderResults(results) {
     $results.innerHTML = "";
     if (results.length === 0) {
@@ -583,7 +688,11 @@
   $form.addEventListener("submit", (e) => {
     e.preventDefault();
     const q = $input.value.trim();
-    if (q) runSearch(q);
+    if (!q) return;
+    // Dual-mode: a Cypher clause keyword routes to the executor; plain
+    // text is a full-text search.
+    if (looksLikeCypher(q)) runCypher(q);
+    else runSearch(q);
   });
 
   // Re-render (from cache, no re-fetch) when the node limit changes.

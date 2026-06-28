@@ -167,6 +167,32 @@ body {
 }
 .kind-chip.active .kind-chip-count { color: rgba(255, 255, 255, 0.85); }
 
+/* ── Cypher result table (left rail, dual-mode query bar) ── */
+.cypher-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78em;
+}
+.cypher-table th,
+.cypher-table td {
+  text-align: left;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  word-break: break-word;
+}
+.cypher-table th {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.9em;
+}
+.cypher-table td.cell-node {
+  color: var(--accent-2);
+  cursor: pointer;
+}
+.cypher-table td.cell-node:hover { text-decoration: underline; }
+
 .results-list {
   list-style: none;
   margin: 0;

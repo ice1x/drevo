@@ -435,4 +435,29 @@ mod tests {
             "styles.css must style the .kind-chip elements"
         );
     }
+
+    // ── Cypher query bar (Neo4j-Browser-style) ───────────────────────────
+
+    #[test]
+    fn embedded_app_js_runs_cypher_queries() {
+        // The top bar must accept Cypher (not only FTS) and POST it to the
+        // /cypher endpoint, auto-detecting which mode the input is.
+        assert!(
+            APP_JS.contains("/cypher"),
+            "app.js must POST to the /cypher endpoint"
+        );
+        assert!(
+            APP_JS.contains("runCypher"),
+            "app.js must define runCypher()"
+        );
+        assert!(
+            APP_JS.contains("looksLikeCypher"),
+            "app.js must auto-detect Cypher vs FTS input"
+        );
+        // The graph projection returned by /cypher must reach the canvas.
+        assert!(
+            APP_JS.contains(".graph"),
+            "app.js must render the /cypher graph projection"
+        );
+    }
 }

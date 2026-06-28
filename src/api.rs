@@ -85,6 +85,8 @@ use axum::Json;
 use axum::Router;
 use serde::{Deserialize, Serialize};
 
+use crate::cypher::executor::{self, ExecResult, Value as CypherValue};
+use crate::cypher::parser;
 use crate::db::Drevo;
 use crate::dump::ImportReport;
 use crate::error::DrevoError;
@@ -644,6 +646,245 @@ async fn search_fts(
     Ok(Json(SearchFtsResponse { results }))
 }
 
+// ── Cypher over HTTP (`POST /cypher`) ───────────────────────────────────
+// drevo's Cypher executor was reachable only over Bolt. This endpoint runs
+// the same `cypher::executor` over HTTP so the Web UI (and any HTTP client)
+// can issue Cypher and get back BOTH a tabular result (`columns` + `rows`)
+// and a `graph` projection — every Node / Relationship / Path value in the
+// rows, deduped by id — that the browser renders on the canvas the same way
+// it renders `/export/json` and `/subgraph`.
+//
+// NOTE: like Bolt, this accepts write queries (CREATE/SET/DELETE/MERGE). The
+// HTTP server has no auth, so it inherits the same trust model as the rest
+// of the API (bind to localhost / put auth in front for shared deployments).
+
+/// Request body for `POST /cypher`.
+#[derive(Debug, Deserialize)]
+pub struct CypherRequest {
+    /// The Cypher query text.
+    pub query: Option<String>,
+    /// Optional query parameters (`$name` placeholders), JSON scalars/containers.
+    #[serde(default)]
+    pub params: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Mutation counters surfaced from [`executor::ExecStats`].
+#[derive(Debug, Serialize)]
+pub struct CypherStats {
+    /// Nodes created by `CREATE` / `MERGE`.
+    pub nodes_created: usize,
+    /// Relationships created by `CREATE` / `MERGE`.
+    pub relationships_created: usize,
+    /// Property assignments performed by `SET` / `REMOVE` / `MERGE`.
+    pub properties_set: usize,
+    /// Nodes removed by `DELETE` / `DETACH DELETE`.
+    pub nodes_deleted: usize,
+    /// Relationships removed by `DELETE` / `DETACH DELETE`.
+    pub relationships_deleted: usize,
+    /// Labels added by `SET n:Label`.
+    pub labels_added: usize,
+    /// Labels removed by `REMOVE n:Label`.
+    pub labels_removed: usize,
+}
+
+/// Graph projection: the Node / Relationship values found anywhere in the
+/// result rows, deduped by id, in the `{nodes, edges}` shape the UI reads.
+#[derive(Debug, Serialize)]
+pub struct CypherGraph {
+    /// Deduped node objects (`{id, kind, title, uuid, labels, properties}`).
+    pub nodes: Vec<serde_json::Value>,
+    /// Deduped edge objects (`{id, from_id, to_id, kind, ...}`).
+    pub edges: Vec<serde_json::Value>,
+}
+
+/// Response body for `POST /cypher`.
+#[derive(Debug, Serialize)]
+pub struct CypherResponse {
+    /// Projected column names, in `RETURN` order.
+    pub columns: Vec<String>,
+    /// One entry per result row; each cell is the JSON form of a Cypher value.
+    pub rows: Vec<Vec<serde_json::Value>>,
+    /// Write-side mutation counters.
+    pub stats: CypherStats,
+    /// The Node / Relationship / Path values from the rows, for canvas render.
+    pub graph: CypherGraph,
+}
+
+/// Handler for `POST /cypher`: parse + execute, return rows + graph.
+async fn cypher(
+    State(state): State<ApiState>,
+    body: Result<Json<CypherRequest>, JsonRejection>,
+) -> Result<Json<CypherResponse>, ApiError> {
+    let Json(CypherRequest { query, params }) = body?;
+    let query =
+        query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
+    let ast = parser::parse(&query)
+        .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
+    let params = params
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| (k, json_to_cypher_value(v)))
+        .collect();
+    let result = executor::execute(&ast, state.db.as_ref(), params)
+        .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
+    Ok(Json(exec_result_to_response(result)))
+}
+
+/// Convert a JSON parameter value into a Cypher runtime value.
+fn json_to_cypher_value(v: serde_json::Value) -> CypherValue {
+    match v {
+        serde_json::Value::Null => CypherValue::Null,
+        serde_json::Value::Bool(b) => CypherValue::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                CypherValue::Integer(i)
+            } else {
+                CypherValue::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => CypherValue::String(s),
+        serde_json::Value::Array(a) => {
+            CypherValue::List(a.into_iter().map(json_to_cypher_value).collect())
+        }
+        serde_json::Value::Object(o) => CypherValue::Map(
+            o.into_iter()
+                .map(|(k, v)| (k, json_to_cypher_value(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Serialise a UUID byte array the same way `/export/json` does (a number
+/// array) so the UI's existing `uuidToHyphenated` helper handles it.
+fn uuid_to_json(uuid: &[u8; 16]) -> serde_json::Value {
+    serde_json::Value::Array(uuid.iter().map(|b| serde_json::json!(b)).collect())
+}
+
+/// A Cypher `NodeValue` → the `{id, kind, title, uuid, labels, properties}`
+/// shape the front-end renderer (`toElements`) reads.
+fn node_value_to_json(n: &executor::NodeValue) -> serde_json::Value {
+    let title = match n.properties.get("title") {
+        Some(CypherValue::String(s)) => s.clone(),
+        _ => String::new(),
+    };
+    serde_json::json!({
+        "id": n.id,
+        "kind": n.labels.first().cloned().unwrap_or_default(),
+        "title": title,
+        "uuid": uuid_to_json(&n.uuid),
+        "labels": n.labels,
+        "properties": map_to_json(&n.properties),
+    })
+}
+
+/// A Cypher `RelationshipValue` → the `{id, from_id, to_id, kind, ...}` shape.
+fn rel_value_to_json(r: &executor::RelationshipValue) -> serde_json::Value {
+    serde_json::json!({
+        "id": r.id,
+        "from_id": r.from_id,
+        "to_id": r.to_id,
+        "kind": r.kind,
+        "uuid": uuid_to_json(&r.uuid),
+        "properties": map_to_json(&r.properties),
+    })
+}
+
+fn map_to_json(m: &std::collections::BTreeMap<String, CypherValue>) -> serde_json::Value {
+    serde_json::Value::Object(
+        m.iter()
+            .map(|(k, v)| (k.clone(), value_to_json(v)))
+            .collect(),
+    )
+}
+
+/// Convert a Cypher runtime value into JSON for the tabular `rows`.
+fn value_to_json(v: &CypherValue) -> serde_json::Value {
+    match v {
+        CypherValue::Null => serde_json::Value::Null,
+        CypherValue::Bool(b) => serde_json::Value::Bool(*b),
+        CypherValue::Integer(i) => serde_json::json!(i),
+        CypherValue::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        CypherValue::String(s) => serde_json::Value::String(s.clone()),
+        CypherValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(value_to_json).collect())
+        }
+        CypherValue::Map(m) => map_to_json(m),
+        CypherValue::Node(n) => node_value_to_json(n),
+        CypherValue::Relationship(r) => rel_value_to_json(r),
+        CypherValue::Path(p) => serde_json::json!({
+            "nodes": p.nodes.iter().map(|n| node_value_to_json(n)).collect::<Vec<_>>(),
+            "relationships": p.relationships.iter().map(|r| rel_value_to_json(r)).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+/// Walk every value in the result, collecting the Node / Relationship values
+/// (deduped by id) so the UI can draw the graph the query touched.
+fn collect_graph(rows: &[Vec<CypherValue>]) -> CypherGraph {
+    let mut nodes: std::collections::BTreeMap<u64, serde_json::Value> = Default::default();
+    let mut edges: std::collections::BTreeMap<u64, serde_json::Value> = Default::default();
+    fn walk(
+        v: &CypherValue,
+        nodes: &mut std::collections::BTreeMap<u64, serde_json::Value>,
+        edges: &mut std::collections::BTreeMap<u64, serde_json::Value>,
+    ) {
+        match v {
+            CypherValue::Node(n) => {
+                nodes.entry(n.id).or_insert_with(|| node_value_to_json(n));
+            }
+            CypherValue::Relationship(r) => {
+                edges.entry(r.id).or_insert_with(|| rel_value_to_json(r));
+            }
+            CypherValue::Path(p) => {
+                for n in &p.nodes {
+                    nodes.entry(n.id).or_insert_with(|| node_value_to_json(n));
+                }
+                for r in &p.relationships {
+                    edges.entry(r.id).or_insert_with(|| rel_value_to_json(r));
+                }
+            }
+            CypherValue::List(items) => items.iter().for_each(|x| walk(x, nodes, edges)),
+            CypherValue::Map(m) => m.values().for_each(|x| walk(x, nodes, edges)),
+            _ => {}
+        }
+    }
+    for row in rows {
+        for v in row {
+            walk(v, &mut nodes, &mut edges);
+        }
+    }
+    CypherGraph {
+        nodes: nodes.into_values().collect(),
+        edges: edges.into_values().collect(),
+    }
+}
+
+fn exec_result_to_response(result: ExecResult) -> CypherResponse {
+    let rows: Vec<Vec<serde_json::Value>> = result
+        .rows
+        .iter()
+        .map(|row| row.iter().map(value_to_json).collect())
+        .collect();
+    let graph = collect_graph(&result.rows);
+    let s = result.stats;
+    CypherResponse {
+        columns: result.columns,
+        rows,
+        stats: CypherStats {
+            nodes_created: s.nodes_created,
+            relationships_created: s.relationships_created,
+            properties_set: s.properties_set,
+            nodes_deleted: s.nodes_deleted,
+            relationships_deleted: s.relationships_deleted,
+            labels_added: s.labels_added,
+            labels_removed: s.labels_removed,
+        },
+        graph,
+    }
+}
+
 // ---------------------------------------------------------------------
 // Keyword faceting (task 00133)
 // ---------------------------------------------------------------------
@@ -983,6 +1224,9 @@ pub fn build_router(state: ApiState) -> Router {
         )
         .route("/paths/shortest", with_405(get(get_shortest_path)))
         .route("/search/fts", with_405(axum::routing::post(search_fts)))
+        // Cypher over HTTP — parse + execute, return rows + graph projection
+        // (the Web UI's query bar; same executor Bolt uses).
+        .route("/cypher", with_405(axum::routing::post(cypher)))
         // ── Phase 17 task `00133` — keyword faceting endpoint ───────
         .route("/facets", with_405(get(facets)))
         .route("/export/json", with_405(get(export_json)))
