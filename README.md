@@ -716,6 +716,34 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 - [x] `00130` **Observability — Prometheus `/metrics` + structured query log** — production deployments need to answer *how much traffic, how fast?* and *which queries ran, did they fail?* without a debugger attached. Adds the always-compiled, dependency-free [`observability`](src/observability/mod.rs) module: a lock-free metrics [`Registry`](src/observability/mod.rs) with the three Prometheus shapes ([`Counter`](src/observability/mod.rs)/[`Gauge`](src/observability/mod.rs)/[`Histogram`](src/observability/mod.rs)) and a [`render_prometheus`](src/observability/mod.rs) renderer emitting the text exposition format (v0.0.4), the standard [`DrevoMetrics`](src/observability/mod.rs) bundle (`drevo_http_requests_total{status}`, `drevo_http_request_duration_seconds`, `drevo_http_requests_in_flight`, `drevo_queries_total{status}`, `drevo_query_duration_seconds`, `drevo_process_uptime_seconds`, `drevo_build_info{version}`), and a structured query log ([`QueryObservation`](src/observability/mod.rs) → [`record_query`](src/observability/mod.rs)) that updates the counters/histogram and emits a `tracing` event tagged with OpenTelemetry database semantic-convention fields. Wired into the HTTP layer ([`api`](src/api.rs)) behind the `http` feature: a `GET /metrics` route plus a per-request instrumentation middleware. **OTLP wire export is deliberately out of scope** — pulling tonic/gRPC/protobuf into the default dependency graph would break the crate's "embeddable, no external system deps" property, so the OTEL-semantic spans are emitted ready for an opt-in `tracing-opentelemetry` exporter follow-up. (Late-added Phase 15 task; uses the next free id `00130` because the originally-suggested `00103` was already taken by the Phase 8.5 storage-audit task.)
 - [x] `00163` **Containerised drevo + external FastMCP MCP server** — packages drevo for the "Neo4j-like, runs out of the box" experience the embedded `drevo-mcp` (`00090`) does **not** give, in two halves. **(1) Container** — [`docker-compose.yml`](docker-compose.yml) now **bind-mounts a host folder** (`${DREVO_DATA_DIR:-./data}` → `/data`, replacing the named volume) and runs the image as the host user (`${DREVO_UID}:${DREVO_GID}`, so the non-root container can take redb's write lock on the mounted folder); `drevo-server` is the **single owner** of the file and serves the HTTP API **and the embedded Web UI (`/ui`) by default** on `:8080` against the host's `drevo.redb`. **(2) External FastMCP server** — new standalone package [`tools/drevo-mcp/`](tools/drevo-mcp/): a [FastMCP](https://github.com/jlowin/fastmcp) stdio server (`python -m drevo_mcp`) that is an **HTTP client** of the running container (base URL from `DREVO_HTTP_URL`), exposing eight read-only tools (`health`, `node_get`, `list_nodes_by_kind`, `search_fts`, `neighbors`, `subgraph`, `shortest_path`, `count_nodes`), each mapping to one endpoint in [`src/api.rs`](src/api.rs). Because it **never opens the redb file**, it removes the single-process-lock contention that made the embedded `drevo-server` and the `drevo-mcp` binary mutually exclusive on one file — so the Web UI and the MCP server run against the same data at once. Supersedes the embedded path of `00090`/`00121` for **multi-client** deployments (the embedded binary stays valid for a single-process app). Tests (all Python, off the cargo path): [`tools/drevo-mcp/tests/`](tools/drevo-mcp/tests/) — `test_client.py` (every endpoint: URL / params / body / error mapping via `pytest-httpx`), `test_tools.py` (each tool delegates + all eight register on the FastMCP instance), `test_compose.py` (locks the bind-mount + host-user + no-named-volume edits); `pytest` green, `mypy --strict` + `ruff` + `black` clean. Verified end-to-end against the migration corpus: `count_nodes` → `{"count": 2209}` through `python -m drevo_mcp` → HTTP → `drevo-server`, no lock conflict. See the [Quick Start — Container + External MCP](#quick-start--container--external-mcp-fastmcp) guide. **Out of scope:** Bolt-transport MCP; write tools (read-only first, like `00090`); publishing the image to a registry; an O(1) `/stats` count endpoint (`count_nodes` counts `/export/json` for now).
 
+  > **`00163` integration round — subtasks (local container + MCP migration).** The
+  > headline `00163` landed the container + FastMCP package, but actually *migrating a
+  > real Neo4j knowledge graph onto a local drevo container + an MCP connector* surfaced
+  > a chain of follow-ups (the "3-day move"). Each shipped as part of this integration
+  > effort across PRs [#187](https://github.com/ice1x/drevo/pull/187) /
+  > [#188](https://github.com/ice1x/drevo/pull/188) /
+  > [#189](https://github.com/ice1x/drevo/pull/189):
+  >
+  > **Container**
+  > - [x] `00163.c1` Dockerfile actually builds — base image `rust:1.85`→`1.88` (workspace MSRV, `time` crate), and `COPY static/ static/` so the Web UI assets reach the image (#187).
+  > - [x] `00163.c2` `docker-compose.yml` bind-mounts the host folder + runs as host UID/GID so the non-root container takes redb's write lock; exposes Bolt port (#187).
+  > - [x] `00163.c3` **Batch import** — `Drevo.create_nodes` / `create_edges` (one redb txn per chunk) replace per-row writes; the Neo4j→drevo migration of 2209 nodes / 3172 edges dropped from minutes (fsync-bound) to **~6.7 s** ([`src/db.rs`](src/db.rs), [`tools/neo4j-to-drevo/neo4j_to_drevo/_engine.py`](tools/neo4j-to-drevo/neo4j_to_drevo/_engine.py)) (#187).
+  > - [x] `00163.c4` **Neo4j-compatible Bolt server** — optional listener via `DREVO_BOLT_PORT`, shares the `Arc<Drevo>` with HTTP; `server_agent` starts with `Neo4j/` so the official neo4j driver accepts it ([`src/server.rs`](src/server.rs), [`src/bolt/session.rs`](src/bolt/session.rs)) (#187).
+  > - [x] `00163.c5` Cypher `datetime()` / `timestamp()` — needed by the neo4j-mcp drop-in's write queries ([`src/cypher/executor.rs`](src/cypher/executor.rs)) (#187).
+  > - [x] `00163.c6` **Publish image to ghcr without the macOS keychain** — the self-hosted runner is an Apple-Silicon Mac; `docker login` fails on `osxkeychain` (`-25308`). Pre-bake the `auths` blob into a per-run `DOCKER_CONFIG`, skip `docker login` ([`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)) (#188).
+  > - [x] `00163.c7` `.dockerignore` excludes the untracked, ~64 GB live `actions-runner/` so a **local** `docker build` doesn't hang streaming it to the daemon (CI is unaffected — clean checkout) (#189).
+  >
+  > **MCP**
+  > - [x] `00163.m1` **Bolt drop-in MCP** — [`tools/drevo-mcp-bolt/`](tools/drevo-mcp-bolt/): a copy of the user's neo4j-mcp re-pointed at drevo's Bolt port, giving the **same 13 knowledge-graph tools** as the Neo4j MCP, backed by drevo (`DREVO_BOLT_URL`, default `bolt://localhost:7687`). The neo4j-mcp `search()` `**params` collision and the Bolt-4.4 `notifications_disabled_categories` were patched out (#187).
+  > - [x] `00163.m2` FastMCP HTTP-client package [`tools/drevo-mcp/`](tools/drevo-mcp/) — the lock-free read-only path (8 tools over HTTP) for multi-client setups (#187).
+  >
+  > **Web UI**
+  > - [x] `00163.u1` **Vendor Cytoscape.js locally** — the `/ui` graph was stuck on "connecting…": the `index.html` `<script>` carried an SRI `integrity=` hash that did **not** match the file unpkg served, so the browser blocked it (independent of Brave Shields / network). The four bundles are now vendored under [`static/web/vendor/`](static/web/vendor/) and served same-origin via `/ui/vendor/*.js`, baked into the binary — no CDN, no `integrity`, works offline ([`src/web_ui.rs`](src/web_ui.rs)) (#189).
+  >
+  > **Verified local deployment.** `docker run` of the locally-built image, bind-mounting `~/drevo_data`: HTTP + Web UI on `:8080`, Bolt on host `:7688`, querying the migrated graph (2209 nodes / 3172 edges); the `drevo-kg` Bolt-drop-in MCP connector answers over `bolt://localhost:7688`.
+  >
+  > **Still open (next session):** consume the **published** ghcr image (after #188 reaches `main`) instead of a local build; Bolt-transport **write** tools; an O(1) `/stats` count endpoint.
+
 **Definition of done:** `docker run ghcr.io/ice1x/drevo` ships with Bolt + HTTP + Web UI + MCP integrated; Python SDK is published to PyPI (delivered by Phase 16, see below); the comparison table above is updated with measured numbers from task `00101`.
 
 > **Note on `00100`:** the placeholder "Python SDK" entry above is **superseded by Phase 16** (`00114`–`00122`), which decomposes the SDK into a graph-RAG-friendly API, three test layers, MCP-introspectable documentation, and a Python CI matrix. The `00100` slot stays in this list only to preserve task numbering; concrete deliverables live under Phase 16.
@@ -1282,7 +1310,23 @@ curl -s localhost:8080/health      # {"status":"ok"}
 open http://localhost:8080/ui      # the embedded graph Web UI (served by default)
 ```
 
+Equivalent plain `docker run` (also enables the Neo4j-compatible Bolt listener — see
+the Bolt drop-in MCP below — and survives reboots):
+
+```bash
+docker build -t drevo:latest .     # or: docker pull ghcr.io/ice1x/drevo
+docker run -d --name drevo --restart unless-stopped \
+  --user "$(id -u):$(id -g)" \
+  -p 8080:8080 -p 7688:7687 \      # host 7688 → container Bolt 7687 (7687 often taken by Neo4j)
+  -v "$HOME/drevo_data:/data" \
+  -e DREVO_BOLT_PORT=7687 \
+  drevo:latest
+```
+
 The container bind-mounts the host folder to `/data` and serves `<folder>/drevo.redb`.
+The Web UI is **fully self-contained** — Cytoscape.js is vendored and served from
+`/ui/vendor/`, so the graph renders with no CDN access (works offline / behind privacy
+browsers). Type a query → **Search** → click a result to draw its 2-hop subgraph.
 
 ### 2. Configure the MCP server
 
@@ -1318,6 +1362,30 @@ Add a connector to the client's MCP config — Claude Desktop
 This **external FastMCP** connector replaces the embedded Rust `drevo-mcp` binary
 (`00090`) for multi-client use: the container owns the file and the MCP process is just
 an HTTP client, so there is no redb lock conflict between the Web UI and the MCP server.
+
+### Alternative: Bolt drop-in (Neo4j-MCP parity, 13 tools)
+
+If you are migrating off a Neo4j knowledge graph and want the **same tools your Neo4j
+MCP already exposed**, use the Bolt drop-in in [`tools/drevo-mcp-bolt/`](tools/drevo-mcp-bolt/)
+instead of the HTTP FastMCP package. It is the neo4j-mcp server re-pointed at drevo's
+Neo4j-compatible Bolt port (`00163.m1`), so the AI client sees an identical 13-tool
+surface backed by drevo:
+
+```bash
+pip install -e tools/drevo-mcp-bolt
+```
+
+```json
+"drevo-kg": {
+  "command": "python",
+  "args": ["-m", "drevo_mcp_bolt"],
+  "env": { "DREVO_BOLT_URL": "bolt://localhost:7688" }
+}
+```
+
+This talks to the container's Bolt listener (host `:7688` in the `docker run` above), not
+HTTP. Like the FastMCP path it holds no redb lock — drevo's Bolt server shares the
+container's single `Drevo` handle.
 
 ---
 
