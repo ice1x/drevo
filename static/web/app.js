@@ -35,6 +35,7 @@
   const $tooltip = document.getElementById("cy-tooltip");
   const $nodeLimit = document.getElementById("node-limit");
   const $kindChips = document.getElementById("kind-chips");
+  const $themeToggle = document.getElementById("theme-toggle");
 
   // ── Graph overview state ─────────────────────────────────────────────
   // The whole graph dump is fetched once from /export/json and cached;
@@ -200,58 +201,106 @@
   }
 
   // ── Cytoscape init ─────────────────────────────────────────────────
+  // Theme-aware Cytoscape stylesheet. Canvas colours (node labels, the
+  // ring around each node, edge lines + captions) must match the active
+  // light/dark theme, so they are parameterised here and re-applied via
+  // cy.style() whenever the theme toggles.
+  const CY_THEME = {
+    light: {
+      label: "#1b2230",
+      nodeBorder: "#ffffff",
+      edge: "#c4cad6",
+      edgeLabel: "#687081",
+      root: "#1f9d57",
+      expanded: "#3f6fe6",
+      selected: "#1b2230",
+    },
+    dark: {
+      label: "#d9dde7",
+      nodeBorder: "#0f1115",
+      edge: "#4a4f5e",
+      edgeLabel: "#8a91a3",
+      root: "#76e3a4",
+      expanded: "#5b8df9",
+      selected: "#f5f7ff",
+    },
+  };
+  function cyStyle(theme) {
+    const t = CY_THEME[theme] || CY_THEME.light;
+    return [
+      {
+        selector: "node",
+        style: {
+          // Dynamic colour: every distinct `kind` gets a stable hue.
+          "background-color": (ele) => colorForKind(ele.data("kind")),
+          label: "data(title)",
+          color: t.label,
+          "text-valign": "bottom",
+          "text-margin-y": 6,
+          "font-size": 11,
+          width: 28,
+          height: 28,
+          "border-width": 1.5,
+          "border-color": t.nodeBorder,
+          "transition-property": "background-color, border-color, width, height",
+          "transition-duration": "160ms",
+        },
+      },
+      {
+        selector: "node.root",
+        style: { "border-width": 3, "border-color": t.root },
+      },
+      { selector: "node.expanded", style: { "border-color": t.expanded } },
+      {
+        selector: "node:selected",
+        style: { "border-width": 3, "border-color": t.selected },
+      },
+      {
+        selector: "edge",
+        style: {
+          width: 1.5,
+          "line-color": t.edge,
+          "target-arrow-color": t.edge,
+          "target-arrow-shape": "triangle",
+          "curve-style": "bezier",
+          label: "data(kind)",
+          "font-size": 9,
+          color: t.edgeLabel,
+          "text-rotation": "autorotate",
+        },
+      },
+    ];
+  }
+
+  // ── Light / dark theme ─────────────────────────────────────────────
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") || "light";
+  }
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("drevo-theme", theme);
+    } catch (e) {
+      /* private mode / disabled storage — non-fatal */
+    }
+    if ($themeToggle) $themeToggle.textContent = theme === "dark" ? "☀" : "☾";
+    if (cy) cy.style(cyStyle(theme)); // re-skin the canvas to match
+  }
+  function initTheme() {
+    let saved = "light";
+    try {
+      saved = localStorage.getItem("drevo-theme") || "light";
+    } catch (e) {
+      /* ignore */
+    }
+    applyTheme(saved);
+  }
+
   function initCytoscape() {
     cy = cytoscape({
       container: document.getElementById("cy"),
       layout: fcoseOptions(false),
-      style: [
-        {
-          selector: "node",
-          style: {
-            // Dynamic colour: every distinct `kind` gets a stable hue
-            // via colorForKind, so the palette is no longer capped at a
-            // few hard-coded selectors.
-            "background-color": (ele) => colorForKind(ele.data("kind")),
-            label: "data(title)",
-            color: "#d9dde7",
-            "text-valign": "bottom",
-            "text-margin-y": 6,
-            "font-size": 11,
-            width: 28,
-            height: 28,
-            "border-width": 1,
-            "border-color": "#0f1115",
-            "transition-property": "background-color, border-color, width, height",
-            "transition-duration": "160ms",
-          },
-        },
-        {
-          selector: "node.root",
-          style: { "border-width": 3, "border-color": "#76e3a4" },
-        },
-        {
-          selector: "node.expanded",
-          style: { "border-color": "#5b8df9" },
-        },
-        {
-          selector: "node:selected",
-          style: { "border-width": 3, "border-color": "#f5f7ff" },
-        },
-        {
-          selector: "edge",
-          style: {
-            width: 1.5,
-            "line-color": "#4a4f5e",
-            "target-arrow-color": "#4a4f5e",
-            "target-arrow-shape": "triangle",
-            "curve-style": "bezier",
-            label: "data(kind)",
-            "font-size": 9,
-            color: "#8a91a3",
-            "text-rotation": "autorotate",
-          },
-        },
-      ],
+      style: cyStyle(currentTheme()),
       wheelSensitivity: 0.2,
     });
 
@@ -789,7 +838,15 @@
     $nodeLimit.addEventListener("change", () => renderSample());
   }
 
+  // Light / dark theme toggle.
+  if ($themeToggle) {
+    $themeToggle.addEventListener("click", () =>
+      applyTheme(currentTheme() === "dark" ? "light" : "dark")
+    );
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
+    initTheme();
     initCytoscape();
     loadServerInfo();
     loadOverview();
@@ -797,6 +854,7 @@
   // Some bundlers / browsers race: if DOMContentLoaded already fired,
   // initialise immediately.
   if (document.readyState !== "loading") {
+    initTheme();
     initCytoscape();
     loadServerInfo();
     loadOverview();

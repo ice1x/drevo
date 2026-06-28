@@ -1,13 +1,37 @@
-/* drevo browser — minimal layout for the Phase 15 task 00092 Web UI.
-   No CSS framework / preprocessor: a single hand-rolled stylesheet
-   keeps the asset map (embedded via include_str! in src/web_ui.rs)
-   to three files. */
+/* drevo browser — Web UI styles (Phase 15 task 00092+).
+   No CSS framework / preprocessor: a single hand-rolled stylesheet keeps
+   the embedded asset map (include_str! in src/web_ui.rs) small.
+
+   Theming: every colour is a CSS variable. The default (`:root`) is a
+   light, Neo4j-Browser-style theme; `html[data-theme="dark"]` overrides
+   with the dark palette. app.js toggles `data-theme` and persists it. */
 
 :root {
+  /* ── Light theme (default) ── */
+  --bg: #f6f8fb;
+  --bg-panel: #ffffff;
+  --bg-elev: #eef1f6;
+  --border: #e3e7ee;
+  --border-strong: #d2d8e2;
+  --text: #1b2230;
+  --text-muted: #687081;
+  --accent: #3f6fe6;
+  --accent-2: #1f9d57;
+  --danger: #d8463b;
+  --node-default: #3f6fe6;
+  --edge-default: #c4cad6;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 6px 16px rgba(16, 24, 40, 0.08);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --radius: 9px;
+  --radius-sm: 6px;
+}
+
+html[data-theme="dark"] {
   --bg: #0f1115;
   --bg-panel: #161922;
   --bg-elev: #1d212c;
   --border: #2a2f3d;
+  --border-strong: #39414f;
   --text: #d9dde7;
   --text-muted: #8a91a3;
   --accent: #5b8df9;
@@ -15,73 +39,102 @@
   --danger: #f56565;
   --node-default: #5b8df9;
   --edge-default: #4a4f5e;
-  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 6px 18px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
   color: var(--text);
   background: var(--bg);
   display: flex;
   flex-direction: column;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
-/* Top bar: brand + search + server info. */
+/* Top bar: brand + search + server info + theme toggle. */
 .topbar {
   display: flex;
   align-items: center;
   gap: 1rem;
-  padding: 0.6rem 1rem;
+  padding: 0.7rem 1.1rem;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-sm);
   z-index: 2;
 }
 .brand {
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   color: var(--accent);
 }
 .search {
   flex: 1;
   display: flex;
   gap: 0.5rem;
-  max-width: 560px;
+  max-width: 620px;
 }
 .search input {
   flex: 1;
-  padding: 0.45rem 0.7rem;
-  border-radius: 4px;
-  border: 1px solid var(--border);
+  padding: 0.5rem 0.8rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
   background: var(--bg-elev);
   color: var(--text);
   font: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.search input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.search input::placeholder { color: var(--text-muted); }
+.search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
 .search button {
-  padding: 0.45rem 1rem;
-  border-radius: 4px;
+  padding: 0.5rem 1.1rem;
+  border-radius: var(--radius);
   border: 1px solid var(--accent);
   background: var(--accent);
   color: #fff;
   font: inherit;
+  font-weight: 600;
   cursor: pointer;
+  transition: filter 0.12s ease, transform 0.05s ease;
 }
-.search button:hover { filter: brightness(1.08); }
+.search button:hover { filter: brightness(1.06); }
+.search button:active { transform: translateY(1px); }
 .server-info {
   color: var(--text-muted);
   font-size: 0.85em;
   white-space: nowrap;
 }
+.theme-toggle {
+  margin-left: auto;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.theme-toggle:hover { border-color: var(--accent); }
 
 /* Three-column layout: results | canvas | inspector. */
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 280px 1fr 320px;
+  grid-template-columns: 290px 1fr 330px;
   min-height: 0;
 }
 
@@ -90,7 +143,7 @@ body {
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   overflow-y: auto;
-  padding: 0.5rem 0.75rem;
+  padding: 0.75rem 0.9rem;
 }
 .inspector {
   border-right: none;
@@ -98,17 +151,19 @@ body {
 }
 .results-pane h2,
 .inspector h2 {
-  font-size: 0.78em;
+  font-size: 0.72em;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   color: var(--text-muted);
-  margin: 0.5rem 0 0.5rem;
+  margin: 0.4rem 0 0.6rem;
 }
+
 /* ── Graph overview panel (Neo4j-Browser-style label chips + limit) ── */
 .overview-panel {
   border-bottom: 1px solid var(--border);
-  padding-bottom: 0.6rem;
-  margin-bottom: 0.4rem;
+  padding-bottom: 0.8rem;
+  margin-bottom: 0.6rem;
 }
 .limit-control {
   display: flex;
@@ -116,40 +171,48 @@ body {
   gap: 0.4rem;
   font-size: 0.8em;
   color: var(--text-muted);
-  margin-bottom: 0.55rem;
+  margin-bottom: 0.65rem;
 }
 .limit-control input {
   width: 4.5rem;
-  padding: 0.25rem 0.4rem;
-  border-radius: 4px;
-  border: 1px solid var(--border);
+  padding: 0.3rem 0.45rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
   background: var(--bg-elev);
   color: var(--text);
   font: inherit;
 }
-.limit-control input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.limit-control input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
 .kind-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.3rem;
+  gap: 0.35rem;
 }
 .kind-chips-empty { color: var(--text-muted); font-style: italic; font-size: 0.8em; }
 .kind-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.2rem 0.5rem;
+  padding: 0.25rem 0.6rem;
   border-radius: 999px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--bg-elev);
   color: var(--text);
   font: inherit;
   font-size: 0.78em;
   cursor: pointer;
-  transition: border-color 120ms, background 120ms;
+  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
 }
-.kind-chip:hover { border-color: var(--accent); }
-.kind-chip.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+.kind-chip:hover { border-color: var(--accent); box-shadow: var(--shadow-sm); }
+.kind-chip.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
 /* A small colour dot keyed to the same hue colorForKind() gives the node. */
 .kind-chip-name::before {
   content: "";
@@ -176,7 +239,7 @@ body {
 .cypher-table th,
 .cypher-table td {
   text-align: left;
-  padding: 0.3rem 0.4rem;
+  padding: 0.35rem 0.45rem;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
   word-break: break-word;
@@ -188,8 +251,9 @@ body {
   font-size: 0.9em;
 }
 .cypher-table td.cell-node {
-  color: var(--accent-2);
+  color: var(--accent);
   cursor: pointer;
+  font-weight: 500;
 }
 .cypher-table td.cell-node:hover { text-decoration: underline; }
 
@@ -199,11 +263,12 @@ body {
   padding: 0;
 }
 .results-list li {
-  padding: 0.45rem 0.5rem;
-  margin-bottom: 0.25rem;
-  border-radius: 3px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.3rem;
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
   cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 .results-list li:hover {
   background: var(--bg-elev);
@@ -219,7 +284,7 @@ body {
   color: var(--text-muted);
   font-style: italic;
 }
-.results-list .result-title { font-weight: 500; }
+.results-list .result-title { font-weight: 600; }
 .results-list .result-meta {
   display: block;
   color: var(--text-muted);
@@ -231,26 +296,22 @@ body {
 .graph-canvas {
   background: var(--bg);
   min-height: 0;
-  /* Positioning context for the absolutely-placed hover tooltip
-     (task 00093) — the tooltip's rendered coordinates come from
-     Cytoscape relative to this container. */
   position: relative;
   overflow: hidden;
+  transition: background 0.2s ease;
 }
 
-/* Hover tooltip (task 00093): a small floating card showing a node's
-   title + kind + id. Hidden until app.js adds `.visible` on mouseover;
-   pointer-events:none so it never steals the hover from the canvas. */
+/* Hover tooltip (task 00093). */
 #cy-tooltip {
   position: absolute;
   top: 0;
   left: 0;
   z-index: 5;
   max-width: 240px;
-  padding: 0.4rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--bg-elev);
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
   color: var(--text);
   box-shadow: var(--shadow);
   font-size: 0.85em;
@@ -277,7 +338,7 @@ body {
 .inspector-body { font-size: 0.9em; }
 .inspector-row {
   display: flex;
-  padding: 0.25rem 0;
+  padding: 0.3rem 0;
   border-bottom: 1px solid var(--border);
 }
 .inspector-row .k {
@@ -293,12 +354,13 @@ body {
 }
 .inspector-kind {
   display: inline-block;
-  padding: 0.1rem 0.45rem;
+  padding: 0.12rem 0.5rem;
   border-radius: 999px;
   background: var(--accent);
   color: #fff;
   font-size: 0.75em;
-  margin-bottom: 0.35rem;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
 }
 
 /* Status bar — non-modal feedback line at the bottom. */
@@ -306,7 +368,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.3rem 1rem;
+  padding: 0.35rem 1.1rem;
   background: var(--bg-panel);
   border-top: 1px solid var(--border);
   color: var(--text-muted);

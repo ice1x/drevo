@@ -501,6 +501,51 @@ mod tests {
         );
     }
 
+    // ── Light / dark theme ───────────────────────────────────────────────
+
+    #[test]
+    fn embedded_index_defaults_to_light_theme_with_toggle() {
+        assert!(
+            INDEX_HTML.contains("data-theme=\"light\""),
+            "default theme must be light (the Neo4j-fresh look)"
+        );
+        assert!(
+            INDEX_HTML.contains("id=\"theme-toggle\""),
+            "the topbar must carry a #theme-toggle control"
+        );
+    }
+
+    #[test]
+    fn embedded_styles_css_defines_both_themes() {
+        // Light is the default `:root` palette; dark overrides via the
+        // `[data-theme="dark"]` selector. Both must be present.
+        assert!(
+            STYLES_CSS.contains("html[data-theme=\"dark\"]")
+                || STYLES_CSS.contains("[data-theme=\"dark\"]"),
+            "styles.css must define a dark-theme override block"
+        );
+        assert!(
+            STYLES_CSS.contains("--radius"),
+            "styles.css must use the modern radius variable (rounded UI)"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_toggles_theme_and_reskins_canvas() {
+        assert!(
+            APP_JS.contains("applyTheme") && APP_JS.contains("data-theme"),
+            "app.js must toggle the document data-theme"
+        );
+        assert!(
+            APP_JS.contains("cyStyle"),
+            "app.js must re-skin the Cytoscape canvas per theme"
+        );
+        assert!(
+            APP_JS.contains("drevo-theme"),
+            "app.js must persist the chosen theme"
+        );
+    }
+
     // ── Cypher query bar (Neo4j-Browser-style) ───────────────────────────
 
     #[test]
