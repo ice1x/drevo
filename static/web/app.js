@@ -33,6 +33,18 @@
   const $inspectorBody = document.getElementById("inspector-body");
   const $statusText = document.getElementById("status-text");
   const $tooltip = document.getElementById("cy-tooltip");
+  const $nodeLimit = document.getElementById("node-limit");
+  const $kindChips = document.getElementById("kind-chips");
+
+  // ── Graph overview state ─────────────────────────────────────────────
+  // The whole graph dump is fetched once from /export/json and cached;
+  // the on-load overview and the kind-chip filters all render bounded
+  // samples from this cache, so changing the node limit or switching
+  // kinds never re-hits the network.
+  /** @type {{nodes: any[], edges: any[]} | null} */
+  let graphCache = null;
+  const degreeById = new Map(); // node id → degree (for top-N sampling)
+  let activeKind = null; // null = all kinds
 
   // ── Dynamic node colour (task 00093) ────────────────────────────────
   // A handful of common kinds get curated, semantically-suggestive
@@ -456,6 +468,117 @@
     );
   }
 
+  // ── Graph overview (Neo4j-Browser-style initial view) ──────────────
+  // On load drevo shows a bounded sample of the graph instead of a blank
+  // canvas. The sample size is user-configurable (#node-limit, mirroring
+  // Neo4j's "Initial Node Display Limit"), and per-kind chips let you
+  // focus one label at a time. Dumping all ~thousands of nodes at once
+  // would be an unreadable hairball, so we cap the display like Neo4j.
+
+  /** Read the configurable sample size, clamped to a sane range. */
+  function currentLimit() {
+    const n = parseInt($nodeLimit && $nodeLimit.value, 10);
+    if (!Number.isFinite(n) || n < 1) return 50;
+    return Math.min(n, 2000);
+  }
+
+  /** Fetch the graph once, build the degree map, draw the first sample. */
+  async function loadOverview() {
+    status("Loading graph overview…");
+    try {
+      const dump = await apiGet("/export/json");
+      graphCache = { nodes: dump.nodes || [], edges: dump.edges || [] };
+      degreeById.clear();
+      for (const e of graphCache.edges) {
+        degreeById.set(e.from_id, (degreeById.get(e.from_id) || 0) + 1);
+        degreeById.set(e.to_id, (degreeById.get(e.to_id) || 0) + 1);
+      }
+      renderKindChips();
+      renderSample();
+    } catch (e) {
+      status(`Overview load failed: ${e.message}`, "error");
+    }
+  }
+
+  /** Distinct kinds with counts, most-common first. */
+  function kindCounts() {
+    const counts = new Map();
+    for (const n of (graphCache && graphCache.nodes) || []) {
+      const k = n.kind || "(no kind)";
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }
+
+  /** Build the clickable label-chip rail (an "All" chip + one per kind). */
+  function renderKindChips() {
+    if (!$kindChips) return;
+    $kindChips.innerHTML = "";
+    const total = (graphCache && graphCache.nodes.length) || 0;
+    const makeChip = (label, count, kindOrNull) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "kind-chip";
+      if (activeKind === kindOrNull) chip.classList.add("active");
+      if (kindOrNull) chip.style.setProperty("--chip-color", colorForKind(kindOrNull));
+      const name = document.createElement("span");
+      name.className = "kind-chip-name";
+      name.textContent = label;
+      const c = document.createElement("span");
+      c.className = "kind-chip-count";
+      c.textContent = String(count);
+      chip.appendChild(name);
+      chip.appendChild(c);
+      chip.addEventListener("click", () => {
+        activeKind = kindOrNull;
+        renderKindChips();
+        renderSample();
+      });
+      return chip;
+    };
+    $kindChips.appendChild(makeChip("All", total, null));
+    for (const [kind, count] of kindCounts()) {
+      $kindChips.appendChild(makeChip(kind, count, kind));
+    }
+  }
+
+  /** Pick the top-`limit` highest-degree nodes from a pool (id asc ties). */
+  function pickSampleNodes(pool, limit) {
+    return [...pool]
+      .sort(
+        (a, b) =>
+          (degreeById.get(b.id) || 0) - (degreeById.get(a.id) || 0) || a.id - b.id
+      )
+      .slice(0, limit);
+  }
+
+  /** Edges whose BOTH endpoints are in the sampled set (no dangling ends). */
+  function inducedEdges(idSet) {
+    return ((graphCache && graphCache.edges) || []).filter(
+      (e) => idSet.has(e.from_id) && idSet.has(e.to_id)
+    );
+  }
+
+  /** Render the current view: a bounded, induced sample of the cache. */
+  function renderSample() {
+    if (!graphCache) return;
+    const limit = currentLimit();
+    const pool = activeKind
+      ? graphCache.nodes.filter((n) => (n.kind || "(no kind)") === activeKind)
+      : graphCache.nodes;
+    const sample = pickSampleNodes(pool, limit);
+    const idSet = new Set(sample.map((n) => n.id));
+    const edges = inducedEdges(idSet);
+    renderSubgraph({ nodes: sample, edges }, null);
+    const scope = activeKind ? `kind “${activeKind}”` : "all kinds";
+    status(
+      `Overview: ${sample.length} of ${pool.length} node${
+        pool.length === 1 ? "" : "s"
+      } (${scope}), ${edges.length} edge${edges.length === 1 ? "" : "s"}.`,
+      "ok"
+    );
+  }
+
   // ── Bootstrap ──────────────────────────────────────────────────────
   $form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -463,14 +586,21 @@
     if (q) runSearch(q);
   });
 
+  // Re-render (from cache, no re-fetch) when the node limit changes.
+  if ($nodeLimit) {
+    $nodeLimit.addEventListener("change", () => renderSample());
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     initCytoscape();
     loadServerInfo();
+    loadOverview();
   });
   // Some bundlers / browsers race: if DOMContentLoaded already fired,
   // initialise immediately.
   if (document.readyState !== "loading") {
     initCytoscape();
     loadServerInfo();
+    loadOverview();
   }
 })();

@@ -41,8 +41,22 @@
   </header>
 
   <main class="layout">
-    <!-- Left rail: FTS results pane. Populated on submit. -->
+    <!-- Left rail: graph overview controls (Neo4j-Browser-style label
+         chips + a configurable node-display limit) on top, FTS results
+         below. The overview auto-renders a bounded sample on load. -->
     <aside class="results-pane" id="results-pane">
+      <section class="overview-panel" id="overview-panel">
+        <h2>Graph</h2>
+        <label class="limit-control">
+          Show
+          <input type="number" id="node-limit" min="1" max="2000" step="10"
+                 value="50" autocomplete="off" />
+          nodes
+        </label>
+        <div class="kind-chips" id="kind-chips">
+          <span class="kind-chips-empty">loading…</span>
+        </div>
+      </section>
       <h2>Results</h2>
       <ol id="results-list" class="results-list">
         <li class="results-empty">Type a query above to begin.</li>
@@ -69,7 +83,7 @@
 
   <footer class="statusbar" id="statusbar">
     <span id="status-text">Ready.</span>
-    <span class="hint">Tip: click a result to load its 2-hop subgraph; double-click a node to expand its neighbours.</span>
+    <span class="hint">Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours.</span>
   </footer>
 
   <script src="/ui/app.js"></script>

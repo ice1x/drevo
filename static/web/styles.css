@@ -104,6 +104,69 @@ body {
   color: var(--text-muted);
   margin: 0.5rem 0 0.5rem;
 }
+/* ── Graph overview panel (Neo4j-Browser-style label chips + limit) ── */
+.overview-panel {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.limit-control {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8em;
+  color: var(--text-muted);
+  margin-bottom: 0.55rem;
+}
+.limit-control input {
+  width: 4.5rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+}
+.limit-control input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.kind-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.kind-chips-empty { color: var(--text-muted); font-style: italic; font-size: 0.8em; }
+.kind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78em;
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms;
+}
+.kind-chip:hover { border-color: var(--accent); }
+.kind-chip.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+/* A small colour dot keyed to the same hue colorForKind() gives the node. */
+.kind-chip-name::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  background: var(--chip-color, var(--node-default));
+  vertical-align: baseline;
+}
+.kind-chip-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.kind-chip.active .kind-chip-count { color: rgba(255, 255, 255, 0.85); }
+
 .results-list {
   list-style: none;
   margin: 0;
