@@ -7,26 +7,7 @@
    with the dark palette. app.js toggles `data-theme` and persists it. */
 
 :root {
-  /* ── Light theme (default) ── */
-  --bg: #f6f8fb;
-  --bg-panel: #ffffff;
-  --bg-elev: #eef1f6;
-  --border: #e3e7ee;
-  --border-strong: #d2d8e2;
-  --text: #1b2230;
-  --text-muted: #687081;
-  --accent: #3f6fe6;
-  --accent-2: #1f9d57;
-  --danger: #d8463b;
-  --node-default: #3f6fe6;
-  --edge-default: #c4cad6;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 6px 16px rgba(16, 24, 40, 0.08);
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
-  --radius: 9px;
-  --radius-sm: 6px;
-}
-
-html[data-theme="dark"] {
+  /* ── Dark theme (default) ── */
   --bg: #0f1115;
   --bg-panel: #161922;
   --bg-elev: #1d212c;
@@ -41,6 +22,25 @@ html[data-theme="dark"] {
   --edge-default: #4a4f5e;
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 6px 18px rgba(0, 0, 0, 0.45);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --radius: 9px;
+  --radius-sm: 6px;
+}
+
+html[data-theme="light"] {
+  --bg: #f6f8fb;
+  --bg-panel: #ffffff;
+  --bg-elev: #eef1f6;
+  --border: #e3e7ee;
+  --border-strong: #d2d8e2;
+  --text: #1b2230;
+  --text-muted: #687081;
+  --accent: #3f6fe6;
+  --accent-2: #1f9d57;
+  --danger: #d8463b;
+  --node-default: #3f6fe6;
+  --edge-default: #c4cad6;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 6px 16px rgba(16, 24, 40, 0.08);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
 }
 
 * { box-sizing: border-box; }

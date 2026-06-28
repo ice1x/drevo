@@ -141,14 +141,16 @@
       animationDuration: 500,
       randomize: randomize === true,
       fit: true,
-      padding: 30,
-      nodeRepulsion: 9000,
-      idealEdgeLength: 95,
+      padding: 36,
+      // Generous spacing so nodes don't sit on top of their edges and the
+      // labels have room to breathe (the cramped "душно" look).
+      nodeRepulsion: 16000,
+      idealEdgeLength: 150,
       nestingFactor: 0.1,
-      gravity: 0.3,
-      gravityRange: 3.8,
+      gravity: 0.22,
+      gravityRange: 4.2,
       packComponents: false,
-      nodeSeparation: 110,
+      nodeSeparation: 175,
       nodeDimensionsIncludeLabels: true,
     };
   }
@@ -171,8 +173,8 @@
       fit: false, // re-fitting every tick while dragging is nauseating
       animate: true,
       randomize: false, // start from the current (fcose) positions
-      edgeLength: 95, // ideal spring length (matches fcose idealEdgeLength)
-      nodeSpacing: 12,
+      edgeLength: 150, // ideal spring length (matches fcose idealEdgeLength)
+      nodeSpacing: 28,
       handleDisconnected: true,
       // Let the user keep grabbing nodes while the sim runs.
       ungrabifyWhileSimulating: false,
@@ -208,6 +210,7 @@
   const CY_THEME = {
     light: {
       label: "#1b2230",
+      halo: "#f6f8fb", // = canvas bg → label outline so text reads over anything
       nodeBorder: "#ffffff",
       edge: "#c4cad6",
       edgeLabel: "#687081",
@@ -217,16 +220,17 @@
     },
     dark: {
       label: "#d9dde7",
+      halo: "#0f1115",
       nodeBorder: "#0f1115",
       edge: "#4a4f5e",
-      edgeLabel: "#8a91a3",
+      edgeLabel: "#c7cedd",
       root: "#76e3a4",
       expanded: "#5b8df9",
       selected: "#f5f7ff",
     },
   };
   function cyStyle(theme) {
-    const t = CY_THEME[theme] || CY_THEME.light;
+    const t = CY_THEME[theme] || CY_THEME.dark;
     return [
       {
         selector: "node",
@@ -238,8 +242,18 @@
           "text-valign": "bottom",
           "text-margin-y": 6,
           "font-size": 11,
-          width: 28,
-          height: 28,
+          // Halo + truncation so labels stay legible and don't pile into an
+          // unreadable wall of text over the edges / other nodes.
+          "text-outline-width": 2.5,
+          "text-outline-color": t.halo,
+          "text-max-width": "120px",
+          "text-wrap": "ellipsis",
+          // Labels only appear once the graph is zoomed in enough to read
+          // them — declutters the wide-out view (like the Neo4j Browser).
+          "min-zoomed-font-size": 9,
+          "z-index": 10, // nodes paint above edges
+          width: 30,
+          height: 30,
           "border-width": 1.5,
           "border-color": t.nodeBorder,
           "transition-property": "background-color, border-color, width, height",
@@ -258,23 +272,37 @@
       {
         selector: "edge",
         style: {
-          width: 1.5,
+          width: 1.2,
           "line-color": t.edge,
+          "line-opacity": 0.7,
           "target-arrow-color": t.edge,
           "target-arrow-shape": "triangle",
+          "arrow-scale": 0.8,
           "curve-style": "bezier",
+          // Relationship-type captions are hidden by default (they were the
+          // worst source of clutter) and revealed on hover / selection.
           label: "data(kind)",
+          "text-opacity": 0,
           "font-size": 9,
           color: t.edgeLabel,
+          "text-outline-width": 2.5,
+          "text-outline-color": t.halo,
           "text-rotation": "autorotate",
+          "z-index": 1,
         },
+      },
+      {
+        // Hovered (`.hl`) or selected edge → show its caption + emphasise.
+        selector: "edge.hl, edge:selected",
+        style: { "text-opacity": 1, "line-opacity": 1, width: 2 },
       },
     ];
   }
 
   // ── Light / dark theme ─────────────────────────────────────────────
+  // Dark is the default; a light theme is available via the toggle.
   function currentTheme() {
-    return document.documentElement.getAttribute("data-theme") || "light";
+    return document.documentElement.getAttribute("data-theme") || "dark";
   }
   function applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
@@ -287,9 +315,9 @@
     if (cy) cy.style(cyStyle(theme)); // re-skin the canvas to match
   }
   function initTheme() {
-    let saved = "light";
+    let saved = "dark";
     try {
-      saved = localStorage.getItem("drevo-theme") || "light";
+      saved = localStorage.getItem("drevo-theme") || "dark";
     } catch (e) {
       /* ignore */
     }
@@ -331,6 +359,11 @@
     cy.on("mousemove", "node", (evt) => positionTooltip(evt.target));
     cy.on("mouseout", "node", () => hideTooltip());
     cy.on("pan zoom drag", () => hideTooltip());
+
+    // Relationship captions are hidden by default to keep the canvas
+    // readable; reveal a single edge's type on hover.
+    cy.on("mouseover", "edge", (evt) => evt.target.addClass("hl"));
+    cy.on("mouseout", "edge", (evt) => evt.target.removeClass("hl"));
 
     // Live drag physics (Neo4j-Browser-style): start a running cola force
     // simulation the moment a node actually starts moving, so its connected

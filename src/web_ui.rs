@@ -504,10 +504,10 @@ mod tests {
     // ── Light / dark theme ───────────────────────────────────────────────
 
     #[test]
-    fn embedded_index_defaults_to_light_theme_with_toggle() {
+    fn embedded_index_defaults_to_dark_theme_with_toggle() {
         assert!(
-            INDEX_HTML.contains("data-theme=\"light\""),
-            "default theme must be light (the Neo4j-fresh look)"
+            INDEX_HTML.contains("data-theme=\"dark\""),
+            "default theme must be dark"
         );
         assert!(
             INDEX_HTML.contains("id=\"theme-toggle\""),
@@ -517,12 +517,12 @@ mod tests {
 
     #[test]
     fn embedded_styles_css_defines_both_themes() {
-        // Light is the default `:root` palette; dark overrides via the
-        // `[data-theme="dark"]` selector. Both must be present.
+        // Dark is the default `:root` palette; light overrides via the
+        // `[data-theme="light"]` selector. Both must be present.
         assert!(
-            STYLES_CSS.contains("html[data-theme=\"dark\"]")
-                || STYLES_CSS.contains("[data-theme=\"dark\"]"),
-            "styles.css must define a dark-theme override block"
+            STYLES_CSS.contains("html[data-theme=\"light\"]")
+                || STYLES_CSS.contains("[data-theme=\"light\"]"),
+            "styles.css must define a light-theme override block"
         );
         assert!(
             STYLES_CSS.contains("--radius"),
@@ -543,6 +543,25 @@ mod tests {
         assert!(
             APP_JS.contains("drevo-theme"),
             "app.js must persist the chosen theme"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_declutters_the_graph() {
+        // The cramped look came from relationship captions everywhere + node
+        // labels piling over edges. Captions are hidden by default and shown
+        // on hover; node labels carry a halo so they stay legible.
+        assert!(
+            APP_JS.contains("\"text-opacity\": 0"),
+            "edge captions must be hidden by default"
+        );
+        assert!(
+            APP_JS.contains("edge.hl") || APP_JS.contains("addClass(\"hl\")"),
+            "edge captions must be revealed on hover/selection"
+        );
+        assert!(
+            APP_JS.contains("text-outline-width"),
+            "node labels must have a halo so they read over edges/other nodes"
         );
     }
 
