@@ -220,6 +220,22 @@ async fn ui_serves_vendored_javascript_bundles() {
     }
 }
 
+#[tokio::test]
+async fn ui_overview_dependency_export_json_is_reachable() {
+    // The on-load graph overview fetches /export/json once and renders a
+    // bounded sample client-side. Lock that the endpoint the UI depends on
+    // is wired and returns the {nodes, edges} dump shape.
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/export/json").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("json"), "export must be JSON, got `{ct}`");
+    let body = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        body.contains("\"nodes\"") && body.contains("\"edges\""),
+        "export dump must carry nodes + edges arrays the overview reads"
+    );
+}
+
 // ── Non-UI routes unchanged ────────────────────────────────────────────
 
 #[tokio::test]

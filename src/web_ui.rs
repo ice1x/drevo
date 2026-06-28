@@ -361,4 +361,110 @@ mod tests {
             "styles.css must style the #cy-tooltip element"
         );
     }
+
+    // ── Graph overview on load (Neo4j-Browser-style initial view) ────────
+
+    #[test]
+    fn embedded_index_has_overview_controls() {
+        // A configurable node-count input (Neo4j's "Initial Node Display
+        // Limit") and a container for the per-kind chips must exist in the
+        // HTML for app.js to drive.
+        assert!(
+            INDEX_HTML.contains("id=\"node-limit\""),
+            "index.html must contain the #node-limit control (configurable sample size)"
+        );
+        assert!(
+            INDEX_HTML.contains("id=\"kind-chips\""),
+            "index.html must contain the #kind-chips container for label chips"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_renders_overview_on_load() {
+        // On load the canvas must auto-render a bounded sample of the graph
+        // (not sit empty), fetched once from /export/json and cached.
+        assert!(
+            APP_JS.contains("/export/json"),
+            "app.js must fetch the graph dump from /export/json for the overview"
+        );
+        assert!(
+            APP_JS.contains("loadOverview"),
+            "app.js must define a loadOverview() entry point"
+        );
+        // The overview must actually run at bootstrap, alongside the
+        // existing cytoscape init / server-info calls.
+        assert!(
+            APP_JS.matches("loadOverview(").count() >= 2,
+            "app.js must call loadOverview() at startup (definition + invocation)"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_sample_is_configurable_and_kind_filtered() {
+        // The sample size is read from the #node-limit control (configurable
+        // like Neo4j), and clicking a kind chip re-renders that kind.
+        assert!(
+            APP_JS.contains("node-limit"),
+            "app.js must read the configurable sample size from #node-limit"
+        );
+        assert!(
+            APP_JS.contains("renderSample"),
+            "app.js must define renderSample() to draw a bounded node set"
+        );
+        assert!(
+            APP_JS.contains("kind-chips") || APP_JS.contains("renderKindChips"),
+            "app.js must build the per-kind chips"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_induced_edges_only() {
+        // A sample of N nodes must draw only edges whose BOTH endpoints are
+        // in the sampled set — otherwise cytoscape throws on a dangling
+        // edge endpoint. Lock the membership-filter helper.
+        assert!(
+            APP_JS.contains("inducedEdges") || APP_JS.contains("has(e.from_id)"),
+            "app.js must keep only induced edges (both endpoints in the sample)"
+        );
+    }
+
+    #[test]
+    fn embedded_styles_css_styles_kind_chips() {
+        assert!(
+            STYLES_CSS.contains(".kind-chip"),
+            "styles.css must style the .kind-chip elements"
+        );
+    }
+
+    // ── Cypher query bar (Neo4j-Browser-style) ───────────────────────────
+
+    #[test]
+    fn embedded_app_js_runs_cypher_queries() {
+        // The top bar must accept Cypher (not only FTS) and POST it to the
+        // /cypher endpoint, auto-detecting which mode the input is.
+        assert!(
+            APP_JS.contains("/cypher"),
+            "app.js must POST to the /cypher endpoint"
+        );
+        assert!(
+            APP_JS.contains("runCypher"),
+            "app.js must define runCypher()"
+        );
+        assert!(
+            APP_JS.contains("looksLikeCypher"),
+            "app.js must auto-detect Cypher vs FTS input"
+        );
+        // The graph projection returned by /cypher must reach the canvas.
+        assert!(
+            APP_JS.contains(".graph"),
+            "app.js must render the /cypher graph projection"
+        );
+        // "Connect result nodes" (Neo4j Browser parity): a node-only result
+        // must still be wired with the edges that exist between the returned
+        // nodes, so `MATCH (n) RETURN n` is not a disconnected grid.
+        assert!(
+            APP_JS.contains("connectResultNodes"),
+            "app.js must connect result nodes with their inter-node edges"
+        );
+    }
 }

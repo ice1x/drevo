@@ -33,6 +33,18 @@
   const $inspectorBody = document.getElementById("inspector-body");
   const $statusText = document.getElementById("status-text");
   const $tooltip = document.getElementById("cy-tooltip");
+  const $nodeLimit = document.getElementById("node-limit");
+  const $kindChips = document.getElementById("kind-chips");
+
+  // ── Graph overview state ─────────────────────────────────────────────
+  // The whole graph dump is fetched once from /export/json and cached;
+  // the on-load overview and the kind-chip filters all render bounded
+  // samples from this cache, so changing the node limit or switching
+  // kinds never re-hits the network.
+  /** @type {{nodes: any[], edges: any[]} | null} */
+  let graphCache = null;
+  const degreeById = new Map(); // node id → degree (for top-N sampling)
+  let activeKind = null; // null = all kinds
 
   // ── Dynamic node colour (task 00093) ────────────────────────────────
   // A handful of common kinds get curated, semantically-suggestive
@@ -110,24 +122,38 @@
   // ── Layout (task 00093) ────────────────────────────────────────────
   // fcose = "fast Compound Spring Embedder": a force-directed physics
   // layout that spreads nodes organically and animates into place.
-  // `randomize: false` reuses current positions on re-runs so an
-  // incremental expand nudges the graph rather than reshuffling it.
-  function fcoseOptions(animate) {
+  //
+  // `randomize` controls the seed: a FRESH render (search result, Cypher
+  // result, overview sample) randomises so the physics has somewhere to
+  // pull from — crucial when the result has FEW OR NO edges (e.g.
+  // `MATCH (n) RETURN n`), where there are no springs and only node
+  // repulsion + gravity spread the nodes. An incremental expand passes
+  // `randomize: false` so it nudges the existing graph instead of
+  // reshuffling it. `packComponents: false` stops fcose from grid-packing
+  // disconnected nodes into an overlapping clump; repulsion + gravity then
+  // spread even an edgeless result. `nodeDimensionsIncludeLabels` keeps the
+  // titles from colliding.
+  function fcoseOptions(animate, randomize) {
     return {
       name: "fcose",
       animate: animate !== false,
       animationDuration: 500,
-      randomize: false,
+      randomize: randomize === true,
       fit: true,
-      padding: 28,
-      nodeRepulsion: 6500,
-      idealEdgeLength: 90,
+      padding: 30,
+      nodeRepulsion: 9000,
+      idealEdgeLength: 95,
       nestingFactor: 0.1,
+      gravity: 0.3,
+      gravityRange: 3.8,
+      packComponents: false,
+      nodeSeparation: 110,
+      nodeDimensionsIncludeLabels: true,
     };
   }
-  function runLayout(animate) {
+  function runLayout(animate, randomize) {
     if (!cy) return;
-    cy.layout(fcoseOptions(animate)).run();
+    cy.layout(fcoseOptions(animate, randomize)).run();
   }
 
   // ── Cytoscape init ─────────────────────────────────────────────────
@@ -259,7 +285,8 @@
       const sub = await apiGet(`/nodes/${nodeId}/subgraph?depth=1`);
       const added = mergeSubgraph(sub);
       node.addClass("expanded");
-      runLayout(true);
+      // Incremental → keep current positions, just nudge the new nodes in.
+      runLayout(true, false);
       cy.fit(undefined, 28);
       status(
         added === 0
@@ -292,6 +319,130 @@
     } catch (e) {
       status(`Search failed: ${e.message}`, "error");
     }
+  }
+
+  // ── Cypher query mode (Neo4j-Browser-style) ────────────────────────
+  // The top bar is dual-mode: an input that begins with a Cypher clause
+  // keyword runs against POST /cypher (the same executor Bolt uses);
+  // anything else is a full-text search. This lets `MATCH (n) RETURN n
+  // LIMIT 10` Just Work the way it does in the Neo4j Browser.
+  const CYPHER_RE =
+    /^\s*(MATCH|OPTIONAL\s+MATCH|CREATE|MERGE|RETURN|WITH|UNWIND|CALL|DETACH\s+DELETE|DELETE|SET|REMOVE|FOREACH)\b/i;
+  function looksLikeCypher(text) {
+    return CYPHER_RE.test(text);
+  }
+
+  async function runCypher(query) {
+    status("Running Cypher…");
+    try {
+      // Own fetch (not apiPost) so we can surface the executor's error
+      // text — /cypher returns the parse/exec message as the body on 400.
+      const r = await fetch("/cypher", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        status(`Cypher error: ${text}`, "error");
+        return;
+      }
+      renderCypherResult(JSON.parse(text));
+    } catch (e) {
+      status(`Cypher failed: ${e.message}`, "error");
+    }
+  }
+
+  // Neo4j-Browser-style "Connect result nodes": a query like
+  // `MATCH (n) RETURN n` returns nodes but no relationships, so the canvas
+  // would show a disconnected grid. Augment the result with the edges that
+  // exist *between the returned nodes* (taken from the cached graph dump),
+  // unioned with any relationships the query itself returned (deduped).
+  function connectResultNodes(nodes, returnedEdges) {
+    const byId = new Map();
+    for (const e of returnedEdges || []) byId.set(e.id, e);
+    if (nodes.length > 1 && graphCache) {
+      const idSet = new Set(nodes.map((n) => n.id));
+      for (const e of inducedEdges(idSet)) {
+        if (!byId.has(e.id)) byId.set(e.id, e);
+      }
+    }
+    return [...byId.values()];
+  }
+
+  function renderCypherResult(resp) {
+    const graph = resp.graph || { nodes: [], edges: [] };
+    const edges = connectResultNodes(graph.nodes, graph.edges);
+    // Draw whatever nodes/relationships the query touched, plus the edges
+    // that connect the returned nodes to each other.
+    if (graph.nodes.length > 0) {
+      renderSubgraph({ nodes: graph.nodes, edges }, null);
+    } else if (cy) {
+      cy.elements().remove();
+    }
+    renderCypherRows(resp.columns || [], resp.rows || []);
+    const s = resp.stats || {};
+    const writes =
+      (s.nodes_created || 0) +
+      (s.relationships_created || 0) +
+      (s.properties_set || 0) +
+      (s.nodes_deleted || 0) +
+      (s.relationships_deleted || 0);
+    const writeNote = writes > 0 ? ` · ${writes} write${writes === 1 ? "" : "s"}` : "";
+    status(
+      `${resp.rows.length} row${resp.rows.length === 1 ? "" : "s"} · graph: ${
+        graph.nodes.length
+      } node${graph.nodes.length === 1 ? "" : "s"}, ${edges.length} edge${
+        edges.length === 1 ? "" : "s"
+      }${writeNote}.`,
+      "ok"
+    );
+  }
+
+  // Render the tabular result in the left rail. Node/edge-valued cells show
+  // a readable label; scalars show their JSON. A node cell stays clickable
+  // to load its 2-hop neighbourhood, like a search result.
+  function renderCypherRows(columns, rows) {
+    $results.innerHTML = "";
+    if (rows.length === 0) {
+      const li = document.createElement("li");
+      li.className = "results-empty";
+      li.textContent = "Query returned no rows.";
+      $results.appendChild(li);
+      return;
+    }
+    const table = document.createElement("table");
+    table.className = "cypher-table";
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    for (const c of columns) {
+      const th = document.createElement("th");
+      th.textContent = c;
+      htr.appendChild(th);
+    }
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      for (const cell of row) {
+        const td = document.createElement("td");
+        if (cell && typeof cell === "object" && typeof cell.id === "number" && "kind" in cell) {
+          // A node (or edge) value — show a clickable label.
+          td.className = "cell-node";
+          td.textContent = cell.title || `${cell.kind || "node"} #${cell.id}`;
+          if (!("from_id" in cell)) {
+            td.addEventListener("click", () => selectResult(cell.id, null));
+          }
+        } else {
+          td.textContent = JSON.stringify(cell);
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    $results.appendChild(table);
   }
 
   function renderResults(results) {
@@ -379,7 +530,8 @@
     const { nodes, edges } = toElements(subgraph, rootId);
     cy.add(nodes);
     cy.add(edges);
-    runLayout(true);
+    // Fresh render → randomise the seed so even an edgeless result spreads.
+    runLayout(true, true);
     cy.fit(undefined, 28);
   }
 
@@ -456,21 +608,143 @@
     );
   }
 
+  // ── Graph overview (Neo4j-Browser-style initial view) ──────────────
+  // On load drevo shows a bounded sample of the graph instead of a blank
+  // canvas. The sample size is user-configurable (#node-limit, mirroring
+  // Neo4j's "Initial Node Display Limit"), and per-kind chips let you
+  // focus one label at a time. Dumping all ~thousands of nodes at once
+  // would be an unreadable hairball, so we cap the display like Neo4j.
+
+  /** Read the configurable sample size, clamped to a sane range. */
+  function currentLimit() {
+    const n = parseInt($nodeLimit && $nodeLimit.value, 10);
+    if (!Number.isFinite(n) || n < 1) return 50;
+    return Math.min(n, 2000);
+  }
+
+  /** Fetch the graph once, build the degree map, draw the first sample. */
+  async function loadOverview() {
+    status("Loading graph overview…");
+    try {
+      const dump = await apiGet("/export/json");
+      graphCache = { nodes: dump.nodes || [], edges: dump.edges || [] };
+      degreeById.clear();
+      for (const e of graphCache.edges) {
+        degreeById.set(e.from_id, (degreeById.get(e.from_id) || 0) + 1);
+        degreeById.set(e.to_id, (degreeById.get(e.to_id) || 0) + 1);
+      }
+      renderKindChips();
+      renderSample();
+    } catch (e) {
+      status(`Overview load failed: ${e.message}`, "error");
+    }
+  }
+
+  /** Distinct kinds with counts, most-common first. */
+  function kindCounts() {
+    const counts = new Map();
+    for (const n of (graphCache && graphCache.nodes) || []) {
+      const k = n.kind || "(no kind)";
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }
+
+  /** Build the clickable label-chip rail (an "All" chip + one per kind). */
+  function renderKindChips() {
+    if (!$kindChips) return;
+    $kindChips.innerHTML = "";
+    const total = (graphCache && graphCache.nodes.length) || 0;
+    const makeChip = (label, count, kindOrNull) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "kind-chip";
+      if (activeKind === kindOrNull) chip.classList.add("active");
+      if (kindOrNull) chip.style.setProperty("--chip-color", colorForKind(kindOrNull));
+      const name = document.createElement("span");
+      name.className = "kind-chip-name";
+      name.textContent = label;
+      const c = document.createElement("span");
+      c.className = "kind-chip-count";
+      c.textContent = String(count);
+      chip.appendChild(name);
+      chip.appendChild(c);
+      chip.addEventListener("click", () => {
+        activeKind = kindOrNull;
+        renderKindChips();
+        renderSample();
+      });
+      return chip;
+    };
+    $kindChips.appendChild(makeChip("All", total, null));
+    for (const [kind, count] of kindCounts()) {
+      $kindChips.appendChild(makeChip(kind, count, kind));
+    }
+  }
+
+  /** Pick the top-`limit` highest-degree nodes from a pool (id asc ties). */
+  function pickSampleNodes(pool, limit) {
+    return [...pool]
+      .sort(
+        (a, b) =>
+          (degreeById.get(b.id) || 0) - (degreeById.get(a.id) || 0) || a.id - b.id
+      )
+      .slice(0, limit);
+  }
+
+  /** Edges whose BOTH endpoints are in the sampled set (no dangling ends). */
+  function inducedEdges(idSet) {
+    return ((graphCache && graphCache.edges) || []).filter(
+      (e) => idSet.has(e.from_id) && idSet.has(e.to_id)
+    );
+  }
+
+  /** Render the current view: a bounded, induced sample of the cache. */
+  function renderSample() {
+    if (!graphCache) return;
+    const limit = currentLimit();
+    const pool = activeKind
+      ? graphCache.nodes.filter((n) => (n.kind || "(no kind)") === activeKind)
+      : graphCache.nodes;
+    const sample = pickSampleNodes(pool, limit);
+    const idSet = new Set(sample.map((n) => n.id));
+    const edges = inducedEdges(idSet);
+    renderSubgraph({ nodes: sample, edges }, null);
+    const scope = activeKind ? `kind “${activeKind}”` : "all kinds";
+    status(
+      `Overview: ${sample.length} of ${pool.length} node${
+        pool.length === 1 ? "" : "s"
+      } (${scope}), ${edges.length} edge${edges.length === 1 ? "" : "s"}.`,
+      "ok"
+    );
+  }
+
   // ── Bootstrap ──────────────────────────────────────────────────────
   $form.addEventListener("submit", (e) => {
     e.preventDefault();
     const q = $input.value.trim();
-    if (q) runSearch(q);
+    if (!q) return;
+    // Dual-mode: a Cypher clause keyword routes to the executor; plain
+    // text is a full-text search.
+    if (looksLikeCypher(q)) runCypher(q);
+    else runSearch(q);
   });
+
+  // Re-render (from cache, no re-fetch) when the node limit changes.
+  if ($nodeLimit) {
+    $nodeLimit.addEventListener("change", () => renderSample());
+  }
 
   document.addEventListener("DOMContentLoaded", () => {
     initCytoscape();
     loadServerInfo();
+    loadOverview();
   });
   // Some bundlers / browsers race: if DOMContentLoaded already fired,
   // initialise immediately.
   if (document.readyState !== "loading") {
     initCytoscape();
     loadServerInfo();
+    loadOverview();
   }
 })();
