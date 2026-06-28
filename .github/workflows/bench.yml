@@ -111,10 +111,19 @@ jobs:
       - name: Upload criterion reports
         # Always upload — even on partial failure we want the
         # criterion HTML for the benches that did complete.
+        #
+        # The path MUST track `CARGO_TARGET_DIR` (set above to
+        # `$RUNNER_TOOL_CACHE/drevo-cargo-target`), NOT the hard-coded
+        # `target/`. criterion writes its reports to
+        # `$CARGO_TARGET_DIR/criterion/`; the old `path: target/criterion/`
+        # pointed at a directory that never exists under the redirected
+        # target dir, so every run logged "No files were found … target/
+        # criterion/" and uploaded an EMPTY artifact — the benchmark data
+        # was generated but never published.
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: criterion-${{ github.run_id }}
-          path: target/criterion/
+          path: ${{ env.CARGO_TARGET_DIR }}/criterion/
           retention-days: 90
           if-no-files-found: warn
