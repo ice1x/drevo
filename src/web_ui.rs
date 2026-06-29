@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn embedded_app_js_live_drag_runs_cola_simulation() {
         // Dragging a node must run a live cola force simulation so connected
-        // neighbours tug along (Neo4j-Browser parity), keyed off `drag`/`free`.
+        // neighbours tug along (Neo4j-Browser parity).
         assert!(
             APP_JS.contains("name: \"cola\""),
             "app.js must run the cola layout for live drag"
@@ -285,9 +285,21 @@ mod tests {
             APP_JS.contains("startLiveLayout") && APP_JS.contains("stopLiveLayout"),
             "app.js must start/stop the live simulation"
         );
+        // The sim must be armed on `grab` (BEFORE the node moves) and stopped
+        // on `free`. cytoscape-cola pins the dragged node to the cursor only
+        // via its own `grab` handler, which is installed inside run(); starting
+        // on `drag` (post-grab) misses that pin, so neighbours jump once then
+        // stop trailing the node.
         assert!(
-            APP_JS.contains("\"drag\"") && APP_JS.contains("\"free\""),
-            "app.js must drive the live simulation off node drag/free events"
+            APP_JS.contains("\"grab\"") && APP_JS.contains("\"free\""),
+            "app.js must arm the live simulation on node grab and stop it on free"
+        );
+        // Because cola registers its grab handler only when run() is called —
+        // after this grab was already dispatched — app.js must re-emit grab so
+        // cola pins the just-grabbed node to the cursor.
+        assert!(
+            APP_JS.contains(".emit(\"grab\")"),
+            "app.js must re-emit grab so cola pins the dragged node (neighbours trail it continuously)"
         );
         assert!(
             APP_JS.contains("infinite: true"),
