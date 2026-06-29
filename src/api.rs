@@ -1264,6 +1264,14 @@ pub fn build_router(state: ApiState) -> Router {
             "/ui/vendor/cytoscape-fcose.js",
             get(crate::web_ui::serve_vendor_fcose),
         )
+        .route(
+            "/ui/vendor/cola.min.js",
+            get(crate::web_ui::serve_vendor_cola),
+        )
+        .route(
+            "/ui/vendor/cytoscape-cola.js",
+            get(crate::web_ui::serve_vendor_cytoscape_cola),
+        )
         .fallback(fallback)
         // ── Phase 15 task `00130` — per-request metrics instrumentation.
         // Layered after the routes so it wraps every handler (including the

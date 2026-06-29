@@ -35,6 +35,7 @@
   const $tooltip = document.getElementById("cy-tooltip");
   const $nodeLimit = document.getElementById("node-limit");
   const $kindChips = document.getElementById("kind-chips");
+  const $themeToggle = document.getElementById("theme-toggle");
 
   // ── Graph overview state ─────────────────────────────────────────────
   // The whole graph dump is fetched once from /export/json and cached;
@@ -140,14 +141,16 @@
       animationDuration: 500,
       randomize: randomize === true,
       fit: true,
-      padding: 30,
-      nodeRepulsion: 9000,
-      idealEdgeLength: 95,
+      padding: 36,
+      // Generous spacing so nodes don't sit on top of their edges and the
+      // labels have room to breathe (the cramped "душно" look).
+      nodeRepulsion: 16000,
+      idealEdgeLength: 150,
       nestingFactor: 0.1,
-      gravity: 0.3,
-      gravityRange: 3.8,
+      gravity: 0.22,
+      gravityRange: 4.2,
       packComponents: false,
-      nodeSeparation: 110,
+      nodeSeparation: 175,
       nodeDimensionsIncludeLabels: true,
     };
   }
@@ -156,59 +159,176 @@
     cy.layout(fcoseOptions(animate, randomize)).run();
   }
 
+  // ── Live force simulation for drag (cola) ──────────────────────────────
+  // fcose gives a nice static spread; cola gives the *interactive* physics.
+  // While a node is being dragged we run cola as an infinite simulation so
+  // the dragged node (fixed to the cursor by cytoscape-cola) pulls its
+  // connected neighbours along, exactly like the Neo4j Browser. We stop it on
+  // release. `liveLayout` holds the running handle so we can stop/replace it.
+  let liveLayout = null;
+  function colaLiveOptions() {
+    return {
+      name: "cola",
+      infinite: true, // keep solving so the drag is live, not a one-shot
+      fit: false, // re-fitting every tick while dragging is nauseating
+      animate: true,
+      randomize: false, // start from the current (fcose) positions
+      edgeLength: 150, // ideal spring length (matches fcose idealEdgeLength)
+      nodeSpacing: 28,
+      handleDisconnected: true,
+      // Let the user keep grabbing nodes while the sim runs.
+      ungrabifyWhileSimulating: false,
+    };
+  }
+  function startLiveLayout() {
+    if (!cy) return;
+    stopLiveLayout();
+    try {
+      liveLayout = cy.layout(colaLiveOptions());
+      liveLayout.run();
+    } catch (e) {
+      // cola unavailable → fall back to plain (static) dragging.
+      liveLayout = null;
+    }
+  }
+  function stopLiveLayout() {
+    if (liveLayout) {
+      try {
+        liveLayout.stop();
+      } catch (e) {
+        /* ignore */
+      }
+      liveLayout = null;
+    }
+  }
+
   // ── Cytoscape init ─────────────────────────────────────────────────
+  // Theme-aware Cytoscape stylesheet. Canvas colours (node labels, the
+  // ring around each node, edge lines + captions) must match the active
+  // light/dark theme, so they are parameterised here and re-applied via
+  // cy.style() whenever the theme toggles.
+  const CY_THEME = {
+    light: {
+      label: "#1b2230",
+      halo: "#f6f8fb", // = canvas bg → label outline so text reads over anything
+      nodeBorder: "#ffffff",
+      edge: "#c4cad6",
+      edgeLabel: "#687081",
+      root: "#1f9d57",
+      expanded: "#3f6fe6",
+      selected: "#1b2230",
+    },
+    dark: {
+      label: "#d9dde7",
+      halo: "#0f1115",
+      nodeBorder: "#0f1115",
+      edge: "#4a4f5e",
+      edgeLabel: "#c7cedd",
+      root: "#76e3a4",
+      expanded: "#5b8df9",
+      selected: "#f5f7ff",
+    },
+  };
+  function cyStyle(theme) {
+    const t = CY_THEME[theme] || CY_THEME.dark;
+    return [
+      {
+        selector: "node",
+        style: {
+          // Dynamic colour: every distinct `kind` gets a stable hue.
+          "background-color": (ele) => colorForKind(ele.data("kind")),
+          label: "data(title)",
+          color: t.label,
+          "text-valign": "bottom",
+          "text-margin-y": 6,
+          "font-size": 11,
+          // Halo + truncation so labels stay legible and don't pile into an
+          // unreadable wall of text over the edges / other nodes.
+          "text-outline-width": 2.5,
+          "text-outline-color": t.halo,
+          "text-max-width": "120px",
+          "text-wrap": "ellipsis",
+          // Labels only appear once the graph is zoomed in enough to read
+          // them — declutters the wide-out view (like the Neo4j Browser).
+          "min-zoomed-font-size": 9,
+          "z-index": 10, // nodes paint above edges
+          width: 30,
+          height: 30,
+          "border-width": 1.5,
+          "border-color": t.nodeBorder,
+          "transition-property": "background-color, border-color, width, height",
+          "transition-duration": "160ms",
+        },
+      },
+      {
+        selector: "node.root",
+        style: { "border-width": 3, "border-color": t.root },
+      },
+      { selector: "node.expanded", style: { "border-color": t.expanded } },
+      {
+        selector: "node:selected",
+        style: { "border-width": 3, "border-color": t.selected },
+      },
+      {
+        selector: "edge",
+        style: {
+          width: 1.2,
+          "line-color": t.edge,
+          "line-opacity": 0.7,
+          "target-arrow-color": t.edge,
+          "target-arrow-shape": "triangle",
+          "arrow-scale": 0.8,
+          "curve-style": "bezier",
+          // Relationship-type captions are hidden by default (they were the
+          // worst source of clutter) and revealed on hover / selection.
+          label: "data(kind)",
+          "text-opacity": 0,
+          "font-size": 9,
+          color: t.edgeLabel,
+          "text-outline-width": 2.5,
+          "text-outline-color": t.halo,
+          "text-rotation": "autorotate",
+          "z-index": 1,
+        },
+      },
+      {
+        // Hovered (`.hl`) or selected edge → show its caption + emphasise.
+        selector: "edge.hl, edge:selected",
+        style: { "text-opacity": 1, "line-opacity": 1, width: 2 },
+      },
+    ];
+  }
+
+  // ── Light / dark theme ─────────────────────────────────────────────
+  // Dark is the default; a light theme is available via the toggle.
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") || "dark";
+  }
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("drevo-theme", theme);
+    } catch (e) {
+      /* private mode / disabled storage — non-fatal */
+    }
+    if ($themeToggle) $themeToggle.textContent = theme === "dark" ? "☀" : "☾";
+    if (cy) cy.style(cyStyle(theme)); // re-skin the canvas to match
+  }
+  function initTheme() {
+    let saved = "dark";
+    try {
+      saved = localStorage.getItem("drevo-theme") || "dark";
+    } catch (e) {
+      /* ignore */
+    }
+    applyTheme(saved);
+  }
+
   function initCytoscape() {
     cy = cytoscape({
       container: document.getElementById("cy"),
       layout: fcoseOptions(false),
-      style: [
-        {
-          selector: "node",
-          style: {
-            // Dynamic colour: every distinct `kind` gets a stable hue
-            // via colorForKind, so the palette is no longer capped at a
-            // few hard-coded selectors.
-            "background-color": (ele) => colorForKind(ele.data("kind")),
-            label: "data(title)",
-            color: "#d9dde7",
-            "text-valign": "bottom",
-            "text-margin-y": 6,
-            "font-size": 11,
-            width: 28,
-            height: 28,
-            "border-width": 1,
-            "border-color": "#0f1115",
-            "transition-property": "background-color, border-color, width, height",
-            "transition-duration": "160ms",
-          },
-        },
-        {
-          selector: "node.root",
-          style: { "border-width": 3, "border-color": "#76e3a4" },
-        },
-        {
-          selector: "node.expanded",
-          style: { "border-color": "#5b8df9" },
-        },
-        {
-          selector: "node:selected",
-          style: { "border-width": 3, "border-color": "#f5f7ff" },
-        },
-        {
-          selector: "edge",
-          style: {
-            width: 1.5,
-            "line-color": "#4a4f5e",
-            "target-arrow-color": "#4a4f5e",
-            "target-arrow-shape": "triangle",
-            "curve-style": "bezier",
-            label: "data(kind)",
-            "font-size": 9,
-            color: "#8a91a3",
-            "text-rotation": "autorotate",
-          },
-        },
-      ],
+      style: cyStyle(currentTheme()),
       wheelSensitivity: 0.2,
     });
 
@@ -239,6 +359,21 @@
     cy.on("mousemove", "node", (evt) => positionTooltip(evt.target));
     cy.on("mouseout", "node", () => hideTooltip());
     cy.on("pan zoom drag", () => hideTooltip());
+
+    // Relationship captions are hidden by default to keep the canvas
+    // readable; reveal a single edge's type on hover.
+    cy.on("mouseover", "edge", (evt) => evt.target.addClass("hl"));
+    cy.on("mouseout", "edge", (evt) => evt.target.removeClass("hl"));
+
+    // Live drag physics (Neo4j-Browser-style): start a running cola force
+    // simulation the moment a node actually starts moving, so its connected
+    // neighbours tug along; stop it when the node is released so the graph is
+    // calm when idle. Keyed off `drag` (not `grab`) so a plain click/tap does
+    // not reheat the layout.
+    cy.on("drag", "node", () => {
+      if (!liveLayout) startLiveLayout();
+    });
+    cy.on("free", "node", () => stopLiveLayout());
   }
 
   // ── Tooltips (task 00093) ──────────────────────────────────────────
@@ -526,6 +661,7 @@
   // Replace the canvas with a fresh subgraph (results-list click).
   function renderSubgraph(subgraph, rootId) {
     if (!cy) return;
+    stopLiveLayout(); // don't leave a cola sim running on removed elements
     cy.elements().remove();
     const { nodes, edges } = toElements(subgraph, rootId);
     cy.add(nodes);
@@ -735,7 +871,15 @@
     $nodeLimit.addEventListener("change", () => renderSample());
   }
 
+  // Light / dark theme toggle.
+  if ($themeToggle) {
+    $themeToggle.addEventListener("click", () =>
+      applyTheme(currentTheme() === "dark" ? "light" : "dark")
+    );
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
+    initTheme();
     initCytoscape();
     loadServerInfo();
     loadOverview();
@@ -743,6 +887,7 @@
   // Some bundlers / browsers race: if DOMContentLoaded already fired,
   // initialise immediately.
   if (document.readyState !== "loading") {
+    initTheme();
     initCytoscape();
     loadServerInfo();
     loadOverview();
