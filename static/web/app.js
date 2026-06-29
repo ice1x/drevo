@@ -365,13 +365,25 @@
     cy.on("mouseover", "edge", (evt) => evt.target.addClass("hl"));
     cy.on("mouseout", "edge", (evt) => evt.target.removeClass("hl"));
 
-    // Live drag physics (Neo4j-Browser-style): start a running cola force
-    // simulation the moment a node actually starts moving, so its connected
-    // neighbours tug along; stop it when the node is released so the graph is
-    // calm when idle. Keyed off `drag` (not `grab`) so a plain click/tap does
-    // not reheat the layout.
-    cy.on("drag", "node", () => {
-      if (!liveLayout) startLiveLayout();
+    // Live drag physics (Neo4j-Browser-style): the moment a node is grabbed we
+    // start an infinite cola force simulation so its connected neighbours tug
+    // along while it is dragged, then stop it on release so the graph is calm
+    // when idle.
+    //
+    // The sim MUST be armed on `grab`, before the node moves. cytoscape-cola
+    // pins the dragged node to the cursor only through its own `grab` handler,
+    // which it installs inside run(). If we waited for the first `drag` event
+    // (post-grab) the pin would be missed: cola would relax once (an ugly
+    // one-off "jump") and then, with the node not fixed, fight the cursor so
+    // the neighbours stop trailing it. So we start on grab and immediately
+    // re-emit grab — cola's freshly-registered handler then catches it and
+    // pins the node, while our own handler bails out (liveLayout already set).
+    cy.on("grab", "node", (evt) => {
+      const node = evt.target;
+      if (liveLayout) return; // already simulating
+      if (node.degree(false) === 0) return; // lone node: nothing to tug
+      startLiveLayout();
+      if (liveLayout) node.emit("grab"); // let cola pin the grabbed node
     });
     cy.on("free", "node", () => stopLiveLayout());
   }
