@@ -1,42 +1,31 @@
 name: CI
 
-# Docs-only changes (README.md, audit/*.md, memory/*.md, LICENSE, .gitignore)
-# bypass this entire workflow via `paths-ignore`. A paired skip-workflow
-# `.github/workflows/ci-skip.yml` runs on the inverse path set and emits
-# successful status checks under the same `CI / <Job>` names so branch
-# protection still passes on docs-only PRs. The two workflows together
-# implement the standard "ci-skip" pattern (see Rust / Tokio / Diesel
-# for prior art). Both workflows MUST mirror their job-name list and
-# their `name: CI` workflow name — checks line up by `workflow / job`
-# coordinates in GitHub's status-check API.
+# Single source of truth for the required PR status checks.
 #
-# What MUST stay outside paths-ignore — i.e. always trigger this real
-# CI workflow:
-#   * `.github/**`     — workflow changes must run real CI to catch
-#                        regressions in the CI itself (paradox: skipping
-#                        CI on CI-file changes is how broken CI ships).
-#   * `Cargo.toml` / `Cargo.lock` — dependency / version changes.
-#   * `*.rs`, `tests/**`, `benches/**`, `fuzz/**` — every Rust source.
-#   * `Dockerfile`, `k8s/**`, `Makefile`, build.rs — infra.
-# These are implicit (not enumerated), because `paths-ignore` is a
-# negative filter: anything not listed below triggers the workflow.
+# Docs-only handling: the `changes` job below detects whether the push /
+# PR touches anything beyond docs (**/*.md, audit/**, memory/**, LICENSE,
+# .gitignore). Every gated job runs its real work UNLESS the change is
+# docs-only, in which case the job is skipped — and a skipped required
+# check counts as success for branch protection, so a docs-only PR merges
+# without a Rust build.
+#
+# Why not the old `paths-ignore` + paired `ci-skip.yml`: that two-workflow
+# design (both `name: CI`) had each workflow emit the same `CI / <Job>`
+# contexts. On the single self-hosted runner their jobs interleaved, so
+# whichever reported last won the context — the skip workflow's trivial
+# green could mask a failed/cancelled real run (regression 2026-06-29:
+# real Test timed out, PR still showed green), and a fail-closed variant
+# instead non-deterministically BLOCKED a passing PR (2026-06-30). One
+# workflow owning each context removes the race. Consequently this
+# workflow triggers on ALL pushes/PRs to main (NO paths-ignore): the
+# filtering is per-job (skip→success), not per-workflow (which would
+# leave required checks "Expected" forever and is exactly why ci-skip.yml
+# had to exist).
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'audit/**'
-      - 'memory/**'
-      - 'LICENSE'
-      - '.gitignore'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'audit/**'
-      - 'memory/**'
-      - 'LICENSE'
-      - '.gitignore'
 
 # Cancel an in-flight CI run when a newer commit lands on the same PR /
 # branch. Without this, every rapid-fire push stacks into the self-hosted
@@ -44,13 +33,10 @@ on:
 # previous commits — root cause of the multi-hour CI latency seen on
 # PRs #75 and #76. The grouping key includes the workflow name so other
 # workflows (Docker Publish, Cross-compile) keep their own queues.
-# Distinct concurrency group from ci-skip.yml's. Both workflow files
-# declare `name: CI` (required for branch protection to match status
-# checks across them), which means `${{ github.workflow }}` resolves
-# to `"CI"` in BOTH — using it in the group key would collapse the
-# two workflows into the same queue and the faster skip workflow
-# would silently cancel the real CI run via `cancel-in-progress`.
-# Hard-coding `ci-real` here keeps the two queues independent. The
+# The group key is hard-coded `ci-real` (not `${{ github.workflow }}`)
+# for historical reasons — when ci-skip.yml still existed both files were
+# `name: CI`, so `github.workflow` collapsed their queues. ci-skip.yml is
+# gone now, but a literal key is still the clearest contract. The
 # invariant is tested in `tests/ci_self_hosted_runner_tests.rs`.
 concurrency:
   group: ci-real-${{ github.ref }}
@@ -107,8 +93,56 @@ jobs:
   # `paths-ignore` + paired `ci-skip.yml` — are kept, since none
   # of them depended on the runner choice.
 
+  # Docs-only detector. Output `code` is 'false' ONLY when every changed
+  # file matches the docs globs (**/*.md, audit/**, memory/**, LICENSE,
+  # .gitignore); otherwise 'true'. Every gated job below runs unless
+  # `code == 'false'`, so any detection failure or unresolvable range
+  # FAILS SAFE toward running the full suite (never toward a silent skip).
+  # This job is NOT a required branch-protection check — only the build
+  # jobs are. Replaces the deleted ci-skip.yml: one workflow now owns
+  # each `CI / <Job>` context, so no dual-workflow status race.
+  changes:
+    name: changes
+    runs-on: self-hosted
+    timeout-minutes: 10
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base="${BASE_SHA:-}"; head="${HEAD_SHA:-}"
+          # Fail safe: unresolvable range (e.g. a new-branch push whose
+          # `before` is all-zeros) → run the full suite.
+          if [ -z "$base" ] || [ -z "$head" ] || printf '%s' "$base" | grep -qE '^0+$'; then
+            echo "cannot resolve range ($base..$head) — running full CI"
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed="$(git diff --name-only "$base" "$head")"
+          echo "changed files ($base..$head):"; echo "$changed"
+          nondoc="$(printf '%s\n' "$changed" \
+            | grep -vE '(\.md$|^audit/|^memory/|^LICENSE$|^\.gitignore$)' \
+            | grep -v '^$' || true)"
+          if [ -n "$nondoc" ]; then
+            echo "non-docs files present → full CI:"; echo "$nondoc"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs-only change → build jobs will skip (skip == success for required checks)"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     name: Check
+    needs: changes
+    # Run unless the change is provably docs-only. `always()` keeps this
+    # fail-safe even if `changes` errored (empty output != 'false' → runs).
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
     # timeout-minutes (added 2026-06-10): GitHub's default job timeout is
     # 360 minutes. On the single self-hosted runner, two concurrent CI
@@ -141,6 +175,8 @@ jobs:
 
   test:
     name: Test
+    needs: changes
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
     # See the `check` job for the rationale. MEASURED ROOT CAUSE: the
     # *test execution* is fast — all 2857 tests run in ~18 min
@@ -283,6 +319,8 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: changes
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
     # See the `check` job rationale. Clippy compiles three feature sets
     # (default + bolt-tls + bolt-auth) and has reached ~86min under
@@ -318,6 +356,8 @@ jobs:
 
   fmt:
     name: Format
+    needs: changes
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
     # See the `check` job rationale. `cargo fmt --check` does no compile;
     # 20 min is generous slack over its few-second real runtime.
@@ -348,6 +388,8 @@ jobs:
   #
   k8s:
     name: K8s manifests
+    needs: changes
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
     # See the `check` job rationale. Pure `kubectl kustomize` resolution,
     # no compile; 20 min is ample.
@@ -378,6 +420,8 @@ jobs:
   # var the warning would print and the build would still pass.
   doc:
     name: Doc
+    needs: changes
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
     # See the `check` job rationale.
     timeout-minutes: 75
@@ -393,6 +437,8 @@ jobs:
   # This job exercises that exact toolchain so the field cannot decay.
   msrv:
     name: MSRV
+    needs: changes
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
     # See the `check` job rationale. Two `cargo check`s (native +
     # wasm32) on the MSRV toolchain.
@@ -443,6 +489,8 @@ jobs:
   # GitHub-hosted shared pool is friendlier to budget.
   fuzz:
     name: Fuzz
+    needs: changes
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
     # Don't block merges if cargo-fuzz finds a crash — surface it as a
     # CI annotation and let humans triage. The stable harness replay in
