@@ -24,11 +24,21 @@
 # .gitignore]` — it runs when at least one changed path IS in that
 # list.
 #
-# Edge case: a mixed PR (some Rust + some docs) triggers BOTH workflows.
-# That's intentional — the real CI runs the real tests; this skip
-# workflow also runs and trivially passes. Branch protection sees both
-# completing successfully. The cost is one ~5 second job per check name
-# on mixed PRs, which is negligible compared to the real CI run.
+# Mixed PR (some Rust + some docs): GitHub evaluates `pull_request` path
+# filters against the WHOLE PR diff, so any doc file anywhere in the PR
+# makes this workflow trigger alongside ci.yml. Both emit the same
+# `CI / <job>` contexts; GitHub keeps the latest report per context.
+#
+# KNOWN LIMITATION (do not "fix" with a fail-closed guard here): on the
+# single self-hosted runner the two workflows' jobs interleave
+# unpredictably, so neither is guaranteed to report last. A fail-closed
+# skip job (tried 2026-06-30) therefore non-deterministically won a
+# context and BLOCKED a PR whose real CI had passed. The real fix for the
+# false-green is to collapse this into ci.yml as conditional jobs gated by
+# a paths-filter (one workflow, one set of contexts) — tracked separately.
+# Until then these stay trivial pass-throughs; the deps/-bloat guard in
+# ci.yml (which stops the Test timeout that caused the observed
+# false-green) is the load-bearing mitigation.
 #
 # How to keep this in sync with ci.yml
 # ------------------------------------
