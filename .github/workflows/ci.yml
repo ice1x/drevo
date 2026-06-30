@@ -233,22 +233,28 @@ jobs:
       # burst) and completes reliably. `--tests` keeps doctests/benches out
       # (doctests run in the dedicated step below). See KG incident
       # incident_2026_06_21_ci_test_hang_security_stack.
-      # Guard (2026-06-21): the per-job target dir accumulates hashed build
-      # artifacts forever; at ~900k files in deps/, macOS code-sign validation
-      # (which readdir's the whole dir per binary exec) made each test launch
-      # ~23s and hung this job for 4h. The weekly cargo-sweep.yml keeps deps/
-      # bounded; this is the safety net for spikes between sweeps — if deps/
-      # crosses 100k files, prune stale artifacts before running tests.
+      # Guard (2026-06-21, hardened 2026-06-30): the per-job target dir
+      # accumulates hashed build artifacts forever; at ~900k+ files in deps/,
+      # macOS code-sign validation (which readdir's the whole dir per binary
+      # exec) makes each test launch ~23s and hangs this job until the 4h
+      # timeout. Regression on 2026-06-29: deps/ had 1.09M files / 17GB and
+      # Test timed out; the old guard called `cargo sweep --time 3`, which only
+      # removes artifacts untouched for 3 days — on a constantly-rebuilding CI
+      # almost everything is "fresh", so the sweep pruned ~nothing and the
+      # thrash returned. The weekly cargo-sweep.yml has the same blind spot.
+      # Fix: when deps/ crosses the threshold, do a HARD `cargo clean` — it
+      # resets the dir to zero so the next build is cold (~10-20min, bounded)
+      # instead of thrashing for 4h. A periodic cold rebuild is the cheap price
+      # for never re-entering the signature-check death spiral.
       - name: Guard against deps/ bloat
         run: |
           deps="${CARGO_TARGET_DIR:-target}/debug/deps"
           n=0; [ -d "$deps" ] && n=$(ls -1f "$deps" 2>/dev/null | wc -l | tr -d ' ')
           echo "deps file count: $n"
           if [ "$n" -gt 100000 ]; then
-            echo "deps/ over 100k files → pruning stale artifacts before tests"
-            command -v cargo-sweep >/dev/null 2>&1 || cargo install cargo-sweep
-            cargo sweep --time 3 "${CARGO_TARGET_DIR:-target}" || true
-            echo "deps after sweep: $(ls -1f "$deps" 2>/dev/null | wc -l | tr -d ' ')"
+            echo "deps/ over 100k files ($n) → cargo clean to stop macOS code-sign readdir thrash (one cold rebuild follows)"
+            cargo clean
+            echo "deps after clean: $(ls -1f "$deps" 2>/dev/null | wc -l | tr -d ' ')"
           fi
       - name: Run unit + integration tests (cargo test, sequential)
         run: cargo test --tests --no-fail-fast

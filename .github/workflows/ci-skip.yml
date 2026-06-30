@@ -24,11 +24,15 @@
 # .gitignore]` — it runs when at least one changed path IS in that
 # list.
 #
-# Edge case: a mixed PR (some Rust + some docs) triggers BOTH workflows.
-# That's intentional — the real CI runs the real tests; this skip
-# workflow also runs and trivially passes. Branch protection sees both
-# completing successfully. The cost is one ~5 second job per check name
-# on mixed PRs, which is negligible compared to the real CI run.
+# Mixed PR (some Rust + some docs): GitHub path filters fire on ANY
+# matching file, so a mixed commit triggers BOTH workflows. The skip jobs
+# must NOT blindly pass in that case — a no-op `Test: success` here can
+# mask the real ci.yml Test failing or being cancelled (regression
+# 2026-06-29: real Test hit the 4h timeout, PR still showed green from
+# this workflow). So every job below runs `.github/docs-only-guard.sh`,
+# which passes ONLY when the change is genuinely docs-only and otherwise
+# FAILS — ceding the required check to the real ci.yml. A docs-only PR
+# (ci.yml suppressed by paths-ignore) still passes here as before.
 #
 # How to keep this in sync with ci.yml
 # ------------------------------------
@@ -84,43 +88,92 @@ jobs:
     name: Check
     runs-on: self-hosted
     steps:
-      - run: echo "skipped — docs-only change"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pass only if the change is docs-only
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/docs-only-guard.sh
 
   test:
     name: Test
     runs-on: self-hosted
     steps:
-      - run: echo "skipped — docs-only change"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pass only if the change is docs-only
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/docs-only-guard.sh
 
   clippy:
     name: Clippy
     runs-on: self-hosted
     steps:
-      - run: echo "skipped — docs-only change"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pass only if the change is docs-only
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/docs-only-guard.sh
 
   fmt:
     name: Format
     runs-on: self-hosted
     steps:
-      - run: echo "skipped — docs-only change"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pass only if the change is docs-only
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/docs-only-guard.sh
 
   k8s:
     name: K8s manifests
     runs-on: self-hosted
     steps:
-      - run: echo "skipped — docs-only change"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pass only if the change is docs-only
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/docs-only-guard.sh
 
   doc:
     name: Doc
     runs-on: self-hosted
     steps:
-      - run: echo "skipped — docs-only change"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pass only if the change is docs-only
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/docs-only-guard.sh
 
   msrv:
     name: MSRV
     runs-on: self-hosted
     steps:
-      - run: echo "skipped — docs-only change"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pass only if the change is docs-only
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/docs-only-guard.sh
 
   # The fuzz job intentionally has NO skip pass-through. It's
   # `continue-on-error: true` in ci.yml and is not (and must not be)
