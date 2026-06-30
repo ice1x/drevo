@@ -588,25 +588,25 @@ fn ci_yml_caps_cargo_build_jobs_below_runner_core_count() {
 }
 
 /// The docs-only path set — these glob patterns MUST appear in
-/// `paths-ignore:` of EVERY "heavy" PR-gating workflow (ci.yml,
-/// cross-compile.yml, docker-publish.yml) AND in `ci-skip.yml`'s
-/// `paths:` (so the skip workflow runs and emits passing required
-/// checks). The list is duplicated across all four workflow files;
-/// the tests below assert that every element appears in every file.
-/// The set is re-stated here as the single source of truth so a
-/// future edit cannot silently drift one of the files.
+/// `paths-ignore:` of every NON-required heavy workflow
+/// (cross-compile.yml, docker-publish.yml) so docs-only PRs don't
+/// consume runner time or hit upstream flakes there.
+///
+/// ci.yml is NOT in that list: as the required-checks workflow it must
+/// always run (so its `CI / <Job>` checks always report), and it filters
+/// docs-only changes PER JOB via the `changes` detector + `if:` gate
+/// (skip == success for required checks) rather than per-workflow. See
+/// `ci_yml_uses_per_job_docs_gate_not_paths_ignore`.
 const DOCS_ONLY_GLOBS: &[&str] = &["**/*.md", "audit/**", "memory/**", "LICENSE", ".gitignore"];
 
-/// Workflows that MUST skip docs-only PRs via `paths-ignore`. A
-/// docs-only PR (README, audit/, memory/, …) is one that touches no
-/// Rust code, no infra, no workflow files — running any of these
-/// workflows on it is wasted runner time AND a risk: any upstream
-/// network flake (e.g. Android NDK download from dl.google.com via
-/// curl HTTP/2) would block the PR for no legitimate reason. PR #81
-/// (a README-only roadmap PR) was blocked by exactly this on
-/// cross-compile.yml's Android job before this invariant landed.
-const HEAVY_WORKFLOWS_WITH_DOCS_SKIP: &[&str] =
-    &["ci.yml", "cross-compile.yml", "docker-publish.yml"];
+/// Non-required heavy workflows that MUST skip docs-only PRs via
+/// `paths-ignore`. A docs-only PR (README, audit/, memory/, …) touches
+/// no Rust code / infra, so running these wastes runner time AND risks a
+/// PR-blocking upstream flake (e.g. Android NDK download from
+/// dl.google.com — PR #81, a README-only PR, was blocked by exactly
+/// that on cross-compile.yml before this invariant landed). ci.yml is
+/// intentionally absent (it always runs; it gates docs-only per job).
+const HEAVY_WORKFLOWS_WITH_DOCS_SKIP: &[&str] = &["cross-compile.yml", "docker-publish.yml"];
 
 #[test]
 fn heavy_workflows_share_docs_only_paths_ignore() {
@@ -628,252 +628,103 @@ fn heavy_workflows_share_docs_only_paths_ignore() {
                 body.contains(glob),
                 "{workflow} `paths-ignore:` is missing the docs-only \
                  glob `{glob}` — the set must be {DOCS_ONLY_GLOBS:?} \
-                 and stay in sync across {HEAVY_WORKFLOWS_WITH_DOCS_SKIP:?} \
-                 plus ci-skip.yml's `paths:` (which is the inverse)."
+                 and stay in sync across {HEAVY_WORKFLOWS_WITH_DOCS_SKIP:?}."
             );
         }
     }
 }
 
 #[test]
-fn ci_skip_yml_exists() {
-    let ci_skip_yml = workflows_dir().join("ci-skip.yml");
+fn ci_yml_uses_per_job_docs_gate_not_paths_ignore() {
+    // ci.yml is the required-checks workflow, so it must ALWAYS trigger:
+    // a workflow filtered out by `paths-ignore` never reports its
+    // required checks, leaving branch protection waiting forever (the bug
+    // the deleted ci-skip.yml existed to paper over). Docs-only changes
+    // are filtered PER JOB via the `changes` detector + `if:` gate, where
+    // a skipped required job counts as success.
+    let body = fs::read_to_string(workflows_dir().join("ci.yml")).expect("ci.yml exists");
     assert!(
-        ci_skip_yml.exists(),
-        "`.github/workflows/ci-skip.yml` must exist — it is the \
-         pass-through workflow that emits successful required \
-         status checks for docs-only PRs that bypass ci.yml. \
-         Without it, docs-only PRs would be blocked by branch \
-         protection waiting on checks that never run."
+        !body.contains("paths-ignore:"),
+        "ci.yml must NOT use `paths-ignore:` — it must always run and gate \
+         docs-only changes per job via the `changes` job. A workflow-level \
+         path filter leaves the required `CI / <Job>` checks unreported on \
+         docs-only PRs (the bug ci-skip.yml worked around; it is now gone)."
     );
 }
 
 #[test]
-fn ci_skip_yml_triggers_on_docs_only_paths() {
-    let ci_skip_yml = workflows_dir().join("ci-skip.yml");
-    let body = fs::read_to_string(&ci_skip_yml).expect("ci-skip.yml exists");
+fn ci_yml_has_changes_detector_job() {
+    // The per-job docs gate depends on a `changes` job exposing a `code`
+    // output (`'false'` only for a provably docs-only change).
+    let body = fs::read_to_string(workflows_dir().join("ci.yml")).expect("ci.yml exists");
     assert!(
-        body.contains("paths:"),
-        "ci-skip.yml must declare `paths:` (not paths-ignore) — it \
-         must run ONLY when changed files match the docs-only set, \
-         otherwise it would duplicate every real CI run."
+        body.contains("\n  changes:\n"),
+        "ci.yml must declare a `changes:` job that detects docs-only \
+         changes for the per-job gate."
     );
-    for glob in DOCS_ONLY_GLOBS {
-        assert!(
-            body.contains(glob),
-            "ci-skip.yml `paths:` is missing the docs-only glob \
-             `{glob}` — the set must be {DOCS_ONLY_GLOBS:?} and stay \
-             in sync with the same list in ci.yml's paths-ignore."
-        );
-    }
-}
-
-#[test]
-fn ci_skip_yml_workflow_name_matches_ci_yml() {
-    // Branch protection groups required status checks by
-    // `<workflow name> / <job name>`. If ci-skip.yml renames itself
-    // to anything other than `CI`, its jobs become "CI-Skip / Test"
-    // instead of "CI / Test" and stop satisfying the required check.
-    let ci_skip_yml = workflows_dir().join("ci-skip.yml");
-    let body = fs::read_to_string(&ci_skip_yml).expect("ci-skip.yml exists");
-    let has_ci_name = body.lines().any(|line| line.trim() == "name: CI");
     assert!(
-        has_ci_name,
-        "ci-skip.yml must declare exactly `name: CI` at the workflow \
-         level — branch protection identifies required checks by \
-         workflow name and ci.yml is `name: CI`. Any other value \
-         (e.g. `name: CI Skip`) breaks the pass-through pattern."
+        body.contains("code: ${{ steps.detect.outputs.code }}"),
+        "ci.yml's `changes` job must expose `outputs.code` from its detect \
+         step — every gated job's `if:` reads `needs.changes.outputs.code`."
     );
 }
 
-/// Job-name pairs `(id, display_name)` extracted from a workflow body.
-/// The display name is the `name:` value on the job, when present;
-/// fallback to the id itself if no explicit `name:` is given (GitHub's
-/// own default).
-fn job_names_in(workflow_body: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut current_id: Option<String> = None;
-    let mut current_display: Option<String> = None;
-    let mut in_jobs = false;
-    for line in workflow_body.lines() {
-        let trimmed = line.trim_start();
-        // Top-level `jobs:` declaration sits at column 0.
-        if trimmed == "jobs:" && line.starts_with("jobs:") {
-            in_jobs = true;
-            continue;
-        }
-        if !in_jobs {
-            continue;
-        }
-        // A new top-level key at column 0 ends the jobs section.
-        if !line.is_empty()
-            && !line.starts_with(' ')
-            && !line.starts_with('#')
-            && line.ends_with(':')
-            && line.trim_end_matches(':') != "jobs"
-        {
-            break;
-        }
-        // Job declarations are indented 2 spaces and end with `:`.
-        if line.starts_with("  ")
-            && !line.starts_with("    ")
-            && trimmed.ends_with(':')
-            && !trimmed.starts_with('#')
-            && !trimmed.starts_with("- ")
-            && trimmed != "steps:"
-            && trimmed != "env:"
-        {
-            // Flush previous job.
-            if let Some(id) = current_id.take() {
-                let display = current_display.take().unwrap_or_else(|| id.clone());
-                out.push((id, display));
-            }
-            current_id = Some(trimmed.trim_end_matches(':').to_string());
-            current_display = None;
-            continue;
-        }
-        // Job-level `name:` (4-space indent inside the job).
-        if line.starts_with("    name:") && current_display.is_none() {
-            let value = line.trim_start().trim_start_matches("name:").trim();
-            current_display = Some(value.to_string());
-        }
-    }
-    if let Some(id) = current_id {
-        let display = current_display.unwrap_or_else(|| id.clone());
-        out.push((id, display));
-    }
-    out
-}
-
-/// Extract the workflow-level `concurrency.group` literal from a
-/// workflow file body. Returns `None` if no top-level `concurrency:`
-/// block is present.
-fn workflow_concurrency_group(body: &str) -> Option<String> {
-    let mut in_concurrency = false;
-    let mut concurrency_indent: usize = 0;
-    for line in body.lines() {
-        let indent = line.chars().take_while(|c| *c == ' ').count();
-        let trimmed = line.trim_start();
-        if !in_concurrency {
-            if trimmed.starts_with("concurrency:") && indent == 0 {
-                in_concurrency = true;
-                concurrency_indent = indent;
-            }
-            continue;
-        }
-        // We left the concurrency block once we see a line at the same
-        // top-level indent that opens a new key.
-        if !line.is_empty()
-            && indent <= concurrency_indent
-            && trimmed.ends_with(':')
-            && !trimmed.starts_with('#')
-        {
-            return None;
-        }
-        if let Some(rest) = trimmed.strip_prefix("group:") {
-            return Some(rest.trim().to_string());
-        }
-    }
-    None
-}
-
 #[test]
-fn ci_yml_and_ci_skip_yml_have_distinct_concurrency_groups() {
-    // Bug recovered from the third commit on PR #76: both ci.yml and
-    // ci-skip.yml declared `name: CI`, so `${{ github.workflow }}`
-    // resolved to the same string in their concurrency `group:` keys.
-    // The two workflows then shared a single concurrency queue, and
-    // `cancel-in-progress: true` meant whichever workflow started
-    // second (typically the cheap skip workflow on mixed PRs) would
-    // CANCEL the real CI before it ran a single test. Branch
-    // protection then saw the skip workflow's "Success" status as
-    // the latest result for required check names (`CI / Test`,
-    // `CI / Check`, …) and let merges through with no real CI
-    // validation. This invariant pins the fix: the two workflows
-    // MUST use distinct `group:` literals so neither cancels the
-    // other.
-    let ci_yml = workflows_dir().join("ci.yml");
-    let ci_skip_yml = workflows_dir().join("ci-skip.yml");
-    let ci_body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
-    let skip_body = fs::read_to_string(&ci_skip_yml).expect("ci-skip.yml exists");
-
-    let ci_group = workflow_concurrency_group(&ci_body)
-        .expect("ci.yml must declare workflow-level concurrency.group");
-    let skip_group = workflow_concurrency_group(&skip_body)
-        .expect("ci-skip.yml must declare workflow-level concurrency.group");
-
-    assert_ne!(
-        ci_group, skip_group,
-        "ci.yml and ci-skip.yml MUST use distinct concurrency `group:` \
-         literals. Both currently use `{ci_group}`. With identical \
-         groups + `cancel-in-progress: true` the faster skip workflow \
-         silently cancels the real CI on mixed PRs and branch \
-         protection passes on the skip's `echo` jobs instead of the \
-         real test suite."
-    );
-
-    // Belt-and-braces: also forbid the specific anti-pattern of using
-    // `${{ github.workflow }}` in either group, since both workflows
-    // share `name: CI` and that expression resolves identically.
-    for (label, group) in [("ci.yml", &ci_group), ("ci-skip.yml", &skip_group)] {
-        assert!(
-            !group.contains("github.workflow"),
-            "{label}: concurrency `group: {group}` uses `github.workflow` \
-             — both workflows declare `name: CI`, so this expression \
-             resolves to the same string in both files and collapses \
-             their queues. Hard-code a distinct literal (e.g. \
-             `ci-real-${{{{ github.ref }}}}` for the real workflow, \
-             `ci-skip-${{{{ github.ref }}}}` for the skip workflow)."
-        );
-    }
-}
-
-#[test]
-fn ci_skip_yml_mirrors_every_required_job_name_from_ci_yml() {
-    // The skip workflow MUST mirror every required-check job name
-    // from ci.yml. The one allowed exception is `fuzz`, which is
-    // `continue-on-error: true` and is not (and must not be) a
-    // required branch-protection check.
-    let ci_yml = workflows_dir().join("ci.yml");
-    let ci_skip_yml = workflows_dir().join("ci-skip.yml");
-    let ci_body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
-    let skip_body = fs::read_to_string(&ci_skip_yml).expect("ci-skip.yml exists");
-
-    let ci_names = job_names_in(&ci_body);
-    let skip_names = job_names_in(&skip_body);
-
-    let ci_display: Vec<&String> = ci_names
+fn ci_yml_required_jobs_are_gated_on_changes() {
+    // Every required build job must (a) `needs: changes` and (b) gate on
+    // `needs.changes.outputs.code != 'false'` — the fail-safe form: it
+    // runs unless the change is provably docs-only, so a detector failure
+    // or any non-docs file runs the real job (never a silent skip).
+    let body = fs::read_to_string(workflows_dir().join("ci.yml")).expect("ci.yml exists");
+    let all_jobs = [
+        "changes", "check", "test", "clippy", "fmt", "k8s", "doc", "msrv", "fuzz",
+    ];
+    let mut offsets: Vec<usize> = all_jobs
         .iter()
-        .filter(|(id, _)| id != "fuzz")
-        .map(|(_, d)| d)
+        .filter_map(|j| body.find(&format!("\n  {j}:\n")))
         .collect();
-    let skip_display: Vec<&String> = skip_names.iter().map(|(_, d)| d).collect();
-
-    // Every required ci.yml display name must appear in ci-skip.yml.
-    for required in &ci_display {
+    offsets.sort_unstable();
+    // fuzz is continue-on-error (not a required check) but is gated too.
+    let required = [
+        "check", "test", "clippy", "fmt", "k8s", "doc", "msrv", "fuzz",
+    ];
+    for id in required {
+        let hdr = format!("\n  {id}:\n");
+        let start = body
+            .find(&hdr)
+            .unwrap_or_else(|| panic!("ci.yml must declare a `{id}:` job"));
+        let next = offsets
+            .iter()
+            .copied()
+            .find(|&o| o > start)
+            .unwrap_or(body.len());
+        let block = &body[start..next];
         assert!(
-            skip_display.contains(required),
-            "ci-skip.yml is missing a mirror job for ci.yml's \
-             `name: {required}` — the required status check \
-             `CI / {required}` would not pass on docs-only PRs. \
-             Add a matching job to ci-skip.yml (single `echo` \
-             step on ubuntu-latest)."
+            block.contains("needs: changes"),
+            "ci.yml job `{id}` must declare `needs: changes` to gate on the \
+             docs-only detector."
+        );
+        assert!(
+            block.contains("needs.changes.outputs.code != 'false'"),
+            "ci.yml job `{id}` must gate with `needs.changes.outputs.code != \
+             'false'` (fail-safe: runs unless provably docs-only)."
         );
     }
+}
 
-    // ci-skip.yml should not have extra jobs beyond ci.yml's set
-    // (minus fuzz) — that would imply branch protection enforces a
-    // check that has no real CI counterpart.
-    for present in &skip_display {
-        let in_ci = ci_display.iter().any(|d| d == present);
-        assert!(
-            in_ci,
-            "ci-skip.yml has a job `name: {present}` that has no \
-             counterpart in ci.yml — either remove it from \
-             ci-skip.yml or add the real job to ci.yml. Stray skip \
-             jobs imply phantom required checks."
-        );
-    }
+#[test]
+fn ci_skip_yml_must_not_exist() {
+    // The dual-workflow ci-skip pattern was removed: two workflows both
+    // named `CI` emitting the same `CI / <Job>` contexts raced on the
+    // single self-hosted runner (both a false-green and a false-block were
+    // observed). ci.yml now owns every context via per-job gating; a
+    // resurrected ci-skip.yml would re-create the race.
+    assert!(
+        !workflows_dir().join("ci-skip.yml").exists(),
+        "`.github/workflows/ci-skip.yml` must NOT exist — docs-only \
+         filtering is now per-job in ci.yml. A second `name: CI` workflow \
+         re-creates the status-check race."
+    );
 }
 
 #[test]
