@@ -71,3 +71,5 @@ backlog rather than implemented now:
   explicit assertion (currently implied by the alphanumeric-only property).
 - Surrogate-code-point rejection as an explicit documented test (proptest
   excludes them today).
+
+<!-- ci docs-only gate smoke test 2026-07-01 -->
