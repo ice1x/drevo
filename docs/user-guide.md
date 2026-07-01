@@ -60,7 +60,7 @@ drevo is the same engine no matter how you reach it:
   official Neo4j drivers) or in-process via `parse` + `execute`.
 - **HTTP API** — a REST surface on port `8080` for CRUD, traversal, search, and import/export.
 - **Web UI** — a Cytoscape.js graph explorer at `/ui` on the HTTP server.
-- **MCP** — the `drevo-mcp` stdio server exposes graph tools to AI agents (Claude Code, Cline).
+- **MCP** — a separate [drevo-mcp](https://github.com/ice1x/drevo-mcp) server exposes graph tools to AI agents (Claude Code, Cline), talking to `drevo-server` over HTTP / Bolt.
 
 Pick the smallest one that fits: a notebook app embeds the library; a migration script speaks
 Cypher over Bolt; an AI agent uses MCP.

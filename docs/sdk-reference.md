@@ -236,22 +236,12 @@ TLS is available behind the `bolt-tls` feature, authentication behind `bolt-auth
 
 ## MCP tools
 
-The [`drevo-mcp`](../src/bin/mcp.rs) binary is a stdio JSON-RPC MCP server for AI agents
-(Claude Code, Cline, Claude Desktop). Point it at a database with `--data-dir <path>` (or
-`DREVO_DATA_DIR`). It exposes graph tools plus Python-API introspection tools:
-
-| Tool | Purpose |
-|------|---------|
-| `drevo_health_check` | Liveness probe. |
-| `drevo_count_nodes` | Total node count. |
-| `drevo_node_get` | Fetch a node by id. |
-| `drevo_node_get_by_uuid` | Fetch a node by UUID. |
-| `drevo_list_nodes_by_kind` | Paginated list by kind. |
-| `drevo_search_fts` | Full-text search. |
-| `drevo_bfs` | Breadth-first traversal. |
-| `python_api_list` | List exported Python symbols. |
-| `python_api_describe` | Describe a symbol (docstring + signature). |
-| `python_api_examples` | Code examples for a symbol. |
+The Model Context Protocol server for AI agents (Claude Code, Cline, Claude
+Desktop) is maintained in a separate repository —
+[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp) — and connects
+to a running `drevo-server` over HTTP / the Neo4j-compatible Bolt port rather
+than opening the redb file, so it never contends for redb's single-process lock.
+See that repo's README for the tool list and client setup.
 
 ---
 
@@ -263,7 +253,7 @@ The [`drevo-mcp`](../src/bin/mcp.rs) binary is a stdio JSON-RPC MCP server for A
 | `http` | ✅ | Axum HTTP API server **and** the Bolt TCP listener. |
 | `bolt-auth` | — | Argon2id user store + session tokens (transport-agnostic auth). |
 | `bolt-tls` | — | rustls TLS for Bolt; implies `http`. |
-| `wasm` | — | WebAssembly build (excludes `bolt`, `ffi`, `mcp`). |
+| `wasm` | — | WebAssembly build (excludes `bolt`, `ffi`). |
 | `cbindgen` | ✅ | Generate the C header (`drevo.h`) from the FFI surface. |
 
 The in-memory backend (`Drevo::open_in_memory`) needs no features and is always available,
