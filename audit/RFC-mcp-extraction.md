@@ -1,7 +1,11 @@
 # RFC — Extracting the MCP servers into a separate repository
 
 Date: 2026-06-29
-Status: Draft / feasibility — no code moved yet.
+Status: IMPLEMENTED (2026-07-02). All in-tree MCP surfaces were removed — the two
+Python packages (`tools/drevo-mcp`, `tools/drevo-mcp-bolt`) AND the embedded Rust
+`src/mcp/` + `src/bin/mcp.rs` binary. The MCP server now lives in a separate
+repository: https://github.com/ice1x/drevo-mcp. The path references below are
+historical (the files no longer exist in this repo).
 Companion to: the test-coverage audit (`tests/special_chars_content_tests.rs`,
 vector-coverage findings below).
 

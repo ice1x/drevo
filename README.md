@@ -1291,12 +1291,12 @@ Traversal layer (MemoryBackend, 100K nodes + 1M edges, degree 10):
 ## Quick Start — Container + External MCP (FastMCP)
 
 Run drevo as a **server in a container** (the single owner of the redb file, serving
-the HTTP API **and** the Web UI) and attach an **external [FastMCP](https://github.com/jlowin/fastmcp)
-MCP server** — a *separate process* that talks to the container over HTTP — so an AI
-client can read the graph in conversation. Because the MCP server never opens the redb
-file, it never fights the container for redb's single-process lock; the Web UI and the
-MCP server query the same data at once. (Task `00163`; the FastMCP server lives in
-[`tools/drevo-mcp/`](tools/drevo-mcp/).)
+the HTTP API **and** the Web UI) and attach the **MCP server** — a *separate process*
+that talks to the container over HTTP / Bolt — so an AI client can read the graph in
+conversation. Because the MCP server never opens the redb file, it never fights the
+container for redb's single-process lock; the Web UI and the MCP server query the same
+data at once. The MCP server is maintained in its own repository:
+**[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp)**.
 
 ### 1. Bring up the container
 
@@ -1330,93 +1330,45 @@ The Web UI is **fully self-contained** — Cytoscape.js is vendored and served f
 `/ui/vendor/`, so the graph renders with no CDN access (works offline / behind privacy
 browsers). Type a query → **Search** → click a result to draw its 2-hop subgraph.
 
-### 2. Configure the MCP server
+### 2. Attach the MCP server
 
-```bash
-pip install -e tools/drevo-mcp                 # FastMCP server; an httpx client of the HTTP API
-export DREVO_HTTP_URL=http://localhost:8080    # default; set if the container is elsewhere
+The MCP server lives in its own repository —
+**[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp)** — and offers
+both an HTTP client (read-only tools mapped to `src/api.rs` endpoints) and a
+Neo4j-compatible Bolt drop-in (the same knowledge-graph tool surface as a Neo4j
+MCP, pointed at the container's Bolt port). Follow that repo's README to install
+it and register the connector in your client's MCP config (Claude Desktop, the
+Claude Code CLI `~/.claude/settings.json`, or Cline), pointing it at this
+container:
 
-# Smoke-test the wire without an MCP client:
-printf '%s\n' \
-  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
-  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-  | python -m drevo_mcp
-```
+- HTTP transport → `DREVO_HTTP_URL=http://localhost:8080`
+- Bolt transport → `DREVO_BOLT_URL=bolt://localhost:7688` (host `:7688` in the `docker run` above)
 
-It exposes read-only tools: `health`, `node_get`, `list_nodes_by_kind`, `search_fts`,
-`neighbors`, `subgraph`, `shortest_path`, `count_nodes`.
-
-### 3. Connect an MCP client
-
-Add a connector to the client's MCP config — Claude Desktop
-(`~/Library/Application Support/Claude/claude_desktop_config.json`), the Claude Code CLI
-(`~/.claude/settings.json`), or Cline — then restart the client:
-
-```json
-"drevo": {
-  "command": "python",
-  "args": ["-m", "drevo_mcp"],
-  "env": { "DREVO_HTTP_URL": "http://localhost:8080" }
-}
-```
-
-This **external FastMCP** connector replaces the embedded Rust `drevo-mcp` binary
-(`00090`) for multi-client use: the container owns the file and the MCP process is just
-an HTTP client, so there is no redb lock conflict between the Web UI and the MCP server.
-
-### Alternative: Bolt drop-in (Neo4j-MCP parity, 13 tools)
-
-If you are migrating off a Neo4j knowledge graph and want the **same tools your Neo4j
-MCP already exposed**, use the Bolt drop-in in [`tools/drevo-mcp-bolt/`](tools/drevo-mcp-bolt/)
-instead of the HTTP FastMCP package. It is the neo4j-mcp server re-pointed at drevo's
-Neo4j-compatible Bolt port (`00163.m1`), so the AI client sees an identical 13-tool
-surface backed by drevo:
-
-```bash
-pip install -e tools/drevo-mcp-bolt
-```
-
-```json
-"drevo-kg": {
-  "command": "python",
-  "args": ["-m", "drevo_mcp_bolt"],
-  "env": { "DREVO_BOLT_URL": "bolt://localhost:7688" }
-}
-```
-
-This talks to the container's Bolt listener (host `:7688` in the `docker run` above), not
-HTTP. Like the FastMCP path it holds no redb lock — drevo's Bolt server shares the
-container's single `Drevo` handle.
+Either transport holds **no** redb lock — the container's `drevo-server` is the
+single file owner — so the Web UI and the MCP server run against the same data at
+once.
 
 ---
 
-## MCP Server (Planned)
+## MCP Server
 
-> For the **external FastMCP server** (an HTTP client that holds no redb lock) plus a
-> containerised, Web-UI-by-default deployment, see
-> [Quick Start — Container + External MCP](#quick-start--container--external-mcp-fastmcp)
-> (task `00163`, shipped). The embedded binary below remains the right choice for a
-> single-process app that opens the redb file directly.
+The [Model Context Protocol](https://modelcontextprotocol.io) server for drevo
+lives in a **separate repository**:
+**[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp)** — *Drevo
+Graph MCP*.
 
-A planned `drevo-mcp` stdio binary will expose drevo as a [Model Context Protocol](https://modelcontextprotocol.io) server for Cline, Claude Code, and other MCP-compatible AI clients. The binary uses embedded storage (no Docker required) and is configured via the host's MCP settings file:
+It runs as its own process and talks to a running `drevo-server` over HTTP / the
+Neo4j-compatible Bolt port, so it **never opens the redb file** and never
+contends for redb's single-process lock (the Web UI and the MCP server query the
+same data at once). Bring drevo up with the container quick-start above, then
+follow the MCP repo's README to connect Claude Desktop / Claude Code / Cline.
 
-```json
-{
-  "mcpServers": {
-    "drevo": {
-      "command": "/path/to/drevo-mcp",
-      "env": { "DREVO_DATA_DIR": "~/.drevo/data" }
-    }
-  }
-}
-```
-
-The MCP server will expose node CRUD, edge CRUD, traversal, FTS, and (after Phase 10) Cypher query tools — enabling an AI agent to read and write the knowledge graph as part of a conversation.
-
-**After Phase 16 (`00121`)** the MCP server additionally exposes Python-API introspection tools — `python_api_describe`, `python_api_examples`, `python_api_list` — backed by Python symbol entities mirrored into the KG by the `drevo-py` build pipeline. This means an AI client (Cline, Claude Code, Claude Desktop) can answer "how do I open a drevo from Python?" by querying the MCP server directly, without external docs.
-
-Tracked as task `00090` (Phase 15); Python-API tools tracked as task `00121` (Phase 16).
+> History: an *embedded* `drevo-mcp` stdio binary (former tasks `00090` /
+> `00121`) once shipped in this repo (`src/mcp/`, `src/bin/mcp.rs`). It opened
+> the redb file in-process and therefore could not run alongside `drevo-server`
+> on the same file — so it was removed in favour of the out-of-process MCP above.
+> Likewise the in-tree helper packages `tools/drevo-mcp` (HTTP) and
+> `tools/drevo-mcp-bolt` (Bolt) were folded into that external repository.
 
 ---
 

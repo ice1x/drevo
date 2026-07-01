@@ -48,11 +48,11 @@ with drevo.Drevo.open_in_memory() as db:
 
 ## Examples
 
-These snippets are the curated usage corpus surfaced by the
-`python_api_examples` MCP tool (task `00121`): the `drevo-mcp` server
-embeds this README at build time and fuzzy-searches these blocks by
-intent, so an AI client can answer "how do I …?" without leaving the
-conversation. Keep each block self-contained and runnable.
+These snippets are a curated, self-contained usage corpus. Keep each block
+runnable — they double as copy-paste starters and as fixtures for the doc-example
+tests. (Historically they were also indexed by an in-tree `python_api_examples`
+MCP tool; the MCP server now lives in a separate repository —
+[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp).)
 
 ### Create and read a node
 

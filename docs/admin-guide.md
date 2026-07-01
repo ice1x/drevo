@@ -8,21 +8,24 @@ and the replication / streaming substrate. For calling the database see the
 
 ## 1. Binaries
 
-drevo builds two binaries (`Cargo.toml` `[[bin]]`):
+drevo builds one binary (`Cargo.toml` `[[bin]]`):
 
 | Binary | Source | Features | Role |
 |--------|--------|----------|------|
 | `drevo-server` | [`src/bin/server.rs`](../src/bin/server.rs) | `http`, `redb-backend` | HTTP API + Web UI + Bolt listener. |
-| `drevo-mcp` | [`src/bin/mcp.rs`](../src/bin/mcp.rs) | `redb-backend` | stdio MCP server for AI agents (no port, owned by the client process). |
 
 ```bash
 cargo build --release --bin drevo-server --features http,redb-backend
-cargo build --release --bin drevo-mcp   --features redb-backend
 ```
 
 `drevo-server` reads its config from the environment, serves on `${DREVO_HOST}:${DREVO_PORT}`,
 and shuts down gracefully on `SIGTERM` / `Ctrl-C` — flipping `/health` and `/ready` to `503`
 and draining in-flight requests before exiting.
+
+The MCP server for AI agents is a separate process maintained in its own
+repository — [github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp) —
+which connects to a running `drevo-server` over HTTP / Bolt (it never opens the
+redb file, so it never contends for redb's single-process lock).
 
 ---
 
@@ -36,9 +39,6 @@ and draining in-flight requests before exiting.
 | `DREVO_PORT` | `8080` | TCP port (1–65535; `0` is rejected). |
 | `DREVO_DATA_DIR` | `/data` | Directory holding the single `drevo.redb` file. |
 | `RUST_LOG` | `info` | `tracing` env-filter (e.g. `drevo=debug,info`). |
-
-`drevo-mcp` takes `--data-dir <path>` (or `DREVO_DATA_DIR`, default `./drevo-data`) and logs to
-**stderr only** — stdout is the JSON-RPC wire.
 
 Invalid configuration exits with code `2`; a runtime failure exits with `1`.
 
