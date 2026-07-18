@@ -260,8 +260,25 @@ pub struct SubGraph {
 }
 
 /// Generate a new UUID v7 as a 16-byte array.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn new_uuid_v7() -> [u8; 16] {
     *uuid::Uuid::now_v7().as_bytes()
+}
+
+/// Generate a new UUID v7 as a 16-byte array (wasm32).
+///
+/// `Uuid::now_v7()` reads the wall clock through `std::time::SystemTime`,
+/// which is unimplemented on `wasm32-unknown-unknown` and aborts with
+/// `unreachable`. Derive the v7 timestamp from [`now_ms`] (the JS clock)
+/// instead; the random bits still come from `getrandom` (the `wasm_js`
+/// backend enabled by the `wasm` feature).
+#[cfg(target_arch = "wasm32")]
+pub fn new_uuid_v7() -> [u8; 16] {
+    let ms = now_ms();
+    let secs = (ms / 1000) as u64;
+    let nanos = ((ms % 1000) * 1_000_000) as u32;
+    let ts = uuid::Timestamp::from_unix(uuid::NoContext, secs, nanos);
+    *uuid::Uuid::new_v7(ts).as_bytes()
 }
 
 /// Return the current time as Unix milliseconds.
@@ -271,11 +288,23 @@ pub fn new_uuid_v7() -> [u8; 16] {
 /// negative value reflecting the offset before the epoch, satisfying
 /// `drevo-rust` §"Error Handling" + `drevo-architecture` anti-pattern #5
 /// ("no `unwrap()` / `expect()` in library code").
+#[cfg(not(target_arch = "wasm32"))]
 pub fn now_ms() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(dur) => dur.as_millis() as i64,
         Err(err) => -(err.duration().as_millis() as i64),
     }
+}
+
+/// Return the current time as Unix milliseconds (wasm32).
+///
+/// `std::time::SystemTime::now()` is unimplemented on
+/// `wasm32-unknown-unknown` and aborts with `unreachable`, so read the wall
+/// clock from the JS host via `Date.now()`. `js-sys` is always available on
+/// wasm32 (see the target-specific dependency in `Cargo.toml`).
+#[cfg(target_arch = "wasm32")]
+pub fn now_ms() -> i64 {
+    js_sys::Date::now() as i64
 }
 
 impl Node {
