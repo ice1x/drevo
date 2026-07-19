@@ -574,15 +574,19 @@ jobs:
               echo "target=x86_64-unknown-linux-gnu" >> "$GITHUB_OUTPUT"
               ;;
             macOS)
-              # On aarch64 Mac the cargo-fuzz default
-              # `x86_64-apple-darwin` would fail. Pin host arch.
-              # uname -m returns `arm64` on Apple Silicon, `x86_64`
-              # on Intel.
-              if [ "$(uname -m)" = "arm64" ]; then
-                echo "target=aarch64-apple-darwin" >> "$GITHUB_OUTPUT"
-              else
-                echo "target=x86_64-apple-darwin" >> "$GITHUB_OUTPUT"
-              fi
+              # Derive the target from the NIGHTLY toolchain's own host
+              # triple, NOT `uname -m`. The GitHub runner may pick an
+              # x86_64 Homebrew bash (`/usr/local/bin/bash`) for `run:`
+              # steps; under Rosetta that bash reports `uname -m` =
+              # `x86_64` on an Apple Silicon host, so the old check took
+              # the `else` branch and selected `x86_64-apple-darwin` — a
+              # target nightly has no std for, failing the fuzz build with
+              # E0463 "can't find crate for `core`". `rustc -vV`'s `host:`
+              # line reflects the real toolchain arch regardless of the
+              # shell, yielding `aarch64-apple-darwin` on Apple Silicon
+              # (and `x86_64-apple-darwin` on a genuine Intel host).
+              host="$(rustc +nightly -vV | sed -n 's/^host: //p')"
+              echo "target=${host:-aarch64-apple-darwin}" >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "Unsupported RUNNER_OS=$RUNNER_OS for fuzz" >&2

@@ -2671,6 +2671,107 @@ async fn get_export_graphml_empty_database_still_well_formed() {
     assert_eq!(xml.matches("<edge ").count(), 0);
 }
 
+// ---------------------------------------------------------------------
+// Task 00057 — GraphML import endpoint (POST /import/graphml)
+// ---------------------------------------------------------------------
+
+/// Fetch the full GraphML export from an app as a `String`.
+async fn fetch_graphml(app: &axum::Router) -> String {
+    let req = Request::builder()
+        .method("GET")
+        .uri("/export/graphml")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn post_import_graphml_loads_export_into_empty_db() {
+    // Build a source graph and export it as GraphML.
+    let src_app = make_app();
+    send(
+        &src_app,
+        "POST",
+        "/nodes",
+        Some(new_node_body("note", "Graph Source", "some body")),
+    )
+    .await;
+    let xml = fetch_graphml(&src_app).await;
+
+    // Import that document into a fresh app.
+    let dst_app = make_app();
+    let (status, body) = send(
+        &dst_app,
+        "POST",
+        "/import/graphml",
+        Some(json!({ "graphml": xml })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["nodes_imported"], 1);
+    assert_eq!(body["edges_imported"], 0);
+    assert_eq!(body["nodes_skipped"], 0);
+
+    // The node is queryable with its original id preserved.
+    let (status, body) = send(&dst_app, "GET", "/nodes/1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["title"], "Graph Source");
+
+    // Re-importing the same document is idempotent (all rows skipped).
+    let (status, body) = send(
+        &dst_app,
+        "POST",
+        "/import/graphml",
+        Some(json!({ "graphml": xml })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["nodes_imported"], 0);
+    assert_eq!(body["nodes_skipped"], 1);
+}
+
+#[tokio::test]
+async fn post_import_graphml_rejects_malformed_document_with_500() {
+    let app = make_app();
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/import/graphml",
+        Some(json!({ "graphml": "<graphml><graph><node id=" })),
+    )
+    .await;
+    // MalformedGraphml → DrevoError::Io → 500.
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn post_import_graphml_rejects_missing_body_with_400() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/import/graphml")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    // Missing `graphml` field → JsonRejection → BadRequest 400.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn import_graphml_rejects_non_post_methods_with_405() {
+    let app = make_app();
+    let req = Request::builder()
+        .method("GET")
+        .uri("/import/graphml")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
 // ---------------------------------------------------------------
 // Keyword faceting endpoint (task 00133): GET /facets
 // ---------------------------------------------------------------
