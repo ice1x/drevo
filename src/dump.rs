@@ -61,14 +61,43 @@
 //! `cfg(not(target_arch = "wasm32"))` because `std::fs` is not available in
 //! the browser.
 //!
-//! ## GraphML export (task `00056`)
+//! ## GraphML export / import (tasks `00056` / `00057`)
 //!
 //! [`crate::db::Drevo::export_graphml`] emits the graph as a GraphML 1.0
 //! document — the ubiquitous XML interchange format consumed by yEd, Gephi,
 //! NetworkX, Cytoscape, igraph, and a long tail of network-analysis tooling.
-//! The export is one-way (no `import_graphml`); the project's authoritative
-//! wire format remains [`crate::dump::FORMAT_V1`]. GraphML is offered for
-//! interop only.
+//! [`crate::db::Drevo::import_graphml`] is its inverse: it parses a GraphML
+//! document (drevo's own output, or any GraphML that follows the same
+//! `<key>` / `<data>` conventions) back into a live database. The project's
+//! authoritative wire format remains [`crate::dump::FORMAT_V1`]; GraphML is
+//! offered for interop, and JSON stays the recommended backup channel.
+//!
+//! ### Import semantics
+//!
+//! * **Round-trip fidelity.** A document produced by `export_graphml` reloads
+//!   verbatim: node/edge ids (`n<id>` / `e<id>`), uuids (`d_uuid`),
+//!   timestamps (`d_created_at` / `d_updated_at`), kinds, titles, bodies and
+//!   the JSON-encoded property maps are all preserved. Re-importing the same
+//!   document is idempotent (rows are skipped, counted in
+//!   [`crate::dump::ImportReport::nodes_skipped`] /
+//!   [`crate::dump::ImportReport::edges_skipped`]), exactly like
+//!   [`crate::db::Drevo::import_json`].
+//! * **Interop tolerance.** GraphML from foreign tools rarely carries drevo's
+//!   `d_*` keys. Data elements are therefore resolved by the `attr.name` of
+//!   their `<key>` declaration, not the raw key id, so a foreign
+//!   `attr.name="title"` maps onto [`crate::model::Node::title`]. Node ids
+//!   that are not of the `n<u64>` form are remapped onto freshly-allocated
+//!   ids (edges follow the remap); missing uuids/timestamps are generated at
+//!   import time. Unrecognised `<data>` keys are folded into the node/edge
+//!   property map so nothing is silently dropped.
+//! * **Constraints.** Node titles must be unique (drevo's data-model
+//!   invariant); an edge whose `source`/`target` names a node absent from the
+//!   document is rejected as [`crate::dump::DumpError::MalformedGraphml`].
+//!   Malformed XML, a missing `<graphml>`/`<graph>` element, or an id
+//!   collision against different existing content surface as
+//!   [`crate::error::DrevoError::Io`].
+//!
+//! The filesystem variant `Drevo::import_graphml_from_path` is gated off WASM.
 //!
 //! Layout of the emitted document:
 //!
@@ -97,11 +126,13 @@
 //!
 //! Filesystem variant `Drevo::export_graphml_to_path` is gated off WASM.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::db::Drevo;
 use crate::error::{DrevoError, Result};
-use crate::model::{now_ms, Edge, NewEdge, Node, Properties};
+use crate::model::{new_uuid_v7, now_ms, Edge, NewEdge, Node, Properties};
 
 /// Wire-format identifier for the v1 dump schema. Always emitted in the
 /// `format` field; import refuses to load any other value.
@@ -168,6 +199,11 @@ pub enum DumpError {
     /// same id but different content.
     #[error("id collision on import: {0}")]
     IdCollision(String),
+    /// A GraphML payload was not well-formed XML, was missing a required
+    /// structural element (`<graphml>` / `<graph>` / a `<node>` id), or
+    /// referenced an undeclared node from an `<edge>`.
+    #[error("malformed GraphML: {0}")]
+    MalformedGraphml(String),
 }
 
 impl From<DumpError> for DrevoError {
@@ -284,7 +320,245 @@ impl Drevo {
         std::fs::write(path, xml).map_err(DrevoError::Io)
     }
 
+    /// Import a GraphML document produced by
+    /// [`export_graphml`](Self::export_graphml) (or any GraphML that follows
+    /// the same `<key>` / `<data>` conventions) into this database.
+    ///
+    /// The returned [`ImportReport`] separates newly-inserted rows from rows
+    /// skipped because an identical id + content already exists — re-importing
+    /// drevo's own export is therefore idempotent. See the module docs for the
+    /// full round-trip / interop / constraint semantics.
+    ///
+    /// # Errors
+    ///
+    /// * [`DrevoError::Io`] — malformed XML, a missing `<graphml>`/`<graph>`
+    ///   element, an `<edge>` referencing an undeclared node, or an id
+    ///   collision against different existing content (all via
+    ///   [`DumpError::MalformedGraphml`] / [`DumpError::IdCollision`]).
+    /// * [`DrevoError::DuplicateTitle`] — an imported title clashes with a
+    ///   different existing node.
+    /// * [`DrevoError::Storage`] / [`DrevoError::Encode`] — backend failure.
+    pub fn import_graphml(&self, xml: &str) -> Result<ImportReport> {
+        let (nodes, edges) = self.graphml_to_records(xml)?;
+        let next_node_id = nodes.iter().map(|n| n.id).max().map_or(1, |m| m + 1);
+        let next_edge_id = edges.iter().map(|e| e.id).max().map_or(1, |m| m + 1);
+        self.apply_dump(Dump {
+            format: FORMAT_V1.to_string(),
+            exported_at: now_ms(),
+            next_node_id,
+            next_edge_id,
+            nodes,
+            edges,
+        })
+    }
+
+    /// Read a GraphML document from `path` (filesystem read, not available on
+    /// WASM) and import it into this database. See
+    /// [`import_graphml`](Self::import_graphml).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn import_graphml_from_path(&self, path: &std::path::Path) -> Result<ImportReport> {
+        let raw = std::fs::read_to_string(path).map_err(DrevoError::Io)?;
+        self.import_graphml(&raw)
+    }
+
     // --- internals ---------------------------------------------------
+
+    /// Parse a GraphML document into verbatim [`Node`] / [`Edge`] records
+    /// ready to hand to [`apply_dump`](Self::apply_dump).
+    ///
+    /// Node ids of the form `n<u64>` (and edge ids `e<u64>`) are preserved;
+    /// any other id is remapped onto a freshly-allocated id above both the
+    /// preserved range and the ids already present in `self`, so a mixed
+    /// document can never allocate over a preserved id. Edge `source`/`target`
+    /// are resolved through the same node-id map.
+    fn graphml_to_records(&self, xml: &str) -> Result<(Vec<Node>, Vec<Edge>)> {
+        let roots = parse_xml(xml).map_err(DrevoError::from)?;
+        let graphml = roots.iter().find(|e| e.name == "graphml").ok_or_else(|| {
+            DrevoError::from(DumpError::MalformedGraphml(
+                "no <graphml> root element".into(),
+            ))
+        })?;
+
+        // Map each `<key id=…>` to its human-readable `attr.name` so `<data>`
+        // elements can be interpreted by semantic name regardless of the id
+        // scheme the producer chose.
+        let mut keymap: HashMap<&str, &str> = HashMap::new();
+        for k in graphml.children.iter().filter(|e| e.name == "key") {
+            if let (Some(id), Some(name)) = (attr(&k.attrs, "id"), attr(&k.attrs, "attr.name")) {
+                keymap.insert(id, name);
+            }
+        }
+
+        let graph = graphml
+            .children
+            .iter()
+            .find(|e| e.name == "graph")
+            .ok_or_else(|| {
+                DrevoError::from(DumpError::MalformedGraphml("no <graph> element".into()))
+            })?;
+
+        // --- Collect raw node / edge shells (document order) ---
+        let mut raw_nodes: Vec<RawNode> = Vec::new();
+        let mut raw_edges: Vec<RawEdge> = Vec::new();
+        for child in &graph.children {
+            match child.name.as_str() {
+                "node" => {
+                    let raw_id = attr(&child.attrs, "id").ok_or_else(|| {
+                        DrevoError::from(DumpError::MalformedGraphml("<node> without id".into()))
+                    })?;
+                    raw_nodes.push(RawNode {
+                        raw_id,
+                        data: collect_data(child, &keymap),
+                    });
+                }
+                "edge" => {
+                    let source = attr(&child.attrs, "source").ok_or_else(|| {
+                        DrevoError::from(DumpError::MalformedGraphml(
+                            "<edge> without source".into(),
+                        ))
+                    })?;
+                    let target = attr(&child.attrs, "target").ok_or_else(|| {
+                        DrevoError::from(DumpError::MalformedGraphml(
+                            "<edge> without target".into(),
+                        ))
+                    })?;
+                    raw_edges.push(RawEdge {
+                        raw_id: attr(&child.attrs, "id"),
+                        source,
+                        target,
+                        data: collect_data(child, &keymap),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // --- Assign final node ids (preserve `n<id>`, else allocate) ---
+        let db_max_node = self
+            .collect_all_nodes()?
+            .iter()
+            .map(|n| n.id)
+            .max()
+            .unwrap_or(0);
+        let preserved_node: Vec<Option<u64>> = raw_nodes
+            .iter()
+            .map(|rn| parse_prefixed(rn.raw_id, 'n'))
+            .collect();
+        let max_preserved_node = preserved_node.iter().flatten().copied().max().unwrap_or(0);
+        let mut next_alloc_node = db_max_node.max(max_preserved_node);
+        let mut node_id_map: HashMap<&str, u64> = HashMap::new();
+        for (rn, pres) in raw_nodes.iter().zip(preserved_node.iter()) {
+            let id = match pres {
+                Some(id) => *id,
+                None => {
+                    next_alloc_node += 1;
+                    next_alloc_node
+                }
+            };
+            node_id_map.insert(rn.raw_id, id);
+        }
+
+        let mut nodes = Vec::with_capacity(raw_nodes.len());
+        for rn in &raw_nodes {
+            let id = node_id_map[rn.raw_id];
+            let mut kind = String::new();
+            let mut title = String::new();
+            let mut body = String::new();
+            let mut body_html = String::new();
+            let mut uuid: Option<[u8; 16]> = None;
+            let mut created_at: Option<i64> = None;
+            let mut updated_at: Option<i64> = None;
+            let mut properties = Properties::default();
+            for (name, value) in &rn.data {
+                match name.as_str() {
+                    "uuid" => uuid = parse_uuid(value),
+                    "kind" => kind = value.clone(),
+                    "title" => title = value.clone(),
+                    "body" => body = value.clone(),
+                    "body_html" => body_html = value.clone(),
+                    "created_at" => created_at = value.parse::<i64>().ok(),
+                    "updated_at" => updated_at = value.parse::<i64>().ok(),
+                    "properties" => merge_properties(&mut properties, value),
+                    other => fold_unknown_property(&mut properties, other, value),
+                }
+            }
+            let created = created_at.unwrap_or_else(now_ms);
+            nodes.push(Node {
+                id,
+                uuid: uuid.unwrap_or_else(new_uuid_v7),
+                kind,
+                title,
+                body,
+                body_html,
+                created_at: created,
+                updated_at: updated_at.unwrap_or(created),
+                properties,
+            });
+        }
+
+        // --- Assign final edge ids and resolve endpoints ---
+        let db_max_edge = self
+            .collect_all_edges()?
+            .iter()
+            .map(|e| e.id)
+            .max()
+            .unwrap_or(0);
+        let preserved_edge: Vec<Option<u64>> = raw_edges
+            .iter()
+            .map(|re| re.raw_id.and_then(|s| parse_prefixed(s, 'e')))
+            .collect();
+        let max_preserved_edge = preserved_edge.iter().flatten().copied().max().unwrap_or(0);
+        let mut next_alloc_edge = db_max_edge.max(max_preserved_edge);
+        let mut edges = Vec::with_capacity(raw_edges.len());
+        for (re, pres) in raw_edges.iter().zip(preserved_edge.iter()) {
+            let from_id = *node_id_map.get(re.source).ok_or_else(|| {
+                DrevoError::from(DumpError::MalformedGraphml(format!(
+                    "edge source '{}' references an undeclared node",
+                    re.source
+                )))
+            })?;
+            let to_id = *node_id_map.get(re.target).ok_or_else(|| {
+                DrevoError::from(DumpError::MalformedGraphml(format!(
+                    "edge target '{}' references an undeclared node",
+                    re.target
+                )))
+            })?;
+            let eid = match pres {
+                Some(id) => *id,
+                None => {
+                    next_alloc_edge += 1;
+                    next_alloc_edge
+                }
+            };
+            let mut kind = String::new();
+            let mut uuid: Option<[u8; 16]> = None;
+            let mut weight: Option<f32> = None;
+            let mut created_at: Option<i64> = None;
+            let mut properties = Properties::default();
+            for (name, value) in &re.data {
+                match name.as_str() {
+                    "uuid" => uuid = parse_uuid(value),
+                    "kind" => kind = value.clone(),
+                    "weight" => weight = Some(parse_weight_value(value)),
+                    "created_at" => created_at = value.parse::<i64>().ok(),
+                    "properties" => merge_properties(&mut properties, value),
+                    other => fold_unknown_property(&mut properties, other, value),
+                }
+            }
+            edges.push(Edge {
+                id: eid,
+                uuid: uuid.unwrap_or_else(new_uuid_v7),
+                from_id,
+                to_id,
+                kind,
+                weight: weight.unwrap_or(1.0),
+                created_at: created_at.unwrap_or_else(now_ms),
+                properties,
+            });
+        }
+
+        Ok((nodes, edges))
+    }
 
     fn build_dump(&self) -> Result<Dump> {
         let nodes = self.collect_all_nodes()?;
@@ -580,6 +854,335 @@ fn push_escaped(out: &mut String, s: &str) {
     }
 }
 
+// ---------------------------------------------------------------------
+// GraphML parsing (task 00057) — a small, dependency-free XML reader
+// tailored to the GraphML the exporter emits. The workspace deliberately
+// avoids a general XML crate ("embeddable, no external system deps"), and the
+// exporter escapes every `<`/`>`/`&` in element text, so a structural
+// scanner is safe: the only real tags inside the body are the GraphML ones.
+// ---------------------------------------------------------------------
+
+/// A minimal parsed XML element — just enough tree for the GraphML importer.
+struct XmlElement {
+    name: String,
+    attrs: Vec<(String, String)>,
+    children: Vec<XmlElement>,
+    text: String,
+}
+
+/// A `<node>` shell parsed from GraphML, before id allocation. `data` holds
+/// `(semantic-name, value)` pairs resolved via the `<key>` declarations.
+struct RawNode<'a> {
+    raw_id: &'a str,
+    data: Vec<(String, String)>,
+}
+
+/// An `<edge>` shell parsed from GraphML, before id allocation and endpoint
+/// resolution. `raw_id` is optional (GraphML edges may omit an id).
+struct RawEdge<'a> {
+    raw_id: Option<&'a str>,
+    source: &'a str,
+    target: &'a str,
+    data: Vec<(String, String)>,
+}
+
+/// Look up an attribute value by name (first match wins).
+fn attr<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+/// Collect a node/edge element's `<data key=…>value</data>` children, mapping
+/// each key id to its semantic `attr.name` via `keymap` (falling back to the
+/// raw key id when the producer declared no matching `<key>`).
+fn collect_data(elem: &XmlElement, keymap: &HashMap<&str, &str>) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for d in elem.children.iter().filter(|c| c.name == "data") {
+        if let Some(key) = attr(&d.attrs, "key") {
+            let semantic = keymap.get(key).copied().unwrap_or(key);
+            out.push((semantic.to_string(), d.text.clone()));
+        }
+    }
+    out
+}
+
+/// Parse a GraphML/XML document into its top-level elements. Skips the XML
+/// declaration, comments, DOCTYPE, and processing instructions; unescapes
+/// entity references in text and attribute values; understands CDATA.
+fn parse_xml(input: &str) -> std::result::Result<Vec<XmlElement>, DumpError> {
+    let mut roots: Vec<XmlElement> = Vec::new();
+    let mut stack: Vec<XmlElement> = Vec::new();
+    let bytes = input.as_bytes();
+    let mut pos = 0usize;
+    while pos < input.len() {
+        let lt = match input[pos..].find('<') {
+            Some(rel) => pos + rel,
+            None => break,
+        };
+        if lt > pos {
+            if let Some(top) = stack.last_mut() {
+                top.text.push_str(&xml_unescape(&input[pos..lt])?);
+            }
+        }
+        let rest = &input[lt..];
+        if rest.starts_with("<!--") {
+            let end = input[lt + 4..]
+                .find("-->")
+                .ok_or_else(|| DumpError::MalformedGraphml("unterminated comment".into()))?;
+            pos = lt + 4 + end + 3;
+        } else if rest.starts_with("<![CDATA[") {
+            let end = input[lt + 9..]
+                .find("]]>")
+                .ok_or_else(|| DumpError::MalformedGraphml("unterminated CDATA".into()))?;
+            if let Some(top) = stack.last_mut() {
+                top.text.push_str(&input[lt + 9..lt + 9 + end]);
+            }
+            pos = lt + 9 + end + 3;
+        } else if rest.starts_with("<?") {
+            let end = input[lt + 2..].find("?>").ok_or_else(|| {
+                DumpError::MalformedGraphml("unterminated processing instruction".into())
+            })?;
+            pos = lt + 2 + end + 2;
+        } else if rest.starts_with("<!") {
+            let end = input[lt..]
+                .find('>')
+                .ok_or_else(|| DumpError::MalformedGraphml("unterminated declaration".into()))?;
+            pos = lt + end + 1;
+        } else if rest.starts_with("</") {
+            let end = input[lt..]
+                .find('>')
+                .ok_or_else(|| DumpError::MalformedGraphml("unterminated close tag".into()))?;
+            let name = input[lt + 2..lt + end].trim();
+            let elem = stack.pop().ok_or_else(|| {
+                DumpError::MalformedGraphml(format!("unexpected close tag </{name}>"))
+            })?;
+            if elem.name != name {
+                return Err(DumpError::MalformedGraphml(format!(
+                    "mismatched close tag: expected </{}>, found </{name}>",
+                    elem.name
+                )));
+            }
+            match stack.last_mut() {
+                Some(parent) => parent.children.push(elem),
+                None => roots.push(elem),
+            }
+            pos = lt + end + 1;
+        } else {
+            let (gt, self_closing) = find_tag_end(bytes, lt)?;
+            let inner_end = if self_closing { gt - 1 } else { gt };
+            let (name, attrs) = parse_tag(&input[lt + 1..inner_end])?;
+            let elem = XmlElement {
+                name,
+                attrs,
+                children: Vec::new(),
+                text: String::new(),
+            };
+            if self_closing {
+                match stack.last_mut() {
+                    Some(parent) => parent.children.push(elem),
+                    None => roots.push(elem),
+                }
+            } else {
+                stack.push(elem);
+            }
+            pos = gt + 1;
+        }
+    }
+    if let Some(open) = stack.last() {
+        return Err(DumpError::MalformedGraphml(format!(
+            "unclosed element <{}>",
+            open.name
+        )));
+    }
+    Ok(roots)
+}
+
+/// Locate the `>` that closes the tag opened at byte `lt`, honouring quoted
+/// attribute values (which may legally contain `>`). Returns the `>` index and
+/// whether the tag is self-closing (`… />`). All structural characters
+/// (`<>"'/`) are ASCII, so byte scanning is UTF-8-safe.
+fn find_tag_end(bytes: &[u8], lt: usize) -> std::result::Result<(usize, bool), DumpError> {
+    let mut i = lt + 1;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                b'"' | b'\'' => quote = Some(c),
+                b'>' => {
+                    let mut self_closing = false;
+                    let mut k = i;
+                    while k > lt + 1 {
+                        k -= 1;
+                        match bytes[k] {
+                            b' ' | b'\t' | b'\n' | b'\r' => continue,
+                            other => {
+                                self_closing = other == b'/';
+                                break;
+                            }
+                        }
+                    }
+                    return Ok((i, self_closing));
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    Err(DumpError::MalformedGraphml("unterminated tag".into()))
+}
+
+/// Split a tag's interior (`name attr="v" …`, sans `<`, `>` and any trailing
+/// `/`) into its element name and unescaped attribute pairs.
+fn parse_tag(inner: &str) -> std::result::Result<(String, Vec<(String, String)>), DumpError> {
+    let inner = inner.trim();
+    let mut it = inner.splitn(2, char::is_whitespace);
+    let name = it.next().unwrap_or("").trim().to_string();
+    if name.is_empty() {
+        return Err(DumpError::MalformedGraphml("empty tag name".into()));
+    }
+    let mut attrs = Vec::new();
+    if let Some(rest) = it.next() {
+        let mut s = rest.trim_start();
+        while !s.is_empty() {
+            let eq = s.find('=').ok_or_else(|| {
+                DumpError::MalformedGraphml(format!("attribute without '=' in <{name}>"))
+            })?;
+            let aname = s[..eq].trim().to_string();
+            let after_eq = s[eq + 1..].trim_start();
+            let quote = after_eq.chars().next().ok_or_else(|| {
+                DumpError::MalformedGraphml(format!("attribute '{aname}' missing value"))
+            })?;
+            if quote != '"' && quote != '\'' {
+                return Err(DumpError::MalformedGraphml(format!(
+                    "attribute '{aname}' value is not quoted"
+                )));
+            }
+            let after_q = &after_eq[1..];
+            let close = after_q.find(quote).ok_or_else(|| {
+                DumpError::MalformedGraphml(format!("unterminated value for attribute '{aname}'"))
+            })?;
+            attrs.push((aname, xml_unescape(&after_q[..close])?));
+            s = after_q[close + 1..].trim_start();
+        }
+    }
+    Ok((name, attrs))
+}
+
+/// Inverse of the exporter's [`push_escaped`]: turn XML entity references back
+/// into their characters. Handles the five predefined entities plus decimal
+/// and hexadecimal numeric character references. A single left-to-right pass
+/// so already-decoded output is never re-decoded.
+fn xml_unescape(s: &str) -> std::result::Result<String, DumpError> {
+    if !s.contains('&') {
+        return Ok(s.to_string());
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp..];
+        let semi = after
+            .find(';')
+            .ok_or_else(|| DumpError::MalformedGraphml("unterminated entity reference".into()))?;
+        let entity = &after[1..semi];
+        match entity {
+            "amp" => out.push('&'),
+            "lt" => out.push('<'),
+            "gt" => out.push('>'),
+            "quot" => out.push('"'),
+            "apos" => out.push('\''),
+            _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+                let code = u32::from_str_radix(&entity[2..], 16)
+                    .map_err(|_| DumpError::MalformedGraphml(format!("bad char ref &{entity};")))?;
+                out.push(char::from_u32(code).ok_or_else(|| {
+                    DumpError::MalformedGraphml(format!("invalid code point &{entity};"))
+                })?);
+            }
+            _ if entity.starts_with('#') => {
+                let code = entity[1..]
+                    .parse::<u32>()
+                    .map_err(|_| DumpError::MalformedGraphml(format!("bad char ref &{entity};")))?;
+                out.push(char::from_u32(code).ok_or_else(|| {
+                    DumpError::MalformedGraphml(format!("invalid code point &{entity};"))
+                })?);
+            }
+            other => {
+                return Err(DumpError::MalformedGraphml(format!(
+                    "unknown entity reference &{other};"
+                )))
+            }
+        }
+        rest = &after[semi + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// Parse a canonical hyphenated UUID (as emitted by [`uuid_to_hyphenated`])
+/// back into raw bytes. Returns `None` on any malformed value so the caller
+/// can fall back to generating a fresh uuid.
+fn parse_uuid(s: &str) -> Option<[u8; 16]> {
+    uuid::Uuid::parse_str(s).ok().map(|u| *u.as_bytes())
+}
+
+/// Parse a `<prefix><u64>` id (e.g. `n42`, `e7`) into its numeric part.
+/// Returns `None` for any other shape so the caller allocates a fresh id.
+fn parse_prefixed(s: &str, prefix: char) -> Option<u64> {
+    let rest = s.strip_prefix(prefix)?;
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse::<u64>().ok()
+}
+
+/// Inverse of [`format_weight`]: parse an edge-weight `<data>` value, decoding
+/// the non-finite sentinels the exporter emits. Unparseable values default to
+/// `1.0` (drevo's neutral edge weight).
+fn parse_weight_value(s: &str) -> f32 {
+    match s {
+        "NaN" => f32::NAN,
+        "Infinity" => f32::INFINITY,
+        "-Infinity" => f32::NEG_INFINITY,
+        other => other.parse::<f32>().unwrap_or(1.0),
+    }
+}
+
+/// Merge a JSON-object `<data>` value (the `d_props` / `d_e_props` payload)
+/// into `properties`. A value that is not a JSON object is stored verbatim
+/// under a `"properties"` key so nothing is dropped.
+fn merge_properties(properties: &mut Properties, value: &str) {
+    match serde_json::from_str::<Properties>(value) {
+        Ok(parsed) => {
+            for (k, v) in parsed.0 {
+                properties.0.insert(k, v);
+            }
+        }
+        Err(_) => {
+            properties.0.insert(
+                "properties".to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
+        }
+    }
+}
+
+/// Fold an unrecognised `<data>` key (foreign GraphML) into the property map,
+/// parsing the value as JSON when possible and otherwise keeping it as a
+/// string. Ensures interop imports never silently discard attributes.
+fn fold_unknown_property(properties: &mut Properties, name: &str, value: &str) {
+    let parsed = serde_json::from_str::<serde_json::Value>(value)
+        .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+    properties.0.insert(name.to_string(), parsed);
+}
+
 /// Helper used by `NewEdge::from(&Edge)` round-trips in tests / external
 /// tooling — exposed to keep the wire format documentation grounded in real
 /// code paths.
@@ -866,5 +1469,209 @@ mod tests {
         assert!(buf2.contains('\t'));
         assert!(buf2.contains('\n'));
         assert!(buf2.contains('\r'));
+    }
+
+    // -----------------------------------------------------------------
+    // GraphML import (task 00057) — unit tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn xml_unescape_decodes_predefined_and_numeric_entities() {
+        assert_eq!(
+            xml_unescape("a &lt; b &amp; c &gt; d &quot; &apos;").unwrap(),
+            "a < b & c > d \" '"
+        );
+        // A JSON literal round-trips through the escaper.
+        assert_eq!(xml_unescape("{&quot;k&quot;:1}").unwrap(), "{\"k\":1}");
+        // Numeric character references (decimal + hex).
+        assert_eq!(xml_unescape("&#65;&#x42;&#x1F333;").unwrap(), "AB🌳");
+        // No ampersand — identity fast path.
+        assert_eq!(xml_unescape("plain text").unwrap(), "plain text");
+    }
+
+    #[test]
+    fn xml_unescape_rejects_unknown_and_unterminated_entities() {
+        assert!(xml_unescape("&bogus;").is_err());
+        assert!(xml_unescape("a & b").is_err());
+    }
+
+    #[test]
+    fn parse_prefixed_only_matches_prefix_plus_digits() {
+        assert_eq!(parse_prefixed("n42", 'n'), Some(42));
+        assert_eq!(parse_prefixed("e0", 'e'), Some(0));
+        assert_eq!(parse_prefixed("node7", 'n'), None); // extra letters
+        assert_eq!(parse_prefixed("n", 'n'), None); // no digits
+        assert_eq!(parse_prefixed("x1", 'n'), None); // wrong prefix
+    }
+
+    #[test]
+    fn parse_weight_value_inverts_format_weight() {
+        assert_eq!(parse_weight_value("1.5"), 1.5_f32);
+        assert_eq!(parse_weight_value("0"), 0.0_f32);
+        assert!(parse_weight_value("NaN").is_nan());
+        assert_eq!(parse_weight_value("Infinity"), f32::INFINITY);
+        assert_eq!(parse_weight_value("-Infinity"), f32::NEG_INFINITY);
+        assert_eq!(parse_weight_value("garbage"), 1.0_f32); // default
+    }
+
+    #[test]
+    fn parse_xml_skips_declaration_comments_and_pi() {
+        let xml = "<?xml version=\"1.0\"?>\n<!-- a comment -->\n<r a=\"1\"><c/></r>";
+        let roots = parse_xml(xml).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].name, "r");
+        assert_eq!(attr(&roots[0].attrs, "a"), Some("1"));
+        assert_eq!(roots[0].children.len(), 1);
+        assert_eq!(roots[0].children[0].name, "c");
+    }
+
+    #[test]
+    fn parse_xml_rejects_mismatched_and_unclosed_tags() {
+        assert!(parse_xml("<a></b>").is_err());
+        assert!(parse_xml("<a><b></a>").is_err());
+        assert!(parse_xml("<a>").is_err());
+    }
+
+    #[test]
+    fn graphml_round_trips_through_export_import() {
+        let src = Drevo::open_in_memory().unwrap();
+        let a = src
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "Alpha".into(),
+                body: "first".into(),
+                body_html: "<p>first</p>".into(),
+                properties: props(&[("n", json!(1)), ("s", json!("x"))]),
+            })
+            .unwrap();
+        let b = src
+            .create_node(NewNode {
+                kind: "tag".into(),
+                title: "Beta < & >".into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        src.create_edge(NewEdge {
+            from_id: a.id,
+            to_id: b.id,
+            kind: "links_to".into(),
+            weight: 2.5,
+            properties: props(&[("color", json!("red"))]),
+        })
+        .unwrap();
+
+        let xml = src.export_graphml().unwrap();
+        let dst = Drevo::open_in_memory().unwrap();
+        let report = dst.import_graphml(&xml).unwrap();
+        assert_eq!(report.nodes_imported, 2);
+        assert_eq!(report.edges_imported, 1);
+
+        // Re-exporting the destination yields byte-identical GraphML.
+        assert_eq!(dst.export_graphml().unwrap(), xml);
+    }
+
+    #[test]
+    fn graphml_import_preserves_ids_uuid_and_timestamps() {
+        let src = Drevo::open_in_memory().unwrap();
+        let n = src
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "Keep Me".into(),
+                body: "body".into(),
+                body_html: String::new(),
+                properties: props(&[("k", json!(9))]),
+            })
+            .unwrap();
+        let original = src.get_node(n.id).unwrap().unwrap();
+
+        let xml = src.export_graphml().unwrap();
+        let dst = Drevo::open_in_memory().unwrap();
+        dst.import_graphml(&xml).unwrap();
+
+        let restored = dst.get_node(n.id).unwrap().unwrap();
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn graphml_import_is_idempotent() {
+        let src = Drevo::open_in_memory().unwrap();
+        src.create_node(NewNode {
+            kind: "note".into(),
+            title: "Once".into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .unwrap();
+        let xml = src.export_graphml().unwrap();
+
+        let dst = Drevo::open_in_memory().unwrap();
+        let first = dst.import_graphml(&xml).unwrap();
+        assert_eq!(first.nodes_imported, 1);
+        let second = dst.import_graphml(&xml).unwrap();
+        assert_eq!(second.nodes_imported, 0);
+        assert_eq!(second.nodes_skipped, 1);
+    }
+
+    #[test]
+    fn graphml_import_rejects_malformed_xml() {
+        let db = Drevo::open_in_memory().unwrap();
+        let err = db.import_graphml("<graphml><graph><node id=").unwrap_err();
+        assert!(matches!(err, DrevoError::Io(_)));
+    }
+
+    #[test]
+    fn graphml_import_rejects_missing_graphml_root() {
+        let db = Drevo::open_in_memory().unwrap();
+        let err = db.import_graphml("<not-graphml/>").unwrap_err();
+        assert!(matches!(err, DrevoError::Io(_)));
+    }
+
+    #[test]
+    fn graphml_import_rejects_edge_to_undeclared_node() {
+        let db = Drevo::open_in_memory().unwrap();
+        let xml = "<graphml><graph>\
+             <node id=\"n1\"><data key=\"kind\">note</data><data key=\"title\">A</data></node>\
+             <edge id=\"e1\" source=\"n1\" target=\"n999\"/>\
+             </graph></graphml>";
+        let err = db.import_graphml(xml).unwrap_err();
+        assert!(matches!(err, DrevoError::Io(_)));
+    }
+
+    #[test]
+    fn graphml_import_foreign_document_allocates_ids_and_maps_attr_names() {
+        // A foreign GraphML: string node ids, keys referenced by declared
+        // `attr.name`, no uuids/timestamps. drevo must allocate ids, remap the
+        // edge endpoints, and interpret data by attr.name.
+        let db = Drevo::open_in_memory().unwrap();
+        let xml = "<?xml version=\"1.0\"?>\
+             <graphml>\
+             <key id=\"k0\" for=\"node\" attr.name=\"title\" attr.type=\"string\"/>\
+             <key id=\"k1\" for=\"node\" attr.name=\"kind\" attr.type=\"string\"/>\
+             <key id=\"k2\" for=\"node\" attr.name=\"weight_of_life\" attr.type=\"string\"/>\
+             <graph edgedefault=\"directed\">\
+             <node id=\"alice\"><data key=\"k0\">Alice</data><data key=\"k1\">person</data><data key=\"k2\">42</data></node>\
+             <node id=\"bob\"><data key=\"k0\">Bob</data><data key=\"k1\">person</data></node>\
+             <edge source=\"alice\" target=\"bob\"><data key=\"k1\">knows</data></edge>\
+             </graph></graphml>";
+        let report = db.import_graphml(xml).unwrap();
+        assert_eq!(report.nodes_imported, 2);
+        assert_eq!(report.edges_imported, 1);
+
+        // Ids were allocated 1,2; title/kind mapped via attr.name; the
+        // unrecognised `weight_of_life` key folded into properties.
+        let alice = db.get_node(1).unwrap().unwrap();
+        assert_eq!(alice.title, "Alice");
+        assert_eq!(alice.kind, "person");
+        assert_eq!(alice.properties.get("weight_of_life"), Some(&json!(42)));
+
+        let edges = db.collect_all_edges().unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_id, 1);
+        assert_eq!(edges[0].to_id, 2);
+        assert_eq!(edges[0].kind, "knows");
+        assert_eq!(edges[0].weight, 1.0); // default weight
     }
 }

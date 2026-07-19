@@ -1090,7 +1090,7 @@ async fn import_json(
 
 /// Handler for `GET /export/graphml`. Returns the full graph as a GraphML 1.0
 /// document (`application/xml`) — for interop with yEd, Gephi, NetworkX,
-/// Cytoscape, igraph, and friends. Read-only — no inverse endpoint.
+/// Cytoscape, igraph, and friends. Paired with `POST /import/graphml`.
 async fn export_graphml(State(state): State<ApiState>) -> Result<Response, ApiError> {
     let xml = state.db.export_graphml()?;
     Ok((
@@ -1099,6 +1099,28 @@ async fn export_graphml(State(state): State<ApiState>) -> Result<Response, ApiEr
         xml,
     )
         .into_response())
+}
+
+/// JSON body accepted by `POST /import/graphml`. Carries a GraphML document —
+/// drevo's own `GET /export/graphml` output, or any GraphML that follows the
+/// same `<key>` / `<data>` conventions.
+#[derive(Debug, Deserialize)]
+pub struct ImportGraphmlRequest {
+    /// Raw GraphML 1.0 XML document.
+    pub graphml: String,
+}
+
+/// Handler for `POST /import/graphml`. Accepts an [`ImportGraphmlRequest`] body
+/// and returns an [`ImportReport`] summarising newly-inserted vs. skipped rows.
+/// Malformed XML / structural errors return 500 via [`DrevoError::Io`]; title
+/// collisions against existing nodes return 409.
+async fn import_graphml(
+    State(state): State<ApiState>,
+    body: Result<Json<ImportGraphmlRequest>, JsonRejection>,
+) -> Result<Json<ImportReport>, ApiError> {
+    let Json(req) = body?;
+    let report = state.db.import_graphml(&req.graphml)?;
+    Ok(Json(report))
 }
 
 /// Handler for `GET /status`. Returns server metadata and the current
@@ -1232,6 +1254,10 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/export/json", with_405(get(export_json)))
         .route("/import/json", with_405(axum::routing::post(import_json)))
         .route("/export/graphml", with_405(get(export_graphml)))
+        .route(
+            "/import/graphml",
+            with_405(axum::routing::post(import_graphml)),
+        )
         .route("/health", with_405(get(health)))
         .route("/ready", with_405(get(ready)))
         .route("/status", with_405(get(status)))
