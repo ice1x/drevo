@@ -348,6 +348,11 @@
       lastTapAt = now;
       renderInspector(node.data("raw"));
     });
+    // Tapping a relationship inspects it — the sidebar shows its type,
+    // endpoints and properties, mirroring node inspection.
+    cy.on("tap", "edge", (evt) => {
+      renderEdgeInspector(evt.target.data("raw"));
+    });
     cy.on("tap", (evt) => {
       if (evt.target === cy) {
         clearInspector();
@@ -719,6 +724,49 @@
     for (const k of propKeys) {
       addRow(k, JSON.stringify(props[k]));
     }
+  }
+  // Inspect a relationship. Edges carry a different wire shape than
+  // nodes ({id, kind, from_id, to_id, weight, created_at, properties}),
+  // so they get their own renderer instead of squeezing through
+  // `renderInspector` (which assumes node fields like `title`).
+  function renderEdgeInspector(edge) {
+    if (!edge) return clearInspector();
+    $inspectorBody.innerHTML = "";
+    const kindBadge = document.createElement("div");
+    kindBadge.className = "inspector-kind";
+    kindBadge.textContent = edge.kind || "(no kind)";
+    $inspectorBody.appendChild(kindBadge);
+    const heading = document.createElement("h3");
+    // Prefer the endpoints' titles (if their nodes are on the canvas)
+    // so the header reads as a relationship, not two bare ids.
+    heading.textContent = `${endpointLabel(edge.from_id)} → ${endpointLabel(
+      edge.to_id
+    )}`;
+    heading.style.margin = "0.25rem 0 0.6rem";
+    $inspectorBody.appendChild(heading);
+    addRow("id", String(edge.id));
+    if (edge.uuid) addRow("uuid", uuidToHyphenated(edge.uuid));
+    addRow("from_id", String(edge.from_id));
+    addRow("to_id", String(edge.to_id));
+    if (edge.weight !== undefined) addRow("weight", String(edge.weight));
+    if (edge.created_at !== undefined)
+      addRow("created_at", String(edge.created_at));
+    const props = edge.properties || {};
+    for (const k of Object.keys(props).sort()) {
+      addRow(k, JSON.stringify(props[k]));
+    }
+  }
+  // Human label for an endpoint id — the node's title if it is currently
+  // on the canvas, otherwise `#<id>`.
+  function endpointLabel(id) {
+    if (cy) {
+      const el = cy.getElementById(String(id));
+      if (!el.empty()) {
+        const raw = el.data("raw");
+        if (raw && raw.title) return raw.title;
+      }
+    }
+    return `#${id}`;
   }
   function addRow(k, v) {
     const row = document.createElement("div");

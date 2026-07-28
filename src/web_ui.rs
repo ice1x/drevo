@@ -408,6 +408,30 @@ mod tests {
     }
 
     #[test]
+    fn embedded_app_js_edge_tap_opens_inspector() {
+        // Clicking a relationship on the canvas must populate the right
+        // sidebar with the edge's metadata (kind, endpoints, properties)
+        // — not just hover-highlight it. A dedicated `tap` handler on the
+        // `edge` selector routes the edge's raw wire object to the
+        // inspector.
+        assert!(
+            APP_JS.contains("\"tap\", \"edge\""),
+            "app.js must wire a tap handler on the edge selector"
+        );
+        assert!(
+            APP_JS.contains("renderEdgeInspector"),
+            "app.js must render edge metadata in the inspector"
+        );
+        // The edge inspector must surface the endpoints so the panel is
+        // meaningful for a relationship (a node inspector never shows
+        // from_id/to_id).
+        assert!(
+            APP_JS.contains("from_id") && APP_JS.contains("to_id"),
+            "edge inspector must show the source/target endpoints"
+        );
+    }
+
+    #[test]
     fn embedded_app_js_colors_nodes_dynamically() {
         // Node colour is derived from `kind` for *any* kind, not just
         // the three hard-coded selectors — a hash-to-hue function gives
