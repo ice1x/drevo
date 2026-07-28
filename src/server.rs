@@ -43,7 +43,7 @@ use std::sync::Arc;
 
 use crate::api::{build_router, ApiState};
 use crate::bolt::listener::accept_and_run_session;
-use crate::db::Drevo;
+use crate::catalog::Catalog;
 
 /// Default bind address — every interface (container convention).
 const DEFAULT_HOST: &str = "0.0.0.0";
@@ -100,7 +100,8 @@ pub enum ConfigError {
     },
     /// `DREVO_DATA_DIR` was set to an empty string. (Non-empty values
     /// — absolute or relative — are accepted; existence is verified
-    /// later when [`Drevo::open`] tries to create the file.)
+    /// later when [`Catalog::open`](crate::catalog::Catalog::open) tries to
+    /// open the data directory.)
     #[error("invalid DREVO_DATA_DIR: {reason}")]
     InvalidDataDir {
         /// Human-readable parse failure.
@@ -218,15 +219,6 @@ fn parse_port(raw: &str) -> Result<u16, ConfigError> {
 /// failure mode if it grows that need.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
-    /// Failed to open the redb database file.
-    #[error("failed to open database at {path}: {source}")]
-    DatabaseOpen {
-        /// Database path that could not be opened.
-        path: PathBuf,
-        /// Underlying [`crate::error::DrevoError`].
-        #[source]
-        source: crate::error::DrevoError,
-    },
     /// Failed to bind the TCP listener.
     #[error("failed to bind TCP listener on {addr}: {source}")]
     Bind {
@@ -242,6 +234,11 @@ pub enum RunError {
     /// Configuration was invalid.
     #[error(transparent)]
     Config(#[from] ConfigError),
+    /// Failed to open the multi-database catalog rooted at the data
+    /// directory (scan failure or the default database could not be
+    /// opened).
+    #[error("failed to open database catalog: {0}")]
+    CatalogOpen(#[from] crate::catalog::CatalogError),
 }
 
 /// Open the database, bind the TCP listener, and serve until a
@@ -258,7 +255,6 @@ pub enum RunError {
 /// non-zero status.
 pub async fn run(cfg: Config) -> Result<(), RunError> {
     let addr = cfg.socket_addr()?;
-    let db_path = cfg.db_path();
 
     if cfg.is_privileged_port() {
         tracing::warn!(
@@ -268,14 +264,16 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
         );
     }
 
-    tracing::info!(path = %db_path.display(), "opening database");
-    let db = Arc::new(
-        Drevo::open(&db_path).map_err(|source| RunError::DatabaseOpen {
-            path: db_path.clone(),
-            source,
-        })?,
-    );
-    let state = ApiState::new(Arc::clone(&db));
+    // Open the multi-database catalog rooted at the data directory. Every
+    // `<name>.redb` file becomes a database; `default` maps to the legacy
+    // `drevo.redb`, so a pre-catalog data directory opens unchanged. The
+    // default handle is what the Bolt listener shares (Bolt has no
+    // database-selection wired yet).
+    tracing::info!(dir = %cfg.data_dir.display(), "opening database catalog");
+    let catalog = Arc::new(Catalog::open(cfg.data_dir.clone())?);
+    tracing::info!(databases = ?catalog.list(), "catalog ready");
+    let state = ApiState::with_catalog(Arc::clone(&catalog));
+    let db = Arc::clone(&state.db);
     let shutdown_state = state.clone();
     let router = build_router(state);
 

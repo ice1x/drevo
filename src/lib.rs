@@ -82,6 +82,12 @@ pub mod authz;
 /// Not built on `wasm32-unknown-unknown`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bolt;
+/// Named-database catalog — manage multiple [`db::Drevo`] databases (one
+/// redb file each) in a single process, with create / list / switch. Gated
+/// on `http`: its only consumers are the HTTP API and the server binary, so
+/// it is absent from the `wasm` build (which has neither).
+#[cfg(feature = "http")]
+pub mod catalog;
 /// Cypher query language — Phase 10. Today only the lexer (task `00061`)
 /// is implemented; the parser, executor, and downstream clause handlers
 /// will land in tasks `00062` onwards.

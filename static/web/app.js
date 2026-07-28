@@ -17,6 +17,9 @@
   let cy = null;
   let currentRootId = null;
   let lastResults = []; // Array of { node, score }
+  // Selected database (task: multi-database catalog). Every API call carries
+  // it in the `X-Drevo-Database` header; `default` is the built-in database.
+  let currentDb = "default";
 
   // Double-tap detection (task 00093): Cytoscape core emits no native
   // double-tap, so we fold two taps on the same node within this many
@@ -36,6 +39,8 @@
   const $nodeLimit = document.getElementById("node-limit");
   const $kindChips = document.getElementById("kind-chips");
   const $themeToggle = document.getElementById("theme-toggle");
+  const $dbSelect = document.getElementById("db-select");
+  const $dbNew = document.getElementById("db-new");
 
   // ── Graph overview state ─────────────────────────────────────────────
   // The whole graph dump is fetched once from /export/json and cached;
@@ -77,8 +82,17 @@
   }
 
   // ── HTTP helpers ────────────────────────────────────────────────────
+  // Every request names its target database so the server routes it to the
+  // right redb file. Omitted for `default` to keep legacy URLs pristine.
+  function dbHeader() {
+    return currentDb && currentDb !== "default"
+      ? { "X-Drevo-Database": currentDb }
+      : {};
+  }
   async function apiGet(path) {
-    const r = await fetch(path, { headers: { Accept: "application/json" } });
+    const r = await fetch(path, {
+      headers: { Accept: "application/json", ...dbHeader() },
+    });
     if (!r.ok) {
       throw new Error(`GET ${path} → ${r.status} ${r.statusText}`);
     }
@@ -90,6 +104,7 @@
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        ...dbHeader(),
       },
       body: JSON.stringify(body),
     });
@@ -491,7 +506,11 @@
       // text — /cypher returns the parse/exec message as the body on 400.
       const r = await fetch("/cypher", {
         method: "POST",
-        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...dbHeader(),
+        },
         body: JSON.stringify({ query }),
       });
       const text = await r.text();
@@ -915,6 +934,60 @@
     );
   }
 
+  // ── Database picker (multi-database catalog) ───────────────────────
+  // Fetch the catalog and (re)populate the dropdown, keeping the current
+  // selection if it still exists (otherwise falling back to `default`).
+  async function loadDatabases() {
+    if (!$dbSelect) return;
+    try {
+      const info = await apiGet("/databases");
+      const names = info.databases || ["default"];
+      if (!names.includes(currentDb)) currentDb = info.default || "default";
+      $dbSelect.innerHTML = "";
+      for (const name of names) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        if (name === currentDb) opt.selected = true;
+        $dbSelect.appendChild(opt);
+      }
+    } catch (e) {
+      status(`Could not load databases: ${e.message}`, "error");
+    }
+  }
+
+  // Switch the active database and reload the overview from it. Clears the
+  // canvas/cache first so stale nodes from the previous database never
+  // linger.
+  async function switchDatabase(name) {
+    if (!name || name === currentDb) return;
+    currentDb = name;
+    graphCache = null;
+    activeKind = null;
+    status(`Switched to database “${name}”.`, "ok");
+    await loadOverview();
+  }
+
+  // Prompt for a name, create the database, then switch to it.
+  async function createDatabase() {
+    const name = (window.prompt("New database name (A–Z, 0–9, _-):") || "").trim();
+    if (!name) return;
+    try {
+      await apiPost("/databases", { name });
+      await loadDatabases();
+      await switchDatabase(name);
+    } catch (e) {
+      status(`Create database failed: ${e.message}`, "error");
+    }
+  }
+
+  if ($dbSelect) {
+    $dbSelect.addEventListener("change", () => switchDatabase($dbSelect.value));
+  }
+  if ($dbNew) {
+    $dbNew.addEventListener("click", () => createDatabase());
+  }
+
   // ── Bootstrap ──────────────────────────────────────────────────────
   $form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -942,6 +1015,7 @@
     initTheme();
     initCytoscape();
     loadServerInfo();
+    loadDatabases();
     loadOverview();
   });
   // Some bundlers / browsers race: if DOMContentLoaded already fired,
@@ -950,6 +1024,7 @@
     initTheme();
     initCytoscape();
     loadServerInfo();
+    loadDatabases();
     loadOverview();
   }
 })();

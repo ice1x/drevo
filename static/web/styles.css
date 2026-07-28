@@ -130,6 +130,48 @@ body {
 }
 .theme-toggle:hover { border-color: var(--accent); }
 
+/* Database picker: label + <select> + "new" button. */
+.db-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.db-label {
+  color: var(--text-muted);
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.db-select {
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+  max-width: 180px;
+}
+.db-select:hover { border-color: var(--accent); }
+.db-new {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+.db-new:hover { border-color: var(--accent); }
+
 /* Three-column layout: results | canvas | inspector. */
 .layout {
   flex: 1;
