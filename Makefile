@@ -27,7 +27,10 @@ CARGO ?= cargo
 WASM_TARGET := wasm32-unknown-unknown
 MSRV := $(shell awk -F'"' '/^rust-version/ {print $$2}' Cargo.toml)
 
-.PHONY: audit fmt clippy clippy-wasm test doc dead-deps coverage msrv-check help
+IMAGE ?= ghcr.io/ice1x/drevo
+
+.PHONY: audit fmt clippy clippy-wasm test doc dead-deps coverage msrv-check help \
+        image release release-patch release-major next-version
 
 help:
 	@echo "drevo audit matrix — see Makefile header for full list."
@@ -40,6 +43,11 @@ help:
 	@echo "  make dead-deps   cargo machete"
 	@echo "  make coverage    cargo llvm-cov --summary-only"
 	@echo "  make msrv-check  cargo +$(MSRV) check --all-features"
+	@echo ""
+	@echo "  make image       build the container image locally ($(IMAGE):dev)"
+	@echo "  make next-version   print the next MINOR version (dry run)"
+	@echo "  make release     bump MINOR, tag vX.Y.Z, push -> CI publishes the image"
+	@echo "  make release-patch / release-major   bump PATCH / MAJOR instead"
 
 audit: fmt clippy clippy-wasm test doc dead-deps coverage
 	@echo ""
@@ -80,3 +88,23 @@ msrv-check:
 		exit 1; \
 	fi
 	$(CARGO) +$(MSRV) check --all-features
+
+# ── Container image / release ───────────────────────────────────────────
+# The published image is built by .github/workflows/docker-publish.yml on a
+# `vX.Y.Z` tag push. `make release` cuts that tag (see scripts/release.sh);
+# `make image` is a quick local build for smoke-testing the Dockerfile.
+
+image:
+	docker build -t $(IMAGE):dev .
+
+next-version:
+	@scripts/release.sh next minor
+
+release:
+	@scripts/release.sh minor
+
+release-patch:
+	@scripts/release.sh patch
+
+release-major:
+	@scripts/release.sh major
