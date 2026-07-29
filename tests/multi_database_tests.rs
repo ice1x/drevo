@@ -6,7 +6,9 @@
 //!
 //! - `GET  /databases` lists them; `POST /databases` creates one.
 //! - Every data endpoint selects a database with the `X-Drevo-Database`
-//!   header or a `?db=<name>` query, defaulting to `default`.
+//!   header or a `?db=<name>` query, defaulting to `drevo`.
+//! - `/cypher` also accepts the admin commands `SHOW DATABASES`,
+//!   `CREATE DATABASE <name>`, and `USE <name> [<query>]`.
 //!
 //! These tests drive the router with an in-memory catalog (`ApiState::new`),
 //! so creating a database yields a fresh in-memory `Drevo` — enough to prove
@@ -78,14 +80,14 @@ async fn get_databases_lists_default() {
     let app = make_app();
     let (status, body) = send(&app, "GET", "/databases", None, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["default"], "default");
+    assert_eq!(body["default"], "drevo");
     let names: Vec<&str> = body["databases"]
         .as_array()
         .unwrap()
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["default"]);
+    assert_eq!(names, vec!["drevo"]);
 }
 
 // ── creation ────────────────────────────────────────────────────────────
@@ -110,7 +112,7 @@ async fn post_databases_creates_and_appears_in_list() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["default", "projectA"]);
+    assert_eq!(names, vec!["drevo", "projectA"]);
 }
 
 #[tokio::test]
@@ -214,7 +216,82 @@ async fn default_database_used_when_unspecified() {
     let app = make_app();
     let (status, _) = send(&app, "POST", "/nodes", None, Some(node_body("k", "t"))).await;
     assert_eq!(status, StatusCode::CREATED);
-    // Same node is visible without any selector (both hit `default`).
+    // Same node is visible without any selector (both hit `drevo`).
     let (_, listed) = send(&app, "GET", "/nodes?kind=k", None, None).await;
     assert_eq!(listed["nodes"].as_array().unwrap().len(), 1);
+}
+
+// ── Cypher admin commands (SHOW DATABASES / CREATE DATABASE / USE) ───────
+/// POST a Cypher query (optionally selecting a database) to `/cypher`.
+async fn cypher(app: &axum::Router, query: &str, db: Option<&str>) -> (StatusCode, Value) {
+    send(app, "POST", "/cypher", db, Some(json!({ "query": query }))).await
+}
+
+#[tokio::test]
+async fn cypher_show_databases_lists_catalog() {
+    let app = make_app();
+    cypher(&app, "CREATE DATABASE projectA", None).await;
+    let (status, body) = cypher(&app, "SHOW DATABASES", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["columns"], json!(["name", "default"]));
+    let rows = body["rows"].as_array().unwrap();
+    // Rows: [["drevo", true], ["projectA", false]] (sorted).
+    let names: Vec<&str> = rows.iter().map(|r| r[0].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["drevo", "projectA"]);
+    assert_eq!(rows[0][1], json!(true)); // drevo is the default
+    assert_eq!(rows[1][1], json!(false));
+}
+
+#[tokio::test]
+async fn cypher_create_database_then_use_it() {
+    let app = make_app();
+    let (status, body) = cypher(&app, "CREATE DATABASE reports", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["rows"][0][0], "reports");
+
+    // Write into it via a `USE <name> <query>` one-shot...
+    let (status, _) = cypher(
+        &app,
+        "USE reports CREATE (n:doc {title:'q4'}) RETURN n",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // ...and it is isolated: `drevo` (default) has no such node.
+    let (_, in_default) = cypher(&app, "MATCH (n:doc) RETURN count(n) AS c", None).await;
+    assert_eq!(in_default["rows"][0][0], json!(0));
+    // But `reports` does (selected via header this time).
+    let (_, in_reports) = cypher(&app, "MATCH (n:doc) RETURN count(n) AS c", Some("reports")).await;
+    assert_eq!(in_reports["rows"][0][0], json!(1));
+}
+
+#[tokio::test]
+async fn cypher_create_database_if_not_exists_is_idempotent() {
+    let app = make_app();
+    let (first, _) = cypher(&app, "CREATE DATABASE dup", None).await;
+    assert_eq!(first, StatusCode::OK);
+    // Plain re-create → 409.
+    let (conflict, _) = cypher(&app, "CREATE DATABASE dup", None).await;
+    assert_eq!(conflict, StatusCode::CONFLICT);
+    // IF NOT EXISTS → no-op success.
+    let (ok, _) = cypher(&app, "CREATE DATABASE dup IF NOT EXISTS", None).await;
+    assert_eq!(ok, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn cypher_use_unknown_database_is_404() {
+    let app = make_app();
+    let (status, _) = cypher(&app, "USE ghost MATCH (n) RETURN n", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn cypher_bare_use_acknowledges_selection() {
+    let app = make_app();
+    cypher(&app, "CREATE DATABASE reports", None).await;
+    let (status, body) = cypher(&app, "USE reports", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["columns"], json!(["using"]));
+    assert_eq!(body["rows"][0][0], "reports");
 }

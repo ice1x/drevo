@@ -16,6 +16,10 @@
 /// Abstract syntax tree types produced by [`parser::parse`] and consumed
 /// by the executor (task `00063`). See the module docs for the shape of
 /// the tree.
+/// Catalog-level admin commands (`SHOW DATABASES`, `USE`, `CREATE
+/// DATABASE`) recognised at the string level and handled by the
+/// catalog-aware caller, outside the single-database graph executor.
+pub mod admin;
 pub mod ast;
 /// Executor — walks the [`ast::Query`] produced by [`parser::parse`]
 /// and runs it against a [`crate::db::Drevo`] handle. Task `00063`.

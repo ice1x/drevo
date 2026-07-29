@@ -87,6 +87,7 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{Catalog, CatalogError, DEFAULT_DB};
+use crate::cypher::admin::{self as cypher_admin, AdminCommand};
 use crate::cypher::executor::{self, ExecResult, Value as CypherValue};
 use crate::cypher::parser;
 use crate::db::Drevo;
@@ -764,7 +765,7 @@ pub struct CypherRequest {
 }
 
 /// Mutation counters surfaced from [`executor::ExecStats`].
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct CypherStats {
     /// Nodes created by `CREATE` / `MERGE`.
     pub nodes_created: usize,
@@ -784,7 +785,7 @@ pub struct CypherStats {
 
 /// Graph projection: the Node / Relationship values found anywhere in the
 /// result rows, deduped by id, in the `{nodes, edges}` shape the UI reads.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct CypherGraph {
     /// Deduped node objects (`{id, kind, title, uuid, labels, properties}`).
     pub nodes: Vec<serde_json::Value>,
@@ -807,22 +808,105 @@ pub struct CypherResponse {
 
 /// Handler for `POST /cypher`: parse + execute, return rows + graph.
 async fn cypher(
+    State(state): State<ApiState>,
     Db(db): Db,
     body: Result<Json<CypherRequest>, JsonRejection>,
 ) -> Result<Json<CypherResponse>, ApiError> {
     let Json(CypherRequest { query, params }) = body?;
     let query =
         query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
-    let ast = parser::parse(&query)
-        .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
-    let params = params
+    let params: std::collections::HashMap<String, CypherValue> = params
         .unwrap_or_default()
         .into_iter()
         .map(|(k, v)| (k, json_to_cypher_value(v)))
         .collect();
-    let result = executor::execute(&ast, db.as_ref(), params)
+
+    // Catalog-level admin commands (`SHOW DATABASES`, `USE`, `CREATE
+    // DATABASE`) are handled here, where the catalog is in reach — the graph
+    // executor only knows a single database. Everything else is a graph query
+    // against the request-selected database.
+    match cypher_admin::parse(&query) {
+        Some(AdminCommand::ShowDatabases) => Ok(Json(show_databases_response(&state.catalog))),
+        Some(AdminCommand::CreateDatabase {
+            name,
+            if_not_exists,
+        }) => create_database_response(&state.catalog, &name, if_not_exists).map(Json),
+        Some(AdminCommand::Use { name, query }) => {
+            // Route the (optional) inner query at the named database.
+            let target = state.catalog.get(&name)?;
+            match query {
+                Some(inner) => run_cypher_query(target.as_ref(), &inner, params).map(Json),
+                None => Ok(Json(using_response(&name))),
+            }
+        }
+        None => run_cypher_query(db.as_ref(), &query, params).map(Json),
+    }
+}
+
+/// Parse and execute a graph query against `db`, mapping failures to
+/// [`ApiError::BadRequest`] with the executor's message.
+fn run_cypher_query(
+    db: &Drevo,
+    query: &str,
+    params: std::collections::HashMap<String, CypherValue>,
+) -> Result<CypherResponse, ApiError> {
+    let ast = parser::parse(query)
+        .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
+    let result = executor::execute(&ast, db, params)
         .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
-    Ok(Json(exec_result_to_response(result)))
+    Ok(exec_result_to_response(result))
+}
+
+/// `SHOW DATABASES` → one row per database: its `name` and whether it is the
+/// `default`. Columns mirror a trimmed Neo4j `SHOW DATABASES`.
+fn show_databases_response(catalog: &Catalog) -> CypherResponse {
+    let rows = catalog
+        .list()
+        .into_iter()
+        .map(|name| {
+            let is_default = name == DEFAULT_DB;
+            vec![
+                serde_json::Value::String(name),
+                serde_json::json!(is_default),
+            ]
+        })
+        .collect();
+    CypherResponse {
+        columns: vec!["name".to_string(), "default".to_string()],
+        rows,
+        stats: CypherStats::default(),
+        graph: CypherGraph::default(),
+    }
+}
+
+/// `CREATE DATABASE <name>` → create it and echo the name. With
+/// `IF NOT EXISTS`, a pre-existing name is a no-op rather than a 409.
+fn create_database_response(
+    catalog: &Catalog,
+    name: &str,
+    if_not_exists: bool,
+) -> Result<CypherResponse, ApiError> {
+    match catalog.create(name) {
+        Ok(_) => {}
+        Err(CatalogError::AlreadyExists(_)) if if_not_exists => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(CypherResponse {
+        columns: vec!["name".to_string()],
+        rows: vec![vec![serde_json::Value::String(name.to_string())]],
+        stats: CypherStats::default(),
+        graph: CypherGraph::default(),
+    })
+}
+
+/// A bare `USE <name>` (no trailing query) → acknowledge the selection.
+fn using_response(name: &str) -> CypherResponse {
+    CypherResponse {
+        columns: vec!["using".to_string()],
+        rows: vec![vec![serde_json::Value::String(name.to_string())]],
+        stats: CypherStats::default(),
+        graph: CypherGraph::default(),
+    }
 }
 
 /// Convert a JSON parameter value into a Cypher runtime value.

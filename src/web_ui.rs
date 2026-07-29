@@ -215,6 +215,22 @@ mod tests {
     }
 
     #[test]
+    fn embedded_app_js_routes_cypher_database_admin() {
+        // The Cypher bar must route the catalog admin commands to /cypher
+        // (not FTS): SHOW DATABASES and USE are added to the Cypher keyword
+        // detector, a bare `USE <name>` switches the picker client-side, and
+        // admin queries refresh the database list afterwards.
+        assert!(
+            APP_JS.contains("SHOW\\s+DATABASES") && APP_JS.contains("BARE_USE_RE"),
+            "app.js must detect SHOW DATABASES and bare USE in the query bar"
+        );
+        assert!(
+            APP_JS.contains("DB_ADMIN_RE") && APP_JS.contains("loadDatabases()"),
+            "app.js must refresh the database picker after admin commands"
+        );
+    }
+
+    #[test]
     fn embedded_index_references_local_app_js_and_styles_css() {
         assert!(INDEX_HTML.contains("/ui/app.js"));
         assert!(INDEX_HTML.contains("/ui/styles.css"));
