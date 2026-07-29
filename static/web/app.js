@@ -18,8 +18,8 @@
   let currentRootId = null;
   let lastResults = []; // Array of { node, score }
   // Selected database (task: multi-database catalog). Every API call carries
-  // it in the `X-Drevo-Database` header; `default` is the built-in database.
-  let currentDb = "default";
+  // it in the `X-Drevo-Database` header; `drevo` is the built-in default database.
+  let currentDb = "drevo";
 
   // Double-tap detection (task 00093): Cytoscape core emits no native
   // double-tap, so we fold two taps on the same node within this many
@@ -83,9 +83,9 @@
 
   // ── HTTP helpers ────────────────────────────────────────────────────
   // Every request names its target database so the server routes it to the
-  // right redb file. Omitted for `default` to keep legacy URLs pristine.
+  // right redb file. Omitted for the `drevo` default to keep legacy URLs pristine.
   function dbHeader() {
-    return currentDb && currentDb !== "default"
+    return currentDb && currentDb !== "drevo"
       ? { "X-Drevo-Database": currentDb }
       : {};
   }
@@ -494,7 +494,13 @@
   // anything else is a full-text search. This lets `MATCH (n) RETURN n
   // LIMIT 10` Just Work the way it does in the Neo4j Browser.
   const CYPHER_RE =
-    /^\s*(MATCH|OPTIONAL\s+MATCH|CREATE|MERGE|RETURN|WITH|UNWIND|CALL|DETACH\s+DELETE|DELETE|SET|REMOVE|FOREACH)\b/i;
+    /^\s*(MATCH|OPTIONAL\s+MATCH|CREATE|MERGE|RETURN|WITH|UNWIND|CALL|DETACH\s+DELETE|DELETE|SET|REMOVE|FOREACH|SHOW\s+DATABASES|USE)\b/i;
+  // A bare `USE <name>` (no trailing query) is a database switch, handled
+  // client-side by moving the picker rather than a round-trip.
+  const BARE_USE_RE = /^\s*USE\s+([A-Za-z0-9_-]+)\s*;?\s*$/i;
+  // Admin commands whose success changes the catalog / selection — after
+  // running one we refresh the database picker.
+  const DB_ADMIN_RE = /^\s*(SHOW\s+DATABASES|CREATE\s+DATABASE|USE)\b/i;
   function looksLikeCypher(text) {
     return CYPHER_RE.test(text);
   }
@@ -941,8 +947,8 @@
     if (!$dbSelect) return;
     try {
       const info = await apiGet("/databases");
-      const names = info.databases || ["default"];
-      if (!names.includes(currentDb)) currentDb = info.default || "default";
+      const names = info.databases || ["drevo"];
+      if (!names.includes(currentDb)) currentDb = info.default || "drevo";
       $dbSelect.innerHTML = "";
       for (const name of names) {
         const opt = document.createElement("option");
@@ -993,10 +999,22 @@
     e.preventDefault();
     const q = $input.value.trim();
     if (!q) return;
+    // A bare `USE <name>` just switches the active database (like the
+    // picker) — no query to run.
+    const bareUse = q.match(BARE_USE_RE);
+    if (bareUse) {
+      switchDatabase(bareUse[1]);
+      return;
+    }
     // Dual-mode: a Cypher clause keyword routes to the executor; plain
     // text is a full-text search.
-    if (looksLikeCypher(q)) runCypher(q);
-    else runSearch(q);
+    if (looksLikeCypher(q)) {
+      runCypher(q).then(() => {
+        // `CREATE DATABASE` / `USE` may have changed the catalog — refresh
+        // the picker so a newly created database appears.
+        if (DB_ADMIN_RE.test(q)) loadDatabases();
+      });
+    } else runSearch(q);
   });
 
   // Re-render (from cache, no re-fetch) when the node limit changes.
