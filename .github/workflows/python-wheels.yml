@@ -170,10 +170,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python (host)
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Locate system Python 3.13 on self-hosted macOS
+        # `actions/setup-python@v5` cannot install into
+        # `/Users/runner/hostedtoolcache/` under the self-hosted runner's
+        # user — it runs `mkdir /Users/runner` and dies with "Permission
+        # denied", which is exactly what turned this workflow red on
+        # 2026-07-01. Same shim `python.yml` / `python-ci.yml` use: locate
+        # the python.org-pkg 3.13 binary and symlink it as `python` /
+        # `python3` in a `$GITHUB_WORKSPACE/.py-shim` dir prepended to
+        # `$GITHUB_PATH`. cibuildwheel uses the host Python only to
+        # orchestrate; the wheel Python is managed by cibuildwheel itself.
+        shell: bash
+        run: |
+          for candidate in \
+            "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13" \
+            "$(command -v python3.13 || true)" \
+            "/opt/homebrew/bin/python3.13" \
+            "/usr/local/bin/python3.13"; do
+            if [ -x "$candidate" ]; then
+              echo "Using $candidate ($($candidate --version))"
+              mkdir -p "$GITHUB_WORKSPACE/.py-shim"
+              ln -sf "$candidate" "$GITHUB_WORKSPACE/.py-shim/python"
+              ln -sf "$candidate" "$GITHUB_WORKSPACE/.py-shim/python3"
+              echo "$GITHUB_WORKSPACE/.py-shim" >> "$GITHUB_PATH"
+              exit 0
+            fi
+          done
+          echo "::error::python3.13 not found on self-hosted macOS — install via the python.org pkg"
+          exit 1
 
       - name: Set up Rust (host — needed on macOS / Windows)
         if: runner.os != 'Linux'
@@ -212,10 +236,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Locate system Python 3.13 on self-hosted macOS
+        # See the `build_wheels` job: `actions/setup-python@v5` tries to
+        # `mkdir /Users/runner` on the self-hosted runner and fails. Shim
+        # the python.org 3.13 binary onto `$GITHUB_PATH` instead.
+        shell: bash
+        run: |
+          for candidate in \
+            "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13" \
+            "$(command -v python3.13 || true)" \
+            "/opt/homebrew/bin/python3.13" \
+            "/usr/local/bin/python3.13"; do
+            if [ -x "$candidate" ]; then
+              echo "Using $candidate ($($candidate --version))"
+              mkdir -p "$GITHUB_WORKSPACE/.py-shim"
+              ln -sf "$candidate" "$GITHUB_WORKSPACE/.py-shim/python"
+              ln -sf "$candidate" "$GITHUB_WORKSPACE/.py-shim/python3"
+              echo "$GITHUB_WORKSPACE/.py-shim" >> "$GITHUB_PATH"
+              exit 0
+            fi
+          done
+          echo "::error::python3.13 not found on self-hosted macOS — install via the python.org pkg"
+          exit 1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
