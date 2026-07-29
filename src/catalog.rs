@@ -138,6 +138,11 @@ enum Backing {
 /// method needs.
 pub struct Catalog {
     backing: Backing,
+    /// The always-present [`DEFAULT_DB`] handle, held in its own field (not
+    /// the `open` cache) so [`Catalog::default_db`] is infallible — no lock,
+    /// no `Option`, no panic path. [`Catalog::get`] special-cases the default
+    /// name to return this.
+    default: Arc<Drevo>,
     /// Every registered database name (whether its handle is open yet or
     /// not). Sorted iteration comes for free from `BTreeSet`.
     known: RwLock<BTreeSet<String>>,
@@ -146,33 +151,44 @@ pub struct Catalog {
     open: RwLock<HashMap<String, Arc<Drevo>>>,
 }
 
+/// A `known` set seeded with just the default database. The default handle
+/// itself lives in the [`Catalog::default`] field, not the `open` cache, so
+/// there is exactly one extra reference to it (see [`Catalog::get`], which
+/// special-cases the default name).
+fn seed_known() -> BTreeSet<String> {
+    let mut known = BTreeSet::new();
+    known.insert(DEFAULT_DB.to_string());
+    known
+}
+
 impl Catalog {
     /// Open a disk-backed catalog rooted at `data_dir`.
     ///
-    /// Scans the directory for `*.redb` files and registers each as a
-    /// database, then guarantees a [`DEFAULT_DB`] entry exists (opening —
-    /// and thereby creating — `drevo.redb` if the directory is empty). The
-    /// `default` handle is opened eagerly so a misconfigured data directory
-    /// fails fast at startup rather than on the first request.
+    /// Opens (creating if absent) the [`DEFAULT_DB`] handle first — so a
+    /// misconfigured data directory fails fast at startup — then scans the
+    /// directory for other `*.redb` files and registers each as a database.
     ///
     /// # Errors
     ///
-    /// Returns [`CatalogError::Open`] if the directory cannot be scanned or
-    /// the `default` database cannot be opened.
+    /// Returns [`CatalogError::Open`] if the `default` database cannot be
+    /// opened.
     #[cfg(feature = "redb-backend")]
     pub fn open(data_dir: PathBuf) -> Result<Self, CatalogError> {
-        let catalog = Self {
-            backing: Backing::Disk(data_dir.clone()),
-            known: RwLock::new(BTreeSet::new()),
-            open: RwLock::new(HashMap::new()),
-        };
+        let default_path = data_dir.join(filename_for(DEFAULT_DB));
+        let default =
+            Arc::new(
+                Drevo::open(&default_path).map_err(|source| CatalogError::Open {
+                    name: DEFAULT_DB.to_string(),
+                    source,
+                })?,
+            );
+        let mut known = seed_known();
 
         // Register any pre-existing database files. A missing directory is
         // fine — it means a fresh deployment; `create`/`get` create files on
         // demand, and the caller is responsible for the directory existing
         // (the server binary mkdir's the data dir, mirroring the old path).
         if let Ok(entries) = std::fs::read_dir(&data_dir) {
-            let mut known = catalog.known.write().expect("catalog lock poisoned");
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str().and_then(name_for_file) {
                     known.insert(name);
@@ -180,15 +196,12 @@ impl Catalog {
             }
         }
 
-        // `default` must always exist; opening it eagerly both registers it
-        // and surfaces a broken data directory immediately.
-        catalog
-            .known
-            .write()
-            .expect("catalog lock poisoned")
-            .insert(DEFAULT_DB.to_string());
-        catalog.get(DEFAULT_DB)?;
-        Ok(catalog)
+        Ok(Self {
+            backing: Backing::Disk(data_dir),
+            default,
+            known: RwLock::new(known),
+            open: RwLock::new(HashMap::new()),
+        })
     }
 
     /// Build a catalog around an already-open [`Drevo`] handle, installed as
@@ -198,22 +211,12 @@ impl Catalog {
     /// database of a one-entry catalog.
     #[must_use]
     pub fn from_default(db: Arc<Drevo>) -> Self {
-        let catalog = Self {
+        Self {
             backing: Backing::Memory,
-            known: RwLock::new(BTreeSet::new()),
+            default: db,
+            known: RwLock::new(seed_known()),
             open: RwLock::new(HashMap::new()),
-        };
-        catalog
-            .known
-            .write()
-            .expect("catalog lock poisoned")
-            .insert(DEFAULT_DB.to_string());
-        catalog
-            .open
-            .write()
-            .expect("catalog lock poisoned")
-            .insert(DEFAULT_DB.to_string(), db);
-        catalog
+        }
     }
 
     /// Open an all-ephemeral catalog: every database (including `default`)
@@ -224,18 +227,24 @@ impl Catalog {
     /// Returns [`CatalogError::Open`] if the `default` in-memory database
     /// cannot be constructed (effectively never).
     pub fn open_in_memory() -> Result<Self, CatalogError> {
-        let catalog = Self {
+        let default = Arc::new(
+            Drevo::open_in_memory().map_err(|source| CatalogError::Open {
+                name: DEFAULT_DB.to_string(),
+                source,
+            })?,
+        );
+        Ok(Self {
             backing: Backing::Memory,
-            known: RwLock::new(BTreeSet::new()),
+            default,
+            known: RwLock::new(seed_known()),
             open: RwLock::new(HashMap::new()),
-        };
-        catalog
-            .known
-            .write()
-            .expect("catalog lock poisoned")
-            .insert(DEFAULT_DB.to_string());
-        catalog.get(DEFAULT_DB)?;
-        Ok(catalog)
+        })
+    }
+
+    /// The always-present [`DEFAULT_DB`] handle. Infallible.
+    #[must_use]
+    pub fn default_db(&self) -> Arc<Drevo> {
+        Arc::clone(&self.default)
     }
 
     /// All registered database names, sorted ascending. Always includes
@@ -244,7 +253,7 @@ impl Catalog {
     pub fn list(&self) -> Vec<String> {
         self.known
             .read()
-            .expect("catalog lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .cloned()
             .collect()
@@ -255,7 +264,7 @@ impl Catalog {
     pub fn contains(&self, name: &str) -> bool {
         self.known
             .read()
-            .expect("catalog lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .contains(name)
     }
 
@@ -266,6 +275,10 @@ impl Catalog {
     /// [`CatalogError::NotFound`] if `name` is not registered, or
     /// [`CatalogError::Open`] if the handle cannot be opened.
     pub fn get(&self, name: &str) -> Result<Arc<Drevo>, CatalogError> {
+        // The default handle lives in its own field, not the `open` cache.
+        if name == DEFAULT_DB {
+            return Ok(self.default_db());
+        }
         if !self.contains(name) {
             return Err(CatalogError::NotFound(name.to_string()));
         }
@@ -273,7 +286,7 @@ impl Catalog {
         if let Some(db) = self
             .open
             .read()
-            .expect("catalog lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(name)
             .cloned()
         {
@@ -281,7 +294,7 @@ impl Catalog {
         }
         // Slow path: open under the write lock, re-checking in case another
         // thread opened it while we waited for the lock.
-        let mut open = self.open.write().expect("catalog lock poisoned");
+        let mut open = self.open.write().unwrap_or_else(|e| e.into_inner());
         if let Some(db) = open.get(name).cloned() {
             return Ok(db);
         }
@@ -305,7 +318,7 @@ impl Catalog {
         // Register atomically under the `known` write lock so two concurrent
         // creates cannot both believe they won.
         {
-            let mut known = self.known.write().expect("catalog lock poisoned");
+            let mut known = self.known.write().unwrap_or_else(|e| e.into_inner());
             if known.contains(name) {
                 return Err(CatalogError::AlreadyExists(name.to_string()));
             }
@@ -318,7 +331,7 @@ impl Catalog {
             Err(err) => {
                 self.known
                     .write()
-                    .expect("catalog lock poisoned")
+                    .unwrap_or_else(|e| e.into_inner())
                     .remove(name);
                 Err(err)
             }

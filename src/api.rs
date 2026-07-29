@@ -152,15 +152,11 @@ impl ApiState {
     /// catalog's [`DEFAULT_DB`] handle becomes the [`ApiState::db`] default
     /// so existing single-database consumers keep working unchanged.
     ///
-    /// # Panics
-    ///
-    /// Panics if the catalog cannot yield its `default` database — an
-    /// invariant [`Catalog::open`] upholds at construction.
     #[must_use]
     pub fn with_catalog(catalog: Arc<Catalog>) -> Self {
-        let db = catalog
-            .get(DEFAULT_DB)
-            .expect("catalog must always expose the default database");
+        // The default handle is always present by construction, so this is
+        // infallible — no `Result`, no panic path.
+        let db = catalog.default_db();
         Self {
             db,
             catalog,
