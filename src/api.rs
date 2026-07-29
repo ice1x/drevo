@@ -77,7 +77,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::rejection::{JsonRejection, QueryRejection};
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -85,6 +86,7 @@ use axum::Json;
 use axum::Router;
 use serde::{Deserialize, Serialize};
 
+use crate::catalog::{Catalog, CatalogError, DEFAULT_DB};
 use crate::cypher::executor::{self, ExecResult, Value as CypherValue};
 use crate::cypher::parser;
 use crate::db::Drevo;
@@ -104,8 +106,15 @@ use crate::observability::DrevoMetrics;
 /// underlying `StorageBackend` is.
 #[derive(Clone)]
 pub struct ApiState {
-    /// The shared database handle.
+    /// The default database handle ([`DEFAULT_DB`]). Retained as a direct
+    /// field for back-compat and for consumers that never select a database
+    /// (the Bolt server, admin probes). Per-request database selection goes
+    /// through [`ApiState::catalog`] via the [`Db`] extractor.
     pub db: Arc<Drevo>,
+    /// The multi-database catalog. Every data handler resolves its target
+    /// database from here through the [`Db`] extractor (`X-Drevo-Database`
+    /// header or `?db=` query, defaulting to [`DEFAULT_DB`]).
+    pub catalog: Arc<Catalog>,
     /// Wall-clock instant at which this state was constructed. Used by
     /// `GET /status` to compute the process uptime without pulling in
     /// a system-time crate.
@@ -129,8 +138,28 @@ impl ApiState {
     /// `GET /status` can report how long this API instance has been
     /// serving traffic.
     pub fn new(db: Arc<Drevo>) -> Self {
+        let catalog = Arc::new(Catalog::from_default(Arc::clone(&db)));
         Self {
             db,
+            catalog,
+            started_at: Instant::now(),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            metrics: Arc::new(DrevoMetrics::new()),
+        }
+    }
+
+    /// Build an [`ApiState`] backed by a multi-database [`Catalog`]. The
+    /// catalog's [`DEFAULT_DB`] handle becomes the [`ApiState::db`] default
+    /// so existing single-database consumers keep working unchanged.
+    ///
+    #[must_use]
+    pub fn with_catalog(catalog: Arc<Catalog>) -> Self {
+        // The default handle is always present by construction, so this is
+        // infallible — no `Result`, no panic path.
+        let db = catalog.default_db();
+        Self {
+            db,
+            catalog,
             started_at: Instant::now(),
             shutting_down: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(DrevoMetrics::new()),
@@ -161,6 +190,65 @@ impl ApiState {
     }
 }
 
+/// HTTP header naming the target database for a request. Case-insensitive
+/// per HTTP; the extractor lower-cases before lookup.
+pub const DB_HEADER: &str = "x-drevo-database";
+
+/// Query-parameter name naming the target database (`?db=<name>`). Handy for
+/// links and the Web UI where setting a header is awkward.
+pub const DB_QUERY_PARAM: &str = "db";
+
+/// Request extractor that resolves the target [`Drevo`] database for a
+/// handler from the catalog in [`ApiState`].
+///
+/// Selection precedence: the [`DB_HEADER`] header, then the
+/// [`DB_QUERY_PARAM`] query parameter, then [`DEFAULT_DB`]. An unknown or
+/// malformed name is rejected — [`CatalogError::NotFound`] → 404,
+/// [`CatalogError::InvalidName`] → 400 — via [`ApiError`].
+///
+/// Data handlers take `Db(db): Db` in place of `State(state)` and call
+/// methods on `db`, so the same handler body serves every database.
+pub struct Db(pub Arc<Drevo>);
+
+/// Extract the requested database name from the header, then the query
+/// string, defaulting to [`DEFAULT_DB`].
+fn requested_db_name(parts: &Parts) -> String {
+    if let Some(name) = parts
+        .headers
+        .get(DB_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return name.to_string();
+    }
+    if let Some(query) = parts.uri.query() {
+        for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                if k == DB_QUERY_PARAM && !v.is_empty() {
+                    // Values here are plain database names (`[A-Za-z0-9_-]`),
+                    // which are URL-safe as-is, so no percent-decoding needed.
+                    return v.to_string();
+                }
+            }
+        }
+    }
+    DEFAULT_DB.to_string()
+}
+
+impl FromRequestParts<ApiState> for Db {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        let name = requested_db_name(parts);
+        let db = state.catalog.get(&name)?;
+        Ok(Db(db))
+    }
+}
+
 /// Unified error type returned by every HTTP handler.
 ///
 /// Wraps either a [`DrevoError`] (producing a status code based on
@@ -171,6 +259,23 @@ pub enum ApiError {
     Db(DrevoError),
     /// The client sent an invalid request (400 Bad Request).
     BadRequest(String),
+    /// A named resource (e.g. a database) does not exist (404 Not Found).
+    NotFound(String),
+    /// The request conflicts with existing state, e.g. creating a database
+    /// that already exists (409 Conflict).
+    Conflict(String),
+}
+
+impl From<CatalogError> for ApiError {
+    fn from(err: CatalogError) -> Self {
+        match err {
+            CatalogError::InvalidName(_) => Self::BadRequest(err.to_string()),
+            CatalogError::NotFound(_) => Self::NotFound(err.to_string()),
+            CatalogError::AlreadyExists(_) => Self::Conflict(err.to_string()),
+            // A failed handle open is an internal fault, not a client error.
+            CatalogError::Open { source, .. } => Self::Db(source),
+        }
+    }
 }
 
 impl From<DrevoError> for ApiError {
@@ -213,6 +318,8 @@ impl IntoResponse for ApiError {
                 | DrevoError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
             },
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
         };
         json_error(status, &message)
     }
@@ -296,49 +403,43 @@ pub struct NodeListResponse {
 /// [`NewNode`] body and returns the stored node with generated id,
 /// uuid, and timestamps.
 async fn create_node(
-    State(state): State<ApiState>,
+    Db(db): Db,
     body: Result<Json<NewNode>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Node>), ApiError> {
     let Json(new_node) = body?;
-    let node = state.db.create_node(new_node)?;
+    let node = db.create_node(new_node)?;
     Ok((StatusCode::CREATED, Json(node)))
 }
 
 /// Handler for `GET /nodes/{id}`. Returns the node or 404 if missing.
-async fn get_node(
-    State(state): State<ApiState>,
-    Path(id): Path<u64>,
-) -> Result<Json<Node>, ApiError> {
-    let node = state.db.get_node(id)?.ok_or(DrevoError::NodeNotFound(id))?;
+async fn get_node(Db(db): Db, Path(id): Path<u64>) -> Result<Json<Node>, ApiError> {
+    let node = db.get_node(id)?.ok_or(DrevoError::NodeNotFound(id))?;
     Ok(Json(node))
 }
 
 /// Handler for `PATCH /nodes/{id}`. Applies a partial update via
 /// [`NodePatch`] and returns the updated node.
 async fn update_node(
-    State(state): State<ApiState>,
+    Db(db): Db,
     Path(id): Path<u64>,
     body: Result<Json<NodePatch>, JsonRejection>,
 ) -> Result<Json<Node>, ApiError> {
     let Json(patch) = body?;
-    let node = state.db.update_node(id, patch)?;
+    let node = db.update_node(id, patch)?;
     Ok(Json(node))
 }
 
 /// Handler for `DELETE /nodes/{id}`. Returns 204 on success or 404
 /// if the node does not exist.
-async fn delete_node(
-    State(state): State<ApiState>,
-    Path(id): Path<u64>,
-) -> Result<StatusCode, ApiError> {
-    state.db.delete_node(id)?;
+async fn delete_node(Db(db): Db, Path(id): Path<u64>) -> Result<StatusCode, ApiError> {
+    db.delete_node(id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Handler for `GET /nodes`. Lists nodes filtered by `kind` with
 /// pagination. A missing `kind` parameter yields 400 Bad Request.
 async fn list_nodes(
-    State(state): State<ApiState>,
+    Db(db): Db,
     query: Result<Query<ListNodesQuery>, QueryRejection>,
 ) -> Result<Json<NodeListResponse>, ApiError> {
     let Query(ListNodesQuery {
@@ -350,7 +451,7 @@ async fn list_nodes(
         kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
     let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
     let offset = offset.unwrap_or(0);
-    let nodes = state.db.list_nodes_by_kind(&kind, limit, offset)?;
+    let nodes = db.list_nodes_by_kind(&kind, limit, offset)?;
     Ok(Json(NodeListResponse { nodes }))
 }
 
@@ -395,49 +496,43 @@ pub struct EdgeListResponse {
 /// [`NewEdge`] body and returns the stored edge. Returns 404 if either
 /// endpoint node does not exist.
 async fn create_edge(
-    State(state): State<ApiState>,
+    Db(db): Db,
     body: Result<Json<NewEdge>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Edge>), ApiError> {
     let Json(new_edge) = body?;
-    let edge = state.db.create_edge(new_edge)?;
+    let edge = db.create_edge(new_edge)?;
     Ok((StatusCode::CREATED, Json(edge)))
 }
 
 /// Handler for `GET /edges/{id}`. Returns the edge or 404 if missing.
-async fn get_edge(
-    State(state): State<ApiState>,
-    Path(id): Path<u64>,
-) -> Result<Json<Edge>, ApiError> {
-    let edge = state.db.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
+async fn get_edge(Db(db): Db, Path(id): Path<u64>) -> Result<Json<Edge>, ApiError> {
+    let edge = db.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
     Ok(Json(edge))
 }
 
 /// Handler for `PATCH /edges/{id}`. Applies a partial update via
 /// [`EdgePatch`] and returns the updated edge.
 async fn update_edge(
-    State(state): State<ApiState>,
+    Db(db): Db,
     Path(id): Path<u64>,
     body: Result<Json<EdgePatch>, JsonRejection>,
 ) -> Result<Json<Edge>, ApiError> {
     let Json(patch) = body?;
-    let edge = state.db.update_edge(id, patch)?;
+    let edge = db.update_edge(id, patch)?;
     Ok(Json(edge))
 }
 
 /// Handler for `DELETE /edges/{id}`. Returns 204 on success or 404
 /// if the edge does not exist.
-async fn delete_edge(
-    State(state): State<ApiState>,
-    Path(id): Path<u64>,
-) -> Result<StatusCode, ApiError> {
-    state.db.delete_edge(id)?;
+async fn delete_edge(Db(db): Db, Path(id): Path<u64>) -> Result<StatusCode, ApiError> {
+    db.delete_edge(id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Handler for `GET /edges`. Lists edges filtered by `kind` with
 /// pagination. A missing `kind` parameter yields 400 Bad Request.
 async fn list_edges(
-    State(state): State<ApiState>,
+    Db(db): Db,
     query: Result<Query<ListEdgesQuery>, QueryRejection>,
 ) -> Result<Json<EdgeListResponse>, ApiError> {
     let Query(ListEdgesQuery {
@@ -449,7 +544,7 @@ async fn list_edges(
         kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
     let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
     let offset = offset.unwrap_or(0);
-    let edges = state.db.list_edges_by_kind(&kind, limit, offset)?;
+    let edges = db.list_edges_by_kind(&kind, limit, offset)?;
     Ok(Json(EdgeListResponse { edges }))
 }
 
@@ -457,13 +552,13 @@ async fn list_edges(
 /// the node in the given direction (default: both). Unknown direction
 /// values yield 400 Bad Request.
 async fn get_node_edges(
-    State(state): State<ApiState>,
+    Db(db): Db,
     Path(id): Path<u64>,
     query: Result<Query<NodeEdgesQuery>, QueryRejection>,
 ) -> Result<Json<EdgeListResponse>, ApiError> {
     let Query(NodeEdgesQuery { direction }) = query?;
     let direction = parse_direction(direction.as_deref())?;
-    let edges = state.db.edges_of(id, direction)?;
+    let edges = db.edges_of(id, direction)?;
     Ok(Json(EdgeListResponse { edges }))
 }
 
@@ -532,7 +627,7 @@ pub struct ShortestPathResponse {
 /// callers can distinguish "node has no neighbors" from "node doesn't
 /// exist".
 async fn get_node_neighbors(
-    State(state): State<ApiState>,
+    Db(db): Db,
     Path(id): Path<u64>,
     query: Result<Query<NeighborsQuery>, QueryRejection>,
 ) -> Result<Json<NodeListResponse>, ApiError> {
@@ -546,11 +641,11 @@ async fn get_node_neighbors(
 
     // Explicitly surface missing nodes as 404 — the underlying `bfs`
     // would otherwise silently return an empty list.
-    if state.db.get_node(id)?.is_none() {
+    if db.get_node(id)?.is_none() {
         return Err(DrevoError::NodeNotFound(id).into());
     }
 
-    let nodes = state.db.bfs(id, depth, direction, kind.as_deref())?;
+    let nodes = db.bfs(id, depth, direction, kind.as_deref())?;
     Ok(Json(NodeListResponse { nodes }))
 }
 
@@ -559,7 +654,7 @@ async fn get_node_neighbors(
 /// unreachable target produces a 200 response with `{"path": null}`
 /// so that clients can distinguish "no such node" from "no route".
 async fn get_shortest_path(
-    State(state): State<ApiState>,
+    Db(db): Db,
     query: Result<Query<ShortestPathQuery>, QueryRejection>,
 ) -> Result<Json<ShortestPathResponse>, ApiError> {
     let Query(ShortestPathQuery { from, to }) = query?;
@@ -570,14 +665,14 @@ async fn get_shortest_path(
 
     // Validate both endpoints up front so we can return 404 instead
     // of silently returning `None` (which means "unreachable").
-    if state.db.get_node(from)?.is_none() {
+    if db.get_node(from)?.is_none() {
         return Err(DrevoError::NodeNotFound(from).into());
     }
-    if state.db.get_node(to)?.is_none() {
+    if db.get_node(to)?.is_none() {
         return Err(DrevoError::NodeNotFound(to).into());
     }
 
-    let path = state.db.shortest_path(from, to)?;
+    let path = db.shortest_path(from, to)?;
     Ok(Json(ShortestPathResponse { path }))
 }
 
@@ -586,13 +681,13 @@ async fn get_shortest_path(
 /// if the root does not exist (the underlying traversal already maps
 /// that case to `NodeNotFound`).
 async fn get_node_subgraph(
-    State(state): State<ApiState>,
+    Db(db): Db,
     Path(id): Path<u64>,
     query: Result<Query<SubgraphQuery>, QueryRejection>,
 ) -> Result<Json<SubGraph>, ApiError> {
     let Query(SubgraphQuery { depth }) = query?;
     let depth = depth.unwrap_or(DEFAULT_SUBGRAPH_DEPTH);
-    let sub = state.db.subgraph(id, depth)?;
+    let sub = db.subgraph(id, depth)?;
     Ok(Json(sub))
 }
 
@@ -635,14 +730,14 @@ pub struct SearchFtsResponse {
 /// over the node title/body trigram index and returns up to `limit`
 /// scored matches. A missing `query` field is rejected with 400.
 async fn search_fts(
-    State(state): State<ApiState>,
+    Db(db): Db,
     body: Result<Json<SearchFtsRequest>, JsonRejection>,
 ) -> Result<Json<SearchFtsResponse>, ApiError> {
     let Json(SearchFtsRequest { query, limit }) = body?;
     let query =
         query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
     let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT).min(MAX_SEARCH_LIMIT);
-    let results = state.db.search_fts(&query, limit)?;
+    let results = db.search_fts(&query, limit)?;
     Ok(Json(SearchFtsResponse { results }))
 }
 
@@ -712,7 +807,7 @@ pub struct CypherResponse {
 
 /// Handler for `POST /cypher`: parse + execute, return rows + graph.
 async fn cypher(
-    State(state): State<ApiState>,
+    Db(db): Db,
     body: Result<Json<CypherRequest>, JsonRejection>,
 ) -> Result<Json<CypherResponse>, ApiError> {
     let Json(CypherRequest { query, params }) = body?;
@@ -725,7 +820,7 @@ async fn cypher(
         .into_iter()
         .map(|(k, v)| (k, json_to_cypher_value(v)))
         .collect();
-    let result = executor::execute(&ast, state.db.as_ref(), params)
+    let result = executor::execute(&ast, db.as_ref(), params)
         .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
     Ok(Json(exec_result_to_response(result)))
 }
@@ -931,7 +1026,7 @@ pub struct FacetsResponse {
 /// optionally collapsing near-duplicate keywords (lexical axis). Returns
 /// `{facets: [{facet, members, count}]}`.
 async fn facets(
-    State(state): State<ApiState>,
+    Db(db): Db,
     query: Result<Query<FacetsQuery>, QueryRejection>,
 ) -> Result<Json<FacetsResponse>, ApiError> {
     let Query(FacetsQuery {
@@ -965,7 +1060,7 @@ async fn facets(
         }
     };
 
-    let facets = state.db.facets(&kind, &property, k, &collapse)?;
+    let facets = db.facets(&kind, &property, k, &collapse)?;
     Ok(Json(FacetsResponse { facets }))
 }
 
@@ -1044,6 +1139,8 @@ async fn ready(State(state): State<ApiState>) -> Response {
     if state.is_shutting_down() {
         return shutting_down_response();
     }
+    // The readiness probe exercises the default database; a per-request
+    // database selection has no meaning for a liveness/readiness check.
     match state.db.health_check() {
         Ok(()) => Json(HealthResponse {
             status: HealthStatus::Ready,
@@ -1070,8 +1167,8 @@ pub struct ImportJsonRequest {
 /// Handler for `GET /export/json`. Streams the full graph as a pretty-printed
 /// `drevo-json-v1` JSON document. Operators can curl this for backups or to
 /// migrate data between deployments.
-async fn export_json(State(state): State<ApiState>) -> Result<Response, ApiError> {
-    let dump = state.db.export_json()?;
+async fn export_json(Db(db): Db) -> Result<Response, ApiError> {
+    let dump = db.export_json()?;
     Ok((StatusCode::OK, [("content-type", "application/json")], dump).into_response())
 }
 
@@ -1080,19 +1177,19 @@ async fn export_json(State(state): State<ApiState>) -> Result<Response, ApiError
 /// Malformed payloads / unknown formats return 500 via [`DrevoError::Io`];
 /// title collisions against existing nodes return 409.
 async fn import_json(
-    State(state): State<ApiState>,
+    Db(db): Db,
     body: Result<Json<ImportJsonRequest>, JsonRejection>,
 ) -> Result<Json<ImportReport>, ApiError> {
     let Json(req) = body?;
-    let report = state.db.import_json(&req.dump)?;
+    let report = db.import_json(&req.dump)?;
     Ok(Json(report))
 }
 
 /// Handler for `GET /export/graphml`. Returns the full graph as a GraphML 1.0
 /// document (`application/xml`) — for interop with yEd, Gephi, NetworkX,
 /// Cytoscape, igraph, and friends. Paired with `POST /import/graphml`.
-async fn export_graphml(State(state): State<ApiState>) -> Result<Response, ApiError> {
-    let xml = state.db.export_graphml()?;
+async fn export_graphml(Db(db): Db) -> Result<Response, ApiError> {
+    let xml = db.export_graphml()?;
     Ok((
         StatusCode::OK,
         [("content-type", "application/xml; charset=utf-8")],
@@ -1115,11 +1212,11 @@ pub struct ImportGraphmlRequest {
 /// Malformed XML / structural errors return 500 via [`DrevoError::Io`]; title
 /// collisions against existing nodes return 409.
 async fn import_graphml(
-    State(state): State<ApiState>,
+    Db(db): Db,
     body: Result<Json<ImportGraphmlRequest>, JsonRejection>,
 ) -> Result<Json<ImportReport>, ApiError> {
     let Json(req) = body?;
-    let report = state.db.import_graphml(&req.graphml)?;
+    let report = db.import_graphml(&req.graphml)?;
     Ok(Json(report))
 }
 
@@ -1132,6 +1229,55 @@ async fn status(State(state): State<ApiState>) -> Json<StatusResponse> {
         version: env!("CARGO_PKG_VERSION"),
         uptime_seconds,
     })
+}
+
+// ── Multi-database catalog (`/databases`) ───────────────────────────────
+// Manage the named databases the process serves. Each is a separate redb
+// file (see [`crate::catalog`]); every data endpoint selects one via the
+// `X-Drevo-Database` header or `?db=` query. These two routes let a client
+// discover what exists and create new databases without restarting.
+
+/// Response body for `GET /databases`.
+#[derive(Debug, Serialize)]
+pub struct DatabaseListResponse {
+    /// All database names, sorted ascending. Always includes `default`.
+    pub databases: Vec<String>,
+    /// The name selected when a request specifies none.
+    pub default: &'static str,
+}
+
+/// Request body for `POST /databases`.
+#[derive(Debug, Deserialize)]
+pub struct CreateDatabaseRequest {
+    /// New database name — `[A-Za-z0-9_-]`, 1..=64 chars. Required.
+    pub name: Option<String>,
+}
+
+/// Response body for `POST /databases`.
+#[derive(Debug, Serialize)]
+pub struct CreateDatabaseResponse {
+    /// The name of the database that was created.
+    pub name: String,
+}
+
+/// Handler for `GET /databases` — list every database the catalog serves.
+async fn list_databases(State(state): State<ApiState>) -> Json<DatabaseListResponse> {
+    Json(DatabaseListResponse {
+        databases: state.catalog.list(),
+        default: DEFAULT_DB,
+    })
+}
+
+/// Handler for `POST /databases` — create a new database. A missing `name`
+/// is 400; an invalid name is 400; an existing name is 409.
+async fn create_database(
+    State(state): State<ApiState>,
+    body: Result<Json<CreateDatabaseRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<CreateDatabaseResponse>), ApiError> {
+    let Json(CreateDatabaseRequest { name }) = body?;
+    let name = name.ok_or_else(|| ApiError::BadRequest("field 'name' is required".to_string()))?;
+    state.catalog.create(&name)?;
+    Ok((StatusCode::CREATED, Json(CreateDatabaseResponse { name })))
 }
 
 /// Parse the `direction` query parameter into a [`Direction`].
@@ -1257,6 +1403,11 @@ pub fn build_router(state: ApiState) -> Router {
         .route(
             "/import/graphml",
             with_405(axum::routing::post(import_graphml)),
+        )
+        // ── Multi-database catalog — list / create named databases ──
+        .route(
+            "/databases",
+            with_405(get(list_databases).post(create_database)),
         )
         .route("/health", with_405(get(health)))
         .route("/ready", with_405(get(ready)))

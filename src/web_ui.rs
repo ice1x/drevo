@@ -191,6 +191,30 @@ mod tests {
     }
 
     #[test]
+    fn embedded_app_js_wires_database_picker() {
+        // The multi-database catalog is reachable from the Web UI: a picker
+        // in the header lists databases, a "+" creates one, and every API
+        // call carries the selected database in the `X-Drevo-Database`
+        // header. Lock the wiring in at the embedded-asset layer.
+        assert!(
+            INDEX_HTML.contains("id=\"db-select\"") && INDEX_HTML.contains("id=\"db-new\""),
+            "index.html must contain the database picker controls"
+        );
+        assert!(
+            APP_JS.contains("loadDatabases") && APP_JS.contains("switchDatabase"),
+            "app.js must load and switch databases"
+        );
+        assert!(
+            APP_JS.contains("/databases"),
+            "app.js must call the /databases endpoint"
+        );
+        assert!(
+            APP_JS.contains("X-Drevo-Database"),
+            "app.js must send the database selector header on API calls"
+        );
+    }
+
+    #[test]
     fn embedded_index_references_local_app_js_and_styles_css() {
         assert!(INDEX_HTML.contains("/ui/app.js"));
         assert!(INDEX_HTML.contains("/ui/styles.css"));

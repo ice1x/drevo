@@ -137,6 +137,12 @@
 #define FAILURE 127
 
 /**
+ * Maximum database-name length in bytes. Comfortably below any filesystem
+ * component limit once the `.redb` suffix is added.
+ */
+#define MAX_NAME_LEN 64
+
+/**
  * Default trigram-set Jaccard threshold for [`FacetCollapse::Lexical`].
  *
  * `0.34` means two keywords merge on the trigram signal when about a third
