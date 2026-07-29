@@ -78,6 +78,11 @@ uuid = { version = "1", features = ["v4", "v7", "rng-getrandom"] }
 getrandom = { version = "0.4", optional = true }
 serde_json = "1"
 wasm-bindgen = { version = "0.2", optional = true }
+# `js-sys` is needed in two independent situations, so it is declared twice:
+#  * optional + in the `wasm` feature → `src/wasm.rs`'s `js_sys::JSON` bindings
+#    compile (and lint under `--all-features`) on any target.
+#  * unconditionally on wasm32 (see the `[target.'cfg(...)']` block below) →
+#    `model.rs`'s clock path works even without the `wasm` feature.
 js-sys = { version = "0.3", optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "io-util"], optional = true }
@@ -130,6 +135,14 @@ bolt-tls = ["http", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 # entry points are independently gated on `http`.
 bolt-auth = ["dep:argon2"]
 
+# `js-sys` is the clock source for `now_ms`/`new_uuid_v7` on wasm32, where
+# `std::time::SystemTime::now()` aborts (see `model.rs`, drevo#198). It is
+# needed on every wasm32 build regardless of the `wasm` feature — hence this
+# unconditional target-specific declaration, in addition to the optional
+# `wasm`-feature one above (which covers `src/wasm.rs` on non-wasm targets).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+
 [dev-dependencies]
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -175,6 +188,10 @@ harness = false
 
 [[bench]]
 name = "traversal_bench"
+harness = false
+
+[[bench]]
+name = "comparison_bench"
 harness = false
 
 # `getrandom` has no direct `use getrandom::...` site in this crate — it is

@@ -154,10 +154,10 @@ async fn api_state_is_cloneable_and_shares_db() {
     // References to the same underlying `Drevo`, four ways: the local `db`,
     // `state_a.db`, `state_b.db`, and the copy the catalog holds as its
     // `default` database (`ApiState::new` installs `db` as the catalog's
-    // default, so `state.db` and `catalog.get("default")` are the same Arc).
+    // default, so `state.db` and `catalog.get("drevo")` are the same Arc).
     assert!(Arc::ptr_eq(
         &state_a.db,
-        &state_a.catalog.get("default").unwrap()
+        &state_a.catalog.get("drevo").unwrap()
     ));
     assert_eq!(Arc::strong_count(&db), 4);
 }

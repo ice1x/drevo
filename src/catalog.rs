@@ -9,11 +9,9 @@
 //!
 //! ## Naming and files
 //!
-//! A database name maps to a file inside the data directory:
-//!
-//! - `default` → `drevo.redb` (the legacy single-file layout, so existing
-//!   deployments keep working with zero migration).
-//! - any other `name` → `<name>.redb`.
+//! A database name maps to `<name>.redb` inside the data directory. The
+//! default database is named `drevo`, so it maps to the legacy `drevo.redb`
+//! file — existing single-file deployments keep working with zero migration.
 //!
 //! Names are validated ([`is_valid_name`](crate::catalog::is_valid_name)):
 //! non-empty, at most [`MAX_NAME_LEN`](crate::catalog::MAX_NAME_LEN) bytes,
@@ -42,12 +40,9 @@ use std::sync::{Arc, RwLock};
 use crate::db::Drevo;
 use crate::error::DrevoError;
 
-/// The always-present database. Maps to the legacy `drevo.redb` file so a
-/// pre-catalog data directory opens unchanged.
-pub const DEFAULT_DB: &str = "default";
-
-/// Legacy single-file name that [`DEFAULT_DB`] maps to.
-const DEFAULT_DB_FILENAME: &str = "drevo.redb";
+/// The always-present database. Named `drevo`, so it maps to the legacy
+/// `drevo.redb` file and a pre-catalog data directory opens unchanged.
+pub const DEFAULT_DB: &str = "drevo";
 
 /// redb file extension the catalog scans for and creates.
 const DB_EXTENSION: &str = "redb";
@@ -96,31 +91,22 @@ pub fn is_valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// The on-disk filename for a database name. `default` keeps the legacy
-/// `drevo.redb`; everything else is `<name>.redb`.
+/// The on-disk filename for a database name: `<name>.redb`. The default
+/// database (`drevo`) therefore lands on the legacy `drevo.redb`.
 fn filename_for(name: &str) -> String {
-    if name == DEFAULT_DB {
-        DEFAULT_DB_FILENAME.to_string()
-    } else {
-        format!("{name}.{DB_EXTENSION}")
-    }
+    format!("{name}.{DB_EXTENSION}")
 }
 
 /// The database name encoded by a `*.redb` filename, or `None` if the file
 /// is not a recognised database file. Inverse of [`filename_for`]:
-/// `drevo.redb` → `default`, `<name>.redb` → `<name>` (validated).
+/// `<name>.redb` → `<name>` (validated); `drevo.redb` → `drevo`.
 fn name_for_file(file_name: &str) -> Option<String> {
-    if file_name == DEFAULT_DB_FILENAME {
-        return Some(DEFAULT_DB.to_string());
-    }
     let stem = file_name.strip_suffix(&format!(".{DB_EXTENSION}"))?;
-    // A file literally named `default.redb` would collide with the logical
-    // `default` (which lives in `drevo.redb`); ignore it to keep the mapping
-    // a bijection. Likewise reject stems that are not valid names.
-    if stem == DEFAULT_DB || !is_valid_name(stem) {
-        return None;
+    if is_valid_name(stem) {
+        Some(stem.to_string())
+    } else {
+        None
     }
-    Some(stem.to_string())
 }
 
 /// How a catalog opens the databases it manages.
@@ -391,16 +377,15 @@ mod tests {
     // ── filename mapping ────────────────────────────────────────────────
     #[test]
     fn default_maps_to_legacy_file() {
+        assert_eq!(DEFAULT_DB, "drevo");
         assert_eq!(filename_for(DEFAULT_DB), "drevo.redb");
         assert_eq!(filename_for("projectA"), "projectA.redb");
     }
 
     #[test]
-    fn file_to_name_is_inverse_and_rejects_collisions() {
-        assert_eq!(name_for_file("drevo.redb").as_deref(), Some("default"));
+    fn file_to_name_is_inverse() {
+        assert_eq!(name_for_file("drevo.redb").as_deref(), Some("drevo"));
         assert_eq!(name_for_file("projectA.redb").as_deref(), Some("projectA"));
-        // `default.redb` would collide with the logical default → ignored.
-        assert_eq!(name_for_file("default.redb"), None);
         assert_eq!(name_for_file("notes.txt"), None);
         assert_eq!(name_for_file("README"), None);
     }
@@ -409,7 +394,7 @@ mod tests {
     #[test]
     fn fresh_catalog_has_only_default() {
         let cat = Catalog::open_in_memory().unwrap();
-        assert_eq!(cat.list(), vec!["default".to_string()]);
+        assert_eq!(cat.list(), vec!["drevo".to_string()]);
         assert!(cat.contains(DEFAULT_DB));
         assert!(cat.get(DEFAULT_DB).is_ok());
     }
@@ -419,7 +404,7 @@ mod tests {
         let cat = Catalog::open_in_memory().unwrap();
         let a = cat.create("alpha").unwrap();
         assert!(cat.contains("alpha"));
-        assert_eq!(cat.list(), vec!["alpha".to_string(), "default".to_string()]);
+        assert_eq!(cat.list(), vec!["alpha".to_string(), "drevo".to_string()]);
         // The new database is independent of default: a write to one is not
         // visible in the other.
         let node = crate::model::NewNode {
@@ -511,7 +496,7 @@ mod tests {
         {
             let cat = Catalog::open(dir.clone()).unwrap();
             let names = cat.list();
-            assert!(names.contains(&"default".to_string()));
+            assert!(names.contains(&"drevo".to_string()));
             assert!(
                 names.contains(&"projectA".to_string()),
                 "existing *.redb files must be discovered on open, got {names:?}"

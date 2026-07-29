@@ -129,7 +129,18 @@ jobs:
       CIBW_BEFORE_BUILD_MACOS: "rustup show"
       # Test dependencies installed in the wheel's isolated test
       # env (not in the wheel itself). pytest + the four gates.
-      CIBW_TEST_REQUIRES: "pytest>=7 mypy ruff black faker hypothesis"
+      #
+      # `ruff` and `black` are PINNED. They were previously unpinned, so
+      # cibuildwheel resolved whatever was latest at run time. ruff 0.16.0
+      # tightened its import-sort / lint defaults and started reporting 144
+      # errors against unchanged drevo-py sources — turning `main` red on
+      # every push from #200 onward with no code change. Pinning to the
+      # versions the project actually lints against (verified green on
+      # Python 3.13: `ruff==0.15.1` clean, `black==24.10.0` "49 files left
+      # unchanged") freezes that behavior. NB: an `[tool.ruff.lint.isort]
+      # known-first-party` config does NOT fix ruff 0.16.0 (still 123
+      # errors) — the pin is the fix. Bump deliberately + re-verify locally.
+      CIBW_TEST_REQUIRES: "pytest>=7 mypy ruff==0.15.1 black==24.10.0 faker hypothesis"
       # Run the full test suite against the just-built wheel.
       # `{package}` expands to `drevo-py/` (the dir cibuildwheel is
       # pointed at below). Each gate gets its own command so a

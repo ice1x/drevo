@@ -1,0 +1,43 @@
+# Phase 15 task `00101` — drevo-vs-competitors benchmark harness.
+#
+# Runs the criterion comparison bench (`benches/comparison_bench.rs`) that
+# measures drevo's side of the standard workload documented in
+# `docs/benchmarks.md`. The competitor side is reproduced manually per that
+# guide — this workflow only produces drevo's numbers.
+#
+# Trigger policy: **manual only** (`workflow_dispatch`). It is deliberately NOT
+# wired to `push` / `pull_request` / `schedule`: the project runs a single
+# self-hosted runner, and a `--release` benchmark build is heavy, so an
+# automatic trigger would serialise behind (and delay) every PR's CI. A
+# maintainer kicks this off on demand when they want fresh numbers.
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      bench_args:
+        description: "Extra args passed to `cargo bench --bench comparison_bench --`"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  comparison:
+    name: drevo comparison bench
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run comparison benchmark
+        run: |
+          cargo bench --bench comparison_bench -- ${{ github.event.inputs.bench_args }}
+
+      - name: Upload criterion reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-comparison-report
+          path: target/criterion/
+          if-no-files-found: warn
