@@ -2,9 +2,11 @@
 //!
 //! Phase 8 task 00051: build the production drevo image from
 //! `Dockerfile` and push it to GitHub Container Registry
-//! (`ghcr.io/ice1x/drevo`) on every push to `main` and on every
-//! semver tag (`v*`). Pull requests build the image but never push,
-//! so a forked-PR clone cannot publish under the project's namespace.
+//! (`ghcr.io/ice1x/drevo`) on every semver tag (`v*`) — the image is a
+//! release artifact (changed 2026-07-30 from per-push-to-`main`, which
+//! blocked the single self-hosted runner with a ~40-min QEMU build every
+//! merge). Pull requests build the image but never push, so a forked-PR
+//! clone cannot publish under the project's namespace.
 //!
 //! These tests parse `.github/workflows/docker-publish.yml` as text —
 //! no Docker daemon, no GHCR credentials, no `act` runner needed.
@@ -17,9 +19,9 @@
 //!
 //! 1.  The workflow file lives at the canonical path so other tooling
 //!     (Renovate, dependabot, branch-protection rules) can find it.
-//! 2.  Triggers — push to `main`, push of `v*` tags, pull_request to
-//!     `main`. Plus a `workflow_dispatch` so ops can re-publish without
-//!     a code change.
+//! 2.  Triggers — push of `v*` tags (release-only; NOT push-to-`main`).
+//!     Plus a `workflow_dispatch` so ops can re-publish without a code
+//!     change.
 //! 3.  Permissions — `contents: read` + `packages: write` only. No
 //!     `actions: write`, no `id-token: write`. Smallest possible token
 //!     surface for a publish workflow (see the GitHub OIDC hardening
@@ -131,16 +133,19 @@ fn docker_publish_workflow_has_name() {
 // ------------------------------------------------------------------
 
 #[test]
-fn docker_publish_triggers_on_push_to_main() {
+fn docker_publish_does_not_trigger_on_push_to_main() {
+    // Changed 2026-07-30: the image is a RELEASE artifact, published on
+    // `v*` tags only — NOT on every push to `main`. On the single
+    // self-hosted runner the ~40-min QEMU multi-arch build serialised
+    // behind and blocked every merge, so the per-merge trigger was
+    // removed. `:latest` tracks the newest release tag; `make release`
+    // (which pushes a `vX.Y.Z` tag) is what publishes the image.
     let w = read_workflow();
+    // The push trigger must NOT filter by branch (no branch push at all).
     assert!(
-        w.contains("push:"),
-        "workflow must have an `on.push:` trigger so merges to main publish a new image"
-    );
-    // The push trigger must mention `main` (default branch).
-    assert!(
-        w.contains("main"),
-        "workflow must filter the push trigger to the `main` branch"
+        !w.contains("branches:"),
+        "workflow must NOT trigger on a branch push (e.g. `main`) — the image publishes on \
+         `v*` tags only; a per-merge multi-arch build blocks the single self-hosted runner"
     );
 }
 
@@ -436,18 +441,18 @@ fn docker_publish_emits_semver_tags_from_git_tags() {
 }
 
 #[test]
-fn docker_publish_emits_latest_only_on_default_branch() {
+fn docker_publish_emits_latest_on_release_tags() {
     let w = read_workflow();
-    // `docker/metadata-action` rule `type=raw,value=latest,enable={{is_default_branch}}`
-    // OR the equivalent `latest=auto` flag.
-    let latest_gated = (w.contains("latest") && w.contains("is_default_branch"))
-        || w.contains("flavor:") && w.contains("latest=auto");
+    // Changed 2026-07-30: the workflow runs on `v*` tags (not `main`), so
+    // `:latest` is gated on a version tag ref rather than the default
+    // branch — it tracks the newest release.
+    let latest_gated =
+        w.contains("latest") && (w.contains("refs/tags/v") || w.contains("startsWith(github.ref"));
     assert!(
         latest_gated,
-        "workflow must only emit the `latest` tag on the default branch (`main`) — a stray \
-         `latest` pointing at a tag-build or a feature-branch build would surprise downstream \
-         consumers. Use `type=raw,value=latest,enable={{{{is_default_branch}}}}` or \
-         `flavor: latest=auto`."
+        "workflow must emit the `latest` tag on `v*` release tags — e.g. \
+         `type=raw,value=latest,enable=${{{{ startsWith(github.ref, 'refs/tags/v') }}}}`. \
+         `:latest` should track the newest release, not a feature-branch build."
     );
 }
 
