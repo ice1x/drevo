@@ -62,6 +62,25 @@ pub enum StorageError {
     /// reference and retry. Surfaced by Phase 9 task `00054`.
     #[error("compact requires exclusive backend access")]
     CompactNotExclusive,
+
+    /// The on-disk file was written by a drevo build with a newer,
+    /// layout-incompatible **major** format version (or carries an
+    /// unparseable format marker). Opening it is refused rather than risk
+    /// silently misreading or corrupting the data. `found` is the raw
+    /// version string recorded in the file (e.g. `"2.0"`); this build reads
+    /// any file whose major version is `<= supported_major`. See the
+    /// on-disk format-version guarantee (issue #48).
+    #[error(
+        "incompatible on-disk format: file reports version {found:?}, \
+         this build supports major format version {supported_major}"
+    )]
+    IncompatibleFormat {
+        /// Raw `MAJOR.MINOR` version string read from the file (or the
+        /// unparseable marker bytes rendered lossily).
+        found: String,
+        /// Highest on-disk major version this build can read.
+        supported_major: u32,
+    },
 }
 
 // Lift redb sub-error types into `StorageError::Redb` so `?` works at every

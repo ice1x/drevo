@@ -9,6 +9,38 @@ use crate::storage::StorageBackend;
 /// Table definition for the single key-value table.
 const DATA_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("data");
 
+/// Metadata table, kept separate from the user-facing [`DATA_TABLE`] so
+/// storage-level bookkeeping (currently just the on-disk format version)
+/// never collides with graph keys and is invisible to `scan_prefix`.
+const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+
+/// Key under [`META_TABLE`] holding the on-disk format version as a
+/// UTF-8 `"MAJOR.MINOR"` string (e.g. `"1.0"`).
+const FORMAT_VERSION_KEY: &str = "format_version";
+
+/// Current on-disk format **major** version this build writes and reads.
+///
+/// Compatibility rule (semver-style): a build opens any file whose major
+/// version is `<= FORMAT_MAJOR`. A file with a greater major was written by
+/// a newer, layout-incompatible drevo and is refused with
+/// [`StorageError::IncompatibleFormat`] instead of being silently misread.
+/// Files predating format versioning carry no marker and are treated as the
+/// original `1.0` format (then stamped on first open). This is the on-disk
+/// durability guarantee for the agent-memory-graph file (issue #48).
+pub const FORMAT_MAJOR: u32 = 1;
+
+/// Current on-disk format **minor** version. Bumped for additive,
+/// backward-compatible layout changes within a major; purely informational
+/// for the compatibility check (any minor of a compatible major opens).
+pub const FORMAT_MINOR: u32 = 0;
+
+/// Parse a `"MAJOR.MINOR"` marker string into its numeric parts.
+/// Returns `None` for anything that is not two dot-separated `u32`s.
+fn parse_format_version(raw: &str) -> Option<(u32, u32)> {
+    let (major, minor) = raw.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
 /// ACID-compliant storage backend backed by [redb](https://github.com/cberner/redb).
 ///
 /// Each `get`, `put`, `delete`, and `scan_prefix` call runs inside its own
@@ -49,15 +81,87 @@ impl RedbBackend {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let db = Database::create(&path)?;
-        Ok(Self {
+        let backend = Self {
             db: Arc::new(db),
             path,
-        })
+        };
+        backend.check_or_stamp_format_version()?;
+        Ok(backend)
     }
 
     /// Path of the underlying redb database file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Read the on-disk format version marker, if the file carries one.
+    ///
+    /// Returns `Ok(None)` for a file written before format versioning
+    /// existed (no marker), and `Ok(Some((major, minor)))` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Redb`] on an underlying redb failure, or
+    /// [`StorageError::IncompatibleFormat`] if a marker is present but not a
+    /// parseable `MAJOR.MINOR` string.
+    pub fn format_version(&self) -> Result<Option<(u32, u32)>> {
+        match self.read_raw_format_version()? {
+            None => Ok(None),
+            Some(raw) => match parse_format_version(&raw) {
+                Some(v) => Ok(Some(v)),
+                None => Err(StorageError::IncompatibleFormat {
+                    found: raw,
+                    supported_major: FORMAT_MAJOR,
+                }),
+            },
+        }
+    }
+
+    /// Read the raw marker string from [`META_TABLE`], or `None` when the
+    /// table or key is absent (a fresh or pre-versioning file).
+    fn read_raw_format_version(&self) -> Result<Option<String>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(META_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        match table.get(FORMAT_VERSION_KEY)? {
+            Some(v) => Ok(Some(String::from_utf8_lossy(v.value()).into_owned())),
+            None => Ok(None),
+        }
+    }
+
+    /// Enforce the on-disk format-version compatibility rule on open.
+    ///
+    /// - Marker present and major `> FORMAT_MAJOR` (or unparseable) →
+    ///   [`StorageError::IncompatibleFormat`].
+    /// - Marker present and major `<= FORMAT_MAJOR` → accept.
+    /// - Marker absent (fresh or pre-versioning file) → stamp the current
+    ///   `FORMAT_MAJOR.FORMAT_MINOR` so the file is versioned from now on.
+    fn check_or_stamp_format_version(&self) -> Result<()> {
+        match self.read_raw_format_version()? {
+            Some(raw) => match parse_format_version(&raw) {
+                Some((major, _minor)) if major <= FORMAT_MAJOR => Ok(()),
+                _ => Err(StorageError::IncompatibleFormat {
+                    found: raw,
+                    supported_major: FORMAT_MAJOR,
+                }),
+            },
+            None => self.stamp_format_version(),
+        }
+    }
+
+    /// Write the current format version marker into [`META_TABLE`].
+    fn stamp_format_version(&self) -> Result<()> {
+        let marker = format!("{FORMAT_MAJOR}.{FORMAT_MINOR}");
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(META_TABLE)?;
+            table.insert(FORMAT_VERSION_KEY, marker.as_bytes())?;
+        }
+        write_txn.commit()?;
+        Ok(())
     }
 }
 
@@ -337,5 +441,125 @@ mod tests {
         let backend: Arc<dyn StorageBackend> = Arc::new(backend);
         backend.put(b"key", b"value").unwrap();
         assert_eq!(backend.get(b"key").unwrap(), Some(b"value".to_vec()));
+    }
+
+    // --- On-disk format version (issue #48) -------------------------------
+
+    /// Write a raw `meta.format_version` marker directly via redb, bypassing
+    /// [`RedbBackend`], so tests can forge foreign / future / malformed files.
+    fn write_raw_marker(path: &Path, marker: &[u8]) {
+        let db = Database::create(path).unwrap();
+        let write_txn = db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(META_TABLE).unwrap();
+            table.insert(FORMAT_VERSION_KEY, marker).unwrap();
+        }
+        write_txn.commit().unwrap();
+    }
+
+    #[test]
+    fn fresh_db_is_stamped_with_current_version() {
+        let (backend, _dir) = open_temp_db();
+        assert_eq!(
+            backend.format_version().unwrap(),
+            Some((FORMAT_MAJOR, FORMAT_MINOR)),
+            "a freshly created file must carry the current format marker"
+        );
+    }
+
+    #[test]
+    fn reopen_same_version_succeeds_and_keeps_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("versioned.redb");
+        {
+            let backend = RedbBackend::open(&db_path).unwrap();
+            backend.put(b"k", b"v").unwrap();
+        }
+        // Second open must accept the marker it stamped itself.
+        let backend = RedbBackend::open(&db_path).unwrap();
+        assert_eq!(
+            backend.format_version().unwrap(),
+            Some((FORMAT_MAJOR, FORMAT_MINOR))
+        );
+        assert_eq!(backend.get(b"k").unwrap(), Some(b"v".to_vec()));
+    }
+
+    #[test]
+    fn legacy_file_without_marker_opens_and_is_stamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.redb");
+        // Simulate a pre-versioning file: a `data` table with content but no
+        // `meta` table at all.
+        {
+            let db = Database::create(&db_path).unwrap();
+            let write_txn = db.begin_write().unwrap();
+            {
+                let mut table = write_txn.open_table(DATA_TABLE).unwrap();
+                table.insert(b"old".as_slice(), b"data".as_slice()).unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        let backend = RedbBackend::open(&db_path).unwrap();
+        // Legacy data is preserved and readable.
+        assert_eq!(backend.get(b"old").unwrap(), Some(b"data".to_vec()));
+        // ...and the file is now stamped as the original 1.0 format.
+        assert_eq!(
+            backend.format_version().unwrap(),
+            Some((FORMAT_MAJOR, FORMAT_MINOR))
+        );
+    }
+
+    #[test]
+    fn open_rejects_incompatible_future_major() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("future.redb");
+        write_raw_marker(&db_path, format!("{}.0", FORMAT_MAJOR + 1).as_bytes());
+
+        let err = RedbBackend::open(&db_path).unwrap_err();
+        match err {
+            StorageError::IncompatibleFormat {
+                found,
+                supported_major,
+            } => {
+                assert_eq!(found, format!("{}.0", FORMAT_MAJOR + 1));
+                assert_eq!(supported_major, FORMAT_MAJOR);
+            }
+            other => panic!("expected IncompatibleFormat, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_accepts_older_or_equal_major_with_any_minor() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("same_major_higher_minor.redb");
+        // A future minor within the supported major must still open
+        // (additive, backward-compatible).
+        write_raw_marker(&db_path, format!("{FORMAT_MAJOR}.999").as_bytes());
+        assert!(RedbBackend::open(&db_path).is_ok());
+    }
+
+    #[test]
+    fn open_rejects_malformed_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("garbage.redb");
+        write_raw_marker(&db_path, b"not-a-version");
+
+        match RedbBackend::open(&db_path).unwrap_err() {
+            StorageError::IncompatibleFormat { found, .. } => {
+                assert_eq!(found, "not-a-version");
+            }
+            other => panic!("expected IncompatibleFormat, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stamping_does_not_leak_into_data_scan() {
+        // The `meta` marker must be invisible to the user-facing data scan.
+        let (backend, _dir) = open_temp_db();
+        backend.put(b"a:1", b"v").unwrap();
+        let all = backend.scan_prefix(b"").unwrap();
+        assert_eq!(all.len(), 1, "scan must see only data keys, not meta");
+        assert_eq!(all[0].0, b"a:1");
     }
 }
