@@ -314,3 +314,106 @@ fn range_drives_row_generation_via_unwind() {
         ]
     );
 }
+
+// ===== Vector similarity (issue #202) =======================================
+// `cosine_similarity(a, b)` — cosine of the angle between two numeric-list
+// vectors, in `[-1, 1]`. Unlike the `similar()` threshold predicate, it
+// returns the SCORE, so retrieval can `RETURN … AS score ORDER BY score DESC`.
+// NULL-propagating like every other scalar; genuine misuse (arity / type /
+// dimension mismatch / zero vector) is a recoverable InvalidFunctionCall.
+
+#[test]
+fn cosine_similarity_identical_orthogonal_opposite() {
+    let db = db();
+    // Identical direction → 1.0.
+    assert_eq!(
+        one(
+            "RETURN cosine_similarity([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]) AS s",
+            &db
+        ),
+        Value::Float(1.0)
+    );
+    // Orthogonal → 0.0.
+    assert_eq!(
+        one("RETURN cosine_similarity([1.0, 0.0], [0.0, 1.0]) AS s", &db),
+        Value::Float(0.0)
+    );
+    // Opposite → -1.0.
+    assert_eq!(
+        one(
+            "RETURN cosine_similarity([1.0, 0.0], [-1.0, 0.0]) AS s",
+            &db
+        ),
+        Value::Float(-1.0)
+    );
+}
+
+#[test]
+fn cosine_similarity_parallel_and_integer_lists() {
+    let db = db();
+    // Parallel (scaled) vectors → 1.0; integer elements accepted (as_number).
+    // f32 math means "≈1.0", not bit-exact, so compare within a tolerance.
+    let Value::Float(v) = one("RETURN cosine_similarity([1, 2, 3], [2, 4, 6]) AS s", &db) else {
+        panic!("expected a Float score");
+    };
+    assert!((v - 1.0).abs() < 1e-6, "expected ≈1.0, got {v}");
+}
+
+#[test]
+fn cosine_similarity_null_propagates() {
+    let db = db();
+    assert_eq!(
+        one("RETURN cosine_similarity(null, [1.0, 0.0]) AS s", &db),
+        Value::Null
+    );
+    assert_eq!(
+        one("RETURN cosine_similarity([1.0, 0.0], null) AS s", &db),
+        Value::Null
+    );
+}
+
+#[test]
+fn cosine_similarity_arity_and_type_and_dimension_errors() {
+    let db = db();
+    // Wrong arity.
+    assert!(matches!(
+        run_err("RETURN cosine_similarity([1.0, 0.0]) AS s", &db),
+        ExecError::InvalidFunctionCall { .. }
+    ));
+    // Non-list argument.
+    assert!(matches!(
+        run_err("RETURN cosine_similarity('nope', [1.0]) AS s", &db),
+        ExecError::InvalidFunctionCall { .. }
+    ));
+    // Dimension mismatch.
+    assert!(matches!(
+        run_err("RETURN cosine_similarity([1.0, 0.0], [1.0]) AS s", &db),
+        ExecError::InvalidFunctionCall { .. }
+    ));
+}
+
+#[test]
+fn cosine_similarity_orders_retrieval_by_score() {
+    // The issue's primary use case: score chunks and ORDER BY score DESC.
+    let db = db();
+    exec(
+        "CREATE (:Chunk {title: 'a', embedding: [1.0, 0.0]}), \
+                (:Chunk {title: 'b', embedding: [0.9, 0.1]}), \
+                (:Chunk {title: 'c', embedding: [0.0, 1.0]})",
+        &db,
+    );
+    let rows = run(
+        "MATCH (c:Chunk) \
+         RETURN c.title AS title, cosine_similarity(c.embedding, [1.0, 0.0]) AS score \
+         ORDER BY score DESC",
+        &db,
+    );
+    let titles: Vec<&str> = rows
+        .iter()
+        .map(|r| match &r[0] {
+            Value::String(s) => s.as_str(),
+            other => panic!("title not a string: {other:?}"),
+        })
+        .collect();
+    assert_eq!(titles, vec!["a", "b", "c"]);
+}

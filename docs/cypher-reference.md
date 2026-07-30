@@ -746,6 +746,20 @@ cosine similarity — the building block for hybrid graph + vector filters:
 RETURN similar([0.10, 0.20, 0.30], [0.11, 0.19, 0.31], 0.80) AS is_similar
 ```
 
+`cosine_similarity(a, b)` returns the cosine similarity **score** (a Float in
+`[-1, 1]`) of two numeric-list vectors. Unlike `similar()`, which only
+threshold-filters, the score is usable in `RETURN` / `ORDER BY` for scored
+retrieval. NULL-propagating; a non-list argument, dimension mismatch, or zero
+vector is an error.
+
+```cypher
+MATCH (c:Chunk {book_id: $book_id})
+WHERE c.embedding IS NOT NULL
+RETURN c, cosine_similarity(c.embedding, $query) AS score
+ORDER BY score DESC
+LIMIT $k
+```
+
 ---
 
 ## Literals

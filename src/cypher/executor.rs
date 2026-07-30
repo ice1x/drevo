@@ -1451,6 +1451,11 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             // drop-in of the knowledge-graph MCP).
             | "timestamp"
             | "datetime"
+            // Vector similarity (issue #202) — `cosine_similarity(a, b)`
+            // returns the cosine SCORE of two numeric-list vectors (in
+            // `[-1, 1]`) for `RETURN` / `ORDER BY`, complementing the
+            // `similar()` threshold predicate.
+            | "cosine_similarity"
     )
 }
 
@@ -5071,8 +5076,8 @@ impl<'a> Executor<'a> {
             return Ok(Value::Null);
         }
 
-        let a = similar_operand(&lhs, "vector", span)?;
-        let b = similar_operand(&rhs, "query", span)?;
+        let a = similar_operand(&lhs, "similar", "vector", span)?;
+        let b = similar_operand(&rhs, "similar", "query", span)?;
         let threshold = threshold
             .as_number()
             .ok_or_else(|| ExecError::InvalidFunctionCall {
@@ -5232,10 +5237,10 @@ fn edge_matches_pattern(
 /// integer and float elements are both accepted (a JSON embedding array
 /// may carry either). `which` names the argument (`"vector"` / `"query"`)
 /// for the error message.
-fn similar_operand(value: &Value, which: &str, span: Span) -> ExecResultT<Vec<f32>> {
+fn similar_operand(value: &Value, func: &str, which: &str, span: Span) -> ExecResultT<Vec<f32>> {
     let Value::List(items) = value else {
         return Err(ExecError::InvalidFunctionCall {
-            name: "similar".into(),
+            name: func.into(),
             message: format!(
                 "{which} argument must be a list of numbers, got {}",
                 value.type_name()
@@ -5248,7 +5253,7 @@ fn similar_operand(value: &Value, which: &str, span: Span) -> ExecResultT<Vec<f3
         let n = item
             .as_number()
             .ok_or_else(|| ExecError::InvalidFunctionCall {
-                name: "similar".into(),
+                name: func.into(),
                 message: format!(
                     "{which} argument element at index {index} is not a number (got {})",
                     item.type_name()
@@ -5441,6 +5446,7 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "ltrim" => str_map(name, args, span, |s| s.trim_start().to_string()),
         "rtrim" => str_map(name, args, span, |s| s.trim_end().to_string()),
         "reverse" => scalar_reverse(args, span),
+        "cosine_similarity" => scalar_cosine_similarity(args, span),
         "substring" => scalar_substring(args, span),
         "replace" => scalar_replace(args, span),
         "split" => scalar_split(args, span),
@@ -6086,6 +6092,25 @@ fn scalar_tostring(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
 
 /// `abs(n)` — preserves Integer vs Float. `abs(i64::MIN)` overflows and is a
 /// recoverable error rather than a panic.
+/// `cosine_similarity(a, b)` — cosine similarity of two numeric-list vectors,
+/// as a Float in `[-1, 1]` (issue #202). Complements the `similar()` threshold
+/// predicate by returning the SCORE, so scored retrieval can
+/// `RETURN cosine_similarity(c.embedding, $q) AS score ORDER BY score DESC`.
+/// NULL propagation is handled by the guard in [`call_scalar`]; a non-list
+/// argument, dimension mismatch, or zero vector is a recoverable
+/// [`ExecError::InvalidFunctionCall`].
+fn scalar_cosine_similarity(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    expect_arity("cosine_similarity", &args, 2, span)?;
+    let a = similar_operand(&args[0], "cosine_similarity", "first", span)?;
+    let b = similar_operand(&args[1], "cosine_similarity", "second", span)?;
+    let score = cosine_similarity(&a, &b).map_err(|e| ExecError::InvalidFunctionCall {
+        name: "cosine_similarity".into(),
+        message: e.to_string(),
+        span,
+    })?;
+    Ok(Value::Float(f64::from(score)))
+}
+
 fn scalar_abs(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("abs", &args, 1, span)?;
     match &args[0] {
@@ -9272,7 +9297,7 @@ mod tests {
             Value::Integer(0),
         ]);
         assert_eq!(
-            similar_operand(&v, "vector", span).unwrap(),
+            similar_operand(&v, "similar", "vector", span).unwrap(),
             vec![1.0_f32, 2.5, 0.0]
         );
     }
@@ -9280,7 +9305,8 @@ mod tests {
     #[test]
     fn similar_operand_rejects_non_list() {
         let span = zero_span();
-        let e = similar_operand(&Value::String("nope".into()), "query", span).unwrap_err();
+        let e =
+            similar_operand(&Value::String("nope".into()), "similar", "query", span).unwrap_err();
         assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
     }
 
@@ -9288,7 +9314,7 @@ mod tests {
     fn similar_operand_rejects_non_numeric_element() {
         let span = zero_span();
         let v = Value::List(vec![Value::Float(1.0), Value::Bool(true)]);
-        let e = similar_operand(&v, "vector", span).unwrap_err();
+        let e = similar_operand(&v, "similar", "vector", span).unwrap_err();
         match e {
             ExecError::InvalidFunctionCall { message, .. } => {
                 assert!(message.contains("index 1"), "message was {message:?}");
