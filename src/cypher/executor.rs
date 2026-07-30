@@ -919,14 +919,16 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                 procedure_columns(&name).ok_or_else(|| ExecError::InvalidProcedureCall {
                     name: name.clone(),
                     message: "no such procedure — built-in procedures are \
-                          db.labels, db.relationshipTypes, db.propertyKeys"
+                          db.labels, db.relationshipTypes, db.propertyKeys, \
+                          drevo.vector.query"
                         .into(),
                     span: c.span,
                 })?;
-            if !c.args.is_empty() {
+            let expected_args = procedure_arity(&name);
+            if c.args.len() != expected_args {
                 return Err(ExecError::InvalidProcedureCall {
                     name,
-                    message: format!("expected 0 arguments, got {}", c.args.len()),
+                    message: format!("expected {expected_args} arguments, got {}", c.args.len()),
                     span: c.span,
                 });
             }
@@ -3605,7 +3607,7 @@ impl<'a> Executor<'a> {
             message: "no such procedure".into(),
             span: c.span,
         })?;
-        let output = self.invoke_procedure(&name, c.span)?;
+        let output = self.invoke_procedure(&name, &c.args, c.span)?;
 
         match &c.yields {
             Some(items) => {
@@ -3652,10 +3654,83 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
+    /// `CALL drevo.vector.query(label, property, query, k) YIELD node, score`
+    /// (issue #202) — the top-`k` nodes of `label` ranked by cosine
+    /// similarity between their `property` embedding and the `query` vector.
+    ///
+    /// Emits `(node, score)` rows (a `Value::Node` and a `Value::Float` in
+    /// `[-1, 1]`), so the caller can `YIELD node, score`, post-filter with a
+    /// `WHERE` on any node property (e.g. `node.book_id = $b`), and
+    /// `RETURN … ORDER BY score DESC`.
+    ///
+    /// Semantics: this is a brute-force scan (score every `label` node that
+    /// carries the `property`) — correct and sub-millisecond at per-book
+    /// scale, per the issue. Nodes without the property, whose property is
+    /// not a numeric list, or whose dimensionality does not match the query
+    /// are skipped (like a `WHERE c.embedding IS NOT NULL` guard). The
+    /// arguments are evaluated once against an empty binding, so they must
+    /// be literals or parameters (`$query`), not references to variables
+    /// bound by a preceding `MATCH`.
+    ///
+    /// NOTE: `k` is applied *before* any post-`YIELD` `WHERE`, so
+    /// `… query(…, $k) YIELD node, score WHERE node.book_id = $b` returns the
+    /// global top-`k` then filters. For pre-filtered per-book retrieval use
+    /// the `cosine_similarity` scalar over a `MATCH (c:Chunk {book_id:$b})`.
+    fn proc_vector_query(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (4) is already enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let label = self.eval(&args[0], &empty)?;
+        let label = label.as_string(span)?.to_string();
+        let property = self.eval(&args[1], &empty)?;
+        let property = property.as_string(span)?.to_string();
+        let query_val = self.eval(&args[2], &empty)?;
+        let query = similar_operand(&query_val, "drevo.vector.query", "query", span)?;
+        let k = self.eval_usize(&args[3], &empty)?;
+
+        let mut scored: Vec<(f32, Arc<NodeValue>)> = Vec::new();
+        for node in self.drevo.collect_all_nodes()? {
+            if !node_labels_from_storage(&node).iter().any(|l| l == &label) {
+                continue;
+            }
+            let nv = node_to_value(&node);
+            let Some(embedding_val) = nv.properties.get(&property) else {
+                continue; // no embedding on this node — skip
+            };
+            let Ok(embedding) =
+                similar_operand(embedding_val, "drevo.vector.query", "embedding", span)
+            else {
+                continue; // property is not a numeric list — skip
+            };
+            let Ok(score) = cosine_similarity(&embedding, &query) else {
+                continue; // dimension mismatch / zero vector — skip
+            };
+            scored.push((score, nv));
+        }
+
+        // Highest cosine similarity first; ties broken by node id for a
+        // deterministic order.
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        scored.truncate(k);
+        Ok(scored
+            .into_iter()
+            .map(|(score, nv)| vec![Value::Node(nv), Value::Float(f64::from(score))])
+            .collect())
+    }
+
     /// Run a built-in procedure and return its output rows, each a
     /// positional vector aligned with [`procedure_columns`].
-    fn invoke_procedure(&self, name: &str, span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+    fn invoke_procedure(
+        &self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
         match name {
+            "drevo.vector.query" => self.proc_vector_query(args, span),
             "db.labels" => {
                 let mut labels: Vec<String> = Vec::new();
                 for node in self.drevo.collect_all_nodes()? {
@@ -5140,7 +5215,21 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "db.labels" => Some(&["label"]),
         "db.relationshipTypes" => Some(&["relationshipType"]),
         "db.propertyKeys" => Some(&["propertyKey"]),
+        // Vector search (issue #202): top-k nodes by cosine similarity.
+        "drevo.vector.query" => Some(&["node", "score"]),
         _ => None,
+    }
+}
+
+/// Number of positional arguments each built-in procedure takes. Used by
+/// the upfront validation sweep to reject a mis-arity `CALL` before any
+/// side effects run.
+fn procedure_arity(name: &str) -> usize {
+    match name {
+        // db.vector.query(label, property, query, k)
+        "drevo.vector.query" => 4,
+        // The db.* introspection procedures take no arguments.
+        _ => 0,
     }
 }
 
