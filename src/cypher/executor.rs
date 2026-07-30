@@ -920,7 +920,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     name: name.clone(),
                     message: "no such procedure — built-in procedures are \
                           db.labels, db.relationshipTypes, db.propertyKeys, \
-                          drevo.vector.query"
+                          drevo.vector.query, fts.search"
                         .into(),
                     span: c.span,
                 })?;
@@ -3721,6 +3721,44 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// `CALL fts.search(query, k) YIELD node, score` (issue #208) — the top-`k`
+    /// nodes matching `query` in the BM25 full-text index (task `00131`),
+    /// ranked by relevance.
+    ///
+    /// Emits `(node, score)` rows so a Bolt/Cypher client gets scored
+    /// full-text hits without client-side re-ranking, mirroring
+    /// `drevo.vector.query` for the vector side:
+    ///
+    /// ```text
+    /// CALL fts.search('anxious thoughts about work', 25) YIELD node, score
+    /// WHERE node.group_id = $group_id
+    /// RETURN node, score ORDER BY score DESC
+    /// ```
+    ///
+    /// The score is the Okapi BM25 relevance already implemented in
+    /// `search_fts`. As with `drevo.vector.query`, `k` is applied before any
+    /// post-`YIELD WHERE`, and the arguments are evaluated once against an
+    /// empty binding (so they must be literals or parameters).
+    fn proc_fts_search(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (2) is already enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let query = self.eval(&args[0], &empty)?;
+        let query = query.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[1], &empty)?;
+
+        // `search_fts` already returns nodes ranked by descending BM25 score.
+        let hits = self.drevo.search_fts(&query, k)?;
+        Ok(hits
+            .into_iter()
+            .map(|scored| {
+                vec![
+                    Value::Node(node_to_value(&scored.node)),
+                    Value::Float(f64::from(scored.score)),
+                ]
+            })
+            .collect())
+    }
+
     /// Run a built-in procedure and return its output rows, each a
     /// positional vector aligned with [`procedure_columns`].
     fn invoke_procedure(
@@ -3731,6 +3769,7 @@ impl<'a> Executor<'a> {
     ) -> ExecResultT<Vec<Vec<Value>>> {
         match name {
             "drevo.vector.query" => self.proc_vector_query(args, span),
+            "fts.search" => self.proc_fts_search(args, span),
             "db.labels" => {
                 let mut labels: Vec<String> = Vec::new();
                 for node in self.drevo.collect_all_nodes()? {
@@ -5217,6 +5256,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "db.propertyKeys" => Some(&["propertyKey"]),
         // Vector search (issue #202): top-k nodes by cosine similarity.
         "drevo.vector.query" => Some(&["node", "score"]),
+        // Full-text search (issue #208): BM25-ranked matching nodes.
+        "fts.search" => Some(&["node", "score"]),
         _ => None,
     }
 }
@@ -5228,6 +5269,8 @@ fn procedure_arity(name: &str) -> usize {
     match name {
         // db.vector.query(label, property, query, k)
         "drevo.vector.query" => 4,
+        // fts.search(query, k)
+        "fts.search" => 2,
         // The db.* introspection procedures take no arguments.
         _ => 0,
     }

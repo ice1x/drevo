@@ -373,3 +373,114 @@ fn vector_query_wrong_arity_is_an_error() {
         "{err:?}"
     );
 }
+
+// ---- Full-text search (issue #208) -----------------------------------------
+// `CALL fts.search(query, k) YIELD node, score` — BM25-ranked matching nodes
+// from the full-text index (task 00131), the FTS analogue of
+// `drevo.vector.query`.
+
+/// Two entities carry the distinctive term `zorptastic` (in different groups);
+/// a third is unrelated (no shared trigrams with the query term).
+fn seed_fts_entities(db: &Drevo) {
+    exec(
+        "CREATE (:Entity {title: 'zorptastic anxiety spiral', group_id: 1}), \
+                (:Entity {title: 'zorptastic calm morning', group_id: 2}), \
+                (:Entity {title: 'unrelated content here', group_id: 1})",
+        db,
+    );
+}
+
+#[test]
+fn fts_search_returns_only_matching_nodes() {
+    let db = db();
+    seed_fts_entities(&db);
+    let rows = run(
+        "CALL fts.search('zorptastic', 10) YIELD node, score RETURN node.title AS t",
+        &db,
+    );
+    let titles = strings(&rows);
+    assert_eq!(titles.len(), 2, "got {titles:?}");
+    assert!(
+        titles.iter().all(|t| t.contains("zorptastic")),
+        "{titles:?}"
+    );
+    assert!(
+        !titles.iter().any(|t| t.contains("unrelated")),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn fts_search_post_yield_where_filters_by_group() {
+    let db = db();
+    seed_fts_entities(&db);
+    let rows = run(
+        "CALL fts.search('zorptastic', 10) YIELD node, score \
+         WHERE node.group_id = 1 \
+         RETURN node.title AS t",
+        &db,
+    );
+    assert_eq!(strings(&rows), vec!["zorptastic anxiety spiral"]);
+}
+
+#[test]
+fn fts_search_honours_k_limit() {
+    let db = db();
+    seed_fts_entities(&db);
+    let rows = run(
+        "CALL fts.search('zorptastic', 1) YIELD node, score RETURN node.title AS t",
+        &db,
+    );
+    assert_eq!(strings(&rows).len(), 1);
+}
+
+#[test]
+fn fts_search_exposes_a_positive_score() {
+    let db = db();
+    seed_fts_entities(&db);
+    let rows = run(
+        "CALL fts.search('zorptastic', 1) YIELD node, score RETURN score AS s",
+        &db,
+    );
+    assert_eq!(rows.len(), 1);
+    match &rows[0][0] {
+        Value::Float(f) => assert!(*f > 0.0, "BM25 score should be positive, got {f}"),
+        other => panic!("score must be a Float, got {other:?}"),
+    }
+}
+
+#[test]
+fn fts_search_standalone_projects_node_and_score() {
+    let db = db();
+    seed_fts_entities(&db);
+    let rows = run("CALL fts.search('zorptastic', 1)", &db);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 2);
+    assert!(matches!(rows[0][0], Value::Node(_)));
+    assert!(matches!(rows[0][1], Value::Float(_)));
+}
+
+#[test]
+fn fts_search_no_match_is_empty() {
+    let db = db();
+    seed_fts_entities(&db);
+    let rows = run(
+        "CALL fts.search('nonexistentqwxyz', 10) YIELD node, score RETURN node",
+        &db,
+    );
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn fts_search_wrong_arity_is_an_error() {
+    let db = db();
+    seed_fts_entities(&db);
+    let err = exec_err(
+        "CALL fts.search('zorptastic') YIELD node, score RETURN node",
+        &db,
+    );
+    assert!(
+        matches!(err, ExecError::InvalidProcedureCall { .. }),
+        "{err:?}"
+    );
+}

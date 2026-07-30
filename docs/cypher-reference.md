@@ -774,6 +774,17 @@ CALL drevo.vector.query('Chunk', 'embedding', [0.1, 0.2, 0.3], 5) YIELD node, sc
 RETURN node, score ORDER BY score DESC
 ```
 
+`CALL fts.search(query, k) YIELD node, score` returns the top-`k` nodes
+matching `query` in the BM25 full-text index (task `00131`), ranked by
+relevance — the full-text counterpart of `drevo.vector.query`. The `score` is
+the Okapi BM25 relevance. Post-filter with a `WHERE` on any node property and
+`ORDER BY score DESC` as usual.
+
+```cypher
+CALL fts.search('anxious thoughts about work', 25) YIELD node, score
+RETURN node, score ORDER BY score DESC
+```
+
 ---
 
 ## Literals
