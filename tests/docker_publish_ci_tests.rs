@@ -446,8 +446,8 @@ fn docker_publish_emits_latest_on_release_tags() {
     // Changed 2026-07-30: the workflow runs on `v*` tags (not `main`), so
     // `:latest` is gated on a version tag ref rather than the default
     // branch — it tracks the newest release.
-    let latest_gated = w.contains("latest")
-        && (w.contains("refs/tags/v") || w.contains("startsWith(github.ref"));
+    let latest_gated =
+        w.contains("latest") && (w.contains("refs/tags/v") || w.contains("startsWith(github.ref"));
     assert!(
         latest_gated,
         "workflow must emit the `latest` tag on `v*` release tags — e.g. \
