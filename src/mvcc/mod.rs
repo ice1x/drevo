@@ -102,32 +102,22 @@
 //!
 //! These all build directly on the primitives defined here.
 
-/// Recoverable error type for the MVCC layer
-/// ([`MvccError`](crate::mvcc::MvccError)).
+/// Recoverable error type for the MVCC layer ([`MvccError`]).
 pub mod error;
-/// Background garbage collection thread
-/// ([`GcWorker`](crate::mvcc::GcWorker)).
+/// Background garbage collection thread ([`GcWorker`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gc;
 /// Configurable transaction isolation levels
-/// ([`IsolationLevel`](crate::mvcc::IsolationLevel),
-/// [`Transaction`](crate::mvcc::Transaction),
-/// [`run_transaction`](crate::mvcc::run_transaction)).
+/// ([`IsolationLevel`], [`Transaction`], [`run_transaction`]).
 pub mod isolation;
-/// Optimistic concurrency control retry loop
-/// ([`run_with_retry`](crate::mvcc::run_with_retry)).
+/// Optimistic concurrency control retry loop ([`run_with_retry`]).
 pub mod occ;
-/// Multi-version key-value store
-/// ([`VersionedStore`](crate::mvcc::VersionedStore),
-/// [`VacuumReport`](crate::mvcc::VacuumReport)).
+/// Multi-version key-value store ([`VersionedStore`], [`VacuumReport`]).
 pub mod store;
 /// Transaction ids, the commit log, and snapshots
-/// ([`TransactionManager`](crate::mvcc::TransactionManager),
-/// [`Snapshot`](crate::mvcc::Snapshot), [`Xid`](crate::mvcc::Xid),
-/// [`XidStatus`](crate::mvcc::XidStatus)).
+/// ([`TransactionManager`], [`Snapshot`], [`Xid`], [`XidStatus`]).
 pub mod transaction;
-/// Tuple versioning — the `xmin` / `xmax`-stamped
-/// [`Version`](crate::mvcc::Version).
+/// Tuple versioning — the `xmin` / `xmax`-stamped [`Version`].
 pub mod version;
 
 pub use error::{MvccError, Result};
