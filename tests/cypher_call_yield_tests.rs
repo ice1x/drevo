@@ -247,3 +247,129 @@ fn error_is_deterministic_on_empty_graph() {
         "got {e:?}"
     );
 }
+
+// ---- Vector search (issue #202 Part 2) -------------------------------------
+// `CALL drevo.vector.query(label, property, query, k) YIELD node, score` —
+// top-k nodes ranked by cosine similarity to a query vector. Brute-force,
+// works with externally-computed embeddings stored as a list node property.
+
+/// Seed three chunks: `a` is identical to the query direction, `b` close,
+/// `c` orthogonal; `a`/`b` in book 1, `c` in book 2.
+fn seed_chunks(db: &Drevo) {
+    exec(
+        "CREATE (:Chunk {title: 'a', book_id: 1, embedding: [1.0, 0.0]}), \
+                (:Chunk {title: 'b', book_id: 1, embedding: [0.8, 0.6]}), \
+                (:Chunk {title: 'c', book_id: 2, embedding: [0.0, 1.0]})",
+        db,
+    );
+}
+
+#[test]
+fn vector_query_ranks_top_k_by_cosine() {
+    let db = db();
+    seed_chunks(&db);
+    let rows = run(
+        "CALL drevo.vector.query('Chunk', 'embedding', [1.0, 0.0], 3) YIELD node, score \
+         RETURN node.title AS t ORDER BY score DESC",
+        &db,
+    );
+    assert_eq!(strings(&rows), vec!["a", "b", "c"]);
+}
+
+#[test]
+fn vector_query_honours_k_limit() {
+    let db = db();
+    seed_chunks(&db);
+    let rows = run(
+        "CALL drevo.vector.query('Chunk', 'embedding', [1.0, 0.0], 2) YIELD node, score \
+         RETURN node.title AS t ORDER BY score DESC",
+        &db,
+    );
+    assert_eq!(strings(&rows), vec!["a", "b"]);
+}
+
+#[test]
+fn vector_query_post_yield_where_filters_by_property() {
+    let db = db();
+    seed_chunks(&db);
+    // The issue's headline query shape: score, then filter by book_id.
+    let rows = run(
+        "CALL drevo.vector.query('Chunk', 'embedding', [1.0, 0.0], 3) YIELD node, score \
+         WHERE node.book_id = 1 \
+         RETURN node.title AS t ORDER BY score DESC",
+        &db,
+    );
+    assert_eq!(strings(&rows), vec!["a", "b"]);
+}
+
+#[test]
+fn vector_query_exposes_a_numeric_score() {
+    let db = db();
+    seed_chunks(&db);
+    // The identical-direction chunk scores 1.0.
+    let rows = run(
+        "CALL drevo.vector.query('Chunk', 'embedding', [1.0, 0.0], 1) YIELD node, score \
+         RETURN score AS s",
+        &db,
+    );
+    assert_eq!(rows.len(), 1);
+    match &rows[0][0] {
+        Value::Float(f) => assert!((f - 1.0).abs() < 1e-6, "expected ~1.0, got {f}"),
+        other => panic!("score must be a Float, got {other:?}"),
+    }
+}
+
+#[test]
+fn vector_query_skips_nodes_without_the_embedding() {
+    let db = db();
+    seed_chunks(&db);
+    exec("CREATE (:Chunk {title: 'no_emb', book_id: 1})", &db);
+    let rows = run(
+        "CALL drevo.vector.query('Chunk', 'embedding', [1.0, 0.0], 10) YIELD node, score \
+         RETURN node.title AS t",
+        &db,
+    );
+    let titles = strings(&rows);
+    assert!(!titles.contains(&"no_emb".to_string()), "got {titles:?}");
+    assert_eq!(titles.len(), 3);
+}
+
+#[test]
+fn vector_query_standalone_projects_node_and_score() {
+    let db = db();
+    seed_chunks(&db);
+    let rows = run(
+        "CALL drevo.vector.query('Chunk', 'embedding', [1.0, 0.0], 1)",
+        &db,
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 2, "standalone CALL projects node + score");
+    assert!(matches!(rows[0][0], Value::Node(_)));
+    assert!(matches!(rows[0][1], Value::Float(_)));
+}
+
+#[test]
+fn vector_query_unknown_label_is_empty_not_error() {
+    let db = db();
+    seed_chunks(&db);
+    let rows = run(
+        "CALL drevo.vector.query('Nonexistent', 'embedding', [1.0, 0.0], 3) YIELD node, score \
+         RETURN node",
+        &db,
+    );
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn vector_query_wrong_arity_is_an_error() {
+    let db = db();
+    seed_chunks(&db);
+    let err = exec_err(
+        "CALL drevo.vector.query('Chunk', 'embedding', [1.0, 0.0]) YIELD node, score RETURN node",
+        &db,
+    );
+    assert!(
+        matches!(err, ExecError::InvalidProcedureCall { .. }),
+        "{err:?}"
+    );
+}

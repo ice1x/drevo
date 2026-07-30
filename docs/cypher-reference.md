@@ -760,6 +760,20 @@ ORDER BY score DESC
 LIMIT $k
 ```
 
+`CALL drevo.vector.query(label, property, query, k) YIELD node, score` returns
+the top-`k` nodes of `label` ranked by cosine similarity between their
+`property` embedding and the `query` vector — the same contract Neo4j's
+`db.index.vector.queryNodes` exposes. Nodes without the property (or with a
+non-numeric / mismatched-dimension one) are skipped. It is a brute-force scan
+(sub-millisecond at per-book scale); `k` is applied before any post-`YIELD`
+`WHERE`, so for pre-filtered per-book retrieval prefer the
+`cosine_similarity` form above.
+
+```cypher
+CALL drevo.vector.query('Chunk', 'embedding', [0.1, 0.2, 0.3], 5) YIELD node, score
+RETURN node, score ORDER BY score DESC
+```
+
 ---
 
 ## Literals
