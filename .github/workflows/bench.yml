@@ -14,8 +14,10 @@
 #   traversal_bfs/outgoing/depth_2   ~245 s
 #   …
 #
-# A full `cargo bench --all-features` cumulates to roughly one hour.
-# Running that on every PR was the root cause of the four-hour CI
+# A full `cargo bench --all-features` at criterion's default sample size
+# took ~150-175 min in practice (not the ~1h once assumed) — see the
+# `--sample-size 20` + `timeout-minutes` in the job below, which bound it.
+# Running benches on every PR was the root cause of the four-hour CI
 # debacle on PR #76. PR #77 fixed PR-gating CI by removing benches
 # from the `test` job. This file is the OTHER half: benches still
 # matter as a perf signal, they just don't belong in the PR critical
@@ -79,6 +81,15 @@ jobs:
   bench:
     name: Criterion benchmarks
     runs-on: self-hosted
+    # Hard cap so a scheduled bench can never squat the single
+    # self-hosted runner for hours. Before this, a full run took
+    # ~150-175 min every night (one run hit 359 min — one minute from
+    # GitHub's 360-min default kill), monopolising the only runner from
+    # 04:00 well into working hours. Combined with the reduced criterion
+    # `--sample-size` below (which brings a normal run comfortably under
+    # this cap), 90 min is generous headroom for the real work while
+    # bounding any pathological hang. Mirrors `slow-tests.yml`.
+    timeout-minutes: 90
     # Do NOT block the workflow on a single regressed bench — let
     # all four bench crates run, surface failures as annotations,
     # and capture the criterion HTML so a human can triage.
@@ -106,7 +117,16 @@ jobs:
         # same feature surface the test suite uses. `--no-fail-fast`
         # so one failing bench doesn't prevent the rest from
         # producing data.
-        run: cargo bench --all-features --no-fail-fast
+        #
+        # `-- --sample-size 20` (criterion default is 100): this is a
+        # nightly regression TRIPWIRE, not publication-grade measurement,
+        # so 20 samples is plenty to catch a meaningful regression while
+        # cutting wall-clock ~4-5x. Full-config runs took ~150-175 min and
+        # hogged the single runner for hours; 20 samples brings that well
+        # under the 90-min `timeout-minutes` cap above. Bump it (or run
+        # `workflow_dispatch` with the default) when a run needs tighter
+        # confidence intervals.
+        run: cargo bench --all-features --no-fail-fast -- --sample-size 20
 
       - name: Upload criterion reports
         # Always upload — even on partial failure we want the

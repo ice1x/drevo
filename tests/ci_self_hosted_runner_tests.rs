@@ -877,6 +877,44 @@ fn bench_yml_runs_on_self_hosted() {
 }
 
 #[test]
+fn bench_yml_caps_runtime_so_it_cannot_hog_the_runner() {
+    // A full criterion run took ~150-175 min every night (one run hit
+    // 359 min, one minute from GitHub's 360-min default kill), squatting
+    // the single self-hosted runner from 04:00 into working hours. Two
+    // guards keep that bounded and must both stay: an explicit
+    // `timeout-minutes` (< 360, so a hang frees the runner) and a reduced
+    // criterion `--sample-size` (so a normal run finishes well under the
+    // cap). Removing either reintroduces the multi-hour hog.
+    let body = fs::read_to_string(workflows_dir().join("bench.yml")).expect("bench.yml exists");
+    let timeout = body
+        .lines()
+        .find(|l| l.trim_start().starts_with("timeout-minutes:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "bench.yml must declare `timeout-minutes:` — without it the job \
+                 inherits GitHub's 360-min default and can squat the single \
+                 self-hosted runner for hours (it took ~3h nightly before this cap)."
+            )
+        });
+    let value: u32 = timeout
+        .split(':')
+        .nth(1)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| {
+            panic!("bench.yml has an unparseable timeout-minutes line: {timeout:?}")
+        });
+    assert!(
+        value < 360,
+        "bench.yml timeout-minutes={value} must be < 360 (the default 6h ceiling)"
+    );
+    assert!(
+        body.contains("--sample-size"),
+        "bench.yml must pass criterion `--sample-size` to keep the nightly run \
+         under the timeout — the default (100) samples took ~150-175 min."
+    );
+}
+
+#[test]
 fn bench_yml_does_not_trigger_on_pr_or_push() {
     // The ENTIRE reason for this workflow's existence: it must NOT
     // re-introduce the four-hour CI debacle by accidentally
