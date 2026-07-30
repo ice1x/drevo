@@ -30,6 +30,33 @@ Nodes: `order`, `product`, `customer`, `warehouse`, `invoice`. Edges: `ordered_b
 
 Nodes: `bug`, `feature`, `release`, `test_case`, `assignee`. Edges: `reported_in`, `fixed_by`, `verified_by`, `blocks_release`. FTS over bug descriptions, traversal for impact analysis.
 
+### Agent Memory Graph
+
+A persistent, queryable **memory backend for agent orchestrators** (LangGraph, Temporal, Claude Code, Cursor, CrewAI, multi-agent swarms) that survives across sessions, agents, and machines. Nodes: `agent`, `session`, `observation`, `decision`, `task`, `artifact`, `fact`, `preference`, `tool_call`. Edges: `observed_by`, `decided_by`, `performed_in_session`, `derived_from`, `contradicts`, `supersedes`, `references_artifact`, `belongs_to_task`, `honours_preference`, `produced_by_tool`.
+
+The orchestrator hot path maps directly onto drevo's existing surface — no new engine features needed:
+
+- **record_observation** → `create_node` + `create_edge`
+- **recall** (FTS + kind filter, or `CALL fts.search(query, k)` over Bolt) → BM25 ranking
+- **context_subgraph** (a bounded window for an LLM prompt) → `subgraph(id, depth)`
+- **supersede** (mark memory stale) → a `supersedes` edge
+- **compact** (prune low-confidence observations) → scan by kind + `delete_node`
+
+The full flow is pinned by [`tests/scenario_agent_memory.rs`](tests/scenario_agent_memory.rs).
+
+**Why drevo over the usual options** — its differentiator is hitting all five at once:
+
+| | Embedded | Cross-platform | Graph-native | Built-in FTS | No external deps |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Flat markdown (`MEMORY.md`) | ✅ | ✅ | ❌ | ❌ | ✅ |
+| Vector DB (Chroma/Qdrant) | ~ | ~ | ❌ | ~ | ❌ |
+| SQLite ad-hoc schema | ✅ | ✅ | ❌ | ~ | ✅ |
+| **drevo** | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+Because drevo runs embedded on Linux/macOS/Windows, iOS/Android, WASM, and as a Docker/HTTP service, a **single memory graph file can travel** between a local Claude Code session, a cloud orchestrator run, and a mobile app — synced by file copy or over Bolt/HTTP.
+
+> An agent-memory MCP server that exposes this surface to MCP-capable orchestrators lives in the separate [`ice1x/drevo-mcp`](https://github.com/ice1x/drevo-mcp) repo, not here.
+
 ### Common patterns across all scenarios
 
 - **Node kinds** define domain entities — the `kind` field + `kind_index` provide filtered views
