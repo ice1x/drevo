@@ -761,9 +761,14 @@ impl<'a> Session<'a> {
         let exhausted;
         loop {
             if n >= 0 && emitted >= n {
-                // Pulled the requested batch — peek to see whether more
-                // rows are still queued.
-                exhausted = pending.rows.by_ref().peekable().peek().is_none();
+                // Pulled the requested batch — check whether more rows are
+                // still queued WITHOUT consuming one. `pending.rows` is a
+                // `std::vec::IntoIter`, so `as_slice()` exposes the remaining
+                // items non-destructively. (The old
+                // `.by_ref().peekable().peek()` built a throwaway `Peekable`
+                // that pulled the next row into its buffer and then dropped
+                // it — silently losing one row at every PULL batch boundary.)
+                exhausted = pending.rows.as_slice().is_empty();
                 break;
             }
             match pending.rows.next() {
@@ -819,7 +824,9 @@ impl<'a> Session<'a> {
         let exhausted;
         loop {
             if n >= 0 && dropped >= n {
-                exhausted = pending.rows.by_ref().peekable().peek().is_none();
+                // Non-consuming remaining-rows check — see `handle_pull`; the
+                // old `.by_ref().peekable().peek()` dropped one row per batch.
+                exhausted = pending.rows.as_slice().is_empty();
                 break;
             }
             if pending.rows.next().is_none() {
@@ -1199,6 +1206,45 @@ mod tests {
         assert!(
             agent.contains("drevo"),
             "bolt agent should still identify drevo, got {agent:?}"
+        );
+    }
+
+    #[test]
+    fn batched_pull_does_not_drop_rows_across_batches() {
+        // Regression: `handle_pull` checked for remaining rows with
+        // `.by_ref().peekable().peek()`, which pulled the next row into a
+        // throwaway `Peekable` and then dropped it — silently losing one row
+        // at every PULL batch boundary. Pull three rows one at a time and
+        // assert none go missing.
+        let db = crate::db::Drevo::open_in_memory().unwrap();
+        let mut session = Session::new(&db);
+        session.state = State::Ready; // skip the HELLO handshake for the unit
+        let run = session.handle_run(
+            "UNWIND [1, 2, 3] AS x RETURN x".to_string(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        assert!(
+            matches!(run.last(), Some(ServerMessage::Success { .. })),
+            "RUN should succeed, got {run:?}"
+        );
+
+        let mut n1 = BTreeMap::new();
+        n1.insert("n".to_string(), Value::Integer(1));
+        let mut records: Vec<i64> = Vec::new();
+        for _ in 0..3 {
+            for msg in session.handle_pull(n1.clone()) {
+                if let ServerMessage::Record { fields } = msg {
+                    if let Some(Value::Integer(i)) = fields.first() {
+                        records.push(*i);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            records,
+            vec![1, 2, 3],
+            "every row must survive batched PULL — none dropped by the exhaustion check"
         );
     }
 
