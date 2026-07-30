@@ -588,9 +588,9 @@ fn ci_yml_caps_cargo_build_jobs_below_runner_core_count() {
 }
 
 /// The docs-only path set — these glob patterns MUST appear in
-/// `paths-ignore:` of every NON-required heavy workflow
-/// (cross-compile.yml, docker-publish.yml) so docs-only PRs don't
-/// consume runner time or hit upstream flakes there.
+/// `paths-ignore:` of every NON-required heavy workflow that runs on
+/// branch pushes (cross-compile.yml) so docs-only PRs don't consume
+/// runner time or hit upstream flakes there.
 ///
 /// ci.yml is NOT in that list: as the required-checks workflow it must
 /// always run (so its `CI / <Job>` checks always report), and it filters
@@ -606,7 +606,10 @@ const DOCS_ONLY_GLOBS: &[&str] = &["**/*.md", "audit/**", "memory/**", "LICENSE"
 /// dl.google.com — PR #81, a README-only PR, was blocked by exactly
 /// that on cross-compile.yml before this invariant landed). ci.yml is
 /// intentionally absent (it always runs; it gates docs-only per job).
-const HEAVY_WORKFLOWS_WITH_DOCS_SKIP: &[&str] = &["cross-compile.yml", "docker-publish.yml"];
+/// docker-publish.yml was removed 2026-07-30: it no longer runs on
+/// branch pushes (release-tag + workflow_dispatch only), so it has no
+/// `paths-ignore` to keep in sync.
+const HEAVY_WORKFLOWS_WITH_DOCS_SKIP: &[&str] = &["cross-compile.yml"];
 
 #[test]
 fn heavy_workflows_share_docs_only_paths_ignore() {

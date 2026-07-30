@@ -1,13 +1,19 @@
 # Phase 8 task 00051 — build and publish the drevo container image
 # to GitHub Container Registry (`ghcr.io/ice1x/drevo`).
 #
-# Triggers:
-#   * push to `main`           → publishes `latest` + `sha-<short>` + `main`
+# Triggers (release-only — NOT on every push to main):
 #   * push of a `v*` git tag   → publishes `MAJOR.MINOR.PATCH` + `MAJOR.MINOR`
-#                                + `sha-<short>`
+#                                + `latest` + `sha-<short>`. This is what
+#                                `make release` fires.
 #   * workflow_dispatch        → manual re-publish from the Actions UI; useful
-#                                for cutting a hotfix tag rebuild without a
-#                                code change.
+#                                for a hotfix rebuild without a code change.
+#
+# Why not on every push to `main` (changed 2026-07-30): the multi-arch
+# build below runs the `linux/amd64` cell under QEMU on the single
+# self-hosted Apple Silicon runner (~40 min), and it serialised behind and
+# blocked every other job on EVERY merge. The image is a release artifact,
+# not a per-merge one, so it now publishes on release tags only. `:latest`
+# tracks the newest release tag.
 #
 # Why no `pull_request:` trigger
 # ------------------------------
@@ -44,8 +50,8 @@
 #   * `type=ref,event=branch`                     → `main` on default-branch builds
 #   * `type=semver,pattern={{version}}`           → `0.1.0` from tag `v0.1.0`
 #   * `type=semver,pattern={{major}}.{{minor}}`   → `0.1`   from tag `v0.1.0`
-#   * `type=raw,value=latest,enable=is_default_branch`
-#                                                 → `latest` only on `main`
+#   * `type=raw,value=latest,enable=<v-tag>`      → `latest` on `v*` tags
+#                                                 (the newest release)
 # Hand-rolled tag logic in shell drifts from semver — never extend this.
 #
 # Verification: every wire-format invariant above is pinned by
@@ -54,27 +60,19 @@
 
 name: Docker Publish
 
-# Docs-only changes bypass this workflow via `paths-ignore`. The set
-# MUST stay byte-identical to ci.yml's and cross-compile.yml's
-# paths-ignore set — locked by
-# `tests/ci_self_hosted_runner_tests.rs::heavy_workflows_share_docs_only_paths_ignore`.
-# Without this filter, a README-only push to `main` would still trigger
-# the linux/amd64 + linux/arm64 multi-arch build via QEMU (~20-30 min
-# under emulation), consuming runner time and adding nothing — the
-# Docker image cannot meaningfully change when only docs do.
-# `push` to tags (`v*`) is intentionally NOT filtered: a release tag
-# always rebuilds the image regardless of what files changed in the
-# tagged commit.
+# Trigger: release tags (`v*`) + manual `workflow_dispatch` ONLY.
+#
+# The image is intentionally NOT built on every push to `main`. On the
+# single self-hosted Apple Silicon runner the `linux/amd64` half of the
+# multi-arch matrix runs under QEMU emulation (~40 min per run), and it
+# serialised behind — and blocked — every other job on every merge. The
+# image is a release artifact, not a per-merge one: `make release` (which
+# pushes a `vX.Y.Z` tag) is what publishes it. `:latest` tracks the newest
+# release tag (see the metadata step), and ops can rebuild any ref on
+# demand via `workflow_dispatch`. Because there is no `push:main` trigger,
+# there is no `paths-ignore` to keep in sync — a tag build always runs.
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - '**/*.md'
-      - 'audit/**'
-      - 'memory/**'
-      - 'LICENSE'
-      - '.gitignore'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -167,7 +165,10 @@ jobs:
             type=sha
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            # `:latest` now tracks the newest RELEASE (this workflow only
+            # runs on `v*` tags + dispatch), so gate it on a version tag
+            # rather than the default branch.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
