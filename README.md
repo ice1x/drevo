@@ -890,6 +890,37 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
 ---
 
+### Phase 19 — Self-Hosted Embeddings (`/v1/embeddings`)
+
+> Goal: let a **single drevo instance** serve graph, vector search, **and** embedding generation, so a deployment is self-contained for RAG. drevo already persists `Value::Vector`, builds an HNSW index, and searches it (`vector_search` / `similar()` / cosine) — but it hosts **no embedder** (the `drevo.rag.Embedder` is a caller-supplied protocol; the HTTP server returns 400 on the semantic-faceting path for that reason). Expose an **OpenAI-compatible** `POST /v1/embeddings`, **opt-in / config-gated** so the dependency-free default binary is preserved. Consumer: a first-class `DrevoEmbedder` in the graphiti connector (`base_url` → drevo). Tracks [#217](https://github.com/ice1x/drevo/issues/217). **Architectural rule:** off by default; the default binary bundles no HTTP client and no model weights.
+
+- [ ] **`/v1/embeddings` route** — OpenAI-shaped I/O (`{ "model", "input": [...] }` → `{ "data": [ { "embedding": [...] } ] }`); returns a clear `501`/`404` when embeddings are not enabled.
+- [ ] **Proxy backend (first slice)** — forward to a configured upstream (OpenAI / Ollama / any OpenAI-compatible server) using a `base_url` + optional API key taken from **config/env only, never from the request** (SSRF-safe). Gated behind a Cargo feature (e.g. `embeddings-proxy`, pulls the HTTP client) **and** runtime config, so the default build stays dependency-free.
+- [ ] **Local model backend (second slice, optional)** — host a small embedding model behind a separate opt-in feature flag; the default binary is unaffected.
+- [ ] **Config surface** — enable flag, upstream URL, model name, request timeout; documented in the Admin Guide.
+- [ ] **Tests** — request/response shape; disabled-by-default returns `501`; proxy round-trip against a stub upstream; SSRF guard (upstream is fixed by config, not request-controlled).
+
+**Definition of done:** with the feature enabled and an upstream configured, `POST /v1/embeddings` returns OpenAI-compatible vectors usable by an OpenAI SDK; the disabled/default build never links the HTTP-client dependency and the endpoint reports "not enabled"; the upstream URL is **never** read from the request body (no SSRF); graphiti can point a `DrevoEmbedder` at a drevo instance. Closes #217.
+
+---
+
+### Phase 20 — Security Hardening & OWASP Top 10 Audit
+
+> Goal: audit drevo's **network-facing surface** against the OWASP Top 10 and secure-development-lifecycle practices, then harden the gaps — **before** more services (HTTP API, Bolt, the Phase 19 embeddings proxy) widen the attack surface. Mirrors Phase 8.5's audit style: each item yields a documented finding plus a fix-or-explicitly-accept decision. Auth/hardening additions are **opt-in**; the default behaviour for embedded/local use is unchanged.
+
+- [ ] **A01 Broken Access Control** — the HTTP API ships **no auth by default** and `/cypher` runs arbitrary Cypher over any database. Document the threat model; add **optional** API-key / bearer auth + per-database access gating (opt-in; embedded/local default unchanged).
+- [ ] **A03 Injection** — audit Cypher parameter binding across HTTP `/cypher` and Bolt; confirm no string-concatenated queries; review property / label / DDL injection vectors.
+- [ ] **A10 SSRF** — the Phase 19 embeddings proxy issues **outbound** HTTP: enforce upstream-from-config-only + a host allowlist; audit any other user-influenced outbound request path.
+- [ ] **A02 / A07 Crypto & Auth** — review the Bolt argon2 `UserStore` (`bolt-auth`), TLS (`bolt-tls`), token handling, and defaults.
+- [ ] **A05 Security Misconfiguration** — safe defaults, no verbose error/stack leakage over HTTP, CORS posture, bind-address guidance (localhost vs `0.0.0.0`).
+- [ ] **A09 Logging & Monitoring** — ensure the structured query log and `/metrics` never leak secrets or PII; define auditable security events.
+- [ ] **A06 Vulnerable Dependencies** — add `cargo audit` (advisory scan) to CI; document the update policy.
+- [ ] **Deliverable** — `audit/AUDIT-security.md` mapping every OWASP Top 10 category to a drevo-specific assessment (applicable / N-A with reason) with file:line findings and fix-or-accept, mirroring the Phase 8.5 report format; run the `/security-review` skill on each hardening PR.
+
+**Definition of done:** every OWASP Top 10 category has a documented drevo-specific assessment; each applicable gap is fixed or explicitly accepted with a reason; auth + SSRF guards are opt-in and the embedded/local default behaviour is unchanged; CI gains a dependency-advisory check; the audit report lives at `audit/AUDIT-security.md`.
+
+---
+
 ### Phase 8.5 — Codebase Audit & Refactor (skill-anchored)
 
 > **Re-ranked as the immediate next priority** (before remaining Phase 8/9 tasks). The 9.5k LOC of production code in this repo were written **before the project's four skill specs existed** (`drevo-tdd`, `drevo-rust`, `drevo-architecture`, `drevo-database` — under `.claude/skills/`). Phase 8.5 audits the existing code against those skill rules and refactors where it has drifted, BEFORE Phase 10 (Cypher) and Phase 13 (MVCC) put heavy new layers on top of the same surfaces.
