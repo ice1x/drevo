@@ -70,6 +70,89 @@ if [ "${1:-}" = "next" ]; then
   exit 0
 fi
 
+# ── One-shot image release: `image [part] [--yes] [--no-tag]` ──
+# Increment the version, BUILD the container image, and PUSH it to the registry
+# the deployment actually pulls from — Docker Hub `ice1x/drevo` by default
+# (override with DREVO_IMAGE, e.g. ghcr.io/ice1x/drevo). This is the missing
+# "one command to ship a new deployed image": the tag-only flow below merely
+# cuts a `vX.Y.Z` tag, which Docker Publish CI mirrors to ghcr.io — a registry
+# the compose/run-drevo deploy does not use. Unless `--no-tag`, this also cuts
+# and pushes the git tag so ghcr + history stay in sync.
+if [ "${1:-}" = "image" ]; then
+  shift
+  assume_yes=0
+  part="minor"
+  do_tag=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -y|--yes) assume_yes=1; shift ;;
+      --no-tag) do_tag=0; shift ;;
+      minor|patch|major) part="$1"; shift ;;
+      *) echo "release.sh image: unexpected arg '$1'" >&2; exit 2 ;;
+    esac
+  done
+
+  cd "$(repo_root)"
+
+  command -v docker >/dev/null 2>&1 || {
+    echo "release.sh: docker not found on PATH." >&2; exit 1; }
+  docker info >/dev/null 2>&1 || {
+    echo "release.sh: docker daemon unreachable — is Docker running?" >&2; exit 1; }
+
+  branch=$(git symbolic-ref --quiet --short HEAD || echo DETACHED)
+  if [ "$branch" != "main" ]; then
+    echo "release.sh: refusing to release from '$branch' — switch to main first." >&2
+    exit 1
+  fi
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "release.sh: working tree is dirty — commit or stash before releasing." >&2
+    exit 1
+  fi
+
+  cur=$(current_version)
+  next=$(bump_version "$cur" "$part")
+  tag="v$next"
+  img="${DREVO_IMAGE:-ice1x/drevo}"
+
+  if [ "$do_tag" -eq 1 ] && git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+    echo "release.sh: tag $tag already exists (pass --no-tag to build+push the image only)." >&2
+    exit 1
+  fi
+
+  echo "Current version : $cur"
+  echo "Next version    : $next   (bump: $part)"
+  echo "Will build+push : $img:$next  and  $img:latest"
+  if [ "$do_tag" -eq 1 ]; then
+    echo "Will also tag   : $tag  (→ ghcr.io mirror via Docker Publish CI)"
+  fi
+  if [ "$assume_yes" -ne 1 ]; then
+    printf 'Proceed? [y/N] '
+    read -r reply
+    case "$reply" in
+      y|Y|yes|YES) : ;;
+      *) echo "Aborted."; exit 0 ;;
+    esac
+  fi
+
+  echo "Building $img:$next …"
+  docker build -t "$img:$next" -t "$img:latest" .
+  echo "Pushing $img:$next and $img:latest …"
+  docker push "$img:$next"
+  docker push "$img:latest"
+
+  if [ "$do_tag" -eq 1 ]; then
+    git tag -a "$tag" -m "drevo $next"
+    git push origin "$tag"
+  fi
+
+  echo
+  echo "Done. Redeploy where the drevo container + its bind-mounted ./data live:"
+  echo "  docker compose pull && DREVO_UID=\$(id -u) DREVO_GID=\$(id -g) docker compose up -d"
+  echo "The redb file is on the host and survives the image swap; format v1 stays"
+  echo "backward-compatible, so existing data opens unchanged."
+  exit 0
+fi
+
 # ── Real release: parse flags ──
 assume_yes=0
 part="minor"

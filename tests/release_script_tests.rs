@@ -87,4 +87,47 @@ fn release_targets_do_not_push_from_the_makefile() {
         !makefile.contains("git push"),
         "the Makefile must not `git push` directly — releasing goes through scripts/release.sh"
     );
+    assert!(
+        !makefile.contains("docker push"),
+        "the Makefile must not `docker push` directly — image release goes through scripts/release.sh"
+    );
+}
+
+#[test]
+fn release_script_supports_one_shot_image_build_and_push() {
+    // The `image` subcommand is the missing "one command to ship a deployed
+    // image": bump -> docker build -> docker push (to the registry the deploy
+    // pulls from) -> git tag. Assert the structure rather than running docker.
+    let s = read("scripts/release.sh");
+    assert!(
+        s.contains(r#""image""#),
+        "release.sh must handle an `image` subcommand"
+    );
+    assert!(
+        s.contains("docker build"),
+        "release.sh `image` mode must build the container image"
+    );
+    assert!(
+        s.contains("docker push"),
+        "release.sh `image` mode must push the container image"
+    );
+    // Must push to the registry the deploy actually uses (Docker Hub by
+    // default), overridable via DREVO_IMAGE — not hard-wired to ghcr.io.
+    assert!(
+        s.contains("DREVO_IMAGE") && s.contains("ice1x/drevo"),
+        "release.sh `image` mode must default to the Docker Hub deploy image, DREVO_IMAGE-overridable"
+    );
+}
+
+#[test]
+fn makefile_wires_release_image_target() {
+    let makefile = read("Makefile");
+    assert!(
+        makefile.contains("release-image:"),
+        "Makefile must define a `release-image` target"
+    );
+    assert!(
+        makefile.contains("scripts/release.sh image"),
+        "the `release-image` target must delegate to `scripts/release.sh image`"
+    );
 }
