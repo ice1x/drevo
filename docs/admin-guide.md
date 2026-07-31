@@ -42,6 +42,52 @@ redb file, so it never contends for redb's single-process lock).
 
 Invalid configuration exits with code `2`; a runtime failure exits with `1`.
 
+### Embeddings proxy (`/v1/embeddings`, opt-in)
+
+drevo can host an **OpenAI-compatible** `POST /v1/embeddings` endpoint so one
+instance serves graph, vector search, **and** embedding generation. It is
+off by default: the endpoint is always present but answers `503`
+(`embeddings backend not configured`) until a backend is compiled **and**
+configured. The proxy backend forwards each request to a configured upstream
+(OpenAI / Ollama / vLLM / any OpenAI-compatible server).
+
+1. **Build** with the feature (pulls a `reqwest` HTTP client on the pure-Rust
+   `rustls`+`ring` stack — no OpenSSL, no C toolchain):
+
+   ```
+   cargo build --release --features embeddings-proxy
+   ```
+
+2. **Configure** the upstream. These are read only under `embeddings-proxy`:
+
+   | Variable | Default | Meaning |
+   |----------|---------|---------|
+   | `DREVO_EMBEDDINGS_UPSTREAM` | (unset) | Full upstream URL, e.g. `https://api.openai.com/v1/embeddings` or `http://localhost:11434/v1/embeddings`. Unset ⇒ endpoint stays `503`. Must be `http`/`https`. |
+   | `DREVO_EMBEDDINGS_API_KEY` | (unset) | Bearer token forwarded as `Authorization: Bearer …`. |
+   | `DREVO_EMBEDDINGS_MODEL` | (unset) | Default model when a request omits `model`. |
+
+   A set-but-invalid `DREVO_EMBEDDINGS_UPSTREAM` (empty or non-http scheme)
+   fails startup fast rather than degrading silently.
+
+> **Security (OWASP A10 / SSRF).** The upstream is taken **only** from these
+> variables — **never** from the request body. The request type carries no URL
+> field, so a caller cannot redirect drevo's outbound call at an internal
+> address (e.g. a cloud metadata endpoint). A host allowlist and a request
+> timeout knob are tracked as Phase 20 / follow-up hardening.
+
+Request / response shape:
+
+```
+POST /v1/embeddings
+{ "model": "text-embedding-3-small", "input": ["text a", "text b"] }
+-> { "object": "list",
+     "data": [ { "object": "embedding", "index": 0, "embedding": [ … ] }, … ],
+     "model": "text-embedding-3-small", "usage": { … } }
+```
+
+`input` accepts a single string or an array; an empty `input` is a `400`; an
+upstream failure surfaces as `502`.
+
 ---
 
 ## 3. Docker
