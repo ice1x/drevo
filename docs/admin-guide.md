@@ -88,6 +88,14 @@ POST /v1/embeddings
 `input` accepts a single string or an array; an empty `input` is a `400`; an
 upstream failure surfaces as `502`.
 
+The proxy is a **transparent passthrough**: `model` + `input` are validated,
+but any other request field (OpenAI `dimensions` / `encoding_format` / `user`,
+Voyage / Anthropic-recommended `input_type` / `output_dimension`, …) is
+forwarded verbatim, and the upstream response — including base64 embeddings
+(`encoding_format: "base64"`) — is returned unchanged. So any OpenAI-compatible
+provider works without drevo needing to know its parameter set. (The outbound
+destination is still config-only — a forwarded field never changes it.)
+
 ---
 
 ## 3. Docker

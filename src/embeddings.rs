@@ -1,4 +1,4 @@
-//! OpenAI-compatible text-embedding endpoint (Phase 19, issue #217).
+//! OpenAI-compatible text-embedding endpoint (Phase 19, issues #217 + passthrough).
 //!
 //! drevo is a graph **+ vector store**: it persists `Value::Vector` nodes,
 //! builds an HNSW index, and searches them. It deliberately does not *host* an
@@ -16,34 +16,54 @@
 //!      "embedding": [ ... ] }, ... ], "model": "<name>", "usage": { ... } }
 //! ```
 //!
+//! # Provider-agnostic passthrough
+//!
+//! The proxy is a **transparent passthrough**, not a re-typed adapter, so it
+//! works with every OpenAI-shaped provider even though their optional fields
+//! differ:
+//!
+//! - **Request** — `model` + `input` are recognised (and validated), but every
+//!   other field the client sends (`dimensions`, `encoding_format`, `user` for
+//!   OpenAI; `input_type`, `output_dimension` for Voyage / Anthropic-recommended;
+//!   anything future) is **forwarded verbatim** to the upstream.
+//! - **Response** — the upstream body is returned **verbatim** as JSON, so
+//!   base64-encoded embeddings (`encoding_format: "base64"`) and any extra
+//!   fields survive unchanged.
+//!
+//! The only normalisation is: `input` is forwarded as an array (every
+//! OpenAI-compatible upstream accepts that form), and a missing/empty `model`
+//! is filled from the server's configured default.
+//!
 //! # Backends
 //!
-//! The endpoint itself (types, validation, routing) is always compiled with
-//! the `http` feature and adds **no** dependencies — the default binary stays
-//! lean. Until a backend is configured it answers `503 Service Unavailable`
+//! The endpoint itself (validation, routing) is always compiled with the
+//! `http` feature and adds **no** dependencies — the default binary stays lean.
+//! Until a backend is configured it answers `503 Service Unavailable`
 //! ("embeddings backend not configured"), exactly as the semantic-facet path
 //! answers `400` when no embedder is present.
 //!
 //! A concrete backend is opt-in:
 //!
 //! - [`ProxyBackend`](crate::embeddings::ProxyBackend) (feature
-//!   `embeddings-proxy`) forwards the request to a
-//!   configured upstream (OpenAI, Ollama, vLLM, …) and passes the response
-//!   back. This keeps drevo dependency-free by default while making one
-//!   instance the whole RAG backend when enabled.
+//!   `embeddings-proxy`) forwards the request to a configured upstream (OpenAI,
+//!   Voyage, Ollama, vLLM, …) and passes the response back. This keeps drevo
+//!   dependency-free by default while making one instance the whole RAG backend
+//!   when enabled.
 //!
 //! # Security — SSRF (OWASP A10)
 //!
-//! The upstream is taken **only** from server configuration
+//! The outbound destination is taken **only** from server configuration
 //! ([`EmbeddingsConfig::from_env`](crate::embeddings::EmbeddingsConfig::from_env),
-//! `DREVO_EMBEDDINGS_UPSTREAM`). It is never read from the request body:
-//! [`EmbeddingsRequest`](crate::embeddings::EmbeddingsRequest) has no URL
-//! field, so a
-//! caller can never redirect drevo's outbound call at an internal address
-//! (e.g. the cloud metadata endpoint). This is a type-level guarantee, locked
-//! by tests.
+//! `DREVO_EMBEDDINGS_UPSTREAM`) — **never** from the request. A request field
+//! is forwarded *to that fixed upstream* but can never change **where** drevo
+//! connects, so a caller cannot redirect the outbound call at an internal
+//! address (e.g. the cloud metadata endpoint). Even a body carrying a `url` /
+//! `base_url` key is harmless: it rides along to the operator's configured
+//! upstream, which ignores it; the connection target is unaffected. This is a
+//! configuration-boundary guarantee, locked by tests.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::{Map, Value};
 
 /// The `input` field of an embeddings request. OpenAI accepts either a single
 /// string or an array of strings; both deserialize here.
@@ -80,10 +100,12 @@ impl EmbeddingInput {
 
 /// An OpenAI-compatible embeddings request body.
 ///
-/// Only `model` and `input` are recognised. Any other field a client sends is
-/// ignored by serde — in particular there is **no** way to specify an upstream
-/// URL from the request (see the module-level SSRF note).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// `model` and `input` are recognised and validated; **every other field is
+/// captured in [`extra`](Self::extra) and forwarded verbatim** to the upstream
+/// (`dimensions`, `encoding_format`, `user`, `input_type`, …). There is no URL
+/// field, and `extra` cannot change the outbound destination (see the
+/// module-level SSRF note) — it only rides along to the configured upstream.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EmbeddingsRequest {
     /// Requested model name. Forwarded to the upstream; when empty, the
     /// server's configured default model (if any) is used.
@@ -91,54 +113,10 @@ pub struct EmbeddingsRequest {
     pub model: String,
     /// Text(s) to embed.
     pub input: EmbeddingInput,
-}
-
-fn list_object() -> String {
-    "list".to_string()
-}
-
-fn embedding_object() -> String {
-    "embedding".to_string()
-}
-
-/// One embedding in a response, matching OpenAI's `data[]` element.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EmbeddingData {
-    /// Always `"embedding"`.
-    #[serde(default = "embedding_object")]
-    pub object: String,
-    /// Zero-based position of this embedding, matching the input order.
-    pub index: usize,
-    /// The embedding vector.
-    pub embedding: Vec<f32>,
-}
-
-/// Token accounting, mirroring OpenAI's `usage`. drevo does not tokenise, so
-/// when proxying it reflects whatever the upstream reports (default zeros).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Usage {
-    /// Tokens in the prompt/input.
-    #[serde(default)]
-    pub prompt_tokens: usize,
-    /// Total tokens billed.
-    #[serde(default)]
-    pub total_tokens: usize,
-}
-
-/// An OpenAI-compatible embeddings response body.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EmbeddingsResponse {
-    /// Always `"list"`.
-    #[serde(default = "list_object")]
-    pub object: String,
-    /// The embeddings, one per input, in input order.
-    pub data: Vec<EmbeddingData>,
-    /// The model that produced the embeddings.
-    #[serde(default)]
-    pub model: String,
-    /// Token accounting.
-    #[serde(default)]
-    pub usage: Usage,
+    /// Every other top-level field the client sent, forwarded verbatim to the
+    /// upstream so provider-specific parameters pass through unchanged.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// Errors surfaced by the embeddings path.
@@ -152,7 +130,7 @@ pub enum EmbeddingsError {
     #[error("invalid embeddings request: {0}")]
     InvalidInput(String),
     /// The configured upstream URL is malformed or uses an unsupported scheme
-    /// — a server-configuration fault (`500`).
+    /// — a server-configuration fault.
     #[error("invalid embeddings upstream: {0}")]
     InvalidUpstream(String),
     /// The upstream call failed or returned an unexpected response — a bad
@@ -238,37 +216,26 @@ fn effective_model(req: &EmbeddingsRequest, config: &EmbeddingsConfig) -> String
 }
 
 /// Build the JSON body forwarded to the upstream. Pure (no I/O) so it is unit
-/// testable without a network client. Always normalises `input` to an array,
-/// which every OpenAI-compatible upstream accepts.
+/// testable without a network client.
+///
+/// Starts from the request's passthrough [`extra`](EmbeddingsRequest::extra)
+/// fields (so provider-specific parameters survive), then sets `model` (from
+/// the request or the configured default) and `input` (normalised to an array,
+/// which every OpenAI-compatible upstream accepts). `model` / `input` always
+/// win over any collision — though `extra` can never contain them, since they
+/// are consumed by the named fields during deserialization.
 #[must_use]
-pub fn build_upstream_body(
-    req: &EmbeddingsRequest,
-    config: &EmbeddingsConfig,
-) -> serde_json::Value {
-    serde_json::json!({
-        "model": effective_model(req, config),
-        "input": req.input.texts(),
-    })
-}
-
-/// Parse an upstream response body into an [`EmbeddingsResponse`]. Pure (no
-/// I/O). When the upstream omits `model`, `fallback_model` is stamped in so the
-/// caller always sees which model was used.
-///
-/// # Errors
-///
-/// Returns [`EmbeddingsError::Upstream`] when the bytes are not a valid
-/// OpenAI-shaped embeddings response.
-pub fn parse_upstream_response(
-    bytes: &[u8],
-    fallback_model: &str,
-) -> Result<EmbeddingsResponse, EmbeddingsError> {
-    let mut resp: EmbeddingsResponse = serde_json::from_slice(bytes)
-        .map_err(|e| EmbeddingsError::Upstream(format!("malformed upstream response: {e}")))?;
-    if resp.model.is_empty() {
-        resp.model = fallback_model.to_string();
-    }
-    Ok(resp)
+pub fn build_upstream_body(req: &EmbeddingsRequest, config: &EmbeddingsConfig) -> Value {
+    let mut body = req.extra.clone();
+    body.insert(
+        "model".to_string(),
+        Value::String(effective_model(req, config)),
+    );
+    body.insert(
+        "input".to_string(),
+        Value::Array(req.input.texts().into_iter().map(Value::String).collect()),
+    );
+    Value::Object(body)
 }
 
 /// A configured embeddings backend.
@@ -284,17 +251,15 @@ pub enum EmbeddingBackend {
 }
 
 impl EmbeddingBackend {
-    /// Produce embeddings for `req`.
+    /// Produce embeddings for `req`, returning the upstream's JSON response
+    /// verbatim (passthrough).
     ///
     /// # Errors
     ///
     /// Propagates the backend's [`EmbeddingsError`] (upstream failure, invalid
     /// response, …).
     #[cfg_attr(not(feature = "embeddings-proxy"), allow(unused_variables))]
-    pub async fn embed(
-        &self,
-        req: &EmbeddingsRequest,
-    ) -> Result<EmbeddingsResponse, EmbeddingsError> {
+    pub async fn embed(&self, req: &EmbeddingsRequest) -> Result<Value, EmbeddingsError> {
         match *self {
             #[cfg(feature = "embeddings-proxy")]
             Self::Proxy(ref p) => p.embed(req).await,
@@ -303,8 +268,9 @@ impl EmbeddingBackend {
 }
 
 /// Proxy backend: forwards each request to a configured upstream and passes the
-/// response back. Enabled by the `embeddings-proxy` feature (pulls in an HTTP
-/// client); off by default so the standard binary carries no extra dependency.
+/// response back verbatim. Enabled by the `embeddings-proxy` feature (pulls in
+/// an HTTP client); off by default so the standard binary carries no extra
+/// dependency.
 #[cfg(feature = "embeddings-proxy")]
 pub struct ProxyBackend {
     client: reqwest::Client,
@@ -326,17 +292,14 @@ impl ProxyBackend {
         Ok(Self { client, config })
     }
 
-    /// Forward `req` to the configured upstream and return its response.
+    /// Forward `req` to the configured upstream and return its response body
+    /// verbatim as JSON.
     ///
     /// # Errors
     ///
     /// Returns [`EmbeddingsError::Upstream`] when the upstream is unreachable,
-    /// returns a non-2xx status, or sends a body that is not a valid
-    /// OpenAI-shaped embeddings response.
-    pub async fn embed(
-        &self,
-        req: &EmbeddingsRequest,
-    ) -> Result<EmbeddingsResponse, EmbeddingsError> {
+    /// returns a non-2xx status, or sends a body that is not valid JSON.
+    pub async fn embed(&self, req: &EmbeddingsRequest) -> Result<Value, EmbeddingsError> {
         let body = build_upstream_body(req, &self.config);
         let mut builder = self.client.post(&self.config.upstream).json(&body);
         if let Some(key) = &self.config.api_key {
@@ -357,13 +320,17 @@ impl ProxyBackend {
                 String::from_utf8_lossy(&bytes).trim()
             )));
         }
-        parse_upstream_response(&bytes, &effective_model(req, &self.config))
+        // Passthrough: return the upstream body verbatim (base64 embeddings and
+        // any provider-specific fields survive because nothing is re-typed).
+        serde_json::from_slice(&bytes)
+            .map_err(|e| EmbeddingsError::Upstream(format!("malformed upstream response: {e}")))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn cfg(upstream: &str) -> EmbeddingsConfig {
         EmbeddingsConfig {
@@ -408,15 +375,21 @@ mod tests {
     }
 
     #[test]
-    fn request_ignores_unknown_fields_no_url_smuggling() {
-        // The SSRF boundary at the type level: extra fields (a would-be
-        // upstream override) are accepted and dropped, not honoured.
+    fn request_captures_extra_fields_for_passthrough() {
+        // Provider-specific params (and even a stray `url`) land in `extra`,
+        // ready to be forwarded verbatim — never dropped, never a destination.
         let req: EmbeddingsRequest = serde_json::from_str(
-            r#"{"model":"m","input":"hi","url":"http://169.254.169.254","base_url":"x"}"#,
+            r#"{"model":"m","input":"hi","dimensions":256,"input_type":"query","url":"http://169.254.169.254"}"#,
         )
         .unwrap();
         assert_eq!(req.model, "m");
         assert_eq!(req.input, EmbeddingInput::Single("hi".into()));
+        assert_eq!(req.extra.get("dimensions"), Some(&json!(256)));
+        assert_eq!(req.extra.get("input_type"), Some(&json!("query")));
+        assert_eq!(req.extra.get("url"), Some(&json!("http://169.254.169.254")));
+        // `model` / `input` are consumed by the named fields, not duplicated.
+        assert!(!req.extra.contains_key("model"));
+        assert!(!req.extra.contains_key("input"));
     }
 
     #[test]
@@ -478,10 +451,11 @@ mod tests {
         let req = EmbeddingsRequest {
             model: "m".into(),
             input: EmbeddingInput::Single("hi".into()),
+            extra: Map::new(),
         };
         let body = build_upstream_body(&req, &cfg("https://u/v1/embeddings"));
         assert_eq!(body["model"], "m");
-        assert_eq!(body["input"], serde_json::json!(["hi"]));
+        assert_eq!(body["input"], json!(["hi"]));
     }
 
     #[test]
@@ -489,65 +463,26 @@ mod tests {
         let req = EmbeddingsRequest {
             model: String::new(),
             input: EmbeddingInput::Batch(vec!["a".into(), "b".into()]),
+            extra: Map::new(),
         };
         let mut c = cfg("https://u/v1/embeddings");
         c.model = Some("default-model".into());
         let body = build_upstream_body(&req, &c);
         assert_eq!(body["model"], "default-model");
-        assert_eq!(body["input"], serde_json::json!(["a", "b"]));
+        assert_eq!(body["input"], json!(["a", "b"]));
     }
 
     #[test]
-    fn parse_upstream_response_ok() {
-        let upstream = r#"{
-            "object":"list",
-            "data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],
-            "model":"text-embedding-3-small",
-            "usage":{"prompt_tokens":3,"total_tokens":3}
-        }"#;
-        let resp = parse_upstream_response(upstream.as_bytes(), "fallback").unwrap();
-        assert_eq!(resp.object, "list");
-        assert_eq!(resp.data.len(), 1);
-        assert_eq!(resp.data[0].index, 0);
-        assert_eq!(resp.data[0].embedding, vec![0.1, 0.2]);
-        assert_eq!(resp.model, "text-embedding-3-small");
-        assert_eq!(resp.usage.total_tokens, 3);
-    }
-
-    #[test]
-    fn parse_upstream_response_stamps_fallback_model() {
-        let upstream = r#"{"data":[{"index":0,"embedding":[1.0]}]}"#;
-        let resp = parse_upstream_response(upstream.as_bytes(), "fallback-model").unwrap();
-        // Defaults filled in: object strings and model fallback.
-        assert_eq!(resp.object, "list");
-        assert_eq!(resp.data[0].object, "embedding");
-        assert_eq!(resp.model, "fallback-model");
-    }
-
-    #[test]
-    fn parse_upstream_response_rejects_garbage() {
-        let err = parse_upstream_response(b"not json", "m").unwrap_err();
-        assert!(matches!(err, EmbeddingsError::Upstream(_)));
-    }
-
-    #[test]
-    fn response_serialises_openai_shape() {
-        let resp = EmbeddingsResponse {
-            object: list_object(),
-            data: vec![EmbeddingData {
-                object: embedding_object(),
-                index: 0,
-                embedding: vec![0.5, 0.25],
-            }],
-            model: "m".into(),
-            usage: Usage::default(),
-        };
-        let v = serde_json::to_value(&resp).unwrap();
-        assert_eq!(v["object"], "list");
-        assert_eq!(v["data"][0]["object"], "embedding");
-        assert_eq!(v["data"][0]["index"], 0);
-        assert_eq!(v["data"][0]["embedding"], serde_json::json!([0.5, 0.25]));
-        assert_eq!(v["model"], "m");
-        assert_eq!(v["usage"]["total_tokens"], 0);
+    fn upstream_body_forwards_extra_fields_verbatim() {
+        // The passthrough contract: provider-specific params reach the upstream.
+        let req: EmbeddingsRequest = serde_json::from_str(
+            r#"{"model":"voyage-3","input":"hi","input_type":"document","dimensions":512}"#,
+        )
+        .unwrap();
+        let body = build_upstream_body(&req, &cfg("https://u/v1/embeddings"));
+        assert_eq!(body["model"], "voyage-3");
+        assert_eq!(body["input"], json!(["hi"]));
+        assert_eq!(body["input_type"], json!("document"));
+        assert_eq!(body["dimensions"], json!(512));
     }
 }

@@ -10,9 +10,11 @@
 //! behind the `embeddings-proxy` feature.
 //!
 //! The security-relevant invariant asserted here (OWASP A10 / SSRF): the
-//! upstream is never taken from the request — a body carrying a `url`/
-//! `base_url`/`endpoint` field is accepted and those fields are ignored, so a
-//! caller can never redirect drevo's outbound call.
+//! outbound destination is never taken from the request — a body carrying a
+//! `url`/`base_url`/`endpoint` field cannot select an upstream (with no backend
+//! configured the request is refused with `503` before any outbound call). The
+//! passthrough of such a field to a *configured* upstream is covered in
+//! `embeddings_proxy_tests.rs`.
 
 #![cfg(feature = "http")]
 
@@ -100,9 +102,10 @@ async fn embeddings_empty_input_is_rejected_400() {
 #[tokio::test]
 async fn embeddings_ignores_request_supplied_url_ssrf_guard() {
     // OWASP A10 / SSRF: the outbound upstream is configured server-side only.
-    // A body trying to smuggle a destination must be accepted-and-ignored (the
-    // fields simply are not part of the request type), NOT honoured. Reaching
-    // the 503 not-configured path proves no request field selected an upstream.
+    // A body trying to smuggle a destination cannot select one — reaching the
+    // 503 not-configured path proves no request field turned into an outbound
+    // call. (Forwarding such a field to a *configured* upstream, harmlessly, is
+    // covered by embeddings_proxy_tests.rs.)
     let app = make_app();
     let (status, body) = post_embeddings(
         &app,
