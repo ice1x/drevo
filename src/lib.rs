@@ -98,6 +98,11 @@ pub mod db;
 /// methods. Filesystem-bound `*_to_path` / `*_from_path` variants are gated
 /// off WASM.
 pub mod dump;
+/// OpenAI-compatible text-embedding endpoint (`/v1/embeddings`, Phase 19,
+/// issue #217). Gated on `http`: its only consumer is the HTTP server. The
+/// `reqwest`-backed proxy backend is further gated on `embeddings-proxy`.
+#[cfg(feature = "http")]
+pub mod embeddings;
 pub mod error;
 /// `extern "C"` FFI surface for desktop / mobile embedders. Not built on
 /// `wasm32-unknown-unknown` because the platform has no C ABI.

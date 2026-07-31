@@ -92,6 +92,7 @@ use crate::cypher::executor::{self, ExecResult, Value as CypherValue};
 use crate::cypher::parser;
 use crate::db::Drevo;
 use crate::dump::ImportReport;
+use crate::embeddings::{EmbeddingBackend, EmbeddingsError, EmbeddingsRequest, EmbeddingsResponse};
 use crate::error::DrevoError;
 use crate::fts::facet::{Facet, FacetCollapse, DEFAULT_TRIGRAM_THRESHOLD};
 use crate::model::{
@@ -131,6 +132,13 @@ pub struct ApiState {
     /// latencies, and in-flight gauges accumulate into one registry that the
     /// `GET /metrics` route renders in the Prometheus exposition format.
     pub metrics: Arc<DrevoMetrics>,
+    /// Optional embeddings backend (Phase 19 task `00217`). When `None` — the
+    /// default — `POST /v1/embeddings` answers `503` ("not configured"). A
+    /// backend is wired in only when the operator opts in (e.g. via
+    /// `DREVO_EMBEDDINGS_UPSTREAM` with the `embeddings-proxy` feature), so the
+    /// upstream is always an operator choice, never taken from a request
+    /// (the SSRF boundary — OWASP A10).
+    pub embeddings: Option<Arc<EmbeddingBackend>>,
 }
 
 impl ApiState {
@@ -146,6 +154,7 @@ impl ApiState {
             started_at: Instant::now(),
             shutting_down: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(DrevoMetrics::new()),
+            embeddings: None,
         }
     }
 
@@ -164,7 +173,19 @@ impl ApiState {
             started_at: Instant::now(),
             shutting_down: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(DrevoMetrics::new()),
+            embeddings: None,
         }
+    }
+
+    /// Attach an embeddings backend, enabling `POST /v1/embeddings`.
+    ///
+    /// Consuming builder so it composes with [`ApiState::new`] /
+    /// [`ApiState::with_catalog`]. Left unset (the default), the endpoint
+    /// reports "not configured" with a `503`.
+    #[must_use]
+    pub fn with_embeddings_backend(mut self, backend: EmbeddingBackend) -> Self {
+        self.embeddings = Some(Arc::new(backend));
+        self
     }
 
     /// Mark the API as draining.
@@ -265,6 +286,13 @@ pub enum ApiError {
     /// The request conflicts with existing state, e.g. creating a database
     /// that already exists (409 Conflict).
     Conflict(String),
+    /// A required backend is not configured or is draining (503 Service
+    /// Unavailable). Used by `POST /v1/embeddings` when no embeddings backend
+    /// is wired in.
+    Unavailable(String),
+    /// An upstream dependency failed (502 Bad Gateway). Used by `POST
+    /// /v1/embeddings` when the configured embeddings upstream errors.
+    BadGateway(String),
 }
 
 impl From<CatalogError> for ApiError {
@@ -288,6 +316,22 @@ impl From<DrevoError> for ApiError {
 impl From<JsonRejection> for ApiError {
     fn from(err: JsonRejection) -> Self {
         Self::BadRequest(err.body_text())
+    }
+}
+
+impl From<EmbeddingsError> for ApiError {
+    fn from(err: EmbeddingsError) -> Self {
+        match err {
+            // No backend wired in → the endpoint exists but cannot serve.
+            EmbeddingsError::NotConfigured => Self::Unavailable(err.to_string()),
+            // Bad client input (empty input, …).
+            EmbeddingsError::InvalidInput(_) => Self::BadRequest(err.to_string()),
+            // Operator misconfiguration (bad upstream URL): the service is not
+            // properly configured, so it cannot serve — surface as 503.
+            EmbeddingsError::InvalidUpstream(_) => Self::Unavailable(err.to_string()),
+            // The configured upstream failed or misbehaved — a bad gateway.
+            EmbeddingsError::Upstream(_) => Self::BadGateway(err.to_string()),
+        }
     }
 }
 
@@ -321,6 +365,8 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
+            ApiError::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
+            ApiError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg),
         };
         json_error(status, &message)
     }
@@ -1450,6 +1496,36 @@ async fn track_metrics(
     response
 }
 
+/// Handler for `POST /v1/embeddings` (Phase 19 task `00217`).
+///
+/// OpenAI-compatible: the body is `{ "model": <name>, "input": <str|[str]> }`
+/// and the response is `{ "object": "list", "data": [ { "object":
+/// "embedding", "index": n, "embedding": [ ... ] } ], "model", "usage" }`.
+///
+/// Validation happens before the backend, so an empty input is a deterministic
+/// `400` even when no backend is configured. When no backend is wired in, the
+/// endpoint answers `503` ("not configured"), mirroring the semantic-facet
+/// `400`. The upstream is never taken from the request (SSRF boundary — OWASP
+/// A10): [`EmbeddingsRequest`] carries no URL field, so any extra field a
+/// client sends is ignored by serde.
+async fn embeddings(
+    State(state): State<ApiState>,
+    body: Result<Json<EmbeddingsRequest>, JsonRejection>,
+) -> Result<Json<EmbeddingsResponse>, ApiError> {
+    let Json(req) = body?;
+    if req.input.is_empty() {
+        return Err(ApiError::from(EmbeddingsError::InvalidInput(
+            "`input` must contain at least one non-empty string".to_string(),
+        )));
+    }
+    let backend = state
+        .embeddings
+        .as_ref()
+        .ok_or(EmbeddingsError::NotConfigured)?;
+    let resp = backend.embed(&req).await?;
+    Ok(Json(resp))
+}
+
 /// Build the HTTP [`Router`] for a given [`ApiState`].
 ///
 /// Returned router can be served with `axum::serve` on a TCP listener
@@ -1479,6 +1555,8 @@ pub fn build_router(state: ApiState) -> Router {
         // Cypher over HTTP — parse + execute, return rows + graph projection
         // (the Web UI's query bar; same executor Bolt uses).
         .route("/cypher", with_405(axum::routing::post(cypher)))
+        // ── Phase 19 task `00217` — OpenAI-compatible embeddings ────
+        .route("/v1/embeddings", with_405(axum::routing::post(embeddings)))
         // ── Phase 17 task `00133` — keyword faceting endpoint ───────
         .route("/facets", with_405(get(facets)))
         .route("/export/json", with_405(get(export_json)))

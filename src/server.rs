@@ -26,6 +26,18 @@
 //! | `DREVO_PORT`      | `8080`      | TCP port (1..=65535)              |
 //! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `drevo.redb`    |
 //!
+//! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
+//! variables opt the server into hosting `POST /v1/embeddings` by proxying a
+//! configured upstream. They are read only when the feature is compiled in;
+//! the upstream is taken solely from configuration, never from a request (the
+//! SSRF boundary — OWASP A10):
+//!
+//! | Variable                    | Default | Description                         |
+//! |-----------------------------|---------|-------------------------------------|
+//! | `DREVO_EMBEDDINGS_UPSTREAM` | (unset) | Upstream embeddings URL (http/https); unset ⇒ `/v1/embeddings` answers 503 |
+//! | `DREVO_EMBEDDINGS_API_KEY`  | (unset) | Bearer token forwarded to the upstream |
+//! | `DREVO_EMBEDDINGS_MODEL`    | (unset) | Default model when a request omits `model` |
+//!
 //! ## Signal handling
 //!
 //! Graceful shutdown is driven by [`crate::server::shutdown_signal`]. On Unix it
@@ -239,6 +251,39 @@ pub enum RunError {
     /// opened).
     #[error("failed to open database catalog: {0}")]
     CatalogOpen(#[from] crate::catalog::CatalogError),
+    /// The embeddings proxy was requested via `DREVO_EMBEDDINGS_UPSTREAM` but
+    /// its configuration is invalid (bad URL, unbuildable client). Fail fast
+    /// so a misconfigured RAG backend is loud, not silently degraded.
+    #[cfg(feature = "embeddings-proxy")]
+    #[error("invalid embeddings configuration: {0}")]
+    Embeddings(String),
+}
+
+/// Attach an embeddings backend to `state` from the environment, when the
+/// `embeddings-proxy` feature is compiled in and `DREVO_EMBEDDINGS_UPSTREAM`
+/// is set. A no-op otherwise, so the default binary keeps `/v1/embeddings`
+/// answering `503` ("not configured").
+#[cfg(feature = "embeddings-proxy")]
+fn configure_embeddings(state: ApiState) -> Result<ApiState, RunError> {
+    use crate::embeddings::{EmbeddingBackend, EmbeddingsConfig, ProxyBackend};
+    match EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
+        .map_err(|e| RunError::Embeddings(e.to_string()))?
+    {
+        Some(cfg) => {
+            tracing::info!(upstream = %cfg.upstream, "embeddings proxy enabled");
+            let backend =
+                ProxyBackend::new(cfg).map_err(|e| RunError::Embeddings(e.to_string()))?;
+            Ok(state.with_embeddings_backend(EmbeddingBackend::Proxy(backend)))
+        }
+        None => Ok(state),
+    }
+}
+
+/// No-op when the proxy backend is not compiled in — `/v1/embeddings` then
+/// always answers `503`.
+#[cfg(not(feature = "embeddings-proxy"))]
+fn configure_embeddings(state: ApiState) -> Result<ApiState, RunError> {
+    Ok(state)
 }
 
 /// Open the database, bind the TCP listener, and serve until a
@@ -273,6 +318,9 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     let catalog = Arc::new(Catalog::open(cfg.data_dir.clone())?);
     tracing::info!(databases = ?catalog.list(), "catalog ready");
     let state = ApiState::with_catalog(Arc::clone(&catalog));
+    // Opt-in embeddings proxy (Phase 19 task `00217`); no-op unless the
+    // `embeddings-proxy` feature is built and `DREVO_EMBEDDINGS_UPSTREAM` set.
+    let state = configure_embeddings(state)?;
     let db = Arc::clone(&state.db);
     let shutdown_state = state.clone();
     let router = build_router(state);
