@@ -92,7 +92,7 @@ use crate::cypher::executor::{self, ExecResult, Value as CypherValue};
 use crate::cypher::parser;
 use crate::db::Drevo;
 use crate::dump::ImportReport;
-use crate::embeddings::{EmbeddingBackend, EmbeddingsError, EmbeddingsRequest, EmbeddingsResponse};
+use crate::embeddings::{EmbeddingBackend, EmbeddingsError, EmbeddingsRequest};
 use crate::error::DrevoError;
 use crate::fts::facet::{Facet, FacetCollapse, DEFAULT_TRIGRAM_THRESHOLD};
 use crate::model::{
@@ -1502,16 +1502,20 @@ async fn track_metrics(
 /// and the response is `{ "object": "list", "data": [ { "object":
 /// "embedding", "index": n, "embedding": [ ... ] } ], "model", "usage" }`.
 ///
-/// Validation happens before the backend, so an empty input is a deterministic
-/// `400` even when no backend is configured. When no backend is wired in, the
-/// endpoint answers `503` ("not configured"), mirroring the semantic-facet
-/// `400`. The upstream is never taken from the request (SSRF boundary — OWASP
-/// A10): [`EmbeddingsRequest`] carries no URL field, so any extra field a
-/// client sends is ignored by serde.
+/// The proxy is a transparent passthrough: `model` + `input` are validated,
+/// every other request field is forwarded verbatim to the upstream, and the
+/// upstream's JSON body is returned verbatim (so provider-specific params and
+/// base64 embeddings survive). Validation happens before the backend, so an
+/// empty input is a deterministic `400` even when no backend is configured.
+/// When no backend is wired in, the endpoint answers `503` ("not configured"),
+/// mirroring the semantic-facet `400`. The outbound destination is never taken
+/// from the request (SSRF boundary — OWASP A10): a forwarded field rides along
+/// to the operator-configured upstream but can never change where drevo
+/// connects.
 async fn embeddings(
     State(state): State<ApiState>,
     body: Result<Json<EmbeddingsRequest>, JsonRejection>,
-) -> Result<Json<EmbeddingsResponse>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let Json(req) = body?;
     if req.input.is_empty() {
         return Err(ApiError::from(EmbeddingsError::InvalidInput(
