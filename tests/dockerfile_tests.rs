@@ -141,6 +141,33 @@ fn dockerfile_sets_env_defaults() {
 }
 
 #[test]
+fn dockerfile_features_are_build_arg_overridable() {
+    // The compiled Cargo feature set is a build ARG (`CARGO_FEATURES`) so a
+    // deployment can opt into extra features — e.g. `embeddings-proxy` for the
+    // `/v1/embeddings` endpoint (issue #217) — via `docker build --build-arg`
+    // without editing the Dockerfile. The default must keep the lean server
+    // (http + redb-backend), and the build must consume the ARG rather than a
+    // hardcoded feature list.
+    let content = read_dockerfile();
+    let arg_line = content
+        .lines()
+        .find(|l| l.trim_start().starts_with("ARG CARGO_FEATURES"))
+        .expect("Dockerfile must declare `ARG CARGO_FEATURES` for an overridable feature set");
+    assert!(
+        arg_line.contains("http") && arg_line.contains("redb-backend"),
+        "the default CARGO_FEATURES must keep http + redb-backend: {arg_line}"
+    );
+    assert!(
+        content.contains("${CARGO_FEATURES}"),
+        "the cargo build must take features from ${{CARGO_FEATURES}}, not a hardcoded list"
+    );
+    assert!(
+        content.contains("--no-default-features"),
+        "the build must stay --no-default-features so only the ARG features compile"
+    );
+}
+
+#[test]
 fn dockerfile_copies_binary_from_builder() {
     let content = read_dockerfile();
     let has_copy = content

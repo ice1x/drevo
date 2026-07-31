@@ -40,8 +40,16 @@ COPY static/ static/
 
 # Build only the server binary in release mode.
 # cbindgen feature is excluded — no C header needed in the container.
+#
+# The compiled Cargo feature set is a build ARG so a deployment can opt into
+# extra features — e.g. `embeddings-proxy` for the OpenAI-compatible
+# `/v1/embeddings` endpoint (issue #217) — WITHOUT editing this file:
+#   docker build --build-arg CARGO_FEATURES="http,redb-backend,embeddings-proxy" .
+# The default keeps the lean, dependency-free server (no extra HTTP client).
+# Locked by `tests/dockerfile_tests.rs::dockerfile_features_are_build_arg_overridable`.
+ARG CARGO_FEATURES="http,redb-backend"
 RUN cargo build --release --bin drevo-server \
-        --no-default-features --features "http,redb-backend"
+        --no-default-features --features "${CARGO_FEATURES}"
 
 # Stage 2: Runtime — minimal Debian image with just the binary
 FROM debian:bookworm-slim
