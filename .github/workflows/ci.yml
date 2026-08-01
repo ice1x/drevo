@@ -172,6 +172,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check --all-targets
+      # cbindgen header drift guard. `build.rs` regenerates the tracked
+      # `drevo.h` (CARGO_MANIFEST_DIR) on every build with the default
+      # `cbindgen` feature, so the `cargo check` above just rewrote it.
+      # If it differs from the committed copy, the FFI surface (or crate
+      # version) changed without re-committing the header — the exact
+      # drift that left the tree dirty and blocked `scripts/release.sh`
+      # (cleaned up by hand in PR #230). Fail the PR that introduced it
+      # instead. Locked by tests/cbindgen_header_sync_ci_tests.rs.
+      - name: Verify committed drevo.h is in sync with cbindgen
+        run: |
+          if ! git diff --exit-code -- drevo.h; then
+            echo "::error::drevo.h is out of sync with the FFI surface." >&2
+            echo "Regenerate and commit it: \`cargo check && git add drevo.h\`." >&2
+            exit 1
+          fi
 
   test:
     name: Test

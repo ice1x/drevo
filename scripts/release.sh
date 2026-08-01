@@ -108,6 +108,14 @@ if [ "${1:-}" = "image" ]; then
   fi
   if [ -n "$(git status --porcelain)" ]; then
     echo "release.sh: working tree is dirty — commit or stash before releasing." >&2
+    # The usual culprit is a regenerated but un-committed cbindgen header:
+    # `build.rs` rewrites drevo.h on every build, and Cargo.lock tracks the
+    # crate version. CI's Check job now fails such drift on the PR branch,
+    # but guard here too so a local release explains itself.
+    if git status --porcelain | grep -qE ' (drevo\.h|Cargo\.lock)$'; then
+      echo "release.sh: drevo.h / Cargo.lock drifted — regenerate and commit them:" >&2
+      echo "    cargo check && git add drevo.h Cargo.lock && git commit" >&2
+    fi
     exit 1
   fi
 
