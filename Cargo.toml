@@ -53,7 +53,7 @@ debug = 1  # line tables only — keeps backtrace file:line, drops full debuginf
 
 [package]
 name = "drevo"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
 # MSRV — locked in by audit task 00113. Bumped to 1.85 because:
 #   * bincode 2.x requires 1.85+
@@ -65,6 +65,11 @@ edition = "2021"
 # `tests/crosscut_audit_tests.rs`.
 rust-version = "1.85"
 description = "Embedded graph database for cross-platform knowledge management"
+# NOTE: `0.0.0` is the pre-release seed for the deploy-image version line. The
+# release flow (`scripts/release.sh` / `make release-image`) derives the image
+# tag from git tags (`vX.Y.Z`), falling back to this value when none exist — so
+# the FIRST `make release-image` (a PATCH bump) publishes `0.0.1`, then `0.0.2`,
+# … walking the full patch space rather than jumping straight to `0.1.0`.
 
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]
