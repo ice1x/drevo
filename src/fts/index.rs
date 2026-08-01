@@ -6,8 +6,13 @@
 //! This allows efficient posting list retrieval via `scan_prefix("fts:{trigram}:")`,
 //! and efficient add/remove of individual node entries without touching other nodes.
 
+// Only the no-properties test wrappers below need an empty map.
+#[cfg(test)]
+use std::collections::HashMap;
+
 use crate::error::Result;
-use crate::fts::tokenizer::{extract_raw_trigrams, extract_trigrams};
+use crate::fts::tokenizer::{extract_raw_trigrams_fields, extract_trigrams_fields};
+use crate::model::Properties;
 use crate::storage::StorageBackend;
 
 /// Key prefix for FTS index entries: `fts:{trigram}:{node_id}` -> empty.
@@ -53,22 +58,85 @@ fn fts_len_key(node_id: u64) -> Vec<u8> {
 // because the node_id is at the end of the key. Instead, we re-extract
 // trigrams from the text and delete entries one by one.
 
-/// Build (but do not write) the FTS index entries for a node: one
-/// `fts:{trigram}:{node_id}` posting per distinct trigram, plus the
-/// `ftslen:{node_id}` length entry when non-empty.
-///
-/// Every key is `node_id`-scoped and there is no shared per-trigram posting
-/// *value*, so a bulk insert can concatenate many nodes' entries and commit
-/// them in one transaction with no cross-node merge. Shared by [`index_node`]
-/// and the batch node-create path ([`crate::db::Drevo::create_nodes`]).
+/// Collect every FTS-indexable string from a property map (#227): each
+/// `String` value, and each string element of an array value, in property-key
+/// order so the index is deterministic regardless of `HashMap` iteration.
+/// Non-string scalars, nested objects, and non-string array elements are
+/// skipped.
+pub(crate) fn collect_property_text(properties: &Properties) -> Vec<String> {
+    let mut keys: Vec<&String> = properties.keys().collect();
+    keys.sort();
+    let mut out = Vec::new();
+    for key in keys {
+        match properties.get(key) {
+            Some(serde_json::Value::String(s)) => out.push(s.clone()),
+            Some(serde_json::Value::Array(items)) => {
+                for item in items {
+                    if let serde_json::Value::String(s) = item {
+                        out.push(s.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The ordered list of text fields indexed for a node: `title`, `body`, then
+/// each string drawn from its properties.
+fn node_fields<'a>(title: &'a str, body: &'a str, prop_text: &'a [String]) -> Vec<&'a str> {
+    let mut fields: Vec<&str> = Vec::with_capacity(2 + prop_text.len());
+    fields.push(title);
+    fields.push(body);
+    fields.extend(prop_text.iter().map(String::as_str));
+    fields
+}
+
+/// The raw (bag) trigrams a node contributes to the FTS index — `title` +
+/// `body` + string properties (#227). The BM25/TF-IDF ranker calls this so
+/// query-time term frequency and document length are computed over the **same**
+/// text [`index_node_with_props`] indexed (otherwise a node whose text lives
+/// only in properties would be a candidate but score 0).
+pub(crate) fn node_raw_trigrams(title: &str, body: &str, properties: &Properties) -> Vec<String> {
+    let prop_text = collect_property_text(properties);
+    let fields = node_fields(title, body, &prop_text);
+    extract_raw_trigrams_fields(&fields)
+}
+
+/// The distinct (deduplicated) trigram set a node contributes — the same-fields
+/// companion of [`node_raw_trigrams`], used by the TF-IDF ranker.
+pub(crate) fn node_trigrams(title: &str, body: &str, properties: &Properties) -> Vec<String> {
+    let prop_text = collect_property_text(properties);
+    let fields = node_fields(title, body, &prop_text);
+    extract_trigrams_fields(&fields)
+}
+
+/// Build the FTS index entries for a node from its `title` + `body` only.
+/// A no-properties convenience over [`node_index_entries_with_props`]; only the
+/// tests use it (production always has a node's properties to hand).
+#[cfg(test)]
 pub(crate) fn node_index_entries(node_id: u64, title: &str, body: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let trigrams = extract_trigrams(title, body);
+    node_index_entries_with_props(node_id, title, body, &Properties(HashMap::new()))
+}
+
+/// Build the FTS index entries for a node from `title` + `body` + every string
+/// property value (#227).
+pub(crate) fn node_index_entries_with_props(
+    node_id: u64,
+    title: &str,
+    body: &str,
+    properties: &Properties,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let prop_text = collect_property_text(properties);
+    let fields = node_fields(title, body, &prop_text);
+    let trigrams = extract_trigrams_fields(&fields);
     let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(trigrams.len() + 1);
     for trigram in &trigrams {
         entries.push((fts_key(trigram, node_id), Vec::new()));
     }
 
-    let doc_len = extract_raw_trigrams(title, body).len();
+    let doc_len = extract_raw_trigrams_fields(&fields).len();
     if doc_len > 0 {
         entries.push((
             fts_len_key(node_id),
@@ -78,13 +146,27 @@ pub(crate) fn node_index_entries(node_id: u64, title: &str, body: &str) -> Vec<(
     entries
 }
 
+/// Index a node by its `title` + `body`. A no-properties convenience used only
+/// by the tests (production always has the node's properties).
+#[cfg(test)]
 pub(crate) fn index_node(
     backend: &dyn StorageBackend,
     node_id: u64,
     title: &str,
     body: &str,
 ) -> Result<()> {
-    for (key, value) in node_index_entries(node_id, title, body) {
+    index_node_with_props(backend, node_id, title, body, &Properties(HashMap::new()))
+}
+
+/// Index a node by its `title` + `body` + string properties (#227).
+pub(crate) fn index_node_with_props(
+    backend: &dyn StorageBackend,
+    node_id: u64,
+    title: &str,
+    body: &str,
+    properties: &Properties,
+) -> Result<()> {
+    for (key, value) in node_index_entries_with_props(node_id, title, body, properties) {
         backend.put(&key, &value)?;
     }
     Ok(())
@@ -96,13 +178,29 @@ pub(crate) fn index_node(
 /// postings, and removes the persisted document-length entry (cascade-on-
 /// delete, mirroring the posting cleanup). `delete` of an absent key is a
 /// no-op, so this is safe even when the node had no indexable text.
+#[cfg(test)]
 pub(crate) fn deindex_node(
     backend: &dyn StorageBackend,
     node_id: u64,
     title: &str,
     body: &str,
 ) -> Result<()> {
-    let trigrams = extract_trigrams(title, body);
+    deindex_node_with_props(backend, node_id, title, body, &Properties(HashMap::new()))
+}
+
+/// Remove a node's FTS entries, re-deriving trigrams from `title` + `body` +
+/// string properties (#227) so the same postings written by
+/// [`index_node_with_props`] are cleaned up.
+pub(crate) fn deindex_node_with_props(
+    backend: &dyn StorageBackend,
+    node_id: u64,
+    title: &str,
+    body: &str,
+    properties: &Properties,
+) -> Result<()> {
+    let prop_text = collect_property_text(properties);
+    let fields = node_fields(title, body, &prop_text);
+    let trigrams = extract_trigrams_fields(&fields);
     for trigram in &trigrams {
         backend.delete(&fts_key(trigram, node_id))?;
     }
@@ -278,6 +376,91 @@ mod tests {
 
         let ids = node_ids_for_trigram(&b, "hel").unwrap();
         assert_eq!(ids, vec![1]);
+    }
+
+    // ── #227: index configurable string properties, not just title/body ──
+
+    fn props(pairs: &[(&str, serde_json::Value)]) -> Properties {
+        Properties(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn collect_property_text_gathers_strings_and_array_elements() {
+        let p = props(&[
+            ("name", serde_json::json!("Zebra")),
+            ("tags", serde_json::json!(["alpha", "beta"])),
+            ("count", serde_json::json!(7)), // non-string scalar → skipped
+            ("meta", serde_json::json!({"k": "v"})), // nested object → skipped
+        ]);
+        let mut text = collect_property_text(&p);
+        text.sort();
+        assert_eq!(text, vec!["Zebra", "alpha", "beta"]);
+    }
+
+    #[test]
+    fn index_with_props_makes_a_name_property_searchable() {
+        // The exact #227 scenario: text under `name` (not title/body) is indexed.
+        let b = backend();
+        index_node_with_props(
+            &b,
+            7,
+            "",
+            "",
+            &props(&[("name", serde_json::json!("Zebra crossing"))]),
+        )
+        .unwrap();
+        assert_eq!(node_ids_for_trigram(&b, "zeb").unwrap(), vec![7]);
+    }
+
+    #[test]
+    fn index_with_props_indexes_array_string_elements() {
+        let b = backend();
+        index_node_with_props(
+            &b,
+            3,
+            "",
+            "",
+            &props(&[("obs", serde_json::json!(["wolverine"]))]),
+        )
+        .unwrap();
+        assert_eq!(node_ids_for_trigram(&b, "wol").unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn deindex_with_props_removes_property_trigrams() {
+        let b = backend();
+        let p = props(&[("name", serde_json::json!("Zebra crossing"))]);
+        index_node_with_props(&b, 7, "", "", &p).unwrap();
+        deindex_node_with_props(&b, 7, "", "", &p).unwrap();
+        assert!(node_ids_for_trigram(&b, "zeb").unwrap().is_empty());
+    }
+
+    #[test]
+    fn non_string_properties_are_not_indexed() {
+        let b = backend();
+        index_node_with_props(
+            &b,
+            9,
+            "",
+            "",
+            &props(&[("count", serde_json::json!(12345))]),
+        )
+        .unwrap();
+        assert!(node_ids_for_trigram(&b, "123").unwrap().is_empty());
+    }
+
+    #[test]
+    fn title_body_wrapper_matches_no_props_call() {
+        // Back-compat: the 2-arg wrappers equal the *_with_props path with empty
+        // properties, so existing behaviour is unchanged.
+        let a = node_index_entries(1, "Hello", "World");
+        let b = node_index_entries_with_props(1, "Hello", "World", &Properties(HashMap::new()));
+        assert_eq!(a, b);
     }
 
     #[test]

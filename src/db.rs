@@ -44,7 +44,7 @@ use std::sync::Mutex;
 use crate::error::{DrevoError, Result};
 use crate::fts::facet::{build_facets, Facet, FacetCollapse};
 use crate::fts::index as fts_index;
-use crate::fts::tokenizer::{extract_raw_trigrams, extract_trigrams};
+use crate::fts::tokenizer::extract_trigrams;
 use crate::model::{
     Direction, Edge, EdgePatch, FtsRanking, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
 };
@@ -536,7 +536,13 @@ impl Drevo {
             .put(&node_uuid_key(&node.uuid), &node.id.to_le_bytes())?;
         self.backend.put(&title_key, &node.id.to_le_bytes())?;
         self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
-        fts_index::index_node(&*self.backend, node.id, &node.title, &node.body)?;
+        fts_index::index_node_with_props(
+            &*self.backend,
+            node.id,
+            &node.title,
+            &node.body,
+            &node.properties,
+        )?;
         property_index::index_node(&*self.backend, node.id, &node.properties)?;
         self.backend
             .put(&updated_key(node.updated_at, node.id), &[])?;
@@ -731,7 +737,13 @@ impl Drevo {
         self.backend
             .put(&node_title_key(&node.title), &node.id.to_le_bytes())?;
         self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
-        fts_index::index_node(&*self.backend, node.id, &node.title, &node.body)?;
+        fts_index::index_node_with_props(
+            &*self.backend,
+            node.id,
+            &node.title,
+            &node.body,
+            &node.properties,
+        )?;
         property_index::index_node(&*self.backend, node.id, &node.properties)?;
         self.backend
             .put(&updated_key(node.updated_at, node.id), &[])?;
@@ -765,7 +777,13 @@ impl Drevo {
         self.backend.delete(&node_title_key(&current.title))?;
         self.backend
             .delete(&node_kind_key(&current.kind, current.id))?;
-        fts_index::deindex_node(&*self.backend, current.id, &current.title, &current.body)?;
+        fts_index::deindex_node_with_props(
+            &*self.backend,
+            current.id,
+            &current.title,
+            &current.body,
+            &current.properties,
+        )?;
         property_index::deindex_node(&*self.backend, current.id, &current.properties)?;
         self.backend
             .delete(&updated_key(current.updated_at, current.id))?;
@@ -803,7 +821,13 @@ impl Drevo {
         self.backend.delete(&node_uuid_key(&node.uuid))?;
         self.backend.delete(&node_title_key(&node.title))?;
         self.backend.delete(&node_kind_key(&node.kind, id))?;
-        fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
+        fts_index::deindex_node_with_props(
+            &*self.backend,
+            id,
+            &node.title,
+            &node.body,
+            &node.properties,
+        )?;
         property_index::deindex_node(&*self.backend, id, &node.properties)?;
         self.backend.delete(&updated_key(node.updated_at, id))?;
         Ok(())
@@ -858,7 +882,13 @@ impl Drevo {
         self.backend.put(&node_kind_key(&node.kind, id), &[])?;
 
         // FTS index
-        fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
+        fts_index::index_node_with_props(
+            &*self.backend,
+            id,
+            &node.title,
+            &node.body,
+            &node.properties,
+        )?;
 
         // Property index (Phase 14 task 00088)
         property_index::index_node(&*self.backend, id, &node.properties)?;
@@ -907,7 +937,12 @@ impl Drevo {
             writes.push((node_uuid_key(&node.uuid), id.to_le_bytes().to_vec()));
             writes.push((title_key, id.to_le_bytes().to_vec()));
             writes.push((node_kind_key(&node.kind, id), Vec::new()));
-            writes.extend(fts_index::node_index_entries(id, &node.title, &node.body));
+            writes.extend(fts_index::node_index_entries_with_props(
+                id,
+                &node.title,
+                &node.body,
+                &node.properties,
+            ));
             writes.extend(property_index::node_index_entries(id, &node.properties)?);
             writes.push((updated_key(node.updated_at, id), Vec::new()));
 
@@ -1011,10 +1046,26 @@ impl Drevo {
             self.backend.put(&node_kind_key(&node.kind, id), &[])?;
         }
 
-        // Update FTS index if title or body changed
-        if node.title != old_title || node.body != old_body {
-            fts_index::deindex_node(&*self.backend, id, &old_title, &old_body)?;
-            fts_index::index_node(&*self.backend, id, &node.title, &node.body)?;
+        // Update FTS index if title, body, or any indexed property changed
+        // (#227): the index now covers string properties, so a property-only
+        // change must re-index too, and the old postings must be removed using
+        // the OLD properties or stale property trigrams would leak.
+        if node.title != old_title || node.body != old_body || node.properties.0 != old_properties.0
+        {
+            fts_index::deindex_node_with_props(
+                &*self.backend,
+                id,
+                &old_title,
+                &old_body,
+                &old_properties,
+            )?;
+            fts_index::index_node_with_props(
+                &*self.backend,
+                id,
+                &node.title,
+                &node.body,
+                &node.properties,
+            )?;
         }
 
         // Update property index if the properties map changed (Phase 14
@@ -1067,7 +1118,13 @@ impl Drevo {
         self.backend.delete(&node_kind_key(&node.kind, id))?;
 
         // Remove FTS index
-        fts_index::deindex_node(&*self.backend, id, &node.title, &node.body)?;
+        fts_index::deindex_node_with_props(
+            &*self.backend,
+            id,
+            &node.title,
+            &node.body,
+            &node.properties,
+        )?;
 
         // Remove property index
         property_index::deindex_node(&*self.backend, id, &node.properties)?;
@@ -1660,7 +1717,7 @@ impl Drevo {
             };
 
             // Raw (non-deduplicated) trigrams give per-term frequency.
-            let raw = extract_raw_trigrams(&node.title, &node.body);
+            let raw = fts_index::node_raw_trigrams(&node.title, &node.body, &node.properties);
             if raw.is_empty() {
                 continue;
             }
@@ -1726,7 +1783,7 @@ impl Drevo {
             };
 
             // Extract the node's own (deduplicated) trigrams to compute TF.
-            let node_trigrams = extract_trigrams(&node.title, &node.body);
+            let node_trigrams = fts_index::node_trigrams(&node.title, &node.body, &node.properties);
             let node_trigram_count = node_trigrams.len() as f32;
             if node_trigram_count == 0.0 {
                 continue;

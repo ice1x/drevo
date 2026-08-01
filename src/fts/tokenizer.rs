@@ -77,18 +77,31 @@ pub fn trigrams(text: &str) -> Vec<String> {
     set.into_iter().collect()
 }
 
+/// Join a set of text fields with a single space, skipping empty ones so no
+/// spurious boundary trigrams are produced. The shared basis for the field
+/// tokenizers below.
+fn join_fields(fields: &[&str]) -> String {
+    let mut combined = String::new();
+    for f in fields.iter().filter(|f| !f.is_empty()) {
+        if !combined.is_empty() {
+            combined.push(' ');
+        }
+        combined.push_str(f);
+    }
+    combined
+}
+
+/// Extract the **set** of distinct trigrams across an arbitrary list of text
+/// fields (title, body, and — since #227 — any string-valued node/edge
+/// properties), joined with a space separator before tokenization.
+pub fn extract_trigrams_fields(fields: &[&str]) -> Vec<String> {
+    trigrams(&join_fields(fields))
+}
+
 /// Extract trigrams from title and body fields combined.
 /// The fields are joined with a space separator before tokenization.
 pub fn extract_trigrams(title: &str, body: &str) -> Vec<String> {
-    let combined = if body.is_empty() {
-        title.to_string()
-    } else if title.is_empty() {
-        body.to_string()
-    } else {
-        format!("{} {}", title, body)
-    };
-
-    trigrams(&combined)
+    extract_trigrams_fields(&[title, body])
 }
 
 /// Extract **raw** trigrams from text — like [`trigrams`] but **without
@@ -137,15 +150,15 @@ pub fn raw_trigrams(text: &str) -> Vec<String> {
 /// Used by BM25 ranking (task `00131`) to compute per-document term
 /// frequencies and document length `|d|`.
 pub fn extract_raw_trigrams(title: &str, body: &str) -> Vec<String> {
-    let combined = if body.is_empty() {
-        title.to_string()
-    } else if title.is_empty() {
-        body.to_string()
-    } else {
-        format!("{} {}", title, body)
-    };
+    extract_raw_trigrams_fields(&[title, body])
+}
 
-    raw_trigrams(&combined)
+/// Extract **raw** (non-deduplicated) trigrams across an arbitrary list of text
+/// fields — the multi-field companion of [`extract_raw_trigrams`], used to
+/// compute BM25 document length `|d|` over title + body + string properties
+/// (#227).
+pub fn extract_raw_trigrams_fields(fields: &[&str]) -> Vec<String> {
+    raw_trigrams(&join_fields(fields))
 }
 
 /// Split text into lowercase **word** tokens, preserving document order and

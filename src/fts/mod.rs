@@ -37,5 +37,6 @@ pub mod tokenizer;
 
 pub use facet::{Facet, FacetCollapse};
 pub use tokenizer::{
-    extract_raw_trigrams, extract_trigrams, normalize, raw_trigrams, trigrams, words,
+    extract_raw_trigrams, extract_raw_trigrams_fields, extract_trigrams, extract_trigrams_fields,
+    normalize, raw_trigrams, trigrams, words,
 };

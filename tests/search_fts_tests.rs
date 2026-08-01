@@ -54,6 +54,100 @@ fn search_fts_single_match() {
 }
 
 #[test]
+fn search_fts_finds_text_in_a_non_title_body_property() {
+    // #227: text stored under a property key other than `title`/`body` must be
+    // BM25-searchable (not just reachable via a slow CONTAINS scan).
+    let db = db();
+    let mut props = std::collections::HashMap::new();
+    props.insert(
+        "name".to_string(),
+        serde_json::json!("Zebra crossing paths"),
+    );
+    db.create_node(NewNode {
+        kind: "thing".to_string(),
+        title: String::new(),
+        body: String::new(),
+        body_html: String::new(),
+        properties: props.into(),
+    })
+    .unwrap();
+    // A distractor with no matching text anywhere.
+    db.create_node(new_node("note", "Quarterly revenue report", ""))
+        .unwrap();
+
+    let results = db.search_fts("zebra", 10).unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "the zebra node must be found by its `name` property"
+    );
+    assert!(results[0].score > 0.0);
+}
+
+#[test]
+fn search_fts_reindexes_on_property_only_change() {
+    // A change to an indexed property (with title/body untouched) must
+    // re-index: the old term disappears from search, the new one appears.
+    let db = db();
+    let mut props = std::collections::HashMap::new();
+    props.insert("name".to_string(), serde_json::json!("alphaword marker"));
+    let node = db
+        .create_node(NewNode {
+            kind: "thing".to_string(),
+            title: String::new(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: props.into(),
+        })
+        .unwrap();
+    assert_eq!(db.search_fts("alphaword", 10).unwrap().len(), 1);
+
+    let mut new_props = std::collections::HashMap::new();
+    new_props.insert("name".to_string(), serde_json::json!("bravoword marker"));
+    db.update_node(
+        node.id,
+        drevo::model::NodePatch {
+            properties: Some(new_props.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert!(
+        db.search_fts("alphaword", 10).unwrap().is_empty(),
+        "the old property term must be de-indexed"
+    );
+    assert_eq!(
+        db.search_fts("bravoword", 10).unwrap().len(),
+        1,
+        "the new property term must be indexed"
+    );
+}
+
+#[test]
+fn search_fts_finds_text_in_array_property_elements() {
+    // Array-of-string property values (e.g. a KG entity's `observations`) are
+    // indexed element-by-element.
+    let db = db();
+    let mut props = std::collections::HashMap::new();
+    props.insert(
+        "observations".to_string(),
+        serde_json::json!(["prefers wolverine over badger"]),
+    );
+    db.create_node(NewNode {
+        kind: "entity".to_string(),
+        title: String::new(),
+        body: String::new(),
+        body_html: String::new(),
+        properties: props.into(),
+    })
+    .unwrap();
+
+    let results = db.search_fts("wolverine", 10).unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
 fn search_fts_multiple_matches_ranked() {
     let db = db();
     // Node 1: "rust" in title only
