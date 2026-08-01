@@ -85,6 +85,59 @@ fn search_fts_finds_text_in_a_non_title_body_property() {
 }
 
 #[test]
+fn search_fts_relationships_finds_and_reindexes_edges() {
+    // #227-B: relationship string properties (e.g. `fact`) are BM25-searchable
+    // via search_fts_relationships, and update/delete keep the index in sync.
+    let db = db();
+    let a = db.create_node(new_node("n", "A", "")).unwrap();
+    let b = db.create_node(new_node("n", "B", "")).unwrap();
+
+    let mut props = std::collections::HashMap::new();
+    props.insert(
+        "fact".to_string(),
+        serde_json::json!("acquired wolverine corp"),
+    );
+    let edge = db
+        .create_edge(drevo::model::NewEdge {
+            from_id: a.id,
+            to_id: b.id,
+            kind: "relates_to".to_string(),
+            weight: 1.0,
+            properties: props.into(),
+        })
+        .unwrap();
+
+    let hits = db.search_fts_relationships("wolverine", 10).unwrap();
+    assert_eq!(hits.len(), 1, "edge found by its `fact` property");
+    assert!(hits[0].score > 0.0);
+    assert_eq!(hits[0].edge.id, edge.id);
+
+    // Update the property → old term gone, new term found.
+    let mut new_props = std::collections::HashMap::new();
+    new_props.insert("fact".to_string(), serde_json::json!("acquired badger inc"));
+    db.update_edge(
+        edge.id,
+        drevo::model::EdgePatch {
+            properties: Some(new_props.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(db
+        .search_fts_relationships("wolverine", 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(db.search_fts_relationships("badger", 10).unwrap().len(), 1);
+
+    // Delete → gone from the edge index.
+    db.delete_edge(edge.id).unwrap();
+    assert!(db
+        .search_fts_relationships("badger", 10)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn search_fts_reindexes_on_property_only_change() {
     // A change to an indexed property (with title/body untouched) must
     // re-index: the old term disappears from search, the new one appears.
