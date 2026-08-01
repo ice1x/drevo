@@ -215,6 +215,19 @@ mod tests {
     }
 
     #[test]
+    fn embedded_app_js_humanizes_epoch_timestamps() {
+        // The node/edge inspector must render epoch-millis timestamps
+        // (created_at / updated_at, stored as i64 and sent raw over the
+        // wire) as human-readable dates rather than raw integers, keeping
+        // the raw value in a tooltip. Formatting lives in the UI (browser
+        // `Date`) so the engine stays free of a date-time dependency.
+        assert!(
+            APP_JS.contains("formatTimestamp"),
+            "app.js must humanize epoch timestamps in the inspector"
+        );
+    }
+
+    #[test]
     fn embedded_app_js_routes_cypher_database_admin() {
         // The Cypher bar must route the catalog admin commands to /cypher
         // (not FTS): SHOW DATABASES and USE are added to the Cypher keyword
