@@ -1344,12 +1344,28 @@ fn is_percentile_aggregation(lower: &str) -> bool {
 /// task `00138`), plus drevo's two domain extensions — `similar(...)`,
 /// the joint graph+vector predicate (`00077`), and `keywords(...)`,
 /// BM25-IDF keyword extraction (`00132`).
+/// Which end of a relationship [`Executor::eval_endpoint_node`] resolves —
+/// the tail (`startNode`) or the head (`endNode`). Issue #232.
+#[derive(Clone, Copy)]
+enum Endpoint {
+    Start,
+    End,
+}
+
 fn is_scalar_function_name(name: &[String]) -> bool {
     if name.len() != 1 {
         return false;
     }
     let lower = name[0].to_ascii_lowercase();
-    lower == "similar" || lower == "keywords" || is_builtin_scalar_function(&lower)
+    // `startnode` / `endnode` (issue #232) are DB-aware like `similar` /
+    // `keywords` — they resolve a relationship's endpoint *id* to the actual
+    // node — so they are evaluated in the executor, not `call_scalar`, but
+    // must still be recognised here as valid scalar function names.
+    lower == "similar"
+        || lower == "keywords"
+        || lower == "startnode"
+        || lower == "endnode"
+        || is_builtin_scalar_function(&lower)
 }
 
 /// `true` when `lower` (an already-lowercased function name) is one of the
@@ -5084,6 +5100,12 @@ impl<'a> Executor<'a> {
         if name.len() == 1 && name[0].eq_ignore_ascii_case("keywords") {
             return self.eval_keywords(args, row, span);
         }
+        if name.len() == 1 && name[0].eq_ignore_ascii_case("startNode") {
+            return self.eval_endpoint_node("startNode", Endpoint::Start, args, row, span);
+        }
+        if name.len() == 1 && name[0].eq_ignore_ascii_case("endNode") {
+            return self.eval_endpoint_node("endNode", Endpoint::End, args, row, span);
+        }
         if name.len() == 1 {
             let lower = name[0].to_ascii_lowercase();
             if is_builtin_scalar_function(&lower) {
@@ -5099,6 +5121,54 @@ impl<'a> Executor<'a> {
             task: "future Phase 10 follow-up".into(),
             span,
         })
+    }
+
+    /// Evaluate `startNode(rel)` / `endNode(rel)` (issue #232) — the source /
+    /// target node of a relationship.
+    ///
+    /// A [`RelationshipValue`] carries only the endpoint *ids*, so the node is
+    /// resolved through the graph ([`crate::db::Drevo::get_node`]); this is why
+    /// the two functions live here (DB access) rather than in the pure
+    /// [`call_scalar`] library. Semantics mirror Neo4j:
+    ///
+    /// * `NULL` argument → `NULL` (so it composes with `OPTIONAL MATCH`);
+    /// * a non-relationship argument is a recoverable
+    ///   [`ExecError::InvalidFunctionCall`];
+    /// * a dangling endpoint (the node was deleted out from under the edge)
+    ///   yields `NULL` rather than erroring.
+    fn eval_endpoint_node(
+        &self,
+        fn_name: &str,
+        which: Endpoint,
+        args: &[Expression],
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        if args.len() != 1 {
+            return Err(ExecError::InvalidFunctionCall {
+                name: fn_name.into(),
+                message: format!("expected 1 argument (relationship), got {}", args.len()),
+                span,
+            });
+        }
+        match self.eval(&args[0], row)? {
+            Value::Null => Ok(Value::Null),
+            Value::Relationship(rv) => {
+                let node_id = match which {
+                    Endpoint::Start => rv.from_id,
+                    Endpoint::End => rv.to_id,
+                };
+                match self.drevo.get_node(node_id)? {
+                    Some(node) => Ok(Value::Node(node_to_value(&node))),
+                    None => Ok(Value::Null),
+                }
+            }
+            other => Err(ExecError::InvalidFunctionCall {
+                name: fn_name.into(),
+                message: format!("argument must be a Relationship, got {}", other.type_name()),
+                span,
+            }),
+        }
     }
 
     /// Evaluate `keywords(text, k [, stem])` — the top-`k` salient terms of

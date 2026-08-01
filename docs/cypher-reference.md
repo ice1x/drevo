@@ -568,6 +568,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | Numeric predicate | `isNaN(n)` — `true` when `n` is the IEEE-754 NaN value, `false` for any other number (an `Integer` is never NaN, and `±Infinity` are numbers, not NaN). The only way to test for NaN, since `NaN = NaN` is *false*. See [isNaN()](#testing-for-nan-with-isnan) |
 | Non-deterministic | `rand()` — uniform `Float` in `[0.0, 1.0)`; `randomUUID()` — a fresh version-4 UUID string. Both take **no arguments** and re-draw on every evaluation (per row). See [Non-deterministic functions](#non-deterministic-functions) |
 | Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
+| Relationship | `startNode(r)`, `endNode(r)` — the source / target node of a relationship `r`. The companion to [`fts.searchRelationships`](#procedures): a `YIELD rel` endpoint is then directly reachable, no re-`MATCH`. A `NULL` argument yields `NULL`; a non-relationship argument errors |
 
 **NULL handling.** Every function except `coalesce` is *NULL-propagating*: a `NULL`
 argument yields `NULL`, never an error — so a function applied across a heterogeneous
@@ -604,6 +605,11 @@ RETURN x, x * x AS squared
 MATCH (n)
 RETURN labels(n) AS kinds, keys(n) AS props
 LIMIT 5
+```
+
+```cypher
+CALL fts.searchRelationships('merger', 10) YIELD rel, score
+RETURN startNode(rel).name AS source, endNode(rel).name AS target, score
 ```
 
 ### Trigonometric & logarithmic functions
