@@ -921,6 +921,56 @@ Critical path: lexer → parser → executor (CREATE/MATCH/RETURN) → mutations
 
 ---
 
+### Phase 21 — Semantic Index: a Cypher-controlled auto-embedding state machine
+
+> Goal: make the vector layer a **first-class, Cypher-controlled subsystem** instead of something an operator wires up with an external backfill script. A per-`(label, property)` **state machine** — **off by default** — lets an operator turn semantic indexing on/off, pick how embeddings are produced (`manual` vs `auto`), and (re)build the index, all from Cypher procedures in the same family as `fts.search` / `drevo.vector.query`. Builds on Phase 12 (vector store + HNSW) and Phase 19 (`/v1/embeddings`); requires an embeddings backend configured, else `enable`/`reindex` fail with a clear error. **Architectural rule:** default is `Disabled` — nothing is embedded, no outbound calls, until an operator opts in.
+
+**State machine (persisted in redb, per `(label, prop)`):**
+
+```
+Disabled ──enable(mode)──► Enabled{mode} ──reindex──► Reindexing ──► Enabled{mode}
+   ▲  ▲                        │
+   │  └────────disable─────────┘        disable: vectors are KEPT (control-plane only)
+   └────drop──── (explicit, destructive: removes the vectors)
+```
+
+`mode ∈ { manual, auto }` is an option of the machine, switchable live via `set_mode`:
+
+- **`manual`** (default on `enable`) — embeddings are produced only by an explicit `reindex`. Writes (`CREATE`/`SET`) stay pure and offline.
+- **`auto`** — additionally, a write that changes the embedded text enqueues the node; a background worker embeds it asynchronously (never on the write path). `status` surfaces the `pending` count.
+
+**Invalidation on data change (precise, hash-based):** each vector stores a hash of its source text (`embedding_src_hash`). On `SET`/`CREATE`, if `hash(new textProp) != embedding_src_hash` the stale vector is **dropped** and the node marked dirty; if the embedded text is unchanged, nothing happens (no paid re-embed for edits to unrelated properties). So the search path never serves a stale vector — a node either has a **current** vector or none (and stays findable via `fts_search` until re-embedded). `reindex` is idempotent: it embeds only dirty/missing nodes and **skips** nodes whose hash still matches (zero cost to re-run). Node `DELETE` cascade-deletes the vector (already true since task `00078`).
+
+**Control surface (Cypher procedures, `drevo.embeddings.*`):**
+
+```cypher
+CALL drevo.embeddings.enable('Entity', 'body', 'embedding', 'manual')
+CALL drevo.embeddings.set_mode('Entity', 'auto')
+CALL drevo.embeddings.reindex('Entity')   -- YIELD embedded, skipped, failed
+CALL drevo.embeddings.disable('Entity')   -- keeps vectors
+CALL drevo.embeddings.drop('Entity')      -- removes vectors (destructive, explicit)
+CALL drevo.embeddings.status()            -- YIELD label, prop, state, mode, embedded, pending, total, model
+```
+
+**State-transition / data rules:**
+
+| Event | Effect on stored vectors |
+|-------|--------------------------|
+| `DELETE` of a node | vector removed (cascade — mandatory) |
+| `SET` changes the embedded text | stale vector **dropped** + node dirty (by hash) |
+| `SET` leaves the embedded text unchanged | vector kept |
+| `disable` | vectors **kept** (control-plane stop only) |
+| `drop` | vectors removed (explicit, destructive) |
+
+**Phasing (procedure surface is stable across both):**
+
+- [ ] **Phase 1 — control plane + `manual`.** Persistent per-`(label, prop)` state in redb; `enable` / `disable` / `set_mode` / `status` / `drop`; hash-based dirty tracking on write; `reindex` (batched, idempotent, hash-skip) driving the Phase 12 vector store via the configured embedder. This alone delivers the "backfill" as `CALL drevo.embeddings.reindex(...)`.
+- [ ] **Phase 2 — `auto`.** A persistent dirty-queue populated on the write path and a background worker that embeds pending nodes; `status.pending`; backpressure + failure/retry handling. No change to the procedure surface — only new behaviour behind `mode='auto'`.
+
+**Definition of done:** with an embeddings backend configured, an operator can `enable('Entity','body','embedding')`, `reindex`, and have `semantic_search` return entities; `disable` stops indexing without discarding vectors and `drop` removes them explicitly; changing a node's embedded text invalidates only that vector (hash-precise) and `reindex` refreshes it idempotently; the default build/graph is **Disabled** with zero embedding activity; every rule above is locked by tests across the three layers (`drevo-tdd`).
+
+---
+
 ### Phase 8.5 — Codebase Audit & Refactor (skill-anchored)
 
 > **Re-ranked as the immediate next priority** (before remaining Phase 8/9 tasks). The 9.5k LOC of production code in this repo were written **before the project's four skill specs existed** (`drevo-tdd`, `drevo-rust`, `drevo-architecture`, `drevo-database` — under `.claude/skills/`). Phase 8.5 audits the existing code against those skill rules and refactors where it has drifted, BEFORE Phase 10 (Cypher) and Phase 13 (MVCC) put heavy new layers on top of the same surfaces.
