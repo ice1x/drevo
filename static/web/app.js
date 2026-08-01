@@ -728,6 +728,44 @@
     return added;
   }
 
+  // ── Timestamp humanising ───────────────────────────────────────────
+  // drevo stores created_at / updated_at as epoch milliseconds (i64) and
+  // sends them raw over the wire. Formatting is a presentation concern, so
+  // it lives here (the browser's native `Date`) rather than in the engine —
+  // which deliberately carries no date-time dependency.
+  //
+  // `formatTimestamp(key, value)` returns `{ text, title }` when `value` is
+  // an epoch timestamp under a time-like key, else `null` (caller renders
+  // the value as before). `title` keeps the raw value for the tooltip.
+  const TIME_KEY_RE = /(^|_)(at|ts|time|timestamp)$/i;
+  function humanizeEpoch(ms) {
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return null;
+    // "YYYY-MM-DD HH:MM:SS UTC" — unambiguous, matches the ISO strings that
+    // KG string-typed timestamps already arrive as.
+    return d.toISOString().slice(0, 19).replace("T", " ") + " UTC";
+  }
+  function formatTimestamp(key, value) {
+    if (!TIME_KEY_RE.test(key)) return null;
+    let num = null;
+    if (typeof value === "number" && Number.isFinite(value)) num = value;
+    else if (typeof value === "string" && /^\d{10,16}$/.test(value))
+      num = Number(value);
+    if (num === null) return null; // already-ISO strings pass through
+    // Heuristic: values below 1e12 are epoch *seconds* (~1.7e9 today),
+    // at/above are epoch *milliseconds* (~1.7e12 today).
+    const ms = num < 1e12 ? num * 1000 : num;
+    const human = humanizeEpoch(ms);
+    return human ? { text: human, title: String(value) } : null;
+  }
+  // Render one inspector row, humanising the value if it is an epoch
+  // timestamp under a time-like key.
+  function addTimestampAwareRow(key, value, fallbackText) {
+    const ts = formatTimestamp(key, value);
+    if (ts) addRow(key, ts.text, ts.title);
+    else addRow(key, fallbackText);
+  }
+
   // ── Inspector ──────────────────────────────────────────────────────
   function renderInspector(node) {
     if (!node) return clearInspector();
@@ -742,12 +780,14 @@
     $inspectorBody.appendChild(heading);
     addRow("id", String(node.id));
     if (node.uuid) addRow("uuid", uuidToHyphenated(node.uuid));
-    if (node.created_at !== undefined) addRow("created_at", String(node.created_at));
-    if (node.updated_at !== undefined) addRow("updated_at", String(node.updated_at));
+    if (node.created_at !== undefined)
+      addTimestampAwareRow("created_at", node.created_at, String(node.created_at));
+    if (node.updated_at !== undefined)
+      addTimestampAwareRow("updated_at", node.updated_at, String(node.updated_at));
     const props = node.properties || {};
     const propKeys = Object.keys(props).sort();
     for (const k of propKeys) {
-      addRow(k, JSON.stringify(props[k]));
+      addTimestampAwareRow(k, props[k], JSON.stringify(props[k]));
     }
   }
   // Inspect a relationship. Edges carry a different wire shape than
@@ -775,10 +815,10 @@
     addRow("to_id", String(edge.to_id));
     if (edge.weight !== undefined) addRow("weight", String(edge.weight));
     if (edge.created_at !== undefined)
-      addRow("created_at", String(edge.created_at));
+      addTimestampAwareRow("created_at", edge.created_at, String(edge.created_at));
     const props = edge.properties || {};
     for (const k of Object.keys(props).sort()) {
-      addRow(k, JSON.stringify(props[k]));
+      addTimestampAwareRow(k, props[k], JSON.stringify(props[k]));
     }
   }
   // Human label for an endpoint id — the node's title if it is currently
@@ -793,7 +833,7 @@
     }
     return `#${id}`;
   }
-  function addRow(k, v) {
+  function addRow(k, v, title) {
     const row = document.createElement("div");
     row.className = "inspector-row";
     const kEl = document.createElement("span");
@@ -802,6 +842,9 @@
     const vEl = document.createElement("span");
     vEl.className = "v";
     vEl.textContent = v;
+    // Raw value tooltip (e.g. the original epoch millis behind a humanised
+    // timestamp) so nothing is lost to formatting.
+    if (title) vEl.title = title;
     row.appendChild(kEl);
     row.appendChild(vEl);
     $inspectorBody.appendChild(row);
