@@ -224,6 +224,26 @@
 #define MIN_SUPERNODE_THRESHOLD 100
 
 /**
+ * Current on-disk format **major** version this build writes and reads.
+ *
+ * Compatibility rule (semver-style): a build opens any file whose major
+ * version is `<= FORMAT_MAJOR`. A file with a greater major was written by
+ * a newer, layout-incompatible drevo and is refused with
+ * [`StorageError::IncompatibleFormat`] instead of being silently misread.
+ * Files predating format versioning carry no marker and are treated as the
+ * original `1.0` format (then stamped on first open). This is the on-disk
+ * durability guarantee for the agent-memory-graph file (issue #48).
+ */
+#define FORMAT_MAJOR 1
+
+/**
+ * Current on-disk format **minor** version. Bumped for additive,
+ * backward-compatible layout changes within a major; purely informational
+ * for the compatibility check (any minor of a compatible major opens).
+ */
+#define FORMAT_MINOR 0
+
+/**
  * The default batch size used by [`IngestConsumer::new`] when none is
  * specified.
  */
