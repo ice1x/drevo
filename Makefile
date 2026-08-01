@@ -48,7 +48,7 @@ help:
 	@echo "  make next-version   print the next MINOR version (dry run)"
 	@echo "  make release     bump MINOR, tag vX.Y.Z, push -> CI publishes to ghcr.io"
 	@echo "  make release-patch / release-major   bump PATCH / MAJOR instead"
-	@echo "  make release-image  bump + docker build + push to the DEPLOY registry"
+	@echo "  make release-image  bump PATCH + docker build + push to the DEPLOY registry"
 	@echo "                      (Docker Hub ice1x/drevo; override with DREVO_IMAGE) + tag"
 
 audit: fmt clippy clippy-wasm test doc dead-deps coverage
@@ -119,4 +119,4 @@ release-major:
 # One command: bump version -> build the image -> push it to the deploy
 # registry -> git tag. This is what actually ships a new *deployed* image.
 release-image:
-	@scripts/release.sh image minor
+	@scripts/release.sh image patch

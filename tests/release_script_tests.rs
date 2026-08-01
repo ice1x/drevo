@@ -79,6 +79,27 @@ fn makefile_wires_image_and_release_targets() {
 }
 
 #[test]
+fn release_image_walks_the_patch_space_from_the_seed() {
+    // The deploy-image version line starts at the Cargo.toml `0.0.0` seed and
+    // walks the PATCH space: the first `make release-image` (no git tags yet)
+    // is 0.0.1, then 0.0.2, … — not a jump straight to 0.1.0.
+    assert_eq!(next_version("patch", "0.0.0"), "0.0.1");
+    assert_eq!(next_version("patch", "0.0.1"), "0.0.2");
+
+    let makefile = read("Makefile");
+    assert!(
+        makefile.contains("scripts/release.sh image patch"),
+        "`make release-image` must bump PATCH (walk the patch space), not minor"
+    );
+
+    let cargo = read("Cargo.toml");
+    assert!(
+        cargo.contains("version = \"0.0.0\""),
+        "Cargo.toml version must seed the image line at 0.0.0 so the first release is 0.0.1"
+    );
+}
+
+#[test]
 fn release_targets_do_not_push_from_the_makefile() {
     // Guard against a footgun: the tag/push must live behind the script's
     // safety rails (clean tree, on main, confirm), never inline in a target.

@@ -81,7 +81,9 @@ fi
 if [ "${1:-}" = "image" ]; then
   shift
   assume_yes=0
-  part="minor"
+  # PATCH by default: the deploy-image line walks the full patch space
+  # (0.0.1 -> 0.0.2 -> …). Pass `minor`/`major` explicitly to jump.
+  part="patch"
   do_tag=1
   while [ $# -gt 0 ]; do
     case "$1" in
