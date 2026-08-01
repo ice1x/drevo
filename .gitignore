@@ -24,3 +24,30 @@ target
 # Added by cargo
 
 /target
+
+# ── Local / machine artifacts (keep the working tree clean) ──────────────
+# These are generated locally and must never be tracked. Notably, an untracked
+# file makes `git status --porcelain` non-empty, which trips the clean-tree
+# guard in `scripts/release.sh` ("working tree is dirty") and blocks
+# `make release-image`. Ignoring them lets a release run from a normal working
+# checkout. None of these are deleted by being ignored.
+
+# macOS
+.DS_Store
+
+# Python bytecode, build metadata, and the maturin-built extension module
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.abi3.so
+
+# Local virtualenvs (e.g. .venv-ci-fmt used to reproduce the format gate)
+.venv*/
+
+# Self-hosted GitHub Actions runner: on the CI machine this lives inside the
+# repo. Never track or sweep it — doing so has killed the runner before. It is
+# already excluded from the Docker build context via .dockerignore.
+actions-runner/
+
+# Scratch / temporary migration workspace
+migr_tmp/
