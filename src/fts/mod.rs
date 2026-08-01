@@ -18,6 +18,9 @@
 //! strategy trait, broad-query performance mitigations, NFC
 //! normalization).
 
+/// Edge (relationship) trigram index (#227-B) — the `efts:` keyspace companion
+/// of [`index`], powering `fts.searchRelationships`.
+pub(crate) mod edge_index;
 /// Keyword-similarity grouping & faceting: collapse near-duplicate
 /// keywords (lexical or semantic) into facets (task `00133`).
 pub mod facet;

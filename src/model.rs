@@ -203,6 +203,18 @@ pub struct ScoredNode {
     pub score: f32,
 }
 
+/// A relationship search result with a relevance score (#227-B).
+///
+/// Returned by [`crate::db::Drevo::search_fts_relationships`] — edges are ranked
+/// by Okapi BM25 over their string properties.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScoredEdge {
+    /// The matching edge.
+    pub edge: Edge,
+    /// Relevance score (higher = more relevant).
+    pub score: f32,
+}
+
 /// Relevance-ranking strategy for full-text search.
 ///
 /// [`Drevo::search_fts`](crate::db::Drevo::search_fts) ranks with

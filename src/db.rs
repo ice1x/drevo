@@ -42,11 +42,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::error::{DrevoError, Result};
+use crate::fts::edge_index;
 use crate::fts::facet::{build_facets, Facet, FacetCollapse};
 use crate::fts::index as fts_index;
 use crate::fts::tokenizer::extract_trigrams;
 use crate::model::{
-    Direction, Edge, EdgePatch, FtsRanking, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
+    Direction, Edge, EdgePatch, FtsRanking, NewEdge, NewNode, Node, NodePatch, ScoredEdge,
+    ScoredNode, SubGraph,
 };
 use crate::property_index;
 #[cfg(feature = "redb-backend")]
@@ -1295,6 +1297,10 @@ impl Drevo {
         // Edge kind index
         self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
 
+        // FTS index the edge's string properties (#227-B) so relationship text
+        // (e.g. `name` / `fact`) is BM25-searchable via fts.searchRelationships.
+        edge_index::index_edge(&*self.backend, id, &edge.properties)?;
+
         self.record_undo(UndoOp::CreatedEdge(id));
         Ok(edge)
     }
@@ -1334,6 +1340,8 @@ impl Drevo {
             writes.push((out_edge_key(edge.from_id, id), Vec::new()));
             writes.push((in_edge_key(edge.to_id, id), Vec::new()));
             writes.push((edge_kind_key(&edge.kind, id), Vec::new()));
+            // FTS postings for the edge's string properties (#227-B).
+            writes.extend(edge_index::edge_index_entries(id, &edge.properties));
 
             edges.push(edge);
         }
@@ -1398,6 +1406,7 @@ impl Drevo {
         let pre_image = edge.clone();
 
         let old_kind = edge.kind.clone();
+        let old_properties = edge.properties.clone();
 
         edge.apply_patch(patch);
 
@@ -1408,6 +1417,13 @@ impl Drevo {
         if edge.kind != old_kind {
             self.backend.delete(&edge_kind_key(&old_kind, id))?;
             self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
+        }
+
+        // Re-index the edge's FTS text when a string property changed (#227-B):
+        // de-index by the OLD properties so stale trigrams can't leak.
+        if edge.properties.0 != old_properties.0 {
+            edge_index::deindex_edge(&*self.backend, id, &old_properties)?;
+            edge_index::index_edge(&*self.backend, id, &edge.properties)?;
         }
 
         self.record_undo(UndoOp::UpdatedEdge(pre_image));
@@ -1438,6 +1454,9 @@ impl Drevo {
 
         // Remove edge kind index
         self.backend.delete(&edge_kind_key(&edge.kind, id))?;
+
+        // Remove FTS postings (#227-B).
+        edge_index::deindex_edge(&*self.backend, id, &edge.properties)?;
 
         self.record_undo(UndoOp::DeletedEdge(edge));
         Ok(())
@@ -1677,6 +1696,78 @@ impl Drevo {
                 .then(a.node.id.cmp(&b.node.id))
         });
 
+        scored.truncate(limit);
+        Ok(scored)
+    }
+
+    /// Full-text search over **relationships** (#227-B): the top-`limit` edges
+    /// whose string properties best match `query`, ranked by Okapi BM25 — the
+    /// edge companion of [`Self::search_fts`], exposed to Cypher as
+    /// `CALL fts.searchRelationships(query, k)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] on backend failure.
+    pub fn search_fts_relationships(&self, query: &str, limit: usize) -> Result<Vec<ScoredEdge>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let query_trigrams = extract_trigrams(query, "");
+        if query_trigrams.is_empty() {
+            return Ok(Vec::new());
+        }
+        let candidate_ids = edge_index::intersect_trigrams(&*self.backend, &query_trigrams)?;
+        if candidate_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let stats = edge_index::corpus_stats(&*self.backend)?;
+        let avgdl = stats.avgdl();
+        let (k1, b) = (1.2_f32, 0.75_f32);
+
+        let mut dfs: Vec<u64> = Vec::with_capacity(query_trigrams.len());
+        for trigram in &query_trigrams {
+            dfs.push(edge_index::posting_list_len(&*self.backend, trigram)? as u64);
+        }
+        let n = dfs.iter().copied().max().unwrap_or(0).max(stats.doc_count);
+        let idf_values: Vec<f32> = dfs.iter().map(|&df| fts_index::bm25_idf(n, df)).collect();
+
+        let mut scored: Vec<ScoredEdge> = Vec::with_capacity(candidate_ids.len());
+        for edge_id in &candidate_ids {
+            let edge = match self.get_edge(*edge_id)? {
+                Some(e) => e,
+                None => continue,
+            };
+            let raw = edge_index::edge_raw_trigrams(&edge.properties);
+            if raw.is_empty() {
+                continue;
+            }
+            let doc_len = edge_index::doc_length(&*self.backend, *edge_id)?
+                .map(|l| l as f32)
+                .unwrap_or(raw.len() as f32);
+            let norm = if avgdl > 0.0 {
+                1.0 - b + b * (doc_len / avgdl)
+            } else {
+                1.0
+            };
+            let mut score: f32 = 0.0;
+            for (i, qt) in query_trigrams.iter().enumerate() {
+                let tf = raw.iter().filter(|t| *t == qt).count() as f32;
+                if tf == 0.0 {
+                    continue;
+                }
+                score += idf_values[i] * (tf * (k1 + 1.0)) / (tf + k1 * norm);
+            }
+            if score > 0.0 {
+                scored.push(ScoredEdge { edge, score });
+            }
+        }
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.edge.id.cmp(&b.edge.id))
+        });
         scored.truncate(limit);
         Ok(scored)
     }

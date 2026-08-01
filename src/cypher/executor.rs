@@ -920,7 +920,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     name: name.clone(),
                     message: "no such procedure — built-in procedures are \
                           db.labels, db.relationshipTypes, db.propertyKeys, \
-                          drevo.vector.query, fts.search"
+                          drevo.vector.query, fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
                 })?;
@@ -3759,6 +3759,31 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// `CALL fts.searchRelationships(query, k) YIELD rel, score` (#227-B) — the
+    /// top-`k` relationships whose string properties best match `query`, ranked
+    /// by BM25. The edge companion of [`Self::proc_fts_search`].
+    fn proc_fts_search_relationships(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let empty = Bindings::new();
+        let query = self.eval(&args[0], &empty)?;
+        let query = query.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[1], &empty)?;
+
+        let hits = self.drevo.search_fts_relationships(&query, k)?;
+        Ok(hits
+            .into_iter()
+            .map(|scored| {
+                vec![
+                    Value::Relationship(edge_to_value(&scored.edge)),
+                    Value::Float(f64::from(scored.score)),
+                ]
+            })
+            .collect())
+    }
+
     /// Run a built-in procedure and return its output rows, each a
     /// positional vector aligned with [`procedure_columns`].
     fn invoke_procedure(
@@ -3770,6 +3795,7 @@ impl<'a> Executor<'a> {
         match name {
             "drevo.vector.query" => self.proc_vector_query(args, span),
             "fts.search" => self.proc_fts_search(args, span),
+            "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
             "db.labels" => {
                 let mut labels: Vec<String> = Vec::new();
                 for node in self.drevo.collect_all_nodes()? {
@@ -5258,6 +5284,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.vector.query" => Some(&["node", "score"]),
         // Full-text search (issue #208): BM25-ranked matching nodes.
         "fts.search" => Some(&["node", "score"]),
+        // Relationship full-text search (issue #227-B): BM25-ranked edges.
+        "fts.searchRelationships" => Some(&["rel", "score"]),
         _ => None,
     }
 }
@@ -5269,8 +5297,8 @@ fn procedure_arity(name: &str) -> usize {
     match name {
         // db.vector.query(label, property, query, k)
         "drevo.vector.query" => 4,
-        // fts.search(query, k)
-        "fts.search" => 2,
+        // fts.search(query, k) / fts.searchRelationships(query, k)
+        "fts.search" | "fts.searchRelationships" => 2,
         // The db.* introspection procedures take no arguments.
         _ => 0,
     }

@@ -484,3 +484,24 @@ fn fts_search_wrong_arity_is_an_error() {
         "{err:?}"
     );
 }
+
+#[test]
+fn call_fts_search_relationships_returns_scored_edges() {
+    // #227-B: relationship full-text search over edge string properties.
+    let db = db();
+    exec(
+        "CREATE (a:N {title:'A'})-[:RELATES_TO {fact:'acquired wolverine corp'}]->(b:N {title:'B'})",
+        &db,
+    );
+    let rows = run(
+        "CALL fts.searchRelationships('wolverine', 10) YIELD rel, score RETURN rel, score",
+        &db,
+    );
+    assert_eq!(rows.len(), 1);
+    assert!(
+        matches!(rows[0][0], Value::Relationship(_)),
+        "{:?}",
+        rows[0][0]
+    );
+    assert!(matches!(rows[0][1], Value::Float(_)), "{:?}", rows[0][1]);
+}
