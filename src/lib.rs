@@ -154,6 +154,11 @@ pub mod property_index;
 /// [`replication::ReplicationError`] channel and is not yet wired into the
 /// executor / HTTP / Bolt request path.
 pub mod replication;
+/// Semantic-index state machine (Phase 21) — the pure, dependency-free control
+/// plane that governs whether and how a `(label, property)` is auto-embedded
+/// for semantic search. Off by default; serialisable for redb persistence and
+/// the `drevo.embeddings.*` Cypher procedures. Performs no embedding itself.
+pub mod semantic_index;
 #[cfg(feature = "http")]
 pub mod server;
 pub mod storage;
