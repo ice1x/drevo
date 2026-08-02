@@ -145,7 +145,11 @@ if [ "${1:-}" = "image" ]; then
   fi
 
   echo "Building $img:$next …"
-  docker build -t "$img:$next" -t "$img:latest" .
+  # Thread the version into the build: `.git` is excluded from the Docker build
+  # context, so `build.rs` can't `git describe` there. Without this arg the image
+  # would report `CARGO_PKG_VERSION` (0.0.0) at `/`, `/status`, the Bolt `server`
+  # agent, and metrics — the git tag is the source of truth, not Cargo.toml.
+  docker build --build-arg "DREVO_VERSION=$next" -t "$img:$next" -t "$img:latest" .
   echo "Pushing $img:$next and $img:latest …"
   docker push "$img:$next"
   docker push "$img:latest"

@@ -730,7 +730,7 @@ impl DrevoMetrics {
             .gauge(
                 "drevo_build_info",
                 "Build information; the value is always 1.",
-                &[("version", env!("CARGO_PKG_VERSION"))],
+                &[("version", crate::VERSION)],
             )
             .set(1);
         Self {
@@ -1095,10 +1095,7 @@ mod tests {
     fn build_info_published() {
         let m = DrevoMetrics::new();
         let out = m.render_prometheus();
-        let expected = format!(
-            "drevo_build_info{{version=\"{}\"}} 1",
-            env!("CARGO_PKG_VERSION")
-        );
+        let expected = format!("drevo_build_info{{version=\"{}\"}} 1", crate::VERSION);
         assert!(out.contains(&expected), "{out}");
     }
 

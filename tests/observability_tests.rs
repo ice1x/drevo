@@ -81,7 +81,7 @@ async fn metrics_endpoint_serves_prometheus_text() {
     assert!(
         body.contains(&format!(
             "drevo_build_info{{version=\"{}\"}} 1",
-            env!("CARGO_PKG_VERSION")
+            drevo::VERSION
         )),
         "missing build_info:\n{body}"
     );

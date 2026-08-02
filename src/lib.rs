@@ -50,6 +50,17 @@
 //! vector search (Phase 12).
 #![warn(missing_docs)]
 
+/// The version string the running server reports — from `GET /`, `GET /status`,
+/// the Bolt `server` agent, and the metrics `version` label.
+///
+/// Injected at build time by `build.rs` as the `DREVO_VERSION` env var, which
+/// resolves (in order) the `DREVO_VERSION` build-arg the release image passes,
+/// `git describe --tags` on a dev checkout, then `CARGO_PKG_VERSION`. It is
+/// **not** `env!("CARGO_PKG_VERSION")`: the release flow keeps the git tag as
+/// the source of truth and leaves `Cargo.toml` at `0.0.0`, so reporting the
+/// crate version would show `0.0.0` on every deployed build.
+pub const VERSION: &str = env!("DREVO_VERSION");
+
 /// Built-in global graph algorithms — Phase 15 task `00098`. Adds the two
 /// whole-graph analytics algorithms that complement the local traversals in
 /// [`traversal`]: [`algorithms::pagerank`] (weighted PageRank centrality via

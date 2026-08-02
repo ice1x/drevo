@@ -461,7 +461,7 @@ impl<'a> Session<'a> {
             // drevo's Bolt surface is a deliberate Neo4j-compatible drop-in, so
             // we report a Neo4j-version-prefixed agent (drevo's own version is
             // kept as a suffix and remains available via the HTTP `/status`).
-            server_agent: format!("Neo4j/5.26.0-drevo-{}", env!("CARGO_PKG_VERSION")),
+            server_agent: format!("Neo4j/5.26.0-drevo-{}", crate::VERSION),
             connection_id: format!("drevo-bolt-{id}"),
             pending: None,
             authenticator,
