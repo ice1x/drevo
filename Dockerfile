@@ -54,6 +54,15 @@ COPY static/ static/
 # the deploy image only.) Locked by
 # `tests/dockerfile_tests.rs::dockerfile_features_are_build_arg_overridable`.
 ARG CARGO_FEATURES="http,redb-backend,embeddings-proxy"
+# The version the built server reports (`/`, `/status`, Bolt `server` agent,
+# metrics). `.git` is excluded from the build context, so `build.rs` cannot run
+# `git describe` here and would fall back to `CARGO_PKG_VERSION` (0.0.0, since the
+# release flow keeps the version in the git tag, not Cargo.toml). `scripts/release.sh`
+# passes `--build-arg DREVO_VERSION=<next>` so the deployed image reports the real
+# released version. Locked by
+# `tests/dockerfile_tests.rs::dockerfile_threads_the_version_build_arg`.
+ARG DREVO_VERSION=""
+ENV DREVO_VERSION=${DREVO_VERSION}
 RUN cargo build --release --bin drevo-server \
         --no-default-features --features "${CARGO_FEATURES}"
 

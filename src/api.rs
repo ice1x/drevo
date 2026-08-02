@@ -390,7 +390,8 @@ fn json_error(status: StatusCode, message: &str) -> Response {
 pub struct ServerInfo {
     /// Crate name.
     pub name: &'static str,
-    /// Crate version (from `CARGO_PKG_VERSION`).
+    /// Server version (from [`crate::VERSION`] — the release git tag,
+    /// injected at build time; see `build.rs`).
     pub version: &'static str,
 }
 
@@ -400,7 +401,7 @@ pub struct ServerInfo {
 async fn root(State(_state): State<ApiState>) -> Json<ServerInfo> {
     Json(ServerInfo {
         name: "drevo",
-        version: env!("CARGO_PKG_VERSION"),
+        version: crate::VERSION,
     })
 }
 
@@ -1356,7 +1357,7 @@ async fn status(State(state): State<ApiState>) -> Json<StatusResponse> {
     let uptime_seconds = state.started_at.elapsed().as_secs();
     Json(StatusResponse {
         name: "drevo",
-        version: env!("CARGO_PKG_VERSION"),
+        version: crate::VERSION,
         uptime_seconds,
     })
 }

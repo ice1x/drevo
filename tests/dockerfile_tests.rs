@@ -222,6 +222,23 @@ fn dockerignore_excludes_target_and_git() {
     );
 }
 
+#[test]
+fn dockerfile_threads_the_version_build_arg() {
+    // `.git` is excluded from the build context, so `build.rs` can't
+    // `git describe` inside the image and would fall back to CARGO_PKG_VERSION
+    // (0.0.0). The version must arrive as a build ARG and be exported to the
+    // build env so `build.rs` picks it up. `scripts/release.sh` supplies it.
+    let content = read_dockerfile();
+    assert!(
+        content.contains("ARG DREVO_VERSION"),
+        "Dockerfile must declare `ARG DREVO_VERSION` so the release version can be injected"
+    );
+    assert!(
+        content.contains("ENV DREVO_VERSION"),
+        "Dockerfile must export DREVO_VERSION to the build env for build.rs to read"
+    );
+}
+
 fn read_dockerfile() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Dockerfile");
     fs::read_to_string(path).expect("failed to read Dockerfile")

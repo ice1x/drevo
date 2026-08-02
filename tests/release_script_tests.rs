@@ -152,3 +152,40 @@ fn makefile_wires_release_image_target() {
         "the `release-image` target must delegate to `scripts/release.sh image`"
     );
 }
+
+// --- Version injection wiring (server/UI reported version, not 0.0.0) -------
+//
+// The release version lives in the `vX.Y.Z` git tag, not in `Cargo.toml`
+// (which stays 0.0.0). `build.rs` injects it as the `DREVO_VERSION` compile
+// env, and the release image gets it via a `--build-arg` because `.git` is
+// excluded from the Docker build context. These lock that chain end to end.
+
+#[test]
+fn build_rs_resolves_version_env_then_git_then_cargo() {
+    let build_rs = read("build.rs");
+    assert!(
+        build_rs.contains("cargo:rustc-env=DREVO_VERSION="),
+        "build.rs must emit the DREVO_VERSION compile env var"
+    );
+    assert!(
+        build_rs.contains("DREVO_VERSION") && build_rs.contains("var(\"DREVO_VERSION\")"),
+        "build.rs must honour a DREVO_VERSION build-arg/env override"
+    );
+    assert!(
+        build_rs.contains("git") && build_rs.contains("describe"),
+        "build.rs must fall back to `git describe` for native/dev builds"
+    );
+    assert!(
+        build_rs.contains("CARGO_PKG_VERSION"),
+        "build.rs must keep CARGO_PKG_VERSION as the last-resort fallback (infallible build)"
+    );
+}
+
+#[test]
+fn release_image_passes_the_version_build_arg() {
+    let script = read("scripts/release.sh");
+    assert!(
+        script.contains("--build-arg") && script.contains("DREVO_VERSION=$next"),
+        "release.sh image must pass --build-arg DREVO_VERSION=$next so the image reports the real version"
+    );
+}

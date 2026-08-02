@@ -122,6 +122,14 @@ async fn root_returns_server_info() {
     );
     let version = value["version"].as_str().unwrap();
     assert!(!version.is_empty(), "version should not be empty");
+    // The reported version must be the build-injected `drevo::VERSION` (the
+    // release git tag), NOT a stale `CARGO_PKG_VERSION` (0.0.0 on every
+    // deployed build, since the release flow leaves Cargo.toml at 0.0.0).
+    assert_eq!(
+        version,
+        drevo::VERSION,
+        "GET / must report drevo::VERSION, not a hardcoded crate version"
+    );
 }
 
 #[tokio::test]
@@ -1167,6 +1175,11 @@ async fn get_status_returns_server_metadata() {
     assert!(value["version"].is_string());
     let version = value["version"].as_str().unwrap();
     assert!(!version.is_empty());
+    assert_eq!(
+        version,
+        drevo::VERSION,
+        "GET /status must report drevo::VERSION (the build-injected release version)"
+    );
     assert!(
         value["uptime_seconds"].is_u64(),
         "uptime_seconds should be a non-negative integer, got {value:?}"
