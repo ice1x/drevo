@@ -425,6 +425,20 @@ pub struct Session<'a> {
     /// `scheme`/`principal`/`credentials` tuple before reaching
     /// [`State::Ready`]. Phase 11 task `00074`.
     authenticator: Option<&'a dyn Authenticator>,
+    /// `true` while *this* session holds the `Drevo` handle's single
+    /// explicit-transaction slot — set on a successful `BEGIN`, cleared
+    /// on `COMMIT` / `ROLLBACK` (and by the cleanup on `RESET` / drop).
+    ///
+    /// The transaction slot is global to the `Drevo` handle, but the
+    /// lifecycle hooks that tear an open transaction down (`RESET`,
+    /// `GOODBYE`, a dropped connection) must only roll back a transaction
+    /// *this* session opened. Gating on this flag — rather than the
+    /// global [`Drevo::is_tx_active`](crate::db::Drevo::is_tx_active) —
+    /// stops a pooled driver's `RESET` on one connection from silently
+    /// rolling back a managed transaction in flight on another, which
+    /// otherwise surfaced as an intermittent `no active transaction`
+    /// failure at `COMMIT` (issue #236).
+    owns_tx: bool,
 }
 
 struct PendingResult {
@@ -465,6 +479,7 @@ impl<'a> Session<'a> {
             connection_id: format!("drevo-bolt-{id}"),
             pending: None,
             authenticator,
+            owns_tx: false,
         }
     }
 
@@ -552,15 +567,27 @@ impl<'a> Session<'a> {
         vec![ServerMessage::Success { metadata: md }]
     }
 
-    fn handle_goodbye(&mut self) -> Vec<ServerMessage> {
-        // An explicit transaction left open at GOODBYE is rolled back
-        // so the next session that connects through the same `Drevo`
-        // handle isn't blocked by a stale journal slot. Errors during
-        // rollback are silently swallowed — the client is already
-        // walking away and no reply is delivered for `GOODBYE`.
-        if self.drevo.is_tx_active() {
+    /// Roll back the explicit transaction *this* session owns, if any,
+    /// swallowing any rollback error. Idempotent: clears `owns_tx` so a
+    /// later drop / GOODBYE does not double-roll-back. Used by the
+    /// no-reply teardown paths (`GOODBYE`, connection drop) where there is
+    /// no client left to receive a `FAILURE`.
+    fn roll_back_own_tx(&mut self) {
+        if self.owns_tx {
+            self.owns_tx = false;
             let _ = self.drevo.tx_rollback();
         }
+    }
+
+    fn handle_goodbye(&mut self) -> Vec<ServerMessage> {
+        // An explicit transaction *this* session left open at GOODBYE is
+        // rolled back so the next session through the same `Drevo` handle
+        // isn't blocked by a stale journal slot. We gate on `owns_tx`, not
+        // the global `is_tx_active()`: another connection may legitimately
+        // hold the slot, and its transaction is none of our business
+        // (issue #236). Errors during rollback are silently swallowed —
+        // the client is already walking away and no reply is delivered.
+        self.roll_back_own_tx();
         self.state = State::Defunct;
         self.pending = None;
         Vec::new()
@@ -568,12 +595,15 @@ impl<'a> Session<'a> {
 
     fn handle_reset(&mut self) -> Vec<ServerMessage> {
         self.pending = None;
-        // RESET inside an explicit transaction rolls it back, matching
-        // the Neo4j driver contract: the transaction is gone when the
-        // session returns to READY. Any rollback failure surfaces as
-        // FAILURE so the driver gets a deterministic signal rather
-        // than a torn connection.
-        if self.drevo.is_tx_active() {
+        // RESET inside *our own* explicit transaction rolls it back,
+        // matching the Neo4j driver contract: the transaction is gone when
+        // the session returns to READY. Gated on `owns_tx` so a pooled
+        // driver's RESET on this connection never disturbs a transaction
+        // in flight on another (issue #236). Any rollback failure surfaces
+        // as FAILURE so the driver gets a deterministic signal rather than
+        // a torn connection.
+        if self.owns_tx {
+            self.owns_tx = false;
             if let Err(e) = self.drevo.tx_rollback() {
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
@@ -603,6 +633,7 @@ impl<'a> Session<'a> {
         match self.drevo.tx_begin() {
             Ok(()) => {
                 self.state = State::TxReady;
+                self.owns_tx = true;
                 vec![ServerMessage::Success {
                     metadata: BTreeMap::new(),
                 }]
@@ -626,6 +657,8 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
+        // Whatever the outcome, the slot is no longer ours to clean up.
+        self.owns_tx = false;
         match self.drevo.tx_commit() {
             Ok(()) => {
                 self.state = State::Ready;
@@ -652,6 +685,8 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
+        // Whatever the outcome, the slot is no longer ours to clean up.
+        self.owns_tx = false;
         match self.drevo.tx_rollback() {
             Ok(()) => {
                 self.state = State::Ready;
@@ -845,6 +880,20 @@ impl<'a> Session<'a> {
             md.insert("has_more".to_string(), Value::Boolean(true));
         }
         vec![ServerMessage::Success { metadata: md }]
+    }
+}
+
+impl Drop for Session<'_> {
+    /// A connection that drops without `COMMIT` / `ROLLBACK` / `GOODBYE`
+    /// (a hard disconnect, a cancelled task, a panicked handler) must not
+    /// leak the `Drevo` handle's single explicit-transaction slot — with
+    /// per-session ownership (issue #236), no *other* session will clean
+    /// it up, so a leaked slot would reject every future `BEGIN` with
+    /// `transaction already active`. Rolling back our own transaction here
+    /// closes that gap on every exit path. A no-op unless we still own the
+    /// slot (`COMMIT` / `ROLLBACK` / `RESET` / `GOODBYE` already cleared it).
+    fn drop(&mut self) {
+        self.roll_back_own_tx();
     }
 }
 
