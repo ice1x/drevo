@@ -957,6 +957,134 @@ fn run_in_failed_state_inside_tx_still_ignored() {
     assert!(matches!(replies[0], ServerMessage::Ignored));
 }
 
+// --- Cross-session transaction isolation (issue #236) ----------------------
+//
+// The explicit-transaction slot is a single global one per `Drevo` handle, but
+// the session-lifecycle hooks (`RESET`, `GOODBYE`, connection drop) that clean
+// up "an open transaction" must only touch a transaction *this* session opened.
+// A pooled driver routinely sends `RESET` on a *different* connection while a
+// managed transaction is in flight on another; before the ownership fix that
+// stray `RESET` rolled back the unrelated transaction, so the owning session's
+// later `COMMIT` failed with `Neo.DatabaseError.Statement.ExecutionFailed: no
+// active transaction` — the intermittent failure reported in issue #236.
+
+fn ready(drevo: &Drevo) -> Session<'_> {
+    let mut s = Session::new(drevo);
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    s
+}
+
+#[test]
+fn reset_on_another_session_does_not_roll_back_our_tx() {
+    let drevo = open();
+    let mut owner = ready(&drevo);
+    let mut other = ready(&drevo);
+
+    owner.handle(ClientMessage::Begin { extra: dict([]) });
+    assert_eq!(owner.state(), State::TxReady);
+    assert!(drevo.is_tx_active());
+
+    // A pooled driver recycling a *different* connection sends RESET.
+    let replies = other.handle(ClientMessage::Reset);
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+    // The other session must NOT have disturbed the owner's transaction.
+    assert!(
+        drevo.is_tx_active(),
+        "a foreign RESET rolled back our transaction (issue #236)"
+    );
+
+    // The owner can still commit — no spurious `no active transaction`.
+    let replies = owner.handle(ClientMessage::Commit);
+    assert!(
+        matches!(replies[0], ServerMessage::Success { .. }),
+        "COMMIT after a foreign RESET should still succeed, got {:?}",
+        replies[0]
+    );
+    assert_eq!(owner.state(), State::Ready);
+    assert!(!drevo.is_tx_active());
+}
+
+#[test]
+fn goodbye_on_another_session_does_not_roll_back_our_tx() {
+    let drevo = open();
+    let mut owner = ready(&drevo);
+
+    owner.handle(ClientMessage::Begin { extra: dict([]) });
+    assert!(drevo.is_tx_active());
+
+    {
+        // A second connection opens, does nothing transactional, and leaves.
+        let mut other = ready(&drevo);
+        other.handle(ClientMessage::Goodbye);
+    } // `other` is also dropped here — neither GOODBYE nor drop may touch our tx.
+
+    assert!(
+        drevo.is_tx_active(),
+        "a foreign GOODBYE/drop rolled back our transaction (issue #236)"
+    );
+    let replies = owner.handle(ClientMessage::Commit);
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+}
+
+#[test]
+fn own_reset_still_rolls_back_our_open_tx() {
+    // The ownership gate must not stop a session from cleaning up its *own*
+    // transaction on RESET — the Neo4j driver contract.
+    let drevo = open();
+    let mut s = ready(&drevo);
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    assert!(drevo.is_tx_active());
+    let replies = s.handle(ClientMessage::Reset);
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+    assert_eq!(s.state(), State::Ready);
+    assert!(!drevo.is_tx_active(), "own RESET must roll back our tx");
+}
+
+#[test]
+fn own_reset_after_midtx_failure_rolls_back_our_tx() {
+    // Even when a mid-transaction error left the session `Failed`, its own
+    // RESET must roll the still-open transaction back (ownership is tracked
+    // independently of the streaming/failed state).
+    let drevo = open();
+    let mut s = ready(&drevo);
+    s.handle(ClientMessage::Begin { extra: dict([]) });
+    s.handle(ClientMessage::Run {
+        query: "MATCH this is not valid cypher".to_string(),
+        parameters: dict([]),
+        extra: dict([]),
+    });
+    assert_eq!(s.state(), State::Failed);
+    assert!(
+        drevo.is_tx_active(),
+        "the tx is still open after a failed RUN"
+    );
+    let replies = s.handle(ClientMessage::Reset);
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+    assert_eq!(s.state(), State::Ready);
+    assert!(!drevo.is_tx_active());
+}
+
+#[test]
+fn dropping_a_session_with_an_open_tx_rolls_it_back() {
+    // A hard disconnect (connection dropped without GOODBYE) must not leak the
+    // global transaction slot — otherwise, with the ownership gate in place, no
+    // other session would clear it and every future BEGIN would be rejected.
+    let drevo = open();
+    {
+        let mut s = ready(&drevo);
+        s.handle(ClientMessage::Begin { extra: dict([]) });
+        assert!(drevo.is_tx_active());
+    } // dropped here without COMMIT/ROLLBACK/GOODBYE
+    assert!(
+        !drevo.is_tx_active(),
+        "dropping a session leaked its open transaction (would block all future BEGINs)"
+    );
+    // Proof the slot is truly free: a fresh session can BEGIN.
+    let mut s = ready(&drevo);
+    let replies = s.handle(ClientMessage::Begin { extra: dict([]) });
+    assert!(matches!(replies[0], ServerMessage::Success { .. }));
+}
+
 // --- Cypher integration -----------------------------------------------------
 
 #[test]
