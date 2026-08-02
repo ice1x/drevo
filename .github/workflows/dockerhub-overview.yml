@@ -1,0 +1,78 @@
+name: Docker Hub Overview
+
+# Sync the Docker Hub repository OVERVIEW (long description) from the
+# committed DOCKERHUB.md.
+#
+# Why this exists: Docker Hub's overview is populated only via the web form
+# or the Docker Hub API — a `docker push` never touches it. Without this the
+# published overview silently drifts from, or never matches, the source of
+# truth in the repo (the page read "No overview available" until this landed).
+#
+# Dependency-free: a plain `curl` PATCH against the Docker Hub API (login →
+# JWT → PATCH), no third-party action, matching drevo's self-contained ethos.
+# `jq --rawfile` JSON-escapes the whole file so any markdown content is safe.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   DOCKERHUB_USERNAME — the Docker Hub account that owns ice1x/drevo
+#   DOCKERHUB_TOKEN    — a Docker Hub *access token* (Account Settings →
+#                        Security → New Access Token) with Read/Write on the
+#                        repo. A token, never the account password.
+#
+# Locked by tests/dockerhub_overview_sync_ci_tests.rs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - DOCKERHUB.md
+      - .github/workflows/dockerhub-overview.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync overview
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push DOCKERHUB.md to the Docker Hub overview
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_REPO: ice1x/drevo
+          SHORT_DESCRIPTION: "Embedded graph + vector database — Neo4j-compatible, built-in FTS, no external deps."
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "::error::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets are not set — add them in repo Settings." >&2
+            exit 1
+          fi
+
+          # 1) Exchange username + access token for a short-lived JWT.
+          login_body=$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" \
+            '{username:$u, password:$p}')
+          token=$(curl -sf -X POST https://hub.docker.com/v2/users/login/ \
+            -H 'Content-Type: application/json' -d "$login_body" | jq -r '.token // empty')
+          if [ -z "$token" ]; then
+            echo "::error::Docker Hub login failed — check DOCKERHUB_USERNAME / DOCKERHUB_TOKEN." >&2
+            exit 1
+          fi
+
+          # 2) PATCH the repo's full overview (and short description) from the
+          #    file. --rawfile safely JSON-escapes the whole markdown body.
+          patch_body=$(jq -n --rawfile full DOCKERHUB.md --arg short "$SHORT_DESCRIPTION" \
+            '{full_description:$full, description:$short}')
+          code=$(curl -s -o /tmp/dh_resp.json -w '%{http_code}' \
+            -X PATCH "https://hub.docker.com/v2/repositories/${DOCKERHUB_REPO}/" \
+            -H "Authorization: JWT ${token}" \
+            -H 'Content-Type: application/json' -d "$patch_body")
+          echo "Docker Hub API responded: ${code}"
+          if [ "$code" != "200" ]; then
+            echo "::error::Docker Hub overview update failed (HTTP ${code})." >&2
+            cat /tmp/dh_resp.json >&2 || true
+            exit 1
+          fi
+          echo "Synced ${DOCKERHUB_REPO} overview from DOCKERHUB.md."
