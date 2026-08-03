@@ -220,6 +220,13 @@ required-features = ["redb-backend"]
 name = "churn_compact"
 required-features = ["redb-backend"]
 
+# The HTTP load harness (#241 slice 4) starts the axum API and drives it over
+# a real socket, so it needs the `http` feature (axum + tokio). `Drevo::open_in_memory`
+# is always available, so no `redb-backend` gate is required.
+[[example]]
+name = "http_load"
+required-features = ["http"]
+
 [[bench]]
 name = "storage_bench"
 harness = false
