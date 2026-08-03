@@ -558,9 +558,14 @@ impl Drevo {
         self.backend.put(&edge_key(edge.id), &data)?;
         self.backend
             .put(&edge_uuid_key(&edge.uuid), &edge.id.to_le_bytes())?;
-        self.backend
-            .put(&out_edge_key(edge.from_id, edge.id), &[])?;
-        self.backend.put(&in_edge_key(edge.to_id, edge.id), &[])?;
+        self.backend.put(
+            &out_edge_key(edge.from_id, edge.id),
+            &adjacency_value(edge.to_id, &edge.kind),
+        )?;
+        self.backend.put(
+            &in_edge_key(edge.to_id, edge.id),
+            &adjacency_value(edge.from_id, &edge.kind),
+        )?;
         self.backend.put(&edge_kind_key(&edge.kind, edge.id), &[])?;
         Ok(())
     }
@@ -759,9 +764,14 @@ impl Drevo {
         self.backend.put(&edge_key(edge.id), &data)?;
         self.backend
             .put(&edge_uuid_key(&edge.uuid), &edge.id.to_le_bytes())?;
-        self.backend
-            .put(&out_edge_key(edge.from_id, edge.id), &[])?;
-        self.backend.put(&in_edge_key(edge.to_id, edge.id), &[])?;
+        self.backend.put(
+            &out_edge_key(edge.from_id, edge.id),
+            &adjacency_value(edge.to_id, &edge.kind),
+        )?;
+        self.backend.put(
+            &in_edge_key(edge.to_id, edge.id),
+            &adjacency_value(edge.from_id, &edge.kind),
+        )?;
         self.backend.put(&edge_kind_key(&edge.kind, edge.id), &[])?;
         Ok(())
     }
@@ -1288,11 +1298,17 @@ impl Drevo {
         self.backend
             .put(&edge_uuid_key(&edge.uuid), &id.to_le_bytes())?;
 
-        // Outgoing adjacency: out:{from_id}:{edge_id}
-        self.backend.put(&out_edge_key(edge.from_id, id), &[])?;
+        // Outgoing adjacency: out:{from_id}:{edge_id} -> (to_id, kind) (#243).
+        self.backend.put(
+            &out_edge_key(edge.from_id, id),
+            &adjacency_value(edge.to_id, &edge.kind),
+        )?;
 
-        // Incoming adjacency: in:{to_id}:{edge_id}
-        self.backend.put(&in_edge_key(edge.to_id, id), &[])?;
+        // Incoming adjacency: in:{to_id}:{edge_id} -> (from_id, kind) (#243).
+        self.backend.put(
+            &in_edge_key(edge.to_id, id),
+            &adjacency_value(edge.from_id, &edge.kind),
+        )?;
 
         // Edge kind index
         self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
@@ -1337,8 +1353,14 @@ impl Drevo {
 
             writes.push((edge_key(id), serialize_edge(&edge)?));
             writes.push((edge_uuid_key(&edge.uuid), id.to_le_bytes().to_vec()));
-            writes.push((out_edge_key(edge.from_id, id), Vec::new()));
-            writes.push((in_edge_key(edge.to_id, id), Vec::new()));
+            writes.push((
+                out_edge_key(edge.from_id, id),
+                adjacency_value(edge.to_id, &edge.kind),
+            ));
+            writes.push((
+                in_edge_key(edge.to_id, id),
+                adjacency_value(edge.from_id, &edge.kind),
+            ));
             writes.push((edge_kind_key(&edge.kind, id), Vec::new()));
             // FTS postings for the edge's string properties (#227-B).
             writes.extend(edge_index::edge_index_entries(id, &edge.properties));
@@ -1417,6 +1439,17 @@ impl Drevo {
         if edge.kind != old_kind {
             self.backend.delete(&edge_kind_key(&old_kind, id))?;
             self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
+            // The kind is denormalized into the adjacency value (#243), so
+            // refresh both entries. Endpoints can't change here, so the keys
+            // are unchanged — only the value is rewritten.
+            self.backend.put(
+                &out_edge_key(edge.from_id, id),
+                &adjacency_value(edge.to_id, &edge.kind),
+            )?;
+            self.backend.put(
+                &in_edge_key(edge.to_id, id),
+                &adjacency_value(edge.from_id, &edge.kind),
+            )?;
         }
 
         // Re-index the edge's FTS text when a string property changed (#227-B):
@@ -2135,7 +2168,10 @@ impl Drevo {
 
     /// Return immediate neighbors of a node (BFS depth=1).
     ///
-    /// Convenience wrapper over [`Self::bfs`] with `max_depth=1`.
+    /// Semantically equivalent to [`Self::bfs`] with `max_depth=1`, but reads
+    /// the neighbor ids from the denormalized adjacency index via
+    /// [`Self::neighbor_ids`] (one prefix scan, no `get_edge` per neighbor on
+    /// a #243-era database) and then loads each distinct neighbor node once.
     ///
     /// # Arguments
     ///
@@ -2148,7 +2184,86 @@ impl Drevo {
         direction: Direction,
         kind: Option<&str>,
     ) -> Result<Vec<Node>> {
-        self.bfs(node_id, 1, direction, kind)
+        let ids = self.neighbor_ids(node_id, direction, kind)?;
+        let mut nodes = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(node) = self.get_node(id)? {
+                nodes.push(node);
+            }
+        }
+        Ok(nodes)
+    }
+
+    /// Return the **distinct** node ids adjacent to `node_id` in `direction`,
+    /// optionally restricted to edges of `kind`.
+    ///
+    /// Unlike [`Self::neighbors`], this returns bare node ids and — on any
+    /// database written since #243 — reads them **straight from the adjacency
+    /// index**: one `out:`/`in:` prefix scan, zero `get_edge` point lookups,
+    /// so the cost stays proportional to the fan-out even on supernodes.
+    /// (Legacy adjacency entries written before #243 carry an empty value and
+    /// fall back to one `get_edge` each; upgrade them once with
+    /// [`Self::backfill_adjacency_values`].)
+    ///
+    /// Ordering follows a breadth-first visit: outgoing entries before
+    /// incoming (for [`Direction::Both`]), each neighbor reported once at
+    /// first sight, and `node_id` itself excluded — so a self-loop contributes
+    /// no neighbor.
+    pub fn neighbor_ids(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind: Option<&str>,
+    ) -> Result<Vec<u64>> {
+        let targets = self.adjacency_targets(node_id, direction)?;
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        seen.insert(node_id);
+        let mut ids = Vec::new();
+        for target in targets {
+            if let Some(filter) = kind {
+                if target.kind != filter {
+                    continue;
+                }
+            }
+            if seen.insert(target.neighbor_id) {
+                ids.push(target.neighbor_id);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Upgrade legacy empty adjacency values (pre-#243) to the denormalized
+    /// `(neighbor_id, kind)` payload, so later [`Self::neighbor_ids`] and
+    /// kind-filtered traversals skip the `get_edge` fallback.
+    ///
+    /// Returns the number of adjacency entries rewritten. Idempotent: entries
+    /// that already carry a value are left untouched, so it is safe to run
+    /// repeatedly — e.g. once after opening a database created by an older
+    /// drevo. An adjacency entry whose edge record is missing (a dangling
+    /// entry — an integrity violation, not a legacy state) is skipped.
+    pub fn backfill_adjacency_values(&self) -> Result<u64> {
+        let mut upgraded = 0u64;
+        for (prefix, incoming) in [(PREFIX_OUT, false), (PREFIX_IN, true)] {
+            for (key, value) in self.backend.scan_prefix(prefix)? {
+                if !value.is_empty() {
+                    continue; // already denormalized
+                }
+                // {prefix}{node_id_8}:{edge_id_8} — the edge id is the last 8.
+                if key.len() < 8 {
+                    continue;
+                }
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&key[key.len() - 8..]);
+                let edge_id = u64::from_le_bytes(arr);
+                if let Some(edge) = self.get_edge(edge_id)? {
+                    let neighbor_id = if incoming { edge.from_id } else { edge.to_id };
+                    self.backend
+                        .put(&key, &adjacency_value(neighbor_id, &edge.kind))?;
+                    upgraded += 1;
+                }
+            }
+        }
+        Ok(upgraded)
     }
 
     // ---------------------------------------------------------------
@@ -2209,7 +2324,7 @@ impl Drevo {
 
         // ---- Invariant #1 & #2 — adjacency consistency + no dangling ----
         let out_entries = self.backend.scan_prefix(PREFIX_OUT)?;
-        for (key, _) in &out_entries {
+        for (key, value) in &out_entries {
             // out:{from_id_8}:{edge_id_8}
             let expected_len = PREFIX_OUT.len() + 8 + 1 + 8;
             if key.len() != expected_len {
@@ -2236,6 +2351,18 @@ impl Drevo {
                             e.from_id
                         ));
                     }
+                    // #243 — a denormalized value must match the edge's
+                    // to_id / kind (an empty value is a legacy entry, allowed).
+                    if let Some((neighbor_id, kind)) = decode_adjacency_value(value) {
+                        if neighbor_id != e.to_id || kind != e.kind {
+                            violations.push(format!(
+                                "out adjacency value mismatch: edge_id={edge_id}, \
+                                 value=({neighbor_id}, {kind:?}), \
+                                 edge=(to_id={}, kind={:?})",
+                                e.to_id, e.kind
+                            ));
+                        }
+                    }
                     // Invariant #1 — the corresponding in: entry MUST exist.
                     let in_key = in_edge_key(e.to_id, e.id);
                     if self.backend.get(&in_key)?.is_none() {
@@ -2250,7 +2377,7 @@ impl Drevo {
         }
 
         let in_entries = self.backend.scan_prefix(PREFIX_IN)?;
-        for (key, _) in &in_entries {
+        for (key, value) in &in_entries {
             let expected_len = PREFIX_IN.len() + 8 + 1 + 8;
             if key.len() != expected_len {
                 violations.push(format!(
@@ -2272,6 +2399,18 @@ impl Drevo {
                             "in adjacency to_id mismatch: key to_id={to_id}, edge.to_id={}",
                             e.to_id
                         ));
+                    }
+                    // #243 — a denormalized value must match the edge's
+                    // from_id / kind (an empty value is a legacy entry).
+                    if let Some((neighbor_id, kind)) = decode_adjacency_value(value) {
+                        if neighbor_id != e.from_id || kind != e.kind {
+                            violations.push(format!(
+                                "in adjacency value mismatch: edge_id={edge_id}, \
+                                 value=({neighbor_id}, {kind:?}), \
+                                 edge=(from_id={}, kind={:?})",
+                                e.from_id, e.kind
+                            ));
+                        }
                     }
                     // Invariant #1 — mirror direction.
                     let out_key = out_edge_key(e.from_id, e.id);
@@ -2408,6 +2547,57 @@ impl Drevo {
     // ---------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------
+
+    /// Read a node's denormalized adjacency targets in `direction` — the
+    /// `(edge_id, neighbor_id, kind)` triples recovered from the adjacency
+    /// **value** without a full `get_edge` on #243-era entries. Legacy
+    /// empty-value entries fall back to one `get_edge` each. For
+    /// [`Direction::Both`] the outgoing targets precede the incoming ones,
+    /// matching the edge order of [`Self::edges_of`].
+    fn adjacency_targets(&self, node_id: u64, direction: Direction) -> Result<Vec<AdjTarget>> {
+        match direction {
+            Direction::Outgoing => self.adjacency_targets_prefixed(node_id, false),
+            Direction::Incoming => self.adjacency_targets_prefixed(node_id, true),
+            Direction::Both => {
+                let mut targets = self.adjacency_targets_prefixed(node_id, false)?;
+                targets.extend(self.adjacency_targets_prefixed(node_id, true)?);
+                Ok(targets)
+            }
+        }
+    }
+
+    /// One-direction half of [`Self::adjacency_targets`]. `incoming` selects
+    /// the `in:` prefix (neighbor = `from_id`) versus the `out:` prefix
+    /// (neighbor = `to_id`), which also drives the legacy `get_edge` fallback.
+    fn adjacency_targets_prefixed(&self, node_id: u64, incoming: bool) -> Result<Vec<AdjTarget>> {
+        let prefix = if incoming {
+            in_prefix(node_id)
+        } else {
+            out_prefix(node_id)
+        };
+        let entries = self.backend.scan_prefix(&prefix)?;
+        let mut targets = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            let edge_id = edge_id_from_adjacency_key(&key, &prefix);
+            match decode_adjacency_value(&value) {
+                Some((neighbor_id, kind)) => targets.push(AdjTarget {
+                    neighbor_id,
+                    kind: kind.to_string(),
+                }),
+                None => {
+                    // Legacy empty value (pre-#243) — recover from the edge.
+                    if let Some(edge) = self.get_edge(edge_id)? {
+                        let neighbor_id = if incoming { edge.from_id } else { edge.to_id };
+                        targets.push(AdjTarget {
+                            neighbor_id,
+                            kind: edge.kind,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(targets)
+    }
 
     /// Collect outgoing edges for a node by scanning the `out:` prefix.
     fn outgoing_edges(&self, node_id: u64) -> Result<Vec<Edge>> {
@@ -2809,6 +2999,52 @@ fn edge_id_from_adjacency_key(key: &[u8], prefix: &[u8]) -> u64 {
     } else {
         0
     }
+}
+
+/// A denormalized adjacency target: the neighbor node id and the edge kind,
+/// recovered from the adjacency **value** (or a `get_edge` fallback for legacy
+/// entries) without loading the full edge record (#243 slice 1).
+struct AdjTarget {
+    neighbor_id: u64,
+    kind: String,
+}
+
+/// Encode the denormalized adjacency **value** (#243 slice 1): the *other*
+/// endpoint's node id (8-byte little-endian) followed by the edge `kind` as
+/// UTF-8.
+///
+/// Storing the neighbor id + kind directly in the value lets
+/// [`Drevo::neighbor_ids`] and kind-filtered fan-out answer "who is adjacent
+/// to X" straight from the `out:`/`in:` prefix scan, with **zero** `get_edge`
+/// point lookups — the property that keeps supernode traversal cheap.
+/// Databases written before #243 store an empty value; readers fall back to
+/// `get_edge` for those (see [`decode_adjacency_value`]) and can be upgraded
+/// in place via [`Drevo::backfill_adjacency_values`].
+///
+/// A migrated value is always ≥ 8 bytes (even for an empty `kind`), so it is
+/// unambiguously distinct from a legacy empty value.
+fn adjacency_value(neighbor_id: u64, kind: &str) -> Vec<u8> {
+    let mut value = Vec::with_capacity(8 + kind.len());
+    value.extend_from_slice(&neighbor_id.to_le_bytes());
+    value.extend_from_slice(kind.as_bytes());
+    value
+}
+
+/// Decode an adjacency value written by [`adjacency_value`].
+///
+/// Returns `Some((neighbor_id, kind))` for a denormalized value, or `None`
+/// for a legacy empty value (pre-#243), a too-short value, or a non-UTF-8
+/// `kind` tail — in which case the caller recovers the data with a `get_edge`
+/// fallback. Panic-free per `drevo-rust` §"Error Handling".
+fn decode_adjacency_value(value: &[u8]) -> Option<(u64, &str)> {
+    if value.len() < 8 {
+        return None;
+    }
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(&value[..8]);
+    let neighbor_id = u64::from_le_bytes(arr);
+    let kind = std::str::from_utf8(&value[8..]).ok()?;
+    Some((neighbor_id, kind))
 }
 
 /// Build a node kind index key: `node_kind:{kind}:{node_id}`.
@@ -3289,6 +3525,202 @@ mod tests {
         let prefix = b"out:";
         let key = b"out:short";
         assert_eq!(edge_id_from_adjacency_key(key, prefix), 0);
+    }
+
+    // --- Adjacency value codec (#243 slice 1) ---
+
+    #[test]
+    fn adjacency_value_roundtrips() {
+        let v = adjacency_value(0xDEAD_BEEF, "knows");
+        assert_eq!(v.len(), 8 + "knows".len());
+        assert_eq!(decode_adjacency_value(&v), Some((0xDEAD_BEEF, "knows")));
+    }
+
+    #[test]
+    fn adjacency_value_empty_kind_is_still_denormalized() {
+        // An edge with an empty kind still yields an 8-byte value — distinct
+        // from a legacy empty value, so it decodes rather than falling back.
+        let v = adjacency_value(42, "");
+        assert_eq!(v.len(), 8);
+        assert_eq!(decode_adjacency_value(&v), Some((42, "")));
+    }
+
+    #[test]
+    fn decode_legacy_and_malformed_values_return_none() {
+        assert_eq!(
+            decode_adjacency_value(&[]),
+            None,
+            "legacy empty -> fallback"
+        );
+        assert_eq!(decode_adjacency_value(&[1, 2, 3]), None, "too short");
+        // 8 id bytes + an invalid UTF-8 kind tail -> None (panic-free).
+        let mut bad = 7u64.to_le_bytes().to_vec();
+        bad.push(0xFF);
+        assert_eq!(decode_adjacency_value(&bad), None);
+    }
+
+    // --- neighbor_ids reads from the value, not `get_edge` (#243) ---
+
+    /// Wraps a `MemoryBackend` and counts `get` calls that target an `edge:`
+    /// record. The counter is an `Arc<AtomicU64>` so the test can hold its own
+    /// clone and read it without downcasting the boxed trait object.
+    struct CountingBackend {
+        inner: MemoryBackend,
+        edge_gets: std::sync::Arc<AtomicU64>,
+    }
+
+    impl StorageBackend for CountingBackend {
+        fn get(&self, key: &[u8]) -> crate::storage::error::Result<Option<Vec<u8>>> {
+            // Count only `edge:{id}` record reads, not edge_uuid:/edge_kind:.
+            if key.len() == PREFIX_EDGE.len() + 8 && key.starts_with(PREFIX_EDGE) {
+                self.edge_gets.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.get(key)
+        }
+        fn put(&self, key: &[u8], value: &[u8]) -> crate::storage::error::Result<()> {
+            self.inner.put(key, value)
+        }
+        fn put_batch(&self, items: &[(Vec<u8>, Vec<u8>)]) -> crate::storage::error::Result<()> {
+            self.inner.put_batch(items)
+        }
+        fn delete(&self, key: &[u8]) -> crate::storage::error::Result<()> {
+            self.inner.delete(key)
+        }
+        fn scan_prefix(
+            &self,
+            prefix: &[u8],
+        ) -> crate::storage::error::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+            self.inner.scan_prefix(prefix)
+        }
+        fn flush(&self) -> crate::storage::error::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    #[test]
+    fn neighbor_ids_does_zero_edge_loads_but_edges_of_loads_all() {
+        use crate::model::{Direction, NewEdge, NewNode, Properties};
+
+        let edge_gets = std::sync::Arc::new(AtomicU64::new(0));
+        let db = Drevo {
+            backend: Box::new(CountingBackend {
+                inner: MemoryBackend::new(),
+                edge_gets: std::sync::Arc::clone(&edge_gets),
+            }),
+            next_node_id: AtomicU64::new(1),
+            next_edge_id: AtomicU64::new(1),
+            counter_drift_repaired: AtomicBool::new(false),
+            tx_state: Mutex::new(TxState::Idle),
+        };
+
+        let mk = |title: &str| {
+            db.create_node(NewNode {
+                kind: "n".into(),
+                title: title.into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap()
+            .id
+        };
+        let a = mk("a");
+        let targets: Vec<u64> = (0..10).map(|i| mk(&format!("t{i}"))).collect();
+        for (i, &to) in targets.iter().enumerate() {
+            db.create_edge(NewEdge {
+                from_id: a,
+                to_id: to,
+                kind: if i % 2 == 0 { "even" } else { "odd" }.into(),
+                weight: 1.0,
+                properties: Properties::default(),
+            })
+            .unwrap();
+        }
+
+        // neighbor_ids recovers every neighbor from the adjacency value —
+        // zero `edge:` record reads — and applies the kind filter in memory.
+        let before = edge_gets.load(Ordering::Relaxed);
+        let ids = db.neighbor_ids(a, Direction::Outgoing, None).unwrap();
+        let evens = db
+            .neighbor_ids(a, Direction::Outgoing, Some("even"))
+            .unwrap();
+        let after = edge_gets.load(Ordering::Relaxed);
+        assert_eq!(ids.len(), 10, "all distinct fan-out neighbors surfaced");
+        assert_eq!(
+            evens.len(),
+            5,
+            "kind filter applied straight from the value"
+        );
+        assert_eq!(
+            after - before,
+            0,
+            "neighbor_ids must not load any edge record on a denormalized db"
+        );
+
+        // Sanity: the full-edge path *does* load every edge, so the zero above
+        // reflects a real reduction, not an unmeasured path.
+        let before = edge_gets.load(Ordering::Relaxed);
+        let edges = db.edges_of(a, Direction::Outgoing).unwrap();
+        let after = edge_gets.load(Ordering::Relaxed);
+        assert_eq!(edges.len(), 10);
+        assert_eq!(after - before, 10, "edges_of loads one edge per neighbor");
+    }
+
+    // --- backfill upgrades legacy empty adjacency values (#243) ---
+
+    #[test]
+    fn backfill_upgrades_legacy_empty_values() {
+        use crate::model::{Direction, NewEdge, NewNode, Properties};
+
+        let db = Drevo::open_in_memory().unwrap();
+        let mk = |title: &str| {
+            db.create_node(NewNode {
+                kind: "n".into(),
+                title: title.into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap()
+            .id
+        };
+        let a = mk("a");
+        let b = mk("b");
+        let e = db
+            .create_edge(NewEdge {
+                from_id: a,
+                to_id: b,
+                kind: "knows".into(),
+                weight: 1.0,
+                properties: Properties::default(),
+            })
+            .unwrap();
+
+        // Simulate a pre-#243 database by rewriting the adjacency values back
+        // to empty, the way an older drevo stored them.
+        db.backend.put(&out_edge_key(a, e.id), &[]).unwrap();
+        db.backend.put(&in_edge_key(b, e.id), &[]).unwrap();
+
+        // Reads still work via the get_edge fallback...
+        assert_eq!(
+            db.neighbor_ids(a, Direction::Outgoing, None).unwrap(),
+            vec![b]
+        );
+
+        // ...and backfill upgrades both entries (out + in) exactly once.
+        assert_eq!(db.backfill_adjacency_values().unwrap(), 2);
+        assert_eq!(db.backfill_adjacency_values().unwrap(), 0, "idempotent");
+
+        // The values are now denormalized and match the edge.
+        assert_eq!(
+            decode_adjacency_value(&db.backend.get(&out_edge_key(a, e.id)).unwrap().unwrap()),
+            Some((b, "knows"))
+        );
+        assert_eq!(
+            decode_adjacency_value(&db.backend.get(&in_edge_key(b, e.id)).unwrap().unwrap()),
+            Some((a, "knows"))
+        );
+        assert!(db.verify_invariants().unwrap().is_empty());
     }
 
     // --- Node kind index key helpers ---

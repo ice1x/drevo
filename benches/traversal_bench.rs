@@ -261,11 +261,68 @@ fn bench_subgraph(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// neighbor_ids vs full-edge fan-out (#243 slice 1)
+// ---------------------------------------------------------------------------
+
+/// Compare the denormalized adjacency read path (`neighbor_ids`, which reads
+/// neighbor id and kind straight from the `out:` value with zero `get_edge`)
+/// against the full-edge path (`edges_of`, which loads every incident edge
+/// record). On the average-degree-10 graph the gap is modest; on a supernode
+/// it is the difference between one scan and thousands of point lookups.
+fn bench_neighbor_ids(c: &mut Criterion) {
+    let (db, ids) = populated_db();
+    let mut group = c.benchmark_group("traversal_neighbor_ids");
+    group.sample_size(30);
+
+    // Denormalized: neighbor ids without loading any edge record.
+    group.bench_function("neighbor_ids_outgoing", |b| {
+        let mut idx = 0usize;
+        b.iter(|| {
+            let node_id = ids[idx % NUM_NODES];
+            let result = db
+                .neighbor_ids(black_box(node_id), Direction::Outgoing, None)
+                .unwrap();
+            black_box(&result);
+            idx = idx.wrapping_add(7919);
+        });
+    });
+
+    // Full-edge path for the same fan-out: one edge load per neighbor.
+    group.bench_function("edges_of_outgoing", |b| {
+        let mut idx = 0usize;
+        b.iter(|| {
+            let node_id = ids[idx % NUM_NODES];
+            let result = db
+                .edges_of(black_box(node_id), Direction::Outgoing)
+                .unwrap();
+            black_box(&result);
+            idx = idx.wrapping_add(7919);
+        });
+    });
+
+    // Kind-filtered fan-out — the value carries the kind, so no edge load.
+    group.bench_function("neighbor_ids_outgoing_kind", |b| {
+        let mut idx = 0usize;
+        b.iter(|| {
+            let node_id = ids[idx % NUM_NODES];
+            let result = db
+                .neighbor_ids(black_box(node_id), Direction::Outgoing, Some("rel_0"))
+                .unwrap();
+            black_box(&result);
+            idx = idx.wrapping_add(7919);
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_bfs,
     bench_dfs,
     bench_shortest_path,
-    bench_subgraph
+    bench_subgraph,
+    bench_neighbor_ids
 );
 criterion_main!(benches);
