@@ -71,15 +71,54 @@ signal is the *shape* across the sweep, not the raw figures.
   writer). This is the quantitative companion to the adjacency-layout analysis in
   [`adjacency-key-schema.md`](adjacency-key-schema.md) and [#243].
 
+## Churn → compact → recovery (`churn_compact` example)
+
+The second harness measures the degradation the [#240] adjacency-layout
+investigation predicts — a COW B-tree file holds its high-water mark and
+scatters live pages across the freelist under churn — and how much
+`Drevo::compact()` recovers. Unlike the in-memory sweep above, it runs against
+the **redb (on-disk) backend** so the file footprint and compaction are real.
+
+```text
+cargo run --release --example churn_compact
+NODES=20000 EDGES=40000 CHURN=40000 PROBE=20000 cargo run --release --example churn_compact
+```
+
+| Var | Default | Meaning |
+|---|---|---|
+| `NODES` | `10000` | seed nodes |
+| `EDGES` | `20000` | seed edges (so `neighbors` returns something) |
+| `CHURN` | `20000` | churn rounds — grow-then-shrink: insert this many edges (rewriting node bodies), then delete them all |
+| `PROBE` | `10000` | read-probe ops per phase (`get_node` + 1-hop `neighbors`) |
+
+It runs a single-threaded read probe in three phases — **steady** → (churn) →
+**degraded** → (`compact()`) → **recovered** — and prints JSON with each phase's
+throughput / p50–p99 / on-disk `file_bytes`, plus the `CompactReport`
+(`bytes_before` / `bytes_after` / `bytes_reclaimed`).
+
+> **On-disk writes are fsync-bound and slow on the shared self-hosted runner**
+> (each redb transaction fsyncs; ~thousands of churn writes take minutes). The
+> full-scale run is a local/on-demand measurement. The flow itself is covered at
+> small scale by the `#[ignore]`d `redb_three_phase_churn_compact_recovers` in
+> `tests/compaction_tests.rs`, which runs in `slow-tests.yml` (never on the PR
+> gate). The compaction *reclaim* contract is separately locked by
+> `redb_compact_reclaims_after_heavy_churn`.
+>
+> **Reclaim only manifests at scale.** redb pre-allocates a file region and
+> recycles freed pages from its freelist, so a small run stays inside that region
+> and reports `bytes_reclaimed: 0` with a flat `file_bytes` across phases — the
+> grow-then-shrink churn has to push the file past the pre-allocated region
+> before `compact()` returns space to the OS. Use a large `CHURN` (and enough
+> `NODES`/`EDGES`) to see non-zero reclaim; the existing
+> `redb_compact_reclaims_after_heavy_churn` documents the same caveat.
+
 ## Deliberately deferred (follow-up PRs)
 
-Kept out of this first slice to keep it reviewable:
+Kept out of these slices to keep them reviewable:
 
-- **churn → `compact()` → recovery curve** — measure steady-state, apply heavy
-  delete/insert/update churn, re-measure (degraded), compact, re-measure. This is
-  the degradation the [#240] investigation predicts.
-- **redb (on-disk) backend variant** — the numbers above are the in-memory
-  backend; the on-disk single-writer path has its own fsync/COW costs.
+- **redb (on-disk) variant of the mixed load sweep** — the concurrency baseline
+  above is the in-memory backend; running the *same* mixed read/write sweep
+  against redb would surface the on-disk single-writer fsync/COW costs.
 - **HTTP load path** — driving `POST /import` and the HTTP API for RPS/SLA figures.
 
 [#240]: https://github.com/ice1x/drevo/issues/240

@@ -35,7 +35,7 @@
 use std::path::Path;
 
 use drevo::db::{CompactReport, Drevo};
-use drevo::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::model::{Direction, NewEdge, NewNode, NodePatch, Properties};
 use drevo::storage::{MemoryBackend, RedbBackend, StorageBackend, StorageError};
 use tempfile::TempDir;
 
@@ -305,6 +305,120 @@ fn redb_compact_reclaims_after_heavy_churn() {
         assert_eq!(bytes_before_churn, before);
         db.close().unwrap();
     }
+}
+
+/// Read probe used by the three-phase churn/compact test: `get_node` + 1-hop
+/// `neighbors` over a deterministic walk of `ids`. Returns `(reads_ok,
+/// p50_us, p99_us)` — the same measurement the `churn_compact` example
+/// reports, at small scale.
+fn probe_reads(db: &Drevo, ids: &[u64], ops: u64) -> (u64, u64, u64) {
+    let n = ids.len().max(1) as u64;
+    let mut lat = Vec::with_capacity(ops as usize);
+    let mut ok = 0u64;
+    for i in 0..ops {
+        let id = ids[(i.wrapping_mul(0x9E37_79B9) % n) as usize];
+        let t0 = std::time::Instant::now();
+        let got = db
+            .get_node(id)
+            .and_then(|_| db.neighbors(id, Direction::Outgoing, None));
+        lat.push(t0.elapsed().as_micros() as u64);
+        if got.is_ok() {
+            ok += 1;
+        }
+    }
+    lat.sort_unstable();
+    let pct = |q: f64| -> u64 {
+        if lat.is_empty() {
+            return 0;
+        }
+        let rank = (q / 100.0 * lat.len() as f64).ceil() as usize;
+        lat[rank.clamp(1, lat.len()) - 1]
+    };
+    (ok, pct(50.0), pct(99.0))
+}
+
+// `#[ignore]` (task 00129 family): the small-scale companion to the
+// `churn_compact` example (#241 slice 2) — exercises the full
+// steady -> churn -> degraded -> compact -> recovered measurement flow on the
+// redb backend. Heavy redb fsync writes, so it is kept off the PR-gating
+// `test` job and runs in `slow-tests.yml` (`--run-ignored ignored-only`,
+// `binary(compaction_tests)`).
+#[test]
+#[ignore = "heavy redb churn + compaction (3-phase probe); runs in slow-tests.yml via --run-ignored all"]
+fn redb_three_phase_churn_compact_recovers() {
+    let (_dir, path) = open_temp();
+    let mut db = Drevo::open(&path).unwrap();
+
+    // Seed a small graph with edges so `neighbors` returns something.
+    let mut ids = Vec::new();
+    for i in 0..200u64 {
+        ids.push(
+            db.create_node(new_node("note", &format!("cc-{i}")))
+                .unwrap()
+                .id,
+        );
+    }
+    let n = ids.len() as u64;
+    for e in 0..400u64 {
+        let from = ids[(e.wrapping_mul(2_654_435_761) % n) as usize];
+        let to = ids[(e.wrapping_mul(40_503).wrapping_add(1) % n) as usize];
+        db.create_edge(new_edge(from, to, "seed")).unwrap();
+    }
+
+    // Phase 1 — steady state.
+    let (ok_steady, p50_steady, p99_steady) = probe_reads(&db, &ids, 200);
+    assert_eq!(ok_steady, 200, "all steady reads must succeed");
+    assert!(p50_steady <= p99_steady, "percentiles must be ordered");
+
+    // Phase 2 — churn in a grow-then-shrink shape: insert a batch of edges
+    // (rewriting node bodies along the way), then delete them all so the file
+    // grows to a high-water mark and is left with a freed region to reclaim.
+    let mut inserted = Vec::new();
+    for r in 0..400u64 {
+        let a = ids[(r.wrapping_mul(0x9E37_79B9) % n) as usize];
+        let b = ids[(r.wrapping_mul(2_246_822_519).wrapping_add(1) % n) as usize];
+        inserted.push(db.create_edge(new_edge(a, b, "churn")).unwrap().id);
+        db.update_node(
+            a,
+            NodePatch {
+                body: Some(format!("churned-{r}")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    for id in inserted {
+        db.delete_edge(id).unwrap();
+    }
+    let bytes_after_churn = file_size(&path);
+    let (ok_degraded, _, _) = probe_reads(&db, &ids, 200);
+    assert_eq!(ok_degraded, 200, "all degraded reads must succeed");
+
+    // Phase 3 — compact and re-measure.
+    let report: CompactReport = db.compact().unwrap();
+    let before = report.bytes_before.unwrap();
+    let after = report.bytes_after.unwrap();
+    assert!(
+        after <= before,
+        "post-compaction file must not grow: before={before}, after={after}"
+    );
+    assert_eq!(
+        bytes_after_churn, before,
+        "compact must measure the on-disk file it opened"
+    );
+
+    let (ok_recovered, p50_recovered, p99_recovered) = probe_reads(&db, &ids, 200);
+    assert_eq!(ok_recovered, 200, "all recovered reads must succeed");
+    assert!(
+        p50_recovered <= p99_recovered,
+        "percentiles must be ordered"
+    );
+
+    // Data survives compaction: the seeded nodes are all still readable.
+    for &id in &ids {
+        assert!(db.get_node(id).unwrap().is_some(), "node {id} lost");
+    }
+    db.close().unwrap();
 }
 
 #[test]
