@@ -208,6 +208,16 @@ required-features = ["http", "redb-backend"]
 # (https://github.com/ice1x/drevo-mcp) and talks to a running
 # `drevo-server` over HTTP / Bolt, so it never contends for the file.
 
+# The churn->compact->recovery harness (#241 slice 2) opens the on-disk redb
+# backend and calls `Drevo::open` / `Drevo::compact`, both gated on
+# `redb-backend`. `required-features` skips it (rather than failing to compile)
+# under `--no-default-features`. The `load_harness` example uses only the
+# always-available in-memory backend, so it needs no such gate and stays
+# auto-discovered.
+[[example]]
+name = "churn_compact"
+required-features = ["redb-backend"]
+
 [[bench]]
 name = "storage_bench"
 harness = false
