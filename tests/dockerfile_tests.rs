@@ -256,11 +256,13 @@ fn read_dockerfile() -> String {
 // build without a corresponding Dockerfile update.
 // ------------------------------------------------------------------
 
-/// Read all top-level `[[bench]]` / `[[bin]]` / `[[test]]` blocks
-/// from `Cargo.toml` and return the directory each block points at
-/// (e.g. `benches`, `src/bin`, `tests`). The Dockerfile must COPY
-/// every directory in the returned set into the builder stage, or
-/// manifest parsing fails inside the container.
+/// Read all top-level `[[bench]]` / `[[bin]]` / `[[test]]` / `[[example]]`
+/// blocks from `Cargo.toml` and return the directory each block points at
+/// (e.g. `benches`, `src/bin`, `tests`, `examples`). The Dockerfile must COPY
+/// every directory in the returned set into the builder stage, or manifest
+/// parsing fails inside the container — cargo validates every declared
+/// target's path when it parses the manifest, even for `cargo build --bin`,
+/// and `required-features` gates *building* a target, not the path check.
 fn cargo_manifest_target_dirs() -> Vec<String> {
     let cargo_toml = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
         .expect("failed to read Cargo.toml");
@@ -274,12 +276,14 @@ fn cargo_manifest_target_dirs() -> Vec<String> {
             current_section = Some("bin");
         } else if trimmed.starts_with("[[test]]") {
             current_section = Some("test");
+        } else if trimmed.starts_with("[[example]]") {
+            current_section = Some("example");
         } else if trimmed.starts_with('[') {
             current_section = None;
         } else if let Some(section) = current_section {
             // Either an explicit `path = "..."` or rely on the
             // convention: benches/<name>.rs, src/bin/<name>.rs,
-            // tests/<name>.rs.
+            // tests/<name>.rs, examples/<name>.rs.
             if let Some(rest) = trimmed.strip_prefix("path") {
                 if let Some(value) = rest.split('=').nth(1) {
                     let path = value.trim().trim_matches('"').to_string();
@@ -292,6 +296,7 @@ fn cargo_manifest_target_dirs() -> Vec<String> {
                     "bench" => "benches",
                     "bin" => "src/bin",
                     "test" => "tests",
+                    "example" => "examples",
                     _ => continue,
                 };
                 dirs.push(dir.to_string());
@@ -318,6 +323,11 @@ fn cargo_manifest_target_dirs_collector_finds_benches() {
     assert!(
         dirs.iter().any(|d| d == "src/bin"),
         "helper failed to discover the `src/bin/` directory from `[[bin]]` declarations. Got: {dirs:?}"
+    );
+    assert!(
+        dirs.iter().any(|d| d == "examples"),
+        "helper failed to discover the `examples/` directory from `[[example]]` declarations \
+         (the #241 load-harness targets) — the gap that broke `make release-image`. Got: {dirs:?}"
     );
 }
 
