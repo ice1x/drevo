@@ -101,15 +101,21 @@ for (key, _) in entries {
    does **not** help here — it is not scoped by `from_id`, so using it would require an
    intersection with `out:{X}:`.
 
-3. **`scan_prefix` returns a full `Vec` → no pagination / streaming.** (Q4) The backend
-   contract materializes the entire neighbor set into a `Vec<(Vec,Vec)>`, then
-   `outgoing_edges` allocates a second `Vec<Edge>` and loads every edge. A supernode with
-   millions of edges materializes millions of keys **plus** millions of edge loads in RAM
-   — even if the caller wants only the first K, or a `kind`-filtered subset.
+3. ~~**`scan_prefix` returns a full `Vec` → no pagination / streaming.**~~ **Fixed —
+   #243 slice 3.** `StorageBackend::scan_prefix_limited(prefix, start_after, limit)` reads
+   at most `limit` entries starting after an opaque cursor (native lazy range on redb and
+   the in-memory `BTreeMap`; a correct-but-unbounded default for other backends).
+   `Drevo::outgoing_adjacency_page` / `incoming_adjacency_page` expose it as bounded pages
+   of `AdjacencyEntry` (edge id + neighbor id + kind, **0 `get_edge`** on a denormalized
+   db), so a supernode is walked in `ceil(N / limit)` bounded-memory chunks instead of
+   materializing the whole neighbor set. The unbounded `edges_of` / `scan_prefix` remain
+   for callers that genuinely want the full set.
 
-**Supernode verdict:** scan-*correct* but not supernode-*friendly* — unbounded
-materialization, no type slice, and a mandatory extra read per edge. The first thing that
-hurts on a hot hub node.
+**Supernode verdict:** originally scan-*correct* but not supernode-*friendly*. Two of the
+three gaps are now closed — the mandatory extra read per edge (slice 1) and unbounded
+materialization (slice 3). The remaining gap is the missing **type slice** (slice 2,
+gated on [#241]): a `kind`-filtered fan-out still scans all of a hub's edges in the chosen
+direction and filters in memory.
 
 **Churn verdict:** deletes/updates are clean (no tombstones; freed pages go to the redb
 freelist; adjacency + kind index keys are all removed/rewritten, so no index drift from
@@ -138,12 +144,12 @@ Ordered cheapest-first; validate against [#241]'s numbers before any format migr
 2. **Put `kind` in the adjacency _key_** (`out:{from}:{kind}:{edge_id}` or `…:{to}:…`)
    for true type-sliced sub-prefix scans. Key-format migration — heavier. Still open
    (#243 slice 2), gated on the supernode/type-filter numbers from [#241].
-3. **Streaming / bounded scan API** (iterator or `scan_prefix_limited(prefix, start,
-   limit)`) so supernode expansion doesn't materialize the whole neighbor set. Still open
-   (#243 slice 3), format-independent and low-risk.
+3. ~~**Streaming / bounded scan API**~~ **Done — #243 slice 3.** `scan_prefix_limited`
+   plus the `outgoing_adjacency_page` / `incoming_adjacency_page` cursor API bound
+   supernode expansion to `limit` entries per call. Format-independent, low risk.
 
-Options 1 and 3 are independent of the format and low-risk; option 2 should wait on the
-supernode numbers from [#241].
+Options 1 and 3 (both landed) were independent of the format and low-risk; option 2
+should wait on the supernode numbers from [#241].
 
 [#240]: https://github.com/ice1x/drevo/issues/240
 [#241]: https://github.com/ice1x/drevo/issues/241

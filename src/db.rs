@@ -2266,6 +2266,96 @@ impl Drevo {
         Ok(upgraded)
     }
 
+    /// Read one bounded page of a node's **outgoing** adjacency (#243 slice 3).
+    ///
+    /// Returns at most `limit` [`AdjacencyEntry`]s (edge id + neighbor id +
+    /// kind) in ascending key order, plus an opaque `next` cursor. Pass
+    /// `after = None` for the first page and `after = page.next.as_deref()` for
+    /// each subsequent page; iteration ends when `next` is `None`.
+    ///
+    /// Unlike [`Self::edges_of`], this walks the adjacency index in
+    /// **bounded-memory chunks** — the backend stops scanning once `limit`
+    /// entries are collected — so a supernode with millions of out-edges can be
+    /// consumed a page at a time instead of materialising the whole set. On a
+    /// denormalized database (post-#243) it also loads **no** edge records;
+    /// legacy empty-value entries fall back to one `get_edge` each (bounded by
+    /// `limit`).
+    pub fn outgoing_adjacency_page(
+        &self,
+        node_id: u64,
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<AdjacencyPage> {
+        self.adjacency_page(node_id, false, after, limit)
+    }
+
+    /// Read one bounded page of a node's **incoming** adjacency (#243 slice 3).
+    ///
+    /// The `in:`-prefix sibling of [`Self::outgoing_adjacency_page`]; the
+    /// `neighbor_id` of each entry is the edge's `from_id`. Same cursor
+    /// protocol and bounded-memory guarantees.
+    pub fn incoming_adjacency_page(
+        &self,
+        node_id: u64,
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<AdjacencyPage> {
+        self.adjacency_page(node_id, true, after, limit)
+    }
+
+    /// Shared bounded-page reader for [`Self::outgoing_adjacency_page`] /
+    /// [`Self::incoming_adjacency_page`]. `incoming` selects the `in:` prefix
+    /// (neighbor = `from_id`) versus `out:` (neighbor = `to_id`).
+    fn adjacency_page(
+        &self,
+        node_id: u64,
+        incoming: bool,
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<AdjacencyPage> {
+        let prefix = if incoming {
+            in_prefix(node_id)
+        } else {
+            out_prefix(node_id)
+        };
+        // Fetch one extra entry as a lookahead: if it exists there is another
+        // page, and `next` is the cursor at the `limit`-th key; otherwise this
+        // is the final page and `next` is `None`. This avoids the trailing
+        // empty page that a plain "full page -> cursor" rule needs when the
+        // edge count divides evenly by `limit`.
+        let raw = self
+            .backend
+            .scan_prefix_limited(&prefix, after, limit.saturating_add(1))?;
+        let has_more = raw.len() > limit;
+        let kept = if has_more { &raw[..limit] } else { &raw[..] };
+        let next = has_more
+            .then(|| kept.last().map(|(k, _)| k.clone()))
+            .flatten();
+        let mut entries = Vec::with_capacity(kept.len());
+        for (key, value) in kept {
+            let edge_id = edge_id_from_adjacency_key(key, &prefix);
+            match decode_adjacency_value(value) {
+                Some((neighbor_id, kind)) => entries.push(AdjacencyEntry {
+                    edge_id,
+                    neighbor_id,
+                    kind: kind.to_string(),
+                }),
+                None => {
+                    // Legacy empty value (pre-#243) — recover from the edge.
+                    if let Some(edge) = self.get_edge(edge_id)? {
+                        let neighbor_id = if incoming { edge.from_id } else { edge.to_id };
+                        entries.push(AdjacencyEntry {
+                            edge_id,
+                            neighbor_id,
+                            kind: edge.kind,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(AdjacencyPage { entries, next })
+    }
+
     // ---------------------------------------------------------------
     // Invariant verification (test-only — `00106`)
     // ---------------------------------------------------------------
@@ -3009,6 +3099,37 @@ struct AdjTarget {
     kind: String,
 }
 
+/// One adjacency entry from a bounded page (#243 slice 3): the edge id, the
+/// neighbor node id, and the edge kind — recovered from the adjacency value
+/// (no `get_edge` on a denormalized database).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdjacencyEntry {
+    /// The connecting edge's id.
+    pub edge_id: u64,
+    /// The node at the *other* end of the edge (its `to_id` for an outgoing
+    /// page, its `from_id` for an incoming page).
+    pub neighbor_id: u64,
+    /// The edge's kind.
+    pub kind: String,
+}
+
+/// A bounded page of a node's adjacency (#243 slice 3), as returned by
+/// [`Drevo::outgoing_adjacency_page`] / [`Drevo::incoming_adjacency_page`].
+///
+/// `entries` holds up to the requested `limit` items in ascending key order.
+/// `next` is an **opaque** cursor to pass as `after` for the following page,
+/// or `None` when this page exhausted the node's edges (it was not full).
+/// The entries are per-edge and **not** de-duplicated across parallel edges —
+/// this is an edge-level iterator, not the distinct-neighbor set that
+/// [`Drevo::neighbor_ids`] returns.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdjacencyPage {
+    /// The page's adjacency entries (at most `limit`).
+    pub entries: Vec<AdjacencyEntry>,
+    /// Opaque cursor for the next page, or `None` at the end.
+    pub next: Option<Vec<u8>>,
+}
+
 /// Encode the denormalized adjacency **value** (#243 slice 1): the *other*
 /// endpoint's node id (8-byte little-endian) followed by the edge `kind` as
 /// UTF-8.
@@ -3721,6 +3842,47 @@ mod tests {
             Some((a, "knows"))
         );
         assert!(db.verify_invariants().unwrap().is_empty());
+    }
+
+    // --- bounded adjacency page: legacy fallback (#243 slice 3) ---
+
+    #[test]
+    fn adjacency_page_falls_back_to_get_edge_on_legacy_empty_value() {
+        use crate::model::{NewEdge, NewNode, Properties};
+
+        let db = Drevo::open_in_memory().unwrap();
+        let mk = |title: &str| {
+            db.create_node(NewNode {
+                kind: "n".into(),
+                title: title.into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap()
+            .id
+        };
+        let a = mk("a");
+        let b = mk("b");
+        let e = db
+            .create_edge(NewEdge {
+                from_id: a,
+                to_id: b,
+                kind: "knows".into(),
+                weight: 1.0,
+                properties: Properties::default(),
+            })
+            .unwrap();
+
+        // Simulate a pre-#243 empty adjacency value; the page must still
+        // recover (neighbor_id, kind) via the get_edge fallback.
+        db.backend.put(&out_edge_key(a, e.id), &[]).unwrap();
+        let page = db.outgoing_adjacency_page(a, None, 10).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].neighbor_id, b);
+        assert_eq!(page.entries[0].kind, "knows");
+        assert_eq!(page.entries[0].edge_id, e.id);
+        assert!(page.next.is_none());
     }
 
     // --- Node kind index key helpers ---
