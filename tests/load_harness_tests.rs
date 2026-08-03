@@ -95,6 +95,25 @@ fn pick_op(i: u64, read_pct: u8) -> Op {
 }
 
 // ---------------------------------------------------------------------------
+// Backend selection
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    Memory,
+    Redb,
+}
+
+/// Parse the `BACKEND` env value. Anything other than a redb alias falls back
+/// to the in-memory backend, so an unset/garbage value keeps the fast default.
+fn resolve_backend(s: &str) -> Backend {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "redb" | "disk" | "ondisk" | "on-disk" => Backend::Redb,
+        _ => Backend::Memory,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
 
@@ -282,6 +301,18 @@ fn pick_op_honors_read_percentage() {
     assert_eq!(reads_at(80), 80);
     // Clamped above 100.
     assert_eq!(reads_at(200), 100);
+}
+
+#[test]
+fn resolve_backend_maps_aliases_and_defaults_to_memory() {
+    assert_eq!(resolve_backend("redb"), Backend::Redb);
+    assert_eq!(resolve_backend("  ReDB "), Backend::Redb);
+    assert_eq!(resolve_backend("disk"), Backend::Redb);
+    assert_eq!(resolve_backend("on-disk"), Backend::Redb);
+    // Unset / unknown / garbage keeps the fast in-memory default.
+    assert_eq!(resolve_backend(""), Backend::Memory);
+    assert_eq!(resolve_backend("memory"), Backend::Memory);
+    assert_eq!(resolve_backend("sqlite"), Backend::Memory);
 }
 
 #[test]

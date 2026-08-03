@@ -18,15 +18,25 @@ Knobs (environment variables):
 | `NODES` | `5000` | seed nodes the workload reads/links against |
 | `OPS` | `2000` | operations **per thread** |
 | `READ_PCT` | `80` | percent of ops that are reads (rest are edge writes) |
+| `BACKEND` | `memory` | `memory` (in-memory) or `redb` (on-disk) — see below |
 
 ```text
 NODES=20000 OPS=5000 READ_PCT=50 cargo run --release --example load_harness
+BACKEND=redb NODES=1000 OPS=500 cargo run --release --example load_harness
 ```
 
-The thread sweep is fixed at `[1, 2, 4, 8, 16]`. A **fresh in-memory graph is
-seeded per sweep point** so points are comparable (writes don't accumulate as
-the thread count grows). stdout is a JSON array of sweep points (one per thread
-count); stderr is a compact human table.
+The thread sweep is fixed at `[1, 2, 4, 8, 16]`. A **fresh graph is seeded per
+sweep point** so points are comparable (writes don't accumulate as the thread
+count grows). stdout is a JSON array of sweep points (one per thread count);
+stderr is a compact human table.
+
+**`BACKEND=redb`** runs the identical sweep against the on-disk redb backend
+instead of the ephemeral in-memory one. Every `create_edge` then commits with an
+fsync, so writes are far slower and the single-writer ceiling shows in real
+wall-clock — this is where the concurrency curve reflects redb's actual
+copy-on-write cost rather than just lock contention. Because each write fsyncs,
+**use small `NODES`/`OPS`** (the default 5000×2000 would take a long time on
+disk). It is an on-demand measurement, never run in CI.
 
 Read op = `get_node` + 1-hop `neighbors` (`Outgoing`). Write op = `create_edge`
 between two seed nodes. The op mix and per-thread access stream are deterministic
@@ -116,10 +126,8 @@ throughput / p50–p99 / on-disk `file_bytes`, plus the `CompactReport`
 
 Kept out of these slices to keep them reviewable:
 
-- **redb (on-disk) variant of the mixed load sweep** — the concurrency baseline
-  above is the in-memory backend; running the *same* mixed read/write sweep
-  against redb would surface the on-disk single-writer fsync/COW costs.
-- **HTTP load path** — driving `POST /import` and the HTTP API for RPS/SLA figures.
+- **HTTP load path** — driving `POST /import` and the HTTP API for RPS/SLA
+  figures over the wire (the sweeps above exercise the in-process API directly).
 
 [#240]: https://github.com/ice1x/drevo/issues/240
 [#241]: https://github.com/ice1x/drevo/issues/241
