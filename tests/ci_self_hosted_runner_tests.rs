@@ -346,6 +346,45 @@ fn fuzz_job_in_ci_must_be_self_hosted() {
 }
 
 #[test]
+fn fuzz_job_must_pin_nightly_toolchain() {
+    // The fuzz smoke steps call bare `cargo fuzz run`, which reads the
+    // machine-global `rustup default`. On the single self-hosted runner that
+    // default is shared mutable state: a concurrent job running
+    // `dtolnay/rust-toolchain@stable` (i.e. `rustup default stable`) can flip
+    // it out from under the fuzz job *between two smoke steps*, so cargo-fuzz's
+    // `-Zsanitizer=address` build dies with "the option `Z` is only accepted on
+    // the nightly compiler". Pinning `RUSTUP_TOOLCHAIN: nightly` at job level
+    // makes every step of the job immune to that race regardless of the global
+    // default. Regression guard for the flaky fuzz failure diagnosed on PR #244
+    // (nightly-OK smoke step immediately followed by a stable-fail one).
+    let ci_yml = workflows_dir().join("ci.yml");
+    let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
+    let mut in_fuzz_job = false;
+    let mut pinned = false;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        // Job declarations are indented 2 spaces and end with `:`.
+        if line.starts_with("  ") && !line.starts_with("    ") && trimmed.ends_with(':') {
+            let job = trimmed.trim_end_matches(':');
+            in_fuzz_job = job == "fuzz";
+            continue;
+        }
+        if in_fuzz_job && trimmed.starts_with("RUSTUP_TOOLCHAIN:") && trimmed.contains("nightly") {
+            pinned = true;
+            break;
+        }
+    }
+    assert!(
+        pinned,
+        "ci.yml fuzz job must pin `RUSTUP_TOOLCHAIN: nightly` at job level. \
+         Without it the bare `cargo fuzz run` steps read the shared global \
+         `rustup default`, which a concurrent stable-toolchain job on the \
+         single self-hosted runner can flip mid-job, breaking the \
+         nightly-only `-Zsanitizer=address` build.",
+    );
+}
+
+#[test]
 fn docker_publish_job_must_be_self_hosted() {
     // Docker multi-arch (linux/amd64 + linux/arm64 via QEMU) on
     // ubuntu-latest can exceed 30 minutes per build because arm64

@@ -507,6 +507,19 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: self-hosted
+    # Pin the whole job to nightly. The smoke steps below call bare
+    # `cargo fuzz run`, which reads the machine-global `rustup default`.
+    # On the single self-hosted runner that default is shared mutable
+    # state — a concurrent job doing `dtolnay/rust-toolchain@stable`
+    # (`rustup default stable`) can flip it out from under this job between
+    # two smoke steps, so cargo-fuzz's nightly-only `-Zsanitizer=address`
+    # build fails with "the option `Z` is only accepted on the nightly
+    # compiler". A static `RUSTUP_TOOLCHAIN` (not a `runner.*` expression,
+    # so GHA accepts it at job-level env) overrides the default for every
+    # step and immunises the job against that race. Locked by
+    # `ci_self_hosted_runner_tests.rs::fuzz_job_must_pin_nightly_toolchain`.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     # Don't block merges if cargo-fuzz finds a crash — surface it as a
     # CI annotation and let humans triage. The stable harness replay in
     # the `test` job remains a hard gate.
