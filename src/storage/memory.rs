@@ -156,6 +156,35 @@ impl StorageBackend for MemoryBackend {
         Ok(results)
     }
 
+    fn scan_prefix_limited(
+        &self,
+        prefix: &[u8],
+        start_after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        use std::ops::Bound;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let data = self.data.read().map_err(|_| StorageError::LockPoisoned)?;
+        // Start strictly after the cursor when it is within the prefix range;
+        // otherwise begin at the prefix head (an out-of-range cursor must not
+        // skip the start of the range). The `take_while` bounds the walk to
+        // the prefix and `take(limit)` bounds the work — the `BTreeMap` range
+        // is lazy, so we never touch more than `limit` matching entries.
+        let lower = match start_after {
+            Some(s) if s >= prefix => Bound::Excluded(s.to_vec()),
+            _ => Bound::Included(prefix.to_vec()),
+        };
+        let results = data
+            .range((lower, Bound::Unbounded))
+            .take_while(|(k, _)| k.starts_with(prefix))
+            .take(limit)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Ok(results)
+    }
+
     fn flush(&self) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -298,6 +327,46 @@ mod tests {
         let backend = MemoryBackend::new();
         backend.put(b"abc", b"v").unwrap();
         assert!(backend.scan_prefix(b"xyz").unwrap().is_empty());
+    }
+
+    #[test]
+    fn scan_prefix_limited_bounds_and_paginates() {
+        let backend = MemoryBackend::new();
+        for i in 0..10u8 {
+            backend.put(format!("a:{i}").as_bytes(), b"v").unwrap();
+        }
+        backend.put(b"b:0", b"other").unwrap();
+
+        // limit bounds the page; keys are ascending; the other prefix is excluded.
+        let p1 = backend.scan_prefix_limited(b"a:", None, 3).unwrap();
+        assert_eq!(p1.len(), 3);
+        assert_eq!(p1[0].0, b"a:0");
+        assert_eq!(p1[2].0, b"a:2");
+
+        // Cursor = last key of the previous page → next page starts strictly after.
+        let p2 = backend
+            .scan_prefix_limited(b"a:", Some(&p1[2].0), 3)
+            .unwrap();
+        assert_eq!(p2[0].0, b"a:3");
+        assert_eq!(p2.len(), 3);
+
+        // A limit larger than the remainder returns only what's left, no `b:`.
+        let tail = backend
+            .scan_prefix_limited(b"a:", Some(b"a:7"), 100)
+            .unwrap();
+        assert_eq!(tail.len(), 2, "a:8 and a:9");
+        assert!(tail.iter().all(|(k, _)| k.starts_with(b"a:")));
+
+        // limit 0 is empty; an out-of-range (too-small) cursor still starts at head.
+        assert!(backend
+            .scan_prefix_limited(b"a:", None, 0)
+            .unwrap()
+            .is_empty());
+        let head = backend.scan_prefix_limited(b"a:", Some(b"a"), 2).unwrap();
+        assert_eq!(
+            head[0].0, b"a:0",
+            "cursor before the prefix does not skip the head"
+        );
     }
 
     #[test]

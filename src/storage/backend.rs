@@ -77,6 +77,47 @@ pub trait StorageBackend: Send + Sync {
     /// Returns [`StorageError`](super::error::StorageError) on I/O or backend failure.
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
 
+    /// Bounded / paginated prefix scan (#243 slice 3).
+    ///
+    /// Return at most `limit` key-value pairs whose key starts with `prefix`,
+    /// in ascending key order, beginning **strictly after** `start_after` when
+    /// it is `Some` (a pagination cursor — pass the last key of the previous
+    /// page). `limit == 0` returns an empty `Vec`.
+    ///
+    /// Unlike [`scan_prefix`](Self::scan_prefix), an implementation should stop
+    /// reading once `limit` matches are collected, so a supernode with millions
+    /// of adjacency entries can be walked in bounded-memory chunks instead of
+    /// materialising the whole neighbor set at once.
+    ///
+    /// A `start_after` that sorts before `prefix` is treated as absent (the
+    /// scan still begins at `prefix`), so an out-of-range cursor never skips
+    /// the head of the range.
+    ///
+    /// The default implementation is correct but **not** memory-bounded — it
+    /// calls [`scan_prefix`](Self::scan_prefix) and slices the result. Backends
+    /// with a native ordered range (redb, the in-memory `BTreeMap`) override it
+    /// to read only up to `limit` entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on I/O or backend failure.
+    fn scan_prefix_limited(
+        &self,
+        prefix: &[u8],
+        start_after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let all = self.scan_prefix(prefix)?;
+        Ok(all
+            .into_iter()
+            .filter(|(k, _)| start_after.is_none_or(|s| k.as_slice() > s))
+            .take(limit)
+            .collect())
+    }
+
     /// Flush any buffered writes to durable storage.
     ///
     /// For in-memory backends this may be a no-op or trigger a snapshot.

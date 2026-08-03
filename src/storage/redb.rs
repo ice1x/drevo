@@ -243,6 +243,47 @@ impl StorageBackend for RedbBackend {
         Ok(results)
     }
 
+    fn scan_prefix_limited(
+        &self,
+        prefix: &[u8],
+        start_after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        use std::ops::Bound;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(DATA_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+
+        // Begin strictly after the cursor when it lies within the prefix range;
+        // otherwise at the prefix head. The redb range iterator is lazy, so the
+        // `break` after `limit` matches stops the scan without materialising
+        // the rest of a supernode's adjacency.
+        let lower: Bound<&[u8]> = match start_after {
+            Some(s) if s >= prefix => Bound::Excluded(s),
+            _ => Bound::Included(prefix),
+        };
+        let mut results = Vec::new();
+        let range = table.range::<&[u8]>((lower, Bound::Unbounded))?;
+        for entry in range {
+            let entry = entry?;
+            let key = entry.0.value().to_vec();
+            if !key.starts_with(prefix) {
+                break;
+            }
+            results.push((key, entry.1.value().to_vec()));
+            if results.len() >= limit {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
     fn flush(&self) -> Result<()> {
         // redb commits are durable — each put/delete already commits.
         // compact() is available but expensive; flush is a no-op.
@@ -356,6 +397,51 @@ mod tests {
     fn scan_prefix_empty_store() {
         let (backend, _dir) = open_temp_db();
         assert!(backend.scan_prefix(b"any").unwrap().is_empty());
+    }
+
+    #[test]
+    fn scan_prefix_limited_bounds_and_paginates() {
+        let (backend, _dir) = open_temp_db();
+        for i in 0..10u8 {
+            backend.put(format!("a:{i}").as_bytes(), b"v").unwrap();
+        }
+        backend.put(b"b:0", b"other").unwrap();
+
+        let p1 = backend.scan_prefix_limited(b"a:", None, 3).unwrap();
+        assert_eq!(p1.len(), 3);
+        assert_eq!(p1[0].0, b"a:0");
+        assert_eq!(p1[2].0, b"a:2");
+
+        let p2 = backend
+            .scan_prefix_limited(b"a:", Some(&p1[2].0), 3)
+            .unwrap();
+        assert_eq!(p2[0].0, b"a:3");
+        assert_eq!(p2.len(), 3);
+
+        let tail = backend
+            .scan_prefix_limited(b"a:", Some(b"a:7"), 100)
+            .unwrap();
+        assert_eq!(tail.len(), 2, "a:8 and a:9, never b:");
+        assert!(tail.iter().all(|(k, _)| k.starts_with(b"a:")));
+
+        assert!(backend
+            .scan_prefix_limited(b"a:", None, 0)
+            .unwrap()
+            .is_empty());
+        let head = backend.scan_prefix_limited(b"a:", Some(b"a"), 2).unwrap();
+        assert_eq!(
+            head[0].0, b"a:0",
+            "cursor before the prefix does not skip the head"
+        );
+    }
+
+    #[test]
+    fn scan_prefix_limited_on_empty_store_is_empty() {
+        let (backend, _dir) = open_temp_db();
+        assert!(backend
+            .scan_prefix_limited(b"any", None, 5)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
