@@ -173,6 +173,7 @@ fn drevo_package_init_imports_native_extension() {
         "ScoredNode",
         "SubGraph",
         "CompactReport",
+        "ImportReport",
         "DrevoError",
         "NotFoundError",
         "NodeNotFoundError",
@@ -293,6 +294,7 @@ fn type_stubs_declare_public_surface() {
         "class ScoredNode",
         "class SubGraph",
         "class CompactReport",
+        "class ImportReport",
     ] {
         assert!(
             stub.contains(class),
@@ -330,6 +332,10 @@ fn type_stubs_declare_public_surface() {
         "def subgraph(",
         "def neighbors(",
         "def search_fts(",
+        "def export_graphml(",
+        "def export_graphml_to_path(",
+        "def import_graphml(",
+        "def import_graphml_from_path(",
     ] {
         assert!(
             stub.contains(method),

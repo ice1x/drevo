@@ -71,6 +71,11 @@ classifiers = [
 # adds optional extras (`pip install drevo-py[langchain]`) for adapters.
 dependencies = []
 
+# `drevo` console script — GraphML backup/restore + compact/shrink CLI.
+# The command logic lives in `drevo/__main__.py` (stdlib argparse, no deps).
+[project.scripts]
+drevo = "drevo.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/ice1x/drevo"
 Repository = "https://github.com/ice1x/drevo"
