@@ -327,6 +327,174 @@ impl ProxyBackend {
     }
 }
 
+/// Extract a single embedding vector from an OpenAI-shaped embeddings
+/// response (#251 slice 3).
+///
+/// Reads `data[0].embedding` and requires it to be a **numeric array**,
+/// returning it as `Vec<f32>`. This is deliberately strict:
+///
+/// - A **base64 string** embedding (`encoding_format: "base64"`, which the
+///   passthrough proxy forwards verbatim) is **rejected** with a clear error
+///   rather than silently mis-read — `drevo.semantic.query` needs the raw
+///   floats to run a cosine scan, so the caller must not request base64.
+/// - A missing/empty `data` array, a missing `embedding` field, or a
+///   non-numeric element are all reported as upstream faults.
+///
+/// # Errors
+///
+/// Returns [`EmbeddingsError::Upstream`] when the response does not carry a
+/// numeric `data[0].embedding` array.
+pub fn embedding_vec_from_response(resp: &Value) -> Result<Vec<f32>, EmbeddingsError> {
+    let data = resp
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| EmbeddingsError::Upstream("response missing `data` array".to_string()))?;
+    let first = data
+        .first()
+        .ok_or_else(|| EmbeddingsError::Upstream("response `data` array is empty".to_string()))?;
+    let embedding = first.get("embedding").ok_or_else(|| {
+        EmbeddingsError::Upstream("response missing `data[0].embedding`".to_string())
+    })?;
+    match embedding {
+        Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for (index, el) in arr.iter().enumerate() {
+                let n = el.as_f64().ok_or_else(|| {
+                    EmbeddingsError::Upstream(format!(
+                        "embedding element at index {index} is not a number"
+                    ))
+                })?;
+                out.push(n as f32);
+            }
+            Ok(out)
+        }
+        Value::String(_) => Err(EmbeddingsError::Upstream(
+            "upstream returned a base64-encoded embedding; drevo.semantic.query requires a \
+             numeric array (do not request encoding_format=base64)"
+                .to_string(),
+        )),
+        _ => Err(EmbeddingsError::Upstream(
+            "`data[0].embedding` is neither a numeric array nor a string".to_string(),
+        )),
+    }
+}
+
+/// A synchronous, server-side text embedder for `drevo.semantic.query`
+/// (#251 slice 3).
+///
+/// The Cypher / Bolt executor is **synchronous** and runs *on a tokio worker
+/// thread*, so it cannot `block_on` an async embedder (that panics with a
+/// "runtime within a runtime" error). Implementors bridge that gap — see
+/// [`SyncEmbedder`], which owns a dedicated OS thread with its own
+/// current-thread runtime — and expose a plain blocking `embed_query`.
+///
+/// Installed on a [`Drevo`](crate::db::Drevo) handle via
+/// `set_embedder`; the `drevo.semantic.query` procedure calls `embed_text`,
+/// which delegates here. Feature-gated on `http` (the module itself is).
+pub trait TextEmbedder: Send + Sync {
+    /// Embed one query string into a vector, blocking until the upstream
+    /// responds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EmbeddingsError`] when the upstream call fails or its
+    /// response does not carry a usable numeric embedding.
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingsError>;
+}
+
+/// A [`TextEmbedder`] that drives the async [`ProxyBackend`] from synchronous
+/// code without nesting tokio runtimes (#251 slice 3).
+///
+/// It owns a **dedicated OS thread** running a private current-thread tokio
+/// runtime and receives jobs over an mpsc channel. `embed_query` posts the
+/// text and blocks on a reply channel, so the *caller's* thread (a worker of
+/// the server's multi-threaded runtime) never runs `block_on` — sidestepping
+/// the runtime-in-runtime panic that a direct `Handle::block_on` or
+/// `reqwest::blocking` would hit. Enabled by `embeddings-proxy` (which pulls
+/// in the HTTP client and, transitively, tokio).
+#[cfg(feature = "embeddings-proxy")]
+pub struct SyncEmbedder {
+    sender: std::sync::mpsc::Sender<EmbedJob>,
+    // The worker thread lives as long as the sender: dropping `SyncEmbedder`
+    // drops `sender`, the worker's `recv` returns `Err`, and the thread exits.
+    // Not joined on drop (best-effort teardown); the handle is retained so the
+    // thread is owned rather than detached.
+    _worker: std::thread::JoinHandle<()>,
+}
+
+/// One embedding request handed to the [`SyncEmbedder`] worker thread, with a
+/// one-shot reply channel for the result.
+#[cfg(feature = "embeddings-proxy")]
+struct EmbedJob {
+    text: String,
+    reply: std::sync::mpsc::Sender<Result<Vec<f32>, EmbeddingsError>>,
+}
+
+#[cfg(feature = "embeddings-proxy")]
+impl SyncEmbedder {
+    /// Spawn the worker thread and return a handle wired to `config`'s
+    /// upstream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingsError::InvalidUpstream`] when the HTTP client or the
+    /// worker thread / runtime cannot be constructed.
+    pub fn from_config(config: EmbeddingsConfig) -> Result<Self, EmbeddingsError> {
+        let backend = ProxyBackend::new(config)?;
+        let (sender, receiver) = std::sync::mpsc::channel::<EmbedJob>();
+        let worker = std::thread::Builder::new()
+            .name("drevo-embedder".to_string())
+            .spawn(move || {
+                // The runtime is single-threaded and confined to this OS
+                // thread, so `block_on` here never nests inside the server's
+                // worker-pool runtime.
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    // Cannot build a runtime: exit the thread. Every pending and
+                    // future send then fails with a disconnect error, which
+                    // `embed_query` maps to a clean upstream error.
+                    Err(_) => return,
+                };
+                while let Ok(job) = receiver.recv() {
+                    let req = EmbeddingsRequest {
+                        model: String::new(),
+                        input: EmbeddingInput::Single(job.text),
+                        extra: Map::new(),
+                    };
+                    let result = runtime
+                        .block_on(backend.embed(&req))
+                        .and_then(|value| embedding_vec_from_response(&value));
+                    // The receiver may have given up (dropped its end); ignore.
+                    let _ = job.reply.send(result);
+                }
+            })
+            .map_err(|e| EmbeddingsError::InvalidUpstream(e.to_string()))?;
+        Ok(Self {
+            sender,
+            _worker: worker,
+        })
+    }
+}
+
+#[cfg(feature = "embeddings-proxy")]
+impl TextEmbedder for SyncEmbedder {
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingsError> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.sender
+            .send(EmbedJob {
+                text: text.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| EmbeddingsError::Upstream("embedder worker thread stopped".to_string()))?;
+        reply_rx.recv().map_err(|_| {
+            EmbeddingsError::Upstream("embedder worker dropped the request".to_string())
+        })?
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +638,48 @@ mod tests {
         let body = build_upstream_body(&req, &c);
         assert_eq!(body["model"], "default-model");
         assert_eq!(body["input"], json!(["a", "b"]));
+    }
+
+    #[test]
+    fn embedding_vec_parses_numeric_array() {
+        let resp = json!({"data": [{"embedding": [0.1, 0.2, 3, -0.5]}]});
+        let v = embedding_vec_from_response(&resp).unwrap();
+        assert_eq!(v, vec![0.1_f32, 0.2, 3.0, -0.5]);
+    }
+
+    #[test]
+    fn embedding_vec_rejects_base64_string() {
+        // encoding_format=base64 makes the passthrough return a string; we must
+        // reject it, not mis-read it, since the cosine scan needs raw floats.
+        let resp = json!({"data": [{"embedding": "gAAAAB=="}]});
+        let err = embedding_vec_from_response(&resp).unwrap_err();
+        assert!(matches!(err, EmbeddingsError::Upstream(_)));
+        assert!(err.to_string().contains("base64"));
+    }
+
+    #[test]
+    fn embedding_vec_rejects_missing_and_empty_data() {
+        assert!(matches!(
+            embedding_vec_from_response(&json!({"object": "list"})).unwrap_err(),
+            EmbeddingsError::Upstream(_)
+        ));
+        assert!(matches!(
+            embedding_vec_from_response(&json!({"data": []})).unwrap_err(),
+            EmbeddingsError::Upstream(_)
+        ));
+        assert!(matches!(
+            embedding_vec_from_response(&json!({"data": [{"index": 0}]})).unwrap_err(),
+            EmbeddingsError::Upstream(_)
+        ));
+    }
+
+    #[test]
+    fn embedding_vec_rejects_non_numeric_element() {
+        let resp = json!({"data": [{"embedding": [0.1, "oops", 0.3]}]});
+        assert!(matches!(
+            embedding_vec_from_response(&resp).unwrap_err(),
+            EmbeddingsError::Upstream(_)
+        ));
     }
 
     #[test]

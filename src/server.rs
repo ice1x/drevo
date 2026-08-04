@@ -286,6 +286,44 @@ fn configure_embeddings(state: ApiState) -> Result<ApiState, RunError> {
     Ok(state)
 }
 
+/// Install a server-side query embedder on the catalog's default database so
+/// `drevo.semantic.query` can embed query text (#251 slice 3), when the
+/// `embeddings-proxy` feature is built and `DREVO_EMBEDDINGS_UPSTREAM` is set.
+///
+/// The embedder is set on the **default** handle only — the one HTTP `/cypher`
+/// and the Bolt listener share (Bolt has no database selection wired yet), so
+/// this covers both server-side Cypher paths. Databases opened lazily by name
+/// through the catalog do not receive it and report "not configured"; wiring
+/// the multi-database case is a follow-up. A no-op (leaving
+/// `drevo.semantic.query` to report "not configured") when the feature is off
+/// or the upstream is unset.
+#[cfg(feature = "embeddings-proxy")]
+fn configure_query_embedder(catalog: &crate::catalog::Catalog) -> Result<(), RunError> {
+    use crate::embeddings::{EmbeddingsConfig, SyncEmbedder};
+    match EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
+        .map_err(|e| RunError::Embeddings(e.to_string()))?
+    {
+        Some(cfg) => {
+            let embedder =
+                SyncEmbedder::from_config(cfg).map_err(|e| RunError::Embeddings(e.to_string()))?;
+            if catalog
+                .default_db()
+                .set_embedder(std::sync::Arc::new(embedder))
+            {
+                tracing::info!("drevo.semantic.query embedder installed on default database");
+            }
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+/// No-op when the proxy backend is not compiled in.
+#[cfg(not(feature = "embeddings-proxy"))]
+fn configure_query_embedder(_catalog: &crate::catalog::Catalog) -> Result<(), RunError> {
+    Ok(())
+}
+
 /// Open the database, bind the TCP listener, and serve until a
 /// shutdown signal is observed.
 ///
@@ -317,6 +355,10 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     tracing::info!(dir = %cfg.data_dir.display(), "opening database catalog");
     let catalog = Arc::new(Catalog::open(cfg.data_dir.clone())?);
     tracing::info!(databases = ?catalog.list(), "catalog ready");
+    // Install the server-side query embedder for `drevo.semantic.query` on the
+    // shared default handle (#251 slice 3); no-op unless `embeddings-proxy` is
+    // built and `DREVO_EMBEDDINGS_UPSTREAM` is set.
+    configure_query_embedder(&catalog)?;
     let state = ApiState::with_catalog(Arc::clone(&catalog));
     // Opt-in embeddings proxy (Phase 19 task `00217`); no-op unless the
     // `embeddings-proxy` feature is built and `DREVO_EMBEDDINGS_UPSTREAM` set.
