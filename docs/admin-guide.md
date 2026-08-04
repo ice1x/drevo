@@ -161,7 +161,13 @@ bundle (dependency-free, always compiled — see [`src/observability/`](../src/o
 | `drevo_queries_total` | counter | `status` (`ok`/`error`) |
 | `drevo_query_duration_seconds` | histogram | — |
 | `drevo_process_uptime_seconds` | gauge | — |
+| `drevo_storage_file_bytes` | gauge | — |
 | `drevo_build_info` | gauge | `version` |
+
+`drevo_storage_file_bytes` (#253 slice 1) is the physical on-disk size of the backend file,
+refreshed on every scrape from an O(1) file stat (`0` for the ephemeral in-memory backend).
+Pair it with the **logical** size from `GET /storage/bloat` (below) to alert on reclaimable
+copy-on-write bloat.
 
 Scrape config:
 
@@ -198,6 +204,35 @@ cp /data/drevo.redb /backups/drevo-$(date +%Y%m%d-%H%M%S).redb
 **Recover** — `Drevo::recover(path)` opens the file and runs an integrity scan
 (`IntegrityReport`: counter drift, orphaned index entries, dangling edges, corrupt rows),
 repairing counter drift automatically. `Drevo::compact()` reclaims space.
+
+### Storage bloat (#253 slice 1)
+
+redb is copy-on-write: freed pages go to an internal freelist and the file **keeps its
+high-water mark** — it never returns space to the OS on its own. Under churn (constant
+create/update/delete, FTS re-index, body rewrites — the agent-memory / KG workload) the file
+grows steadily; a live tree was measured at **412 MB physical for ~18 MB of data**. Only
+`compact()` (or a dump→fresh-import `shrink`) reclaims it.
+
+Observe the ratio and act on it:
+
+```bash
+# Physical size, continuously, via Prometheus:
+curl -s http://localhost:8080/metrics | grep '^drevo_storage_file_bytes'
+
+# On-demand physical-vs-logical report + bloat ratio (HTTP or CLI):
+curl -s http://localhost:8080/storage/bloat        # {"file_bytes":…, "logical_bytes":…, "bloat_ratio":…}
+python -m drevo bloat /data/drevo.redb             # prints size + ratio, hints at ≥3×
+
+# Reclaim when the ratio is high:
+python -m drevo compact /data/drevo.redb           # in place (needs exclusive access)
+python -m drevo shrink  /data/drevo.redb small.redb  # dump → fresh import (robust, writes a new file)
+```
+
+`bloat_ratio = file_bytes / logical_bytes`; `logical_bytes` is the node + edge record data
+only (indexes / adjacency / FTS / vectors are legitimate overhead on top), so a freshly
+compacted file reads somewhat above 1 and a large ratio is the reclaimable-bloat signal. The
+`/storage/bloat` scan is proportional to the logical data — a maintenance call, not per-request.
+*(Policy-driven automatic compaction is the follow-up #253 slice 2.)*
 
 Monitor disk growth against node/edge count and FTS index size; pre-size the PVC accordingly.
 
@@ -274,6 +309,10 @@ curl    http://localhost:8080/status | jq  # version + uptime
 
 # Metrics
 curl -s http://localhost:8080/metrics | grep '^drevo_'
+
+# Storage bloat (physical vs. logical, #253 slice 1)
+curl -s http://localhost:8080/storage/bloat | jq
+python -m drevo bloat /data/drevo.redb
 
 # Backup
 cp /data/drevo.redb /backups/drevo-$(date +%F-%H%M%S).redb

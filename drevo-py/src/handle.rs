@@ -296,6 +296,18 @@ impl Drevo {
         })
     }
 
+    /// Measure storage bloat (#253 slice 1): physical file size vs. logical
+    /// data size, plus their ratio, as a `BloatReport`. An on-demand scan of
+    /// the node/edge records — a maintenance / alerting call, not a hot path.
+    fn bloat_report(&self, py: Python<'_>) -> PyResult<types::BloatReport> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                let report = py.allow_threads(|| db.bloat_report()).map_err(map_err)?;
+                Ok(types::BloatReport::new(report))
+            })
+        })
+    }
+
     // ── Dump / backup (GraphML) ────────────────────────────────────
 
     /// Serialize the whole graph to a GraphML XML string.

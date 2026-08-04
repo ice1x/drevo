@@ -56,6 +56,7 @@ fn _drevo(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<types::SubGraph>()?;
     m.add_class::<types::CompactReport>()?;
     m.add_class::<types::ImportReport>()?;
+    m.add_class::<types::BloatReport>()?;
 
     // The handle.
     m.add_class::<handle::Drevo>()?;

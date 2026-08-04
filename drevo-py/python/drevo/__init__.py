@@ -42,6 +42,7 @@ from . import _drevo
 # attribute re-exports above.
 from ._drevo import (  # type: ignore[attr-defined]
     # Plain-data wrappers.
+    BloatReport,
     CompactReport,
     # Exception hierarchy.
     ConflictError,
@@ -85,6 +86,7 @@ __all__ = [
     # Handle.
     "Drevo",
     # Plain-data wrappers.
+    "BloatReport",
     "CompactReport",
     "Direction",
     "Edge",

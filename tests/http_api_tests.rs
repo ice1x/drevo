@@ -2974,3 +2974,41 @@ async fn ui_styles_css_styles_tooltip_for_client() {
     assert!(content_type.contains("text/css"));
     assert!(body.contains("#cy-tooltip"));
 }
+
+// ── #253 slice 1 — storage-bloat observability ──────────────────────────
+
+#[tokio::test]
+async fn storage_bloat_endpoint_reports_logical_size_and_counts() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+    let (status, _) = send(&app, "POST", "/edges", Some(new_edge_body(a, b, "knows"))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(&app, "GET", "/storage/bloat", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["node_count"], 2);
+    assert_eq!(body["edge_count"], 1);
+    assert!(body["logical_bytes"].as_u64().unwrap() > 0);
+    // In-memory backend has no physical footprint → null file size + ratio.
+    assert!(body["file_bytes"].is_null());
+    assert!(body["bloat_ratio"].is_null());
+}
+
+#[tokio::test]
+async fn storage_bloat_endpoint_rejects_post() {
+    let app = make_app();
+    let (status, _) = send(&app, "POST", "/storage/bloat", None).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn metrics_endpoint_exposes_storage_file_bytes_gauge() {
+    let app = make_app();
+    let (status, _content_type, body) = fetch_text(&app, "/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    // The gauge is registered and rendered (0 for the in-memory backend).
+    assert!(
+        body.contains("drevo_storage_file_bytes"),
+        "metrics output missing storage gauge:\n{body}"
+    );
+}

@@ -174,6 +174,7 @@ fn drevo_package_init_imports_native_extension() {
         "SubGraph",
         "CompactReport",
         "ImportReport",
+        "BloatReport",
         "DrevoError",
         "NotFoundError",
         "NodeNotFoundError",
@@ -296,6 +297,7 @@ fn type_stubs_declare_public_surface() {
         "class SubGraph",
         "class CompactReport",
         "class ImportReport",
+        "class BloatReport",
     ] {
         assert!(
             stub.contains(class),
@@ -311,6 +313,7 @@ fn type_stubs_declare_public_surface() {
         "def __enter__(",
         "def __exit__(",
         "def compact(",
+        "def bloat_report(",
         "def health_check(",
         "def create_node(",
         "def get_node(",
