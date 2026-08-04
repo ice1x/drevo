@@ -831,14 +831,39 @@ It requires the server to be built with the `embeddings-proxy` feature and
 started with `DREVO_EMBEDDINGS_UPSTREAM` set (the same configuration that powers
 `POST /v1/embeddings`); otherwise the call fails with a clear "embeddings
 backend not configured" error, so a client can catch it and fall back to an
-external embedder plus `drevo.vector.query`. The nodes must already carry their
-`property` embeddings — `drevo.semantic.query` embeds only the *query* text;
-populating node embeddings on ingest is a follow-up slice.
+external embedder plus `drevo.vector.query`.
 
-The `register` / `status` procedures expose the **control plane** (registration
-+ introspection); auto-embedding of node text on ingest lands in a follow-up
-slice, so a registered target's `state` reflects the control plane, not
-embedding readiness.
+**Auto-embedding on ingest.** When a target is registered in `'auto'` mode and
+the server has an embedder configured, drevo embeds `text_property` into
+`embedding_property` **automatically as matching nodes are created or updated** —
+no client round-trip. So the full loop needs no client-side embedding at all.
+First register the target:
+
+```cypher
+CALL drevo.semantic.register('Doc', 'text', 'embedding', 'auto')
+YIELD label, state RETURN label, state
+```
+
+Then ordinary writes are embedded server-side — this `CREATE` populates
+`embedding` on its own:
+
+```cypher
+CREATE (:Doc {title: 'note-1', text: 'anxious thoughts about work'})
+```
+
+and the node is immediately retrievable by query text:
+
+```cypher
+CALL drevo.semantic.query('Doc', 'embedding', 'work stress', 5)
+YIELD node, score RETURN node.title, score ORDER BY score DESC
+```
+
+Auto-embedding is a no-op unless an embedder is configured and an `'auto'`
+target matches, so ordinary writes are unaffected. It embeds `text_property` on
+each create/update (an update re-embeds only when that text changes); a `'manual'`
+target is never auto-embedded, and existing nodes created before registration
+keep their current embeddings until next written. An upstream failure is logged
+and swallowed — it never fails the write.
 
 ---
 

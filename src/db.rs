@@ -47,8 +47,8 @@ use crate::fts::facet::{build_facets, Facet, FacetCollapse};
 use crate::fts::index as fts_index;
 use crate::fts::tokenizer::extract_trigrams;
 use crate::model::{
-    Direction, Edge, EdgePatch, FtsRanking, NewEdge, NewNode, Node, NodePatch, ScoredEdge,
-    ScoredNode, SubGraph,
+    Direction, Edge, EdgePatch, FtsRanking, NewEdge, NewNode, Node, NodePatch, Properties,
+    ScoredEdge, ScoredNode, SubGraph,
 };
 use crate::property_index;
 use crate::semantic_index::{IndexError, IndexMode, SemanticIndex, SemanticIndexRegistry};
@@ -67,6 +67,12 @@ const META_NEXT_EDGE_ID: &[u8] = b"meta:next_edge_id";
 /// Meta key for the persisted Phase 21 semantic-index registry (#251) — a
 /// JSON blob so `drevo.semantic.register` targets survive a restart.
 const META_SEMANTIC_REGISTRY: &[u8] = b"meta:semantic_registry";
+
+/// The reserved property key holding a node's secondary `:Label`s (mirrors the
+/// private constant in [`crate::cypher::executor`]). #251 slice 4 matches
+/// auto-embed targets against these in addition to the primary `kind`.
+#[cfg(feature = "http")]
+const SECONDARY_LABELS_KEY: &str = "_labels";
 
 /// Key prefix for node data: `node:{id}` -> bincode(Node).
 const PREFIX_NODE: &[u8] = b"node:";
@@ -754,6 +760,112 @@ impl Drevo {
             .embed_query(text)
     }
 
+    /// #251 slice 4 — apply server-side auto-embedding to a node's properties
+    /// just before it is persisted.
+    ///
+    /// For every registered [`IndexMode::Auto`] target whose label matches this
+    /// node (primary `kind` or a `_labels` secondary label), embed the text in
+    /// the target's `text_property` and write the resulting vector into its
+    /// `embedding_property`. This is what makes ingest "just work": a client
+    /// `CREATE`s `(:Doc {text: …})` and the embedding appears without a
+    /// separate `/v1/embeddings` round-trip, so `drevo.semantic.query` /
+    /// `drevo.vector.query` can retrieve it immediately (issue #251 acceptance
+    /// bullet: "on ingest/update, drevo embeds the configured properties
+    /// server-side and keeps the vector index in sync").
+    ///
+    /// A deliberate double no-op keeps the common path untouched: it returns
+    /// immediately when no embedder is installed (every non-server context —
+    /// tests, CLI, an in-memory backend without `set_embedder`) and when no
+    /// Auto target matches. `old` is the pre-patch property map on update; a
+    /// target whose source text is unchanged (and whose embedding is already
+    /// present) is skipped, so an unrelated update does not re-hit the upstream.
+    /// An upstream failure is logged and swallowed — a transient embedder
+    /// outage must never fail a write. The embedding call runs before any
+    /// storage transaction is opened, so no lock is held across the network I/O.
+    fn apply_auto_embeddings(
+        &self,
+        kind: &str,
+        properties: &mut Properties,
+        old: Option<&Properties>,
+    ) {
+        #[cfg(feature = "http")]
+        {
+            // Fast exit: no server-side embedder → nothing to do (the common
+            // case for tests, the CLI, and any handle the server never wired).
+            if self.embedder.get().is_none() {
+                return;
+            }
+            let targets: Vec<(String, String, String)> = {
+                let registry = self.semantic.lock().unwrap_or_else(|e| e.into_inner());
+                registry
+                    .list()
+                    .iter()
+                    .filter(|t| matches!(t.mode, IndexMode::Auto))
+                    .map(|t| {
+                        (
+                            t.label.clone(),
+                            t.text_property.clone(),
+                            t.embedding_property.clone(),
+                        )
+                    })
+                    .collect()
+            };
+            if targets.is_empty() {
+                return;
+            }
+            let mut labels = vec![kind.to_string()];
+            if let Some(serde_json::Value::Array(arr)) = properties.0.get(SECONDARY_LABELS_KEY) {
+                for item in arr {
+                    if let serde_json::Value::String(s) = item {
+                        if !labels.iter().any(|l| l == s) {
+                            labels.push(s.clone());
+                        }
+                    }
+                }
+            }
+            for (label, text_prop, emb_prop) in targets {
+                if !labels.iter().any(|l| l == &label) {
+                    continue;
+                }
+                let Some(text) = properties
+                    .0
+                    .get(&text_prop)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                else {
+                    continue; // no text to embed on this node
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                // On update, skip when the source text is unchanged and the
+                // embedding already exists — avoid a redundant upstream call.
+                if let Some(old) = old {
+                    let unchanged = old.0.get(&text_prop).and_then(serde_json::Value::as_str)
+                        == Some(text.as_str());
+                    if unchanged && properties.0.contains_key(&emb_prop) {
+                        continue;
+                    }
+                }
+                match self.embed_text(&text) {
+                    Ok(vector) => {
+                        let arr = serde_json::Value::Array(
+                            vector.into_iter().map(|f| serde_json::json!(f)).collect(),
+                        );
+                        properties.0.insert(emb_prop, arr);
+                    }
+                    Err(error) => {
+                        tracing::warn!(label = %label, %error, "auto-embed failed (ignored)");
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            let _ = (kind, properties, old);
+        }
+    }
+
     /// Physical on-disk size of the backend file in bytes, or `None` for the
     /// ephemeral in-memory backend (#253 slice 1).
     ///
@@ -1415,7 +1527,10 @@ impl Drevo {
         }
 
         let id = self.alloc_node_id();
-        let node = new_node.into_node(id);
+        let mut node = new_node.into_node(id);
+        // #251 slice 4: server-side auto-embedding on ingest. No-op unless an
+        // embedder is installed and an Auto-mode target matches this node.
+        self.apply_auto_embeddings(&node.kind, &mut node.properties, None);
 
         // Store node data
         let data = serialize_node(&node)?;
@@ -1481,7 +1596,10 @@ impl Drevo {
             batch_titles.insert(new_node.title.clone());
 
             let id = self.alloc_node_id();
-            let node = new_node.into_node(id);
+            let mut node = new_node.into_node(id);
+            // #251 slice 4: auto-embed each node on bulk ingest too (no-op
+            // unless an embedder is installed and an Auto-mode target matches).
+            self.apply_auto_embeddings(&node.kind, &mut node.properties, None);
 
             writes.push((node_key(id), serialize_node(&node)?));
             writes.push((node_uuid_key(&node.uuid), id.to_le_bytes().to_vec()));
@@ -1578,6 +1696,10 @@ impl Drevo {
         }
 
         node.apply_patch(patch);
+        // #251 slice 4: re-embed when the source text changed (no-op unless an
+        // embedder is installed and an Auto-mode target matches). Passing the
+        // pre-image lets it skip when the text is unchanged.
+        self.apply_auto_embeddings(&node.kind, &mut node.properties, Some(&old_properties));
 
         // Store updated node
         let data = serialize_node(&node)?;
