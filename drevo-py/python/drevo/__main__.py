@@ -204,9 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_compact.add_argument("db", help="path to the drevo database to compact")
     p_compact.set_defaults(func=_cmd_compact)
 
-    p_bloat = sub.add_parser(
-        "bloat", help="report physical vs. logical size and the bloat ratio"
-    )
+    p_bloat = sub.add_parser("bloat", help="report physical vs. logical size and the bloat ratio")
     p_bloat.add_argument("db", help="path to the drevo database to inspect")
     p_bloat.set_defaults(func=_cmd_bloat)
 
