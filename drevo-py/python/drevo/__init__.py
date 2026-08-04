@@ -37,35 +37,35 @@ from . import _drevo
 # Re-export every public class the PyO3 module ships. Source of truth:
 # `drevo-py/src/lib.rs` — every `m.add_class::<...>()` and
 # `m.add("...", py.get_type::<...>())` call has a matching name here.
-from ._drevo import (  # type: ignore[attr-defined]
-    # Plain-data wrappers.
-    CompactReport,
-    Direction,
-    Edge,
-    EdgePatch,
-    NewEdge,
-    NewNode,
-    Node,
-    NodePatch,
-    ScoredNode,
-    SubGraph,
-    # Exception hierarchy.
-    ConflictError,
-    DrevoError,
-    DuplicateTitleError,
-    EdgeNotFoundError,
-    LockedError,
-    NodeNotFoundError,
-    NotFoundError,
-    PanicError,
-    SerializationError,
-    StorageError,
-)
-
 # Handle. Imported separately so the UUID-wrapping decorator below can
 # patch its `__init_subclass__`-style hooks without confusing the
 # attribute re-exports above.
-from ._drevo import Drevo  # type: ignore[attr-defined]
+from ._drevo import (  # type: ignore[attr-defined]
+    # Plain-data wrappers.
+    CompactReport,
+    # Exception hierarchy.
+    ConflictError,
+    Direction,
+    Drevo,  # type: ignore[attr-defined]
+    DrevoError,
+    DuplicateTitleError,
+    Edge,
+    EdgeNotFoundError,
+    EdgePatch,
+    ImportReport,
+    LockedError,
+    NewEdge,
+    NewNode,
+    Node,
+    NodeNotFoundError,
+    NodePatch,
+    NotFoundError,
+    PanicError,
+    ScoredNode,
+    SerializationError,
+    StorageError,
+    SubGraph,
+)
 
 # Pure-Python `InvalidWeightError(ValueError)` — see RFC §12.3. The
 # PyO3 layer raises `PyValueError` directly for `DrevoError::InvalidWeight`,
@@ -88,6 +88,7 @@ __all__ = [
     "Direction",
     "Edge",
     "EdgePatch",
+    "ImportReport",
     "NewEdge",
     "NewNode",
     "Node",

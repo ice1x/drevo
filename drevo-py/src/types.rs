@@ -616,6 +616,69 @@ impl CompactReport {
     }
 }
 
+// ── ImportReport ───────────────────────────────────────────────────────
+
+/// Result of [`crate::handle::Drevo::import_graphml`] /
+/// [`crate::handle::Drevo::import_graphml_from_path`] — how many rows were
+/// newly inserted vs. skipped as byte-equal duplicates (idempotent re-import).
+#[pyclass(frozen, name = "ImportReport")]
+#[derive(Clone)]
+pub struct ImportReport {
+    inner: drevo::dump::ImportReport,
+}
+
+impl ImportReport {
+    pub(crate) fn new(inner: drevo::dump::ImportReport) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl ImportReport {
+    /// Number of nodes inserted during this import.
+    #[getter]
+    fn nodes_imported(&self) -> usize {
+        self.inner.nodes_imported
+    }
+
+    /// Number of edges inserted during this import.
+    #[getter]
+    fn edges_imported(&self) -> usize {
+        self.inner.edges_imported
+    }
+
+    /// Number of nodes skipped because a byte-equal row already existed.
+    #[getter]
+    fn nodes_skipped(&self) -> usize {
+        self.inner.nodes_skipped
+    }
+
+    /// Number of edges skipped because a byte-equal row already existed.
+    #[getter]
+    fn edges_skipped(&self) -> usize {
+        self.inner.edges_skipped
+    }
+
+    fn as_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        d.set_item("nodes_imported", self.inner.nodes_imported)?;
+        d.set_item("edges_imported", self.inner.edges_imported)?;
+        d.set_item("nodes_skipped", self.inner.nodes_skipped)?;
+        d.set_item("edges_skipped", self.inner.edges_skipped)?;
+        Ok(d)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ImportReport(nodes_imported={}, edges_imported={}, nodes_skipped={}, edges_skipped={})",
+            self.inner.nodes_imported,
+            self.inner.edges_imported,
+            self.inner.nodes_skipped,
+            self.inner.edges_skipped
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

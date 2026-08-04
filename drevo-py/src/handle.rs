@@ -296,6 +296,68 @@ impl Drevo {
         })
     }
 
+    // ── Dump / backup (GraphML) ────────────────────────────────────
+
+    /// Serialize the whole graph to a GraphML XML string.
+    ///
+    /// Round-trips faithfully through [`import_graphml`](Self::import_graphml):
+    /// ids, uuids, timestamps, kinds, titles, bodies, properties and weights
+    /// are all preserved. GraphML is also readable by Gephi / yEd / NetworkX /
+    /// Neo4j (APOC).
+    fn export_graphml(&self, py: Python<'_>) -> PyResult<String> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.export_graphml()).map_err(map_err)
+            })
+        })
+    }
+
+    /// Serialize the graph to GraphML and write it to `path` (overwrites).
+    ///
+    /// A read-only backup of the database: it only reads the graph, never
+    /// mutates it.
+    fn export_graphml_to_path(&self, py: Python<'_>, path: PyObject) -> PyResult<()> {
+        let path: PathBuf = extract_path(py, path)?;
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.export_graphml_to_path(&path))
+                    .map_err(map_err)
+            })
+        })
+    }
+
+    /// Import a GraphML document (drevo's own export, or any compatible
+    /// GraphML) into this database. Idempotent for drevo's own export:
+    /// byte-equal rows are skipped. Returns an [`ImportReport`].
+    fn import_graphml(&self, py: Python<'_>, xml: &str) -> PyResult<types::ImportReport> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                let report = py
+                    .allow_threads(|| db.import_graphml(xml))
+                    .map_err(map_err)?;
+                Ok(types::ImportReport::new(report))
+            })
+        })
+    }
+
+    /// Read a GraphML document from `path` and import it. See
+    /// [`import_graphml`](Self::import_graphml).
+    fn import_graphml_from_path(
+        &self,
+        py: Python<'_>,
+        path: PyObject,
+    ) -> PyResult<types::ImportReport> {
+        let path: PathBuf = extract_path(py, path)?;
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                let report = py
+                    .allow_threads(|| db.import_graphml_from_path(&path))
+                    .map_err(map_err)?;
+                Ok(types::ImportReport::new(report))
+            })
+        })
+    }
+
     // ── Node CRUD ──────────────────────────────────────────────────
 
     fn create_node(&self, py: Python<'_>, new_node: types::NewNode) -> PyResult<types::Node> {
