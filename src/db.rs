@@ -64,6 +64,10 @@ const META_NEXT_NODE_ID: &[u8] = b"meta:next_node_id";
 /// Meta key for the next edge ID counter.
 const META_NEXT_EDGE_ID: &[u8] = b"meta:next_edge_id";
 
+/// Meta key for the persisted Phase 21 semantic-index registry (#251) — a
+/// JSON blob so `drevo.semantic.register` targets survive a restart.
+const META_SEMANTIC_REGISTRY: &[u8] = b"meta:semantic_registry";
+
 /// Key prefix for node data: `node:{id}` -> bincode(Node).
 const PREFIX_NODE: &[u8] = b"node:";
 
@@ -144,10 +148,11 @@ pub struct Drevo {
     tx_state: Mutex<TxState>,
     /// Phase 21 semantic-index control plane (#251) — the registry of
     /// auto-embedding targets, reachable over Cypher via the
-    /// `drevo.semantic.*` procedures. In-memory for now (registration is
-    /// per-server-lifetime); redb persistence is a follow-up slice. Guarded by
-    /// a `Mutex` so the `&Drevo` shared by the executor / Bolt sessions can
-    /// register and introspect targets through interior mutability.
+    /// `drevo.semantic.*` procedures. Persisted to the
+    /// `meta:semantic_registry` key so registrations survive a restart
+    /// ([`Self::load_semantic_registry`] / [`Self::persist_semantic_registry`]).
+    /// Guarded by a `Mutex` so the `&Drevo` shared by the executor / Bolt
+    /// sessions can register and introspect targets through interior mutability.
     semantic: Mutex<SemanticIndexRegistry>,
 }
 
@@ -496,13 +501,16 @@ impl Drevo {
         let backend = RedbBackend::open(path)?;
         let backend = Box::new(backend);
         let (next_node_id, next_edge_id, drift_repaired) = Self::load_counters(&*backend)?;
+        // Restore any persisted semantic-index registry (#251) so registered
+        // auto-embedding targets survive a restart.
+        let semantic = Self::load_semantic_registry(&*backend);
         Ok(Self {
             backend,
             next_node_id: AtomicU64::new(next_node_id),
             next_edge_id: AtomicU64::new(next_edge_id),
             counter_drift_repaired: AtomicBool::new(drift_repaired),
             tx_state: Mutex::new(TxState::Idle),
-            semantic: Mutex::new(SemanticIndexRegistry::new()),
+            semantic: Mutex::new(semantic),
         })
     }
 
@@ -642,9 +650,43 @@ impl Drevo {
         model: Option<String>,
     ) -> std::result::Result<SemanticIndex, IndexError> {
         let mut registry = self.semantic.lock().unwrap_or_else(|e| e.into_inner());
-        registry
+        let target = registry
             .enable(label, text_property, embedding_property, mode, model)
-            .cloned()
+            .cloned()?;
+        // Persist so the registration survives a restart (#251). Best-effort:
+        // the in-memory registry is authoritative for the running server, and a
+        // storage hiccup must not fail a control-plane call — the next
+        // successful mutation re-persists. Ephemeral in-memory backends simply
+        // drop the blob on close, which is the correct behaviour there.
+        self.persist_semantic_registry(&registry);
+        Ok(target)
+    }
+
+    /// Serialize the semantic-index registry to the `meta:semantic_registry`
+    /// key (#251). Best-effort — a failure is logged (when tracing is built in)
+    /// and swallowed rather than surfaced to the control-plane caller.
+    fn persist_semantic_registry(&self, registry: &SemanticIndexRegistry) {
+        let bytes = match serde_json::to_vec(registry) {
+            Ok(b) => b,
+            Err(_e) => {
+                #[cfg(feature = "http")]
+                tracing::warn!(error = %_e, "failed to serialize semantic registry (ignored)");
+                return;
+            }
+        };
+        if let Err(_e) = self.backend.put(META_SEMANTIC_REGISTRY, &bytes) {
+            #[cfg(feature = "http")]
+            tracing::warn!(error = %_e, "failed to persist semantic registry (ignored)");
+        }
+    }
+
+    /// Load a persisted semantic-index registry from the backend, or an empty
+    /// one when absent or unreadable (#251). Used by [`Self::open`].
+    fn load_semantic_registry(backend: &dyn StorageBackend) -> SemanticIndexRegistry {
+        match backend.get(META_SEMANTIC_REGISTRY) {
+            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            _ => SemanticIndexRegistry::new(),
+        }
     }
 
     /// Snapshot every registered semantic-index target (#251 Phase 21).
@@ -4458,6 +4500,35 @@ mod tests {
         assert!(report.bytes_after.is_some());
         // Data is intact after the reclaim.
         assert_eq!(db.bloat_report().unwrap().node_count, 20);
+    }
+
+    // --- Semantic-index registry persistence (#251) ---
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn semantic_registry_survives_reopen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sem.redb");
+        {
+            let db = Drevo::open(&path).unwrap();
+            db.semantic_register("Entity", "summary", "embedding", IndexMode::Auto, None)
+                .unwrap();
+            db.close().unwrap();
+        }
+        // A fresh open must restore the registered target from redb.
+        let db = Drevo::open(&path).unwrap();
+        let status = db.semantic_status();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].label, "Entity");
+        assert_eq!(status[0].text_property, "summary");
+        assert_eq!(status[0].embedding_property, "embedding");
+        assert_eq!(status[0].mode, IndexMode::Auto);
+    }
+
+    #[test]
+    fn semantic_registry_empty_by_default() {
+        let db = Drevo::open_in_memory().unwrap();
+        assert!(db.semantic_status().is_empty());
     }
 
     // --- Adjacency value codec (#243 slice 1) ---
