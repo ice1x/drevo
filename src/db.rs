@@ -51,6 +51,7 @@ use crate::model::{
     ScoredNode, SubGraph,
 };
 use crate::property_index;
+use crate::semantic_index::{IndexError, IndexMode, SemanticIndex, SemanticIndexRegistry};
 #[cfg(feature = "redb-backend")]
 use crate::storage::RedbBackend;
 use crate::storage::{MemoryBackend, StorageBackend};
@@ -141,6 +142,13 @@ pub struct Drevo {
     /// The MVP allows only one in-flight transaction per `Drevo` handle;
     /// proper multi-writer isolation lands with MVCC (`00081`).
     tx_state: Mutex<TxState>,
+    /// Phase 21 semantic-index control plane (#251) — the registry of
+    /// auto-embedding targets, reachable over Cypher via the
+    /// `drevo.semantic.*` procedures. In-memory for now (registration is
+    /// per-server-lifetime); redb persistence is a follow-up slice. Guarded by
+    /// a `Mutex` so the `&Drevo` shared by the executor / Bolt sessions can
+    /// register and introspect targets through interior mutability.
+    semantic: Mutex<SemanticIndexRegistry>,
 }
 
 /// Per-`Drevo` explicit-transaction state — see the `tx_state` field on
@@ -494,6 +502,7 @@ impl Drevo {
             next_edge_id: AtomicU64::new(next_edge_id),
             counter_drift_repaired: AtomicBool::new(drift_repaired),
             tx_state: Mutex::new(TxState::Idle),
+            semantic: Mutex::new(SemanticIndexRegistry::new()),
         })
     }
 
@@ -610,6 +619,47 @@ impl Drevo {
         Ok(migrated)
     }
 
+    /// Register (or re-enable) a semantic-index target and return its current
+    /// [`SemanticIndex`] record (#251 Phase 21 control plane).
+    ///
+    /// Backs the `drevo.semantic.register` Cypher procedure: it enables
+    /// auto-embedding bookkeeping for `(label, embedding_property)` sourced from
+    /// `text_property`. This slice records the intent in the in-memory registry;
+    /// the actual server-side embedding is wired by a follow-up slice, so a
+    /// registered target's `state` reflects the control plane, not embedding
+    /// readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError`] (e.g. `AlreadyEnabled`) from the underlying
+    /// registry transition.
+    pub fn semantic_register(
+        &self,
+        label: &str,
+        text_property: &str,
+        embedding_property: &str,
+        mode: IndexMode,
+        model: Option<String>,
+    ) -> std::result::Result<SemanticIndex, IndexError> {
+        let mut registry = self.semantic.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .enable(label, text_property, embedding_property, mode, model)
+            .cloned()
+    }
+
+    /// Snapshot every registered semantic-index target (#251 Phase 21).
+    ///
+    /// Backs the `drevo.semantic.status` Cypher procedure — lets a client
+    /// introspect the control plane (which targets exist and their state) and
+    /// branch on the capability's presence.
+    pub fn semantic_status(&self) -> Vec<SemanticIndex> {
+        self.semantic
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+            .to_vec()
+    }
+
     /// Physical on-disk size of the backend file in bytes, or `None` for the
     /// ephemeral in-memory backend (#253 slice 1).
     ///
@@ -718,6 +768,7 @@ impl Drevo {
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
             tx_state: Mutex::new(TxState::Idle),
+            semantic: Mutex::new(SemanticIndexRegistry::new()),
         })
     }
 
@@ -4493,6 +4544,7 @@ mod tests {
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
             tx_state: Mutex::new(TxState::Idle),
+            semantic: Mutex::new(SemanticIndexRegistry::new()),
         };
 
         let mk = |title: &str| {

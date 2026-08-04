@@ -164,6 +164,7 @@ use crate::error::DrevoError;
 use crate::model::{
     new_uuid_v7, Direction as ModelDirection, Edge, NewEdge, NewNode, Node, Properties,
 };
+use crate::semantic_index::{IndexMode, SemanticIndex};
 use crate::vector::cosine_similarity;
 
 // ===== Public types =========================================================
@@ -920,7 +921,9 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     name: name.clone(),
                     message: "no such procedure — built-in procedures are \
                           db.labels, db.relationshipTypes, db.propertyKeys, \
-                          drevo.vector.query, fts.search, fts.searchRelationships"
+                          drevo.vector.query, drevo.semantic.register, \
+                          drevo.semantic.status, fts.search, \
+                          fts.searchRelationships"
                         .into(),
                     span: c.span,
                 })?;
@@ -3737,6 +3740,63 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// `CALL drevo.semantic.register(label, text_property, embedding_property,
+    /// mode) YIELD label, text_property, embedding_property, state, mode`
+    /// (#251 Phase 21 control plane).
+    ///
+    /// Registers (or re-enables) a server-side auto-embedding target: for nodes
+    /// of `label`, the text in `text_property` should be embedded into
+    /// `embedding_property`. `mode` is `'auto'` or `'manual'`. Returns the
+    /// target's current control-plane record. The actual embedding is produced
+    /// by a follow-up slice; this call records the intent and lets a client see
+    /// the target via [`Self::proc_semantic_status`].
+    fn proc_semantic_register(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (4) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let label = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let text_property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let embedding_property = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+        let mode_str = self.eval(&args[3], &empty)?.as_string(span)?.to_string();
+        let mode = IndexMode::parse(&mode_str).map_err(|e| ExecError::InvalidProcedureCall {
+            name: "drevo.semantic.register".to_string(),
+            message: e.to_string(),
+            span,
+        })?;
+        let target = self
+            .drevo
+            .semantic_register(&label, &text_property, &embedding_property, mode, None)
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.register".to_string(),
+                message: e.to_string(),
+                span,
+            })?;
+        Ok(vec![semantic_index_row(&target)])
+    }
+
+    /// `CALL drevo.semantic.status() YIELD label, text_property,
+    /// embedding_property, state, mode` (#251 Phase 21 control plane).
+    ///
+    /// One row per registered semantic-index target, so a client can introspect
+    /// the control plane — detect that server-side auto-embedding is available
+    /// and branch (fall back to an external embedder when the procedure is
+    /// absent).
+    fn proc_semantic_status(
+        &self,
+        _args: &[Expression],
+        _span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        Ok(self
+            .drevo
+            .semantic_status()
+            .iter()
+            .map(semantic_index_row)
+            .collect())
+    }
+
     /// `CALL fts.search(query, k) YIELD node, score` (issue #208) — the top-`k`
     /// nodes matching `query` in the BM25 full-text index (task `00131`),
     /// ranked by relevance.
@@ -3810,6 +3870,8 @@ impl<'a> Executor<'a> {
     ) -> ExecResultT<Vec<Vec<Value>>> {
         match name {
             "drevo.vector.query" => self.proc_vector_query(args, span),
+            "drevo.semantic.register" => self.proc_semantic_register(args, span),
+            "drevo.semantic.status" => self.proc_semantic_status(args, span),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
             "db.labels" => {
@@ -5352,6 +5414,15 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "db.propertyKeys" => Some(&["propertyKey"]),
         // Vector search (issue #202): top-k nodes by cosine similarity.
         "drevo.vector.query" => Some(&["node", "score"]),
+        // Semantic-index control plane (#251 Phase 21): register / introspect
+        // auto-embedding targets. Same column layout for both.
+        "drevo.semantic.register" | "drevo.semantic.status" => Some(&[
+            "label",
+            "text_property",
+            "embedding_property",
+            "state",
+            "mode",
+        ]),
         // Full-text search (issue #208): BM25-ranked matching nodes.
         "fts.search" => Some(&["node", "score"]),
         // Relationship full-text search (issue #227-B): BM25-ranked edges.
@@ -5367,11 +5438,28 @@ fn procedure_arity(name: &str) -> usize {
     match name {
         // db.vector.query(label, property, query, k)
         "drevo.vector.query" => 4,
+        // drevo.semantic.register(label, text_property, embedding_property, mode)
+        "drevo.semantic.register" => 4,
+        // drevo.semantic.status() — no arguments.
+        "drevo.semantic.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
         "fts.search" | "fts.searchRelationships" => 2,
         // The db.* introspection procedures take no arguments.
         _ => 0,
     }
+}
+
+/// Render one [`SemanticIndex`] target as a `drevo.semantic.*` output row,
+/// matching the `["label","text_property","embedding_property","state","mode"]`
+/// column layout in [`procedure_columns`].
+fn semantic_index_row(target: &SemanticIndex) -> Vec<Value> {
+    vec![
+        Value::String(target.label.clone()),
+        Value::String(target.text_property.clone()),
+        Value::String(target.embedding_property.clone()),
+        Value::String(target.state.as_str().to_string()),
+        Value::String(target.mode.as_str().to_string()),
+    ]
 }
 
 fn node_labels_from_storage(node: &Node) -> Vec<String> {

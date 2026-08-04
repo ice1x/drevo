@@ -791,6 +791,34 @@ CALL fts.search('anxious thoughts about work', 25) YIELD node, score
 RETURN node, score ORDER BY score DESC
 ```
 
+### Semantic-index control plane (#251, Phase 21)
+
+`CALL drevo.semantic.register(label, text_property, embedding_property, mode)`
+registers a **server-side auto-embedding** target: nodes of `label` have the
+text in `text_property` embedded into `embedding_property`. `mode` is `'auto'`
+or `'manual'`. It yields the target's control-plane record — `label`,
+`text_property`, `embedding_property`, `state`, `mode`:
+
+```cypher
+CALL drevo.semantic.register('Entity', 'summary', 'embedding', 'auto')
+YIELD label, state RETURN label, state
+```
+
+`CALL drevo.semantic.status()` yields one row per registered target (same
+columns), so a client can introspect the capability — detect that server-side
+auto-embedding is available and branch, falling back to an external embedder
+when the procedure is absent:
+
+```cypher
+CALL drevo.semantic.status() YIELD label, embedding_property, state
+RETURN label, embedding_property, state
+```
+
+This slice exposes the **control plane** (registration + introspection); the
+server-side embedding step and query-text embedding land in follow-up slices,
+so a registered target's `state` reflects the control plane, not embedding
+readiness.
+
 ---
 
 ## Literals
