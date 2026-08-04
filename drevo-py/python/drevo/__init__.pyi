@@ -176,6 +176,18 @@ class CompactReport:
     def as_dict(self) -> dict[str, Any]: ...
     def __repr__(self) -> str: ...
 
+class BloatReport:
+    """Result of `Drevo.bloat_report` — physical vs. logical storage size."""
+
+    file_bytes: Optional[int]
+    logical_bytes: int
+    node_count: int
+    edge_count: int
+    bloat_ratio: Optional[float]
+
+    def as_dict(self) -> dict[str, Any]: ...
+    def __repr__(self) -> str: ...
+
 class ImportReport:
     """Result of `Drevo.import_graphml` — rows inserted vs. skipped."""
 
@@ -266,6 +278,7 @@ class Drevo:
     @staticmethod
     def migrate(path: _PathLike, direction: str) -> int: ...
     def compact(self) -> CompactReport: ...
+    def bloat_report(self) -> BloatReport: ...
     def health_check(self) -> None: ...
     def export_graphml(self) -> str: ...
     def export_graphml_to_path(self, path: _PathLike) -> None: ...
@@ -334,6 +347,7 @@ class Drevo:
 
 __all__: Final[list[str]] = [
     "Drevo",
+    "BloatReport",
     "CompactReport",
     "Direction",
     "Edge",

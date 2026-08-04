@@ -657,6 +657,12 @@ pub struct DrevoMetrics {
     /// `drevo_process_uptime_seconds` (gauge, refreshed by the `/metrics`
     /// handler from the server's start instant).
     pub uptime_seconds: Gauge,
+    /// `drevo_storage_file_bytes` (gauge, #253 slice 1) — physical on-disk size
+    /// of the backend file, refreshed by the `/metrics` handler from an O(1)
+    /// file stat. Stays `0` for the ephemeral in-memory backend. Pair it with
+    /// the logical size from the on-demand `GET /storage/bloat` report to alert
+    /// on reclaimable copy-on-write bloat.
+    pub storage_file_bytes: Gauge,
 }
 
 impl DrevoMetrics {
@@ -724,6 +730,12 @@ impl DrevoMetrics {
             "Seconds since the server started serving traffic.",
             &[],
         );
+        let storage_file_bytes = registry.gauge(
+            "drevo_storage_file_bytes",
+            "Physical on-disk size of the backend file in bytes (0 for the \
+             ephemeral in-memory backend).",
+            &[],
+        );
         // Publish the build version as a `1`-valued info gauge — the idiomatic
         // Prometheus way to expose a constant string dimension.
         registry
@@ -742,6 +754,7 @@ impl DrevoMetrics {
             queries_error,
             query_duration,
             uptime_seconds,
+            storage_file_bytes,
         }
     }
 
@@ -1105,6 +1118,15 @@ mod tests {
         m.uptime_seconds.set(42);
         let out = m.render_prometheus();
         assert!(out.contains("drevo_process_uptime_seconds 42"), "{out}");
+    }
+
+    #[test]
+    fn storage_file_bytes_gauge_settable() {
+        // #253 slice 1 — the /metrics handler refreshes this from an O(1) stat.
+        let m = DrevoMetrics::new();
+        m.storage_file_bytes.set(412_000_000);
+        let out = m.render_prometheus();
+        assert!(out.contains("drevo_storage_file_bytes 412000000"), "{out}");
     }
 
     #[test]

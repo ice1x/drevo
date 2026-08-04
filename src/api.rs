@@ -1305,6 +1305,19 @@ async fn export_json(Db(db): Db) -> Result<Response, ApiError> {
     Ok((StatusCode::OK, [("content-type", "application/json")], dump).into_response())
 }
 
+/// Handler for `GET /storage/bloat` (#253 slice 1). Returns a
+/// [`BloatReport`](crate::db::BloatReport) — physical file size, logical data
+/// size, and the bloat ratio — so operators and automation can see how much of
+/// the redb file is reclaimable copy-on-write high-water-mark bloat.
+///
+/// This performs an on-demand scan of the `node:` + `edge:` records (cost
+/// proportional to the logical data), so it is a maintenance / alerting call,
+/// not a per-request one. The cheap physical size alone is also exported
+/// continuously as the `drevo_storage_file_bytes` gauge on `GET /metrics`.
+async fn storage_bloat(Db(db): Db) -> Result<Json<crate::db::BloatReport>, ApiError> {
+    Ok(Json(db.bloat_report()?))
+}
+
 /// Handler for `POST /import/json`. Accepts an [`ImportJsonRequest`] body and
 /// returns an [`ImportReport`] summarising newly-inserted vs. skipped rows.
 /// Malformed payloads / unknown formats return 500 via [`DrevoError::Io`];
@@ -1468,6 +1481,12 @@ async fn metrics(State(state): State<ApiState>) -> Response {
         .metrics
         .uptime_seconds
         .set(state.started_at.elapsed().as_secs() as i64);
+    // Refresh the physical file-size gauge from an O(1) stat (#253 slice 1).
+    // A probe failure leaves the previous value in place rather than faking a
+    // zero — a transient stat error must not read as "file shrank to 0".
+    if let Ok(Some(bytes)) = state.db.file_bytes() {
+        state.metrics.storage_file_bytes.set(bytes as i64);
+    }
     let body = state.metrics.render_prometheus();
     (
         StatusCode::OK,
@@ -1567,6 +1586,8 @@ pub fn build_router(state: ApiState) -> Router {
         // ── Phase 17 task `00133` — keyword faceting endpoint ───────
         .route("/facets", with_405(get(facets)))
         .route("/export/json", with_405(get(export_json)))
+        // ── #253 slice 1 — storage-bloat observability ──────────────
+        .route("/storage/bloat", with_405(get(storage_bloat)))
         .route("/import/json", with_405(axum::routing::post(import_json)))
         .route("/export/graphml", with_405(get(export_graphml)))
         .route(

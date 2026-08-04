@@ -679,6 +679,81 @@ impl ImportReport {
     }
 }
 
+// ── BloatReport ────────────────────────────────────────────────────────
+
+/// Result of [`crate::handle::Drevo::bloat_report`] (#253 slice 1) — physical
+/// file size vs. logical data size and their ratio, so callers can detect
+/// reclaimable copy-on-write high-water-mark bloat.
+#[pyclass(frozen, name = "BloatReport")]
+#[derive(Clone)]
+pub struct BloatReport {
+    inner: drevo::db::BloatReport,
+}
+
+impl BloatReport {
+    pub(crate) fn new(inner: drevo::db::BloatReport) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl BloatReport {
+    /// Physical on-disk size in bytes (None for the ephemeral in-memory
+    /// backend).
+    #[getter]
+    fn file_bytes(&self) -> Option<u64> {
+        self.inner.file_bytes
+    }
+
+    /// Summed size of the node + edge record rows — the irreducible logical
+    /// graph data.
+    #[getter]
+    fn logical_bytes(&self) -> u64 {
+        self.inner.logical_bytes
+    }
+
+    /// Number of node records.
+    #[getter]
+    fn node_count(&self) -> u64 {
+        self.inner.node_count
+    }
+
+    /// Number of edge records.
+    #[getter]
+    fn edge_count(&self) -> u64 {
+        self.inner.edge_count
+    }
+
+    /// `file_bytes / logical_bytes` — physical bytes per logical byte. None
+    /// when unmeasurable (in-memory backend) or there is no data yet. A value
+    /// well above 1 signals reclaimable bloat.
+    #[getter]
+    fn bloat_ratio(&self) -> Option<f64> {
+        self.inner.bloat_ratio
+    }
+
+    fn as_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        d.set_item("file_bytes", self.inner.file_bytes)?;
+        d.set_item("logical_bytes", self.inner.logical_bytes)?;
+        d.set_item("node_count", self.inner.node_count)?;
+        d.set_item("edge_count", self.inner.edge_count)?;
+        d.set_item("bloat_ratio", self.inner.bloat_ratio)?;
+        Ok(d)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BloatReport(file_bytes={:?}, logical_bytes={}, node_count={}, edge_count={}, bloat_ratio={:?})",
+            self.inner.file_bytes,
+            self.inner.logical_bytes,
+            self.inner.node_count,
+            self.inner.edge_count,
+            self.inner.bloat_ratio
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -305,6 +305,44 @@ pub struct CompactReport {
     pub next_edge_id: u64,
 }
 
+/// Storage-bloat snapshot (#253 slice 1) — the physical file footprint versus
+/// the irreducible logical data it holds, so operators and automation can see
+/// how much of a redb file is reclaimable copy-on-write high-water-mark bloat.
+///
+/// redb never returns freed pages to the OS on its own (see #240 / #241 /
+/// #243): under churn the file grows to its high-water mark and only
+/// [`Drevo::compact`] (or the `drevo shrink` CLI) reclaims it. A live
+/// agent-memory tree was measured at 412 MB physical for ~18 MB of data — a
+/// bloat ratio near 23×. This report surfaces that ratio; the follow-up slices
+/// act on it (opt-in auto-compaction + a steady-state churn test).
+///
+/// `file_bytes` and `bloat_ratio` are `Option` because the ephemeral in-memory
+/// backend has no on-disk footprint — they stay `None` rather than reporting a
+/// fake zero. `logical_bytes` is the summed size of the `node:` + `edge:`
+/// record rows (key + value) — the irreducible graph data, comparable to a
+/// GraphML dump; secondary indexes / adjacency / FTS / vectors are legitimate
+/// overhead on top and are **not** counted, so a freshly compacted file still
+/// reads a ratio somewhat above 1. A large ratio is the reclaimable-bloat
+/// signal.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BloatReport {
+    /// Physical on-disk size of the backend file, or `None` for the ephemeral
+    /// in-memory backend.
+    pub file_bytes: Option<u64>,
+    /// Summed size (key + value bytes) of the `node:` + `edge:` record rows —
+    /// the irreducible logical graph data.
+    pub logical_bytes: u64,
+    /// Number of node records scanned.
+    pub node_count: u64,
+    /// Number of edge records scanned.
+    pub edge_count: u64,
+    /// `file_bytes / logical_bytes` — how many physical bytes back each logical
+    /// byte. `None` when the footprint is unmeasurable (in-memory backend) or
+    /// there is no logical data yet (`logical_bytes == 0`). A value well above
+    /// 1 signals reclaimable high-water-mark bloat.
+    pub bloat_ratio: Option<f64>,
+}
+
 /// Direction of the #243 slice 2 adjacency-format migration, as passed to
 /// [`Drevo::migrate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,6 +513,72 @@ impl Drevo {
         // re-indexed, so a crash before this point re-triggers the gate.
         self.backend.set_format_version(to_major, 0)?;
         Ok(migrated)
+    }
+
+    /// Physical on-disk size of the backend file in bytes, or `None` for the
+    /// ephemeral in-memory backend (#253 slice 1).
+    ///
+    /// An O(1) file stat — cheap enough to sample on every metrics scrape,
+    /// unlike the full [`Self::bloat_report`] scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] if the backend size probe fails.
+    pub fn file_bytes(&self) -> Result<Option<u64>> {
+        Ok(self.backend.size_bytes()?)
+    }
+
+    /// Measure storage bloat (#253 slice 1): the physical file footprint
+    /// versus the irreducible logical graph data, plus their ratio.
+    ///
+    /// Reads `file_bytes` from the backend's `size_bytes` (an O(1) file stat;
+    /// `None` for the ephemeral in-memory backend) and `logical_bytes` by
+    /// scanning the `node:` + `edge:` record rows and summing their key + value
+    /// lengths. `bloat_ratio = file_bytes / logical_bytes` surfaces how much of
+    /// the file is reclaimable copy-on-write high-water-mark bloat that only
+    /// [`Self::compact`] (or `drevo shrink`) returns to the OS.
+    ///
+    /// Cost: one scan of the `node:` and `edge:` prefixes — proportional to the
+    /// logical data size, not the physical file. This is an **on-demand**
+    /// operator/automation call (an alert source, a pre-compaction check), not
+    /// a hot path; do not call it per request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] if the backend scan or size probe fails.
+    pub fn bloat_report(&self) -> Result<BloatReport> {
+        let file_bytes = self.backend.size_bytes()?;
+
+        let mut logical_bytes: u64 = 0;
+        let mut node_count: u64 = 0;
+        for (key, value) in self.backend.scan_prefix(PREFIX_NODE)? {
+            if key.len() != PREFIX_NODE.len() + 8 {
+                continue; // skip anything that isn't a bare node record row
+            }
+            logical_bytes += (key.len() + value.len()) as u64;
+            node_count += 1;
+        }
+        let mut edge_count: u64 = 0;
+        for (key, value) in self.backend.scan_prefix(PREFIX_EDGE)? {
+            if key.len() != PREFIX_EDGE.len() + 8 {
+                continue;
+            }
+            logical_bytes += (key.len() + value.len()) as u64;
+            edge_count += 1;
+        }
+
+        let bloat_ratio = match file_bytes {
+            Some(fb) if logical_bytes > 0 => Some(fb as f64 / logical_bytes as f64),
+            _ => None,
+        };
+
+        Ok(BloatReport {
+            file_bytes,
+            logical_bytes,
+            node_count,
+            edge_count,
+            bloat_ratio,
+        })
     }
 
     /// Open a disk-backed database and run [`Self::check_integrity`] in
@@ -3950,6 +4054,93 @@ mod tests {
         // bumped together (#243 slice 2), so a v2 adjacency file is exactly the
         // set of files an old build refuses via the on-disk major check.
         assert_eq!(ADJ_FORMAT_MAJOR, crate::storage::redb::FORMAT_MAJOR);
+    }
+
+    // --- Bloat report (#253 slice 1) ---
+
+    #[test]
+    fn bloat_report_in_memory_has_no_file_bytes_but_counts_logical() {
+        use crate::model::{NewEdge, NewNode, Properties};
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db
+            .create_node(NewNode {
+                kind: "n".into(),
+                title: "a".into(),
+                body: "hello".into(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap()
+            .id;
+        let b = db
+            .create_node(NewNode {
+                kind: "n".into(),
+                title: "b".into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap()
+            .id;
+        db.create_edge(NewEdge {
+            from_id: a,
+            to_id: b,
+            kind: "knows".into(),
+            weight: 1.0,
+            properties: Properties::default(),
+        })
+        .unwrap();
+
+        let report = db.bloat_report().unwrap();
+        // Ephemeral backend → no physical footprint, so no ratio.
+        assert_eq!(report.file_bytes, None);
+        assert_eq!(report.bloat_ratio, None);
+        assert_eq!(report.node_count, 2);
+        assert_eq!(report.edge_count, 1);
+        assert!(
+            report.logical_bytes > 0,
+            "logical bytes should sum the node/edge records"
+        );
+    }
+
+    #[test]
+    fn bloat_report_empty_db_has_zero_logical_and_no_ratio() {
+        let db = Drevo::open_in_memory().unwrap();
+        let report = db.bloat_report().unwrap();
+        assert_eq!(report.node_count, 0);
+        assert_eq!(report.edge_count, 0);
+        assert_eq!(report.logical_bytes, 0);
+        assert_eq!(report.bloat_ratio, None);
+    }
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn bloat_report_on_disk_measures_file_and_ratio() {
+        use crate::model::{NewNode, Properties};
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("bloat.redb");
+        let db = Drevo::open(&path).unwrap();
+        for i in 0..10 {
+            db.create_node(NewNode {
+                kind: "n".into(),
+                title: format!("t{i}"),
+                body: "x".repeat(64),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        }
+        db.close().unwrap();
+
+        let db = Drevo::open(&path).unwrap();
+        let report = db.bloat_report().unwrap();
+        assert!(report.file_bytes.is_some(), "disk backend measures itself");
+        assert_eq!(report.node_count, 10);
+        assert!(report.logical_bytes > 0);
+        // A real redb file is always at least as large as its logical data, so
+        // the ratio is defined and ≥ 1 (typically well above, being COW).
+        let ratio = report.bloat_ratio.expect("ratio defined on disk");
+        assert!(ratio >= 1.0, "physical must be ≥ logical, got {ratio}");
     }
 
     // --- Adjacency value codec (#243 slice 1) ---

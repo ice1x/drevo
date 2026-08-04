@@ -17,6 +17,7 @@ def test_parser_accepts_each_subcommand() -> None:
         ["dump", "db.redb", "out.graphml"],
         ["restore", "in.graphml", "db.redb"],
         ["compact", "db.redb"],
+        ["bloat", "db.redb"],
         ["shrink", "src.redb", "dst.redb"],
         ["migrate", "up", "db.redb"],
         ["migrate", "down", "db.redb"],
@@ -44,6 +45,23 @@ def test_migrate_parser_rejects_bad_direction() -> None:
 def test_main_migrate_returns_nonzero_on_missing_db(tmp_path) -> None:  # type: ignore[no-untyped-def]
     rc = main(["migrate", "up", str(tmp_path / "does-not-exist.redb")])
     assert rc == 1
+
+
+def test_main_bloat_returns_nonzero_on_missing_db(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    rc = main(["bloat", str(tmp_path / "does-not-exist.redb")])
+    assert rc == 1
+
+
+def test_main_bloat_reports_on_real_db(tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+    import drevo
+
+    db_path = tmp_path / "graph.redb"
+    with drevo.Drevo.open(str(db_path)) as db:
+        db.create_node(drevo.NewNode(kind="n", title="only"))
+    rc = main(["bloat", str(db_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "1 nodes" in out and "bloat=" in out
 
 
 def test_parser_requires_a_subcommand() -> None:

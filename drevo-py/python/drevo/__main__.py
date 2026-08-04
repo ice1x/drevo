@@ -9,6 +9,7 @@ overwrite their source):
 * ``restore <in.graphml> <db>`` — import a GraphML dump into ``db`` (created if
   absent); prints an import report.
 * ``compact <db>``              — reclaim redb free pages in place.
+* ``bloat <db>``                — report physical vs. logical size + bloat ratio.
 * ``shrink <db> <out_db>``      — dump ``db`` and re-import into a fresh
   ``out_db`` (the robust way to shed copy-on-write high-water-mark bloat).
 * ``migrate {up,down} <db>``    — convert the adjacency index between the
@@ -128,6 +129,29 @@ def _cmd_shrink(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_bloat(args: argparse.Namespace) -> int:
+    db_path: str = args.db
+    if not os.path.exists(db_path):
+        print(f"error: database not found: {db_path}", file=sys.stderr)
+        return 1
+    with Drevo.open(db_path) as db:
+        report = db.bloat_report()
+    ratio = f"{report.bloat_ratio:.1f}x" if report.bloat_ratio is not None else "?"
+    print(
+        f"{db_path}: file={_human_bytes(report.file_bytes)}, "
+        f"logical={_human_bytes(report.logical_bytes)} "
+        f"({report.node_count} nodes, {report.edge_count} edges), "
+        f"bloat={ratio}"
+    )
+    if report.bloat_ratio is not None and report.bloat_ratio >= 3.0:
+        print(
+            "  hint: high bloat — run `drevo compact` (in place) or "
+            "`drevo shrink <db> <out_db>` to reclaim space.",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def _cmd_migrate(args: argparse.Namespace) -> int:
     direction: str = args.direction
     db_path: str = args.db
@@ -179,6 +203,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_compact = sub.add_parser("compact", help="reclaim free pages in place")
     p_compact.add_argument("db", help="path to the drevo database to compact")
     p_compact.set_defaults(func=_cmd_compact)
+
+    p_bloat = sub.add_parser(
+        "bloat", help="report physical vs. logical size and the bloat ratio"
+    )
+    p_bloat.add_argument("db", help="path to the drevo database to inspect")
+    p_bloat.set_defaults(func=_cmd_bloat)
 
     p_shrink = sub.add_parser("shrink", help="dump + re-import into a fresh database to shed bloat")
     p_shrink.add_argument("db", help="source database path (never modified)")
