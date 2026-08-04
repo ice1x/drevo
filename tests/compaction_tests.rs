@@ -34,7 +34,7 @@
 
 use std::path::Path;
 
-use drevo::db::{CompactReport, Drevo};
+use drevo::db::{AutoCompactPolicy, CompactReport, Drevo};
 use drevo::model::{Direction, NewEdge, NewNode, NodePatch, Properties};
 use drevo::storage::{MemoryBackend, RedbBackend, StorageBackend, StorageError};
 use tempfile::TempDir;
@@ -689,5 +689,133 @@ fn storage_backend_trait_has_size_bytes() {
     assert!(
         trait_src.contains("fn compact"),
         "StorageBackend trait must expose compact() for backend-internal page reclaim"
+    );
+}
+
+// ---------------------------------------------------------------
+// #253 slice 3 — steady-state churn: auto-compaction bounds the file
+// ---------------------------------------------------------------
+//
+// `#[ignore]` (heavy redb churn): runs in slow-tests.yml via
+// `--run-ignored all -E 'binary(compaction_tests)'`, off the serialised PR
+// path. This is the acceptance test for #253: under sustained grow-then-shrink
+// churn a redb file climbs to its high-water mark and never shrinks on its own,
+// but with the opt-in auto-compaction policy (slice 2) reclaiming each round it
+// stabilizes instead of growing unbounded.
+
+/// One grow-then-shrink churn round on the live handle: insert `batch` nodes
+/// with sizeable bodies (rewriting half of them), then delete every one — net
+/// zero logical data, but the file grows to a fresh high-water mark with a
+/// freed region left behind.
+fn churn_round(db: &Drevo, batch: u64, body_len: usize, salt: u64) {
+    let body = "x".repeat(body_len);
+    // One batched insert (a single fsync'd transaction) grows the file to a
+    // fresh high-water mark; deleting the nodes frees that region back to the
+    // redb freelist without returning it to the OS. Big bodies + a small count
+    // push the high-water well above redb's pre-allocated floor with few
+    // transactions (this machine's fsync is ~100 ms), so the test stays cheap.
+    let new_nodes: Vec<NewNode> = (0..batch)
+        .map(|i| NewNode {
+            kind: "churn".into(),
+            title: format!("r{salt}-{i}"),
+            body: body.clone(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .collect();
+    let created = db.create_nodes(new_nodes).unwrap();
+    for node in created {
+        db.delete_node(node.id).unwrap();
+    }
+}
+
+/// Run `rounds` identical churn rounds against a fresh on-disk database,
+/// returning the file size (bytes) at the end of each round. When
+/// `auto` is `Some`, the policy is applied after every round (modelling the
+/// on-open auto-compaction of slice 2, deterministically and without touching
+/// the process environment).
+fn run_sustained_churn(rounds: u64, batch: u64, auto: Option<&AutoCompactPolicy>) -> Vec<u64> {
+    let (_dir, path) = open_temp();
+    let mut db = Drevo::open(&path).unwrap();
+
+    // A small persistent baseline (never deleted) keeps `logical_bytes > 0`, so
+    // the bloat ratio is defined and — once churn inflates the file — high. This
+    // mirrors the real workload (a durable tree that also churns); a pure
+    // delete-everything churn would drive logical to 0 and leave the ratio
+    // undefined, so the policy would never fire.
+    let base: Vec<NewNode> = (0..8)
+        .map(|i| new_node("base", &format!("base-{i}")))
+        .collect();
+    db.create_nodes(base).unwrap();
+
+    let mut sizes = Vec::with_capacity(rounds as usize);
+    for r in 0..rounds {
+        churn_round(&db, batch, 8192, r);
+        if let Some(policy) = auto {
+            db.maybe_auto_compact(policy).unwrap();
+        }
+        // Flush so the on-disk size reflects the round's writes before we stat.
+        db.health_check().unwrap();
+        sizes.push(file_size(&path));
+    }
+    db.close().unwrap();
+    sizes
+}
+
+#[test]
+#[ignore = "heavy sustained redb churn (#253 slice 3); runs in slow-tests.yml via --run-ignored all"]
+fn auto_compaction_bounds_file_under_sustained_churn() {
+    // Grow-then-shrink churn is net-zero on logical data. redb is a COW B-tree
+    // with a freelist, so the *un-compacted* file plateaus at its high-water
+    // mark (it retains the freed region) rather than growing without bound;
+    // with the auto-compaction policy reclaiming each round it instead falls
+    // back to ~the (near-empty) logical size. The robust, redb-independent
+    // signal is therefore: the policy'd file ends far smaller than the
+    // un-compacted baseline, and it stays flat round over round.
+    // Small counts with large bodies: enough churn to push the high-water well
+    // past redb's pre-allocated floor (measured ~2.1 MB retained vs ~0.6 MB
+    // compacted at this size), few enough transactions to stay a ~90 s test on
+    // a slow-fsync host.
+    let rounds = 4;
+    let batch = 64;
+
+    // Baseline: no policy → the file holds its high-water mark.
+    let off = run_sustained_churn(rounds, batch, None);
+
+    // With the opt-in policy reclaiming each round (min_bytes 0, a modest ratio
+    // floor so it fires once bloated).
+    let policy = AutoCompactPolicy {
+        enabled: true,
+        min_ratio: 1.25,
+        min_bytes: 0,
+    };
+    let on = run_sustained_churn(rounds, batch, Some(&policy));
+
+    // Surfaced on failure and via `--nocapture` for calibration.
+    eprintln!("sustained-churn file sizes (bytes): off={off:?} on={on:?}");
+
+    let off_last = *off.last().unwrap();
+    let on_last = *on.last().unwrap();
+    let on_min = *on.iter().min().unwrap();
+    let on_max = *on.iter().max().unwrap();
+
+    // 1. Core claim: after identical sustained churn the policy'd file is much
+    //    smaller than the un-compacted baseline — the retained high-water bloat
+    //    was reclaimed instead of held forever. Require at least a 1.5× gap so
+    //    this is a real reclaim, not noise.
+    assert!(
+        on_last.saturating_mul(3) <= off_last.saturating_mul(2),
+        "auto-compaction should keep the file far below the un-compacted \
+         baseline (on_last*1.5 ≤ off_last): on_last={on_last}, off_last={off_last}, \
+         on={on:?}, off={off:?}"
+    );
+
+    // 2. Steady state: with the policy the file does not climb round over round —
+    //    every round's size stays within a small band, i.e. it stabilizes
+    //    instead of growing unbounded.
+    assert!(
+        on_max <= on_min.saturating_mul(2),
+        "policy'd file should reach a steady state, not climb: \
+         on_min={on_min}, on_max={on_max}, on={on:?}"
     );
 }
