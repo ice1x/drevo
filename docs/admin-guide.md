@@ -39,6 +39,9 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PORT` | `8080` | TCP port (1–65535; `0` is rejected). |
 | `DREVO_DATA_DIR` | `/data` | Directory holding the single `drevo.redb` file. |
 | `RUST_LOG` | `info` | `tracing` env-filter (e.g. `drevo=debug,info`). |
+| `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
+| `DREVO_AUTO_COMPACT_RATIO` | `2.0` | Minimum bloat ratio to trigger auto-compaction. |
+| `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
 
 Invalid configuration exits with code `2`; a runtime failure exits with `1`.
 
@@ -232,7 +235,17 @@ python -m drevo shrink  /data/drevo.redb small.redb  # dump → fresh import (ro
 only (indexes / adjacency / FTS / vectors are legitimate overhead on top), so a freshly
 compacted file reads somewhat above 1 and a large ratio is the reclaimable-bloat signal. The
 `/storage/bloat` scan is proportional to the logical data — a maintenance call, not per-request.
-*(Policy-driven automatic compaction is the follow-up #253 slice 2.)*
+
+**Automatic compaction (opt-in, #253 slice 2).** Set `DREVO_AUTO_COMPACT=1` and drevo reclaims
+bloat **on open**: the moment a database handle is built it is the sole owner of the file, which
+is the one point that satisfies `compact()`'s exclusive-access requirement — so a churny,
+long-lived store stays bounded across restarts instead of climbing forever. It fires only when
+the file is at least `DREVO_AUTO_COMPACT_MIN_BYTES` (default 10 MiB) **and** the bloat ratio is at
+least `DREVO_AUTO_COMPACT_RATIO` (default 2.0). It is **off by default**, and best-effort: a
+compaction failure is logged and ignored so it never denies access to intact data. The reclaim
+runs a `/storage/bloat`-style scan on open, so keep the ratio threshold meaningful rather than
+near 1. For a long-running server that rarely restarts, also schedule the manual `compact` /
+`shrink` above as a maintenance job.
 
 Monitor disk growth against node/edge count and FTS index size; pre-size the PVC accordingly.
 

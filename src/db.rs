@@ -343,6 +343,78 @@ pub struct BloatReport {
     pub bloat_ratio: Option<f64>,
 }
 
+/// Opt-in policy for automatic compaction (#253 slice 2).
+///
+/// redb only reclaims high-water-mark bloat on an explicit `compact()`, which
+/// needs **exclusive** access to the file (see [`Drevo::compact`]). The single
+/// point where a [`Drevo`] handle is the sole owner of its backend is right
+/// after [`Drevo::open`] builds it — before it is shared behind an `Arc`. This
+/// policy lets that open path reclaim bloat automatically when a database has
+/// grown past a configured ratio, so a churny long-lived store (the
+/// agent-memory / KG workload) stays bounded across restarts instead of
+/// climbing forever.
+///
+/// **Disabled by default** — bloat reclamation stays a deliberate opt-in
+/// (`DREVO_AUTO_COMPACT=1`). See [`AutoCompactPolicy::from_env`] for the knobs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoCompactPolicy {
+    /// Whether automatic compaction is enabled at all. `false` by default.
+    pub enabled: bool,
+    /// Compact only when [`BloatReport::bloat_ratio`] is at least this. Guards
+    /// against churning a file that is barely bloated.
+    pub min_ratio: f64,
+    /// Compact only when the physical file is at least this many bytes. Small
+    /// files have a noisy ratio and little to reclaim, so they are skipped.
+    pub min_bytes: u64,
+}
+
+impl Default for AutoCompactPolicy {
+    fn default() -> Self {
+        // Off by default; a 2× ratio and a 10 MiB floor when enabled.
+        Self {
+            enabled: false,
+            min_ratio: 2.0,
+            min_bytes: 10 * 1024 * 1024,
+        }
+    }
+}
+
+impl AutoCompactPolicy {
+    /// Build a policy from environment-style configuration, using `get` to look
+    /// up each key (mirrors the testable `from_env` pattern used elsewhere —
+    /// pass `|k| std::env::var(k).ok()` in production).
+    ///
+    /// | Variable | Meaning | Default |
+    /// |---|---|---|
+    /// | `DREVO_AUTO_COMPACT` | enable (`1`/`true`/`yes`/`on`, case-insensitive) | off |
+    /// | `DREVO_AUTO_COMPACT_RATIO` | minimum bloat ratio to trigger | `2.0` |
+    /// | `DREVO_AUTO_COMPACT_MIN_BYTES` | minimum file size to consider | `10485760` (10 MiB) |
+    ///
+    /// Unparseable numeric values fall back to the default rather than failing —
+    /// a misconfigured knob must not stop the database from opening.
+    pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Self {
+        let default = Self::default();
+        let enabled = get("DREVO_AUTO_COMPACT")
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false);
+        let min_ratio = get("DREVO_AUTO_COMPACT_RATIO")
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .unwrap_or(default.min_ratio);
+        let min_bytes = get("DREVO_AUTO_COMPACT_MIN_BYTES")
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(default.min_bytes);
+        Self {
+            enabled,
+            min_ratio,
+            min_bytes,
+        }
+    }
+}
+
 /// Direction of the #243 slice 2 adjacency-format migration, as passed to
 /// [`Drevo::migrate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,7 +443,7 @@ impl Drevo {
     /// on `wasm32` targets. Use [`open_in_memory`](Self::open_in_memory) instead.
     #[cfg(feature = "redb-backend")]
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Self::open_ungated(path)?;
+        let mut db = Self::open_ungated(path)?;
         // #243 slice 2: refuse a database whose adjacency index predates the
         // kind-in-key layout, rather than silently misreading it. The graph
         // is never at risk — the fix is a reversible, index-only migration.
@@ -381,6 +453,29 @@ impl Drevo {
                 found_major,
                 required_major: ADJ_FORMAT_MAJOR,
             });
+        }
+        // #253 slice 2: opt-in automatic compaction. This is the one moment the
+        // handle solely owns its backend (refcount 1), satisfying compact()'s
+        // exclusive-access requirement. Best-effort: the graph data is intact
+        // whether or not the reclaim succeeds, so a maintenance failure must
+        // never deny access — it is logged (when tracing is built in) and
+        // swallowed rather than propagated.
+        let policy = AutoCompactPolicy::from_env(|k| std::env::var(k).ok());
+        if policy.enabled {
+            match db.maybe_auto_compact(&policy) {
+                Ok(Some(_report)) => {
+                    #[cfg(feature = "http")]
+                    tracing::info!(
+                        reclaimed = _report.bytes_reclaimed,
+                        "auto-compaction reclaimed storage on open"
+                    );
+                }
+                Ok(None) => {}
+                Err(_e) => {
+                    #[cfg(feature = "http")]
+                    tracing::warn!(error = %_e, "auto-compaction on open failed (ignored)");
+                }
+            }
         }
         Ok(db)
     }
@@ -691,6 +786,41 @@ impl Drevo {
             next_node_id: self.next_node_id.load(Ordering::Relaxed),
             next_edge_id: self.next_edge_id.load(Ordering::Relaxed),
         })
+    }
+
+    /// Compact **iff** the `policy` is enabled and this database is bloated
+    /// past its thresholds (#253 slice 2).
+    ///
+    /// Returns `Ok(Some(report))` when a compaction ran, or `Ok(None)` when the
+    /// policy is disabled, the backend has no on-disk footprint (in-memory), the
+    /// file is under `policy.min_bytes`, or the bloat ratio is under
+    /// `policy.min_ratio`. Any compaction error is propagated.
+    ///
+    /// This needs the same **exclusive** access as [`Self::compact`] (it calls
+    /// it), so it is only safe to invoke while this handle is the sole owner of
+    /// the backend — which is exactly the case inside [`Self::open`], before the
+    /// handle is shared behind an `Arc`. That is where the opt-in automatic
+    /// trigger lives; embedders can also call this directly at any quiescent
+    /// point they control.
+    pub fn maybe_auto_compact(
+        &mut self,
+        policy: &AutoCompactPolicy,
+    ) -> Result<Option<CompactReport>> {
+        if !policy.enabled {
+            return Ok(None);
+        }
+        let report = self.bloat_report()?;
+        // No physical footprint (in-memory) or nothing measurable → nothing to do.
+        let Some(file_bytes) = report.file_bytes else {
+            return Ok(None);
+        };
+        if file_bytes < policy.min_bytes {
+            return Ok(None);
+        }
+        match report.bloat_ratio {
+            Some(ratio) if ratio >= policy.min_ratio => Ok(Some(self.compact()?)),
+            _ => Ok(None),
+        }
     }
 
     /// Cheap readiness probe used by the HTTP `/ready` endpoint.
@@ -4141,6 +4271,142 @@ mod tests {
         // the ratio is defined and ≥ 1 (typically well above, being COW).
         let ratio = report.bloat_ratio.expect("ratio defined on disk");
         assert!(ratio >= 1.0, "physical must be ≥ logical, got {ratio}");
+    }
+
+    // --- Auto-compaction policy (#253 slice 2) ---
+
+    #[test]
+    fn auto_compact_policy_defaults_are_off_and_conservative() {
+        let p = AutoCompactPolicy::default();
+        assert!(!p.enabled);
+        assert_eq!(p.min_ratio, 2.0);
+        assert_eq!(p.min_bytes, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn auto_compact_policy_from_env_parses_all_knobs() {
+        let env = |k: &str| -> Option<String> {
+            match k {
+                "DREVO_AUTO_COMPACT" => Some("On".to_string()),
+                "DREVO_AUTO_COMPACT_RATIO" => Some("3.5".to_string()),
+                "DREVO_AUTO_COMPACT_MIN_BYTES" => Some("1048576".to_string()),
+                _ => None,
+            }
+        };
+        let p = AutoCompactPolicy::from_env(env);
+        assert!(p.enabled);
+        assert_eq!(p.min_ratio, 3.5);
+        assert_eq!(p.min_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn auto_compact_policy_from_env_disabled_and_bad_values_fall_back() {
+        // Absent → disabled with defaults.
+        let p = AutoCompactPolicy::from_env(|_| None);
+        assert!(!p.enabled);
+        assert_eq!(p.min_ratio, 2.0);
+        // Present-but-falsey stays disabled; unparseable numbers fall back.
+        let env = |k: &str| -> Option<String> {
+            match k {
+                "DREVO_AUTO_COMPACT" => Some("no".to_string()),
+                "DREVO_AUTO_COMPACT_RATIO" => Some("not-a-number".to_string()),
+                "DREVO_AUTO_COMPACT_MIN_BYTES" => Some("-5".to_string()),
+                _ => None,
+            }
+        };
+        let p = AutoCompactPolicy::from_env(env);
+        assert!(!p.enabled);
+        assert_eq!(p.min_ratio, 2.0);
+        assert_eq!(p.min_bytes, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn maybe_auto_compact_disabled_policy_is_noop() {
+        let mut db = Drevo::open_in_memory().unwrap();
+        let policy = AutoCompactPolicy {
+            enabled: false,
+            min_ratio: 1.0,
+            min_bytes: 0,
+        };
+        assert!(db.maybe_auto_compact(&policy).unwrap().is_none());
+    }
+
+    #[test]
+    fn maybe_auto_compact_in_memory_never_compacts() {
+        use crate::model::{NewNode, Properties};
+        let mut db = Drevo::open_in_memory().unwrap();
+        db.create_node(NewNode {
+            kind: "n".into(),
+            title: "a".into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        })
+        .unwrap();
+        // Enabled with the lowest possible thresholds, but the in-memory backend
+        // has no file_bytes → nothing to reclaim.
+        let policy = AutoCompactPolicy {
+            enabled: true,
+            min_ratio: 1.0,
+            min_bytes: 0,
+        };
+        assert!(db.maybe_auto_compact(&policy).unwrap().is_none());
+    }
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn maybe_auto_compact_respects_thresholds_and_runs_when_enabled() {
+        use crate::model::{NewNode, Properties};
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("ac.redb");
+        {
+            let db = Drevo::open(&path).unwrap();
+            for i in 0..20 {
+                db.create_node(NewNode {
+                    kind: "n".into(),
+                    title: format!("t{i}"),
+                    body: "x".repeat(128),
+                    body_html: String::new(),
+                    properties: Properties::default(),
+                })
+                .unwrap();
+            }
+            db.close().unwrap();
+        }
+
+        // Disabled → no-op even though the file exists.
+        let mut db = Drevo::open(&path).unwrap();
+        assert!(db
+            .maybe_auto_compact(&AutoCompactPolicy {
+                enabled: true,
+                min_ratio: 1.0,
+                min_bytes: u64::MAX, // file is below this floor → skip
+            })
+            .unwrap()
+            .is_none());
+        // Ratio floor above the real ratio → skip.
+        assert!(db
+            .maybe_auto_compact(&AutoCompactPolicy {
+                enabled: true,
+                min_ratio: 1e9,
+                min_bytes: 0,
+            })
+            .unwrap()
+            .is_none());
+        // Enabled, thresholds satisfied (any on-disk file has ratio ≥ 1) → a
+        // compaction runs and reports before/after byte counts.
+        let report = db
+            .maybe_auto_compact(&AutoCompactPolicy {
+                enabled: true,
+                min_ratio: 1.0,
+                min_bytes: 0,
+            })
+            .unwrap()
+            .expect("compaction should have run");
+        assert!(report.bytes_before.is_some());
+        assert!(report.bytes_after.is_some());
+        // Data is intact after the reclaim.
+        assert_eq!(db.bloat_report().unwrap().node_count, 20);
     }
 
     // --- Adjacency value codec (#243 slice 1) ---
