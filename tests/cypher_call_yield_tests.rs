@@ -505,3 +505,114 @@ fn call_fts_search_relationships_returns_scored_edges() {
     );
     assert!(matches!(rows[0][1], Value::Float(_)), "{:?}", rows[0][1]);
 }
+
+// ---- Semantic-index control plane (#251 Phase 21) --------------------------
+//
+// `CALL drevo.semantic.register(label, text_property, embedding_property, mode)`
+// and `CALL drevo.semantic.status()` expose the auto-embedding control plane
+// so a Bolt/Cypher client can register targets and introspect the capability
+// (falling back to an external embedder when the procedure is absent).
+
+/// Extract row `r`'s columns as owned strings (all semantic rows are strings).
+fn row_strings(row: &[Value]) -> Vec<String> {
+    row.iter()
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => panic!("expected String column, got {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn semantic_register_returns_the_enabled_target() {
+    let db = db();
+    let rows = run(
+        "CALL drevo.semantic.register('Entity', 'summary', 'embedding', 'auto')",
+        &db,
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        row_strings(&rows[0]),
+        vec!["Entity", "summary", "embedding", "enabled", "auto"]
+    );
+}
+
+#[test]
+fn semantic_status_lists_registered_targets() {
+    let db = db();
+    // Empty to start.
+    assert!(run("CALL drevo.semantic.status()", &db).is_empty());
+
+    exec(
+        "CALL drevo.semantic.register('Entity', 'summary', 'embedding', 'auto')",
+        &db,
+    );
+    exec(
+        "CALL drevo.semantic.register('Doc', 'body', 'vec', 'manual')",
+        &db,
+    );
+
+    let rows = run("CALL drevo.semantic.status()", &db);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        row_strings(&rows[0]),
+        vec!["Entity", "summary", "embedding", "enabled", "auto"]
+    );
+    assert_eq!(
+        row_strings(&rows[1]),
+        vec!["Doc", "body", "vec", "enabled", "manual"]
+    );
+}
+
+#[test]
+fn semantic_status_yield_projects_named_columns() {
+    let db = db();
+    exec(
+        "CALL drevo.semantic.register('Entity', 'summary', 'embedding', 'auto')",
+        &db,
+    );
+    let rows = run(
+        "CALL drevo.semantic.status() YIELD label, state RETURN label, state",
+        &db,
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(row_strings(&rows[0]), vec!["Entity", "enabled"]);
+}
+
+#[test]
+fn semantic_register_rejects_unknown_mode() {
+    let db = db();
+    let e = exec_err(
+        "CALL drevo.semantic.register('Entity', 'summary', 'embedding', 'sideways')",
+        &db,
+    );
+    match e {
+        ExecError::InvalidProcedureCall { name, message, .. } => {
+            assert_eq!(name, "drevo.semantic.register");
+            assert!(message.contains("mode"), "message was: {message}");
+        }
+        other => panic!("expected InvalidProcedureCall, got {other:?}"),
+    }
+}
+
+#[test]
+fn semantic_register_rejects_double_enable_of_same_target() {
+    let db = db();
+    exec(
+        "CALL drevo.semantic.register('Entity', 'summary', 'embedding', 'auto')",
+        &db,
+    );
+    // Same (label, embedding_property) while active → AlreadyEnabled.
+    let e = exec_err(
+        "CALL drevo.semantic.register('Entity', 'summary', 'embedding', 'manual')",
+        &db,
+    );
+    assert!(matches!(e, ExecError::InvalidProcedureCall { .. }));
+}
+
+#[test]
+fn semantic_register_wrong_arity_is_rejected() {
+    let db = db();
+    let e = exec_err("CALL drevo.semantic.register('Entity', 'summary')", &db);
+    assert!(matches!(e, ExecError::InvalidProcedureCall { .. }));
+}
