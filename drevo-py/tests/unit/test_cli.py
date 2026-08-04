@@ -18,10 +18,32 @@ def test_parser_accepts_each_subcommand() -> None:
         ["restore", "in.graphml", "db.redb"],
         ["compact", "db.redb"],
         ["shrink", "src.redb", "dst.redb"],
+        ["migrate", "up", "db.redb"],
+        ["migrate", "down", "db.redb"],
     ):
         args = parser.parse_args(argv)
         assert args.command == argv[0]
         assert callable(args.func)
+
+
+def test_migrate_parser_captures_direction_and_flags() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["migrate", "down", "db.redb", "--no-backup"])
+    assert args.direction == "down"
+    assert args.db == "db.redb"
+    assert args.no_backup is True
+    assert args.force is False
+
+
+def test_migrate_parser_rejects_bad_direction() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["migrate", "sideways", "db.redb"])
+
+
+def test_main_migrate_returns_nonzero_on_missing_db(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    rc = main(["migrate", "up", str(tmp_path / "does-not-exist.redb")])
+    assert rc == 1
 
 
 def test_parser_requires_a_subcommand() -> None:

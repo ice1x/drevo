@@ -27,7 +27,13 @@ const FORMAT_VERSION_KEY: &str = "format_version";
 /// Files predating format versioning carry no marker and are treated as the
 /// original `1.0` format (then stamped on first open). This is the on-disk
 /// durability guarantee for the agent-memory-graph file (issue #48).
-pub const FORMAT_MAJOR: u32 = 1;
+///
+/// **v2** (#243 slice 2): the adjacency index moved to the kind-in-key layout
+/// `out:{from}:{kind}:{edge}`. A v1 file opens (its major `1 <= 2`), but the
+/// graph layer detects the old adjacency layout and refuses it with
+/// [`crate::error::DrevoError::NeedsMigration`] until
+/// [`crate::db::Drevo::migrate_adjacency`] rewrites the index and re-stamps.
+pub const FORMAT_MAJOR: u32 = 2;
 
 /// Current on-disk format **minor** version. Bumped for additive,
 /// backward-compatible layout changes within a major; purely informational
@@ -323,6 +329,21 @@ impl StorageBackend for RedbBackend {
         // the existing `From` impls.
         db.compact()
             .map_err(|e| StorageError::Redb(Box::new(e.into())))?;
+        Ok(())
+    }
+
+    fn format_major(&self) -> Result<Option<u32>> {
+        Ok(self.format_version()?.map(|(major, _minor)| major))
+    }
+
+    fn set_format_version(&self, major: u32, minor: u32) -> Result<()> {
+        let marker = format!("{major}.{minor}");
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(META_TABLE)?;
+            table.insert(FORMAT_VERSION_KEY, marker.as_bytes())?;
+        }
+        write_txn.commit()?;
         Ok(())
     }
 }

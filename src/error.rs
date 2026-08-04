@@ -95,6 +95,30 @@ pub enum DrevoError {
     /// `Neo.ClientError.Transaction.TransactionNotFound` on the wire.
     #[error("no active transaction")]
     NoActiveTransaction,
+
+    /// The database on disk uses an older adjacency layout than this build
+    /// and must be migrated before it can be opened (#243 slice 2).
+    ///
+    /// Raised by [`crate::db::Drevo::open`] when the file's adjacency index
+    /// predates the kind-in-key layout (`found_major < required_major`). The
+    /// fix is an explicit, reversible migration — run `drevo migrate up`
+    /// (which backs up to GraphML first) or call
+    /// [`crate::db::Drevo::migrate_adjacency`] — which rewrites the index and
+    /// re-stamps the on-disk format version. The graph data itself is never at
+    /// risk: the migration rebuilds a derived index from the intact node/edge
+    /// records. Maps to HTTP 503 and the Bolt status
+    /// `Neo.TransientError.Database.Unavailable`.
+    #[error(
+        "database needs migration: on-disk adjacency format v{found_major} \
+         predates this build's v{required_major} — run `drevo migrate up` \
+         (backs up first) to upgrade"
+    )]
+    NeedsMigration {
+        /// The adjacency-layout major version found on disk.
+        found_major: u32,
+        /// The adjacency-layout major version this build requires.
+        required_major: u32,
+    },
 }
 
 /// Convenience type alias for drevo operations.

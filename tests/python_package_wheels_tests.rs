@@ -185,6 +185,7 @@ fn drevo_package_init_imports_native_extension() {
         "LockedError",
         "PanicError",
         "InvalidWeightError",
+        "NeedsMigrationError",
     ] {
         assert!(
             init.contains(symbol),
@@ -332,6 +333,7 @@ fn type_stubs_declare_public_surface() {
         "def subgraph(",
         "def neighbors(",
         "def search_fts(",
+        "def migrate(",
         "def export_graphml(",
         "def export_graphml_to_path(",
         "def import_graphml(",
@@ -357,6 +359,7 @@ fn type_stubs_declare_public_surface() {
         "class LockedError",
         "class PanicError",
         "class InvalidWeightError",
+        "class NeedsMigrationError",
     ] {
         assert!(
             stub.contains(exc),

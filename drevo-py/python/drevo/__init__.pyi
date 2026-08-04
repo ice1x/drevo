@@ -216,6 +216,14 @@ class SerializationError(DrevoError):
 class LockedError(DrevoError):
     """Another process holds the exclusive file lock on the database."""
 
+class NeedsMigrationError(DrevoError):
+    """The on-disk adjacency format predates this build and must be migrated.
+
+    Raised by `Drevo.open` when the database uses the pre-#243-slice-2
+    adjacency layout. `.args == (found_major, required_major)`. Fix with
+    `Drevo.migrate(path, "up")` or the `drevo migrate up` CLI.
+    """
+
 class PanicError(DrevoError):
     """A Rust panic was caught at the FFI boundary."""
 
@@ -255,6 +263,8 @@ class Drevo:
         exc_value: Optional[BaseException],
         traceback: Optional[_types.TracebackType],
     ) -> bool: ...
+    @staticmethod
+    def migrate(path: _PathLike, direction: str) -> int: ...
     def compact(self) -> CompactReport: ...
     def health_check(self) -> None: ...
     def export_graphml(self) -> str: ...
@@ -340,6 +350,7 @@ __all__: Final[list[str]] = [
     "EdgeNotFoundError",
     "InvalidWeightError",
     "LockedError",
+    "NeedsMigrationError",
     "NodeNotFoundError",
     "NotFoundError",
     "PanicError",

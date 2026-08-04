@@ -11,16 +11,20 @@ overwrite their source):
 * ``compact <db>``              — reclaim redb free pages in place.
 * ``shrink <db> <out_db>``      — dump ``db`` and re-import into a fresh
   ``out_db`` (the robust way to shed copy-on-write high-water-mark bloat).
+* ``migrate {up,down} <db>``    — convert the adjacency index between the
+  legacy and current (kind-in-key, #243 slice 2) on-disk layouts. Takes a
+  raw-file backup first (never overwrites an existing one without ``--force``).
 
 The heavy lifting lives in Rust (``drevo.Drevo.export_graphml`` /
-``import_graphml`` / ``compact``); this module is just the argument-parsing and
-reporting "handles".
+``import_graphml`` / ``compact`` / ``migrate``); this module is just the
+argument-parsing and reporting "handles".
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -124,6 +128,36 @@ def _cmd_shrink(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    direction: str = args.direction
+    db_path: str = args.db
+    if not os.path.exists(db_path):
+        print(f"error: database not found: {db_path}", file=sys.stderr)
+        return 1
+
+    # Back up first with a raw file copy — format-agnostic and complete (it
+    # also captures vector embeddings, which GraphML does not). A legacy
+    # database cannot be opened for a GraphML dump until it is migrated, so a
+    # file copy is the only backup available pre-migration anyway.
+    if not args.no_backup:
+        backup = f"{db_path}.pre-migrate.bak"
+        if os.path.exists(backup) and not args.force:
+            print(
+                f"error: backup already exists: {backup} "
+                f"(use --force to overwrite, or --no-backup to skip)",
+                file=sys.stderr,
+            )
+            return 1
+        shutil.copy2(db_path, backup)
+        backup_note = f" (backup: {backup})"
+    else:
+        backup_note = " (no backup)"
+
+    migrated = Drevo.migrate(db_path, direction)
+    print(f"migrated {db_path} {direction}: {migrated} edges re-indexed{backup_note}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the ``drevo`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -150,6 +184,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_shrink.add_argument("db", help="source database path (never modified)")
     p_shrink.add_argument("out_db", help="fresh output database path (must not exist)")
     p_shrink.set_defaults(func=_cmd_shrink)
+
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="convert the adjacency index between on-disk layouts (#243 slice 2)",
+    )
+    p_migrate.add_argument(
+        "direction",
+        choices=("up", "down"),
+        help="'up' upgrades to the current kind-in-key layout; 'down' reverts it",
+    )
+    p_migrate.add_argument("db", help="path to the drevo database to migrate")
+    p_migrate.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="skip the pre-migration raw-file backup (not recommended)",
+    )
+    p_migrate.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing <db>.pre-migrate.bak backup",
+    )
+    p_migrate.set_defaults(func=_cmd_migrate)
 
     return parser
 

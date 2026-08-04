@@ -233,8 +233,14 @@
  * Files predating format versioning carry no marker and are treated as the
  * original `1.0` format (then stamped on first open). This is the on-disk
  * durability guarantee for the agent-memory-graph file (issue #48).
+ *
+ * **v2** (#243 slice 2): the adjacency index moved to the kind-in-key layout
+ * `out:{from}:{kind}:{edge}`. A v1 file opens (its major `1 <= 2`), but the
+ * graph layer detects the old adjacency layout and refuses it with
+ * [`crate::error::DrevoError::NeedsMigration`] until
+ * [`crate::db::Drevo::migrate_adjacency`] rewrites the index and re-stamps.
  */
-#define FORMAT_MAJOR 1
+#define FORMAT_MAJOR 2
 
 /**
  * Current on-disk format **minor** version. Bumped for additive,

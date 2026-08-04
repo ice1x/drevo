@@ -352,7 +352,9 @@ impl IntoResponse for ApiError {
                 DrevoError::InvalidWeight(_) | DrevoError::Vector(_) => {
                     (StatusCode::BAD_REQUEST, err.to_string())
                 }
-                DrevoError::Locked | DrevoError::TransactionAlreadyActive => {
+                DrevoError::Locked
+                | DrevoError::TransactionAlreadyActive
+                | DrevoError::NeedsMigration { .. } => {
                     (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
                 }
                 DrevoError::NoActiveTransaction => (StatusCode::CONFLICT, err.to_string()),
@@ -1705,6 +1707,7 @@ mod error_mapping_tests {
                 DrevoError::Json(_) => "Json",
                 DrevoError::TransactionAlreadyActive => "TransactionAlreadyActive",
                 DrevoError::NoActiveTransaction => "NoActiveTransaction",
+                DrevoError::NeedsMigration { .. } => "NeedsMigration",
                 DrevoError::Vector(_) => "Vector",
             }
         }
