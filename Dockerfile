@@ -18,6 +18,13 @@ COPY src/ src/
 # by manifest parsing (we never run `cargo bench` in this stage).
 # Locked by `tests/dockerfile_tests.rs::dockerfile_copies_every_cargo_manifest_target_dir`.
 COPY benches/ benches/
+# Same rationale for the `[[example]]` targets (the #241 load-harness:
+# load_harness / churn_compact / http_load). Their `required-features` gates
+# *compiling* them, not the manifest path check, so cargo still needs the
+# sources present to parse Cargo.toml — otherwise the release build fails with
+#   error: can't find `churn_compact` example at `examples/churn_compact.rs`
+# We never `cargo build --example` here; this COPY is purely for parsing.
+COPY examples/ examples/
 # Phase 16 task 00115 promoted the repo to a Cargo workspace with
 # `drevo-py` as the second member. Cargo refuses to load *any* workspace
 # manifest if a declared member's Cargo.toml is missing — even when the
