@@ -154,6 +154,18 @@ pub struct Drevo {
     /// Guarded by a `Mutex` so the `&Drevo` shared by the executor / Bolt
     /// sessions can register and introspect targets through interior mutability.
     semantic: Mutex<SemanticIndexRegistry>,
+    /// #251 slice 3 — the server-side query embedder backing
+    /// `drevo.semantic.query`. Installed once at server startup from
+    /// `EmbeddingsConfig` (see [`Self::set_embedder`]); until then the handle
+    /// holds `None` and `drevo.semantic.query` reports "not configured".
+    ///
+    /// A `OnceLock` (not a `Mutex`) because it is written exactly once and only
+    /// ever read afterwards, so a `&Drevo` shared by the executor / Bolt
+    /// sessions can consult it lock-free. Feature-gated on `http`: the embedder
+    /// type lives in the `http`-gated [`crate::embeddings`] module, and only the
+    /// HTTP/Bolt server ever installs one.
+    #[cfg(feature = "http")]
+    embedder: std::sync::OnceLock<std::sync::Arc<dyn crate::embeddings::TextEmbedder>>,
 }
 
 /// Per-`Drevo` explicit-transaction state — see the `tx_state` field on
@@ -511,6 +523,8 @@ impl Drevo {
             counter_drift_repaired: AtomicBool::new(drift_repaired),
             tx_state: Mutex::new(TxState::Idle),
             semantic: Mutex::new(semantic),
+            #[cfg(feature = "http")]
+            embedder: std::sync::OnceLock::new(),
         })
     }
 
@@ -702,6 +716,44 @@ impl Drevo {
             .to_vec()
     }
 
+    /// Install the server-side text embedder used by `drevo.semantic.query`
+    /// (#251 slice 3). Set-once: the first call installs the embedder and
+    /// returns `true`; any later call is a no-op and returns `false`.
+    ///
+    /// Wired at server startup from `EmbeddingsConfig::from_env` (see
+    /// `crate::server::run`). Takes `&self` — the handle is already `Arc`-shared
+    /// by the catalog by the time the server configures it, so a set-once
+    /// [`std::sync::OnceLock`] is the right primitive.
+    #[cfg(feature = "http")]
+    pub fn set_embedder(
+        &self,
+        embedder: std::sync::Arc<dyn crate::embeddings::TextEmbedder>,
+    ) -> bool {
+        self.embedder.set(embedder).is_ok()
+    }
+
+    /// Embed `text` into a query vector with the installed embedder (#251
+    /// slice 3). Backs `drevo.semantic.query`: the executor embeds the query
+    /// text here, then runs the same brute-force cosine scan as
+    /// `drevo.vector.query`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::embeddings::EmbeddingsError::NotConfigured`] when no
+    /// embedder has been installed (the common "server started without
+    /// `DREVO_EMBEDDINGS_UPSTREAM`" case), or the embedder's own error when the
+    /// upstream call or response parsing fails.
+    #[cfg(feature = "http")]
+    pub fn embed_text(
+        &self,
+        text: &str,
+    ) -> std::result::Result<Vec<f32>, crate::embeddings::EmbeddingsError> {
+        self.embedder
+            .get()
+            .ok_or(crate::embeddings::EmbeddingsError::NotConfigured)?
+            .embed_query(text)
+    }
+
     /// Physical on-disk size of the backend file in bytes, or `None` for the
     /// ephemeral in-memory backend (#253 slice 1).
     ///
@@ -811,6 +863,8 @@ impl Drevo {
             counter_drift_repaired: AtomicBool::new(false),
             tx_state: Mutex::new(TxState::Idle),
             semantic: Mutex::new(SemanticIndexRegistry::new()),
+            #[cfg(feature = "http")]
+            embedder: std::sync::OnceLock::new(),
         })
     }
 
@@ -4616,6 +4670,8 @@ mod tests {
             counter_drift_repaired: AtomicBool::new(false),
             tx_state: Mutex::new(TxState::Idle),
             semantic: Mutex::new(SemanticIndexRegistry::new()),
+            #[cfg(feature = "http")]
+            embedder: std::sync::OnceLock::new(),
         };
 
         let mk = |title: &str| {

@@ -111,6 +111,17 @@ fn every_cypher_block_in_the_reference_parses_and_executes() {
             panic!("PARSE failed for cypher block at {loc}:\n---\n{source}\n---\nerror: {e}")
         });
 
+        // A few documented procedures require *runtime configuration* the bare
+        // in-memory database cannot provide (e.g. `drevo.semantic.query` embeds
+        // its query text through the server's configured embeddings upstream,
+        // which is unset here). Their syntax is still validated by `parse`
+        // above; only the execute step is skipped, with an explicit reason —
+        // they are exercised end-to-end in their own feature-gated integration
+        // tests instead.
+        if needs_runtime_config(source) {
+            continue;
+        }
+
         // Each example runs against its own pristine database so CREATE/MERGE
         // examples can never collide on drevo's globally-unique node titles.
         let db = Drevo::open_in_memory().expect("open in-memory drevo");
@@ -118,6 +129,18 @@ fn every_cypher_block_in_the_reference_parses_and_executes() {
             panic!("EXECUTE failed for cypher block at {loc}:\n---\n{source}\n---\nerror: {e}")
         });
     }
+}
+
+/// True for documented examples that parse but cannot *execute* against a bare
+/// in-memory database because they depend on runtime configuration absent in
+/// this test (an embeddings upstream, an external service, …). Kept as a tiny
+/// explicit allowlist so a genuinely broken example can never hide behind it.
+fn needs_runtime_config(source: &str) -> bool {
+    // `drevo.semantic.query` embeds its query text via the configured
+    // embeddings upstream (`DREVO_EMBEDDINGS_UPSTREAM`); without it the call
+    // returns "embeddings backend not configured". End-to-end coverage lives in
+    // `tests/semantic_query_tests.rs` (feature `embeddings-proxy`).
+    source.contains("drevo.semantic.query")
 }
 
 #[test]

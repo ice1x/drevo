@@ -921,9 +921,9 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     name: name.clone(),
                     message: "no such procedure — built-in procedures are \
                           db.labels, db.relationshipTypes, db.propertyKeys, \
-                          drevo.vector.query, drevo.semantic.register, \
-                          drevo.semantic.status, fts.search, \
-                          fts.searchRelationships"
+                          drevo.vector.query, drevo.semantic.query, \
+                          drevo.semantic.register, drevo.semantic.status, \
+                          fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
                 })?;
@@ -3706,13 +3706,33 @@ impl<'a> Executor<'a> {
         let query = similar_operand(&query_val, "drevo.vector.query", "query", span)?;
         let k = self.eval_usize(&args[3], &empty)?;
 
+        self.vector_scan(&label, &property, &query, k, span)
+    }
+
+    /// Brute-force cosine-similarity scan shared by `drevo.vector.query`
+    /// (vector-in) and `drevo.semantic.query` (text-in, embedded server-side).
+    ///
+    /// Scores every node of `label` that carries a numeric `property` embedding
+    /// against `query`, returns the top-`k` as `(node, score)` rows ordered by
+    /// descending cosine similarity (ties broken by ascending node id). Nodes
+    /// missing the property, whose property is not a numeric list, or whose
+    /// dimensionality does not match `query` are skipped (a `WHERE embedding IS
+    /// NOT NULL` guard). Correct and sub-millisecond at per-book scale.
+    fn vector_scan(
+        &self,
+        label: &str,
+        property: &str,
+        query: &[f32],
+        k: usize,
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
         let mut scored: Vec<(f32, Arc<NodeValue>)> = Vec::new();
         for node in self.drevo.collect_all_nodes()? {
-            if !node_labels_from_storage(&node).iter().any(|l| l == &label) {
+            if !node_labels_from_storage(&node).iter().any(|l| l == label) {
                 continue;
             }
             let nv = node_to_value(&node);
-            let Some(embedding_val) = nv.properties.get(&property) else {
+            let Some(embedding_val) = nv.properties.get(property) else {
                 continue; // no embedding on this node — skip
             };
             let Ok(embedding) =
@@ -3720,7 +3740,7 @@ impl<'a> Executor<'a> {
             else {
                 continue; // property is not a numeric list — skip
             };
-            let Ok(score) = cosine_similarity(&embedding, &query) else {
+            let Ok(score) = cosine_similarity(&embedding, query) else {
                 continue; // dimension mismatch / zero vector — skip
             };
             scored.push((score, nv));
@@ -3738,6 +3758,45 @@ impl<'a> Executor<'a> {
             .into_iter()
             .map(|(score, nv)| vec![Value::Node(nv), Value::Float(f64::from(score))])
             .collect())
+    }
+
+    /// `CALL drevo.semantic.query(label, property, text, k) YIELD node, score`
+    /// (#251 slice 3) — the top-`k` nodes of `label` ranked by cosine
+    /// similarity between their `property` embedding and the **query text**,
+    /// which is embedded **server-side** using the handle's configured
+    /// embedder.
+    ///
+    /// This is `drevo.vector.query` with the client's "bring your own vector"
+    /// step folded into the server: instead of a numeric list, the third
+    /// argument is a plain string, so a Bolt/Cypher client can run semantic
+    /// retrieval without hosting an embedder. The text is embedded via
+    /// [`Drevo::embed_text`](crate::db::Drevo::embed_text) (which blocks on the
+    /// dedicated-thread embedder, never nesting tokio runtimes), then the same
+    /// brute-force cosine scan as [`Self::proc_vector_query`] runs.
+    ///
+    /// Errors with a clear "not configured" message when the server was started
+    /// without `DREVO_EMBEDDINGS_UPSTREAM` (no embedder installed), so a client
+    /// can `CALL drevo.semantic.status()` / catch the failure and fall back to
+    /// an external embedder + `drevo.vector.query`.
+    #[cfg(feature = "http")]
+    fn proc_semantic_query(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (4) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let label = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let text = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[3], &empty)?;
+
+        let query = self
+            .drevo
+            .embed_text(&text)
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.query".to_string(),
+                message: e.to_string(),
+                span,
+            })?;
+
+        self.vector_scan(&label, &property, &query, k, span)
     }
 
     /// `CALL drevo.semantic.register(label, text_property, embedding_property,
@@ -3870,6 +3929,8 @@ impl<'a> Executor<'a> {
     ) -> ExecResultT<Vec<Vec<Value>>> {
         match name {
             "drevo.vector.query" => self.proc_vector_query(args, span),
+            #[cfg(feature = "http")]
+            "drevo.semantic.query" => self.proc_semantic_query(args, span),
             "drevo.semantic.register" => self.proc_semantic_register(args, span),
             "drevo.semantic.status" => self.proc_semantic_status(args, span),
             "fts.search" => self.proc_fts_search(args, span),
@@ -5414,6 +5475,10 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "db.propertyKeys" => Some(&["propertyKey"]),
         // Vector search (issue #202): top-k nodes by cosine similarity.
         "drevo.vector.query" => Some(&["node", "score"]),
+        // Semantic text search (#251 slice 3): top-k nodes by cosine
+        // similarity to a server-side embedding of the query text.
+        #[cfg(feature = "http")]
+        "drevo.semantic.query" => Some(&["node", "score"]),
         // Semantic-index control plane (#251 Phase 21): register / introspect
         // auto-embedding targets. Same column layout for both.
         "drevo.semantic.register" | "drevo.semantic.status" => Some(&[
@@ -5438,6 +5503,9 @@ fn procedure_arity(name: &str) -> usize {
     match name {
         // db.vector.query(label, property, query, k)
         "drevo.vector.query" => 4,
+        // drevo.semantic.query(label, property, text, k)
+        #[cfg(feature = "http")]
+        "drevo.semantic.query" => 4,
         // drevo.semantic.register(label, text_property, embedding_property, mode)
         "drevo.semantic.register" => 4,
         // drevo.semantic.status() — no arguments.

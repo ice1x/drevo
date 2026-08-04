@@ -814,10 +814,31 @@ CALL drevo.semantic.status() YIELD label, embedding_property, state
 RETURN label, embedding_property, state
 ```
 
-This slice exposes the **control plane** (registration + introspection); the
-server-side embedding step and query-text embedding land in follow-up slices,
-so a registered target's `state` reflects the control plane, not embedding
-readiness.
+`CALL drevo.semantic.query(label, property, text, k) YIELD node, score` is
+`drevo.vector.query` with the embedding step folded into the server: the third
+argument is a **query string**, not a vector. drevo embeds it server-side (via
+the configured embeddings upstream) and returns the top-`k` nodes of `label`
+ranked by cosine similarity between their `property` embedding and that query
+embedding — so a Bolt/Cypher client can run semantic retrieval without hosting
+an embedder of its own:
+
+```cypher
+CALL drevo.semantic.query('Chunk', 'embedding', 'anxious thoughts about work', 5)
+YIELD node, score RETURN node.title, score ORDER BY score DESC
+```
+
+It requires the server to be built with the `embeddings-proxy` feature and
+started with `DREVO_EMBEDDINGS_UPSTREAM` set (the same configuration that powers
+`POST /v1/embeddings`); otherwise the call fails with a clear "embeddings
+backend not configured" error, so a client can catch it and fall back to an
+external embedder plus `drevo.vector.query`. The nodes must already carry their
+`property` embeddings — `drevo.semantic.query` embeds only the *query* text;
+populating node embeddings on ingest is a follow-up slice.
+
+The `register` / `status` procedures expose the **control plane** (registration
++ introspection); auto-embedding of node text on ingest lands in a follow-up
+slice, so a registered target's `state` reflects the control plane, not
+embedding readiness.
 
 ---
 
