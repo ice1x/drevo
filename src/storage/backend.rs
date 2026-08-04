@@ -172,4 +172,36 @@ pub trait StorageBackend: Send + Sync {
     fn compact(&mut self) -> Result<()> {
         self.flush()
     }
+
+    /// Read the persisted on-disk format **major** version, if the backend
+    /// tracks one.
+    ///
+    /// Returns `Ok(None)` for backends without a durable format marker (the
+    /// ephemeral in-memory backend) or a file predating format versioning.
+    /// The graph layer uses it as one of two signals — alongside sampling an
+    /// actual adjacency key — for the #243 slice 2 kind-in-key migration gate
+    /// in [`crate::db::Drevo::open`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on backend failure.
+    fn format_major(&self) -> Result<Option<u32>> {
+        Ok(None)
+    }
+
+    /// Persist the on-disk format version marker `major.minor`.
+    ///
+    /// The default is a no-op (ephemeral backends have nothing durable to
+    /// stamp). The redb backend writes the `meta.format_version` marker so a
+    /// completed adjacency migration ([`crate::db::Drevo::migrate_adjacency`])
+    /// records the new layout version and old, layout-incompatible builds
+    /// refuse the file with
+    /// [`StorageError::IncompatibleFormat`](super::error::StorageError::IncompatibleFormat).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on backend failure.
+    fn set_format_version(&self, _major: u32, _minor: u32) -> Result<()> {
+        Ok(())
+    }
 }

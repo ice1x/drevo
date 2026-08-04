@@ -78,11 +78,22 @@ const PREFIX_EDGE: &[u8] = b"edge:";
 /// Key prefix for edge UUID index: `edge_uuid:{uuid}` -> u64 (le bytes).
 const PREFIX_EDGE_UUID: &[u8] = b"edge_uuid:";
 
-/// Key prefix for outgoing adjacency: `out:{from_id}:{edge_id}` -> empty.
+/// Key prefix for outgoing adjacency. v2 layout (#243 slice 2):
+/// `out:{from_id}:{kind}:{edge_id}` -> `(to_id, kind)`.
 const PREFIX_OUT: &[u8] = b"out:";
 
-/// Key prefix for incoming adjacency: `in:{to_id}:{edge_id}` -> empty.
+/// Key prefix for incoming adjacency. v2 layout (#243 slice 2):
+/// `in:{to_id}:{kind}:{edge_id}` -> `(from_id, kind)`.
 const PREFIX_IN: &[u8] = b"in:";
+
+/// Current adjacency-index layout **major** version this build reads and
+/// writes (#243 slice 2 — the kind-in-key layout). Kept in lockstep with the
+/// redb on-disk [`crate::storage::redb::FORMAT_MAJOR`]; a
+/// `debug_assert`-backed test pins them equal. A database whose adjacency
+/// index is an older major is refused by [`Drevo::open`] with
+/// [`DrevoError::NeedsMigration`] until [`Drevo::migrate_adjacency`] upgrades
+/// it.
+const ADJ_FORMAT_MAJOR: u32 = 2;
 
 /// Key prefix for node kind index: `node_kind:{kind}:{node_id}` -> empty.
 const PREFIX_NODE_KIND: &[u8] = b"node_kind:";
@@ -294,6 +305,18 @@ pub struct CompactReport {
     pub next_edge_id: u64,
 }
 
+/// Direction of the #243 slice 2 adjacency-format migration, as passed to
+/// [`Drevo::migrate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationDirection {
+    /// Upgrade a legacy (v1) database to the current kind-in-key layout.
+    /// After a successful `Up`, the file opens normally.
+    Up,
+    /// Downgrade a kind-in-key (v2) database back to the v1 layout so an
+    /// older, pre-#243-slice-2 drevo build can read it again.
+    Down,
+}
+
 impl Drevo {
     /// Open a disk-backed database at the given path.
     ///
@@ -310,6 +333,25 @@ impl Drevo {
     /// on `wasm32` targets. Use [`open_in_memory`](Self::open_in_memory) instead.
     #[cfg(feature = "redb-backend")]
     pub fn open(path: &Path) -> Result<Self> {
+        let db = Self::open_ungated(path)?;
+        // #243 slice 2: refuse a database whose adjacency index predates the
+        // kind-in-key layout, rather than silently misreading it. The graph
+        // is never at risk — the fix is a reversible, index-only migration.
+        if db.adjacency_needs_migration()? {
+            let found_major = db.backend.format_major()?.unwrap_or(1);
+            return Err(DrevoError::NeedsMigration {
+                found_major,
+                required_major: ADJ_FORMAT_MAJOR,
+            });
+        }
+        Ok(db)
+    }
+
+    /// Open the redb-backed handle **without** the #243 slice 2 migration
+    /// gate. Used by [`Self::open`] (which then runs the gate) and by
+    /// [`Self::migrate`] (which must open a pre-migration file to upgrade it).
+    #[cfg(feature = "redb-backend")]
+    fn open_ungated(path: &Path) -> Result<Self> {
         let backend = RedbBackend::open(path)?;
         let backend = Box::new(backend);
         let (next_node_id, next_edge_id, drift_repaired) = Self::load_counters(&*backend)?;
@@ -320,6 +362,119 @@ impl Drevo {
             counter_drift_repaired: AtomicBool::new(drift_repaired),
             tx_state: Mutex::new(TxState::Idle),
         })
+    }
+
+    /// Open a database that needs migration, run the #243 slice 2 adjacency
+    /// migration in the requested `direction`, and return the number of edges
+    /// re-indexed.
+    ///
+    /// `direction` is [`MigrationDirection::Up`] to upgrade a legacy file to
+    /// the kind-in-key layout (the common case — after this the file opens
+    /// normally) or [`MigrationDirection::Down`] to revert to the v1 layout so
+    /// an older drevo build can read it again.
+    ///
+    /// The migration is **safe**: it rebuilds the derived `out:`/`in:`
+    /// adjacency index from the intact node/edge records, so an interrupted
+    /// run loses no graph data and simply resumes on the next call (the
+    /// per-edge rewrite is idempotent). Callers SHOULD still take a GraphML
+    /// backup first — the `drevo migrate` CLI does so automatically.
+    ///
+    /// # Availability
+    ///
+    /// Requires the `redb-backend` feature; the ephemeral in-memory backend is
+    /// always current and never needs migration.
+    #[cfg(feature = "redb-backend")]
+    pub fn migrate(path: &Path, direction: MigrationDirection) -> Result<u64> {
+        let db = Self::open_ungated(path)?;
+        let to_major = match direction {
+            MigrationDirection::Up => ADJ_FORMAT_MAJOR,
+            MigrationDirection::Down => 1,
+        };
+        db.migrate_adjacency(to_major)
+    }
+
+    /// Whether the open database's adjacency index predates the current
+    /// kind-in-key layout and must be migrated (#243 slice 2).
+    ///
+    /// Two independent signals are consulted so the gate is robust: the
+    /// persisted format-version stamp (`< ADJ_FORMAT_MAJOR` ⇒ not yet
+    /// migrated, and — because [`Self::migrate_adjacency`] stamps only on
+    /// completion — also catches a half-finished migration), and a direct
+    /// sample of an actual adjacency key (catches a pre-versioning file that
+    /// the storage layer stamped current but whose keys are still v1).
+    /// Backends without a durable stamp (in-memory) rely on the sample alone,
+    /// which for a freshly written database is unambiguously v2.
+    fn adjacency_needs_migration(&self) -> Result<bool> {
+        if let Some(major) = self.backend.format_major()? {
+            if major < ADJ_FORMAT_MAJOR {
+                return Ok(true);
+            }
+        }
+        for prefix in [PREFIX_OUT, PREFIX_IN] {
+            let sample = self.backend.scan_prefix_limited(prefix, None, 1)?;
+            if sample
+                .first()
+                .is_some_and(|(key, _)| adjacency_key_is_v1(key, prefix))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Rewrite the `out:`/`in:` adjacency index into the layout for
+    /// `to_major` (2 = kind-in-key, 1 = legacy) and re-stamp the on-disk
+    /// format version (#243 slice 2).
+    ///
+    /// The index is a projection of the edge records, so this rebuilds it from
+    /// scratch: for every edge it deletes both possible key layouts (making
+    /// the operation idempotent and direction-agnostic) and writes the target
+    /// layout with the denormalized `(neighbor_id, kind)` value. The node and
+    /// edge tables are never touched, so the graph cannot be lost even if the
+    /// process is killed mid-run — the format stamp is written last, so an
+    /// interrupted migration still reports "needs migration" and completes on
+    /// the next call.
+    ///
+    /// Returns the number of edges re-indexed.
+    pub fn migrate_adjacency(&self, to_major: u32) -> Result<u64> {
+        let edge_entries = self.backend.scan_prefix(PREFIX_EDGE)?;
+        let mut migrated = 0u64;
+        for (key, bytes) in &edge_entries {
+            if key.len() != PREFIX_EDGE.len() + 8 {
+                continue; // not an edge record row
+            }
+            let edge = deserialize_edge(bytes)?;
+            // Drop whichever layout currently holds this edge's entries.
+            self.backend
+                .delete(&out_edge_key_v1(edge.from_id, edge.id))?;
+            self.backend.delete(&in_edge_key_v1(edge.to_id, edge.id))?;
+            self.backend
+                .delete(&out_edge_key(edge.from_id, &edge.kind, edge.id))?;
+            self.backend
+                .delete(&in_edge_key(edge.to_id, &edge.kind, edge.id))?;
+            // Write the target layout with a fully denormalized value.
+            let (out_key, in_key) = if to_major >= ADJ_FORMAT_MAJOR {
+                (
+                    out_edge_key(edge.from_id, &edge.kind, edge.id),
+                    in_edge_key(edge.to_id, &edge.kind, edge.id),
+                )
+            } else {
+                (
+                    out_edge_key_v1(edge.from_id, edge.id),
+                    in_edge_key_v1(edge.to_id, edge.id),
+                )
+            };
+            self.backend
+                .put(&out_key, &adjacency_value(edge.to_id, &edge.kind))?;
+            self.backend
+                .put(&in_key, &adjacency_value(edge.from_id, &edge.kind))?;
+            migrated += 1;
+        }
+        self.backend.flush()?;
+        // Stamp last: the on-disk version only advances once every edge is
+        // re-indexed, so a crash before this point re-triggers the gate.
+        self.backend.set_format_version(to_major, 0)?;
+        Ok(migrated)
     }
 
     /// Open a disk-backed database and run [`Self::check_integrity`] in
@@ -559,11 +714,11 @@ impl Drevo {
         self.backend
             .put(&edge_uuid_key(&edge.uuid), &edge.id.to_le_bytes())?;
         self.backend.put(
-            &out_edge_key(edge.from_id, edge.id),
+            &out_edge_key(edge.from_id, &edge.kind, edge.id),
             &adjacency_value(edge.to_id, &edge.kind),
         )?;
         self.backend.put(
-            &in_edge_key(edge.to_id, edge.id),
+            &in_edge_key(edge.to_id, &edge.kind, edge.id),
             &adjacency_value(edge.from_id, &edge.kind),
         )?;
         self.backend.put(&edge_kind_key(&edge.kind, edge.id), &[])?;
@@ -765,11 +920,11 @@ impl Drevo {
         self.backend
             .put(&edge_uuid_key(&edge.uuid), &edge.id.to_le_bytes())?;
         self.backend.put(
-            &out_edge_key(edge.from_id, edge.id),
+            &out_edge_key(edge.from_id, &edge.kind, edge.id),
             &adjacency_value(edge.to_id, &edge.kind),
         )?;
         self.backend.put(
-            &in_edge_key(edge.to_id, edge.id),
+            &in_edge_key(edge.to_id, &edge.kind, edge.id),
             &adjacency_value(edge.from_id, &edge.kind),
         )?;
         self.backend.put(&edge_kind_key(&edge.kind, edge.id), &[])?;
@@ -817,9 +972,9 @@ impl Drevo {
         // self-contained.
         self.backend.delete(&edge_uuid_key(&current.uuid))?;
         self.backend
-            .delete(&out_edge_key(current.from_id, current.id))?;
+            .delete(&out_edge_key(current.from_id, &current.kind, current.id))?;
         self.backend
-            .delete(&in_edge_key(current.to_id, current.id))?;
+            .delete(&in_edge_key(current.to_id, &current.kind, current.id))?;
         self.recreate_edge_at_id(pre.clone())
     }
 
@@ -850,8 +1005,10 @@ impl Drevo {
         let edge = self.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
         self.backend.delete(&edge_key(id))?;
         self.backend.delete(&edge_uuid_key(&edge.uuid))?;
-        self.backend.delete(&out_edge_key(edge.from_id, id))?;
-        self.backend.delete(&in_edge_key(edge.to_id, id))?;
+        self.backend
+            .delete(&out_edge_key(edge.from_id, &edge.kind, id))?;
+        self.backend
+            .delete(&in_edge_key(edge.to_id, &edge.kind, id))?;
         self.backend.delete(&edge_kind_key(&edge.kind, id))?;
         Ok(())
     }
@@ -1298,15 +1455,16 @@ impl Drevo {
         self.backend
             .put(&edge_uuid_key(&edge.uuid), &id.to_le_bytes())?;
 
-        // Outgoing adjacency: out:{from_id}:{edge_id} -> (to_id, kind) (#243).
+        // Outgoing adjacency: out:{from_id}:{kind}:{edge_id} -> (to_id, kind)
+        // (#243 slice 2 folds the kind into the key).
         self.backend.put(
-            &out_edge_key(edge.from_id, id),
+            &out_edge_key(edge.from_id, &edge.kind, id),
             &adjacency_value(edge.to_id, &edge.kind),
         )?;
 
-        // Incoming adjacency: in:{to_id}:{edge_id} -> (from_id, kind) (#243).
+        // Incoming adjacency: in:{to_id}:{kind}:{edge_id} -> (from_id, kind).
         self.backend.put(
-            &in_edge_key(edge.to_id, id),
+            &in_edge_key(edge.to_id, &edge.kind, id),
             &adjacency_value(edge.from_id, &edge.kind),
         )?;
 
@@ -1354,11 +1512,11 @@ impl Drevo {
             writes.push((edge_key(id), serialize_edge(&edge)?));
             writes.push((edge_uuid_key(&edge.uuid), id.to_le_bytes().to_vec()));
             writes.push((
-                out_edge_key(edge.from_id, id),
+                out_edge_key(edge.from_id, &edge.kind, id),
                 adjacency_value(edge.to_id, &edge.kind),
             ));
             writes.push((
-                in_edge_key(edge.to_id, id),
+                in_edge_key(edge.to_id, &edge.kind, id),
                 adjacency_value(edge.from_id, &edge.kind),
             ));
             writes.push((edge_kind_key(&edge.kind, id), Vec::new()));
@@ -1439,15 +1597,19 @@ impl Drevo {
         if edge.kind != old_kind {
             self.backend.delete(&edge_kind_key(&old_kind, id))?;
             self.backend.put(&edge_kind_key(&edge.kind, id), &[])?;
-            // The kind is denormalized into the adjacency value (#243), so
-            // refresh both entries. Endpoints can't change here, so the keys
-            // are unchanged — only the value is rewritten.
+            // The kind is part of the v2 adjacency KEY (#243 slice 2), so a
+            // kind change MOVES both adjacency entries: delete the old-kind
+            // keys, then write the new-kind keys. Endpoints are unchanged.
+            self.backend
+                .delete(&out_edge_key(edge.from_id, &old_kind, id))?;
+            self.backend
+                .delete(&in_edge_key(edge.to_id, &old_kind, id))?;
             self.backend.put(
-                &out_edge_key(edge.from_id, id),
+                &out_edge_key(edge.from_id, &edge.kind, id),
                 &adjacency_value(edge.to_id, &edge.kind),
             )?;
             self.backend.put(
-                &in_edge_key(edge.to_id, id),
+                &in_edge_key(edge.to_id, &edge.kind, id),
                 &adjacency_value(edge.from_id, &edge.kind),
             )?;
         }
@@ -1480,10 +1642,12 @@ impl Drevo {
         self.backend.delete(&edge_uuid_key(&edge.uuid))?;
 
         // Remove outgoing adjacency entry
-        self.backend.delete(&out_edge_key(edge.from_id, id))?;
+        self.backend
+            .delete(&out_edge_key(edge.from_id, &edge.kind, id))?;
 
         // Remove incoming adjacency entry
-        self.backend.delete(&in_edge_key(edge.to_id, id))?;
+        self.backend
+            .delete(&in_edge_key(edge.to_id, &edge.kind, id))?;
 
         // Remove edge kind index
         self.backend.delete(&edge_kind_key(&edge.kind, id))?;
@@ -2215,16 +2379,13 @@ impl Drevo {
         direction: Direction,
         kind: Option<&str>,
     ) -> Result<Vec<u64>> {
-        let targets = self.adjacency_targets(node_id, direction)?;
+        // Push the kind filter into the scan so a kind-restricted fan-out over
+        // a supernode reads only the matching sub-prefix (#243 slice 2).
+        let targets = self.adjacency_targets(node_id, direction, kind)?;
         let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
         seen.insert(node_id);
         let mut ids = Vec::new();
         for target in targets {
-            if let Some(filter) = kind {
-                if target.kind != filter {
-                    continue;
-                }
-            }
             if seen.insert(target.neighbor_id) {
                 ids.push(target.neighbor_id);
             }
@@ -2331,9 +2492,10 @@ impl Drevo {
         let next = has_more
             .then(|| kept.last().map(|(k, _)| k.clone()))
             .flatten();
+        let base_prefix = if incoming { PREFIX_IN } else { PREFIX_OUT };
         let mut entries = Vec::with_capacity(kept.len());
         for (key, value) in kept {
-            let edge_id = edge_id_from_adjacency_key(key, &prefix);
+            let edge_id = edge_id_from_adjacency_key(key, base_prefix);
             match decode_adjacency_value(value) {
                 Some((neighbor_id, kind)) => entries.push(AdjacencyEntry {
                     edge_id,
@@ -2415,9 +2577,10 @@ impl Drevo {
         // ---- Invariant #1 & #2 — adjacency consistency + no dangling ----
         let out_entries = self.backend.scan_prefix(PREFIX_OUT)?;
         for (key, value) in &out_entries {
-            // out:{from_id_8}:{edge_id_8}
-            let expected_len = PREFIX_OUT.len() + 8 + 1 + 8;
-            if key.len() != expected_len {
+            // out:{from_id_8}:{kind}:{edge_id_8} (v2) — the shortest valid key
+            // is the empty-kind case; node id is the first 8, edge id the last.
+            let min_len = PREFIX_OUT.len() + 8 + 1 + 1 + 8;
+            if key.len() < min_len {
                 violations.push(format!(
                     "adjacency key has unexpected length: out: key len = {}",
                     key.len()
@@ -2425,10 +2588,7 @@ impl Drevo {
                 continue;
             }
             let from_id = u64_from_adjacency_key_first_id(key, PREFIX_OUT);
-            let edge_id = edge_id_from_adjacency_key(
-                key,
-                &[PREFIX_OUT, &from_id.to_le_bytes(), b":"].concat(),
-            );
+            let edge_id = edge_id_from_adjacency_key(key, PREFIX_OUT);
             match edges_by_id.get(&edge_id) {
                 None => violations.push(format!(
                     "out adjacency points at missing edge: from_id={from_id}, edge_id={edge_id}"
@@ -2454,7 +2614,7 @@ impl Drevo {
                         }
                     }
                     // Invariant #1 — the corresponding in: entry MUST exist.
-                    let in_key = in_edge_key(e.to_id, e.id);
+                    let in_key = in_edge_key(e.to_id, &e.kind, e.id);
                     if self.backend.get(&in_key)?.is_none() {
                         violations.push(format!(
                             "out adjacency missing in mirror: edge_id={edge_id}, \
@@ -2468,8 +2628,8 @@ impl Drevo {
 
         let in_entries = self.backend.scan_prefix(PREFIX_IN)?;
         for (key, value) in &in_entries {
-            let expected_len = PREFIX_IN.len() + 8 + 1 + 8;
-            if key.len() != expected_len {
+            let min_len = PREFIX_IN.len() + 8 + 1 + 1 + 8;
+            if key.len() < min_len {
                 violations.push(format!(
                     "adjacency key has unexpected length: in: key len = {}",
                     key.len()
@@ -2477,8 +2637,7 @@ impl Drevo {
                 continue;
             }
             let to_id = u64_from_adjacency_key_first_id(key, PREFIX_IN);
-            let edge_id =
-                edge_id_from_adjacency_key(key, &[PREFIX_IN, &to_id.to_le_bytes(), b":"].concat());
+            let edge_id = edge_id_from_adjacency_key(key, PREFIX_IN);
             match edges_by_id.get(&edge_id) {
                 None => violations.push(format!(
                     "in adjacency points at missing edge: to_id={to_id}, edge_id={edge_id}"
@@ -2503,7 +2662,7 @@ impl Drevo {
                         }
                     }
                     // Invariant #1 — mirror direction.
-                    let out_key = out_edge_key(e.from_id, e.id);
+                    let out_key = out_edge_key(e.from_id, &e.kind, e.id);
                     if self.backend.get(&out_key)?.is_none() {
                         violations.push(format!(
                             "in adjacency missing out mirror: edge_id={edge_id}, \
@@ -2519,7 +2678,7 @@ impl Drevo {
         for edge in edges_by_id.values() {
             if self
                 .backend
-                .get(&out_edge_key(edge.from_id, edge.id))?
+                .get(&out_edge_key(edge.from_id, &edge.kind, edge.id))?
                 .is_none()
             {
                 violations.push(format!(
@@ -2529,7 +2688,7 @@ impl Drevo {
             }
             if self
                 .backend
-                .get(&in_edge_key(edge.to_id, edge.id))?
+                .get(&in_edge_key(edge.to_id, &edge.kind, edge.id))?
                 .is_none()
             {
                 violations.push(format!(
@@ -2644,13 +2803,18 @@ impl Drevo {
     /// empty-value entries fall back to one `get_edge` each. For
     /// [`Direction::Both`] the outgoing targets precede the incoming ones,
     /// matching the edge order of [`Self::edges_of`].
-    fn adjacency_targets(&self, node_id: u64, direction: Direction) -> Result<Vec<AdjTarget>> {
+    fn adjacency_targets(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind: Option<&str>,
+    ) -> Result<Vec<AdjTarget>> {
         match direction {
-            Direction::Outgoing => self.adjacency_targets_prefixed(node_id, false),
-            Direction::Incoming => self.adjacency_targets_prefixed(node_id, true),
+            Direction::Outgoing => self.adjacency_targets_prefixed(node_id, false, kind),
+            Direction::Incoming => self.adjacency_targets_prefixed(node_id, true, kind),
             Direction::Both => {
-                let mut targets = self.adjacency_targets_prefixed(node_id, false)?;
-                targets.extend(self.adjacency_targets_prefixed(node_id, true)?);
+                let mut targets = self.adjacency_targets_prefixed(node_id, false, kind)?;
+                targets.extend(self.adjacency_targets_prefixed(node_id, true, kind)?);
                 Ok(targets)
             }
         }
@@ -2659,32 +2823,56 @@ impl Drevo {
     /// One-direction half of [`Self::adjacency_targets`]. `incoming` selects
     /// the `in:` prefix (neighbor = `from_id`) versus the `out:` prefix
     /// (neighbor = `to_id`), which also drives the legacy `get_edge` fallback.
-    fn adjacency_targets_prefixed(&self, node_id: u64, incoming: bool) -> Result<Vec<AdjTarget>> {
-        let prefix = if incoming {
-            in_prefix(node_id)
-        } else {
-            out_prefix(node_id)
+    ///
+    /// When `kind` is `Some`, the scan is narrowed to the kind-scoped
+    /// sub-prefix `{out|in}:{node}:{kind}:` (#243 slice 2), so a kind-filtered
+    /// fan-out over a supernode costs `O(matches)` — the raw scan touches only
+    /// the edges of that kind instead of the node's full degree. The decoded
+    /// kind is still re-checked against `kind`, which discards the rare false
+    /// positive when one kind is a byte-prefix of another (a `kind` containing
+    /// `:`).
+    fn adjacency_targets_prefixed(
+        &self,
+        node_id: u64,
+        incoming: bool,
+        kind: Option<&str>,
+    ) -> Result<Vec<AdjTarget>> {
+        let prefix = match kind {
+            Some(k) if incoming => in_kind_prefix(node_id, k),
+            Some(k) => out_kind_prefix(node_id, k),
+            None if incoming => in_prefix(node_id),
+            None => out_prefix(node_id),
         };
         let entries = self.backend.scan_prefix(&prefix)?;
         let mut targets = Vec::with_capacity(entries.len());
         for (key, value) in entries {
-            let edge_id = edge_id_from_adjacency_key(&key, &prefix);
-            match decode_adjacency_value(&value) {
-                Some((neighbor_id, kind)) => targets.push(AdjTarget {
+            let edge_id =
+                edge_id_from_adjacency_key(&key, if incoming { PREFIX_IN } else { PREFIX_OUT });
+            let target = match decode_adjacency_value(&value) {
+                Some((neighbor_id, k)) => AdjTarget {
                     neighbor_id,
-                    kind: kind.to_string(),
-                }),
+                    kind: k.to_string(),
+                },
                 None => {
                     // Legacy empty value (pre-#243) — recover from the edge.
-                    if let Some(edge) = self.get_edge(edge_id)? {
-                        let neighbor_id = if incoming { edge.from_id } else { edge.to_id };
-                        targets.push(AdjTarget {
-                            neighbor_id,
+                    match self.get_edge(edge_id)? {
+                        Some(edge) => AdjTarget {
+                            neighbor_id: if incoming { edge.from_id } else { edge.to_id },
                             kind: edge.kind,
-                        });
+                        },
+                        None => continue,
                     }
                 }
+            };
+            // On the kind-scoped fast path, drop false positives from a longer
+            // kind that shares this byte prefix (only possible when `kind`
+            // itself contains `:`).
+            if let Some(filter) = kind {
+                if target.kind != filter {
+                    continue;
+                }
             }
+            targets.push(target);
         }
         Ok(targets)
     }
@@ -2695,7 +2883,7 @@ impl Drevo {
         let entries = self.backend.scan_prefix(&prefix)?;
         let mut edges = Vec::with_capacity(entries.len());
         for (key, _) in entries {
-            let edge_id = edge_id_from_adjacency_key(&key, &prefix);
+            let edge_id = edge_id_from_adjacency_key(&key, PREFIX_OUT);
             if let Some(edge) = self.get_edge(edge_id)? {
                 edges.push(edge);
             }
@@ -2709,7 +2897,7 @@ impl Drevo {
         let entries = self.backend.scan_prefix(&prefix)?;
         let mut edges = Vec::with_capacity(entries.len());
         for (key, _) in entries {
-            let edge_id = edge_id_from_adjacency_key(&key, &prefix);
+            let edge_id = edge_id_from_adjacency_key(&key, PREFIX_IN);
             if let Some(edge) = self.get_edge(edge_id)? {
                 edges.push(edge);
             }
@@ -2909,9 +3097,10 @@ impl Drevo {
         let mut orphan_adjacency_entries: u64 = 0;
         for prefix in [PREFIX_OUT, PREFIX_IN] {
             for (key, _) in self.backend.scan_prefix(prefix)? {
-                // {prefix}{node_id_8}:{edge_id_8}
-                let expected = prefix.len() + 8 + 1 + 8;
-                if key.len() != expected {
+                // v2: {prefix}{node_id_8}:{kind}:{edge_id_8}; the edge id is the
+                // last 8 bytes in both v1 and v2. The v1 layout is the shortest
+                // valid key, so use it as a lower bound.
+                if key.len() < prefix.len() + 8 + 1 + 8 {
                     continue;
                 }
                 let mut arr = [0u8; 8];
@@ -3025,25 +3214,64 @@ fn edge_uuid_key(uuid: &[u8; 16]) -> Vec<u8> {
     key
 }
 
-/// Build an outgoing adjacency key: `out:{from_id}:{edge_id}`.
-fn out_edge_key(from_id: u64, edge_id: u64) -> Vec<u8> {
-    let mut key = PREFIX_OUT.to_vec();
-    key.extend_from_slice(&from_id.to_le_bytes());
+/// Build an outgoing adjacency key: `out:{from_id}:{kind}:{edge_id}` (v2,
+/// #243 slice 2 — the edge `kind` is folded into the key so a kind-filtered
+/// fan-out can sub-prefix scan `out:{from_id}:{kind}:` in `O(matches)` instead
+/// of scanning every out-edge of a supernode).
+///
+/// The `edge_id` is always the **last 8 bytes** and the node id the first 8
+/// after the prefix, so [`edge_id_from_adjacency_key`] and
+/// [`u64_from_adjacency_key_first_id`] parse both this layout and the legacy
+/// v1 `out:{from_id}:{edge_id}` without knowing which they hold.
+fn out_edge_key(from_id: u64, kind: &str, edge_id: u64) -> Vec<u8> {
+    adjacency_key(PREFIX_OUT, from_id, kind, edge_id)
+}
+
+/// Build an incoming adjacency key: `in:{to_id}:{kind}:{edge_id}` (v2, #243
+/// slice 2). See [`out_edge_key`] for the layout rationale.
+fn in_edge_key(to_id: u64, kind: &str, edge_id: u64) -> Vec<u8> {
+    adjacency_key(PREFIX_IN, to_id, kind, edge_id)
+}
+
+/// Shared builder for the v2 kind-in-key adjacency layout
+/// `{prefix}{node_id_8}:{kind}:{edge_id_8}`.
+fn adjacency_key(prefix: &[u8], node_id: u64, kind: &str, edge_id: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 8 + 1 + kind.len() + 1 + 8);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(&node_id.to_le_bytes());
+    key.push(b':');
+    key.extend_from_slice(kind.as_bytes());
     key.push(b':');
     key.extend_from_slice(&edge_id.to_le_bytes());
     key
 }
 
-/// Build an incoming adjacency key: `in:{to_id}:{edge_id}`.
-fn in_edge_key(to_id: u64, edge_id: u64) -> Vec<u8> {
-    let mut key = PREFIX_IN.to_vec();
-    key.extend_from_slice(&to_id.to_le_bytes());
+/// Build the **legacy v1** outgoing adjacency key `out:{from_id}:{edge_id}`.
+///
+/// Retained only for the format migration ([`Drevo::migrate_adjacency`]),
+/// which must delete the exact pre-v2 keys, and for the byte-format tests.
+fn out_edge_key_v1(from_id: u64, edge_id: u64) -> Vec<u8> {
+    adjacency_key_v1(PREFIX_OUT, from_id, edge_id)
+}
+
+/// Build the **legacy v1** incoming adjacency key `in:{to_id}:{edge_id}`.
+fn in_edge_key_v1(to_id: u64, edge_id: u64) -> Vec<u8> {
+    adjacency_key_v1(PREFIX_IN, to_id, edge_id)
+}
+
+/// Shared builder for the v1 adjacency layout `{prefix}{node_id_8}:{edge_id_8}`.
+fn adjacency_key_v1(prefix: &[u8], node_id: u64, edge_id: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 8 + 1 + 8);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(&node_id.to_le_bytes());
     key.push(b':');
     key.extend_from_slice(&edge_id.to_le_bytes());
     key
 }
 
-/// Build the scan prefix for outgoing edges of a node: `out:{node_id}:`.
+/// Build the scan prefix for **all** outgoing edges of a node:
+/// `out:{node_id}:`. Matches both v1 and v2 keys (the kind segment sits after
+/// this prefix), so full fan-out and the migration scan are layout-agnostic.
 fn out_prefix(node_id: u64) -> Vec<u8> {
     let mut key = PREFIX_OUT.to_vec();
     key.extend_from_slice(&node_id.to_le_bytes());
@@ -3051,12 +3279,53 @@ fn out_prefix(node_id: u64) -> Vec<u8> {
     key
 }
 
-/// Build the scan prefix for incoming edges of a node: `in:{node_id}:`.
+/// Build the scan prefix for **all** incoming edges of a node: `in:{node_id}:`.
 fn in_prefix(node_id: u64) -> Vec<u8> {
     let mut key = PREFIX_IN.to_vec();
     key.extend_from_slice(&node_id.to_le_bytes());
     key.push(b':');
     key
+}
+
+/// Build the kind-scoped scan prefix for outgoing edges of a node of a given
+/// `kind`: `out:{node_id}:{kind}:` (v2 fast path, #243 slice 2).
+///
+/// Only meaningful on a v2 (kind-in-key) database. A `kind` containing `:`
+/// can admit false positives (a longer kind sharing this byte prefix), so
+/// callers MUST still confirm the decoded value's kind equals `kind`; it never
+/// yields false negatives.
+fn out_kind_prefix(node_id: u64, kind: &str) -> Vec<u8> {
+    adjacency_kind_prefix(PREFIX_OUT, node_id, kind)
+}
+
+/// Build the kind-scoped scan prefix for incoming edges of a node of a given
+/// `kind`: `in:{node_id}:{kind}:` (v2 fast path, #243 slice 2).
+fn in_kind_prefix(node_id: u64, kind: &str) -> Vec<u8> {
+    adjacency_kind_prefix(PREFIX_IN, node_id, kind)
+}
+
+/// Shared builder for the v2 kind-scoped scan prefix
+/// `{prefix}{node_id_8}:{kind}:`.
+fn adjacency_kind_prefix(prefix: &[u8], node_id: u64, kind: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 8 + 1 + kind.len() + 1);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(&node_id.to_le_bytes());
+    key.push(b':');
+    key.extend_from_slice(kind.as_bytes());
+    key.push(b':');
+    key
+}
+
+/// Classify an adjacency key as legacy **v1** (`{prefix}{node_8}:{edge_8}`)
+/// versus **v2** (`{prefix}{node_8}:{kind}:{edge_8}`, #243 slice 2).
+///
+/// A v1 key has exactly 8 bytes after the `{prefix}{node_8}:` header (the
+/// edge id); a v2 key has the `{kind}:` segment in between, so ≥ 9 bytes
+/// remain (an empty kind still contributes the extra `:` delimiter). Used by
+/// the open-time migration gate and never on the read hot path.
+fn adjacency_key_is_v1(key: &[u8], prefix: &[u8]) -> bool {
+    let header = prefix.len() + 8 + 1; // {prefix}{node_8}:
+    key.len() == header + 8
 }
 
 /// Decode the first u64 from an `out:`/`in:` adjacency key.
@@ -3075,20 +3344,21 @@ fn u64_from_adjacency_key_first_id(key: &[u8], prefix: &[u8]) -> u64 {
     u64::from_le_bytes(arr)
 }
 
-/// Extract the edge ID from an adjacency key by stripping the prefix.
+/// Extract the edge ID from an adjacency key.
 ///
-/// Panic-free per `drevo-rust` §"Error Handling" — uses `copy_from_slice`
-/// instead of `try_into().unwrap()` even though the length guard makes the
-/// previous form unreachable.
+/// The edge id is always encoded as the **last 8 bytes** of the key, in both
+/// the v1 (`{prefix}{node_8}:{edge_8}`) and v2 (`{prefix}{node_8}:{kind}:
+/// {edge_8}`, #243 slice 2) layouts, so this parse is layout-agnostic and the
+/// `prefix` argument is only used as a lower bound to reject malformed keys.
+/// Panic-free per `drevo-rust` §"Error Handling".
 fn edge_id_from_adjacency_key(key: &[u8], prefix: &[u8]) -> u64 {
-    let suffix = &key[prefix.len()..];
-    let mut arr = [0u8; 8];
-    if suffix.len() == 8 {
-        arr.copy_from_slice(suffix);
-        u64::from_le_bytes(arr)
-    } else {
-        0
+    // Smallest valid key is v1: {prefix}{node_8}:{edge_8}.
+    if key.len() < prefix.len() + 8 + 1 + 8 {
+        return 0;
     }
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(&key[key.len() - 8..]);
+    u64::from_le_bytes(arr)
 }
 
 /// A denormalized adjacency target: the neighbor node id and the edge kind,
@@ -3601,44 +3871,69 @@ mod tests {
 
     #[test]
     fn out_edge_key_format() {
-        let key = out_edge_key(1, 5);
+        // v2 (#243 slice 2): out:{from_id_8}:{kind}:{edge_id_8}.
+        let key = out_edge_key(1, "likes", 5);
         assert!(key.starts_with(PREFIX_OUT));
-        // Format: out:{from_id_8bytes}:{edge_id_8bytes}
         let rest = &key[PREFIX_OUT.len()..];
         assert_eq!(&rest[..8], &1u64.to_le_bytes());
         assert_eq!(rest[8], b':');
-        assert_eq!(&rest[9..], &5u64.to_le_bytes());
+        assert_eq!(&rest[9..9 + "likes".len()], b"likes");
+        assert_eq!(rest[9 + "likes".len()], b':');
+        assert_eq!(&rest[rest.len() - 8..], &5u64.to_le_bytes());
     }
 
     #[test]
     fn in_edge_key_format() {
-        let key = in_edge_key(2, 10);
+        let key = in_edge_key(2, "knows", 10);
         assert!(key.starts_with(PREFIX_IN));
         let rest = &key[PREFIX_IN.len()..];
         assert_eq!(&rest[..8], &2u64.to_le_bytes());
         assert_eq!(rest[8], b':');
-        assert_eq!(&rest[9..], &10u64.to_le_bytes());
+        assert_eq!(&rest[9..9 + "knows".len()], b"knows");
+        assert_eq!(&rest[rest.len() - 8..], &10u64.to_le_bytes());
     }
 
     #[test]
-    fn out_prefix_format() {
-        let prefix = out_prefix(3);
-        let key = out_edge_key(3, 99);
-        assert!(key.starts_with(&prefix));
+    fn out_prefix_matches_all_kinds_and_kind_prefix_is_narrower() {
+        let all = out_prefix(3);
+        let likes = out_edge_key(3, "likes", 99);
+        let hates = out_edge_key(3, "hates", 7);
+        // The bare node prefix matches every kind's key.
+        assert!(likes.starts_with(&all));
+        assert!(hates.starts_with(&all));
+        // The kind-scoped prefix matches only its own kind.
+        let likes_prefix = out_kind_prefix(3, "likes");
+        assert!(likes.starts_with(&likes_prefix));
+        assert!(!hates.starts_with(&likes_prefix));
     }
 
     #[test]
-    fn in_prefix_format() {
-        let prefix = in_prefix(4);
-        let key = in_edge_key(4, 88);
-        assert!(key.starts_with(&prefix));
+    fn adjacency_key_classifier_distinguishes_v1_and_v2() {
+        let v1 = out_edge_key_v1(1, 42);
+        let v2 = out_edge_key(1, "likes", 42);
+        let v2_empty_kind = out_edge_key(1, "", 42);
+        assert!(adjacency_key_is_v1(&v1, PREFIX_OUT));
+        assert!(!adjacency_key_is_v1(&v2, PREFIX_OUT));
+        // Even an empty-kind v2 key carries the extra ':' delimiter, so it is
+        // never mistaken for v1.
+        assert!(!adjacency_key_is_v1(&v2_empty_kind, PREFIX_OUT));
     }
 
     #[test]
-    fn edge_id_from_adjacency_key_valid() {
-        let prefix = out_prefix(1);
-        let key = out_edge_key(1, 42);
-        assert_eq!(edge_id_from_adjacency_key(&key, &prefix), 42);
+    fn edge_id_from_adjacency_key_valid_for_both_layouts() {
+        // The edge id is the last 8 bytes in both layouts.
+        assert_eq!(
+            edge_id_from_adjacency_key(&out_edge_key(1, "likes", 42), PREFIX_OUT),
+            42
+        );
+        assert_eq!(
+            edge_id_from_adjacency_key(&out_edge_key_v1(1, 42), PREFIX_OUT),
+            42
+        );
+        assert_eq!(
+            edge_id_from_adjacency_key(&out_edge_key(1, "", 7), PREFIX_OUT),
+            7
+        );
     }
 
     #[test]
@@ -3646,6 +3941,15 @@ mod tests {
         let prefix = b"out:";
         let key = b"out:short";
         assert_eq!(edge_id_from_adjacency_key(key, prefix), 0);
+    }
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn adjacency_format_major_matches_on_disk_format_major() {
+        // The adjacency layout version and the redb on-disk format version are
+        // bumped together (#243 slice 2), so a v2 adjacency file is exactly the
+        // set of files an old build refuses via the on-disk major check.
+        assert_eq!(ADJ_FORMAT_MAJOR, crate::storage::redb::FORMAT_MAJOR);
     }
 
     // --- Adjacency value codec (#243 slice 1) ---
@@ -3817,10 +4121,12 @@ mod tests {
             })
             .unwrap();
 
-        // Simulate a pre-#243 database by rewriting the adjacency values back
-        // to empty, the way an older drevo stored them.
-        db.backend.put(&out_edge_key(a, e.id), &[]).unwrap();
-        db.backend.put(&in_edge_key(b, e.id), &[]).unwrap();
+        // Simulate a pre-#243-slice-1 empty adjacency value on the v2 key,
+        // the way an older drevo stored them (value empty, key kind-in-key).
+        db.backend
+            .put(&out_edge_key(a, "knows", e.id), &[])
+            .unwrap();
+        db.backend.put(&in_edge_key(b, "knows", e.id), &[]).unwrap();
 
         // Reads still work via the get_edge fallback...
         assert_eq!(
@@ -3834,11 +4140,21 @@ mod tests {
 
         // The values are now denormalized and match the edge.
         assert_eq!(
-            decode_adjacency_value(&db.backend.get(&out_edge_key(a, e.id)).unwrap().unwrap()),
+            decode_adjacency_value(
+                &db.backend
+                    .get(&out_edge_key(a, "knows", e.id))
+                    .unwrap()
+                    .unwrap()
+            ),
             Some((b, "knows"))
         );
         assert_eq!(
-            decode_adjacency_value(&db.backend.get(&in_edge_key(b, e.id)).unwrap().unwrap()),
+            decode_adjacency_value(
+                &db.backend
+                    .get(&in_edge_key(b, "knows", e.id))
+                    .unwrap()
+                    .unwrap()
+            ),
             Some((a, "knows"))
         );
         assert!(db.verify_invariants().unwrap().is_empty());
@@ -3876,7 +4192,9 @@ mod tests {
 
         // Simulate a pre-#243 empty adjacency value; the page must still
         // recover (neighbor_id, kind) via the get_edge fallback.
-        db.backend.put(&out_edge_key(a, e.id), &[]).unwrap();
+        db.backend
+            .put(&out_edge_key(a, "knows", e.id), &[])
+            .unwrap();
         let page = db.outgoing_adjacency_page(a, None, 10).unwrap();
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].neighbor_id, b);

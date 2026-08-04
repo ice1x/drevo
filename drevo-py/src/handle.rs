@@ -358,6 +358,37 @@ impl Drevo {
         })
     }
 
+    /// Migrate the adjacency index of the database at `path` (#243 slice 2).
+    ///
+    /// `direction` is `"up"` to upgrade a legacy database to the current
+    /// kind-in-key layout (after which `Drevo.open(path)` works again) or
+    /// `"down"` to revert to the previous layout so an older drevo build can
+    /// read it. Returns the number of edges re-indexed.
+    ///
+    /// Safe by construction: the migration rebuilds only the derived
+    /// adjacency index from the intact node/edge records, so an interrupted
+    /// run loses no graph data and simply resumes when re-run. Take a GraphML
+    /// backup first anyway — the `drevo migrate` CLI does so automatically.
+    ///
+    /// Raises `ValueError` for an unrecognised `direction`.
+    #[staticmethod]
+    fn migrate(py: Python<'_>, path: PyObject, direction: &str) -> PyResult<u64> {
+        let path: PathBuf = extract_path(py, path)?;
+        let dir = match direction.to_ascii_lowercase().as_str() {
+            "up" => ddb::MigrationDirection::Up,
+            "down" => ddb::MigrationDirection::Down,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "migrate direction must be 'up' or 'down', got {other:?}"
+                )))
+            }
+        };
+        guarded(|| {
+            py.allow_threads(|| ddb::Drevo::migrate(&path, dir))
+                .map_err(map_err)
+        })
+    }
+
     // ── Node CRUD ──────────────────────────────────────────────────
 
     fn create_node(&self, py: Python<'_>, new_node: types::NewNode) -> PyResult<types::Node> {

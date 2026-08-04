@@ -105,17 +105,22 @@ fn node_uuid_key(uuid: &[u8; 16]) -> Vec<u8> {
     key
 }
 
-fn out_edge_key(from_id: u64, edge_id: u64) -> Vec<u8> {
-    let mut key = PREFIX_OUT.to_vec();
-    key.extend_from_slice(&from_id.to_le_bytes());
-    key.push(b':');
-    key.extend_from_slice(&edge_id.to_le_bytes());
-    key
+// v2 kind-in-key adjacency layout (#243 slice 2): `{prefix}{node_8}:{kind}:
+// {edge_8}`. Mirrors `src/db.rs`. A v1 key here would trip the open-time
+// migration gate, so these injected orphan entries use the current layout.
+fn out_edge_key(from_id: u64, kind: &str, edge_id: u64) -> Vec<u8> {
+    adjacency_key(PREFIX_OUT, from_id, kind, edge_id)
 }
 
-fn in_edge_key(to_id: u64, edge_id: u64) -> Vec<u8> {
-    let mut key = PREFIX_IN.to_vec();
-    key.extend_from_slice(&to_id.to_le_bytes());
+fn in_edge_key(to_id: u64, kind: &str, edge_id: u64) -> Vec<u8> {
+    adjacency_key(PREFIX_IN, to_id, kind, edge_id)
+}
+
+fn adjacency_key(prefix: &[u8], node_id: u64, kind: &str, edge_id: u64) -> Vec<u8> {
+    let mut key = prefix.to_vec();
+    key.extend_from_slice(&node_id.to_le_bytes());
+    key.push(b':');
+    key.extend_from_slice(kind.as_bytes());
     key.push(b':');
     key.extend_from_slice(&edge_id.to_le_bytes());
     key
@@ -486,7 +491,7 @@ fn check_integrity_detects_orphan_out_adjacency_entry() {
     {
         let b = raw(&path);
         // Out-adjacency entry pointing to an edge id that doesn't exist.
-        b.put(&out_edge_key(1, 7777), &[]).unwrap();
+        b.put(&out_edge_key(1, "knows", 7777), &[]).unwrap();
     }
 
     let db = Drevo::open(&path).unwrap();
@@ -504,7 +509,7 @@ fn check_integrity_detects_orphan_in_adjacency_entry() {
     }
     {
         let b = raw(&path);
-        b.put(&in_edge_key(1, 8888), &[]).unwrap();
+        b.put(&in_edge_key(1, "knows", 8888), &[]).unwrap();
     }
 
     let db = Drevo::open(&path).unwrap();

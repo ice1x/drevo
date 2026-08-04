@@ -37,6 +37,7 @@ create_exception!(_drevo, SerializationError, DrevoError);
 create_exception!(_drevo, LockedError, DrevoError);
 create_exception!(_drevo, PanicError, DrevoError);
 create_exception!(_drevo, TransactionError, DrevoError);
+create_exception!(_drevo, NeedsMigrationError, DrevoError);
 
 /// Add the exception classes to the `_drevo` Python module so they are
 /// importable as `drevo.<ClassName>` after task `00116` re-exports them.
@@ -52,6 +53,7 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
     m.add("LockedError", py.get_type::<LockedError>())?;
     m.add("PanicError", py.get_type::<PanicError>())?;
     m.add("TransactionError", py.get_type::<TransactionError>())?;
+    m.add("NeedsMigrationError", py.get_type::<NeedsMigrationError>())?;
     Ok(())
 }
 
@@ -81,6 +83,10 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
         D::Io(err) => StorageError::new_err(err.to_string()),
         D::TransactionAlreadyActive => TransactionError::new_err("transaction already active"),
         D::NoActiveTransaction => TransactionError::new_err("no active transaction"),
+        D::NeedsMigration {
+            found_major,
+            required_major,
+        } => NeedsMigrationError::new_err((found_major, required_major)),
         D::Vector(err) => PyValueError::new_err(err.to_string()),
     }
 }
