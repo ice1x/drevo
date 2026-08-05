@@ -1787,60 +1787,69 @@ impl Drevo {
         Ok(edges)
     }
 
-    /// Insert a verbatim [`Node`], preserving id / uuid / timestamps and
-    /// rebuilding every secondary index. Used by JSON import (Phase 9 task
-    /// `00055`) so dumps can round-trip without losing the producer's IDs.
+    /// Every storage write needed to insert a **verbatim** node (preserving its
+    /// id / uuid / timestamps and rebuilding every secondary index), returned as
+    /// a `(key, value)` batch instead of applied one at a time.
     ///
-    /// Errors:
-    /// - [`DrevoError::DuplicateTitle`] if `node.title` is already indexed
-    ///   to a *different* node id.
-    pub(crate) fn insert_node_raw(&self, node: &Node) -> Result<()> {
+    /// This is the import fast path: [`crate::dump`]'s `apply_dump` collects the
+    /// entries for **all** imported nodes and commits them in a single
+    /// [`StorageBackend::put_batch`] transaction — one fsync instead of one per
+    /// trigram / index-entry. On a text-heavy graph that turns a restore / shrink
+    /// from tens of minutes (hundreds of thousands of per-record commits) into
+    /// seconds.
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::DuplicateTitle`] if a *different* id already owns this
+    /// node's title; storage errors from the property-index scan.
+    pub(crate) fn node_raw_entries(&self, node: &Node) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         // Title uniqueness: only fail when a different id owns this title;
         // exact-content matches were filtered upstream in `dump::apply_dump`.
         let title_key = node_title_key(&node.title);
         if let Some(existing) = self.backend.get(&title_key)? {
-            let existing_id = u64_from_bytes(&existing);
-            if existing_id != node.id {
+            if u64_from_bytes(&existing) != node.id {
                 return Err(DrevoError::DuplicateTitle(node.title.clone()));
             }
         }
 
-        let data = serialize_node(node)?;
-        self.backend.put(&node_key(node.id), &data)?;
-        self.backend
-            .put(&node_uuid_key(&node.uuid), &node.id.to_le_bytes())?;
-        self.backend.put(&title_key, &node.id.to_le_bytes())?;
-        self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
-        fts_index::index_node_with_props(
-            &*self.backend,
+        let mut writes: Vec<(Vec<u8>, Vec<u8>)> = vec![
+            (node_key(node.id), serialize_node(node)?),
+            (node_uuid_key(&node.uuid), node.id.to_le_bytes().to_vec()),
+            (title_key, node.id.to_le_bytes().to_vec()),
+            (node_kind_key(&node.kind, node.id), Vec::new()),
+        ];
+        writes.extend(fts_index::node_index_entries_with_props(
             node.id,
             &node.title,
             &node.body,
             &node.properties,
-        )?;
-        property_index::index_node(&*self.backend, node.id, &node.properties)?;
-        self.backend
-            .put(&updated_key(node.updated_at, node.id), &[])?;
-        Ok(())
+        ));
+        writes.extend(property_index::node_index_entries(
+            node.id,
+            &node.properties,
+        )?);
+        writes.push((updated_key(node.updated_at, node.id), Vec::new()));
+        Ok(writes)
     }
 
-    /// Insert a verbatim [`Edge`], preserving id / uuid / timestamp and
-    /// rebuilding adjacency / kind indexes.
-    pub(crate) fn insert_edge_raw(&self, edge: &Edge) -> Result<()> {
-        let data = serialize_edge(edge)?;
-        self.backend.put(&edge_key(edge.id), &data)?;
-        self.backend
-            .put(&edge_uuid_key(&edge.uuid), &edge.id.to_le_bytes())?;
-        self.backend.put(
-            &out_edge_key(edge.from_id, &edge.kind, edge.id),
-            &adjacency_value(edge.to_id, &edge.kind),
-        )?;
-        self.backend.put(
-            &in_edge_key(edge.to_id, &edge.kind, edge.id),
-            &adjacency_value(edge.from_id, &edge.kind),
-        )?;
-        self.backend.put(&edge_kind_key(&edge.kind, edge.id), &[])?;
-        Ok(())
+    /// Storage writes to insert a **verbatim** [`Edge`] (id / uuid / timestamp
+    /// preserved, adjacency + kind indexes rebuilt) — the edge counterpart of
+    /// [`Self::node_raw_entries`], used by the import fast path.
+    pub(crate) fn edge_raw_entries(&self, edge: &Edge) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let writes: Vec<(Vec<u8>, Vec<u8>)> = vec![
+            (edge_key(edge.id), serialize_edge(edge)?),
+            (edge_uuid_key(&edge.uuid), edge.id.to_le_bytes().to_vec()),
+            (
+                out_edge_key(edge.from_id, &edge.kind, edge.id),
+                adjacency_value(edge.to_id, &edge.kind),
+            ),
+            (
+                in_edge_key(edge.to_id, &edge.kind, edge.id),
+                adjacency_value(edge.from_id, &edge.kind),
+            ),
+            (edge_kind_key(&edge.kind, edge.id), Vec::new()),
+        ];
+        Ok(writes)
     }
 
     /// Return a reference to the underlying storage backend.

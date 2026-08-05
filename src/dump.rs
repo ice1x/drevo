@@ -579,6 +579,13 @@ impl Drevo {
         let mut report = ImportReport::default();
 
         // --- Nodes ---
+        // Collect every node's storage writes and commit them in ONE
+        // `put_batch` transaction. The per-record path used to `put` each of a
+        // node's index entries individually — and FTS emits one entry per
+        // trigram — so a text-heavy graph took hundreds of thousands of
+        // per-record commits (one fsync each). Batching folds that into a
+        // single fsync, turning a multi-minute restore/shrink into seconds.
+        let mut node_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for node in &dump.nodes {
             match self.get_node(node.id)? {
                 Some(existing) if &existing == node => {
@@ -594,11 +601,17 @@ impl Drevo {
                 }
                 None => {}
             }
-            insert_node_verbatim(self, node)?;
+            node_writes.extend(self.node_raw_entries(node)?);
             report.nodes_imported += 1;
+        }
+        if !node_writes.is_empty() {
+            self.backend().put_batch(&node_writes)?;
         }
 
         // --- Edges ---
+        // Nodes are already committed above, so the endpoint-existence checks
+        // below see them. Edge writes are likewise batched into one commit.
+        let mut edge_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for edge in &dump.edges {
             match self.get_edge(edge.id)? {
                 Some(existing) if &existing == edge => {
@@ -614,8 +627,19 @@ impl Drevo {
                 }
                 None => {}
             }
-            insert_edge_verbatim(self, edge)?;
+            // Both endpoints must exist (edges are inserted verbatim, bypassing
+            // the allocating create path that would otherwise validate this).
+            if self.get_node(edge.from_id)?.is_none() {
+                return Err(DrevoError::NodeNotFound(edge.from_id));
+            }
+            if self.get_node(edge.to_id)?.is_none() {
+                return Err(DrevoError::NodeNotFound(edge.to_id));
+            }
+            edge_writes.extend(self.edge_raw_entries(edge)?);
             report.edges_imported += 1;
+        }
+        if !edge_writes.is_empty() {
+            self.backend().put_batch(&edge_writes)?;
         }
 
         // --- ID counters ---
@@ -627,27 +651,6 @@ impl Drevo {
 
         Ok(report)
     }
-}
-
-/// Insert a verbatim node, preserving id / uuid / timestamps and rebuilding
-/// every secondary index. Title uniqueness is enforced via the existing
-/// `create_node` path, which surfaces [`DrevoError::DuplicateTitle`].
-fn insert_node_verbatim(db: &Drevo, node: &Node) -> Result<()> {
-    db.insert_node_raw(node)
-}
-
-/// Insert a verbatim edge, preserving id / uuid / timestamps.
-fn insert_edge_verbatim(db: &Drevo, edge: &Edge) -> Result<()> {
-    // Both endpoints must exist; `create_edge` validates this, but since we
-    // build edges verbatim (preserving their id and uuid) we bypass the
-    // normal allocation path and call directly into the raw insert helper.
-    if db.get_node(edge.from_id)?.is_none() {
-        return Err(DrevoError::NodeNotFound(edge.from_id));
-    }
-    if db.get_node(edge.to_id)?.is_none() {
-        return Err(DrevoError::NodeNotFound(edge.to_id));
-    }
-    db.insert_edge_raw(edge)
 }
 
 /// Helper used by [`Dump`] parsing to keep `Properties` symmetric with
