@@ -3838,12 +3838,20 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.semantic.status() YIELD label, text_property,
-    /// embedding_property, state, mode` (#251 Phase 21 control plane).
+    /// embedding_property, state, mode, pending_count, failed_count, last_error`
+    /// (#251 control plane; health columns added in #263).
     ///
     /// One row per registered semantic-index target, so a client can introspect
     /// the control plane — detect that server-side auto-embedding is available
     /// and branch (fall back to an external embedder when the procedure is
     /// absent).
+    ///
+    /// The health columns make the fail-open auto-embed path (#261) observable:
+    /// `pending_count` is the live backlog of un-embedded nodes, `failed_count`
+    /// / `last_error` surface swallowed embed failures, and `state` reads
+    /// `"degraded"` while a backlog exists. So a client can tell "fully
+    /// embedded" from "writes landed, embeddings missing" and repair via
+    /// `drevo.semantic.reindex`.
     fn proc_semantic_status(
         &self,
         _args: &[Expression],
@@ -3851,9 +3859,9 @@ impl<'a> Executor<'a> {
     ) -> ExecResultT<Vec<Vec<Value>>> {
         Ok(self
             .drevo
-            .semantic_status()
+            .semantic_status_detailed()?
             .iter()
-            .map(semantic_index_row)
+            .map(semantic_status_row)
             .collect())
     }
 
@@ -5558,12 +5566,24 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.semantic.reindex" => Some(&["scanned", "embedded", "skipped", "remaining"]),
         // Semantic-index control plane (#251 Phase 21): register / introspect
         // auto-embedding targets. Same column layout for both.
-        "drevo.semantic.register" | "drevo.semantic.status" => Some(&[
+        "drevo.semantic.register" => Some(&[
             "label",
             "text_property",
             "embedding_property",
             "state",
             "mode",
+        ]),
+        // #263 — status adds live health columns so a client can tell "fully
+        // embedded" from "writes landed, embeddings missing".
+        "drevo.semantic.status" => Some(&[
+            "label",
+            "text_property",
+            "embedding_property",
+            "state",
+            "mode",
+            "pending_count",
+            "failed_count",
+            "last_error",
         ]),
         // Full-text search (issue #208): BM25-ranked matching nodes.
         "fts.search" => Some(&["node", "score"]),
@@ -5607,6 +5627,32 @@ fn semantic_index_row(target: &SemanticIndex) -> Vec<Value> {
         Value::String(target.embedding_property.clone()),
         Value::String(target.state.as_str().to_string()),
         Value::String(target.mode.as_str().to_string()),
+    ]
+}
+
+/// Render one [`SemanticTargetStatus`] as a `drevo.semantic.status` row (#263),
+/// matching the eight-column layout in [`procedure_columns`]:
+/// `["label","text_property","embedding_property","state","mode",
+///   "pending_count","failed_count","last_error"]`.
+///
+/// The `state` column shows `"degraded"` when the target has a pending backlog
+/// (writes landed with embeddings missing); otherwise the control-plane state.
+fn semantic_status_row(status: &crate::db::SemanticTargetStatus) -> Vec<Value> {
+    let target = &status.index;
+    let state = if status.degraded {
+        "degraded".to_string()
+    } else {
+        target.state.as_str().to_string()
+    };
+    vec![
+        Value::String(target.label.clone()),
+        Value::String(target.text_property.clone()),
+        Value::String(target.embedding_property.clone()),
+        Value::String(state),
+        Value::String(target.mode.as_str().to_string()),
+        Value::Integer(i64::try_from(status.pending).unwrap_or(i64::MAX)),
+        Value::Integer(i64::try_from(status.failed).unwrap_or(i64::MAX)),
+        status.last_error.clone().map_or(Value::Null, Value::String),
     ]
 }
 

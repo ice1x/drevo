@@ -804,15 +804,32 @@ CALL drevo.semantic.register('Entity', 'summary', 'embedding', 'auto')
 YIELD label, state RETURN label, state
 ```
 
-`CALL drevo.semantic.status()` yields one row per registered target (same
-columns), so a client can introspect the capability — detect that server-side
-auto-embedding is available and branch, falling back to an external embedder
-when the procedure is absent:
+`CALL drevo.semantic.status()` yields one row per registered target, so a
+client can introspect the capability — detect that server-side auto-embedding is
+available and branch, falling back to an external embedder when the procedure is
+absent. Each row carries the control-plane columns plus live **health** signals
+(`pending_count`, `failed_count`, `last_error`):
 
 ```cypher
-CALL drevo.semantic.status() YIELD label, embedding_property, state
-RETURN label, embedding_property, state
+CALL drevo.semantic.status()
+YIELD label, embedding_property, state, pending_count, failed_count, last_error
+RETURN label, embedding_property, state, pending_count, failed_count, last_error
 ```
+
+Auto-embed is fail-open — a transient embedder outage never fails a write, so a
+`CREATE` can succeed with no embedding written. These columns make that
+observable so `drevo.semantic.query` doesn't silently under-return:
+
+- `pending_count` — `'auto'` nodes of the label that still lack an embedding
+  (a live backlog; drain it with `drevo.semantic.reindex`). Always `0` for
+  `'manual'` targets, which drevo does not embed.
+- `failed_count` / `last_error` — a cumulative tally of swallowed embed failures
+  and the most recent reason (or `null`).
+- `state` reads `'degraded'` whenever `pending_count > 0`, and returns to
+  `'enabled'` once the backlog is drained.
+
+So a client can distinguish "fully embedded" (`pending_count = 0`) from "writes
+landed but embeddings are missing", and repair via `reindex`.
 
 `CALL drevo.semantic.query(label, property, text, k) YIELD node, score` is
 `drevo.vector.query` with the embedding step folded into the server: the third
