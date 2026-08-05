@@ -68,6 +68,10 @@ const META_NEXT_EDGE_ID: &[u8] = b"meta:next_edge_id";
 /// JSON blob so `drevo.semantic.register` targets survive a restart.
 const META_SEMANTIC_REGISTRY: &[u8] = b"meta:semantic_registry";
 
+/// Meta key for the persisted #266 relationship semantic-index registry — the
+/// edge-side mirror of [`META_SEMANTIC_REGISTRY`].
+const META_SEMANTIC_REL_REGISTRY: &[u8] = b"meta:semantic_rel_registry";
+
 /// The reserved property key holding a node's secondary `:Label`s (mirrors the
 /// private constant in [`crate::cypher::executor`]). #251 slice 4 matches
 /// auto-embed targets against these in addition to the primary `kind`; #263's
@@ -201,7 +205,13 @@ pub struct Drevo {
     /// a `Mutex` for the shared `&Drevo`. Feature-gated on `http` like the
     /// embedder that produces these failures.
     #[cfg(feature = "http")]
-    embed_failures: Mutex<std::collections::HashMap<(String, String), EmbedFailureStat>>,
+    embed_failures: Mutex<std::collections::HashMap<(String, String, String), EmbedFailureStat>>,
+    /// #266 — relationship-side mirror of [`Self::semantic`]: auto-embedding
+    /// targets registered against a **relationship type** (rather than a node
+    /// label), reachable over Cypher via the `drevo.semantic.*Rel` procedures.
+    /// Kept in a separate registry (the `fts.search` / `fts.searchRelationships`
+    /// split) and persisted to `meta:semantic_rel_registry`.
+    rel_semantic: Mutex<SemanticIndexRegistry>,
 }
 
 /// A per-target tally of swallowed auto-embed failures (#263).
@@ -219,6 +229,10 @@ struct EmbedFailureStat {
 /// the enriched `drevo.semantic.status` output.
 #[derive(Debug, Clone)]
 pub struct SemanticTargetStatus {
+    /// Whether this target matches a node label (`"node"`) or a relationship
+    /// type (`"relationship"`) — #266. For a node target `index.label` is the
+    /// node label; for a relationship target it is the relationship type.
+    pub target_kind: &'static str,
     /// The registered target (label, properties, mode, control-plane state).
     pub index: SemanticIndex,
     /// Auto-mode nodes of the label that still lack an embedding (a live
@@ -580,8 +594,10 @@ impl Drevo {
         let backend = Box::new(backend);
         let (next_node_id, next_edge_id, drift_repaired) = Self::load_counters(&*backend)?;
         // Restore any persisted semantic-index registry (#251) so registered
-        // auto-embedding targets survive a restart.
-        let semantic = Self::load_semantic_registry(&*backend);
+        // auto-embedding targets survive a restart. The relationship registry
+        // (#266) is restored the same way from its own meta key.
+        let semantic = Self::load_semantic_registry(&*backend, META_SEMANTIC_REGISTRY);
+        let rel_semantic = Self::load_semantic_registry(&*backend, META_SEMANTIC_REL_REGISTRY);
         Ok(Self {
             backend,
             next_node_id: AtomicU64::new(next_node_id),
@@ -593,6 +609,7 @@ impl Drevo {
             embedder: std::sync::OnceLock::new(),
             #[cfg(feature = "http")]
             embed_failures: Mutex::new(std::collections::HashMap::new()),
+            rel_semantic: Mutex::new(rel_semantic),
         })
     }
 
@@ -740,14 +757,37 @@ impl Drevo {
         // storage hiccup must not fail a control-plane call — the next
         // successful mutation re-persists. Ephemeral in-memory backends simply
         // drop the blob on close, which is the correct behaviour there.
-        self.persist_semantic_registry(&registry);
+        self.persist_semantic_registry(META_SEMANTIC_REGISTRY, &registry);
         Ok(target)
     }
 
-    /// Serialize the semantic-index registry to the `meta:semantic_registry`
-    /// key (#251). Best-effort — a failure is logged (when tracing is built in)
-    /// and swallowed rather than surfaced to the control-plane caller.
-    fn persist_semantic_registry(&self, registry: &SemanticIndexRegistry) {
+    /// Register (or re-enable) a **relationship**-side auto-embedding target and
+    /// return its current record (#266) — the edge mirror of
+    /// [`Self::semantic_register`]. `rel_type` matches an edge's `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError`] from the underlying registry transition.
+    pub fn semantic_register_rel(
+        &self,
+        rel_type: &str,
+        text_property: &str,
+        embedding_property: &str,
+        mode: IndexMode,
+        model: Option<String>,
+    ) -> std::result::Result<SemanticIndex, IndexError> {
+        let mut registry = self.rel_semantic.lock().unwrap_or_else(|e| e.into_inner());
+        let target = registry
+            .enable(rel_type, text_property, embedding_property, mode, model)
+            .cloned()?;
+        self.persist_semantic_registry(META_SEMANTIC_REL_REGISTRY, &registry);
+        Ok(target)
+    }
+
+    /// Serialize a semantic-index registry to `key` (#251 / #266). Best-effort —
+    /// a failure is logged (when tracing is built in) and swallowed rather than
+    /// surfaced to the control-plane caller.
+    fn persist_semantic_registry(&self, key: &[u8], registry: &SemanticIndexRegistry) {
         let bytes = match serde_json::to_vec(registry) {
             Ok(b) => b,
             Err(_e) => {
@@ -756,16 +796,16 @@ impl Drevo {
                 return;
             }
         };
-        if let Err(_e) = self.backend.put(META_SEMANTIC_REGISTRY, &bytes) {
+        if let Err(_e) = self.backend.put(key, &bytes) {
             #[cfg(feature = "http")]
             tracing::warn!(error = %_e, "failed to persist semantic registry (ignored)");
         }
     }
 
-    /// Load a persisted semantic-index registry from the backend, or an empty
-    /// one when absent or unreadable (#251). Used by [`Self::open`].
-    fn load_semantic_registry(backend: &dyn StorageBackend) -> SemanticIndexRegistry {
-        match backend.get(META_SEMANTIC_REGISTRY) {
+    /// Load a persisted semantic-index registry from `key`, or an empty one when
+    /// absent or unreadable (#251 / #266). Used by [`Self::open`].
+    fn load_semantic_registry(backend: &dyn StorageBackend, key: &[u8]) -> SemanticIndexRegistry {
+        match backend.get(key) {
             Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
             _ => SemanticIndexRegistry::new(),
         }
@@ -794,30 +834,53 @@ impl Drevo {
     ///
     /// Propagates storage errors from the pending-backlog scan.
     pub fn semantic_status_detailed(&self) -> Result<Vec<SemanticTargetStatus>> {
-        let targets = self.semantic_status();
-        let mut out = Vec::with_capacity(targets.len());
-        for index in targets {
-            // Only Auto targets are drevo-managed, so only they have a backlog.
-            let pending = if matches!(index.mode, IndexMode::Auto) {
-                self.semantic_pending_count(
+        let node_targets = self.semantic_status();
+        let rel_targets = self
+            .rel_semantic
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+            .to_vec();
+        let mut out = Vec::with_capacity(node_targets.len() + rel_targets.len());
+        for index in node_targets {
+            out.push(self.status_for("node", index)?);
+        }
+        for index in rel_targets {
+            out.push(self.status_for("relationship", index)?);
+        }
+        Ok(out)
+    }
+
+    /// Build the health row for one target of the given kind (`"node"` /
+    /// `"relationship"`), scanning the matching backlog (#263 / #266).
+    fn status_for(&self, kind: &'static str, index: SemanticIndex) -> Result<SemanticTargetStatus> {
+        // Only Auto targets are drevo-managed, so only they have a backlog.
+        let pending = if matches!(index.mode, IndexMode::Auto) {
+            match kind {
+                "relationship" => self.semantic_pending_count_rel(
                     &index.label,
                     &index.text_property,
                     &index.embedding_property,
-                )?
-            } else {
-                0
-            };
-            let (failed, last_error) =
-                self.embed_failure_stat(&index.label, &index.embedding_property);
-            out.push(SemanticTargetStatus {
-                index,
-                pending,
-                failed,
-                last_error,
-                degraded: pending > 0,
-            });
-        }
-        Ok(out)
+                )?,
+                _ => self.semantic_pending_count(
+                    &index.label,
+                    &index.text_property,
+                    &index.embedding_property,
+                )?,
+            }
+        } else {
+            0
+        };
+        let (failed, last_error) =
+            self.embed_failure_stat(kind, &index.label, &index.embedding_property);
+        Ok(SemanticTargetStatus {
+            target_kind: kind,
+            index,
+            pending,
+            failed,
+            last_error,
+            degraded: pending > 0,
+        })
     }
 
     /// Count nodes of `label` that carry a non-empty `text_property` but are
@@ -857,17 +920,53 @@ impl Drevo {
         Ok(pending)
     }
 
-    /// Record a swallowed auto-embed failure for a target (#263). Called from
-    /// the fail-open paths (write-path hook and reindex) so the degraded
-    /// condition is observable via `drevo.semantic.status`.
+    /// Relationship mirror of [`Self::semantic_pending_count`] (#266): edges of
+    /// `rel_type` with a non-empty `text_property` but no `embedding_property`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates storage errors from the edge scan.
+    fn semantic_pending_count_rel(
+        &self,
+        rel_type: &str,
+        text_property: &str,
+        embedding_property: &str,
+    ) -> Result<usize> {
+        let mut pending = 0;
+        for edge in self.collect_all_edges()? {
+            if edge.kind != rel_type {
+                continue;
+            }
+            let has_text = edge
+                .properties
+                .0
+                .get(text_property)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| !s.is_empty());
+            let has_embedding = edge.properties.0.contains_key(embedding_property);
+            if has_text && !has_embedding {
+                pending += 1;
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Record a swallowed auto-embed failure for a target (#263), keyed by
+    /// `kind` (`"node"` / `"relationship"`, #266) so a node label and a
+    /// relationship type of the same name never collide. Called from the
+    /// fail-open paths (write-path hooks and reindex).
     #[cfg(feature = "http")]
-    fn record_embed_failure(&self, label: &str, embedding_property: &str, error: &str) {
+    fn record_embed_failure(&self, kind: &str, name: &str, embedding_property: &str, error: &str) {
         let mut map = self
             .embed_failures
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let stat = map
-            .entry((label.to_string(), embedding_property.to_string()))
+            .entry((
+                kind.to_string(),
+                name.to_string(),
+                embedding_property.to_string(),
+            ))
             .or_default();
         stat.count += 1;
         stat.last_error = error.to_string();
@@ -876,21 +975,30 @@ impl Drevo {
     /// Read the cumulative failure count and most-recent error for a target
     /// (#263). Returns `(0, None)` when nothing has failed — and, on a build
     /// without the `http` feature, always (there is no embedder to fail).
-    fn embed_failure_stat(&self, label: &str, embedding_property: &str) -> (u64, Option<String>) {
+    fn embed_failure_stat(
+        &self,
+        kind: &str,
+        name: &str,
+        embedding_property: &str,
+    ) -> (u64, Option<String>) {
         #[cfg(feature = "http")]
         {
             let map = self
                 .embed_failures
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            match map.get(&(label.to_string(), embedding_property.to_string())) {
+            match map.get(&(
+                kind.to_string(),
+                name.to_string(),
+                embedding_property.to_string(),
+            )) {
                 Some(stat) if stat.count > 0 => (stat.count, Some(stat.last_error.clone())),
                 _ => (0, None),
             }
         }
         #[cfg(not(feature = "http"))]
         {
-            let _ = (label, embedding_property);
+            let _ = (kind, name, embedding_property);
             (0, None)
         }
     }
@@ -1029,7 +1137,7 @@ impl Drevo {
                     }
                     Err(error) => {
                         tracing::warn!(label = %label, %error, "auto-embed failed (ignored)");
-                        self.record_embed_failure(&label, &emb_prop, &error.to_string());
+                        self.record_embed_failure("node", &label, &emb_prop, &error.to_string());
                     }
                 }
             }
@@ -1037,6 +1145,81 @@ impl Drevo {
         #[cfg(not(feature = "http"))]
         {
             let _ = (kind, properties, old);
+        }
+    }
+
+    /// #266 — relationship mirror of [`Self::apply_auto_embeddings`]: apply
+    /// server-side auto-embedding to an **edge's** properties before it is
+    /// persisted. `rel_type` is the edge's `kind`; matching Auto-mode targets in
+    /// the relationship registry embed `text_property` into `embedding_property`.
+    /// Same double no-op and fail-open discipline as the node path.
+    fn apply_auto_embeddings_edge(
+        &self,
+        rel_type: &str,
+        properties: &mut Properties,
+        old: Option<&Properties>,
+    ) {
+        #[cfg(feature = "http")]
+        {
+            if self.embedder.get().is_none() {
+                return;
+            }
+            let targets: Vec<(String, String, String)> = {
+                let registry = self.rel_semantic.lock().unwrap_or_else(|e| e.into_inner());
+                registry
+                    .list()
+                    .iter()
+                    .filter(|t| matches!(t.mode, IndexMode::Auto) && t.label == rel_type)
+                    .map(|t| {
+                        (
+                            t.label.clone(),
+                            t.text_property.clone(),
+                            t.embedding_property.clone(),
+                        )
+                    })
+                    .collect()
+            };
+            for (rel, text_prop, emb_prop) in targets {
+                let Some(text) = properties
+                    .0
+                    .get(&text_prop)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                else {
+                    continue; // no text to embed on this edge
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                if let Some(old) = old {
+                    let unchanged = old.0.get(&text_prop).and_then(serde_json::Value::as_str)
+                        == Some(text.as_str());
+                    if unchanged && properties.0.contains_key(&emb_prop) {
+                        continue;
+                    }
+                }
+                match self.embed_text(&text) {
+                    Ok(vector) => {
+                        let arr = serde_json::Value::Array(
+                            vector.into_iter().map(|f| serde_json::json!(f)).collect(),
+                        );
+                        properties.0.insert(emb_prop, arr);
+                    }
+                    Err(error) => {
+                        tracing::warn!(rel_type = %rel, %error, "auto-embed (rel) failed (ignored)");
+                        self.record_embed_failure(
+                            "relationship",
+                            &rel,
+                            &emb_prop,
+                            &error.to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            let _ = (rel_type, properties, old);
         }
     }
 
@@ -1132,7 +1315,85 @@ impl Drevo {
                 Err(error) => {
                     // Swallow like the write path; leave it for a later pass.
                     tracing::warn!(label, error = %error, "reindex embed failed (ignored)");
-                    self.record_embed_failure(label, embedding_property, &error.to_string());
+                    self.record_embed_failure(
+                        "node",
+                        label,
+                        embedding_property,
+                        &error.to_string(),
+                    );
+                    report.remaining += 1;
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// #266 — relationship mirror of [`Self::semantic_reindex`]: backfill
+    /// embeddings for already-present **edges** of `rel_type`, in resumable
+    /// batches. Same idempotent / resumable / fail-open semantics as the node
+    /// path; persists via [`Self::update_edge`] so every index stays in sync.
+    ///
+    /// # Errors
+    ///
+    /// Propagates storage errors from scanning or persisting edges.
+    #[cfg(feature = "http")]
+    pub fn semantic_reindex_rel(
+        &self,
+        rel_type: &str,
+        text_property: &str,
+        embedding_property: &str,
+        batch_size: usize,
+    ) -> Result<SemanticReindexReport> {
+        let mut report = SemanticReindexReport::default();
+        let embedder_ready = self.embedder.get().is_some();
+        let mut budget = batch_size;
+
+        for edge in self.collect_all_edges()? {
+            if edge.kind != rel_type {
+                continue;
+            }
+            report.scanned += 1;
+
+            let text = edge
+                .properties
+                .0
+                .get(text_property)
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let already_embedded = edge.properties.0.contains_key(embedding_property);
+            let Some(text) = text.filter(|_| !already_embedded) else {
+                report.skipped += 1;
+                continue;
+            };
+
+            if budget == 0 || !embedder_ready {
+                report.remaining += 1;
+                continue;
+            }
+            match self.embed_text(&text) {
+                Ok(vector) => {
+                    let mut props = edge.properties.clone();
+                    let arr = serde_json::Value::Array(
+                        vector.into_iter().map(|f| serde_json::json!(f)).collect(),
+                    );
+                    props.0.insert(embedding_property.to_string(), arr);
+                    let patch = EdgePatch {
+                        properties: Some(props),
+                        ..Default::default()
+                    };
+                    self.update_edge(edge.id, patch)?;
+                    report.embedded += 1;
+                    budget -= 1;
+                }
+                Err(error) => {
+                    tracing::warn!(rel_type, error = %error, "reindex (rel) embed failed (ignored)");
+                    self.record_embed_failure(
+                        "relationship",
+                        rel_type,
+                        embedding_property,
+                        &error.to_string(),
+                    );
                     report.remaining += 1;
                 }
             }
@@ -1253,6 +1514,7 @@ impl Drevo {
             embedder: std::sync::OnceLock::new(),
             #[cfg(feature = "http")]
             embed_failures: Mutex::new(std::collections::HashMap::new()),
+            rel_semantic: Mutex::new(SemanticIndexRegistry::new()),
         })
     }
 
@@ -2224,7 +2486,10 @@ impl Drevo {
         }
 
         let id = self.alloc_edge_id();
-        let edge = new_edge.into_edge(id);
+        let mut edge = new_edge.into_edge(id);
+        // #266: relationship-side auto-embedding on ingest. No-op unless an
+        // embedder is installed and an Auto-mode rel target matches this kind.
+        self.apply_auto_embeddings_edge(&edge.kind, &mut edge.properties, None);
 
         // Store edge data
         let data = serialize_edge(&edge)?;
@@ -2286,7 +2551,10 @@ impl Drevo {
             }
 
             let id = self.alloc_edge_id();
-            let edge = new_edge.into_edge(id);
+            let mut edge = new_edge.into_edge(id);
+            // #266: auto-embed each edge on bulk ingest too (no-op unless an
+            // embedder is installed and an Auto-mode rel target matches).
+            self.apply_auto_embeddings_edge(&edge.kind, &mut edge.properties, None);
 
             writes.push((edge_key(id), serialize_edge(&edge)?));
             writes.push((edge_uuid_key(&edge.uuid), id.to_le_bytes().to_vec()));
@@ -2368,6 +2636,10 @@ impl Drevo {
         let old_properties = edge.properties.clone();
 
         edge.apply_patch(patch);
+        // #266: re-embed when the source text changed (no-op unless an embedder
+        // is installed and an Auto-mode rel target matches). Pass the pre-image
+        // so an unchanged text is skipped.
+        self.apply_auto_embeddings_edge(&edge.kind, &mut edge.properties, Some(&old_properties));
 
         let data = serialize_edge(&edge)?;
         self.backend.put(&edge_key(id), &data)?;
@@ -5072,6 +5344,7 @@ mod tests {
             embedder: std::sync::OnceLock::new(),
             #[cfg(feature = "http")]
             embed_failures: Mutex::new(std::collections::HashMap::new()),
+            rel_semantic: Mutex::new(SemanticIndexRegistry::new()),
         };
 
         let mk = |title: &str| {

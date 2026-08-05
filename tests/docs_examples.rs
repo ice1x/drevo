@@ -144,6 +144,8 @@ fn needs_runtime_config(source: &str) -> bool {
     // `drevo.semantic.reindex` requires a registered target (and an embedder) to
     // run; on a bare in-memory database it errors "no semantic target
     // registered". Covered in `tests/semantic_reindex_tests.rs`.
+    // Both cover the relationship mirrors too (queryRel / reindexRel, #266)
+    // via the `query`/`reindex` substring match.
     source.contains("drevo.semantic.query") || source.contains("drevo.semantic.reindex")
 }
 
