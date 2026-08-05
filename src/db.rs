@@ -74,6 +74,24 @@ const META_SEMANTIC_REGISTRY: &[u8] = b"meta:semantic_registry";
 #[cfg(feature = "http")]
 const SECONDARY_LABELS_KEY: &str = "_labels";
 
+/// Outcome of one [`Drevo::semantic_reindex`] backfill pass (#262).
+///
+/// Backs the `drevo.semantic.reindex` procedure. The counts let a client drive
+/// the backfill to completion: keep calling while `remaining > 0`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticReindexReport {
+    /// Nodes of the target label examined this pass.
+    pub scanned: usize,
+    /// Nodes embedded this pass (text present, embedding written).
+    pub embedded: usize,
+    /// Nodes skipped — already carrying the embedding, or no text to embed.
+    pub skipped: usize,
+    /// Candidates still needing embedding after this pass: those left when
+    /// `batch_size` was reached, plus any whose embed attempt failed this pass.
+    /// A client re-runs `reindex` until this reaches zero.
+    pub remaining: usize,
+}
+
 /// Key prefix for node data: `node:{id}` -> bincode(Node).
 const PREFIX_NODE: &[u8] = b"node:";
 
@@ -864,6 +882,105 @@ impl Drevo {
         {
             let _ = (kind, properties, old);
         }
+    }
+
+    /// #262 — backfill embeddings for **already-present** nodes of a semantic
+    /// target, in resumable batches.
+    ///
+    /// Auto-embedding (#251 slice 4) only fires on create/update, so nodes that
+    /// existed before a rule was registered stay un-embedded and invisible to
+    /// `drevo.semantic.query`. This walks the nodes of `label`, embeds
+    /// `text_property` into `embedding_property` for up to `batch_size` of those
+    /// that still lack it, and reports counts so a client can loop until
+    /// `remaining == 0`.
+    ///
+    /// The caller (the `drevo.semantic.reindex` procedure) resolves and
+    /// validates the registered target first and passes its `text_property` /
+    /// `embedding_property` here, so this method itself is registry-agnostic.
+    ///
+    /// Idempotent and resumable: a node that already carries `embedding_property`
+    /// is skipped, so re-running is cheap and safe. A node whose text changed is
+    /// re-embedded by the write path, not here. Each embed + persist is its own
+    /// storage transaction, and the embedding call happens before that
+    /// transaction opens — so, like the write-path hook, no lock is held across
+    /// the network I/O. Nodes without a non-empty `text_property` are skipped; a
+    /// failed embed is left for a later pass (counted in `remaining`).
+    ///
+    /// A no-op returning zeros when no embedder is installed.
+    ///
+    /// # Errors
+    ///
+    /// Propagates storage errors from scanning or persisting nodes.
+    #[cfg(feature = "http")]
+    pub fn semantic_reindex(
+        &self,
+        label: &str,
+        text_property: &str,
+        embedding_property: &str,
+        batch_size: usize,
+    ) -> Result<SemanticReindexReport> {
+        let mut report = SemanticReindexReport::default();
+        let embedder_ready = self.embedder.get().is_some();
+        let mut budget = batch_size;
+
+        for node in self.collect_all_nodes()? {
+            // Match the node's primary kind plus any secondary `_labels`.
+            let matches_label = node.kind == label
+                || matches!(
+                    node.properties.0.get(SECONDARY_LABELS_KEY),
+                    Some(serde_json::Value::Array(arr))
+                        if arr.iter().any(|v| v.as_str() == Some(label))
+                );
+            if !matches_label {
+                continue;
+            }
+            report.scanned += 1;
+
+            let text = node
+                .properties
+                .0
+                .get(text_property)
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let already_embedded = node.properties.0.contains_key(embedding_property);
+            let Some(text) = text.filter(|_| !already_embedded) else {
+                // No text to embed, or the embedding is already present.
+                report.skipped += 1;
+                continue;
+            };
+
+            // A candidate needing embedding.
+            if budget == 0 || !embedder_ready {
+                report.remaining += 1;
+                continue;
+            }
+            match self.embed_text(&text) {
+                Ok(vector) => {
+                    let mut props = node.properties.clone();
+                    let arr = serde_json::Value::Array(
+                        vector.into_iter().map(|f| serde_json::json!(f)).collect(),
+                    );
+                    props.0.insert(embedding_property.to_string(), arr);
+                    // Persist via the normal update path (keeps every index in
+                    // sync). The auto-embed hook sees the text unchanged and the
+                    // embedding already set, so it does not re-embed.
+                    let patch = NodePatch {
+                        properties: Some(props),
+                        ..Default::default()
+                    };
+                    self.update_node(node.id, patch)?;
+                    report.embedded += 1;
+                    budget -= 1;
+                }
+                Err(_error) => {
+                    // Swallow like the write path; leave it for a later pass.
+                    tracing::warn!(label, %_error, "reindex embed failed (ignored)");
+                    report.remaining += 1;
+                }
+            }
+        }
+        Ok(report)
     }
 
     /// Physical on-disk size of the backend file in bytes, or `None` for the

@@ -865,6 +865,24 @@ target is never auto-embedded, and existing nodes created before registration
 keep their current embeddings until next written. An upstream failure is logged
 and swallowed — it never fails the write.
 
+**Backfilling existing nodes.** Because auto-embed fires only on create/update,
+registering a rule against an already-populated label leaves those rows
+un-embedded. `CALL drevo.semantic.reindex(label, embedding_property, batch_size)`
+backfills them in resumable batches:
+
+```cypher
+CALL drevo.semantic.reindex('Doc', 'embedding', 128)
+YIELD scanned, embedded, skipped, remaining
+RETURN scanned, embedded, skipped, remaining
+```
+
+It embeds up to `batch_size` of the still-un-embedded `label` nodes and returns
+the counts; a client loops while `remaining > 0`. It is idempotent (nodes that
+already carry `embedding_property` are `skipped`, so re-running is cheap) and
+resumable across calls. Nodes without a non-empty `text_property` are skipped; a
+`'manual'` target is a no-op (all-zero counts); and it errors if no target is
+registered for `(label, embedding_property)`.
+
 ---
 
 ## Literals
