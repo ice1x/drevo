@@ -564,6 +564,7 @@ fn semantic_status_lists_registered_targets() {
     assert_eq!(rows[0][5], Value::Integer(0));
     assert_eq!(rows[0][6], Value::Integer(0));
     assert_eq!(rows[0][7], Value::Null);
+    assert_eq!(rows[0][8], Value::String("node".to_string())); // target_kind (#266)
     assert_eq!(
         row_strings(&rows[1][..5]),
         vec!["Doc", "body", "vec", "enabled", "manual"]
@@ -571,6 +572,7 @@ fn semantic_status_lists_registered_targets() {
     assert_eq!(rows[1][5], Value::Integer(0));
     assert_eq!(rows[1][6], Value::Integer(0));
     assert_eq!(rows[1][7], Value::Null);
+    assert_eq!(rows[1][8], Value::String("node".to_string()));
 }
 
 #[test]

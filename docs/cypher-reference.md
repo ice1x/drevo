@@ -900,6 +900,35 @@ resumable across calls. Nodes without a non-empty `text_property` are skipped; a
 `'manual'` target is a no-op (all-zero counts); and it errors if no target is
 registered for `(label, embedding_property)`.
 
+### Relationships (#266)
+
+Every semantic procedure has a **relationship** mirror that matches an edge's
+type (`Edge::kind`) instead of a node label — the same split as `fts.search` vs
+`fts.searchRelationships`. A rule registered with `registerRel` auto-embeds
+matching relationships on create/update, and `queryRel` retrieves them:
+
+```cypher
+CALL drevo.semantic.registerRel('RELATES_TO', 'fact', 'fact_embedding', 'auto')
+YIELD label, state RETURN label, state
+```
+
+```cypher
+CALL drevo.semantic.queryRel('RELATES_TO', 'fact_embedding', 'who mentors whom', 5)
+YIELD rel, score RETURN rel, score ORDER BY score DESC
+```
+
+```cypher
+CALL drevo.semantic.reindexRel('RELATES_TO', 'fact_embedding', 128)
+YIELD scanned, embedded, skipped, remaining
+RETURN scanned, embedded, skipped, remaining
+```
+
+`registerRel` / `queryRel` / `reindexRel` behave exactly like their node
+counterparts (`register` / `query` / `reindex`) — same modes, fail-open
+auto-embed, skip-unchanged, and batched/idempotent backfill. `drevo.semantic.status`
+lists node **and** relationship targets, with a `target_kind` column
+(`node` / `relationship`) distinguishing them.
+
 ---
 
 ## Literals

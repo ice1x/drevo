@@ -923,8 +923,9 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           db.labels, db.relationshipTypes, db.propertyKeys, \
                           drevo.vector.query, drevo.semantic.query, \
                           drevo.semantic.reindex, drevo.semantic.register, \
-                          drevo.semantic.status, fts.search, \
-                          fts.searchRelationships"
+                          drevo.semantic.status, drevo.semantic.registerRel, \
+                          drevo.semantic.queryRel, drevo.semantic.reindexRel, \
+                          fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
                 })?;
@@ -3838,9 +3839,12 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.semantic.status() YIELD label, text_property,
-    /// embedding_property, state, mode, pending_count, failed_count, last_error`
-    /// (#251 control plane; health columns added in #263).
+    /// embedding_property, state, mode, pending_count, failed_count, last_error,
+    /// target_kind` (#251 control plane; health columns added in #263;
+    /// `target_kind` node/relationship added in #266).
     ///
+    /// Lists both node targets and relationship targets (#266); `target_kind`
+    /// distinguishes them and `label` holds the node label or relationship type.
     /// One row per registered semantic-index target, so a client can introspect
     /// the control plane — detect that server-side auto-embedding is available
     /// and branch (fall back to an external embedder when the procedure is
@@ -3936,6 +3940,172 @@ impl<'a> Executor<'a> {
         ]])
     }
 
+    /// `CALL drevo.semantic.registerRel(rel_type, text_property,
+    /// embedding_property, mode)` (#266) — the relationship mirror of
+    /// [`Self::proc_semantic_register`]. Registers an auto-embedding rule
+    /// against a relationship *type*; matching edges are embedded on write.
+    fn proc_semantic_register_rel(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let empty = Bindings::new();
+        let rel_type = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let text_property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let embedding_property = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+        let mode_str = self.eval(&args[3], &empty)?.as_string(span)?.to_string();
+        let mode = IndexMode::parse(&mode_str).map_err(|e| ExecError::InvalidProcedureCall {
+            name: "drevo.semantic.registerRel".to_string(),
+            message: e.to_string(),
+            span,
+        })?;
+        let target = self
+            .drevo
+            .semantic_register_rel(&rel_type, &text_property, &embedding_property, mode, None)
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.registerRel".to_string(),
+                message: e.to_string(),
+                span,
+            })?;
+        Ok(vec![semantic_index_row(&target)])
+    }
+
+    /// `CALL drevo.semantic.queryRel(rel_type, embedding_property, text, k)
+    /// YIELD rel, score` (#266) — the relationship mirror of
+    /// [`Self::proc_semantic_query`]: embed the query text server-side, then
+    /// rank edges of `rel_type` by cosine similarity to their
+    /// `embedding_property`.
+    #[cfg(feature = "http")]
+    fn proc_semantic_query_rel(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let empty = Bindings::new();
+        let rel_type = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let text = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[3], &empty)?;
+
+        let query = self
+            .drevo
+            .embed_text(&text)
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.queryRel".to_string(),
+                message: e.to_string(),
+                span,
+            })?;
+
+        self.rel_vector_scan(&rel_type, &property, &query, k, span)
+    }
+
+    /// Brute-force cosine scan over **edges** of `rel_type` (#266) — the edge
+    /// analogue of [`Self::vector_scan`]. Emits `(rel, score)` rows.
+    fn rel_vector_scan(
+        &self,
+        rel_type: &str,
+        property: &str,
+        query: &[f32],
+        k: usize,
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let mut scored: Vec<(f32, Arc<RelationshipValue>)> = Vec::new();
+        for edge in self.drevo.collect_all_edges()? {
+            if edge.kind != rel_type {
+                continue;
+            }
+            let rv = edge_to_value(&edge);
+            let Some(embedding_val) = rv.properties.get(property) else {
+                continue;
+            };
+            let Ok(embedding) =
+                similar_operand(embedding_val, "drevo.semantic.queryRel", "embedding", span)
+            else {
+                continue;
+            };
+            let Ok(score) = cosine_similarity(&embedding, query) else {
+                continue;
+            };
+            scored.push((score, rv));
+        }
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        scored.truncate(k);
+        Ok(scored
+            .into_iter()
+            .map(|(score, rv)| vec![Value::Relationship(rv), Value::Float(f64::from(score))])
+            .collect())
+    }
+
+    /// `CALL drevo.semantic.reindexRel(rel_type, embedding_property, batch_size)
+    /// YIELD scanned, embedded, skipped, remaining` (#266) — the relationship
+    /// mirror of [`Self::proc_semantic_reindex`]. Backfills existing edges.
+    #[cfg(feature = "http")]
+    fn proc_semantic_reindex_rel(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let empty = Bindings::new();
+        let rel_type = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let embedding_property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let batch_size = self.eval_usize(&args[2], &empty)?;
+
+        let target = self
+            .drevo
+            .semantic_status_detailed()
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.reindexRel".to_string(),
+                message: e.to_string(),
+                span,
+            })?
+            .into_iter()
+            .find(|s| {
+                s.target_kind == "relationship"
+                    && s.index.label == rel_type
+                    && s.index.embedding_property == embedding_property
+            });
+        let Some(status) = target else {
+            return Err(ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.reindexRel".to_string(),
+                message: format!(
+                    "no semantic relationship target registered for type `{rel_type}` with \
+                     embedding property `{embedding_property}` — call \
+                     drevo.semantic.registerRel first"
+                ),
+                span,
+            });
+        };
+
+        let report = if matches!(status.index.mode, IndexMode::Auto) {
+            self.drevo
+                .semantic_reindex_rel(
+                    &status.index.label,
+                    &status.index.text_property,
+                    &status.index.embedding_property,
+                    batch_size,
+                )
+                .map_err(|e| ExecError::InvalidProcedureCall {
+                    name: "drevo.semantic.reindexRel".to_string(),
+                    message: e.to_string(),
+                    span,
+                })?
+        } else {
+            crate::db::SemanticReindexReport::default()
+        };
+
+        let as_int = |n: usize| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+        Ok(vec![vec![
+            as_int(report.scanned),
+            as_int(report.embedded),
+            as_int(report.skipped),
+            as_int(report.remaining),
+        ]])
+    }
+
     /// `CALL fts.search(query, k) YIELD node, score` (issue #208) — the top-`k`
     /// nodes matching `query` in the BM25 full-text index (task `00131`),
     /// ranked by relevance.
@@ -4014,6 +4184,11 @@ impl<'a> Executor<'a> {
             #[cfg(feature = "http")]
             "drevo.semantic.reindex" => self.proc_semantic_reindex(args, span),
             "drevo.semantic.register" => self.proc_semantic_register(args, span),
+            "drevo.semantic.registerRel" => self.proc_semantic_register_rel(args, span),
+            #[cfg(feature = "http")]
+            "drevo.semantic.queryRel" => self.proc_semantic_query_rel(args, span),
+            #[cfg(feature = "http")]
+            "drevo.semantic.reindexRel" => self.proc_semantic_reindex_rel(args, span),
             "drevo.semantic.status" => self.proc_semantic_status(args, span),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
@@ -5564,9 +5739,14 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // Backfill reindex (#262): counts from one resumable batch.
         #[cfg(feature = "http")]
         "drevo.semantic.reindex" => Some(&["scanned", "embedded", "skipped", "remaining"]),
+        // #266 relationship mirrors.
+        #[cfg(feature = "http")]
+        "drevo.semantic.queryRel" => Some(&["rel", "score"]),
+        #[cfg(feature = "http")]
+        "drevo.semantic.reindexRel" => Some(&["scanned", "embedded", "skipped", "remaining"]),
         // Semantic-index control plane (#251 Phase 21): register / introspect
         // auto-embedding targets. Same column layout for both.
-        "drevo.semantic.register" => Some(&[
+        "drevo.semantic.register" | "drevo.semantic.registerRel" => Some(&[
             "label",
             "text_property",
             "embedding_property",
@@ -5574,7 +5754,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "mode",
         ]),
         // #263 — status adds live health columns so a client can tell "fully
-        // embedded" from "writes landed, embeddings missing".
+        // embedded" from "writes landed, embeddings missing". #266 adds
+        // `target_kind` (node|relationship) so rel targets are distinguishable.
         "drevo.semantic.status" => Some(&[
             "label",
             "text_property",
@@ -5584,6 +5765,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "pending_count",
             "failed_count",
             "last_error",
+            "target_kind",
         ]),
         // Full-text search (issue #208): BM25-ranked matching nodes.
         "fts.search" => Some(&["node", "score"]),
@@ -5606,6 +5788,13 @@ fn procedure_arity(name: &str) -> usize {
         // drevo.semantic.reindex(label, embedding_property, batch_size)
         #[cfg(feature = "http")]
         "drevo.semantic.reindex" => 3,
+        // #266: registerRel(rel_type, text, emb, mode); queryRel(rel_type, emb,
+        // text, k); reindexRel(rel_type, emb, batch_size).
+        "drevo.semantic.registerRel" => 4,
+        #[cfg(feature = "http")]
+        "drevo.semantic.queryRel" => 4,
+        #[cfg(feature = "http")]
+        "drevo.semantic.reindexRel" => 3,
         // drevo.semantic.register(label, text_property, embedding_property, mode)
         "drevo.semantic.register" => 4,
         // drevo.semantic.status() — no arguments.
@@ -5653,6 +5842,7 @@ fn semantic_status_row(status: &crate::db::SemanticTargetStatus) -> Vec<Value> {
         Value::Integer(i64::try_from(status.pending).unwrap_or(i64::MAX)),
         Value::Integer(i64::try_from(status.failed).unwrap_or(i64::MAX)),
         status.last_error.clone().map_or(Value::Null, Value::String),
+        Value::String(status.target_kind.to_string()),
     ]
 }
 
