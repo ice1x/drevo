@@ -140,7 +140,11 @@ fn needs_runtime_config(source: &str) -> bool {
     // embeddings upstream (`DREVO_EMBEDDINGS_UPSTREAM`); without it the call
     // returns "embeddings backend not configured". End-to-end coverage lives in
     // `tests/semantic_query_tests.rs` (feature `embeddings-proxy`).
-    source.contains("drevo.semantic.query")
+    //
+    // `drevo.semantic.reindex` requires a registered target (and an embedder) to
+    // run; on a bare in-memory database it errors "no semantic target
+    // registered". Covered in `tests/semantic_reindex_tests.rs`.
+    source.contains("drevo.semantic.query") || source.contains("drevo.semantic.reindex")
 }
 
 #[test]

@@ -922,8 +922,9 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     message: "no such procedure — built-in procedures are \
                           db.labels, db.relationshipTypes, db.propertyKeys, \
                           drevo.vector.query, drevo.semantic.query, \
-                          drevo.semantic.register, drevo.semantic.status, \
-                          fts.search, fts.searchRelationships"
+                          drevo.semantic.reindex, drevo.semantic.register, \
+                          drevo.semantic.status, fts.search, \
+                          fts.searchRelationships"
                         .into(),
                     span: c.span,
                 })?;
@@ -3856,6 +3857,77 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// `CALL drevo.semantic.reindex(label, embedding_property, batch_size)
+    /// YIELD scanned, embedded, skipped, remaining` (#262) — backfill embeddings
+    /// for nodes that already existed when an `Auto` target was registered.
+    ///
+    /// Auto-embedding (#251 slice 4) only fires on create/update, so a rule
+    /// registered against a populated graph leaves the pre-existing rows
+    /// un-embedded and invisible to `drevo.semantic.query`. This embeds up to
+    /// `batch_size` of the still-un-embedded nodes and returns counts, so a
+    /// client loops until `remaining == 0`. It is idempotent (already-embedded
+    /// nodes are skipped) and resumable across calls.
+    ///
+    /// Errors if no target is registered for `(label, embedding_property)`. A
+    /// `Manual` target is a no-op (all-zero counts): manual targets are
+    /// client-managed, matching the write-path rule.
+    #[cfg(feature = "http")]
+    fn proc_semantic_reindex(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (3) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let label = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let embedding_property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let batch_size = self.eval_usize(&args[2], &empty)?;
+
+        // Resolve and validate the registered target (keeps db.rs registry-free
+        // and maps a missing target to a clean procedure error).
+        let target = self
+            .drevo
+            .semantic_status()
+            .into_iter()
+            .find(|t| t.label == label && t.embedding_property == embedding_property);
+        let Some(target) = target else {
+            return Err(ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.reindex".to_string(),
+                message: format!(
+                    "no semantic target registered for label `{label}` with embedding property \
+                     `{embedding_property}` — call drevo.semantic.register first"
+                ),
+                span,
+            });
+        };
+
+        let report = if matches!(target.mode, IndexMode::Auto) {
+            self.drevo
+                .semantic_reindex(
+                    &target.label,
+                    &target.text_property,
+                    &target.embedding_property,
+                    batch_size,
+                )
+                .map_err(|e| ExecError::InvalidProcedureCall {
+                    name: "drevo.semantic.reindex".to_string(),
+                    message: e.to_string(),
+                    span,
+                })?
+        } else {
+            // Manual target — never server-embedded; report zeros.
+            crate::db::SemanticReindexReport::default()
+        };
+
+        let as_int = |n: usize| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+        Ok(vec![vec![
+            as_int(report.scanned),
+            as_int(report.embedded),
+            as_int(report.skipped),
+            as_int(report.remaining),
+        ]])
+    }
+
     /// `CALL fts.search(query, k) YIELD node, score` (issue #208) — the top-`k`
     /// nodes matching `query` in the BM25 full-text index (task `00131`),
     /// ranked by relevance.
@@ -3931,6 +4003,8 @@ impl<'a> Executor<'a> {
             "drevo.vector.query" => self.proc_vector_query(args, span),
             #[cfg(feature = "http")]
             "drevo.semantic.query" => self.proc_semantic_query(args, span),
+            #[cfg(feature = "http")]
+            "drevo.semantic.reindex" => self.proc_semantic_reindex(args, span),
             "drevo.semantic.register" => self.proc_semantic_register(args, span),
             "drevo.semantic.status" => self.proc_semantic_status(args, span),
             "fts.search" => self.proc_fts_search(args, span),
@@ -5479,6 +5553,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // similarity to a server-side embedding of the query text.
         #[cfg(feature = "http")]
         "drevo.semantic.query" => Some(&["node", "score"]),
+        // Backfill reindex (#262): counts from one resumable batch.
+        #[cfg(feature = "http")]
+        "drevo.semantic.reindex" => Some(&["scanned", "embedded", "skipped", "remaining"]),
         // Semantic-index control plane (#251 Phase 21): register / introspect
         // auto-embedding targets. Same column layout for both.
         "drevo.semantic.register" | "drevo.semantic.status" => Some(&[
@@ -5506,6 +5583,9 @@ fn procedure_arity(name: &str) -> usize {
         // drevo.semantic.query(label, property, text, k)
         #[cfg(feature = "http")]
         "drevo.semantic.query" => 4,
+        // drevo.semantic.reindex(label, embedding_property, batch_size)
+        #[cfg(feature = "http")]
+        "drevo.semantic.reindex" => 3,
         // drevo.semantic.register(label, text_property, embedding_property, mode)
         "drevo.semantic.register" => 4,
         // drevo.semantic.status() — no arguments.
