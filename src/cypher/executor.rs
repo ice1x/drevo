@@ -923,9 +923,10 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           db.labels, db.relationshipTypes, db.propertyKeys, \
                           drevo.vector.query, drevo.semantic.query, \
                           drevo.semantic.reindex, drevo.semantic.register, \
-                          drevo.semantic.status, drevo.semantic.registerRel, \
-                          drevo.semantic.queryRel, drevo.semantic.reindexRel, \
-                          fts.search, fts.searchRelationships"
+                          drevo.semantic.status, drevo.semantic.info, \
+                          drevo.semantic.registerRel, drevo.semantic.queryRel, \
+                          drevo.semantic.reindexRel, fts.search, \
+                          fts.searchRelationships"
                         .into(),
                     span: c.span,
                 })?;
@@ -3869,6 +3870,33 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// `CALL drevo.semantic.info() YIELD embedder_present, model, dimension,
+    /// upstream` (#267) — capability introspection for the server-side embedder.
+    ///
+    /// One row. `embedder_present` says whether an embedder is actually
+    /// installed (not merely whether the procedures exist); `model` / `dimension`
+    /// let a client verify a server-side embedder is compatible with vectors it
+    /// may write itself (e.g. via an external fallback embedder), failing fast on
+    /// a model/dimension mismatch. `upstream` is the configured endpoint — never
+    /// the API key. All but `embedder_present` are `null` when no embedder is
+    /// configured.
+    fn proc_semantic_info(
+        &self,
+        _args: &[Expression],
+        _span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let cap = self.drevo.embedder_info();
+        let dimension = cap.dimension.map_or(Value::Null, |d| {
+            Value::Integer(i64::try_from(d).unwrap_or(i64::MAX))
+        });
+        Ok(vec![vec![
+            Value::Bool(cap.present),
+            cap.model.map_or(Value::Null, Value::String),
+            dimension,
+            cap.upstream.map_or(Value::Null, Value::String),
+        ]])
+    }
+
     /// `CALL drevo.semantic.reindex(label, embedding_property, batch_size)
     /// YIELD scanned, embedded, skipped, remaining` (#262) — backfill embeddings
     /// for nodes that already existed when an `Auto` target was registered.
@@ -4000,7 +4028,9 @@ impl<'a> Executor<'a> {
     }
 
     /// Brute-force cosine scan over **edges** of `rel_type` (#266) — the edge
-    /// analogue of [`Self::vector_scan`]. Emits `(rel, score)` rows.
+    /// analogue of [`Self::vector_scan`]. Emits `(rel, score)` rows. Only the
+    /// `http`-gated `queryRel` calls it, so it is gated too.
+    #[cfg(feature = "http")]
     fn rel_vector_scan(
         &self,
         rel_type: &str,
@@ -4184,6 +4214,7 @@ impl<'a> Executor<'a> {
             #[cfg(feature = "http")]
             "drevo.semantic.reindex" => self.proc_semantic_reindex(args, span),
             "drevo.semantic.register" => self.proc_semantic_register(args, span),
+            "drevo.semantic.info" => self.proc_semantic_info(args, span),
             "drevo.semantic.registerRel" => self.proc_semantic_register_rel(args, span),
             #[cfg(feature = "http")]
             "drevo.semantic.queryRel" => self.proc_semantic_query_rel(args, span),
@@ -5767,6 +5798,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "last_error",
             "target_kind",
         ]),
+        // #267 embedder capability introspection.
+        "drevo.semantic.info" => Some(&["embedder_present", "model", "dimension", "upstream"]),
         // Full-text search (issue #208): BM25-ranked matching nodes.
         "fts.search" => Some(&["node", "score"]),
         // Relationship full-text search (issue #227-B): BM25-ranked edges.
@@ -5788,6 +5821,9 @@ fn procedure_arity(name: &str) -> usize {
         // drevo.semantic.reindex(label, embedding_property, batch_size)
         #[cfg(feature = "http")]
         "drevo.semantic.reindex" => 3,
+        // #267: info() takes no arguments (explicit for clarity; the `_ => 0`
+        // default would cover it).
+        "drevo.semantic.info" => 0,
         // #266: registerRel(rel_type, text, emb, mode); queryRel(rel_type, emb,
         // text, k); reindexRel(rel_type, emb, batch_size).
         "drevo.semantic.registerRel" => 4,

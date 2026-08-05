@@ -400,6 +400,18 @@ pub trait TextEmbedder: Send + Sync {
     /// Returns an [`EmbeddingsError`] when the upstream call fails or its
     /// response does not carry a usable numeric embedding.
     fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingsError>;
+
+    /// The configured model id this embedder serves, if known (#267 capability
+    /// introspection). `None` by default; a concrete backend overrides it.
+    fn model(&self) -> Option<String> {
+        None
+    }
+
+    /// The configured upstream endpoint URL, if known (#267). Never a secret —
+    /// the bearer token is not part of it. `None` by default.
+    fn upstream(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A [`TextEmbedder`] that drives the async [`ProxyBackend`] from synchronous
@@ -420,6 +432,10 @@ pub struct SyncEmbedder {
     // Not joined on drop (best-effort teardown); the handle is retained so the
     // thread is owned rather than detached.
     _worker: std::thread::JoinHandle<()>,
+    // #267 capability introspection: retained from the config (never the API
+    // key) so `drevo.semantic.info` can report what drevo embeds with.
+    model: Option<String>,
+    upstream: String,
 }
 
 /// One embedding request handed to the [`SyncEmbedder`] worker thread, with a
@@ -440,6 +456,8 @@ impl SyncEmbedder {
     /// Returns [`EmbeddingsError::InvalidUpstream`] when the HTTP client or the
     /// worker thread / runtime cannot be constructed.
     pub fn from_config(config: EmbeddingsConfig) -> Result<Self, EmbeddingsError> {
+        let model = config.model.clone();
+        let upstream = config.upstream.clone();
         let backend = ProxyBackend::new(config)?;
         let (sender, receiver) = std::sync::mpsc::channel::<EmbedJob>();
         let worker = std::thread::Builder::new()
@@ -475,12 +493,22 @@ impl SyncEmbedder {
         Ok(Self {
             sender,
             _worker: worker,
+            model,
+            upstream,
         })
     }
 }
 
 #[cfg(feature = "embeddings-proxy")]
 impl TextEmbedder for SyncEmbedder {
+    fn model(&self) -> Option<String> {
+        self.model.clone()
+    }
+
+    fn upstream(&self) -> Option<String> {
+        Some(self.upstream.clone())
+    }
+
     fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingsError> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.sender

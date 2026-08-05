@@ -206,12 +206,41 @@ pub struct Drevo {
     /// embedder that produces these failures.
     #[cfg(feature = "http")]
     embed_failures: Mutex<std::collections::HashMap<(String, String, String), EmbedFailureStat>>,
+    /// #267 — cached embedding vector dimension, discovered by a one-off probe
+    /// the first time `drevo.semantic.info` is asked (embedding one short string
+    /// and recording the result length). `None` until probed or when no
+    /// embedder is installed. Feature-gated on `http` like the embedder.
+    #[cfg(feature = "http")]
+    embedder_dimension: Mutex<Option<usize>>,
     /// #266 — relationship-side mirror of [`Self::semantic`]: auto-embedding
     /// targets registered against a **relationship type** (rather than a node
     /// label), reachable over Cypher via the `drevo.semantic.*Rel` procedures.
     /// Kept in a separate registry (the `fts.search` / `fts.searchRelationships`
     /// split) and persisted to `meta:semantic_rel_registry`.
     rel_semantic: Mutex<SemanticIndexRegistry>,
+}
+
+/// Capability descriptor for the server-side embedder (#267), backing
+/// `drevo.semantic.info`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EmbedderCapability {
+    /// Whether a server-side embedder is actually installed and configured (not
+    /// merely whether the procedures exist).
+    pub present: bool,
+    /// Configured model id, if known.
+    pub model: Option<String>,
+    /// Configured upstream endpoint URL, if known (never the API key).
+    pub upstream: Option<String>,
+    /// Embedding vector dimension, discovered by a one-off probe.
+    pub dimension: Option<usize>,
+}
+
+impl EmbedderCapability {
+    /// The "no embedder installed" descriptor: `present = false`, all-`None`.
+    #[must_use]
+    pub fn absent() -> Self {
+        Self::default()
+    }
 }
 
 /// A per-target tally of swallowed auto-embed failures (#263).
@@ -609,6 +638,8 @@ impl Drevo {
             embedder: std::sync::OnceLock::new(),
             #[cfg(feature = "http")]
             embed_failures: Mutex::new(std::collections::HashMap::new()),
+            #[cfg(feature = "http")]
+            embedder_dimension: Mutex::new(None),
             rel_semantic: Mutex::new(rel_semantic),
         })
     }
@@ -1039,6 +1070,60 @@ impl Drevo {
             .get()
             .ok_or(crate::embeddings::EmbeddingsError::NotConfigured)?
             .embed_query(text)
+    }
+
+    /// Capability introspection for the server-side embedder (#267).
+    ///
+    /// Reports whether an embedder is actually installed, and — when it is — the
+    /// configured model id, upstream endpoint, and vector dimension, so a client
+    /// can verify a server-side embedder is compatible with vectors it may write
+    /// itself. Never exposes the upstream API key. The dimension is discovered
+    /// by a one-off probe (embedding a short string) and cached; a failing probe
+    /// leaves it `None` without erroring.
+    ///
+    /// Backs the `drevo.semantic.info` procedure. Without the `http` feature (or
+    /// with no embedder installed) it reports `present = false` and all-`None`.
+    pub fn embedder_info(&self) -> EmbedderCapability {
+        #[cfg(feature = "http")]
+        {
+            let Some(embedder) = self.embedder.get() else {
+                return EmbedderCapability::absent();
+            };
+            EmbedderCapability {
+                present: true,
+                model: embedder.model(),
+                upstream: embedder.upstream(),
+                dimension: self.embedder_dimension_probe(),
+            }
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            EmbedderCapability::absent()
+        }
+    }
+
+    /// The embedding vector dimension, from cache or a one-off probe (#267).
+    /// Swallows a probe failure (returns `None`) so `info` never fails.
+    #[cfg(feature = "http")]
+    fn embedder_dimension_probe(&self) -> Option<usize> {
+        {
+            let cached = self
+                .embedder_dimension
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(dim) = *cached {
+                return Some(dim);
+            }
+        }
+        // Probe with a short, non-empty string (empty input is rejected upstream).
+        let dim = self.embed_text("dimension probe").ok().map(|v| v.len());
+        if let Some(dim) = dim {
+            *self
+                .embedder_dimension
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(dim);
+        }
+        dim
     }
 
     /// #251 slice 4 — apply server-side auto-embedding to a node's properties
@@ -1514,6 +1599,8 @@ impl Drevo {
             embedder: std::sync::OnceLock::new(),
             #[cfg(feature = "http")]
             embed_failures: Mutex::new(std::collections::HashMap::new()),
+            #[cfg(feature = "http")]
+            embedder_dimension: Mutex::new(None),
             rel_semantic: Mutex::new(SemanticIndexRegistry::new()),
         })
     }
@@ -5344,6 +5431,8 @@ mod tests {
             embedder: std::sync::OnceLock::new(),
             #[cfg(feature = "http")]
             embed_failures: Mutex::new(std::collections::HashMap::new()),
+            #[cfg(feature = "http")]
+            embedder_dimension: Mutex::new(None),
             rel_semantic: Mutex::new(SemanticIndexRegistry::new()),
         };
 
