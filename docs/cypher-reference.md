@@ -900,6 +900,29 @@ resumable across calls. Nodes without a non-empty `text_property` are skipped; a
 `'manual'` target is a no-op (all-zero counts); and it errors if no target is
 registered for `(label, embedding_property)`.
 
+### Capability introspection (#267)
+
+`CALL drevo.semantic.info() YIELD embedder_present, model, dimension, upstream`
+reports the server-side embedder's capability so a client can verify
+consistency before trusting — or mixing in its own — vectors:
+
+```cypher
+CALL drevo.semantic.info()
+YIELD embedder_present, model, dimension, upstream
+RETURN embedder_present, model, dimension, upstream
+```
+
+- `embedder_present` — whether an embedder is actually installed and configured
+  (not merely whether the procedures exist); `false` on a build without
+  `embeddings-proxy` or with `DREVO_EMBEDDINGS_UPSTREAM` unset.
+- `model` — the configured embedding model id.
+- `dimension` — the vector length (discovered by a one-off probe and cached), so
+  a client can validate its own vectors / index config before mixing a native
+  and a fallback embedder.
+- `upstream` — the configured endpoint URL. **Never** includes the API key.
+
+All fields but `embedder_present` are `null` when no embedder is configured.
+
 ### Relationships (#266)
 
 Every semantic procedure has a **relationship** mirror that matches an edge's
