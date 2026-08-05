@@ -70,8 +70,8 @@ const META_SEMANTIC_REGISTRY: &[u8] = b"meta:semantic_registry";
 
 /// The reserved property key holding a node's secondary `:Label`s (mirrors the
 /// private constant in [`crate::cypher::executor`]). #251 slice 4 matches
-/// auto-embed targets against these in addition to the primary `kind`.
-#[cfg(feature = "http")]
+/// auto-embed targets against these in addition to the primary `kind`; #263's
+/// pending-backlog scan (compiled without `http` too) uses it as well.
 const SECONDARY_LABELS_KEY: &str = "_labels";
 
 /// Outcome of one [`Drevo::semantic_reindex`] backfill pass (#262).
@@ -190,6 +190,48 @@ pub struct Drevo {
     /// HTTP/Bolt server ever installs one.
     #[cfg(feature = "http")]
     embedder: std::sync::OnceLock<std::sync::Arc<dyn crate::embeddings::TextEmbedder>>,
+    /// #263 — cumulative auto-embed failures per target, keyed by
+    /// `(label, embedding_property)`.
+    ///
+    /// Auto-embed is intentionally fail-open (a transient embedder outage never
+    /// fails a write, #261), but that hid the degraded condition from clients.
+    /// Every swallowed failure is tallied here so `drevo.semantic.status` can
+    /// surface `failed_count` / `last_error`, letting a client detect that
+    /// writes landed with no embedding. Runtime-only (not persisted); guarded by
+    /// a `Mutex` for the shared `&Drevo`. Feature-gated on `http` like the
+    /// embedder that produces these failures.
+    #[cfg(feature = "http")]
+    embed_failures: Mutex<std::collections::HashMap<(String, String), EmbedFailureStat>>,
+}
+
+/// A per-target tally of swallowed auto-embed failures (#263).
+#[cfg(feature = "http")]
+#[derive(Debug, Clone, Default)]
+struct EmbedFailureStat {
+    /// How many embed attempts have been swallowed for this target.
+    count: u64,
+    /// The most recent failure message, for `drevo.semantic.status`'s
+    /// `last_error` column.
+    last_error: String,
+}
+
+/// A registered semantic target plus its live health signals (#263), backing
+/// the enriched `drevo.semantic.status` output.
+#[derive(Debug, Clone)]
+pub struct SemanticTargetStatus {
+    /// The registered target (label, properties, mode, control-plane state).
+    pub index: SemanticIndex,
+    /// Auto-mode nodes of the label that still lack an embedding (a live
+    /// backlog that `drevo.semantic.reindex` or a rewrite drains). Always 0 for
+    /// `Manual` targets, which drevo does not embed.
+    pub pending: usize,
+    /// Cumulative count of swallowed auto-embed failures for this target.
+    pub failed: u64,
+    /// The most recent swallowed failure message, if any.
+    pub last_error: Option<String>,
+    /// True when `pending > 0` — writes have landed with embeddings missing, so
+    /// semantic search under-returns until the backlog is drained.
+    pub degraded: bool,
 }
 
 /// Per-`Drevo` explicit-transaction state — see the `tx_state` field on
@@ -549,6 +591,8 @@ impl Drevo {
             semantic: Mutex::new(semantic),
             #[cfg(feature = "http")]
             embedder: std::sync::OnceLock::new(),
+            #[cfg(feature = "http")]
+            embed_failures: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -740,6 +784,117 @@ impl Drevo {
             .to_vec()
     }
 
+    /// Every registered semantic target plus its live health signals (#263):
+    /// pending backlog, cumulative failure count, last error, and a derived
+    /// `degraded` flag. Backs the enriched `drevo.semantic.status` output so a
+    /// client can tell "fully embedded" from "writes landed, embeddings
+    /// missing".
+    ///
+    /// # Errors
+    ///
+    /// Propagates storage errors from the pending-backlog scan.
+    pub fn semantic_status_detailed(&self) -> Result<Vec<SemanticTargetStatus>> {
+        let targets = self.semantic_status();
+        let mut out = Vec::with_capacity(targets.len());
+        for index in targets {
+            // Only Auto targets are drevo-managed, so only they have a backlog.
+            let pending = if matches!(index.mode, IndexMode::Auto) {
+                self.semantic_pending_count(
+                    &index.label,
+                    &index.text_property,
+                    &index.embedding_property,
+                )?
+            } else {
+                0
+            };
+            let (failed, last_error) =
+                self.embed_failure_stat(&index.label, &index.embedding_property);
+            out.push(SemanticTargetStatus {
+                index,
+                pending,
+                failed,
+                last_error,
+                degraded: pending > 0,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Count nodes of `label` that carry a non-empty `text_property` but are
+    /// still missing `embedding_property` — the live auto-embed backlog (#263).
+    ///
+    /// # Errors
+    ///
+    /// Propagates storage errors from the node scan.
+    fn semantic_pending_count(
+        &self,
+        label: &str,
+        text_property: &str,
+        embedding_property: &str,
+    ) -> Result<usize> {
+        let mut pending = 0;
+        for node in self.collect_all_nodes()? {
+            let matches_label = node.kind == label
+                || matches!(
+                    node.properties.0.get(SECONDARY_LABELS_KEY),
+                    Some(serde_json::Value::Array(arr))
+                        if arr.iter().any(|v| v.as_str() == Some(label))
+                );
+            if !matches_label {
+                continue;
+            }
+            let has_text = node
+                .properties
+                .0
+                .get(text_property)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| !s.is_empty());
+            let has_embedding = node.properties.0.contains_key(embedding_property);
+            if has_text && !has_embedding {
+                pending += 1;
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Record a swallowed auto-embed failure for a target (#263). Called from
+    /// the fail-open paths (write-path hook and reindex) so the degraded
+    /// condition is observable via `drevo.semantic.status`.
+    #[cfg(feature = "http")]
+    fn record_embed_failure(&self, label: &str, embedding_property: &str, error: &str) {
+        let mut map = self
+            .embed_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let stat = map
+            .entry((label.to_string(), embedding_property.to_string()))
+            .or_default();
+        stat.count += 1;
+        stat.last_error = error.to_string();
+    }
+
+    /// Read the cumulative failure count and most-recent error for a target
+    /// (#263). Returns `(0, None)` when nothing has failed — and, on a build
+    /// without the `http` feature, always (there is no embedder to fail).
+    fn embed_failure_stat(&self, label: &str, embedding_property: &str) -> (u64, Option<String>) {
+        #[cfg(feature = "http")]
+        {
+            let map = self
+                .embed_failures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match map.get(&(label.to_string(), embedding_property.to_string())) {
+                Some(stat) if stat.count > 0 => (stat.count, Some(stat.last_error.clone())),
+                _ => (0, None),
+            }
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            let _ = (label, embedding_property);
+            (0, None)
+        }
+    }
+
     /// Install the server-side text embedder used by `drevo.semantic.query`
     /// (#251 slice 3). Set-once: the first call installs the embedder and
     /// returns `true`; any later call is a no-op and returns `false`.
@@ -874,6 +1029,7 @@ impl Drevo {
                     }
                     Err(error) => {
                         tracing::warn!(label = %label, %error, "auto-embed failed (ignored)");
+                        self.record_embed_failure(&label, &emb_prop, &error.to_string());
                     }
                 }
             }
@@ -973,9 +1129,10 @@ impl Drevo {
                     report.embedded += 1;
                     budget -= 1;
                 }
-                Err(_error) => {
+                Err(error) => {
                     // Swallow like the write path; leave it for a later pass.
-                    tracing::warn!(label, %_error, "reindex embed failed (ignored)");
+                    tracing::warn!(label, error = %error, "reindex embed failed (ignored)");
+                    self.record_embed_failure(label, embedding_property, &error.to_string());
                     report.remaining += 1;
                 }
             }
@@ -1094,6 +1251,8 @@ impl Drevo {
             semantic: Mutex::new(SemanticIndexRegistry::new()),
             #[cfg(feature = "http")]
             embedder: std::sync::OnceLock::new(),
+            #[cfg(feature = "http")]
+            embed_failures: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -4911,6 +5070,8 @@ mod tests {
             semantic: Mutex::new(SemanticIndexRegistry::new()),
             #[cfg(feature = "http")]
             embedder: std::sync::OnceLock::new(),
+            #[cfg(feature = "http")]
+            embed_failures: Mutex::new(std::collections::HashMap::new()),
         };
 
         let mk = |title: &str| {

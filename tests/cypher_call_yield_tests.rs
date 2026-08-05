@@ -554,14 +554,23 @@ fn semantic_status_lists_registered_targets() {
 
     let rows = run("CALL drevo.semantic.status()", &db);
     assert_eq!(rows.len(), 2);
+    // Five control-plane columns plus the three #263 health columns. With no
+    // nodes present, pending_count=0, failed_count=0, last_error=null, and the
+    // state stays 'enabled' (not 'degraded').
     assert_eq!(
-        row_strings(&rows[0]),
+        row_strings(&rows[0][..5]),
         vec!["Entity", "summary", "embedding", "enabled", "auto"]
     );
+    assert_eq!(rows[0][5], Value::Integer(0));
+    assert_eq!(rows[0][6], Value::Integer(0));
+    assert_eq!(rows[0][7], Value::Null);
     assert_eq!(
-        row_strings(&rows[1]),
+        row_strings(&rows[1][..5]),
         vec!["Doc", "body", "vec", "enabled", "manual"]
     );
+    assert_eq!(rows[1][5], Value::Integer(0));
+    assert_eq!(rows[1][6], Value::Integer(0));
+    assert_eq!(rows[1][7], Value::Null);
 }
 
 #[test]
