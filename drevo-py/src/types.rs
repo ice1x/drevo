@@ -705,11 +705,26 @@ impl BloatReport {
         self.inner.file_bytes
     }
 
+    /// Summed size of **all** stored rows — records plus every secondary
+    /// index. The real data footprint and the denominator of `bloat_ratio`.
+    #[getter]
+    fn stored_bytes(&self) -> u64 {
+        self.inner.stored_bytes
+    }
+
     /// Summed size of the node + edge record rows — the irreducible logical
-    /// graph data.
+    /// graph data, excluding indexes.
     #[getter]
     fn logical_bytes(&self) -> u64 {
         self.inner.logical_bytes
+    }
+
+    /// `stored_bytes - logical_bytes` — the secondary-index footprint (FTS,
+    /// adjacency, property/uuid/title/kind keys, vectors). Legitimate overhead,
+    /// not reclaimable bloat.
+    #[getter]
+    fn index_bytes(&self) -> u64 {
+        self.inner.index_bytes
     }
 
     /// Number of node records.
@@ -724,9 +739,10 @@ impl BloatReport {
         self.inner.edge_count
     }
 
-    /// `file_bytes / logical_bytes` — physical bytes per logical byte. None
-    /// when unmeasurable (in-memory backend) or there is no data yet. A value
-    /// well above 1 signals reclaimable bloat.
+    /// `file_bytes / stored_bytes` — physical bytes per byte of real stored
+    /// data. None when unmeasurable (in-memory backend) or there is no data
+    /// yet. A value well above 1 signals reclaimable bloat; near 1 means the
+    /// file is already minimal.
     #[getter]
     fn bloat_ratio(&self) -> Option<f64> {
         self.inner.bloat_ratio
@@ -735,7 +751,9 @@ impl BloatReport {
     fn as_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
         d.set_item("file_bytes", self.inner.file_bytes)?;
+        d.set_item("stored_bytes", self.inner.stored_bytes)?;
         d.set_item("logical_bytes", self.inner.logical_bytes)?;
+        d.set_item("index_bytes", self.inner.index_bytes)?;
         d.set_item("node_count", self.inner.node_count)?;
         d.set_item("edge_count", self.inner.edge_count)?;
         d.set_item("bloat_ratio", self.inner.bloat_ratio)?;
@@ -744,9 +762,11 @@ impl BloatReport {
 
     fn __repr__(&self) -> String {
         format!(
-            "BloatReport(file_bytes={:?}, logical_bytes={}, node_count={}, edge_count={}, bloat_ratio={:?})",
+            "BloatReport(file_bytes={:?}, stored_bytes={}, logical_bytes={}, index_bytes={}, node_count={}, edge_count={}, bloat_ratio={:?})",
             self.inner.file_bytes,
+            self.inner.stored_bytes,
             self.inner.logical_bytes,
+            self.inner.index_bytes,
             self.inner.node_count,
             self.inner.edge_count,
             self.inner.bloat_ratio

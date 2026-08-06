@@ -211,10 +211,13 @@ repairing counter drift automatically. `Drevo::compact()` reclaims space.
 ### Storage bloat (#253 slice 1)
 
 redb is copy-on-write: freed pages go to an internal freelist and the file **keeps its
-high-water mark** — it never returns space to the OS on its own. Under churn (constant
-create/update/delete, FTS re-index, body rewrites — the agent-memory / KG workload) the file
-grows steadily; a live tree was measured at **412 MB physical for ~18 MB of data**. Only
-`compact()` (or a dump→fresh-import `shrink`) reclaims it.
+high-water mark** — it never returns space to the OS on its own. Under heavy churn (constant
+create/update/delete, FTS re-index, body rewrites — the agent-memory / KG workload) the file can
+outgrow its live data, and only `compact()` (or a dump→fresh-import `shrink`) reclaims the slack.
+**But a large file is not automatically bloat:** for text-heavy graphs the FTS trigram index is
+legitimately several times the record data, so measure `bloat_ratio` (file ÷ *stored*, below)
+before reaching for `compact`/`shrink` — a ratio near 1 means the file is already minimal and a
+rebuild will only produce a same-size (or larger) file.
 
 Observe the ratio and act on it:
 
@@ -222,19 +225,23 @@ Observe the ratio and act on it:
 # Physical size, continuously, via Prometheus:
 curl -s http://localhost:8080/metrics | grep '^drevo_storage_file_bytes'
 
-# On-demand physical-vs-logical report + bloat ratio (HTTP or CLI):
-curl -s http://localhost:8080/storage/bloat        # {"file_bytes":…, "logical_bytes":…, "bloat_ratio":…}
-python -m drevo bloat /data/drevo.redb             # prints size + ratio, hints at ≥3×
+# On-demand storage report + bloat ratio (HTTP or CLI):
+curl -s http://localhost:8080/storage/bloat        # {"file_bytes":…, "stored_bytes":…, "logical_bytes":…, "index_bytes":…, "bloat_ratio":…}
+python -m drevo bloat /data/drevo.redb             # prints file / stored (records + index) + ratio, hints at ≥2×
 
 # Reclaim when the ratio is high:
 python -m drevo compact /data/drevo.redb           # in place (needs exclusive access)
 python -m drevo shrink  /data/drevo.redb small.redb  # dump → fresh import (robust, writes a new file)
 ```
 
-`bloat_ratio = file_bytes / logical_bytes`; `logical_bytes` is the node + edge record data
-only (indexes / adjacency / FTS / vectors are legitimate overhead on top), so a freshly
-compacted file reads somewhat above 1 and a large ratio is the reclaimable-bloat signal. The
-`/storage/bloat` scan is proportional to the logical data — a maintenance call, not per-request.
+`bloat_ratio = file_bytes / stored_bytes`, where `stored_bytes` is **all** stored rows — the
+`node` + `edge` records (`logical_bytes`) *plus* every secondary index (`index_bytes`: adjacency,
+uuid/title/kind keys, property index, FTS trigrams, vectors). The index footprint is a legitimate
+cost, not bloat — for text-heavy graphs the FTS trigram index alone can exceed the records several
+times over, so dividing by `stored_bytes` (not `logical_bytes`) is what keeps an index-rich file
+from reading as bloated. A ratio near 1 means the file is already minimal (compaction/rebuild
+cannot shrink it); a ratio well above 1 is reclaimable copy-on-write high-water-mark slack. The
+`/storage/bloat` scan streams the whole keyspace — a maintenance call, not per-request.
 
 **Automatic compaction (opt-in, #253 slice 2).** Set `DREVO_AUTO_COMPACT=1` and drevo reclaims
 bloat **on open**: the moment a database handle is built it is the sole owner of the file, which

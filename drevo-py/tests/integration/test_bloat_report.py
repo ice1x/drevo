@@ -1,9 +1,10 @@
 """Integration tests for the #253 slice 1 storage-bloat report binding.
 
 Exercises `Drevo.bloat_report()` over the real disk backend: it reports a
-physical `file_bytes`, a logical size that grows with the data, node/edge
-counts, and a defined bloat ratio (≥ 1, since a redb file is never smaller
-than the logical data it holds).
+physical `file_bytes`, a `stored_bytes` total (records + indexes) that splits
+into `logical_bytes` + `index_bytes`, node/edge counts, and a defined bloat
+ratio (file / stored, ≥ 1 since a redb file is never smaller than the data it
+holds).
 """
 
 from __future__ import annotations
@@ -30,16 +31,23 @@ def test_bloat_report_on_disk_measures_file_logical_and_ratio(
     assert report.node_count == 15
     assert report.edge_count == 14
     assert report.logical_bytes > 0
+    # stored = records + every index, so it strictly exceeds records-only
+    # logical, and the split is exact.
+    assert report.stored_bytes > report.logical_bytes
+    assert report.index_bytes == report.stored_bytes - report.logical_bytes
     assert report.file_bytes is not None and report.file_bytes > 0
-    # A real redb file is at least as large as its logical data.
+    # A real redb file is at least as large as the data it stores.
     assert report.bloat_ratio is not None and report.bloat_ratio >= 1.0
 
     d = report.as_dict()
     assert d["node_count"] == 15
     assert d["edge_count"] == 14
+    assert d["index_bytes"] == d["stored_bytes"] - d["logical_bytes"]
     assert set(d) == {
         "file_bytes",
+        "stored_bytes",
         "logical_bytes",
+        "index_bytes",
         "node_count",
         "edge_count",
         "bloat_ratio",
@@ -55,3 +63,5 @@ def test_bloat_report_in_memory_has_no_file_bytes(fake: Faker) -> None:
     assert report.bloat_ratio is None
     assert report.node_count == 1
     assert report.logical_bytes > 0
+    assert report.stored_bytes > report.logical_bytes
+    assert report.index_bytes == report.stored_bytes - report.logical_bytes
