@@ -850,6 +850,28 @@ started with `DREVO_EMBEDDINGS_UPSTREAM` set (the same configuration that powers
 backend not configured" error, so a client can catch it and fall back to an
 external embedder plus `drevo.vector.query`.
 
+**Filtered semantic retrieval — `drevo.semantic.embed` (#272).** `semantic.query`
+fuses embed + scan but is **unfiltered**: it cannot scope results by tenant,
+entity type, or edge endpoints. When you need a filter, use
+`CALL drevo.semantic.embed(text) YIELD vector` — it embeds one string
+server-side (same model/dimension as the index, per `drevo.semantic.info`) and
+returns the vector, so you run your **own** Cypher, with any `WHERE`, against
+`cosine_similarity` (see above):
+
+```cypher
+CALL drevo.semantic.embed('anxious thoughts about work') YIELD vector
+WITH vector
+MATCH (n:Chunk)
+WHERE n.group_id IN ['g1'] AND n.embedding IS NOT NULL
+WITH n, cosine_similarity(n.embedding, vector) AS score
+WHERE score > 0.5
+RETURN n.title, score ORDER BY score DESC LIMIT 5
+```
+
+So a Bolt/Cypher client gets filter/group-scoped semantic search without hosting
+an embedder of its own. Same `embeddings-proxy` requirement and same clear "not
+configured" error as `semantic.query`, so the same fallback applies.
+
 **Auto-embedding on ingest.** When a target is registered in `'auto'` mode and
 the server has an embedder configured, drevo embeds `text_property` into
 `embedding_property` **automatically as matching nodes are created or updated** —
