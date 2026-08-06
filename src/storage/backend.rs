@@ -147,6 +147,33 @@ pub trait StorageBackend: Send + Sync {
         Ok(None)
     }
 
+    /// Total logical content size: the summed `key + value` byte length of
+    /// **every** row currently stored, across all keyspaces — the `node:` /
+    /// `edge:` records *and* every secondary structure (uuid / title / kind
+    /// keys, adjacency, property index, FTS trigrams, vectors).
+    ///
+    /// This is the honest denominator for a bloat ratio. [`size_bytes`](Self::size_bytes)
+    /// is the physical file high-water mark; `size_bytes / content_bytes` is
+    /// how many physical bytes back each byte of real stored data — a value
+    /// well above 1 is reclaimable copy-on-write slack. Counting the indexes
+    /// (which for text-heavy graphs dwarf the record rows, thanks to FTS) is
+    /// exactly what stops that ratio from over-reporting bloat.
+    ///
+    /// The default implementation sums a full `scan_prefix(&[])`, which
+    /// materialises the whole keyspace; disk backends should override it with
+    /// a streaming scan that never allocates the rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) if the scan fails.
+    fn content_bytes(&self) -> Result<u64> {
+        let mut total: u64 = 0;
+        for (key, value) in self.scan_prefix(&[])? {
+            total += (key.len() + value.len()) as u64;
+        }
+        Ok(total)
+    }
+
     /// Reclaim unused storage. The semantics are backend-specific:
     ///
     /// - **redb**: runs `redb::Database::compact` to release pages whose

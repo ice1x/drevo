@@ -1306,12 +1306,14 @@ async fn export_json(Db(db): Db) -> Result<Response, ApiError> {
 }
 
 /// Handler for `GET /storage/bloat` (#253 slice 1). Returns a
-/// [`BloatReport`](crate::db::BloatReport) — physical file size, logical data
-/// size, and the bloat ratio — so operators and automation can see how much of
-/// the redb file is reclaimable copy-on-write high-water-mark bloat.
+/// [`BloatReport`](crate::db::BloatReport) — physical file size, the stored data
+/// size (records + all indexes), the record/index split, and the bloat ratio
+/// (`file_bytes / stored_bytes`) — so operators and automation can see how much
+/// of the redb file is *reclaimable* copy-on-write high-water-mark bloat, as
+/// opposed to a legitimately large but index-rich file.
 ///
-/// This performs an on-demand scan of the `node:` + `edge:` records (cost
-/// proportional to the logical data), so it is a maintenance / alerting call,
+/// This performs an on-demand streaming scan of the whole keyspace (cost
+/// proportional to the stored data), so it is a maintenance / alerting call,
 /// not a per-request one. The cheap physical size alone is also exported
 /// continuously as the `drevo_storage_file_bytes` gauge on `GET /metrics`.
 async fn storage_bloat(Db(db): Db) -> Result<Json<crate::db::BloatReport>, ApiError> {

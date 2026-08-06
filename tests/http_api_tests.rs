@@ -2988,7 +2988,16 @@ async fn storage_bloat_endpoint_reports_logical_size_and_counts() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["node_count"], 2);
     assert_eq!(body["edge_count"], 1);
-    assert!(body["logical_bytes"].as_u64().unwrap() > 0);
+    let logical = body["logical_bytes"].as_u64().unwrap();
+    let stored = body["stored_bytes"].as_u64().unwrap();
+    assert!(logical > 0);
+    // stored counts records + indexes, so it strictly exceeds records-only
+    // logical, and the split is exact.
+    assert!(
+        stored > logical,
+        "stored {stored} should exceed logical {logical}"
+    );
+    assert_eq!(body["index_bytes"].as_u64().unwrap(), stored - logical);
     // In-memory backend has no physical footprint → null file size + ratio.
     assert!(body["file_bytes"].is_null());
     assert!(body["bloat_ratio"].is_null());

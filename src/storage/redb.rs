@@ -307,6 +307,29 @@ impl StorageBackend for RedbBackend {
         }
     }
 
+    /// Sum `key + value` bytes across the whole table with a lazy range
+    /// iterator, so a large FTS-heavy keyspace is measured without ever
+    /// materialising it (unlike the default `scan_prefix`-based impl).
+    fn content_bytes(&self) -> Result<u64> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(DATA_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        // Full-range lazy scan; matches the inherent `range` used by
+        // `scan_prefix` (avoids pulling `ReadableTable` into scope for `iter`).
+        use std::ops::Bound;
+        let mut total: u64 = 0;
+        let lower: Bound<&[u8]> = Bound::Unbounded;
+        let range = table.range::<&[u8]>((lower, Bound::Unbounded))?;
+        for entry in range {
+            let entry = entry?;
+            total += (entry.0.value().len() + entry.1.value().len()) as u64;
+        }
+        Ok(total)
+    }
+
     /// Reclaim free pages inside the redb file.
     ///
     /// redb's compactor takes `&mut Database`. The wrapper holds the

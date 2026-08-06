@@ -214,6 +214,13 @@ impl StorageBackend for MemoryBackend {
         }
     }
 
+    /// Sum `key + value` bytes over the live `BTreeMap` directly, without
+    /// cloning the rows the way the default `scan_prefix`-based impl would.
+    fn content_bytes(&self) -> Result<u64> {
+        let data = self.data.read().map_err(|_| StorageError::LockPoisoned)?;
+        Ok(data.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum())
+    }
+
     /// Snapshot-style compaction for the persistent path. Re-serialises
     /// the live `BTreeMap` to disk — naturally drops bytes for keys that
     /// were deleted between the previous flush and now. No-op for

@@ -139,14 +139,19 @@ def _cmd_bloat(args: argparse.Namespace) -> int:
     ratio = f"{report.bloat_ratio:.1f}x" if report.bloat_ratio is not None else "?"
     print(
         f"{db_path}: file={_human_bytes(report.file_bytes)}, "
-        f"logical={_human_bytes(report.logical_bytes)} "
-        f"({report.node_count} nodes, {report.edge_count} edges), "
+        f"stored={_human_bytes(report.stored_bytes)} "
+        f"(records={_human_bytes(report.logical_bytes)} + "
+        f"index={_human_bytes(report.index_bytes)}), "
+        f"{report.node_count} nodes, {report.edge_count} edges, "
         f"bloat={ratio}"
     )
-    if report.bloat_ratio is not None and report.bloat_ratio >= 3.0:
+    # bloat_ratio is file/stored, so it only rises above ~1 when the file holds
+    # real reclaimable copy-on-write slack — the index footprint no longer
+    # inflates it. 2.0 matches the auto-compaction default.
+    if report.bloat_ratio is not None and report.bloat_ratio >= 2.0:
         print(
-            "  hint: high bloat — run `drevo compact` (in place) or "
-            "`drevo shrink <db> <out_db>` to reclaim space.",
+            "  hint: reclaimable bloat — run `drevo compact` (in place) or "
+            "`drevo shrink <db> <out_db>` to return slack to the OS.",
             file=sys.stderr,
         )
     return 0

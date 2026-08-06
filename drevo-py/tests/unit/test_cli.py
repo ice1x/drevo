@@ -62,6 +62,8 @@ def test_main_bloat_reports_on_real_db(tmp_path, capsys) -> None:  # type: ignor
     assert rc == 0
     out = capsys.readouterr().out
     assert "1 nodes" in out and "bloat=" in out
+    # The report shows the honest record/index breakdown, not just a raw size.
+    assert "stored=" in out and "records=" in out and "index=" in out
 
 
 def test_parser_requires_a_subcommand() -> None:

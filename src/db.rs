@@ -445,35 +445,60 @@ pub struct CompactReport {
 ///
 /// redb never returns freed pages to the OS on its own (see #240 / #241 /
 /// #243): under churn the file grows to its high-water mark and only
-/// [`Drevo::compact`] (or the `drevo shrink` CLI) reclaims it. A live
-/// agent-memory tree was measured at 412 MB physical for ~18 MB of data — a
-/// bloat ratio near 23×. This report surfaces that ratio; the follow-up slices
-/// act on it (opt-in auto-compaction + a steady-state churn test).
+/// [`Drevo::compact`] (or the `drevo shrink` CLI) reclaims it. The ratio is
+/// measured against `stored_bytes` — records **plus** every secondary index —
+/// precisely because a text-heavy graph's FTS index is a large but legitimate
+/// cost: measuring against records alone would report such a file as massively
+/// bloated when a rebuild cannot shrink it at all. A ratio near 1 is a minimal
+/// file; a ratio well above 1 is genuine reclaimable slack. The follow-up
+/// slices act on it (opt-in auto-compaction + a steady-state churn test).
 ///
 /// `file_bytes` and `bloat_ratio` are `Option` because the ephemeral in-memory
 /// backend has no on-disk footprint — they stay `None` rather than reporting a
-/// fake zero. `logical_bytes` is the summed size of the `node:` + `edge:`
-/// record rows (key + value) — the irreducible graph data, comparable to a
-/// GraphML dump; secondary indexes / adjacency / FTS / vectors are legitimate
-/// overhead on top and are **not** counted, so a freshly compacted file still
-/// reads a ratio somewhat above 1. A large ratio is the reclaimable-bloat
-/// signal.
+/// fake zero.
+///
+/// Three byte totals are reported, coarse → fine:
+/// - `stored_bytes` — **every** stored row (records + all secondary indexes),
+///   the honest total of real data in the file. This is the ratio denominator.
+/// - `logical_bytes` — just the `node:` + `edge:` record rows, comparable to a
+///   GraphML dump.
+/// - `index_bytes` — `stored_bytes − logical_bytes`, the secondary structures
+///   (uuid / title / kind keys, adjacency, property index, FTS trigrams,
+///   vectors). For text-heavy graphs the FTS index alone can dwarf the records,
+///   so this is a large but entirely *legitimate* cost — not bloat.
+///
+/// `bloat_ratio = file_bytes / stored_bytes` is therefore the *reclaimable*
+/// bloat signal: a value near 1 means the file is essentially minimal for its
+/// data (compaction/rebuild cannot help), while a value well above 1 is
+/// copy-on-write high-water-mark slack that [`Drevo::compact`] / `drevo shrink`
+/// return to the OS. (An earlier version divided by `logical_bytes`, which
+/// counted the legitimate index footprint as if it were bloat and grossly
+/// over-reported.)
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BloatReport {
     /// Physical on-disk size of the backend file, or `None` for the ephemeral
     /// in-memory backend.
     pub file_bytes: Option<u64>,
+    /// Summed size (key + value bytes) of **all** stored rows — records *and*
+    /// every secondary index. The real logical data footprint, and the
+    /// denominator of [`bloat_ratio`](Self::bloat_ratio).
+    pub stored_bytes: u64,
     /// Summed size (key + value bytes) of the `node:` + `edge:` record rows —
-    /// the irreducible logical graph data.
+    /// the irreducible graph data, excluding indexes.
     pub logical_bytes: u64,
+    /// `stored_bytes − logical_bytes` — the secondary-index footprint
+    /// (adjacency, uuid/title/kind keys, property index, FTS trigrams,
+    /// vectors). Legitimate overhead, not reclaimable bloat.
+    pub index_bytes: u64,
     /// Number of node records scanned.
     pub node_count: u64,
     /// Number of edge records scanned.
     pub edge_count: u64,
-    /// `file_bytes / logical_bytes` — how many physical bytes back each logical
-    /// byte. `None` when the footprint is unmeasurable (in-memory backend) or
-    /// there is no logical data yet (`logical_bytes == 0`). A value well above
-    /// 1 signals reclaimable high-water-mark bloat.
+    /// `file_bytes / stored_bytes` — how many physical bytes back each byte of
+    /// real stored data. `None` when the footprint is unmeasurable (in-memory
+    /// backend) or there is no data yet (`stored_bytes == 0`). A value well
+    /// above 1 signals reclaimable high-water-mark bloat; near 1 means the file
+    /// is already minimal.
     pub bloat_ratio: Option<f64>,
 }
 
@@ -1503,22 +1528,27 @@ impl Drevo {
     /// versus the irreducible logical graph data, plus their ratio.
     ///
     /// Reads `file_bytes` from the backend's `size_bytes` (an O(1) file stat;
-    /// `None` for the ephemeral in-memory backend) and `logical_bytes` by
-    /// scanning the `node:` + `edge:` record rows and summing their key + value
-    /// lengths. `bloat_ratio = file_bytes / logical_bytes` surfaces how much of
-    /// the file is reclaimable copy-on-write high-water-mark bloat that only
-    /// [`Self::compact`] (or `drevo shrink`) returns to the OS.
+    /// `None` for the ephemeral in-memory backend), `stored_bytes` from the
+    /// backend's `content_bytes` (the summed key+value length of every stored
+    /// row — records *and* all secondary indexes), and `logical_bytes` by
+    /// scanning just the `node:` + `edge:` record rows. `index_bytes` is the
+    /// difference. `bloat_ratio = file_bytes / stored_bytes` surfaces how much
+    /// of the file is reclaimable copy-on-write high-water-mark bloat that only
+    /// [`Self::compact`] (or `drevo shrink`) returns to the OS — dividing by the
+    /// full stored footprint (not just records) is what keeps a text-heavy,
+    /// FTS-indexed graph from reading as bloated when it is merely index-rich.
     ///
-    /// Cost: one scan of the `node:` and `edge:` prefixes — proportional to the
-    /// logical data size, not the physical file. This is an **on-demand**
-    /// operator/automation call (an alert source, a pre-compaction check), not
-    /// a hot path; do not call it per request.
+    /// Cost: one full-keyspace content scan (streamed on disk) plus a scan of
+    /// the `node:` and `edge:` prefixes for the record split. This is an
+    /// **on-demand** operator/automation call (an alert source, a pre-compaction
+    /// check), not a hot path; do not call it per request.
     ///
     /// # Errors
     ///
     /// Returns [`DrevoError::Storage`] if the backend scan or size probe fails.
     pub fn bloat_report(&self) -> Result<BloatReport> {
         let file_bytes = self.backend.size_bytes()?;
+        let stored_bytes = self.backend.content_bytes()?;
 
         let mut logical_bytes: u64 = 0;
         let mut node_count: u64 = 0;
@@ -1537,15 +1567,20 @@ impl Drevo {
             logical_bytes += (key.len() + value.len()) as u64;
             edge_count += 1;
         }
+        // Records are a subset of everything stored, so this never underflows;
+        // saturating_sub is belt-and-braces against a backend miscount.
+        let index_bytes = stored_bytes.saturating_sub(logical_bytes);
 
         let bloat_ratio = match file_bytes {
-            Some(fb) if logical_bytes > 0 => Some(fb as f64 / logical_bytes as f64),
+            Some(fb) if stored_bytes > 0 => Some(fb as f64 / stored_bytes as f64),
             _ => None,
         };
 
         Ok(BloatReport {
             file_bytes,
+            stored_bytes,
             logical_bytes,
+            index_bytes,
             node_count,
             edge_count,
             bloat_ratio,
@@ -5144,6 +5179,19 @@ mod tests {
             report.logical_bytes > 0,
             "logical bytes should sum the node/edge records"
         );
+        // stored_bytes counts records + every index, so it strictly exceeds the
+        // records-only logical_bytes, and the split is exact.
+        assert!(
+            report.stored_bytes > report.logical_bytes,
+            "stored ({}) must exceed records-only logical ({}) — indexes exist",
+            report.stored_bytes,
+            report.logical_bytes
+        );
+        assert_eq!(
+            report.index_bytes,
+            report.stored_bytes - report.logical_bytes
+        );
+        assert!(report.index_bytes > 0);
     }
 
     #[test]
@@ -5180,10 +5228,60 @@ mod tests {
         assert!(report.file_bytes.is_some(), "disk backend measures itself");
         assert_eq!(report.node_count, 10);
         assert!(report.logical_bytes > 0);
-        // A real redb file is always at least as large as its logical data, so
-        // the ratio is defined and ≥ 1 (typically well above, being COW).
+        // stored_bytes = records + indexes ≥ records-only logical_bytes.
+        assert!(report.stored_bytes >= report.logical_bytes);
+        assert_eq!(
+            report.index_bytes,
+            report.stored_bytes - report.logical_bytes
+        );
+        // The honest ratio divides the file by the FULL stored footprint, so it
+        // is defined and ≥ 1 (the physical file always covers its own data).
         let ratio = report.bloat_ratio.expect("ratio defined on disk");
-        assert!(ratio >= 1.0, "physical must be ≥ logical, got {ratio}");
+        assert!(ratio >= 1.0, "physical must be ≥ stored, got {ratio}");
+    }
+
+    /// Regression guard for the honest ratio: on a text-heavy graph the FTS
+    /// trigram index dominates the record rows, so `index_bytes` exceeds
+    /// `logical_bytes`. The old `file / logical_bytes` ratio double-counted that
+    /// index as "bloat"; the new `file / stored_bytes` ratio must not.
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn bloat_report_ratio_excludes_fts_index_footprint() {
+        use crate::model::{NewNode, Properties};
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("fts_bloat.redb");
+        let db = Drevo::open(&path).unwrap();
+        // Batch-create (one commit) so this stays fast on the slow CI runner.
+        let nodes: Vec<NewNode> = (0..50)
+            .map(|i| NewNode {
+                kind: "n".into(),
+                title: format!("t{i}"),
+                body: format!(
+                    "node {i} anxious deadlines mentoring graph vectors embeddings \
+                     semantic search relationships knowledge base entity {i} lorem \
+                     ipsum dolor sit amet consectetur adipiscing elit sed eiusmod"
+                ),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .collect();
+        db.create_nodes(nodes).unwrap();
+        let report = db.bloat_report().unwrap();
+        // FTS trigrams over the bodies make the index footprint dominate.
+        assert!(
+            report.index_bytes > report.logical_bytes,
+            "index ({}) should dwarf records ({}) for text-heavy data",
+            report.index_bytes,
+            report.logical_bytes
+        );
+        let honest = report.bloat_ratio.expect("disk ratio defined");
+        // The misleading old metric (file / logical) would read strictly larger,
+        // because it divides by a strictly smaller denominator.
+        let misleading = report.file_bytes.unwrap() as f64 / report.logical_bytes as f64;
+        assert!(
+            misleading > honest,
+            "old metric ({misleading}) must over-report vs honest ({honest})"
+        );
     }
 
     // --- Auto-compaction policy (#253 slice 2) ---

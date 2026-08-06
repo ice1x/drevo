@@ -180,7 +180,9 @@ class BloatReport:
     """Result of `Drevo.bloat_report` — physical vs. logical storage size."""
 
     file_bytes: Optional[int]
+    stored_bytes: int
     logical_bytes: int
+    index_bytes: int
     node_count: int
     edge_count: int
     bloat_ratio: Optional[float]
