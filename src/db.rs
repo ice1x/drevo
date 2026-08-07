@@ -72,6 +72,15 @@ const META_SEMANTIC_REGISTRY: &[u8] = b"meta:semantic_registry";
 /// edge-side mirror of [`META_SEMANTIC_REGISTRY`].
 const META_SEMANTIC_REL_REGISTRY: &[u8] = b"meta:semantic_rel_registry";
 
+/// Meta key stamping the on-disk FTS index layout (#275). Absent (or not equal
+/// to [`FTS_FORMAT_POSTING`]) means the file predates the posting-list layout
+/// (one row per `(trigram, node)`); [`Drevo::ensure_fts_posting_format`]
+/// rebuilds the index on open and stamps this. Value is a single version byte.
+const META_FTS_FORMAT: &[u8] = b"meta:fts_format";
+
+/// Current FTS layout: `fts:{trigram}:` -> packed posting list (#275 slice 2).
+const FTS_FORMAT_POSTING: u8 = 2;
+
 /// The reserved property key holding a node's secondary `:Label`s (mirrors the
 /// private constant in [`crate::cypher::executor`]). #251 slice 4 matches
 /// auto-embed targets against these in addition to the primary `kind`; #263's
@@ -174,6 +183,13 @@ pub struct Drevo {
     /// The MVP allows only one in-flight transaction per `Drevo` handle;
     /// proper multi-writer isolation lands with MVCC (`00081`).
     tx_state: Mutex<TxState>,
+    /// #275 — serializes FTS posting-list writes. The FTS index stores one row
+    /// per trigram whose value is the packed posting list, so indexing a node is
+    /// a read-modify-write of each trigram's list; without this lock two
+    /// concurrent create/update/delete calls touching the same trigram could
+    /// lose one another's node id. Held only around the FTS index step, not the
+    /// whole write, so it does not serialize unrelated writes.
+    fts_lock: Mutex<()>,
     /// Phase 21 semantic-index control plane (#251) — the registry of
     /// auto-embedding targets, reachable over Cypher via the
     /// `drevo.semantic.*` procedures. Persisted to the
@@ -632,6 +648,10 @@ impl Drevo {
                 required_major: ADJ_FORMAT_MAJOR,
             });
         }
+        // #275: rebuild the FTS index into the posting-list layout on the first
+        // open of a file written by an older drevo. Derived-index reindex, not a
+        // graph migration — the graph is never at risk, and it runs once.
+        db.ensure_fts_posting_format()?;
         // #253 slice 2: opt-in automatic compaction. This is the one moment the
         // handle solely owns its backend (refcount 1), satisfying compact()'s
         // exclusive-access requirement. Best-effort: the graph data is intact
@@ -677,6 +697,7 @@ impl Drevo {
             next_edge_id: AtomicU64::new(next_edge_id),
             counter_drift_repaired: AtomicBool::new(drift_repaired),
             tx_state: Mutex::new(TxState::Idle),
+            fts_lock: Mutex::new(()),
             semantic: Mutex::new(semantic),
             #[cfg(feature = "http")]
             embedder: std::sync::OnceLock::new(),
@@ -1703,6 +1724,7 @@ impl Drevo {
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
             tx_state: Mutex::new(TxState::Idle),
+            fts_lock: Mutex::new(()),
             semantic: Mutex::new(SemanticIndexRegistry::new()),
             #[cfg(feature = "http")]
             embedder: std::sync::OnceLock::new(),
@@ -1927,18 +1949,76 @@ impl Drevo {
             (title_key, node.id.to_le_bytes().to_vec()),
             (node_kind_key(&node.kind, node.id), Vec::new()),
         ];
-        writes.extend(fts_index::node_index_entries_with_props(
-            node.id,
-            &node.title,
-            &node.body,
-            &node.properties,
-        ));
+        // #275: FTS is NOT part of the record batch anymore — posting lists need
+        // read-modify-write, so the caller indexes FTS separately (grouped,
+        // under the FTS write lock) via `fts_index_nodes`.
         writes.extend(property_index::node_index_entries(
             node.id,
             &node.properties,
         )?);
         writes.push((updated_key(node.updated_at, node.id), Vec::new()));
         Ok(writes)
+    }
+
+    /// Index a batch of nodes' FTS posting lists under the FTS write lock
+    /// (#275). All FTS writers funnel through here so posting-list
+    /// read-modify-write is serialized (no lost postings under concurrent
+    /// create/update/delete). Grouped so each trigram is rewritten once.
+    pub(crate) fn fts_index_nodes(&self, docs: &[(u64, &str, &str, &Properties)]) -> Result<()> {
+        let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
+        fts_index::index_nodes_grouped(&*self.backend, docs)
+    }
+
+    /// Deindex one node's FTS posting lists under the FTS write lock (#275).
+    fn fts_deindex_node(
+        &self,
+        node_id: u64,
+        title: &str,
+        body: &str,
+        properties: &Properties,
+    ) -> Result<()> {
+        let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
+        fts_index::deindex_node_with_props(&*self.backend, node_id, title, body, properties)
+    }
+
+    /// Ensure the FTS index is in the #275 posting-list layout, rebuilding it
+    /// from source on the first open of a database written by an older drevo
+    /// (which stored one empty row per `(trigram, node)`).
+    ///
+    /// This is a **derived-index reindex, not a graph-data migration**: nodes,
+    /// edges, and their properties are never touched, and no `FORMAT_MAJOR` is
+    /// bumped. It clears every existing `fts:` / `ftslen:` row in one
+    /// `delete_batch` (millions of old rows → one commit) and rewrites the whole
+    /// index from the current nodes in one `put_batch`, then stamps
+    /// [`META_FTS_FORMAT`] so it runs exactly once. Idempotent: on an
+    /// already-current file it is a single `get` and returns.
+    fn ensure_fts_posting_format(&self) -> Result<()> {
+        if self.backend.get(META_FTS_FORMAT)?.as_deref() == Some(&[FTS_FORMAT_POSTING]) {
+            return Ok(());
+        }
+        let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Clear any existing FTS rows (old per-pair format or a partial index).
+        // `b"fts:"` / `b"ftslen:"` mirror the fts module's PREFIX_* wire prefixes.
+        let mut stale: Vec<Vec<u8>> = Vec::new();
+        for (key, _) in self.backend.scan_prefix(b"fts:")? {
+            stale.push(key);
+        }
+        for (key, _) in self.backend.scan_prefix(b"ftslen:")? {
+            stale.push(key);
+        }
+        self.backend.delete_batch(&stale)?;
+
+        // Rebuild the whole posting-list index from source nodes in one batch.
+        let nodes = self.collect_all_nodes()?;
+        let docs: Vec<(u64, &str, &str, &Properties)> = nodes
+            .iter()
+            .map(|n| (n.id, n.title.as_str(), n.body.as_str(), &n.properties))
+            .collect();
+        let batch = fts_index::build_full_index_batch(&docs);
+        self.backend.put_batch(&batch)?;
+
+        self.backend.put(META_FTS_FORMAT, &[FTS_FORMAT_POSTING])?;
+        Ok(())
     }
 
     /// Storage writes to insert a **verbatim** [`Edge`] (id / uuid / timestamp
@@ -2135,13 +2215,7 @@ impl Drevo {
         self.backend
             .put(&node_title_key(&node.title), &node.id.to_le_bytes())?;
         self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
-        fts_index::index_node_with_props(
-            &*self.backend,
-            node.id,
-            &node.title,
-            &node.body,
-            &node.properties,
-        )?;
+        self.fts_index_nodes(&[(node.id, &node.title, &node.body, &node.properties)])?;
         property_index::index_node(&*self.backend, node.id, &node.properties)?;
         self.backend
             .put(&updated_key(node.updated_at, node.id), &[])?;
@@ -2180,8 +2254,7 @@ impl Drevo {
         self.backend.delete(&node_title_key(&current.title))?;
         self.backend
             .delete(&node_kind_key(&current.kind, current.id))?;
-        fts_index::deindex_node_with_props(
-            &*self.backend,
+        self.fts_deindex_node(
             current.id,
             &current.title,
             &current.body,
@@ -2224,13 +2297,7 @@ impl Drevo {
         self.backend.delete(&node_uuid_key(&node.uuid))?;
         self.backend.delete(&node_title_key(&node.title))?;
         self.backend.delete(&node_kind_key(&node.kind, id))?;
-        fts_index::deindex_node_with_props(
-            &*self.backend,
-            id,
-            &node.title,
-            &node.body,
-            &node.properties,
-        )?;
+        self.fts_deindex_node(id, &node.title, &node.body, &node.properties)?;
         property_index::deindex_node(&*self.backend, id, &node.properties)?;
         self.backend.delete(&updated_key(node.updated_at, id))?;
         Ok(())
@@ -2289,14 +2356,8 @@ impl Drevo {
         // Kind index
         self.backend.put(&node_kind_key(&node.kind, id), &[])?;
 
-        // FTS index
-        fts_index::index_node_with_props(
-            &*self.backend,
-            id,
-            &node.title,
-            &node.body,
-            &node.properties,
-        )?;
+        // FTS index (#275: posting-list RMW under the FTS write lock)
+        self.fts_index_nodes(&[(id, &node.title, &node.body, &node.properties)])?;
 
         // Property index (Phase 14 task 00088)
         property_index::index_node(&*self.backend, id, &node.properties)?;
@@ -2348,12 +2409,8 @@ impl Drevo {
             writes.push((node_uuid_key(&node.uuid), id.to_le_bytes().to_vec()));
             writes.push((title_key, id.to_le_bytes().to_vec()));
             writes.push((node_kind_key(&node.kind, id), Vec::new()));
-            writes.extend(fts_index::node_index_entries_with_props(
-                id,
-                &node.title,
-                &node.body,
-                &node.properties,
-            ));
+            // #275: FTS is not part of the record batch — indexed separately
+            // below (grouped posting-list RMW under the FTS write lock).
             writes.extend(property_index::node_index_entries(id, &node.properties)?);
             writes.push((updated_key(node.updated_at, id), Vec::new()));
 
@@ -2361,6 +2418,13 @@ impl Drevo {
         }
 
         self.backend.put_batch(&writes)?;
+        // FTS posting lists, grouped across the whole batch so each trigram is
+        // rewritten once (keeps bulk create / import fast).
+        let docs: Vec<(u64, &str, &str, &Properties)> = nodes
+            .iter()
+            .map(|n| (n.id, n.title.as_str(), n.body.as_str(), &n.properties))
+            .collect();
+        self.fts_index_nodes(&docs)?;
         for node in &nodes {
             self.record_undo(UndoOp::CreatedNode(node.id));
         }
@@ -2467,20 +2531,8 @@ impl Drevo {
         // the OLD properties or stale property trigrams would leak.
         if node.title != old_title || node.body != old_body || node.properties.0 != old_properties.0
         {
-            fts_index::deindex_node_with_props(
-                &*self.backend,
-                id,
-                &old_title,
-                &old_body,
-                &old_properties,
-            )?;
-            fts_index::index_node_with_props(
-                &*self.backend,
-                id,
-                &node.title,
-                &node.body,
-                &node.properties,
-            )?;
+            self.fts_deindex_node(id, &old_title, &old_body, &old_properties)?;
+            self.fts_index_nodes(&[(id, &node.title, &node.body, &node.properties)])?;
         }
 
         // Update property index if the properties map changed (Phase 14
@@ -2532,14 +2584,8 @@ impl Drevo {
         // Remove kind index
         self.backend.delete(&node_kind_key(&node.kind, id))?;
 
-        // Remove FTS index
-        fts_index::deindex_node_with_props(
-            &*self.backend,
-            id,
-            &node.title,
-            &node.body,
-            &node.properties,
-        )?;
+        // Remove FTS index (#275: posting-list RMW under the FTS write lock)
+        self.fts_deindex_node(id, &node.title, &node.body, &node.properties)?;
 
         // Remove property index
         property_index::deindex_node(&*self.backend, id, &node.properties)?;
@@ -5359,42 +5405,151 @@ mod tests {
     }
 
     #[test]
-    fn keyspace_stats_shows_fts_dominates_row_count() {
+    fn keyspace_stats_fts_rows_bounded_by_distinct_trigrams() {
+        // #275: with posting lists (`fts:{trigram}` -> [ids]), the fts row count
+        // equals the number of DISTINCT trigrams — it does NOT grow per node the
+        // way the old one-row-per-(trigram,node) layout did. Adding more nodes
+        // that reuse the same vocabulary lengthens posting lists but adds ~no
+        // new rows.
         use crate::model::{NewNode, Properties};
-        let db = Drevo::open_in_memory().unwrap();
-        // Text-heavy nodes → one FTS row per (trigram, node), so the `fts`
-        // keyspace holds far more rows than the `node` records.
-        let nodes: Vec<NewNode> = (0..40)
-            .map(|i| NewNode {
-                kind: "n".into(),
-                title: format!("t{i}"),
-                body: format!(
-                    "node {i} anxious deadlines mentoring graph vectors embeddings \
-                     semantic search relationships knowledge base entity {i} lorem \
-                     ipsum dolor sit amet consectetur adipiscing elit"
-                ),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .collect();
-        db.create_nodes(nodes).unwrap();
+        let body =
+            "anxious deadlines mentoring graph vectors embeddings semantic search relationships";
+        let make = |range: std::ops::Range<usize>| -> Vec<NewNode> {
+            range
+                .map(|i| NewNode {
+                    kind: "n".into(),
+                    title: format!("t{i}"),
+                    body: body.into(),
+                    body_html: String::new(),
+                    properties: Properties::default(),
+                })
+                .collect()
+        };
 
+        let db = Drevo::open_in_memory().unwrap();
+        db.create_nodes(make(0..20)).unwrap();
+        let fts_after_20 = db
+            .keyspace_stats()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.prefix == "fts")
+            .unwrap()
+            .entries;
+
+        db.create_nodes(make(20..60)).unwrap();
         let stats = db.keyspace_stats().unwrap();
-        // Sorted by descending row count → the FTS keyspace is first.
-        assert_eq!(
-            stats[0].prefix, "fts",
-            "fts should be the largest keyspace by row count, got {stats:?}"
-        );
         let fts = stats.iter().find(|s| s.prefix == "fts").unwrap();
         let node = stats.iter().find(|s| s.prefix == "node").unwrap();
-        assert_eq!(node.entries, 40, "one row per node record");
-        // The blowup driver: FTS rows outnumber node records by a large factor.
+        assert_eq!(node.entries, 60, "one row per node record");
+        // Tripling the node count (20 -> 60) grew fts rows only sublinearly: the
+        // shared body trigrams' posting lists were extended (no new rows), only
+        // the unique titles added rows. The old per-(trigram,node) layout would
+        // have roughly tripled instead.
         assert!(
-            fts.entries > node.entries * 10,
-            "fts rows ({}) should dwarf node rows ({})",
-            fts.entries,
-            node.entries
+            fts.entries < fts_after_20 * 2,
+            "fts rows grew from {fts_after_20} to {} — should be sublinear in node count",
+            fts.entries
         );
+        // Bounded: ~distinct-trigram count, not the ~2500 rows the per-pair
+        // layout would produce for these 60 text-heavy nodes.
+        assert!(
+            fts.entries < 300,
+            "fts rows ({}) should be ~distinct-trigram count, not per-pair",
+            fts.entries
+        );
+    }
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn fts_reindex_on_open_rebuilds_old_format_index() {
+        use crate::model::{NewNode, Properties};
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("fts_migrate.redb");
+        let mk = |t: &str, b: &str| NewNode {
+            kind: "n".into(),
+            title: t.into(),
+            body: b.into(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        };
+        {
+            let db = Drevo::open(&path).unwrap();
+            db.create_nodes(vec![
+                mk("a", "hello world graph"),
+                mk("b", "hello there graph"),
+            ])
+            .unwrap();
+            // Simulate a file written by an OLDER drevo: drop the format marker
+            // and inject a legacy one-row-per-(trigram,node) posting the reindex
+            // must discard.
+            db.backend.delete(META_FTS_FORMAT).unwrap();
+            let legacy_key = b"fts:xyz:\x01\x00\x00\x00\x00\x00\x00\x00";
+            db.backend.put(legacy_key, &[]).unwrap();
+            db.close().unwrap();
+        }
+
+        // Reopen → reindex-on-open fires (marker was absent).
+        let db = Drevo::open(&path).unwrap();
+        // Marker stamped, so a second open is a no-op.
+        assert_eq!(
+            db.backend.get(META_FTS_FORMAT).unwrap().as_deref(),
+            Some(&[FTS_FORMAT_POSTING][..])
+        );
+        // Legacy row discarded by the rebuild.
+        assert!(db
+            .backend
+            .get(b"fts:xyz:\x01\x00\x00\x00\x00\x00\x00\x00")
+            .unwrap()
+            .is_none());
+        // Search rebuilt correctly from source: both nodes match "hel"/"gra".
+        assert_eq!(
+            fts_index::node_ids_for_trigram(&*db.backend, "hel")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            fts_index::node_ids_for_trigram(&*db.backend, "gra")
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn concurrent_creates_do_not_lose_fts_postings() {
+        // #275: posting-list indexing is a read-modify-write of each trigram's
+        // list. Without the FTS write lock, two threads indexing nodes that
+        // share a trigram could each read the list, add their own id, and write
+        // back — losing one. The lock must serialize the RMW so ALL ids land.
+        use crate::model::{NewNode, Properties};
+        use std::sync::Arc;
+        let db = Arc::new(Drevo::open_in_memory().unwrap());
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let db = Arc::clone(&db);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..25 {
+                    db.create_node(NewNode {
+                        kind: "n".into(),
+                        title: format!("t{t}_{i}"),
+                        // Every node shares these words → the same trigrams, so
+                        // all 100 contend on the same posting lists.
+                        body: "shared alpha bravo charlie".into(),
+                        body_html: String::new(),
+                        properties: Properties::default(),
+                    })
+                    .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        // All 100 nodes contain "alp" (from "alpha"); none may be lost to a racy
+        // read-modify-write.
+        let ids = fts_index::node_ids_for_trigram(&*db.backend, "alp").unwrap();
+        assert_eq!(ids.len(), 100, "no postings lost under concurrent writers");
     }
 
     // --- Auto-compaction policy (#253 slice 2) ---
@@ -5646,6 +5801,7 @@ mod tests {
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
             tx_state: Mutex::new(TxState::Idle),
+            fts_lock: Mutex::new(()),
             semantic: Mutex::new(SemanticIndexRegistry::new()),
             #[cfg(feature = "http")]
             embedder: std::sync::OnceLock::new(),

@@ -1,10 +1,13 @@
-//! FTS index: trigram -> posting list storage.
+//! FTS index: trigram -> posting list storage (#275).
 //!
-//! Stores inverted index entries as KV pairs:
-//! `fts:{trigram}:{node_id}` -> empty bytes.
+//! One KV row per trigram: `fts:{trigram}:` -> packed sorted `[node_id]` (the
+//! posting list), plus `ftslen:{node_id}` -> `u32` document length for BM25.
 //!
-//! This allows efficient posting list retrieval via `scan_prefix("fts:{trigram}:")`,
-//! and efficient add/remove of individual node entries without touching other nodes.
+//! Retrieval is a single `get` per trigram (O(1)); indexing a node is a
+//! read-modify-write of each of its trigrams' posting lists (the caller
+//! serializes these via drevo's FTS write lock). This replaced the original
+//! one-empty-row-per-`(trigram, node)` layout, whose millions of tiny rows on a
+//! text-heavy graph inflated the physical file to several× its content (#275).
 
 // Only the no-properties test wrappers below need an empty map.
 #[cfg(test)]
@@ -15,7 +18,7 @@ use crate::fts::tokenizer::{extract_raw_trigrams_fields, extract_trigrams_fields
 use crate::model::Properties;
 use crate::storage::StorageBackend;
 
-/// Key prefix for FTS index entries: `fts:{trigram}:{node_id}` -> empty.
+/// Key prefix for FTS posting-list rows: `fts:{trigram}:` -> packed `[node_id]`.
 const PREFIX_FTS: &[u8] = b"fts:";
 
 /// Key prefix for per-document FTS length entries: `ftslen:{node_id}` ->
@@ -30,21 +33,67 @@ const PREFIX_FTS: &[u8] = b"fts:";
 /// the other.
 const PREFIX_FTS_LEN: &[u8] = b"ftslen:";
 
-/// Build a single FTS index key: `fts:{trigram}:{node_id}`.
-fn fts_key(trigram: &str, node_id: u64) -> Vec<u8> {
+/// Build the posting-list key for a trigram: `fts:{trigram}:` -> packed
+/// `[node_id]`.
+///
+/// #275: the FTS index stores **one row per trigram** whose value is the packed
+/// sorted posting list of node ids, rather than one empty row per
+/// `(trigram, node_id)` pair. On a text-heavy graph that collapses millions of
+/// tiny rows to ~one-per-distinct-trigram, cutting redb's per-row/page overhead
+/// (the file-bloat driver measured in #275 slice 1). The trailing `:` keeps
+/// keys unambiguous when one trigram's bytes are a prefix of another's.
+fn fts_key(trigram: &str) -> Vec<u8> {
     let mut key = PREFIX_FTS.to_vec();
     key.extend_from_slice(trigram.as_bytes());
     key.push(b':');
-    key.extend_from_slice(&node_id.to_le_bytes());
     key
 }
 
-/// Build the scan prefix for a trigram: `fts:{trigram}:`.
-fn fts_trigram_prefix(trigram: &str) -> Vec<u8> {
-    let mut key = PREFIX_FTS.to_vec();
-    key.extend_from_slice(trigram.as_bytes());
-    key.push(b':');
-    key
+/// Encode a **sorted, de-duplicated** posting list as packed little-endian
+/// `u64`s. The caller maintains the sorted-unique invariant (see
+/// [`merge_posting`] / [`remove_posting`]); decoding is a plain chunked read.
+fn encode_postings(ids: &[u64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ids.len() * 8);
+    for id in ids {
+        out.extend_from_slice(&id.to_le_bytes());
+    }
+    out
+}
+
+/// Decode a packed posting list. Trailing bytes that don't form a full `u64`
+/// are ignored (defensive; the encoder never produces them).
+fn decode_postings(bytes: &[u8]) -> Vec<u64> {
+    bytes
+        .chunks_exact(8)
+        .map(|c| {
+            let mut a = [0u8; 8];
+            a.copy_from_slice(c);
+            u64::from_le_bytes(a)
+        })
+        .collect()
+}
+
+/// Insert `id` into a sorted-unique posting list, preserving the invariant.
+/// Returns `true` if it was added (absent before).
+fn merge_posting(list: &mut Vec<u64>, id: u64) -> bool {
+    match list.binary_search(&id) {
+        Ok(_) => false,
+        Err(pos) => {
+            list.insert(pos, id);
+            true
+        }
+    }
+}
+
+/// Remove `id` from a sorted-unique posting list. Returns `true` if removed.
+fn remove_posting(list: &mut Vec<u64>, id: u64) -> bool {
+    match list.binary_search(&id) {
+        Ok(pos) => {
+            list.remove(pos);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Build a per-document length key: `ftslen:{node_id_le}`.
@@ -96,7 +145,7 @@ fn node_fields<'a>(title: &'a str, body: &'a str, prop_text: &'a [String]) -> Ve
 /// The raw (bag) trigrams a node contributes to the FTS index — `title` +
 /// `body` + string properties (#227). The BM25/TF-IDF ranker calls this so
 /// query-time term frequency and document length are computed over the **same**
-/// text [`index_node_with_props`] indexed (otherwise a node whose text lives
+/// text [`index_nodes_grouped`] indexed (otherwise a node whose text lives
 /// only in properties would be a candidate but score 0).
 pub(crate) fn node_raw_trigrams(title: &str, body: &str, properties: &Properties) -> Vec<String> {
     let prop_text = collect_property_text(properties);
@@ -112,42 +161,9 @@ pub(crate) fn node_trigrams(title: &str, body: &str, properties: &Properties) ->
     extract_trigrams_fields(&fields)
 }
 
-/// Build the FTS index entries for a node from its `title` + `body` only.
-/// A no-properties convenience over [`node_index_entries_with_props`]; only the
-/// tests use it (production always has a node's properties to hand).
-#[cfg(test)]
-pub(crate) fn node_index_entries(node_id: u64, title: &str, body: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
-    node_index_entries_with_props(node_id, title, body, &Properties(HashMap::new()))
-}
-
-/// Build the FTS index entries for a node from `title` + `body` + every string
-/// property value (#227).
-pub(crate) fn node_index_entries_with_props(
-    node_id: u64,
-    title: &str,
-    body: &str,
-    properties: &Properties,
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let prop_text = collect_property_text(properties);
-    let fields = node_fields(title, body, &prop_text);
-    let trigrams = extract_trigrams_fields(&fields);
-    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(trigrams.len() + 1);
-    for trigram in &trigrams {
-        entries.push((fts_key(trigram, node_id), Vec::new()));
-    }
-
-    let doc_len = extract_raw_trigrams_fields(&fields).len();
-    if doc_len > 0 {
-        entries.push((
-            fts_len_key(node_id),
-            (doc_len as u32).to_le_bytes().to_vec(),
-        ));
-    }
-    entries
-}
-
 /// Index a node by its `title` + `body`. A no-properties convenience used only
-/// by the tests (production always has the node's properties).
+/// by the tests (production always has the node's properties, and indexes via
+/// [`index_nodes_grouped`]).
 #[cfg(test)]
 pub(crate) fn index_node(
     backend: &dyn StorageBackend,
@@ -155,10 +171,14 @@ pub(crate) fn index_node(
     title: &str,
     body: &str,
 ) -> Result<()> {
-    index_node_with_props(backend, node_id, title, body, &Properties(HashMap::new()))
+    index_nodes_grouped(
+        backend,
+        &[(node_id, title, body, &Properties(HashMap::new()))],
+    )
 }
 
-/// Index a node by its `title` + `body` + string properties (#227).
+/// Test convenience: index one node with properties.
+#[cfg(test)]
 pub(crate) fn index_node_with_props(
     backend: &dyn StorageBackend,
     node_id: u64,
@@ -166,18 +186,98 @@ pub(crate) fn index_node_with_props(
     body: &str,
     properties: &Properties,
 ) -> Result<()> {
-    for (key, value) in node_index_entries_with_props(node_id, title, body, properties) {
-        backend.put(&key, &value)?;
+    index_nodes_grouped(backend, &[(node_id, title, body, properties)])
+}
+
+/// Index one or many nodes into the posting-list FTS store (#275), with each
+/// trigram's posting list read-modified-written **once** across the whole batch
+/// (rather than once per node), so a bulk create / import stays fast.
+///
+/// For each distinct trigram of a node's `title` + `body` + string properties,
+/// adds `node_id` to that trigram's posting list, and writes the document length
+/// under `ftslen:`.
+///
+/// **The caller MUST serialize FTS writes** (drevo does this via its FTS write
+/// lock): each posting list is a `get` → merge → `put`, so two concurrent
+/// indexers of the same trigram would otherwise lose one another's node id.
+pub(crate) fn index_nodes_grouped(
+    backend: &dyn StorageBackend,
+    docs: &[(u64, &str, &str, &Properties)],
+) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    // Group node ids by trigram across the batch; collect doc-length writes.
+    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut len_writes: Vec<(u64, u32)> = Vec::with_capacity(docs.len());
+    for (node_id, title, body, properties) in docs {
+        let prop_text = collect_property_text(properties);
+        let fields = node_fields(title, body, &prop_text);
+        for trigram in extract_trigrams_fields(&fields) {
+            by_trigram.entry(trigram).or_default().push(*node_id);
+        }
+        let doc_len = extract_raw_trigrams_fields(&fields).len();
+        if doc_len > 0 {
+            len_writes.push((*node_id, doc_len as u32));
+        }
+    }
+
+    // One read-modify-write per distinct trigram.
+    for (trigram, mut new_ids) in by_trigram {
+        let key = fts_key(&trigram);
+        let mut list = match backend.get(&key)? {
+            Some(bytes) => decode_postings(&bytes),
+            None => Vec::new(),
+        };
+        new_ids.sort_unstable();
+        new_ids.dedup();
+        for id in new_ids {
+            merge_posting(&mut list, id);
+        }
+        backend.put(&key, &encode_postings(&list))?;
+    }
+
+    for (node_id, doc_len) in len_writes {
+        backend.put(&fts_len_key(node_id), &doc_len.to_le_bytes())?;
     }
     Ok(())
 }
 
-/// Remove FTS index entries for a node.
-///
-/// Re-extracts trigrams from the title and body, deletes the corresponding
-/// postings, and removes the persisted document-length entry (cascade-on-
-/// delete, mirroring the posting cleanup). `delete` of an absent key is a
-/// no-op, so this is safe even when the node had no indexable text.
+/// Build the **complete** posting-list FTS index for a set of documents as a
+/// batch of rows, from scratch — assumes there are no existing `fts:` rows to
+/// merge with (the reindex clears them first). One row per distinct trigram
+/// (packed sorted posting list) plus one `ftslen:` per document, so the whole
+/// index can be written in a single `put_batch` (one commit) instead of a
+/// read-modify-write per trigram. Used by the #275 reindex-on-open.
+pub(crate) fn build_full_index_batch(
+    docs: &[(u64, &str, &str, &Properties)],
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    use std::collections::BTreeMap;
+
+    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (node_id, title, body, properties) in docs {
+        let prop_text = collect_property_text(properties);
+        let fields = node_fields(title, body, &prop_text);
+        for trigram in extract_trigrams_fields(&fields) {
+            by_trigram.entry(trigram).or_default().push(*node_id);
+        }
+        let doc_len = extract_raw_trigrams_fields(&fields).len();
+        if doc_len > 0 {
+            out.push((
+                fts_len_key(*node_id),
+                (doc_len as u32).to_le_bytes().to_vec(),
+            ));
+        }
+    }
+    for (trigram, mut ids) in by_trigram {
+        ids.sort_unstable();
+        ids.dedup();
+        out.push((fts_key(&trigram), encode_postings(&ids)));
+    }
+    out
+}
+
+/// Remove FTS index entries for a node. Test convenience (title + body only).
 #[cfg(test)]
 pub(crate) fn deindex_node(
     backend: &dyn StorageBackend,
@@ -188,9 +288,12 @@ pub(crate) fn deindex_node(
     deindex_node_with_props(backend, node_id, title, body, &Properties(HashMap::new()))
 }
 
-/// Remove a node's FTS entries, re-deriving trigrams from `title` + `body` +
-/// string properties (#227) so the same postings written by
-/// [`index_node_with_props`] are cleaned up.
+/// Remove a node's `node_id` from every trigram posting list it contributed to
+/// (re-deriving trigrams from `title` + `body` + string properties, #227), and
+/// delete its `ftslen:` entry. A trigram whose list becomes empty has its row
+/// deleted, so a fully-removed corpus leaves no `fts:` rows.
+///
+/// Same serialization requirement as [`index_nodes_grouped`].
 pub(crate) fn deindex_node_with_props(
     backend: &dyn StorageBackend,
     node_id: u64,
@@ -202,7 +305,17 @@ pub(crate) fn deindex_node_with_props(
     let fields = node_fields(title, body, &prop_text);
     let trigrams = extract_trigrams_fields(&fields);
     for trigram in &trigrams {
-        backend.delete(&fts_key(trigram, node_id))?;
+        let key = fts_key(trigram);
+        if let Some(bytes) = backend.get(&key)? {
+            let mut list = decode_postings(&bytes);
+            if remove_posting(&mut list, node_id) {
+                if list.is_empty() {
+                    backend.delete(&key)?;
+                } else {
+                    backend.put(&key, &encode_postings(&list))?;
+                }
+            }
+        }
     }
 
     backend.delete(&fts_len_key(node_id))?;
@@ -288,39 +401,28 @@ pub(crate) fn bm25_idf(n: u64, df: u64) -> f32 {
     ((n - df + 0.5) / (df + 0.5)).ln_1p()
 }
 
-/// Retrieve all node IDs from the posting list of a single trigram.
+/// Retrieve all node IDs from the posting list of a single trigram (#275).
 ///
-/// Scans `fts:{trigram}:` prefix and extracts node IDs from the keys.
+/// A single `get` of `fts:{trigram}:` (whose value is the packed sorted posting
+/// list), decoded — O(1) lookup instead of the former prefix scan. The returned
+/// ids are sorted ascending (the write path maintains that invariant).
 pub(crate) fn node_ids_for_trigram(
     backend: &dyn StorageBackend,
     trigram: &str,
 ) -> Result<Vec<u64>> {
-    let prefix = fts_trigram_prefix(trigram);
-    let entries = backend.scan_prefix(&prefix)?;
-
-    let mut ids = Vec::with_capacity(entries.len());
-    for (key, _) in entries {
-        if key.len() < prefix.len() {
-            continue;
-        }
-        let suffix = &key[prefix.len()..];
-        // Refactored in `00106` to remove `.unwrap()` from library code
-        // (`drevo-rust` §"Error Handling"). `copy_from_slice` into a
-        // pre-allocated array is panic-free by construction.
-        let mut arr = [0u8; 8];
-        if suffix.len() == 8 {
-            arr.copy_from_slice(suffix);
-            ids.push(u64::from_le_bytes(arr));
-        }
-    }
-    Ok(ids)
+    Ok(match backend.get(&fts_key(trigram))? {
+        Some(bytes) => decode_postings(&bytes),
+        None => Vec::new(),
+    })
 }
 
-/// Count how many nodes contain a given trigram (document frequency).
+/// Count how many nodes contain a given trigram (document frequency): the
+/// length of its posting list.
 pub(crate) fn posting_list_len(backend: &dyn StorageBackend, trigram: &str) -> Result<usize> {
-    let prefix = fts_trigram_prefix(trigram);
-    let entries = backend.scan_prefix(&prefix)?;
-    Ok(entries.len())
+    Ok(match backend.get(&fts_key(trigram))? {
+        Some(bytes) => bytes.len() / 8,
+        None => 0,
+    })
 }
 
 /// Intersect posting lists for multiple trigrams.
@@ -362,11 +464,22 @@ mod tests {
 
     #[test]
     fn fts_key_format() {
-        let key = fts_key("hel", 42);
-        assert!(key.starts_with(b"fts:hel:"));
-        let suffix = &key[8..];
-        assert_eq!(suffix.len(), 8);
-        assert_eq!(u64::from_le_bytes(suffix.try_into().unwrap()), 42);
+        // #275: one key per trigram, `fts:{trigram}:`, value = packed postings.
+        let key = fts_key("hel");
+        assert_eq!(key, b"fts:hel:");
+    }
+
+    #[test]
+    fn postings_encode_decode_roundtrip_and_merge() {
+        let ids = [1u64, 5, 9, 42];
+        assert_eq!(decode_postings(&encode_postings(&ids)), ids);
+        let mut list = vec![1u64, 5, 9];
+        assert!(merge_posting(&mut list, 7));
+        assert_eq!(list, vec![1, 5, 7, 9]); // stays sorted
+        assert!(!merge_posting(&mut list, 5)); // already present
+        assert!(remove_posting(&mut list, 5));
+        assert_eq!(list, vec![1, 7, 9]);
+        assert!(!remove_posting(&mut list, 100));
     }
 
     #[test]
@@ -456,11 +569,18 @@ mod tests {
 
     #[test]
     fn title_body_wrapper_matches_no_props_call() {
-        // Back-compat: the 2-arg wrappers equal the *_with_props path with empty
-        // properties, so existing behaviour is unchanged.
-        let a = node_index_entries(1, "Hello", "World");
-        let b = node_index_entries_with_props(1, "Hello", "World", &Properties(HashMap::new()));
-        assert_eq!(a, b);
+        // The 2-arg wrapper equals the *_with_props path with empty properties:
+        // both write the same posting-list rows.
+        let a = backend();
+        index_node(&a, 1, "Hello", "World").unwrap();
+        let b = backend();
+        index_node_with_props(&b, 1, "Hello", "World", &Properties(HashMap::new())).unwrap();
+        for tg in ["hel", "ell", "llo", "wor", "orl", "rld"] {
+            assert_eq!(
+                node_ids_for_trigram(&a, tg).unwrap(),
+                node_ids_for_trigram(&b, tg).unwrap()
+            );
+        }
     }
 
     #[test]
