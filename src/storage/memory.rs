@@ -146,6 +146,14 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    fn delete_batch(&self, keys: &[Vec<u8>]) -> Result<()> {
+        let mut data = self.data.write().map_err(|_| StorageError::LockPoisoned)?;
+        for key in keys {
+            data.remove(key);
+        }
+        Ok(())
+    }
+
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let data = self.data.read().map_err(|_| StorageError::LockPoisoned)?;
         let results: Vec<(Vec<u8>, Vec<u8>)> = data

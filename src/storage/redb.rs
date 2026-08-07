@@ -227,6 +227,25 @@ impl StorageBackend for RedbBackend {
         Ok(())
     }
 
+    fn delete_batch(&self, keys: &[Vec<u8>]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = match write_txn.open_table(DATA_TABLE) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
+            for key in keys {
+                table.remove(key.as_slice())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let read_txn = self.db.begin_read()?;
         let table = match read_txn.open_table(DATA_TABLE) {

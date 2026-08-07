@@ -67,6 +67,22 @@ pub trait StorageBackend: Send + Sync {
     /// Returns [`StorageError`](super::error::StorageError) on I/O or backend failure.
     fn delete(&self, key: &[u8]) -> Result<()>;
 
+    /// Delete many keys in a single storage transaction (#275). Absent keys are
+    /// ignored. Used by the FTS posting-list reindex to drop the old
+    /// one-row-per-`(trigram,node)` index (potentially millions of rows) in one
+    /// commit — a per-key loop would be one fsync each. The default deletes one
+    /// at a time; disk backends override with a single transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on I/O or backend failure.
+    fn delete_batch(&self, keys: &[Vec<u8>]) -> Result<()> {
+        for key in keys {
+            self.delete(key)?;
+        }
+        Ok(())
+    }
+
     /// Return all key-value pairs whose key starts with `prefix`,
     /// sorted by key in lexicographic order.
     ///

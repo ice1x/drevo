@@ -586,6 +586,7 @@ impl Drevo {
         // per-record commits (one fsync each). Batching folds that into a
         // single fsync, turning a multi-minute restore/shrink into seconds.
         let mut node_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut imported_nodes: Vec<&Node> = Vec::new();
         for node in &dump.nodes {
             match self.get_node(node.id)? {
                 Some(existing) if &existing == node => {
@@ -602,10 +603,21 @@ impl Drevo {
                 None => {}
             }
             node_writes.extend(self.node_raw_entries(node)?);
+            imported_nodes.push(node);
             report.nodes_imported += 1;
         }
         if !node_writes.is_empty() {
             self.backend().put_batch(&node_writes)?;
+        }
+        // #275: `node_raw_entries` no longer emits FTS entries (posting lists
+        // need read-modify-write), so index the imported nodes' FTS in one
+        // grouped, lock-guarded pass after their records are committed.
+        if !imported_nodes.is_empty() {
+            let docs: Vec<(u64, &str, &str, &crate::model::Properties)> = imported_nodes
+                .iter()
+                .map(|n| (n.id, n.title.as_str(), n.body.as_str(), &n.properties))
+                .collect();
+            self.fts_index_nodes(&docs)?;
         }
 
         // --- Edges ---
