@@ -146,7 +146,13 @@ fn needs_runtime_config(source: &str) -> bool {
     // registered". Covered in `tests/semantic_reindex_tests.rs`.
     // Both cover the relationship mirrors too (queryRel / reindexRel, #266)
     // via the `query`/`reindex` substring match.
-    source.contains("drevo.semantic.query") || source.contains("drevo.semantic.reindex")
+    //
+    // `drevo.semantic.embed` (#272) likewise embeds server-side, so a bare
+    // in-memory DB returns "embeddings backend not configured". End-to-end
+    // coverage lives in `tests/semantic_embed_tests.rs`.
+    source.contains("drevo.semantic.query")
+        || source.contains("drevo.semantic.reindex")
+        || source.contains("drevo.semantic.embed")
 }
 
 #[test]

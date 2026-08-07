@@ -922,6 +922,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     message: "no such procedure — built-in procedures are \
                           db.labels, db.relationshipTypes, db.propertyKeys, \
                           drevo.vector.query, drevo.semantic.query, \
+                          drevo.semantic.embed, \
                           drevo.semantic.reindex, drevo.semantic.register, \
                           drevo.semantic.status, drevo.semantic.info, \
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
@@ -3802,6 +3803,50 @@ impl<'a> Executor<'a> {
         self.vector_scan(&label, &property, &query, k, span)
     }
 
+    /// `CALL drevo.semantic.embed(text) YIELD vector` (#272) — embed one string
+    /// server-side and return the resulting vector as a Cypher list of floats.
+    ///
+    /// This exposes the same server-side embedding step as
+    /// [`Self::proc_semantic_query`], but *without* the fused brute-force scan:
+    /// the caller gets the query vector back and runs its **own** Cypher —
+    /// crucially, its own **filtered** Cypher — e.g.
+    /// `WITH vector MATCH (n:Entity) WHERE n.group_id IN $g AND n.embedding IS
+    /// NOT NULL WITH n, cosine_similarity(n.embedding, vector) AS score ...`.
+    /// `drevo.semantic.query` cannot serve that case because it drops all
+    /// predicates; `embed` + `cosine_similarity` (#202) composes with any
+    /// filter, so a Bolt/Cypher client can do scoped semantic retrieval without
+    /// hosting an embedder of its own (downstream: graphiti#20).
+    ///
+    /// The vector is the same model/dimension as the index (see
+    /// `drevo.semantic.info`, #267). Errors with the same clear "not configured"
+    /// message as `semantic.query` when no embedder is installed, so a client
+    /// can fall back to an external embedder + `/v1/embeddings`.
+    #[cfg(feature = "http")]
+    fn proc_semantic_embed(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (1) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let text = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+
+        let vector = self
+            .drevo
+            .embed_text(&text)
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.embed".to_string(),
+                message: e.to_string(),
+                span,
+            })?;
+
+        // One row, one `vector` column: the embedding as a Cypher list of floats
+        // (widened f32 -> f64 to match every other numeric Value in the engine).
+        let list = Value::List(
+            vector
+                .into_iter()
+                .map(|f| Value::Float(f64::from(f)))
+                .collect(),
+        );
+        Ok(vec![vec![list]])
+    }
+
     /// `CALL drevo.semantic.register(label, text_property, embedding_property,
     /// mode) YIELD label, text_property, embedding_property, state, mode`
     /// (#251 Phase 21 control plane).
@@ -4211,6 +4256,8 @@ impl<'a> Executor<'a> {
             "drevo.vector.query" => self.proc_vector_query(args, span),
             #[cfg(feature = "http")]
             "drevo.semantic.query" => self.proc_semantic_query(args, span),
+            #[cfg(feature = "http")]
+            "drevo.semantic.embed" => self.proc_semantic_embed(args, span),
             #[cfg(feature = "http")]
             "drevo.semantic.reindex" => self.proc_semantic_reindex(args, span),
             "drevo.semantic.register" => self.proc_semantic_register(args, span),
@@ -5767,6 +5814,10 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // similarity to a server-side embedding of the query text.
         #[cfg(feature = "http")]
         "drevo.semantic.query" => Some(&["node", "score"]),
+        // Standalone server-side embed (#272): text -> vector, for filtered
+        // client-side cosine_similarity Cypher.
+        #[cfg(feature = "http")]
+        "drevo.semantic.embed" => Some(&["vector"]),
         // Backfill reindex (#262): counts from one resumable batch.
         #[cfg(feature = "http")]
         "drevo.semantic.reindex" => Some(&["scanned", "embedded", "skipped", "remaining"]),
@@ -5818,6 +5869,9 @@ fn procedure_arity(name: &str) -> usize {
         // drevo.semantic.query(label, property, text, k)
         #[cfg(feature = "http")]
         "drevo.semantic.query" => 4,
+        // drevo.semantic.embed(text)
+        #[cfg(feature = "http")]
+        "drevo.semantic.embed" => 1,
         // drevo.semantic.reindex(label, embedding_property, batch_size)
         #[cfg(feature = "http")]
         "drevo.semantic.reindex" => 3,
