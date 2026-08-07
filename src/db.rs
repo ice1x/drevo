@@ -502,6 +502,25 @@ pub struct BloatReport {
     pub bloat_ratio: Option<f64>,
 }
 
+/// Per-keyspace storage breakdown (#275 investigation): for each logical
+/// keyspace prefix, how many rows it holds and their summed key+value bytes.
+///
+/// Physical bytes per prefix are not exposed by redb, but **entry count** is the
+/// signal that matters for the FTS blowup: the FTS index stores one tiny row per
+/// `(trigram, node_id)` pair, so on a text-heavy graph `fts` dwarfs every other
+/// keyspace in row count — and redb's fixed per-row / per-page overhead on those
+/// millions of near-empty rows is what inflates the physical file to several×
+/// its content. This report makes that dominance measurable.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct KeyspaceStat {
+    /// Human-readable keyspace label (the prefix without its trailing `:`).
+    pub prefix: &'static str,
+    /// Number of rows under this prefix.
+    pub entries: u64,
+    /// Summed key + value bytes of those rows (logical content, not physical).
+    pub content_bytes: u64,
+}
+
 /// Opt-in policy for automatic compaction (#253 slice 2).
 ///
 /// redb only reclaims high-water-mark bloat on an explicit `compact()`, which
@@ -1585,6 +1604,61 @@ impl Drevo {
             edge_count,
             bloat_ratio,
         })
+    }
+
+    /// Per-keyspace storage breakdown (#275): rows + content bytes for each
+    /// logical prefix, sorted by descending row count so the dominant keyspace
+    /// is first. This is the evidence for the FTS-overhead investigation — it
+    /// surfaces that the `fts` keyspace holds far more rows than any other on a
+    /// text-heavy graph (one row per `(trigram, node)`), which is what drives
+    /// the physical file well above its content size.
+    ///
+    /// On-demand only (it scans every keyspace); do not call it per request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DrevoError::Storage`] if a backend scan fails.
+    pub fn keyspace_stats(&self) -> Result<Vec<KeyspaceStat>> {
+        // Every disjoint keyspace prefix. These mirror the module-level
+        // `PREFIX_*` consts (kept as literals here to avoid widening their
+        // visibility across modules); they are stable on-disk wire prefixes.
+        // Disjointness holds because each ends in `:` and no label is a `:`
+        // -delimited prefix of another (e.g. `node:` vs `node_uuid:` differ at
+        // the 5th byte `:` vs `_`).
+        const PREFIXES: &[(&str, &[u8])] = &[
+            ("node", b"node:"),
+            ("node_uuid", b"node_uuid:"),
+            ("node_title", b"node_title:"),
+            ("node_kind", b"node_kind:"),
+            ("edge", b"edge:"),
+            ("edge_uuid", b"edge_uuid:"),
+            ("edge_kind", b"edge_kind:"),
+            ("out", b"out:"),
+            ("in", b"in:"),
+            ("updated", b"updated:"),
+            ("prop", b"prop:"),
+            ("fts", b"fts:"),
+            ("ftslen", b"ftslen:"),
+            ("efts", b"efts:"),
+            ("eftslen", b"eftslen:"),
+            ("vec", b"vec:"),
+        ];
+        let mut out = Vec::with_capacity(PREFIXES.len());
+        for (label, prefix) in PREFIXES {
+            let mut entries: u64 = 0;
+            let mut content_bytes: u64 = 0;
+            for (key, value) in self.backend.scan_prefix(prefix)? {
+                entries += 1;
+                content_bytes += (key.len() + value.len()) as u64;
+            }
+            out.push(KeyspaceStat {
+                prefix: label,
+                entries,
+                content_bytes,
+            });
+        }
+        out.sort_by(|a, b| b.entries.cmp(&a.entries).then(a.prefix.cmp(b.prefix)));
+        Ok(out)
     }
 
     /// Open a disk-backed database and run [`Self::check_integrity`] in
@@ -5281,6 +5355,45 @@ mod tests {
         assert!(
             misleading > honest,
             "old metric ({misleading}) must over-report vs honest ({honest})"
+        );
+    }
+
+    #[test]
+    fn keyspace_stats_shows_fts_dominates_row_count() {
+        use crate::model::{NewNode, Properties};
+        let db = Drevo::open_in_memory().unwrap();
+        // Text-heavy nodes → one FTS row per (trigram, node), so the `fts`
+        // keyspace holds far more rows than the `node` records.
+        let nodes: Vec<NewNode> = (0..40)
+            .map(|i| NewNode {
+                kind: "n".into(),
+                title: format!("t{i}"),
+                body: format!(
+                    "node {i} anxious deadlines mentoring graph vectors embeddings \
+                     semantic search relationships knowledge base entity {i} lorem \
+                     ipsum dolor sit amet consectetur adipiscing elit"
+                ),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .collect();
+        db.create_nodes(nodes).unwrap();
+
+        let stats = db.keyspace_stats().unwrap();
+        // Sorted by descending row count → the FTS keyspace is first.
+        assert_eq!(
+            stats[0].prefix, "fts",
+            "fts should be the largest keyspace by row count, got {stats:?}"
+        );
+        let fts = stats.iter().find(|s| s.prefix == "fts").unwrap();
+        let node = stats.iter().find(|s| s.prefix == "node").unwrap();
+        assert_eq!(node.entries, 40, "one row per node record");
+        // The blowup driver: FTS rows outnumber node records by a large factor.
+        assert!(
+            fts.entries > node.entries * 10,
+            "fts rows ({}) should dwarf node rows ({})",
+            fts.entries,
+            node.entries
         );
     }
 
