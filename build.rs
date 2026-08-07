@@ -1,5 +1,8 @@
 use std::process::Command;
 
+// Pure resolver shared with `tests/version_resolve_tests.rs` (see the file).
+include!("version_resolve.rs");
+
 fn main() {
     emit_version();
 
@@ -37,7 +40,11 @@ fn main() {
 ///     native/dev builds straight from a git clone (e.g. `0.0.4`, or
 ///     `0.0.4-3-g<sha>` a few commits past the tag).
 ///  3. `CARGO_PKG_VERSION` — last-resort fallback for a git-less, arg-less build
-///     (e.g. a source tarball); keeps the build infallible.
+///     (e.g. a source tarball or a plain `docker build`); keeps the build
+///     infallible. Because the release flow never bumps `Cargo.toml`, this is
+///     the placeholder `0.0.0`, which [`resolve_version`] reports as
+///     `0.0.0-unknown` so a versionless build is visibly flagged rather than
+///     masquerading as a real `0.0.0` release.
 fn emit_version() {
     // Re-run when the override changes, and when git HEAD/tags move so a
     // dev build reflects a freshly cut tag without a manual `cargo clean`.
@@ -45,19 +52,15 @@ fn emit_version() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/tags");
 
-    let version = version_from_env()
-        .or_else(version_from_git)
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    // Resolution + the `0.0.0 → 0.0.0-unknown` marker live in the shared,
+    // unit-tested `resolve_version` (see `version_resolve.rs`).
+    let version = resolve_version(
+        std::env::var("DREVO_VERSION").ok(),
+        version_from_git(),
+        env!("CARGO_PKG_VERSION"),
+    );
 
     println!("cargo:rustc-env=DREVO_VERSION={version}");
-}
-
-/// The explicit `DREVO_VERSION` build-arg / env override, if non-empty.
-fn version_from_env() -> Option<String> {
-    match std::env::var("DREVO_VERSION") {
-        Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
-        _ => None,
-    }
 }
 
 /// `git describe --tags --always --dirty`, with any leading `v` stripped so
