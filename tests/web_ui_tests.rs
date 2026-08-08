@@ -204,6 +204,10 @@ async fn ui_html_includes_storage_panel() {
         body.contains("id=\"storage-backup\""),
         "the panel must offer a GraphML backup download"
     );
+    assert!(
+        body.contains("id=\"storage-shrink\""),
+        "the panel must offer the online shrink action"
+    );
 }
 
 #[tokio::test]
@@ -225,6 +229,10 @@ async fn ui_app_js_calls_storage_endpoints() {
     assert!(
         body.contains("/export/graphml"),
         "app.js must wire the GraphML backup link"
+    );
+    assert!(
+        body.contains("/storage/shrink"),
+        "app.js must POST the online shrink action"
     );
 }
 

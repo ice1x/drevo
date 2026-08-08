@@ -247,4 +247,32 @@ pub trait StorageBackend: Send + Sync {
     fn set_format_version(&self, _major: u32, _minor: u32) -> Result<()> {
         Ok(())
     }
+
+    /// Rebuild the store into a fresh, unfragmented copy **in place** and hot-swap
+    /// the live handle to it — an *online* shrink that needs no exclusive
+    /// ownership and no server restart.
+    ///
+    /// Unlike [`compact`](Self::compact) (which only reclaims redb's trailing
+    /// high-water slack, and needs a sole `Arc<Database>` owner), this streams
+    /// every row into a brand-new file — reclaiming *all* copy-on-write bloat,
+    /// including internal fragmentation — then atomically replaces the live file
+    /// and reopens the handle onto it, all under a write lock that quiesces
+    /// concurrent operations for the duration. The graph never migrates: rows
+    /// are copied verbatim (data + meta), so counters, indexes, and format
+    /// markers are byte-identical.
+    ///
+    /// Returns `Ok(Some((bytes_before, bytes_after)))` for a disk-backed store
+    /// that performed the rebuild, or `Ok(None)` for backends that cannot shrink
+    /// online (the ephemeral in-memory backend has no file to reclaim). The
+    /// default is `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on I/O or backend
+    /// failure. On a failure *after* the new file is built, an implementation
+    /// must leave a valid, readable handle installed (never a half-swapped or
+    /// empty store).
+    fn shrink_rebuild(&self) -> Result<Option<(u64, u64)>> {
+        Ok(None)
+    }
 }

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use redb::{Database, TableDefinition};
 
@@ -65,9 +65,20 @@ fn parse_format_version(raw: &str) -> Option<(u32, u32)> {
 /// backend.put(b"key", b"value").unwrap();
 /// assert_eq!(backend.get(b"key").unwrap(), Some(b"value".to_vec()));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RedbBackend {
-    db: Arc<Database>,
+    /// The live redb handle, behind an `RwLock` so an online
+    /// [`shrink_rebuild`](StorageBackend::shrink_rebuild) can take the write
+    /// lock, quiesce every in-flight operation, and hot-swap the handle onto a
+    /// freshly-rebuilt file — no exclusive ownership, no restart. Ordinary
+    /// operations take the shared read lock (see [`Self::db`]) and hold it for
+    /// the whole transaction (begin → commit) so a swap can never land between
+    /// a write's `begin_write` and its `commit`.
+    ///
+    /// The inner `Arc` is retained (rather than a bare `Database`) purely so
+    /// [`compact`](StorageBackend::compact) can keep enforcing its
+    /// unique-owner precondition via `Arc::get_mut`.
+    db: RwLock<Arc<Database>>,
     /// Path to the underlying redb file — retained so
     /// [`StorageBackend::size_bytes`] can `stat(2)` the file without
     /// pulling the path through every call site. Set by [`Self::open`].
@@ -88,7 +99,7 @@ impl RedbBackend {
         let path = path.as_ref().to_path_buf();
         let db = Database::create(&path)?;
         let backend = Self {
-            db: Arc::new(db),
+            db: RwLock::new(Arc::new(db)),
             path,
         };
         backend.check_or_stamp_format_version()?;
@@ -98,6 +109,18 @@ impl RedbBackend {
     /// Path of the underlying redb database file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Acquire the shared read guard on the live database handle.
+    ///
+    /// Every ordinary operation goes through this and **holds the returned guard
+    /// for the whole transaction** (through `commit`), so an online
+    /// [`shrink_rebuild`](StorageBackend::shrink_rebuild) — which takes the
+    /// `write` lock — can never swap the handle between a write's `begin_write`
+    /// and its `commit`. A poisoned lock is recovered (the guarded `Arc` is
+    /// never left in a torn state), mirroring the crate's lock-poisoning policy.
+    fn db(&self) -> RwLockReadGuard<'_, Arc<Database>> {
+        self.db.read().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Read the on-disk format version marker, if the file carries one.
@@ -126,7 +149,8 @@ impl RedbBackend {
     /// Read the raw marker string from [`META_TABLE`], or `None` when the
     /// table or key is absent (a fresh or pre-versioning file).
     fn read_raw_format_version(&self) -> Result<Option<String>> {
-        let read_txn = self.db.begin_read()?;
+        let db = self.db();
+        let read_txn = db.begin_read()?;
         let table = match read_txn.open_table(META_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
@@ -161,7 +185,8 @@ impl RedbBackend {
     /// Write the current format version marker into [`META_TABLE`].
     fn stamp_format_version(&self) -> Result<()> {
         let marker = format!("{FORMAT_MAJOR}.{FORMAT_MINOR}");
-        let write_txn = self.db.begin_write()?;
+        let db = self.db();
+        let write_txn = db.begin_write()?;
         {
             let mut table = write_txn.open_table(META_TABLE)?;
             table.insert(FORMAT_VERSION_KEY, marker.as_bytes())?;
@@ -171,9 +196,30 @@ impl RedbBackend {
     }
 }
 
+/// Cloning shares the underlying `Arc<Database>` (a new `RwLock` wrapping a
+/// clone of the same handle), preserving the pre-`RwLock` semantics: a cloned
+/// backend keeps [`compact`](StorageBackend::compact)'s unique-owner check
+/// meaningful (outstanding clones ⇒ `Arc::get_mut` fails ⇒
+/// [`StorageError::CompactNotExclusive`]). Production never clones a backend;
+/// this exists for the compaction tests and any embedder that keeps a copy.
+///
+/// Note: an online [`shrink_rebuild`](StorageBackend::shrink_rebuild) swaps only
+/// the swapping backend's own `Arc`; a pre-existing clone would keep pointing at
+/// the old handle. That is fine because the graph layer holds exactly one
+/// backend behind its `Box<dyn StorageBackend>`.
+impl Clone for RedbBackend {
+    fn clone(&self) -> Self {
+        Self {
+            db: RwLock::new(Arc::clone(&self.db())),
+            path: self.path.clone(),
+        }
+    }
+}
+
 impl StorageBackend for RedbBackend {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let read_txn = self.db.begin_read()?;
+        let db = self.db();
+        let read_txn = db.begin_read()?;
         let table = match read_txn.open_table(DATA_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
@@ -186,7 +232,8 @@ impl StorageBackend for RedbBackend {
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let write_txn = self.db.begin_write()?;
+        let db = self.db();
+        let write_txn = db.begin_write()?;
         {
             let mut table = write_txn.open_table(DATA_TABLE)?;
             table.insert(key, value)?;
@@ -199,7 +246,8 @@ impl StorageBackend for RedbBackend {
         if items.is_empty() {
             return Ok(());
         }
-        let write_txn = self.db.begin_write()?;
+        let db = self.db();
+        let write_txn = db.begin_write()?;
         {
             let mut table = write_txn.open_table(DATA_TABLE)?;
             for (key, value) in items {
@@ -211,7 +259,8 @@ impl StorageBackend for RedbBackend {
     }
 
     fn delete(&self, key: &[u8]) -> Result<()> {
-        let write_txn = self.db.begin_write()?;
+        let db = self.db();
+        let write_txn = db.begin_write()?;
         {
             let mut table = match write_txn.open_table(DATA_TABLE) {
                 Ok(t) => t,
@@ -231,7 +280,8 @@ impl StorageBackend for RedbBackend {
         if keys.is_empty() {
             return Ok(());
         }
-        let write_txn = self.db.begin_write()?;
+        let db = self.db();
+        let write_txn = db.begin_write()?;
         {
             let mut table = match write_txn.open_table(DATA_TABLE) {
                 Ok(t) => t,
@@ -247,7 +297,8 @@ impl StorageBackend for RedbBackend {
     }
 
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let read_txn = self.db.begin_read()?;
+        let db = self.db();
+        let read_txn = db.begin_read()?;
         let table = match read_txn.open_table(DATA_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
@@ -278,7 +329,8 @@ impl StorageBackend for RedbBackend {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let read_txn = self.db.begin_read()?;
+        let db = self.db();
+        let read_txn = db.begin_read()?;
         let table = match read_txn.open_table(DATA_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
@@ -330,7 +382,8 @@ impl StorageBackend for RedbBackend {
     /// iterator, so a large FTS-heavy keyspace is measured without ever
     /// materialising it (unlike the default `scan_prefix`-based impl).
     fn content_bytes(&self) -> Result<u64> {
-        let read_txn = self.db.begin_read()?;
+        let db = self.db();
+        let read_txn = db.begin_read()?;
         let table = match read_txn.open_table(DATA_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
@@ -366,7 +419,11 @@ impl StorageBackend for RedbBackend {
     /// `redb::CompactionError`, which funnels into
     /// [`StorageError::Redb`].
     fn compact(&mut self) -> Result<()> {
-        let db = Arc::get_mut(&mut self.db).ok_or(StorageError::CompactNotExclusive)?;
+        // `&mut self` gives exclusive access to the `RwLock` without locking, so
+        // the unique-owner precondition is checked exactly as before: `compact`
+        // still requires that no other `Arc<Database>` clone exists.
+        let arc = self.db.get_mut().unwrap_or_else(|e| e.into_inner());
+        let db = Arc::get_mut(arc).ok_or(StorageError::CompactNotExclusive)?;
         // redb::CompactionError → redb::Error → StorageError::Redb via
         // the existing `From` impls.
         db.compact()
@@ -380,13 +437,74 @@ impl StorageBackend for RedbBackend {
 
     fn set_format_version(&self, major: u32, minor: u32) -> Result<()> {
         let marker = format!("{major}.{minor}");
-        let write_txn = self.db.begin_write()?;
+        let db = self.db();
+        let write_txn = db.begin_write()?;
         {
             let mut table = write_txn.open_table(META_TABLE)?;
             table.insert(FORMAT_VERSION_KEY, marker.as_bytes())?;
         }
         write_txn.commit()?;
         Ok(())
+    }
+
+    fn shrink_rebuild(&self) -> Result<Option<(u64, u64)>> {
+        // Exclusive lock: quiesce every in-flight operation (each holds the
+        // shared read guard through its `commit`), so nothing can write to the
+        // old file after we snapshot it and nothing observes the swap mid-flight.
+        let mut guard = self.db.write().unwrap_or_else(|e| e.into_inner());
+
+        let before = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+
+        // Build the compact copy beside the live file; discard a stale temp left
+        // by a crashed prior run first.
+        let tmp = self.path.with_extension("shrinking.redb");
+        if tmp.exists() {
+            std::fs::remove_file(&tmp)?;
+        }
+        let fresh = Database::create(&tmp)?;
+
+        // Copy every row of BOTH tables verbatim — the graph never migrates.
+        // DATA_TABLE holds nodes/edges/indexes AND drevo's `meta:` keys
+        // (counters, semantic registry, fts format marker); META_TABLE holds
+        // the redb format-version marker. Streaming via redb range iterators
+        // keeps peak memory bounded regardless of database size.
+        {
+            let read_txn = guard.begin_read()?;
+            let write_txn = fresh.begin_write()?;
+            match read_txn.open_table(DATA_TABLE) {
+                Ok(src) => {
+                    let mut dst = write_txn.open_table(DATA_TABLE)?;
+                    for entry in src.range::<&[u8]>(..)? {
+                        let entry = entry?;
+                        dst.insert(entry.0.value(), entry.1.value())?;
+                    }
+                }
+                Err(redb::TableError::TableDoesNotExist(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
+            match read_txn.open_table(META_TABLE) {
+                Ok(src) => {
+                    let mut dst = write_txn.open_table(META_TABLE)?;
+                    for entry in src.range::<&str>(..)? {
+                        let entry = entry?;
+                        dst.insert(entry.0.value(), entry.1.value())?;
+                    }
+                }
+                Err(redb::TableError::TableDoesNotExist(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
+            write_txn.commit()?;
+        }
+
+        // Swap: installing `fresh` drops the old `Arc<Database>`, closing the old
+        // file; the new handle's fd then follows the inode through the rename, so
+        // the live file ends up back at `self.path`. The write lock is still held
+        // throughout, so there is no window of unavailability.
+        *guard = Arc::new(fresh);
+        std::fs::rename(&tmp, &self.path)?;
+
+        let after = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        Ok(Some((before, after)))
     }
 }
 
@@ -412,6 +530,72 @@ mod tests {
         let (backend, _dir) = open_temp_db();
         backend.put(b"k", b"v").unwrap();
         assert_eq!(backend.get(b"k").unwrap(), Some(b"v".to_vec()));
+    }
+
+    #[test]
+    fn shrink_rebuild_reclaims_bloat_and_preserves_data() {
+        let (backend, _dir) = open_temp_db();
+        // Manufacture reclaimable high-water bloat: write many large values,
+        // then delete all but a handful. redb frees the pages to its internal
+        // freelist but never shrinks the file on its own.
+        let big = vec![b'x'; 4096];
+        for i in 0..2000u32 {
+            backend.put(format!("k{i:04}").as_bytes(), &big).unwrap();
+        }
+        for i in 10..2000u32 {
+            backend.delete(format!("k{i:04}").as_bytes()).unwrap();
+        }
+        let before = backend.size_bytes().unwrap().unwrap();
+
+        let (b, a) = backend
+            .shrink_rebuild()
+            .unwrap()
+            .expect("a disk-backed store performs an online rebuild");
+        assert_eq!(
+            b, before,
+            "reported before-size must match the pre-shrink file"
+        );
+        assert!(
+            a < before,
+            "file must actually shrink: after {a} !< before {before}"
+        );
+        assert_eq!(
+            backend.size_bytes().unwrap().unwrap(),
+            a,
+            "the live handle now stats the rebuilt file"
+        );
+
+        // Data survives verbatim: the 10 kept keys are intact, the deleted ones
+        // stay gone, and the redb format marker (META_TABLE) came across.
+        for i in 0..10u32 {
+            assert_eq!(
+                backend.get(format!("k{i:04}").as_bytes()).unwrap(),
+                Some(big.clone()),
+                "surviving key k{i:04} must be preserved"
+            );
+        }
+        assert_eq!(
+            backend.get(b"k0100").unwrap(),
+            None,
+            "deleted key stays gone"
+        );
+        assert_eq!(
+            backend.format_version().unwrap(),
+            Some((FORMAT_MAJOR, FORMAT_MINOR)),
+            "format marker preserved across the rebuild"
+        );
+
+        // The swapped-in handle is fully writable afterwards.
+        backend.put(b"after", b"ok").unwrap();
+        assert_eq!(backend.get(b"after").unwrap(), Some(b"ok".to_vec()));
+    }
+
+    #[test]
+    fn shrink_rebuild_is_none_for_ephemeral_memory_backend() {
+        // The in-memory backend has no file to reclaim → online shrink is a
+        // no-op reported as `None` (the endpoint turns this into a clear 409).
+        let backend = crate::storage::MemoryBackend::new();
+        assert!(backend.shrink_rebuild().unwrap().is_none());
     }
 
     #[test]
