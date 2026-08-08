@@ -532,7 +532,7 @@ body {
   padding: 0.75rem 1.1rem;
   border-top: 1px solid var(--border);
 }
-.storage-backup, .storage-refresh, .storage-shrink {
+.storage-backup, .storage-refresh, .storage-shrink, .storage-bench-run {
   padding: 0.4rem 0.8rem;
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
@@ -542,9 +542,12 @@ body {
   cursor: pointer;
   text-decoration: none;
 }
-.storage-backup:hover, .storage-refresh:hover, .storage-shrink:hover {
+.storage-backup:hover, .storage-refresh:hover, .storage-shrink:hover,
+.storage-bench-run:hover {
   border-color: var(--accent);
 }
+.storage-bench-run:disabled { opacity: 0.6; cursor: progress; }
+.storage-bench { padding: 0 1.1rem 0.25rem; }
 /* Shrink is the primary maintenance action — give it an accent so it reads as
    the deliberate, state-changing button (it rebuilds the live file). */
 .storage-shrink {

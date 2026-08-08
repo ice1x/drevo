@@ -3074,6 +3074,35 @@ async fn storage_shrink_endpoint_rejects_get() {
 }
 
 #[tokio::test]
+async fn storage_benchmark_endpoint_returns_metrics() {
+    // The benchmark runs write throughput on a THROWAWAY in-memory database
+    // (never the live graph) and FTS latency read-only against the target db.
+    let app = make_app();
+    let (status, body) = send(&app, "POST", "/storage/benchmark", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["incr_write_nodes_per_sec"].as_f64().unwrap_or(0.0) > 0.0,
+        "incremental write throughput must be measured, got {body:?}"
+    );
+    assert!(
+        body["batch_write_nodes_per_sec"].as_f64().unwrap_or(0.0) > 0.0,
+        "batch write throughput must be measured"
+    );
+    assert!(
+        body["search_median_ms"].is_number(),
+        "search latency must be reported"
+    );
+    assert!(body["incr_n"].as_u64().unwrap_or(0) > 0);
+}
+
+#[tokio::test]
+async fn storage_benchmark_endpoint_rejects_get() {
+    let app = make_app();
+    let (status, _) = send(&app, "GET", "/storage/benchmark", None).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
 async fn metrics_endpoint_exposes_storage_file_bytes_gauge() {
     let app = make_app();
     let (status, _content_type, body) = fetch_text(&app, "/metrics").await;

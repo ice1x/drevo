@@ -208,6 +208,10 @@ async fn ui_html_includes_storage_panel() {
         body.contains("id=\"storage-shrink\""),
         "the panel must offer the online shrink action"
     );
+    assert!(
+        body.contains("id=\"storage-bench-run\""),
+        "the panel must offer the benchmark action"
+    );
 }
 
 #[tokio::test]
@@ -233,6 +237,10 @@ async fn ui_app_js_calls_storage_endpoints() {
     assert!(
         body.contains("/storage/shrink"),
         "app.js must POST the online shrink action"
+    );
+    assert!(
+        body.contains("/storage/benchmark"),
+        "app.js must POST the benchmark action"
     );
 }
 
