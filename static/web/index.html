@@ -53,9 +53,37 @@
               title="Create a new database" aria-label="New database">+</button>
     </div>
     <div class="server-info" id="server-info">connecting…</div>
+    <button type="button" id="storage-toggle" class="storage-toggle"
+            title="Storage &amp; maintenance" aria-label="Open storage panel">⛁</button>
     <button type="button" id="theme-toggle" class="theme-toggle"
             title="Toggle light / dark theme" aria-label="Toggle theme">◐</button>
   </header>
+
+  <!-- Storage panel (modal overlay). Opened from the ⛁ topbar button; shows
+       the active database's on-disk footprint (from GET /storage/bloat), the
+       per-keyspace row/byte breakdown (GET /storage/keyspaces — the `fts` row
+       is what dominates a text-heavy graph), and a GraphML backup download.
+       shrink/compact are OFFLINE maintenance ops (redb holds the live file
+       open) → the panel documents that rather than pretending a live one-click
+       shrink is safe. -->
+  <div id="storage-modal" class="storage-modal" hidden aria-hidden="true"
+       role="dialog" aria-modal="true" aria-labelledby="storage-title">
+    <div class="storage-dialog" role="document">
+      <header class="storage-head">
+        <h2 id="storage-title">Storage</h2>
+        <button type="button" id="storage-close" class="storage-close"
+                title="Close" aria-label="Close storage panel">✕</button>
+      </header>
+      <div class="storage-body" id="storage-body">
+        <p class="storage-loading">Loading storage stats…</p>
+      </div>
+      <footer class="storage-foot">
+        <a id="storage-backup" class="storage-backup" href="/export/graphml"
+           download="drevo-backup.graphml">Backup (GraphML)</a>
+        <button type="button" id="storage-refresh" class="storage-refresh">Refresh</button>
+      </footer>
+    </div>
+  </div>
 
   <main class="layout">
     <!-- Left rail: graph overview controls (Neo4j-Browser-style label

@@ -41,6 +41,12 @@
   const $themeToggle = document.getElementById("theme-toggle");
   const $dbSelect = document.getElementById("db-select");
   const $dbNew = document.getElementById("db-new");
+  const $storageToggle = document.getElementById("storage-toggle");
+  const $storageModal = document.getElementById("storage-modal");
+  const $storageClose = document.getElementById("storage-close");
+  const $storageBody = document.getElementById("storage-body");
+  const $storageBackup = document.getElementById("storage-backup");
+  const $storageRefresh = document.getElementById("storage-refresh");
 
   // ── Graph overview state ─────────────────────────────────────────────
   // The whole graph dump is fetched once from /export/json and cached;
@@ -133,6 +139,117 @@
       $serverInfo.textContent = "(disconnected)";
       status("Cannot reach drevo HTTP API at /. Is the server running?", "error");
     }
+  }
+
+  // ── Storage panel (bloat + keyspaces + backup) ─────────────────────
+  // A read-only витрина over GET /storage/bloat and GET /storage/keyspaces.
+  // shrink/compact are deliberately NOT one-click buttons here: redb holds
+  // the live file open, so reclaiming space is an OFFLINE maintenance op (stop
+  // the server, run `python -m drevo shrink`, swap, restart). The panel says so
+  // rather than shipping an unsafe live-shrink.
+  const KEYSPACE_LABELS = {
+    node: "Nodes",
+    edge: "Edges",
+    fts: "Full-text index (nodes)",
+    ftslen: "FTS doc lengths (nodes)",
+    efts: "Full-text index (edges)",
+    eftslen: "FTS doc lengths (edges)",
+    vec: "Vector embeddings",
+    prop: "Property index",
+    out: "Adjacency (out)",
+    in: "Adjacency (in)",
+    node_uuid: "Node UUID index",
+    edge_uuid: "Edge UUID index",
+    node_title: "Node title index",
+    node_kind: "Node kind index",
+    edge_kind: "Edge kind index",
+    updated: "Updated-at index",
+  };
+
+  function formatBytes(n) {
+    if (n === null || n === undefined) return "—";
+    if (n < 1024) return `${n} B`;
+    const units = ["KiB", "MiB", "GiB", "TiB"];
+    let v = n / 1024;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${v.toFixed(1)} ${units[i]}`;
+  }
+
+  function backupHref() {
+    // The Db extractor accepts `?db=` for non-default databases (the download
+    // anchor can't set the X-Drevo-Database header).
+    return currentDb && currentDb !== "drevo"
+      ? `/export/graphml?db=${encodeURIComponent(currentDb)}`
+      : "/export/graphml";
+  }
+
+  function renderStorage(bloat, keyspaces) {
+    const rows = (keyspaces || [])
+      .filter((k) => k.entries > 0)
+      .map((k) => {
+        const label = KEYSPACE_LABELS[k.prefix] || k.prefix;
+        return `<tr>
+          <td class="ks-name" title="${k.prefix}:">${label}</td>
+          <td class="ks-num">${k.entries.toLocaleString()}</td>
+          <td class="ks-num">${formatBytes(k.content_bytes)}</td>
+        </tr>`;
+      })
+      .join("");
+    const ratio =
+      bloat.bloat_ratio === null || bloat.bloat_ratio === undefined
+        ? "—"
+        : `${bloat.bloat_ratio.toFixed(2)}×`;
+    $storageBody.innerHTML = `
+      <dl class="storage-stats">
+        <div><dt>File on disk</dt><dd>${formatBytes(bloat.file_bytes)}</dd></div>
+        <div><dt>Stored (records + indexes)</dt><dd>${formatBytes(bloat.stored_bytes)}</dd></div>
+        <div><dt>Records only</dt><dd>${formatBytes(bloat.logical_bytes)}</dd></div>
+        <div><dt>Indexes</dt><dd>${formatBytes(bloat.index_bytes)}</dd></div>
+        <div><dt>Bloat ratio</dt><dd>${ratio}</dd></div>
+        <div><dt>Nodes</dt><dd>${(bloat.node_count ?? 0).toLocaleString()}</dd></div>
+        <div><dt>Edges</dt><dd>${(bloat.edge_count ?? 0).toLocaleString()}</dd></div>
+      </dl>
+      <h3 class="storage-subhead">Keyspaces (largest first)</h3>
+      <table class="storage-keyspaces">
+        <thead><tr><th>Keyspace</th><th>Rows</th><th>Content</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="3">empty</td></tr>'}</tbody>
+      </table>
+      <p class="storage-note">
+        To reclaim disk bloat, run <code>shrink</code> offline (stop the server,
+        <code>python -m drevo shrink &lt;db&gt; &lt;out&gt;</code>, swap, restart).
+        redb keeps the live file open, so it can't be compacted in place while
+        the server runs.
+      </p>`;
+  }
+
+  async function loadStorage() {
+    $storageBody.innerHTML = '<p class="storage-loading">Loading storage stats…</p>';
+    if ($storageBackup) $storageBackup.href = backupHref();
+    try {
+      const [bloat, ks] = await Promise.all([
+        apiGet("/storage/bloat"),
+        apiGet("/storage/keyspaces"),
+      ]);
+      renderStorage(bloat, ks.keyspaces || []);
+    } catch (e) {
+      $storageBody.innerHTML = `<p class="storage-error">Cannot load storage stats: ${e.message}</p>`;
+    }
+  }
+
+  function openStorage() {
+    if (!$storageModal) return;
+    $storageModal.hidden = false;
+    $storageModal.setAttribute("aria-hidden", "false");
+    loadStorage();
+  }
+  function closeStorage() {
+    if (!$storageModal) return;
+    $storageModal.hidden = true;
+    $storageModal.setAttribute("aria-hidden", "true");
   }
 
   // ── Layout (task 00093) ────────────────────────────────────────────
@@ -1071,6 +1188,20 @@
       applyTheme(currentTheme() === "dark" ? "light" : "dark")
     );
   }
+
+  // Storage panel — open / close / refresh.
+  if ($storageToggle) $storageToggle.addEventListener("click", openStorage);
+  if ($storageClose) $storageClose.addEventListener("click", closeStorage);
+  if ($storageRefresh) $storageRefresh.addEventListener("click", loadStorage);
+  if ($storageModal) {
+    // Click on the dimmed backdrop (outside the dialog) closes.
+    $storageModal.addEventListener("click", (e) => {
+      if (e.target === $storageModal) closeStorage();
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $storageModal && !$storageModal.hidden) closeStorage();
+  });
 
   document.addEventListener("DOMContentLoaded", () => {
     initTheme();

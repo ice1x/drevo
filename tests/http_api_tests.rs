@@ -3010,6 +3010,48 @@ async fn storage_bloat_endpoint_rejects_post() {
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
 }
 
+// ── Storage UI panel — per-keyspace breakdown ───────────────────────────
+
+#[tokio::test]
+async fn storage_keyspaces_endpoint_lists_prefixes_with_counts() {
+    let app = make_app();
+    let (a, b) = create_two_nodes(&app).await;
+    let (status, _) = send(&app, "POST", "/edges", Some(new_edge_body(a, b, "knows"))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(&app, "GET", "/storage/keyspaces", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body["keyspaces"].as_array().expect("keyspaces array");
+    assert!(!rows.is_empty(), "at least the node keyspace is populated");
+    // Every row exposes the витрина triple the UI renders.
+    for row in rows {
+        assert!(row["prefix"].is_string());
+        assert!(row["entries"].is_u64());
+        assert!(row["content_bytes"].is_u64());
+    }
+    // The `node` keyspace holds exactly the two created nodes.
+    let node = rows
+        .iter()
+        .find(|r| r["prefix"] == "node")
+        .expect("node keyspace present");
+    assert_eq!(node["entries"], 2);
+    // Rows are returned largest-first (entries desc) — the report's own order.
+    let entries: Vec<u64> = rows
+        .iter()
+        .map(|r| r["entries"].as_u64().unwrap())
+        .collect();
+    let mut sorted = entries.clone();
+    sorted.sort_by(|x, y| y.cmp(x));
+    assert_eq!(entries, sorted, "keyspaces must be sorted by entries desc");
+}
+
+#[tokio::test]
+async fn storage_keyspaces_endpoint_rejects_post() {
+    let app = make_app();
+    let (status, _) = send(&app, "POST", "/storage/keyspaces", None).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
 #[tokio::test]
 async fn metrics_endpoint_exposes_storage_file_bytes_gauge() {
     let app = make_app();

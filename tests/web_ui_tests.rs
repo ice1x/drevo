@@ -186,6 +186,49 @@ async fn ui_html_includes_node_inspector() {
 }
 
 #[tokio::test]
+async fn ui_html_includes_storage_panel() {
+    // The Storage panel (bloat + keyspaces + backup) is opened from the ⛁
+    // topbar button and rendered into the #storage-modal dialog.
+    let app = make_app();
+    let (_status, _ct, bytes) = get(&app, "/ui").await;
+    let body = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        body.contains("id=\"storage-toggle\""),
+        "topbar must expose the storage-panel trigger button"
+    );
+    assert!(
+        body.contains("id=\"storage-modal\""),
+        "the storage modal dialog must be present"
+    );
+    assert!(
+        body.contains("id=\"storage-backup\""),
+        "the panel must offer a GraphML backup download"
+    );
+}
+
+#[tokio::test]
+async fn ui_app_js_calls_storage_endpoints() {
+    // app.js must drive the panel off the real storage endpoints; a rename of
+    // /storage/keyspaces (server side) without updating the UI would silently
+    // break the panel — this pins the contract.
+    let app = make_app();
+    let (_status, _ct, bytes) = get(&app, "/ui/app.js").await;
+    let body = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        body.contains("/storage/bloat"),
+        "app.js must fetch bloat stats"
+    );
+    assert!(
+        body.contains("/storage/keyspaces"),
+        "app.js must fetch the keyspace breakdown"
+    );
+    assert!(
+        body.contains("/export/graphml"),
+        "app.js must wire the GraphML backup link"
+    );
+}
+
+#[tokio::test]
 async fn ui_html_references_vendored_cytoscape() {
     // Cytoscape is vendored same-origin (see src/web_ui.rs) — the HTML
     // must point at /ui/vendor/, never a public CDN, so the WebUI works
