@@ -46,6 +46,7 @@
   const $storageClose = document.getElementById("storage-close");
   const $storageBody = document.getElementById("storage-body");
   const $storageBackup = document.getElementById("storage-backup");
+  const $storageShrink = document.getElementById("storage-shrink");
   const $storageRefresh = document.getElementById("storage-refresh");
 
   // ── Graph overview state ─────────────────────────────────────────────
@@ -219,10 +220,10 @@
         <tbody>${rows || '<tr><td colspan="3">empty</td></tr>'}</tbody>
       </table>
       <p class="storage-note">
-        To reclaim disk bloat, run <code>shrink</code> offline (stop the server,
-        <code>python -m drevo shrink &lt;db&gt; &lt;out&gt;</code>, swap, restart).
-        redb keeps the live file open, so it can't be compacted in place while
-        the server runs.
+        <strong>Shrink</strong> rebuilds the database file in place to reclaim
+        copy-on-write bloat — online, with no restart. The graph is copied
+        verbatim (nothing migrates) and operations briefly pause while the file
+        is swapped. Take a <strong>Backup</strong> first if you want a safety net.
       </p>`;
   }
 
@@ -237,6 +238,39 @@
       renderStorage(bloat, ks.keyspaces || []);
     } catch (e) {
       $storageBody.innerHTML = `<p class="storage-error">Cannot load storage stats: ${e.message}</p>`;
+    }
+  }
+
+  async function doShrink() {
+    const label = currentDb || "drevo";
+    if (
+      !window.confirm(
+        `Shrink database "${label}"?\n\nThe file is rebuilt in place to reclaim ` +
+          `bloat. Operations pause briefly during the swap; no data is migrated. ` +
+          `Consider taking a Backup first.`
+      )
+    ) {
+      return;
+    }
+    if ($storageShrink) {
+      $storageShrink.disabled = true;
+      $storageShrink.textContent = "Shrinking…";
+    }
+    status(`Shrinking "${label}"… operations pause during the swap.`);
+    try {
+      const rep = await apiPost("/storage/shrink", {});
+      const reclaimed = formatBytes(rep.bytes_reclaimed || 0);
+      const before = formatBytes(rep.bytes_before);
+      const after = formatBytes(rep.bytes_after);
+      status(`Shrink done: ${before} → ${after} (${reclaimed} reclaimed).`, "ok");
+      await loadStorage();
+    } catch (e) {
+      status(`Shrink failed: ${e.message}`, "error");
+    } finally {
+      if ($storageShrink) {
+        $storageShrink.disabled = false;
+        $storageShrink.textContent = "Shrink";
+      }
     }
   }
 
@@ -1192,6 +1226,7 @@
   // Storage panel — open / close / refresh.
   if ($storageToggle) $storageToggle.addEventListener("click", openStorage);
   if ($storageClose) $storageClose.addEventListener("click", closeStorage);
+  if ($storageShrink) $storageShrink.addEventListener("click", doShrink);
   if ($storageRefresh) $storageRefresh.addEventListener("click", loadStorage);
   if ($storageModal) {
     // Click on the dimmed backdrop (outside the dialog) closes.

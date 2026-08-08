@@ -532,7 +532,7 @@ body {
   padding: 0.75rem 1.1rem;
   border-top: 1px solid var(--border);
 }
-.storage-backup, .storage-refresh {
+.storage-backup, .storage-refresh, .storage-shrink {
   padding: 0.4rem 0.8rem;
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
@@ -542,4 +542,16 @@ body {
   cursor: pointer;
   text-decoration: none;
 }
-.storage-backup:hover, .storage-refresh:hover { border-color: var(--accent); }
+.storage-backup:hover, .storage-refresh:hover, .storage-shrink:hover {
+  border-color: var(--accent);
+}
+/* Shrink is the primary maintenance action — give it an accent so it reads as
+   the deliberate, state-changing button (it rebuilds the live file). */
+.storage-shrink {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.storage-shrink:disabled { opacity: 0.6; cursor: progress; }
+/* Push Refresh to the right so Backup + Shrink group on the left. */
+.storage-refresh { margin-left: auto; }

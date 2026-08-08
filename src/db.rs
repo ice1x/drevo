@@ -1803,6 +1803,47 @@ impl Drevo {
         })
     }
 
+    /// **Online** shrink — rebuild the store into a fresh, unfragmented file and
+    /// hot-swap the live handle to it, reclaiming *all* copy-on-write bloat
+    /// (including internal fragmentation that [`Self::compact`] cannot touch)
+    /// **without** stopping the server or holding exclusive ownership of the
+    /// handle.
+    ///
+    /// Unlike [`Self::compact`] this takes `&self`: the file swap happens through
+    /// the backend's interior mutability under a write lock that quiesces
+    /// concurrent operations for the rebuild's duration, so a `Drevo` shared
+    /// behind an `Arc` (the HTTP + Bolt servers) can shrink a live database in
+    /// place. The graph never migrates — rows are copied verbatim, so counters,
+    /// indexes, and format markers are byte-identical on the new file.
+    ///
+    /// Returns `Ok(Some(report))` for a disk-backed store that rebuilt, or
+    /// `Ok(None)` for the ephemeral in-memory backend (nothing on disk to
+    /// reclaim). In-memory `bytes_*` come back `Some` for the disk case; the
+    /// `next_*_id` fields report the post-checkpoint allocator state, mirroring
+    /// [`CompactReport`] from [`Self::compact`].
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::Storage`] propagated from the counter checkpoint or the
+    /// backend rebuild (I/O, redb failure). On a failure after the new file is
+    /// built the backend keeps a valid, readable handle installed.
+    pub fn shrink_online(&self) -> Result<Option<CompactReport>> {
+        // Flush in-memory allocator counters into the backend first so the
+        // rebuilt file's `meta:next_*_id` reflect live state — the rebuild
+        // copies backend rows verbatim.
+        self.persist_counters()?;
+        match self.backend.shrink_rebuild()? {
+            Some((before, after)) => Ok(Some(CompactReport {
+                bytes_before: Some(before),
+                bytes_after: Some(after),
+                bytes_reclaimed: before.saturating_sub(after),
+                next_node_id: self.next_node_id.load(Ordering::Relaxed),
+                next_edge_id: self.next_edge_id.load(Ordering::Relaxed),
+            })),
+            None => Ok(None),
+        }
+    }
+
     /// Compact **iff** the `policy` is enabled and this database is bloated
     /// past its thresholds (#253 slice 2).
     ///
@@ -5381,6 +5422,89 @@ mod tests {
         // is defined and ≥ 1 (the physical file always covers its own data).
         let ratio = report.bloat_ratio.expect("ratio defined on disk");
         assert!(ratio >= 1.0, "physical must be ≥ stored, got {ratio}");
+    }
+
+    #[cfg(feature = "redb-backend")]
+    #[test]
+    fn shrink_online_preserves_graph_and_reports() {
+        // Graph-integrity + wiring proof for the online shrink. (The *file
+        // actually shrinks* under real bloat is proven at the storage layer in
+        // `storage::redb::tests::shrink_rebuild_reclaims_bloat_and_preserves_data`;
+        // here we keep the dataset small — one batched commit — so the test is
+        // fast, and only assert the file does not grow.)
+        use crate::model::{NewEdge, NewNode, Properties};
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("shrink.redb");
+        let db = Drevo::open(&path).unwrap();
+
+        let new_nodes: Vec<NewNode> = (0..20u32)
+            .map(|i| NewNode {
+                kind: "note".into(),
+                title: format!("title {i}"),
+                body: "anxious deadlines graph vectors embeddings semantic search relationships"
+                    .into(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .collect();
+        let nodes = db.create_nodes(new_nodes).unwrap();
+        let ids: Vec<u64> = nodes.iter().map(|n| n.id).collect();
+        let edge = db
+            .create_edge(NewEdge {
+                from_id: ids[0],
+                to_id: ids[1],
+                kind: "relates".into(),
+                properties: Properties::default(),
+                weight: 1.0,
+            })
+            .unwrap();
+        // A little churn so there is at least some reclaimable slack.
+        for &id in &ids[2..] {
+            db.delete_node(id).unwrap();
+        }
+        let before = db.file_bytes().unwrap().unwrap();
+
+        // Online shrink on a shared handle (&self) — no exclusive ownership.
+        let report = db
+            .shrink_online()
+            .unwrap()
+            .expect("disk-backed database shrinks online");
+        let after = db.file_bytes().unwrap().unwrap();
+        assert_eq!(report.bytes_before, Some(before));
+        assert_eq!(report.bytes_after, Some(after));
+        assert!(
+            after <= before,
+            "rebuild must never grow the file: {after} > {before}"
+        );
+        assert_eq!(report.bytes_reclaimed, before.saturating_sub(after));
+
+        // Graph survives verbatim: the two kept nodes + their edge, deleted
+        // nodes gone, FTS still finds the survivors, and the handle keeps
+        // working (a further write commits to the swapped-in file).
+        assert!(db.get_node(ids[0]).unwrap().is_some());
+        assert!(db.get_node(ids[1]).unwrap().is_some());
+        assert!(db.get_node(ids[19]).unwrap().is_none());
+        assert!(db.get_edge(edge.id).unwrap().is_some());
+        assert!(
+            !db.search_fts("deadlines", 10).unwrap().is_empty(),
+            "FTS index survived the rebuild"
+        );
+        let n = db
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "after shrink".into(),
+                body: "still writable".into(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .unwrap();
+        assert!(db.get_node(n.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn shrink_online_is_none_for_in_memory() {
+        let db = Drevo::open_in_memory().unwrap();
+        assert!(db.shrink_online().unwrap().is_none());
     }
 
     /// Regression guard for the honest ratio: on a text-heavy graph the FTS

@@ -3053,6 +3053,27 @@ async fn storage_keyspaces_endpoint_rejects_post() {
 }
 
 #[tokio::test]
+async fn storage_shrink_endpoint_conflicts_for_in_memory_database() {
+    // The test app is in-memory — there is no file to reclaim, so the online
+    // shrink reports "nothing to do" as 409 Conflict (not a 500). Actual disk
+    // reclamation is covered by the db/storage-layer tests.
+    let app = make_app();
+    let (status, body) = send(&app, "POST", "/storage/shrink", None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("disk-backed"),
+        "409 body should explain the in-memory limitation, got {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn storage_shrink_endpoint_rejects_get() {
+    let app = make_app();
+    let (status, _) = send(&app, "GET", "/storage/shrink", None).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
 async fn metrics_endpoint_exposes_storage_file_bytes_gauge() {
     let app = make_app();
     let (status, _content_type, body) = fetch_text(&app, "/metrics").await;

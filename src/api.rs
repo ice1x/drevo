@@ -1341,6 +1341,30 @@ async fn storage_keyspaces(Db(db): Db) -> Result<Json<KeyspacesResponse>, ApiErr
     }))
 }
 
+/// Handler for `POST /storage/shrink`. Runs [`Drevo::shrink_online`] — an
+/// *online* rebuild-and-hot-swap that reclaims all copy-on-write bloat on the
+/// live database with no restart and no exclusive ownership (the swap happens
+/// under a write lock that quiesces concurrent operations). Returns the
+/// [`CompactReport`](crate::db::CompactReport) (bytes before/after/reclaimed) on
+/// success, or `409 Conflict` for an in-memory database (nothing on disk to
+/// reclaim).
+///
+/// This holds the storage write lock for the rebuild's duration (proportional to
+/// the stored data, typically seconds), during which other operations on this
+/// database block — it is a deliberate maintenance action, not a per-request one.
+async fn storage_shrink(Db(db): Db) -> Result<Response, ApiError> {
+    match db.shrink_online()? {
+        Some(report) => Ok((StatusCode::OK, Json(report)).into_response()),
+        None => Ok((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "shrink requires a disk-backed database; this one is in-memory",
+            })),
+        )
+            .into_response()),
+    }
+}
+
 /// Handler for `POST /import/json`. Accepts an [`ImportJsonRequest`] body and
 /// returns an [`ImportReport`] summarising newly-inserted vs. skipped rows.
 /// Malformed payloads / unknown formats return 500 via [`DrevoError::Io`];
@@ -1613,6 +1637,11 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/storage/bloat", with_405(get(storage_bloat)))
         // ── Storage UI panel — per-keyspace row/byte breakdown ──────
         .route("/storage/keyspaces", with_405(get(storage_keyspaces)))
+        // ── Online shrink — rebuild + hot-swap, no restart ──────────
+        .route(
+            "/storage/shrink",
+            with_405(axum::routing::post(storage_shrink)),
+        )
         .route("/import/json", with_405(axum::routing::post(import_json)))
         .route("/export/graphml", with_405(get(export_graphml)))
         .route(
