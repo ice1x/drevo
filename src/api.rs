@@ -1320,6 +1320,27 @@ async fn storage_bloat(Db(db): Db) -> Result<Json<crate::db::BloatReport>, ApiEr
     Ok(Json(db.bloat_report()?))
 }
 
+/// Response body for `GET /storage/keyspaces`: the per-keyspace row breakdown
+/// that the Web UI's Storage panel renders. Wrapping the `Vec` in a named object
+/// (rather than returning a bare JSON array) keeps the shape forward-compatible —
+/// summary fields can be added alongside `keyspaces` without breaking clients.
+#[derive(serde::Serialize)]
+struct KeyspacesResponse {
+    keyspaces: Vec<crate::db::KeyspaceStat>,
+}
+
+/// Handler for `GET /storage/keyspaces`. Returns [`Drevo::keyspace_stats`], the
+/// per-prefix row-count + logical-byte breakdown, sorted largest-first. This is
+/// what makes the FTS keyspace dominance visible in the UI (the `fts` row dwarfs
+/// the rest on a text-heavy graph) — the storage-panel companion of
+/// [`storage_bloat`]. Like `bloat`, it streams the whole keyspace, so it is a
+/// maintenance call, not a per-request one.
+async fn storage_keyspaces(Db(db): Db) -> Result<Json<KeyspacesResponse>, ApiError> {
+    Ok(Json(KeyspacesResponse {
+        keyspaces: db.keyspace_stats()?,
+    }))
+}
+
 /// Handler for `POST /import/json`. Accepts an [`ImportJsonRequest`] body and
 /// returns an [`ImportReport`] summarising newly-inserted vs. skipped rows.
 /// Malformed payloads / unknown formats return 500 via [`DrevoError::Io`];
@@ -1590,6 +1611,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/export/json", with_405(get(export_json)))
         // ── #253 slice 1 — storage-bloat observability ──────────────
         .route("/storage/bloat", with_405(get(storage_bloat)))
+        // ── Storage UI panel — per-keyspace row/byte breakdown ──────
+        .route("/storage/keyspaces", with_405(get(storage_keyspaces)))
         .route("/import/json", with_405(axum::routing::post(import_json)))
         .route("/export/graphml", with_405(get(export_graphml)))
         .route(

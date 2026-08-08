@@ -419,3 +419,127 @@ body {
 .statusbar .hint { font-style: italic; }
 .statusbar .status-error { color: var(--danger); }
 .statusbar .status-ok { color: var(--accent-2); }
+
+/* Storage panel — topbar trigger + modal overlay. */
+.storage-toggle {
+  margin-left: auto;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.storage-toggle:hover { border-color: var(--accent); }
+/* The theme toggle no longer needs to grab the free space — the storage
+   button does — so the pair sits together on the right. */
+.storage-toggle + .theme-toggle { margin-left: 0.4rem; }
+
+.storage-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 1.5rem;
+}
+.storage-modal[hidden] { display: none; }
+.storage-dialog {
+  width: min(560px, 100%);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.storage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+.storage-head h2 { margin: 0; font-size: 1.05rem; }
+.storage-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+.storage-close:hover { color: var(--text); }
+.storage-body { padding: 1rem 1.1rem; overflow-y: auto; }
+.storage-loading, .storage-error { color: var(--text-muted); }
+.storage-error { color: var(--danger); }
+.storage-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem 1rem;
+  margin: 0 0 1rem;
+}
+.storage-stats > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.storage-stats dt { color: var(--text-muted); font-size: 0.85em; }
+.storage-stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+.storage-subhead { font-size: 0.9rem; margin: 0.5rem 0 0.4rem; }
+.storage-keyspaces {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85em;
+}
+.storage-keyspaces th, .storage-keyspaces td {
+  text-align: left;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+.storage-keyspaces .ks-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.storage-note {
+  margin: 1rem 0 0;
+  font-size: 0.8em;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.storage-note code {
+  background: var(--bg-elev);
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+}
+.storage-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 1.1rem;
+  border-top: 1px solid var(--border);
+}
+.storage-backup, .storage-refresh {
+  padding: 0.4rem 0.8rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 0.85em;
+  cursor: pointer;
+  text-decoration: none;
+}
+.storage-backup:hover, .storage-refresh:hover { border-color: var(--accent); }
