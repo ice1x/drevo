@@ -85,6 +85,11 @@ pub(crate) fn index_edges_grouped(
             len_writes.push((*edge_id, doc_len as u32));
         }
     }
+    // One batched commit for all updated edge posting lists + lengths (see the
+    // node index for why: per-trigram puts meant one fsync each, regressing
+    // bulk import/shrink). Caller holds the FTS write lock.
+    let mut writes: Vec<(Vec<u8>, Vec<u8>)> =
+        Vec::with_capacity(by_trigram.len() + len_writes.len());
     for (trigram, mut new_ids) in by_trigram {
         let key = efts_key(&trigram);
         let mut list = match backend.get(&key)? {
@@ -96,11 +101,12 @@ pub(crate) fn index_edges_grouped(
         for id in new_ids {
             merge_posting(&mut list, id);
         }
-        backend.put(&key, &encode_postings(&list))?;
+        writes.push((key, encode_postings(&list)));
     }
     for (edge_id, doc_len) in len_writes {
-        backend.put(&efts_len_key(edge_id), &doc_len.to_le_bytes())?;
+        writes.push((efts_len_key(edge_id), doc_len.to_le_bytes().to_vec()));
     }
+    backend.put_batch(&writes)?;
     Ok(())
 }
 
