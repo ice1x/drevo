@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock* build.rs cbindgen.toml ./
+COPY Cargo.toml Cargo.lock* build.rs version_resolve.rs cbindgen.toml ./
 COPY src/ src/
 # Cargo parses every `[[bench]]` / `[[bin]]` / `[[test]]` declaration in
 # Cargo.toml even when we ask it to build a single bin — the file must

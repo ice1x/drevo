@@ -244,6 +244,44 @@ fn read_dockerfile() -> String {
     fs::read_to_string(path).expect("failed to read Dockerfile")
 }
 
+/// Every file `include!`d by `build.rs` (e.g. `version_resolve.rs`, #274/#276)
+/// must be COPY'd into the builder stage — otherwise the container build fails
+/// at build-script compile time with "couldn't read <file>", even though a host
+/// `cargo build` (where the file is present) is green. This regression shipped
+/// once: `version_resolve.rs` was added at the repo root but not added to the
+/// Dockerfile's COPY, breaking `make release-image`.
+#[test]
+fn dockerfile_copies_every_build_rs_include() {
+    let build_rs = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs"))
+        .expect("read build.rs");
+    let dockerfile = read_dockerfile();
+
+    for line in build_rs.lines() {
+        let line = line.trim();
+        // Match `include!("some_file.rs")`, ignoring commented lines.
+        if line.starts_with("//") {
+            continue;
+        }
+        let Some(rest) = line.split("include!(\"").nth(1) else {
+            continue;
+        };
+        let Some(file) = rest.split('"').next() else {
+            continue;
+        };
+        // Only root-relative includes matter for the COPY check (paths with `/`
+        // are inside already-copied dirs like `src/`).
+        if file.contains('/') {
+            continue;
+        }
+        assert!(
+            dockerfile.contains(file),
+            "build.rs does `include!(\"{file}\")`, but no COPY line in the Dockerfile pulls \
+             `{file}` into the builder stage — the container build will fail with \
+             \"couldn't read `{file}`\". Add it to the root `COPY ... ./` line."
+        );
+    }
+}
+
 // ------------------------------------------------------------------
 // Manifest-parse correctness — every Cargo.toml `[[bench]]`,
 // `[[bin]]`, and `[[test]]` declaration must be reachable in the
