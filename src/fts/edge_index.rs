@@ -12,25 +12,22 @@
 //! and the posting/length scans are edge-specific.
 
 use crate::error::Result;
-use crate::fts::index::{collect_property_text, CorpusStats};
+use crate::fts::index::{
+    collect_property_text, decode_postings, encode_postings, merge_posting, remove_posting,
+    CorpusStats,
+};
 use crate::fts::tokenizer::{extract_raw_trigrams_fields, extract_trigrams_fields};
 use crate::model::Properties;
 use crate::storage::StorageBackend;
 
-/// Posting prefix: `efts:{trigram}:{edge_id_le8}` -> empty.
+/// Posting-list prefix: `efts:{trigram}:` -> packed sorted `[edge_id]` (#275).
 const PREFIX_EFTS: &[u8] = b"efts:";
 /// Per-edge length prefix: `eftslen:{edge_id_le8}` -> `u32` LE trigram count.
 const PREFIX_EFTS_LEN: &[u8] = b"eftslen:";
 
-fn efts_key(trigram: &str, edge_id: u64) -> Vec<u8> {
-    let mut key = PREFIX_EFTS.to_vec();
-    key.extend_from_slice(trigram.as_bytes());
-    key.push(b':');
-    key.extend_from_slice(&edge_id.to_le_bytes());
-    key
-}
-
-fn efts_trigram_prefix(trigram: &str) -> Vec<u8> {
+/// Posting-list key for a trigram: `efts:{trigram}:` -> packed `[edge_id]`
+/// (#275, mirrors the node [`crate::fts::index`] layout — one row per trigram).
+fn efts_key(trigram: &str) -> Vec<u8> {
     let mut key = PREFIX_EFTS.to_vec();
     key.extend_from_slice(trigram.as_bytes());
     key.push(b':');
@@ -52,40 +49,94 @@ pub(crate) fn edge_raw_trigrams(properties: &Properties) -> Vec<String> {
     extract_raw_trigrams_fields(&fields)
 }
 
-/// Build (but do not write) the edge FTS entries: one `efts:{trigram}:{edge_id}`
-/// posting per distinct trigram plus the `eftslen:{edge_id}` length entry.
-pub(crate) fn edge_index_entries(edge_id: u64, properties: &Properties) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let text = collect_property_text(properties);
-    let fields: Vec<&str> = text.iter().map(String::as_str).collect();
-    let trigrams = extract_trigrams_fields(&fields);
-    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(trigrams.len() + 1);
-    for trigram in &trigrams {
-        entries.push((efts_key(trigram, edge_id), Vec::new()));
-    }
-    let doc_len = extract_raw_trigrams_fields(&fields).len();
-    if doc_len > 0 {
-        entries.push((
-            efts_len_key(edge_id),
-            (doc_len as u32).to_le_bytes().to_vec(),
-        ));
-    }
-    entries
-}
-
-/// Index an edge by its string properties (#227-B).
+/// Index an edge by its string properties (#227-B). Test convenience over
+/// [`index_edges_grouped`] for a single edge (production batches via
+/// `index_edges_grouped`). Same FTS-write-lock requirement.
+#[cfg(test)]
 pub(crate) fn index_edge(
     backend: &dyn StorageBackend,
     edge_id: u64,
     properties: &Properties,
 ) -> Result<()> {
-    for (key, value) in edge_index_entries(edge_id, properties) {
-        backend.put(&key, &value)?;
+    index_edges_grouped(backend, &[(edge_id, properties)])
+}
+
+/// Index many edges into the posting-list `efts:` store (#275), with each
+/// trigram's posting list read-modified-written **once** across the batch.
+///
+/// **The caller MUST serialize FTS writes** (drevo's FTS write lock): each
+/// posting list is a `get` → merge → `put`.
+pub(crate) fn index_edges_grouped(
+    backend: &dyn StorageBackend,
+    docs: &[(u64, &Properties)],
+) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut len_writes: Vec<(u64, u32)> = Vec::with_capacity(docs.len());
+    for (edge_id, properties) in docs {
+        let text = collect_property_text(properties);
+        let fields: Vec<&str> = text.iter().map(String::as_str).collect();
+        for trigram in extract_trigrams_fields(&fields) {
+            by_trigram.entry(trigram).or_default().push(*edge_id);
+        }
+        let doc_len = extract_raw_trigrams_fields(&fields).len();
+        if doc_len > 0 {
+            len_writes.push((*edge_id, doc_len as u32));
+        }
+    }
+    for (trigram, mut new_ids) in by_trigram {
+        let key = efts_key(&trigram);
+        let mut list = match backend.get(&key)? {
+            Some(bytes) => decode_postings(&bytes),
+            None => Vec::new(),
+        };
+        new_ids.sort_unstable();
+        new_ids.dedup();
+        for id in new_ids {
+            merge_posting(&mut list, id);
+        }
+        backend.put(&key, &encode_postings(&list))?;
+    }
+    for (edge_id, doc_len) in len_writes {
+        backend.put(&efts_len_key(edge_id), &doc_len.to_le_bytes())?;
     }
     Ok(())
 }
 
-/// Remove an edge's FTS entries, re-deriving trigrams from `properties` so the
-/// same postings written by [`index_edge`] are cleaned up.
+/// Build the complete `efts:` posting-list index for a set of edges as one
+/// batch (assumes no existing `efts:` rows), for the #275 reindex-on-open.
+pub(crate) fn build_full_edge_index_batch(docs: &[(u64, &Properties)]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    use std::collections::BTreeMap;
+
+    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (edge_id, properties) in docs {
+        let text = collect_property_text(properties);
+        let fields: Vec<&str> = text.iter().map(String::as_str).collect();
+        for trigram in extract_trigrams_fields(&fields) {
+            by_trigram.entry(trigram).or_default().push(*edge_id);
+        }
+        let doc_len = extract_raw_trigrams_fields(&fields).len();
+        if doc_len > 0 {
+            out.push((
+                efts_len_key(*edge_id),
+                (doc_len as u32).to_le_bytes().to_vec(),
+            ));
+        }
+    }
+    for (trigram, mut ids) in by_trigram {
+        ids.sort_unstable();
+        ids.dedup();
+        out.push((efts_key(&trigram), encode_postings(&ids)));
+    }
+    out
+}
+
+/// Remove an edge's `edge_id` from every trigram posting list it contributed to
+/// (re-deriving trigrams from `properties`) and delete its `eftslen:` entry. A
+/// posting list that becomes empty has its row deleted. Same FTS-write-lock
+/// requirement as [`index_edges_grouped`].
 pub(crate) fn deindex_edge(
     backend: &dyn StorageBackend,
     edge_id: u64,
@@ -94,37 +145,39 @@ pub(crate) fn deindex_edge(
     let text = collect_property_text(properties);
     let fields: Vec<&str> = text.iter().map(String::as_str).collect();
     for trigram in &extract_trigrams_fields(&fields) {
-        backend.delete(&efts_key(trigram, edge_id))?;
+        let key = efts_key(trigram);
+        if let Some(bytes) = backend.get(&key)? {
+            let mut list = decode_postings(&bytes);
+            if remove_posting(&mut list, edge_id) {
+                if list.is_empty() {
+                    backend.delete(&key)?;
+                } else {
+                    backend.put(&key, &encode_postings(&list))?;
+                }
+            }
+        }
     }
     backend.delete(&efts_len_key(edge_id))?;
     Ok(())
 }
 
-/// Edge ids in the posting list of a single trigram.
+/// Edge ids in the posting list of a single trigram — a single `get` (#275).
 pub(crate) fn edge_ids_for_trigram(
     backend: &dyn StorageBackend,
     trigram: &str,
 ) -> Result<Vec<u64>> {
-    let prefix = efts_trigram_prefix(trigram);
-    let entries = backend.scan_prefix(&prefix)?;
-    let mut ids = Vec::with_capacity(entries.len());
-    for (key, _) in entries {
-        if key.len() < prefix.len() {
-            continue;
-        }
-        let suffix = &key[prefix.len()..];
-        let mut arr = [0u8; 8];
-        if suffix.len() == 8 {
-            arr.copy_from_slice(suffix);
-            ids.push(u64::from_le_bytes(arr));
-        }
-    }
-    Ok(ids)
+    Ok(match backend.get(&efts_key(trigram))? {
+        Some(bytes) => decode_postings(&bytes),
+        None => Vec::new(),
+    })
 }
 
 /// Number of edges in a trigram's posting list (document frequency).
 pub(crate) fn posting_list_len(backend: &dyn StorageBackend, trigram: &str) -> Result<usize> {
-    Ok(backend.scan_prefix(&efts_trigram_prefix(trigram))?.len())
+    Ok(match backend.get(&efts_key(trigram))? {
+        Some(bytes) => bytes.len() / 8,
+        None => 0,
+    })
 }
 
 /// Candidate edge ids: the intersection of every query trigram's posting list.

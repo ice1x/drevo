@@ -624,6 +624,7 @@ impl Drevo {
         // Nodes are already committed above, so the endpoint-existence checks
         // below see them. Edge writes are likewise batched into one commit.
         let mut edge_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut imported_edges: Vec<&Edge> = Vec::new();
         for edge in &dump.edges {
             match self.get_edge(edge.id)? {
                 Some(existing) if &existing == edge => {
@@ -648,10 +649,22 @@ impl Drevo {
                 return Err(DrevoError::NodeNotFound(edge.to_id));
             }
             edge_writes.extend(self.edge_raw_entries(edge)?);
+            imported_edges.push(edge);
             report.edges_imported += 1;
         }
         if !edge_writes.is_empty() {
             self.backend().put_batch(&edge_writes)?;
+        }
+        // #275: index the imported edges' `efts:` posting lists in one grouped,
+        // lock-guarded pass (edge_raw_entries doesn't emit FTS — posting lists
+        // need read-modify-write). This also gives shrunk/restored files their
+        // relationship FTS, which the record-only import path omitted.
+        if !imported_edges.is_empty() {
+            let docs: Vec<(u64, &crate::model::Properties)> = imported_edges
+                .iter()
+                .map(|e| (e.id, &e.properties))
+                .collect();
+            self.efts_index_edges(&docs)?;
         }
 
         // --- ID counters ---
