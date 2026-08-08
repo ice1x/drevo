@@ -47,6 +47,8 @@
   const $storageBody = document.getElementById("storage-body");
   const $storageBackup = document.getElementById("storage-backup");
   const $storageShrink = document.getElementById("storage-shrink");
+  const $storageBenchRun = document.getElementById("storage-bench-run");
+  const $storageBench = document.getElementById("storage-bench");
   const $storageRefresh = document.getElementById("storage-refresh");
 
   // ── Graph overview state ─────────────────────────────────────────────
@@ -274,10 +276,47 @@
     }
   }
 
+  async function doBenchmark() {
+    if ($storageBenchRun) {
+      $storageBenchRun.disabled = true;
+      $storageBenchRun.textContent = "Running…";
+    }
+    status("Running benchmark… (writes use a throwaway in-memory DB)");
+    try {
+      const r = await apiPost("/storage/benchmark", {});
+      const fmt = (n) => (n >= 1000 ? Math.round(n).toLocaleString() : n);
+      if ($storageBench) {
+        $storageBench.hidden = false;
+        $storageBench.innerHTML = `
+          <h3 class="storage-subhead">Benchmark</h3>
+          <dl class="storage-stats">
+            <div><dt>Write (one-by-one)</dt><dd>${fmt(r.incr_write_nodes_per_sec)} nodes/s</dd></div>
+            <div><dt>Write (batched)</dt><dd>${fmt(r.batch_write_nodes_per_sec)} nodes/s</dd></div>
+            <div><dt>FTS search (median)</dt><dd>${r.search_median_ms} ms</dd></div>
+          </dl>
+          <p class="storage-note">Write throughput measured on a throwaway in-memory
+            database (${r.incr_n} nodes) — the live graph is untouched. FTS latency is
+            the median of ${r.search_samples} read-only searches against this database.</p>`;
+      }
+      status("Benchmark complete.", "ok");
+    } catch (e) {
+      status(`Benchmark failed: ${e.message}`, "error");
+    } finally {
+      if ($storageBenchRun) {
+        $storageBenchRun.disabled = false;
+        $storageBenchRun.textContent = "Benchmark";
+      }
+    }
+  }
+
   function openStorage() {
     if (!$storageModal) return;
     $storageModal.hidden = false;
     $storageModal.setAttribute("aria-hidden", "false");
+    if ($storageBench) {
+      $storageBench.hidden = true;
+      $storageBench.innerHTML = "";
+    }
     loadStorage();
   }
   function closeStorage() {
@@ -1227,6 +1266,7 @@
   if ($storageToggle) $storageToggle.addEventListener("click", openStorage);
   if ($storageClose) $storageClose.addEventListener("click", closeStorage);
   if ($storageShrink) $storageShrink.addEventListener("click", doShrink);
+  if ($storageBenchRun) $storageBenchRun.addEventListener("click", doBenchmark);
   if ($storageRefresh) $storageRefresh.addEventListener("click", loadStorage);
   if ($storageModal) {
     // Click on the dimmed backdrop (outside the dialog) closes.

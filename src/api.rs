@@ -1365,6 +1365,96 @@ async fn storage_shrink(Db(db): Db) -> Result<Response, ApiError> {
     }
 }
 
+/// On-demand performance snapshot for the Storage panel. Reports write
+/// throughput and full-text search latency so an operator can gauge current
+/// health from the UI without leaving the browser.
+#[derive(serde::Serialize)]
+struct BenchmarkReport {
+    /// Nodes/sec creating `incr_n` nodes one at a time (isolates the indexing
+    /// cost; measured on a throwaway in-memory database).
+    incr_write_nodes_per_sec: f64,
+    /// Nodes/sec via a single grouped `create_nodes` call (the fast path).
+    batch_write_nodes_per_sec: f64,
+    /// Median `search_fts` latency in milliseconds, measured read-only against
+    /// the target database's live data.
+    search_median_ms: f64,
+    /// Node count used for each write measurement.
+    incr_n: usize,
+    /// Node count used for the batch measurement.
+    batch_n: usize,
+    /// `queries × reps` search samples behind the median.
+    search_samples: usize,
+}
+
+/// Handler for `POST /storage/benchmark`. Runs a quick, self-contained
+/// performance snapshot:
+/// - **write throughput** (incremental + batched) on a **throwaway in-memory**
+///   database — it never touches the live graph, so it is safe to run against a
+///   production instance;
+/// - **FTS search latency** (median) read-only against the target database.
+///
+/// Synchronous and bounded (a few hundred in-memory inserts + a handful of
+/// searches) — a deliberate maintenance action surfaced as a UI button.
+async fn storage_benchmark(Db(db): Db) -> Result<Json<BenchmarkReport>, ApiError> {
+    use crate::model::{NewNode, Properties};
+    // Shared vocabulary so every node contributes overlapping trigrams — the
+    // worst case for posting-list indexing, mirroring `bench/fts_storage`.
+    const SHARED: &str =
+        "anxious deadlines mentoring graph vectors embeddings semantic search relationships";
+    let incr_n: usize = 500;
+    let batch_n: usize = 500;
+
+    let mk = |prefix: &str, i: usize| NewNode {
+        kind: "bench".to_string(),
+        title: format!("{prefix}-{i}"),
+        body: format!("note {i} {SHARED}"),
+        body_html: String::new(),
+        properties: Properties::default(),
+    };
+
+    // Incremental single-node writes on a throwaway in-memory database.
+    let scratch = Drevo::open_in_memory()?;
+    let t0 = Instant::now();
+    for i in 0..incr_n {
+        scratch.create_node(mk("bench-incr", i))?;
+    }
+    let incr_secs = t0.elapsed().as_secs_f64();
+
+    // Batched writes on a second throwaway in-memory database (fast path).
+    let scratch2 = Drevo::open_in_memory()?;
+    let batch: Vec<NewNode> = (0..batch_n).map(|i| mk("bench-batch", i)).collect();
+    let t1 = Instant::now();
+    scratch2.create_nodes(batch)?;
+    let batch_secs = t1.elapsed().as_secs_f64();
+
+    // FTS search latency, read-only, against the live target database.
+    let queries = ["graph", "error", "test", "the"];
+    let reps: usize = 20;
+    let mut samples: Vec<f64> = Vec::with_capacity(queries.len() * reps);
+    for _ in 0..reps {
+        for q in &queries {
+            let t = Instant::now();
+            let _ = db.search_fts(q, 10)?;
+            samples.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let search_median_ms = samples.get(samples.len() / 2).copied().unwrap_or(0.0);
+
+    let per_sec = |n: usize, secs: f64| if secs > 0.0 { n as f64 / secs } else { 0.0 };
+    let round1 = |x: f64| (x * 10.0).round() / 10.0;
+    let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
+
+    Ok(Json(BenchmarkReport {
+        incr_write_nodes_per_sec: round1(per_sec(incr_n, incr_secs)),
+        batch_write_nodes_per_sec: round1(per_sec(batch_n, batch_secs)),
+        search_median_ms: round3(search_median_ms),
+        incr_n,
+        batch_n,
+        search_samples: samples.len(),
+    }))
+}
+
 /// Handler for `POST /import/json`. Accepts an [`ImportJsonRequest`] body and
 /// returns an [`ImportReport`] summarising newly-inserted vs. skipped rows.
 /// Malformed payloads / unknown formats return 500 via [`DrevoError::Io`];
@@ -1641,6 +1731,11 @@ pub fn build_router(state: ApiState) -> Router {
         .route(
             "/storage/shrink",
             with_405(axum::routing::post(storage_shrink)),
+        )
+        // ── On-demand performance snapshot (write + FTS latency) ────
+        .route(
+            "/storage/benchmark",
+            with_405(axum::routing::post(storage_benchmark)),
         )
         .route("/import/json", with_405(axum::routing::post(import_json)))
         .route("/export/graphml", with_405(get(export_graphml)))
