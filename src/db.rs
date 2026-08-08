@@ -1969,6 +1969,19 @@ impl Drevo {
         fts_index::index_nodes_grouped(&*self.backend, docs)
     }
 
+    /// Edge counterpart of [`Self::fts_index_nodes`] — index a batch of edges'
+    /// `efts:` posting lists under the same FTS write lock (#275).
+    pub(crate) fn efts_index_edges(&self, docs: &[(u64, &Properties)]) -> Result<()> {
+        let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
+        edge_index::index_edges_grouped(&*self.backend, docs)
+    }
+
+    /// Deindex one edge's `efts:` posting lists under the FTS write lock (#275).
+    fn efts_deindex_edge(&self, edge_id: u64, properties: &Properties) -> Result<()> {
+        let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
+        edge_index::deindex_edge(&*self.backend, edge_id, properties)
+    }
+
     /// Deindex one node's FTS posting lists under the FTS write lock (#275).
     fn fts_deindex_node(
         &self,
@@ -1997,25 +2010,32 @@ impl Drevo {
             return Ok(());
         }
         let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
-        // Clear any existing FTS rows (old per-pair format or a partial index).
-        // `b"fts:"` / `b"ftslen:"` mirror the fts module's PREFIX_* wire prefixes.
+        // Clear any existing node + edge FTS rows (old per-pair format or a
+        // partial index). The `b"..."` literals mirror the fts modules' PREFIX_*
+        // wire prefixes (node: fts:/ftslen:, edge: efts:/eftslen:).
         let mut stale: Vec<Vec<u8>> = Vec::new();
-        for (key, _) in self.backend.scan_prefix(b"fts:")? {
-            stale.push(key);
-        }
-        for (key, _) in self.backend.scan_prefix(b"ftslen:")? {
-            stale.push(key);
+        for prefix in [b"fts:".as_slice(), b"ftslen:", b"efts:", b"eftslen:"] {
+            for (key, _) in self.backend.scan_prefix(prefix)? {
+                stale.push(key);
+            }
         }
         self.backend.delete_batch(&stale)?;
 
-        // Rebuild the whole posting-list index from source nodes in one batch.
+        // Rebuild the whole posting-list index from source nodes + edges, each
+        // in one batch.
         let nodes = self.collect_all_nodes()?;
-        let docs: Vec<(u64, &str, &str, &Properties)> = nodes
+        let node_docs: Vec<(u64, &str, &str, &Properties)> = nodes
             .iter()
             .map(|n| (n.id, n.title.as_str(), n.body.as_str(), &n.properties))
             .collect();
-        let batch = fts_index::build_full_index_batch(&docs);
-        self.backend.put_batch(&batch)?;
+        self.backend
+            .put_batch(&fts_index::build_full_index_batch(&node_docs))?;
+
+        let edges = self.collect_all_edges()?;
+        let edge_docs: Vec<(u64, &Properties)> =
+            edges.iter().map(|e| (e.id, &e.properties)).collect();
+        self.backend
+            .put_batch(&edge_index::build_full_edge_index_batch(&edge_docs))?;
 
         self.backend.put(META_FTS_FORMAT, &[FTS_FORMAT_POSTING])?;
         Ok(())
@@ -2768,7 +2788,8 @@ impl Drevo {
 
         // FTS index the edge's string properties (#227-B) so relationship text
         // (e.g. `name` / `fact`) is BM25-searchable via fts.searchRelationships.
-        edge_index::index_edge(&*self.backend, id, &edge.properties)?;
+        // #275: posting-list RMW under the FTS write lock.
+        self.efts_index_edges(&[(id, &edge.properties)])?;
 
         self.record_undo(UndoOp::CreatedEdge(id));
         Ok(edge)
@@ -2818,13 +2839,15 @@ impl Drevo {
                 adjacency_value(edge.from_id, &edge.kind),
             ));
             writes.push((edge_kind_key(&edge.kind, id), Vec::new()));
-            // FTS postings for the edge's string properties (#227-B).
-            writes.extend(edge_index::edge_index_entries(id, &edge.properties));
+            // #275: edge FTS is not part of the record batch (posting-list RMW);
+            // indexed grouped below under the FTS write lock.
 
             edges.push(edge);
         }
 
         self.backend.put_batch(&writes)?;
+        let docs: Vec<(u64, &Properties)> = edges.iter().map(|e| (e.id, &e.properties)).collect();
+        self.efts_index_edges(&docs)?;
         for edge in &edges {
             self.record_undo(UndoOp::CreatedEdge(edge.id));
         }
@@ -2919,8 +2942,8 @@ impl Drevo {
         // Re-index the edge's FTS text when a string property changed (#227-B):
         // de-index by the OLD properties so stale trigrams can't leak.
         if edge.properties.0 != old_properties.0 {
-            edge_index::deindex_edge(&*self.backend, id, &old_properties)?;
-            edge_index::index_edge(&*self.backend, id, &edge.properties)?;
+            self.efts_deindex_edge(id, &old_properties)?;
+            self.efts_index_edges(&[(id, &edge.properties)])?;
         }
 
         self.record_undo(UndoOp::UpdatedEdge(pre_image));
@@ -2954,8 +2977,8 @@ impl Drevo {
         // Remove edge kind index
         self.backend.delete(&edge_kind_key(&edge.kind, id))?;
 
-        // Remove FTS postings (#227-B).
-        edge_index::deindex_edge(&*self.backend, id, &edge.properties)?;
+        // Remove FTS postings (#227-B; #275 posting-list RMW under the lock).
+        self.efts_deindex_edge(id, &edge.properties)?;
 
         self.record_undo(UndoOp::DeletedEdge(edge));
         Ok(())

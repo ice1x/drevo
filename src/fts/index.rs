@@ -52,7 +52,7 @@ fn fts_key(trigram: &str) -> Vec<u8> {
 /// Encode a **sorted, de-duplicated** posting list as packed little-endian
 /// `u64`s. The caller maintains the sorted-unique invariant (see
 /// [`merge_posting`] / [`remove_posting`]); decoding is a plain chunked read.
-fn encode_postings(ids: &[u64]) -> Vec<u8> {
+pub(crate) fn encode_postings(ids: &[u64]) -> Vec<u8> {
     let mut out = Vec::with_capacity(ids.len() * 8);
     for id in ids {
         out.extend_from_slice(&id.to_le_bytes());
@@ -62,7 +62,7 @@ fn encode_postings(ids: &[u64]) -> Vec<u8> {
 
 /// Decode a packed posting list. Trailing bytes that don't form a full `u64`
 /// are ignored (defensive; the encoder never produces them).
-fn decode_postings(bytes: &[u8]) -> Vec<u64> {
+pub(crate) fn decode_postings(bytes: &[u8]) -> Vec<u64> {
     bytes
         .chunks_exact(8)
         .map(|c| {
@@ -75,7 +75,7 @@ fn decode_postings(bytes: &[u8]) -> Vec<u64> {
 
 /// Insert `id` into a sorted-unique posting list, preserving the invariant.
 /// Returns `true` if it was added (absent before).
-fn merge_posting(list: &mut Vec<u64>, id: u64) -> bool {
+pub(crate) fn merge_posting(list: &mut Vec<u64>, id: u64) -> bool {
     match list.binary_search(&id) {
         Ok(_) => false,
         Err(pos) => {
@@ -86,7 +86,7 @@ fn merge_posting(list: &mut Vec<u64>, id: u64) -> bool {
 }
 
 /// Remove `id` from a sorted-unique posting list. Returns `true` if removed.
-fn remove_posting(list: &mut Vec<u64>, id: u64) -> bool {
+pub(crate) fn remove_posting(list: &mut Vec<u64>, id: u64) -> bool {
     match list.binary_search(&id) {
         Ok(pos) => {
             list.remove(pos);
