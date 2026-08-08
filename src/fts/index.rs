@@ -221,7 +221,15 @@ pub(crate) fn index_nodes_grouped(
         }
     }
 
-    // One read-modify-write per distinct trigram.
+    // Read-modify each distinct trigram's list, then commit EVERY updated
+    // posting list + length in ONE put_batch (#275 follow-up). The reads are
+    // cheap; issuing an individual `put` per trigram meant one redb
+    // commit/fsync each — thousands on a bulk import — which regressed
+    // import/shrink ~11x vs the old batched path. The caller holds the FTS
+    // write lock, so no concurrent indexer changes a list between the read here
+    // and the batched write below.
+    let mut writes: Vec<(Vec<u8>, Vec<u8>)> =
+        Vec::with_capacity(by_trigram.len() + len_writes.len());
     for (trigram, mut new_ids) in by_trigram {
         let key = fts_key(&trigram);
         let mut list = match backend.get(&key)? {
@@ -233,12 +241,12 @@ pub(crate) fn index_nodes_grouped(
         for id in new_ids {
             merge_posting(&mut list, id);
         }
-        backend.put(&key, &encode_postings(&list))?;
+        writes.push((key, encode_postings(&list)));
     }
-
     for (node_id, doc_len) in len_writes {
-        backend.put(&fts_len_key(node_id), &doc_len.to_le_bytes())?;
+        writes.push((fts_len_key(node_id), doc_len.to_le_bytes().to_vec()));
     }
+    backend.put_batch(&writes)?;
     Ok(())
 }
 
@@ -457,9 +465,70 @@ pub(crate) fn intersect_trigrams(
 mod tests {
     use super::*;
     use crate::storage::MemoryBackend;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn backend() -> MemoryBackend {
         MemoryBackend::new()
+    }
+
+    /// A backend that counts individual `put` vs `put_batch` calls, delegating
+    /// to an inner `MemoryBackend`. Guards the #275 write-batching fix: bulk FTS
+    /// indexing must commit its posting lists in ONE `put_batch`, not a `put`
+    /// (= a redb commit/fsync) per trigram, which regressed import ~11x.
+    struct CountingBackend {
+        inner: MemoryBackend,
+        puts: AtomicUsize,
+        put_batches: AtomicUsize,
+    }
+    impl CountingBackend {
+        fn new() -> Self {
+            Self {
+                inner: MemoryBackend::new(),
+                puts: AtomicUsize::new(0),
+                put_batches: AtomicUsize::new(0),
+            }
+        }
+    }
+    impl StorageBackend for CountingBackend {
+        fn get(&self, key: &[u8]) -> crate::storage::Result<Option<Vec<u8>>> {
+            self.inner.get(key)
+        }
+        fn put(&self, key: &[u8], value: &[u8]) -> crate::storage::Result<()> {
+            self.puts.fetch_add(1, Ordering::Relaxed);
+            self.inner.put(key, value)
+        }
+        fn put_batch(&self, items: &[(Vec<u8>, Vec<u8>)]) -> crate::storage::Result<()> {
+            self.put_batches.fetch_add(1, Ordering::Relaxed);
+            self.inner.put_batch(items)
+        }
+        fn delete(&self, key: &[u8]) -> crate::storage::Result<()> {
+            self.inner.delete(key)
+        }
+        fn scan_prefix(&self, prefix: &[u8]) -> crate::storage::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+            self.inner.scan_prefix(prefix)
+        }
+        fn flush(&self) -> crate::storage::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    #[test]
+    fn index_nodes_grouped_commits_in_one_put_batch() {
+        let b = CountingBackend::new();
+        let props = Properties(HashMap::new());
+        let docs: Vec<(u64, &str, &str, &Properties)> = (0..50)
+            .map(|i| (i, "t", "shared alpha bravo charlie delta echo", &props))
+            .collect();
+        index_nodes_grouped(&b, &docs).unwrap();
+        // No per-trigram puts; everything in exactly one batched commit.
+        assert_eq!(b.puts.load(Ordering::Relaxed), 0, "no individual puts");
+        assert_eq!(
+            b.put_batches.load(Ordering::Relaxed),
+            1,
+            "posting lists must commit in a single put_batch"
+        );
+        // Sanity: the data actually landed.
+        assert_eq!(node_ids_for_trigram(&b, "alp").unwrap().len(), 50);
     }
 
     #[test]
