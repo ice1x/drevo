@@ -62,15 +62,15 @@ name: Docker Publish
 
 # Trigger: release tags (`v*`) + manual `workflow_dispatch` ONLY.
 #
-# The image is intentionally NOT built on every push to `main`. On the
-# single self-hosted Apple Silicon runner the `linux/amd64` half of the
-# multi-arch matrix runs under QEMU emulation (~40 min per run), and it
-# serialised behind — and blocked — every other job on every merge. The
-# image is a release artifact, not a per-merge one: `make release` (which
-# pushes a `vX.Y.Z` tag) is what publishes it. `:latest` tracks the newest
-# release tag (see the metadata step), and ops can rebuild any ref on
-# demand via `workflow_dispatch`. Because there is no `push:main` trigger,
-# there is no `paths-ignore` to keep in sync — a tag build always runs.
+# The image is intentionally NOT built on every push to `main`. The multi-arch
+# build (linux/amd64 native + linux/arm64 under QEMU emulation on the
+# ubuntu-latest runner) is minutes-heavy, so it stays a release artifact rather
+# than a per-merge one: `make release` (which pushes a `vX.Y.Z` tag) is what
+# publishes it. `:latest` tracks the newest release tag (see the metadata step),
+# and ops can rebuild any ref on demand via `workflow_dispatch`. Because there is
+# no `push:main` trigger, there is no `paths-ignore` to keep in sync — a tag
+# build always runs. The job runs GitHub-hosted (see the `runs-on:` note below)
+# so it never blocks the single self-hosted CI/fuzz runner.
 on:
   push:
     tags:
@@ -88,7 +88,18 @@ permissions:
 jobs:
   build-and-publish:
     name: Build & publish (ghcr.io)
-    runs-on: self-hosted
+    # GitHub-hosted, NOT self-hosted. This is a tag-only release artifact that
+    # nobody waits on synchronously; running it on the single self-hosted runner
+    # monopolised it for the whole multi-arch build (~40-60 min on a cold run),
+    # serialising and stalling every PR's CI behind each release tag. On
+    # ubuntu-latest the build runs on an ephemeral GitHub runner in parallel, so
+    # it NEVER blocks the self-hosted CI/fuzz runner again. Trade-off: a cold
+    # multi-arch build (linux/arm64 under QEMU) is slower here than a warm
+    # self-hosted run, but the `cache-from/to: type=gha` layer cache below keeps
+    # it bounded, and releases are infrequent so the GitHub-minutes cost is
+    # small. Locked by
+    # `tests/ci_self_hosted_runner_tests.rs::docker_publish_job_must_be_github_hosted`.
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

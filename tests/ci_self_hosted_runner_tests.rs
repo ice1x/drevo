@@ -27,9 +27,12 @@
 //!    `self-hosted` (cargo-fuzz preinstall + nightly Rust + ASAN +
 //!    libFuzzer; running this on free runners would inflate the GitHub
 //!    minutes budget without benefit).
-//! 3. The Docker Publish workflow MUST stay on `self-hosted` — QEMU
-//!    multi-arch builds are far slower on GitHub-hosted runners and
-//!    consume the entire 6-hour timeout on cold runs.
+//! 3. The Docker Publish workflow MUST stay OFF `self-hosted` (i.e. on
+//!    `ubuntu-latest`) — its tag-only multi-arch build monopolised the single
+//!    self-hosted runner (~40-60 min cold) and stalled every PR's CI behind
+//!    each release. On an ephemeral GitHub runner it never blocks CI; the
+//!    per-build cost is bounded by the `type=gha` layer cache and releases are
+//!    infrequent.
 //! 4. No `runner.os` reference in a *job-level* `if:` — that's
 //!    rejected by GitHub's workflow validator (regression test for
 //!    commit `03c3909`, reverted in `31ea23a`).
@@ -107,10 +110,11 @@ fn at_least_one_runs_on_directive_exists() {
 /// policy decision. New aliases require a code review explaining why
 /// the workflow needs them.
 ///
-/// * `self-hosted` — the persistent runner for fuzz + Docker multi-arch
-///   (see fuzz_job_in_ci_must_be_self_hosted + docker_publish_job_must_be_self_hosted).
+/// * `self-hosted` — the persistent runner for fuzz
+///   (see fuzz_job_in_ci_must_be_self_hosted). Docker Publish deliberately does
+///   NOT use it (see docker_publish_job_must_be_github_hosted).
 /// * `ubuntu-latest` — the default GitHub-hosted runner for stable-Rust
-///   PR gates (check, test, clippy, fmt, doc, msrv, k8s).
+///   PR gates (check, test, clippy, fmt, doc, msrv, k8s) and Docker Publish.
 /// * `macos-latest` + `windows-latest` — Phase 16 tasks `00116` AND
 ///   `00122` only.
 ///   PyO3 wheels are platform-native (every wheel is an `.so` / `.dylib` /
@@ -385,12 +389,15 @@ fn fuzz_job_must_pin_nightly_toolchain() {
 }
 
 #[test]
-fn docker_publish_job_must_be_self_hosted() {
-    // Docker multi-arch (linux/amd64 + linux/arm64 via QEMU) on
-    // ubuntu-latest can exceed 30 minutes per build because arm64
-    // emulation is slow. On self-hosted with warm layer cache it
-    // settles to ~5-10 min. This invariant prevents accidental
-    // downgrades.
+fn docker_publish_job_must_be_github_hosted() {
+    // Docker Publish MUST stay OFF the self-hosted runner. It is a tag-only
+    // release artifact nobody waits on; on the single self-hosted runner its
+    // multi-arch build (~40-60 min cold) monopolised the runner and stalled
+    // every PR's CI behind each release tag. On ubuntu-latest it runs on an
+    // ephemeral GitHub runner in parallel, so it never blocks CI/fuzz. The
+    // per-build cost (arm64 under QEMU) is bounded by the `type=gha` layer
+    // cache and releases are infrequent. This invariant prevents a regression
+    // back to `self-hosted`.
     let docker_yml = workflows_dir().join("docker-publish.yml");
     if !docker_yml.exists() {
         // If the file is renamed, the rename should ship with this test
@@ -398,21 +405,22 @@ fn docker_publish_job_must_be_self_hosted() {
         return;
     }
     let body = fs::read_to_string(&docker_yml).expect("docker-publish.yml exists");
-    let mut found_self_hosted = false;
     for line in body.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("runs-on:") && trimmed.contains("self-hosted") {
-            found_self_hosted = true;
-            break;
+        if trimmed.starts_with("runs-on:") {
+            assert!(
+                !trimmed.contains("self-hosted"),
+                "docker-publish.yml must NOT run on `self-hosted` — the multi-arch \
+                 release build monopolises the single self-hosted runner and stalls \
+                 every PR's CI behind each release tag. Keep it on `ubuntu-latest`.",
+            );
+            assert!(
+                trimmed.contains("ubuntu-latest"),
+                "docker-publish.yml `runs-on:` must be `ubuntu-latest` so the release \
+                 build runs on an ephemeral GitHub runner, never blocking CI. Got: {trimmed}",
+            );
         }
     }
-    assert!(
-        found_self_hosted,
-        "docker-publish.yml has no `runs-on: self-hosted` — multi-arch \
-         Docker builds via QEMU MUST run on the persistent self-hosted \
-         runner so warm-layer cache survives between runs and so GitHub \
-         minutes don't get exhausted by ARM64 emulation.",
-    );
 }
 
 /// Helper: strip the `runs-on:` prefix and surrounding brackets,
