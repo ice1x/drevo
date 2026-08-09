@@ -1,32 +1,38 @@
 //! GitHub Actions workflow tests — `runs-on` labels.
 //!
-//! drevo CI is **fully GitHub-hosted** as of the open-source move: the
-//! self-hosted runner is retired. Every job runs on an ephemeral GitHub-hosted
-//! runner (`ubuntu-latest`, plus `macos-latest` for the platform-native
-//! iOS/macOS/wheel jobs), so all validation runs in parallel and there is no
-//! persistent host to queue behind.
+//! drevo CI is **mixed-runner** by policy as of the Phase 10.5 CI
+//! speedup work: stable-Rust PR jobs (check, test, clippy, fmt, doc,
+//! msrv, k8s) run on `ubuntu-latest` so that they execute in parallel
+//! on free GitHub-hosted runners; jobs that genuinely require a
+//! persistent host (cargo-fuzz with nightly + libFuzzer + ASAN; Docker
+//! multi-arch builds with QEMU) stay on the `self-hosted` runner.
 //!
-//! Why this changed: the repo is going public. For public repos GitHub-hosted
-//! minutes are free and unlimited, so the only reason for self-hosted (the
-//! private-repo minute budget) is gone. More importantly, a self-hosted runner
-//! on a PUBLIC repo is a security hole — a malicious fork PR can execute
-//! arbitrary code on the host — so self-hosted MUST be gone before the repo is
-//! made public. This also fixes the chronic single-runner serialization that
-//! made `CI / Test` queue for 1-2 hours per push.
+//! Why this changed: the earlier policy ("every job on self-hosted",
+//! introduced by PR #74) optimised for Docker multi-arch + cargo-fuzz
+//! but unintentionally serialised all PR validation through a single
+//! runner-process. The resulting queue made `CI / Test` take 1-2 hours
+//! per push, which broke the development cadence. Restoring
+//! ubuntu-latest for stable-Rust gates gives back the parallelism
+//! without giving up the niche-target benefits self-hosted provides.
 //!
-//! These tests pin the policy as text-level invariants over the workflow files
-//! in `.github/workflows/`:
+//! These tests pin the new policy as text-level invariants over the
+//! workflow files in `.github/workflows/`:
 //!
-//! 1. Every `runs-on:` line references one of the documented allow-listed
-//!    GitHub-hosted runners (`ubuntu-latest` is the default; `macos-latest` +
-//!    `windows-latest` only where a platform-native reason applies — Python
-//!    wheels/CI matrix and the iOS/macOS cross-compile targets).
-//! 2. The `fuzz` job in `.github/workflows/ci.yml` runs on `ubuntu-latest`
-//!    (cargo-fuzz + nightly + libFuzzer + ASAN all work on Linux GitHub runners;
-//!    free on a public repo).
-//! 3. The Docker Publish workflow runs on `ubuntu-latest` (its tag-only
-//!    multi-arch build must never block CI on a shared runner; the `type=gha`
-//!    layer cache bounds the per-build cost).
+//! 1. Every `runs-on:` line references either `self-hosted` or one of
+//!    the documented allow-listed GitHub-hosted runners (`ubuntu-latest`
+//!    is the default; `macos-latest` + `windows-latest` are allowed
+//!    ONLY inside the Phase 16 Python wheel matrix, per the comment
+//!    on `ALLOWED_RUNS_ON`).
+//! 2. The `fuzz` job in `.github/workflows/ci.yml` MUST stay on
+//!    `self-hosted` (cargo-fuzz preinstall + nightly Rust + ASAN +
+//!    libFuzzer; running this on free runners would inflate the GitHub
+//!    minutes budget without benefit).
+//! 3. The Docker Publish workflow MUST stay OFF `self-hosted` (i.e. on
+//!    `ubuntu-latest`) — its tag-only multi-arch build monopolised the single
+//!    self-hosted runner (~40-60 min cold) and stalled every PR's CI behind
+//!    each release. On an ephemeral GitHub runner it never blocks CI; the
+//!    per-build cost is bounded by the `type=gha` layer cache and releases are
+//!    infrequent.
 //! 4. No `runner.os` reference in a *job-level* `if:` — that's
 //!    rejected by GitHub's workflow validator (regression test for
 //!    commit `03c3909`, reverted in `31ea23a`).
@@ -104,12 +110,11 @@ fn at_least_one_runs_on_directive_exists() {
 /// policy decision. New aliases require a code review explaining why
 /// the workflow needs them.
 ///
-/// * `self-hosted` — retained in the allow-list only so the array-form runner
-///   machinery below keeps compiling; NO workflow uses it anymore (the runner
-///   is retired). fuzz + Docker Publish run on ubuntu-latest — see
-///   fuzz_job_in_ci_must_be_github_hosted + docker_publish_job_must_be_github_hosted.
-/// * `ubuntu-latest` — the default GitHub-hosted runner for every stable-Rust
-///   job (check, test, clippy, fmt, doc, msrv, k8s, fuzz) and Docker Publish.
+/// * `self-hosted` — the persistent runner for fuzz
+///   (see fuzz_job_in_ci_must_be_self_hosted). Docker Publish deliberately does
+///   NOT use it (see docker_publish_job_must_be_github_hosted).
+/// * `ubuntu-latest` — the default GitHub-hosted runner for stable-Rust
+///   PR gates (check, test, clippy, fmt, doc, msrv, k8s) and Docker Publish.
 /// * `macos-latest` + `windows-latest` — Phase 16 tasks `00116` AND
 ///   `00122` only.
 ///   PyO3 wheels are platform-native (every wheel is an `.so` / `.dylib` /
@@ -246,17 +251,8 @@ fn matrix_runner_values_are_all_allow_listed() {
                                  ALLOWED_RUNS_ON in this test"
                             );
                         }
-                    } else if !rest.is_empty() {
-                        // Scalar value, e.g. `os: macos-latest` — common inside a
-                        // `matrix.include:` map. Check it directly.
-                        let label = rest.trim_matches('"').trim_matches('\'');
-                        assert!(
-                            ALLOWED_RUNS_ON.contains(&label),
-                            "{file} strategy.matrix.os `{label}` is not \
-                             allow-listed — see ALLOWED_RUNS_ON in this test"
-                        );
                     } else {
-                        // Bare `os:` → list items on following lines as `- foo`.
+                        // List form, items on following lines as `- foo`.
                         in_os_axis = true;
                     }
                     continue;
@@ -297,28 +293,22 @@ fn matrix_runner_values_are_all_allow_listed() {
 /// compile path), FTS UTF-8 tokenisation is locale-sensitive on
 /// Windows, redb file locking is kernel-dependent. See the comment
 /// on ALLOWED_RUNS_ON above for the full citation.
-/// Workflows allowed to reach for `macos-latest` / `windows-latest`, each for a
-/// platform-native reason:
-/// * `python-wheels.yml` / `python.yml` — PyO3 wheels + the Python CI matrix
-///   (00116 / 00122): ABI checks are platform-native, no cross-compile path.
-/// * `cross-compile.yml` — the `aarch64-apple-ios` target needs the Apple SDK,
-///   and the macOS platform smoke tests need a real macOS host.
-const MACOS_WINDOWS_ALLOWED_WORKFLOWS: &[&str] =
-    &["python-wheels.yml", "python.yml", "cross-compile.yml"];
+const PYTHON_OS_MATRIX_WORKFLOWS: &[&str] = &["python-wheels.yml", "python.yml"];
 
 #[test]
-fn macos_and_windows_runners_only_in_justified_workflows() {
+fn macos_and_windows_runners_only_in_python_matrix_workflows() {
     let lines = all_runs_on_lines();
     for (file, line) in &lines {
         for restricted in ["macos-latest", "windows-latest"] {
             if line.contains(restricted) {
                 assert!(
-                    MACOS_WINDOWS_ALLOWED_WORKFLOWS.contains(&file.as_str()),
+                    PYTHON_OS_MATRIX_WORKFLOWS.contains(&file.as_str()),
                     "{file} uses `{restricted}` but only \
-                     {MACOS_WINDOWS_ALLOWED_WORKFLOWS:?} are allowed to — \
-                     PyO3 wheels (00116) + Python CI matrix (00122) and the \
-                     iOS/macOS cross-compile targets are the sole justified \
-                     macOS/Windows use cases. See the comment on ALLOWED_RUNS_ON.",
+                     {PYTHON_OS_MATRIX_WORKFLOWS:?} are allowed to — \
+                     PyO3 wheels (00116) and the Python CI matrix \
+                     (00122) are the sole justified use cases for \
+                     macOS / Windows GitHub-hosted runners in this \
+                     repo. See the comment on ALLOWED_RUNS_ON.",
                 );
             }
         }
@@ -326,12 +316,12 @@ fn macos_and_windows_runners_only_in_justified_workflows() {
 }
 
 #[test]
-fn fuzz_job_in_ci_must_be_github_hosted() {
-    // The `fuzz` job runs on GitHub-hosted ubuntu-latest like every other job:
-    // cargo-fuzz + nightly + libFuzzer + ASAN all install/run fine on Linux
-    // GitHub runners, and on a public repo the minutes are free. Keeping ANY job
-    // on self-hosted is forbidden — a self-hosted runner on a public repo lets a
-    // malicious fork PR execute arbitrary code on the host.
+fn fuzz_job_in_ci_must_be_self_hosted() {
+    // The `fuzz` job in ci.yml requires nightly Rust, libFuzzer, and
+    // AddressSanitizer — moving it to ubuntu-latest would mean
+    // installing cargo-fuzz cold on every PR (~2 min) plus burning
+    // GitHub minutes on 3 × 60s smoke runs. The self-hosted runner
+    // has cargo-fuzz cached and consumes no GitHub-hosted minutes.
     let ci_yml = workflows_dir().join("ci.yml");
     let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
     let mut in_fuzz_job = false;
@@ -350,13 +340,12 @@ fn fuzz_job_in_ci_must_be_github_hosted() {
     }
     let line = fuzz_runs_on.expect("ci.yml fuzz job must declare `runs-on:`");
     assert!(
-        !line.contains("self-hosted"),
-        "ci.yml fuzz job must NOT run on self-hosted (found `{line}`) — no job \
-         may, now that the repo targets public + GitHub-hosted runners.",
-    );
-    assert!(
-        line.contains("ubuntu-latest"),
-        "ci.yml fuzz job must run on ubuntu-latest (found `{line}`).",
+        line.contains("self-hosted"),
+        "ci.yml fuzz job must run on self-hosted (found `{line}`). \
+         Moving it to a GitHub-hosted runner would mean installing \
+         cargo-fuzz + nightly Rust cold on every PR and consuming \
+         GitHub minutes — see the per-job comment in ci.yml for the \
+         full rationale.",
     );
 }
 
@@ -918,12 +907,10 @@ fn bench_yml_supports_workflow_dispatch() {
 }
 
 #[test]
-fn bench_yml_runs_on_github_hosted() {
-    // bench.yml runs on GitHub-hosted ubuntu-latest like every other workflow
-    // (no self-hosted runner exists anymore). Absolute benchmark numbers from
-    // ephemeral VMs carry more noise, but the workflow is scheduled/opt-in and
-    // criterion reports its own variance — a stable host is not worth keeping a
-    // self-hosted runner (a security liability on a public repo).
+fn bench_yml_runs_on_self_hosted() {
+    // Benchmark numbers MUST come from a stable host. GitHub-hosted
+    // ubuntu-latest VMs have variable noise floors that swamp the
+    // signal we're trying to measure.
     let bench_yml = workflows_dir().join("bench.yml");
     let body = fs::read_to_string(&bench_yml).expect("bench.yml exists");
     let bench_runs_on = body
@@ -932,8 +919,10 @@ fn bench_yml_runs_on_github_hosted() {
         .map(str::to_string)
         .expect("bench.yml must declare `runs-on:`");
     assert!(
-        !bench_runs_on.contains("self-hosted"),
-        "bench.yml `runs-on:` must NOT be self-hosted (found `{bench_runs_on}`)."
+        bench_runs_on.contains("self-hosted"),
+        "bench.yml `runs-on:` must include `self-hosted` (found \
+         `{bench_runs_on}`). Benchmark numbers from ephemeral \
+         GitHub-hosted VMs are dominated by neighbour-VM noise."
     );
 }
 

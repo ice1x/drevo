@@ -72,38 +72,79 @@ jobs:
     # `project_state_2026_05_25`) missed this file and python-wheels.yml;
     # both burned ~2,700 of the 3,000 monthly Actions minutes during the
     # Phase 10 Cypher merge burst before being corrected on 2026-05-27.
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - name: Configure the Python venv path
-        # A fresh, workspace-local venv each run. (The self-hosted version
-        # kept a persistent venv + CARGO_TARGET_DIR under $RUNNER_TOOL_CACHE;
-        # on ephemeral GitHub-hosted runners we use a normal venv + let cargo
-        # write ./target so Swatinem/rust-cache below can cache it.)
-        run: echo "DREVO_PY_VENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+      - name: Configure persistent paths (cargo target + python venv)
+        # `runner.tool_cache` expression is ONLY available at step level —
+        # putting it at workflow or job-level `env:` makes GHA reject the
+        # YAML with a generic "workflow file issue" error (no jobs run,
+        # no logs). The earlier fix-attempt in commit 0872954 moved this
+        # from workflow-level env to job-level env, but GHA's context
+        # availability rules forbid `runner.*` in *either* — only steps
+        # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
+        # inside a `run:` (which IS step-level) is the working pattern.
+        # Locked by ci_self_hosted_runner_tests.rs.
+        #
+        # Two persistent paths under $RUNNER_TOOL_CACHE:
+        #   * drevo-cargo-target — incremental Rust compile cache shared
+        #     with ci.yml; lets `maturin develop` relink in seconds
+        #     instead of rebuilding the full drevo + pyo3 + redb tree.
+        #   * drevo-py-venv-py313 — persistent Python venv keyed to the
+        #     interpreter major.minor. Skipping the `python -m venv`
+        #     recreate every run is what makes the workflow ~1 minute
+        #     instead of ~3.
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
+          echo "DREVO_PY_VENV=$RUNNER_TOOL_CACHE/drevo-py-venv-py313" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
-        # actions/setup-python installs a clean CPython 3.13 on the
-        # GitHub-hosted runner. (The old self-hosted step searched macOS
-        # system paths and fails on ubuntu.) Pinned to 3.13 because
-        # `[tool.black].target-version` in `drevo-py/pyproject.toml`
-        # includes `py313` — black's AST safety check fails on an older
-        # interpreter. The abi3-py310 wheel tag still supports 3.10+, so
-        # only the CI lint/test Python moves up.
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Record the Python interpreter
-        run: echo "DREVO_PY_BIN=$(command -v python3.13 || command -v python)" >> "$GITHUB_ENV"
+      - name: Locate system Python 3.13 on the self-hosted runner
+        # NOT `actions/setup-python` — its installation path is
+        # hardcoded to `/Users/runner/hostedtoolcache/` on macOS
+        # and the install step tries `mkdir /Users/runner`, which
+        # the self-hosted runner's user (`cold00n`, not `runner`)
+        # cannot create. The runner already ships Python 3.13 at
+        # `/Library/Frameworks/Python.framework/Versions/3.13/bin/`
+        # (installed via the python.org pkg, surviving brew /
+        # pyenv churn) — that is what local development uses too.
+        # Using the same interpreter keeps local + CI formatting
+        # consistent (the previous black AST-safety failures were
+        # the symptom of a mismatch).
+        #
+        # Pinned to 3.13 because `[tool.black].target-version` in
+        # `drevo-py/pyproject.toml` includes `py313`; black's AST
+        # safety check fails when the running Python is older than
+        # the target. The wheel abi3-py310 tag still produces
+        # wheels compatible with CPython 3.10+, so the runtime
+        # support matrix is unchanged; only the CI lint/test Python
+        # moves up.
+        id: py
+        run: |
+          for candidate in \
+            "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13" \
+            "$(command -v python3.13 || true)" \
+            "/opt/homebrew/bin/python3.13" \
+            "/usr/local/bin/python3.13"; do
+            if [ -x "$candidate" ]; then
+              echo "DREVO_PY_BIN=$candidate" >> "$GITHUB_ENV"
+              echo "Using $candidate ($($candidate --version))"
+              exit 0
+            fi
+          done
+          echo "::error::python3.13 not found on the self-hosted runner — install via the python.org pkg or brew install python@3.13"
+          exit 1
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust build (drevo + pyo3 + redb)
-        # On GitHub-hosted runners the target dir is ephemeral, so a
-        # download-restored cache is what keeps `maturin develop` fast.
-        uses: Swatinem/rust-cache@v2
+      # No `Swatinem/rust-cache@v2` here. The setup step above
+      # exported `CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target`
+      # into `$GITHUB_ENV`, pointing cargo at a persistent location.
+      # `maturin develop` honours that env var, so its compiled drevo
+      # + pyo3 + redb artefacts land in the same shared directory the
+      # rest of the CI uses and stay warm across runs. Layering
+      # Swatinem on top would download an older snapshot over HTTPS
+      # and overwrite the live state.
 
       - name: Ensure persistent venv at $DREVO_PY_VENV (create on first run)
         # The previous form `python -m venv .venv` recreated a fresh
@@ -133,12 +174,7 @@ jobs:
         # the local + CI build paths stay in lockstep.
         run: |
           python -m pip install --upgrade pip
-          # ruff + black are PINNED (matching python.yml / python-wheels.yml).
-          # Unpinned, a fresh GitHub-hosted venv resolves the latest ruff
-          # (0.16+ tightened lint/isort defaults → ~148 errors on unchanged
-          # sources); the self-hosted runner's warm venv masked this. Bump
-          # deliberately + re-verify. See KG `feedback_pin_ruff_black_in_cibuildwheel`.
-          pip install "maturin>=1.7,<2.0" pytest mypy ruff==0.15.1 black==24.10.0 faker hypothesis
+          pip install "maturin>=1.7,<2.0" pytest mypy ruff black faker hypothesis
 
       - name: maturin develop --release (build + install drevo-py)
         run: |
