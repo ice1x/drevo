@@ -80,7 +80,7 @@ env:
 jobs:
   bench:
     name: Criterion benchmarks
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # Hard cap so a scheduled bench can never squat the single
     # self-hosted runner for hours. Before this, a full run took
     # ~150-175 min every night (one run hit 359 min — one minute from
