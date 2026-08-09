@@ -3208,6 +3208,44 @@ impl Drevo {
         self.search_fts_ranked(query, limit, FtsRanking::default())
     }
 
+    /// Upper bound on how many candidate documents a single BM25 query fully
+    /// scores. Beyond this the scan is truncated (top-k becomes approximate)
+    /// and the drop is logged; on ordinary corpora it never triggers. A
+    /// safety valve for pathologically broad terms on very large graphs.
+    const MAX_SCORED_CANDIDATES: usize = 20_000;
+
+    /// Strip English stopword *words* from a free-text FTS query before
+    /// trigram extraction. A query of nothing but function words ("the",
+    /// "and of") then yields no trigrams, so [`Drevo::search_fts`] returns
+    /// empty instead of intersecting the near-universal `the` posting list
+    /// across the whole corpus (measured 1.8 s on the live KG). Filtering is
+    /// **word-level**: a content word containing a stopword substring
+    /// ("theory" ⊃ "the") is preserved, because the test runs on
+    /// whitespace-split words, not on trigrams.
+    fn strip_query_stopwords(query: &str) -> String {
+        query
+            .split_whitespace()
+            .filter(|w| {
+                let core = w
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase();
+                core.is_empty() || !crate::fts::stopwords::is_stopword(&core)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Cap the candidate set a single FTS query fully scores. Returns the
+    /// (possibly truncated) prefix and the number of candidates dropped. See
+    /// [`Self::MAX_SCORED_CANDIDATES`].
+    fn cap_candidates(ids: &[u64], cap: usize) -> (&[u64], usize) {
+        if ids.len() > cap {
+            (&ids[..cap], ids.len() - cap)
+        } else {
+            (ids, 0)
+        }
+    }
+
     /// Full-text search with a selectable [`FtsRanking`] strategy.
     ///
     /// The public [`Drevo::search_fts`] entry point delegates here with
@@ -3252,7 +3290,7 @@ impl Drevo {
             return Ok(Vec::new());
         }
 
-        let query_trigrams = extract_trigrams(query, "");
+        let query_trigrams = extract_trigrams(&Self::strip_query_stopwords(query), "");
         if query_trigrams.is_empty() {
             return Ok(Vec::new());
         }
@@ -3294,7 +3332,7 @@ impl Drevo {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let query_trigrams = extract_trigrams(query, "");
+        let query_trigrams = extract_trigrams(&Self::strip_query_stopwords(query), "");
         if query_trigrams.is_empty() {
             return Ok(Vec::new());
         }
@@ -3381,6 +3419,20 @@ impl Drevo {
 
         // Precompute the BM25 IDF for each query trigram.
         let idf_values: Vec<f32> = dfs.iter().map(|&df| fts_index::bm25_idf(n, df)).collect();
+
+        // Bound the worst-case scan: a pathologically broad term can intersect
+        // most of the corpus. On ordinary graphs this never truncates; when it
+        // does, the top-k is approximate and the drop is logged.
+        let (candidate_ids, dropped) =
+            Self::cap_candidates(candidate_ids, Self::MAX_SCORED_CANDIDATES);
+        if dropped > 0 {
+            #[cfg(feature = "http")]
+            tracing::debug!(
+                dropped,
+                cap = Self::MAX_SCORED_CANDIDATES,
+                "FTS BM25 candidate set truncated; top-k is approximate for this broad query"
+            );
+        }
 
         let mut scored: Vec<ScoredNode> = Vec::with_capacity(candidate_ids.len());
         for node_id in candidate_ids {
@@ -6438,6 +6490,87 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].node.id, node.id);
         assert_eq!(results[0].node.uuid, node.uuid);
+    }
+
+    // --- Stopword-aware query filtering (worst-case FTS latency) ---
+
+    #[test]
+    fn search_fts_pure_stopword_query_returns_empty() {
+        // A query that is nothing but function words must NOT scan the whole
+        // corpus (the trigram `the` otherwise intersects almost every doc —
+        // measured 1.8 s on the live KG). It returns empty, like Lucene/Neo4j.
+        let db = Drevo::open_in_memory().unwrap();
+        for i in 0..5 {
+            db.create_node(test_node(
+                "note",
+                &format!("the meeting {i}"),
+                "the notes are in the shared folder",
+            ))
+            .unwrap();
+        }
+        assert!(db.search_fts("the", 10).unwrap().is_empty());
+        assert!(db.search_fts("the and of", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_fts_stopword_ignored_in_multiword_query() {
+        // "the graph" ranks on the content word "graph"; the stopword "the"
+        // contributes nothing, so a doc without "graph" does not surface.
+        let db = Drevo::open_in_memory().unwrap();
+        db.create_node(test_node("note", "graph database", "the graph engine"))
+            .unwrap();
+        db.create_node(test_node("note", "unrelated", "for and of the this"))
+            .unwrap();
+        let results = db.search_fts("the graph", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].node.title.contains("graph"));
+    }
+
+    #[test]
+    fn search_fts_content_word_with_stopword_substring_still_matches() {
+        // Filtering is word-level, not trigram-level: "theory" contains the
+        // trigram "the" but is not a stopword, so it stays fully searchable.
+        let db = Drevo::open_in_memory().unwrap();
+        db.create_node(test_node("note", "theory", "a theory of computation"))
+            .unwrap();
+        let results = db.search_fts("theory", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].node.title, "theory");
+    }
+
+    #[test]
+    fn strip_query_stopwords_drops_function_words() {
+        assert_eq!(Drevo::strip_query_stopwords("the graph"), "graph");
+        assert_eq!(Drevo::strip_query_stopwords("the and of"), "");
+        assert_eq!(
+            Drevo::strip_query_stopwords("graph database"),
+            "graph database"
+        );
+    }
+
+    #[test]
+    fn strip_query_stopwords_is_word_level_not_substring() {
+        // "theory" contains the trigram "the" but is not itself a stopword.
+        assert_eq!(Drevo::strip_query_stopwords("theory"), "theory");
+        // Punctuation around a stopword is still recognised and stripped.
+        assert_eq!(Drevo::strip_query_stopwords("the, graph."), "graph.");
+    }
+
+    #[test]
+    fn cap_candidates_truncates_beyond_cap() {
+        let ids: Vec<u64> = (0..100).collect();
+        let (capped, dropped) = Drevo::cap_candidates(&ids, 10);
+        assert_eq!(capped.len(), 10);
+        assert_eq!(dropped, 90);
+        assert_eq!(capped, &ids[..10]);
+    }
+
+    #[test]
+    fn cap_candidates_noop_within_cap() {
+        let ids: Vec<u64> = (0..5).collect();
+        let (capped, dropped) = Drevo::cap_candidates(&ids, 1000);
+        assert_eq!(capped.len(), 5);
+        assert_eq!(dropped, 0);
     }
 
     // --- BM25 ranking (task 00131) ---
