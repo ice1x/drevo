@@ -108,14 +108,22 @@ concurrency:
 jobs:
   test_matrix:
     name: cibuildwheel ${{ matrix.platform }} / cp313
-    runs-on: [self-hosted, macOS]
+    # Each platform cell runs on its native GitHub-hosted runner (free +
+    # unlimited on a public repo) — macOS wheels on macos-latest, Linux wheels
+    # on ubuntu-latest. Previously both cells ran on one `[self-hosted, macOS]`
+    # Mac to avoid billed minutes; that reason is gone with the public-repo move.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       # Don't cancel the other cell when one fails — keeps the
       # platform-divergence signal intact.
       fail-fast: false
       matrix:
-        platform: [macos, linux]
+        include:
+          - platform: macos
+            os: macos-latest
+          - platform: linux
+            os: ubuntu-latest
     env:
       # cibuildwheel-controlled. Same envs as python-wheels.yml so
       # the two workflows stay aligned.
