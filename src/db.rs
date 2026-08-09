@@ -3142,7 +3142,26 @@ impl Drevo {
             return Ok(Vec::new());
         }
 
-        let entries = self.backend.scan_prefix(PREFIX_UPDATED)?;
+        let mut entries = self.backend.scan_prefix(PREFIX_UPDATED)?;
+
+        // The `updated:` key packs the node id as little-endian bytes, so scan
+        // order breaks ties on `updated_at` by little-endian id order rather
+        // than newest-first. That is nondeterministic-looking to callers when
+        // several nodes share a millisecond (common on fast hosts — it surfaced
+        // as a flaky pagination test on GitHub-hosted CI). Re-order explicitly:
+        // primary key is the inverted big-endian timestamp slice (ascending =
+        // newest first), tie-broken by node id DESCENDING (a higher id was
+        // allocated later, so it is the more recent insert). No on-disk format
+        // change — the fix is purely in how the scanned rows are ordered here.
+        let ts_slice = |k: &[u8]| {
+            let start = PREFIX_UPDATED.len();
+            k.get(start..start + 8).unwrap_or(&[]).to_vec()
+        };
+        entries.sort_by(|(a, _), (b, _)| {
+            ts_slice(a)
+                .cmp(&ts_slice(b))
+                .then_with(|| node_id_from_updated_key(b).cmp(&node_id_from_updated_key(a)))
+        });
 
         let mut nodes = Vec::new();
         for (key, _) in entries.into_iter().take(limit) {
@@ -6560,6 +6579,34 @@ mod tests {
         assert_eq!(nodes[0].id, n3.id);
         assert_eq!(nodes[1].id, n2.id);
         assert_eq!(nodes[2].id, n1.id);
+    }
+
+    #[test]
+    fn list_recent_breaks_updated_at_ties_by_id_desc() {
+        // Nodes created in ONE batch share an `updated_at`, so list_recent must
+        // break the tie deterministically as newest-first = highest id first.
+        // Regression: the `updated:` index packs the node id little-endian, so
+        // ties were ordered by LE id bytes (ascending) instead — a flaky
+        // pagination failure that surfaced when several nodes shared a
+        // millisecond on fast CI hosts.
+        let db = Drevo::open_in_memory().unwrap();
+        let nodes = db
+            .create_nodes(
+                (0..5)
+                    .map(|i| test_node("note", &format!("N{i}"), ""))
+                    .collect(),
+            )
+            .unwrap();
+        let mut ids: Vec<u64> = nodes.iter().map(|n| n.id).collect();
+        ids.sort_unstable_by(|a, b| b.cmp(a)); // highest id (newest) first
+
+        let recent = db.list_recent(3).unwrap();
+        let got: Vec<u64> = recent.iter().map(|n| n.id).collect();
+        assert_eq!(
+            got,
+            ids[..3].to_vec(),
+            "list_recent must return newest (highest id) first even on updated_at ties"
+        );
     }
 
     #[test]

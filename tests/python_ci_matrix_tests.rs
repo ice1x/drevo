@@ -212,31 +212,33 @@ fn python_ci_matrix_declares_platform_axis() {
 }
 
 #[test]
-fn python_ci_matrix_all_cells_self_hosted() {
+fn python_ci_matrix_cells_run_on_native_github_hosted() {
     let wf = read_workflow();
-    // Both cells (macos and linux) run on the self-hosted macOS
-    // host. cibuildwheel handles the Linux container itself.
-    // Without this guard, a future contributor might "split out
-    // the linux cell to ubuntu-latest" and re-enter GHA billing.
-    assert!(
-        wf.contains("runs-on: [self-hosted, macOS]"),
-        "python.yml must set `runs-on: [self-hosted, macOS]` for \
-         the matrix job — cibuildwheel manages Linux container on \
-         the same macOS host",
-    );
-    // Negative: no GitHub-hosted runner labels.
-    for ghd in ["ubuntu-latest", "windows-latest"] {
-        let bad = wf.lines().any(|line| {
-            let t = line.trim_start();
-            t.starts_with("runs-on:") && t.contains(ghd)
-        });
+    // Each cell runs on its NATIVE GitHub-hosted runner (macOS wheels on
+    // macos-latest, Linux on ubuntu-latest) via `runs-on: ${{ matrix.os }}`
+    // with a `matrix.include` map. The self-hosted runner is retired — a
+    // self-hosted runner on a public repo is a security risk, and public-repo
+    // GitHub-hosted minutes are free, so the old "zero billed minutes"
+    // rationale for collapsing onto a self-hosted Mac no longer applies.
+    for line in wf
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| l.starts_with("runs-on:"))
+    {
         assert!(
-            !bad,
-            "python.yml must NOT route any cell to `{ghd}` — the \
-             whole point of the cibuildwheel pivot is zero \
-             GitHub-hosted minutes",
+            !line.contains("self-hosted"),
+            "python.yml must NOT use a self-hosted runner (retired) — found `{line}`",
         );
     }
+    assert!(
+        wf.contains("runs-on: ${{ matrix.os }}"),
+        "python.yml matrix job must select its runner via `runs-on: ${{ matrix.os }}`",
+    );
+    assert!(
+        wf.contains("os: macos-latest") && wf.contains("os: ubuntu-latest"),
+        "python.yml `matrix.include` must map the macOS cell to macos-latest \
+         and the Linux cell to ubuntu-latest",
+    );
 }
 
 // ── 4. CIBW_TEST_COMMAND covers all gates ──────────────────────────────

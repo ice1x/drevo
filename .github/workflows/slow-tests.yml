@@ -44,7 +44,7 @@
 #
 # Runner & policy
 # ---------------
-# `runs-on: self-hosted`. The slow binaries include I/O-heavy redb
+# `runs-on: ubuntu-latest`. The slow binaries include I/O-heavy redb
 # probes and proptest fuzz-like search; results from ephemeral
 # GitHub-hosted VMs would vary too much for the failure signal to
 # be useful. The Apple Silicon self-hosted runner is the same host
@@ -80,7 +80,7 @@ env:
 jobs:
   full_suite:
     name: nextest (default profile — full suite)
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # Advisory, not gating. See header comment.
     continue-on-error: true
     # timeout-minutes (added 2026-06-11): without it this job inherited
