@@ -78,8 +78,12 @@ const META_SEMANTIC_REL_REGISTRY: &[u8] = b"meta:semantic_rel_registry";
 /// rebuilds the index on open and stamps this. Value is a single version byte.
 const META_FTS_FORMAT: &[u8] = b"meta:fts_format";
 
-/// Current FTS layout: `fts:{trigram}:` -> packed posting list (#275 slice 2).
-const FTS_FORMAT_POSTING: u8 = 2;
+/// Current FTS layout version for `fts:{trigram}:` -> packed node posting list.
+/// v2 (#275 slice 2): entries are bare `u64` node ids. v3 (PR-2): entries are
+/// `(u64 id, u32 tf)` — the per-document term frequency stored inline, so BM25
+/// scores a candidate from the index without a per-candidate node read. A bump
+/// makes [`Drevo::ensure_fts_posting_format`] rebuild the index on next open.
+const FTS_FORMAT_POSTING: u8 = 3;
 
 /// The reserved property key holding a node's secondary `:Label`s (mirrors the
 /// private constant in [`crate::cypher::executor`]). #251 slice 4 matches
@@ -3301,23 +3305,31 @@ impl Drevo {
             return Ok(Vec::new());
         }
 
-        let mut scored = match ranking {
+        let mut scored: Vec<(u64, f32)> = match ranking {
             FtsRanking::Bm25 { k1, b } => {
                 self.score_bm25(&query_trigrams, &candidate_ids, k1, b)?
             }
             FtsRanking::TfIdf => self.score_tfidf(&query_trigrams, &candidate_ids)?,
         };
 
-        // Sort by score descending, then by node id ascending for stability
+        // Rank by score descending, then node id ascending for stability, and
+        // keep only the top `limit`. The node rows are then fetched for the
+        // survivors ONLY — O(limit) reads, not O(candidates): the format-3 win
+        // is that scoring above touched no node rows at all.
         scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
+            b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.node.id.cmp(&b.node.id))
+                .then(a.0.cmp(&b.0))
         });
-
         scored.truncate(limit);
-        Ok(scored)
+
+        let mut results: Vec<ScoredNode> = Vec::with_capacity(scored.len());
+        for (id, score) in scored {
+            if let Some(node) = self.get_node(id)? {
+                results.push(ScoredNode { node, score });
+            }
+        }
+        Ok(results)
     }
 
     /// Full-text search over **relationships** (#227-B): the top-`limit` edges
@@ -3400,29 +3412,16 @@ impl Drevo {
         candidate_ids: &[u64],
         k1: f32,
         b: f32,
-    ) -> Result<Vec<ScoredNode>> {
+    ) -> Result<Vec<(u64, f32)>> {
+        use std::collections::{HashMap, HashSet};
+
         let stats = fts_index::corpus_stats(&*self.backend)?;
         let avgdl = stats.avgdl();
 
-        // Document frequency per query trigram.
-        let mut dfs: Vec<u64> = Vec::with_capacity(query_trigrams.len());
-        for trigram in query_trigrams {
-            dfs.push(fts_index::posting_list_len(&*self.backend, trigram)? as u64);
-        }
-
-        // `N` for the IDF. By construction every posting-bearing node also
-        // has a persisted length, so `doc_count >= df` for a consistent
-        // index. The `max` only matters for a legacy index written before
-        // length stats existed (postings but no `ftslen:`), where it keeps
-        // IDF non-negative instead of silently dropping every result.
-        let n = dfs.iter().copied().max().unwrap_or(0).max(stats.doc_count);
-
-        // Precompute the BM25 IDF for each query trigram.
-        let idf_values: Vec<f32> = dfs.iter().map(|&df| fts_index::bm25_idf(n, df)).collect();
-
-        // Bound the worst-case scan: a pathologically broad term can intersect
-        // most of the corpus. On ordinary graphs this never truncates; when it
-        // does, the top-k is approximate and the drop is logged.
+        // Bound the worst-case scan (see [`Self::cap_candidates`]): a
+        // pathologically broad term can intersect most of the corpus. On
+        // ordinary graphs this never truncates; when it does, the top-k is
+        // approximate and the drop is logged.
         let (candidate_ids, dropped) =
             Self::cap_candidates(candidate_ids, Self::MAX_SCORED_CANDIDATES);
         if dropped > 0 {
@@ -3433,47 +3432,51 @@ impl Drevo {
                 "FTS BM25 candidate set truncated; top-k is approximate for this broad query"
             );
         }
+        let candidate_set: HashSet<u64> = candidate_ids.iter().copied().collect();
 
-        let mut scored: Vec<ScoredNode> = Vec::with_capacity(candidate_ids.len());
-        for node_id in candidate_ids {
-            let node = match self.get_node(*node_id)? {
-                Some(n) => n,
-                None => continue,
-            };
-
-            // Raw (non-deduplicated) trigrams give per-term frequency.
-            let raw = fts_index::node_raw_trigrams(&node.title, &node.body, &node.properties);
-            if raw.is_empty() {
-                continue;
-            }
-            // Document length `|d|`: prefer the persisted stat (the same
-            // value `avgdl` is averaged from) and fall back to the recomputed
-            // count for a legacy index that predates length persistence.
-            let doc_len = fts_index::doc_length(&*self.backend, *node_id)?
+        // Per-candidate document length `|d|` from the persisted `ftslen:` stat
+        // — a tiny 4-byte read each, NOT a full node read + re-tokenize. This is
+        // the format-3 win: term frequency now lives in the posting list, so a
+        // candidate is scored without ever loading its node row.
+        let mut doc_lens: HashMap<u64, f32> = HashMap::with_capacity(candidate_ids.len());
+        for &id in candidate_ids {
+            let dl = fts_index::doc_length(&*self.backend, id)?
                 .map(|l| l as f32)
-                .unwrap_or(raw.len() as f32);
-            // Length-normalization factor; falls back to no normalization
-            // when the corpus average is unavailable.
-            let norm = if avgdl > 0.0 {
-                1.0 - b + b * (doc_len / avgdl)
-            } else {
-                1.0
-            };
+                .unwrap_or(0.0);
+            doc_lens.insert(id, dl);
+        }
 
-            let mut score: f32 = 0.0;
-            for (i, qt) in query_trigrams.iter().enumerate() {
-                let tf = raw.iter().filter(|t| *t == qt).count() as f32;
-                if tf == 0.0 {
+        // Document frequency / IDF per query trigram.
+        let mut dfs: Vec<u64> = Vec::with_capacity(query_trigrams.len());
+        for trigram in query_trigrams {
+            dfs.push(fts_index::posting_list_len(&*self.backend, trigram)? as u64);
+        }
+        // `N` for the IDF. The `max` only matters for a legacy index written
+        // before length stats existed, keeping IDF non-negative.
+        let n = dfs.iter().copied().max().unwrap_or(0).max(stats.doc_count);
+
+        // Term-oriented accumulation: read each query trigram's `(id, tf)`
+        // posting list ONCE and add its BM25 contribution to every candidate it
+        // covers. No node rows are read here at all.
+        let mut scores: HashMap<u64, f32> = HashMap::with_capacity(candidate_ids.len());
+        for (i, trigram) in query_trigrams.iter().enumerate() {
+            let idf = fts_index::bm25_idf(n, dfs[i]);
+            for (id, tf) in fts_index::postings_for_trigram(&*self.backend, trigram)? {
+                if !candidate_set.contains(&id) {
                     continue;
                 }
-                score += idf_values[i] * (tf * (k1 + 1.0)) / (tf + k1 * norm);
-            }
-
-            if score > 0.0 {
-                scored.push(ScoredNode { node, score });
+                let doc_len = *doc_lens.get(&id).unwrap_or(&0.0);
+                let norm = if avgdl > 0.0 {
+                    1.0 - b + b * (doc_len / avgdl)
+                } else {
+                    1.0
+                };
+                let tf = tf as f32;
+                *scores.entry(id).or_insert(0.0) += idf * (tf * (k1 + 1.0)) / (tf + k1 * norm);
             }
         }
-        Ok(scored)
+
+        Ok(scores.into_iter().filter(|(_, s)| *s > 0.0).collect())
     }
 
     /// Score candidates with the legacy TF-IDF scorer. Retained for
@@ -3482,7 +3485,7 @@ impl Drevo {
         &self,
         query_trigrams: &[String],
         candidate_ids: &[u64],
-    ) -> Result<Vec<ScoredNode>> {
+    ) -> Result<Vec<(u64, f32)>> {
         // Total number of indexed nodes (approximate: count node: prefix entries)
         let all_nodes = self.backend.scan_prefix(PREFIX_NODE)?;
         let total_nodes = all_nodes.len() as f32;
@@ -3500,7 +3503,7 @@ impl Drevo {
             idf_values.push(idf);
         }
 
-        let mut scored: Vec<ScoredNode> = Vec::with_capacity(candidate_ids.len());
+        let mut scored: Vec<(u64, f32)> = Vec::with_capacity(candidate_ids.len());
         for node_id in candidate_ids {
             let node = match self.get_node(*node_id)? {
                 Some(n) => n,
@@ -3526,7 +3529,7 @@ impl Drevo {
             }
 
             if score > 0.0 {
-                scored.push(ScoredNode { node, score });
+                scored.push((*node_id, score));
             }
         }
         Ok(scored)
@@ -5732,6 +5735,53 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn fts_reindex_upgrades_v2_id_only_postings_to_tf() {
+        // The production migration: a file written at FTS format 2 (posting
+        // entries are bare 8-byte node ids, no term frequency) must upgrade to
+        // format 3 on open — reindex-on-open rebuilds tf-bearing 12-byte entries
+        // from source nodes, so BM25 can score straight from the index.
+        use crate::model::{NewNode, Properties};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fts_v2_upgrade.redb");
+        let node_id;
+        {
+            let db = Drevo::open(&path).unwrap();
+            let n = db
+                .create_node(NewNode {
+                    kind: "n".into(),
+                    title: "doc".into(),
+                    body: "rust rust rust".into(),
+                    body_html: String::new(),
+                    properties: Properties::default(),
+                })
+                .unwrap();
+            node_id = n.id;
+            // Downgrade on disk to a v2-style index: overwrite the tf-bearing
+            // "rus" posting with a legacy id-only (8-byte) one and stamp the old
+            // format marker, exactly as a file from before this change looks.
+            db.backend
+                .put(b"fts:rus:", &fts_index::encode_postings(&[node_id]))
+                .unwrap();
+            db.backend.put(META_FTS_FORMAT, &[2]).unwrap();
+            db.close().unwrap();
+        }
+        // Reopen → the marker (2) != current (3) triggers reindex-on-open.
+        let db = Drevo::open(&path).unwrap();
+        assert_eq!(
+            db.backend.get(META_FTS_FORMAT).unwrap().as_deref(),
+            Some(&[FTS_FORMAT_POSTING][..]),
+            "format marker upgraded to 3"
+        );
+        // Rebuilt postings carry tf: the repeated "rust" gives tf > 1.
+        let postings = fts_index::postings_for_trigram(&*db.backend, "rus").unwrap();
+        assert_eq!(postings.len(), 1);
+        assert_eq!(postings[0].0, node_id);
+        assert!(postings[0].1 > 1, "reindex must restore term frequency");
+        // And search works against the upgraded index.
+        assert_eq!(db.search_fts("rust", 10).unwrap().len(), 1);
     }
 
     #[test]

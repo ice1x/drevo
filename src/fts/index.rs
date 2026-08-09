@@ -1,7 +1,12 @@
-//! FTS index: trigram -> posting list storage (#275).
+//! FTS index: trigram -> posting list storage (#275, format 3).
 //!
-//! One KV row per trigram: `fts:{trigram}:` -> packed sorted `[node_id]` (the
-//! posting list), plus `ftslen:{node_id}` -> `u32` document length for BM25.
+//! One KV row per trigram: `fts:{trigram}:` -> packed sorted posting list, plus
+//! `ftslen:{node_id}` -> `u32` document length for BM25. Since format 3 (PR-2)
+//! each node posting entry is `(node_id: u64, tf: u32)` — the per-document term
+//! frequency stored inline — so BM25 scores a candidate straight from the index
+//! with no per-candidate node read or re-tokenization. (Edge postings under
+//! `edge_index` keep the id-only layout; the shared id-only codec below serves
+//! them.)
 //!
 //! Retrieval is a single `get` per trigram (O(1)); indexing a node is a
 //! read-modify-write of each of its trigrams' posting lists (the caller
@@ -96,6 +101,78 @@ pub(crate) fn remove_posting(list: &mut Vec<u64>, id: u64) -> bool {
     }
 }
 
+// ── Node posting entries carry per-document term frequency (format 3, PR-2) ──
+//
+// A node trigram's posting list is `[(node_id: u64, tf: u32)]`, sorted by
+// node_id, 12 bytes per entry. Storing `tf` (the raw occurrence count of the
+// trigram in the document) lets BM25 score a candidate straight from the
+// index — no per-candidate node read or re-tokenization. Edge postings keep
+// the id-only layout above (see `edge_index`), so the shared id-only codec
+// stays for them.
+
+/// Bytes per node posting entry: `u64` id + `u32` term frequency.
+const NODE_POSTING_ENTRY_LEN: usize = 12;
+
+/// Encode a node posting list — `(id, tf)` entries sorted by id — as packed
+/// little-endian `u64` id followed by `u32` tf.
+pub(crate) fn encode_node_postings(entries: &[(u64, u32)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(entries.len() * NODE_POSTING_ENTRY_LEN);
+    for (id, tf) in entries {
+        out.extend_from_slice(&id.to_le_bytes());
+        out.extend_from_slice(&tf.to_le_bytes());
+    }
+    out
+}
+
+/// Decode a packed node posting list into `(id, tf)` entries. A trailing
+/// partial entry (never produced by the encoder) is ignored.
+pub(crate) fn decode_node_postings(bytes: &[u8]) -> Vec<(u64, u32)> {
+    bytes
+        .chunks_exact(NODE_POSTING_ENTRY_LEN)
+        .map(|c| {
+            let mut id = [0u8; 8];
+            id.copy_from_slice(&c[0..8]);
+            let mut tf = [0u8; 4];
+            tf.copy_from_slice(&c[8..12]);
+            (u64::from_le_bytes(id), u32::from_le_bytes(tf))
+        })
+        .collect()
+}
+
+/// Insert or update `(id, tf)` in a node posting list keyed + sorted by id,
+/// preserving the invariant. An existing id's `tf` is replaced (the write path
+/// deindexes a node before re-indexing, so a present id is the update case).
+pub(crate) fn merge_node_posting(list: &mut Vec<(u64, u32)>, id: u64, tf: u32) {
+    match list.binary_search_by_key(&id, |(i, _)| *i) {
+        Ok(pos) => list[pos].1 = tf,
+        Err(pos) => list.insert(pos, (id, tf)),
+    }
+}
+
+/// Remove a node id from a node posting list. Returns `true` if removed.
+pub(crate) fn remove_node_posting(list: &mut Vec<(u64, u32)>, id: u64) -> bool {
+    match list.binary_search_by_key(&id, |(i, _)| *i) {
+        Ok(pos) => {
+            list.remove(pos);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Per-trigram term frequencies of a node's text fields, plus the document
+/// length `|d|` (total raw trigram-token count). `tf` is how many times a
+/// trigram occurs across `title` + `body` + string properties.
+fn trigram_frequencies(fields: &[&str]) -> (std::collections::BTreeMap<String, u32>, u32) {
+    let raw = extract_raw_trigrams_fields(fields);
+    let doc_len = raw.len() as u32;
+    let mut tf: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for t in raw {
+        *tf.entry(t).or_insert(0) += 1;
+    }
+    (tf, doc_len)
+}
+
 /// Build a per-document length key: `ftslen:{node_id_le}`.
 fn fts_len_key(node_id: u64) -> Vec<u8> {
     let mut key = PREFIX_FTS_LEN.to_vec();
@@ -140,17 +217,6 @@ fn node_fields<'a>(title: &'a str, body: &'a str, prop_text: &'a [String]) -> Ve
     fields.push(body);
     fields.extend(prop_text.iter().map(String::as_str));
     fields
-}
-
-/// The raw (bag) trigrams a node contributes to the FTS index — `title` +
-/// `body` + string properties (#227). The BM25/TF-IDF ranker calls this so
-/// query-time term frequency and document length are computed over the **same**
-/// text [`index_nodes_grouped`] indexed (otherwise a node whose text lives
-/// only in properties would be a candidate but score 0).
-pub(crate) fn node_raw_trigrams(title: &str, body: &str, properties: &Properties) -> Vec<String> {
-    let prop_text = collect_property_text(properties);
-    let fields = node_fields(title, body, &prop_text);
-    extract_raw_trigrams_fields(&fields)
 }
 
 /// The distinct (deduplicated) trigram set a node contributes — the same-fields
@@ -206,18 +272,18 @@ pub(crate) fn index_nodes_grouped(
 ) -> Result<()> {
     use std::collections::BTreeMap;
 
-    // Group node ids by trigram across the batch; collect doc-length writes.
-    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    // Group (node_id, tf) by trigram across the batch; collect doc-length writes.
+    let mut by_trigram: BTreeMap<String, Vec<(u64, u32)>> = BTreeMap::new();
     let mut len_writes: Vec<(u64, u32)> = Vec::with_capacity(docs.len());
     for (node_id, title, body, properties) in docs {
         let prop_text = collect_property_text(properties);
         let fields = node_fields(title, body, &prop_text);
-        for trigram in extract_trigrams_fields(&fields) {
-            by_trigram.entry(trigram).or_default().push(*node_id);
+        let (tfs, doc_len) = trigram_frequencies(&fields);
+        for (trigram, tf) in tfs {
+            by_trigram.entry(trigram).or_default().push((*node_id, tf));
         }
-        let doc_len = extract_raw_trigrams_fields(&fields).len();
         if doc_len > 0 {
-            len_writes.push((*node_id, doc_len as u32));
+            len_writes.push((*node_id, doc_len));
         }
     }
 
@@ -230,18 +296,18 @@ pub(crate) fn index_nodes_grouped(
     // and the batched write below.
     let mut writes: Vec<(Vec<u8>, Vec<u8>)> =
         Vec::with_capacity(by_trigram.len() + len_writes.len());
-    for (trigram, mut new_ids) in by_trigram {
+    for (trigram, new_entries) in by_trigram {
         let key = fts_key(&trigram);
         let mut list = match backend.get(&key)? {
-            Some(bytes) => decode_postings(&bytes),
+            Some(bytes) => decode_node_postings(&bytes),
             None => Vec::new(),
         };
-        new_ids.sort_unstable();
-        new_ids.dedup();
-        for id in new_ids {
-            merge_posting(&mut list, id);
+        // Each (node_id, tf) within the batch is distinct per trigram (tf is the
+        // node's total for that trigram), so merge inserts/updates in id order.
+        for (id, tf) in new_entries {
+            merge_node_posting(&mut list, id, tf);
         }
-        writes.push((key, encode_postings(&list)));
+        writes.push((key, encode_node_postings(&list)));
     }
     for (node_id, doc_len) in len_writes {
         writes.push((fts_len_key(node_id), doc_len.to_le_bytes().to_vec()));
@@ -261,26 +327,22 @@ pub(crate) fn build_full_index_batch(
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     use std::collections::BTreeMap;
 
-    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut by_trigram: BTreeMap<String, Vec<(u64, u32)>> = BTreeMap::new();
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for (node_id, title, body, properties) in docs {
         let prop_text = collect_property_text(properties);
         let fields = node_fields(title, body, &prop_text);
-        for trigram in extract_trigrams_fields(&fields) {
-            by_trigram.entry(trigram).or_default().push(*node_id);
+        let (tfs, doc_len) = trigram_frequencies(&fields);
+        for (trigram, tf) in tfs {
+            by_trigram.entry(trigram).or_default().push((*node_id, tf));
         }
-        let doc_len = extract_raw_trigrams_fields(&fields).len();
         if doc_len > 0 {
-            out.push((
-                fts_len_key(*node_id),
-                (doc_len as u32).to_le_bytes().to_vec(),
-            ));
+            out.push((fts_len_key(*node_id), doc_len.to_le_bytes().to_vec()));
         }
     }
-    for (trigram, mut ids) in by_trigram {
-        ids.sort_unstable();
-        ids.dedup();
-        out.push((fts_key(&trigram), encode_postings(&ids)));
+    for (trigram, mut entries) in by_trigram {
+        entries.sort_by_key(|(id, _)| *id);
+        out.push((fts_key(&trigram), encode_node_postings(&entries)));
     }
     out
 }
@@ -315,12 +377,12 @@ pub(crate) fn deindex_node_with_props(
     for trigram in &trigrams {
         let key = fts_key(trigram);
         if let Some(bytes) = backend.get(&key)? {
-            let mut list = decode_postings(&bytes);
-            if remove_posting(&mut list, node_id) {
+            let mut list = decode_node_postings(&bytes);
+            if remove_node_posting(&mut list, node_id) {
                 if list.is_empty() {
                     backend.delete(&key)?;
                 } else {
-                    backend.put(&key, &encode_postings(&list))?;
+                    backend.put(&key, &encode_node_postings(&list))?;
                 }
             }
         }
@@ -419,16 +481,32 @@ pub(crate) fn node_ids_for_trigram(
     trigram: &str,
 ) -> Result<Vec<u64>> {
     Ok(match backend.get(&fts_key(trigram))? {
-        Some(bytes) => decode_postings(&bytes),
+        Some(bytes) => decode_node_postings(&bytes)
+            .into_iter()
+            .map(|(id, _tf)| id)
+            .collect(),
+        None => Vec::new(),
+    })
+}
+
+/// Retrieve the `(node_id, tf)` posting entries for a trigram (format 3). The
+/// BM25 ranker consumes these directly, so a candidate is scored from the index
+/// alone — no per-candidate node read or re-tokenization.
+pub(crate) fn postings_for_trigram(
+    backend: &dyn StorageBackend,
+    trigram: &str,
+) -> Result<Vec<(u64, u32)>> {
+    Ok(match backend.get(&fts_key(trigram))? {
+        Some(bytes) => decode_node_postings(&bytes),
         None => Vec::new(),
     })
 }
 
 /// Count how many nodes contain a given trigram (document frequency): the
-/// length of its posting list.
+/// number of entries in its posting list.
 pub(crate) fn posting_list_len(backend: &dyn StorageBackend, trigram: &str) -> Result<usize> {
     Ok(match backend.get(&fts_key(trigram))? {
-        Some(bytes) => bytes.len() / 8,
+        Some(bytes) => bytes.len() / NODE_POSTING_ENTRY_LEN,
         None => 0,
     })
 }
@@ -540,6 +618,8 @@ mod tests {
 
     #[test]
     fn postings_encode_decode_roundtrip_and_merge() {
+        // The id-only codec now serves the edge index (`efts:`); node postings
+        // use the tf-bearing codec below.
         let ids = [1u64, 5, 9, 42];
         assert_eq!(decode_postings(&encode_postings(&ids)), ids);
         let mut list = vec![1u64, 5, 9];
@@ -549,6 +629,37 @@ mod tests {
         assert!(remove_posting(&mut list, 5));
         assert_eq!(list, vec![1, 7, 9]);
         assert!(!remove_posting(&mut list, 100));
+    }
+
+    #[test]
+    fn node_postings_tf_encode_decode_roundtrip_and_merge() {
+        let entries = vec![(1u64, 3u32), (5, 1), (9, 42)];
+        assert_eq!(
+            decode_node_postings(&encode_node_postings(&entries)),
+            entries
+        );
+
+        let mut list = vec![(1u64, 2u32), (5, 1), (9, 4)];
+        merge_node_posting(&mut list, 7, 3);
+        assert_eq!(list, vec![(1, 2), (5, 1), (7, 3), (9, 4)]); // sorted by id
+        merge_node_posting(&mut list, 5, 9); // present id → tf replaced
+        assert_eq!(list[1], (5, 9));
+        assert!(remove_node_posting(&mut list, 5));
+        assert!(!remove_node_posting(&mut list, 100));
+    }
+
+    #[test]
+    fn index_records_term_frequency() {
+        // A trigram repeated across a document gets a higher tf than a single
+        // occurrence — the stat BM25 now reads straight from the posting list.
+        let b = backend();
+        index_node(&b, 1, "rust rust rust", "").unwrap();
+        index_node(&b, 2, "rust", "").unwrap();
+        let postings = postings_for_trigram(&b, "rus").unwrap();
+        let tf1 = postings.iter().find(|(id, _)| *id == 1).unwrap().1;
+        let tf2 = postings.iter().find(|(id, _)| *id == 2).unwrap().1;
+        assert_eq!(tf2, 1, "single occurrence → tf 1");
+        assert!(tf1 > tf2, "repeated term has higher tf ({tf1} vs {tf2})");
     }
 
     #[test]
