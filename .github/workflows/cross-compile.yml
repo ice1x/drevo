@@ -51,7 +51,7 @@ jobs:
   # -------------------------------------------------------------------------
   wasm:
     name: "WASM (wasm32-unknown-unknown)"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -114,7 +114,10 @@ jobs:
   # -------------------------------------------------------------------------
   ios:
     name: "iOS (aarch64-apple-ios)"
-    runs-on: self-hosted
+    # iOS MUST build on macOS — `aarch64-apple-ios` needs the Apple SDK, which
+    # only GitHub's macos-latest runners provide. Every other cross-target here
+    # is Linux-buildable, so they stay on ubuntu-latest.
+    runs-on: macos-latest
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -175,7 +178,7 @@ jobs:
   # -------------------------------------------------------------------------
   android:
     name: "Android (aarch64-linux-android)"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -338,7 +341,7 @@ jobs:
   # -------------------------------------------------------------------------
   cross-compile-tests:
     name: "Cross-compilation tests (host)"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -365,7 +368,7 @@ jobs:
   # -------------------------------------------------------------------------
   smoke-tests:
     name: "Platform smoke tests (host)"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -392,7 +395,8 @@ jobs:
   # -------------------------------------------------------------------------
   smoke-tests-macos:
     name: "Platform smoke tests (macOS)"
-    runs-on: self-hosted
+    # macOS smoke tests need a real macOS runner.
+    runs-on: macos-latest
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
