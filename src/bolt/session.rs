@@ -1025,94 +1025,10 @@ fn pack_to_cypher(v: Value) -> Result<CypherValue, String> {
             }
             Ok(CypherValue::Map(out))
         }
-        Value::Structure { tag, fields } => structure_param_to_cypher(tag, fields),
-    }
-}
-
-// Bolt PackStream temporal structure tags (Neo4j Bolt spec).
-const TAG_DATE: u8 = 0x44; // 'D' — days since epoch
-const TAG_DATETIME_LEGACY: u8 = 0x46; // 'F' — local seconds + nanos + tz offset
-const TAG_DATETIME_UTC: u8 = 0x49; // 'I' — UTC seconds + nanos + tz offset (Bolt 5.0)
-const TAG_LOCAL_DATETIME: u8 = 0x64; // 'd' — seconds + nanos, no zone
-
-/// Decode a PackStream **temporal** parameter structure into an ISO-8601 string.
-///
-/// graphiti (and any neo4j-driver client) serialises `datetime` parameters as
-/// PackStream temporal structures. drevo's Cypher engine has no native temporal
-/// type, so we render them as ISO-8601 text — which round-trips cleanly on the
-/// client via Python's `datetime.fromisoformat` (graphiti `helpers.parse_db_date`).
-/// Non-temporal structures (Node, Relationship, Path, …) remain invalid params.
-fn structure_param_to_cypher(tag: u8, fields: Vec<Value>) -> Result<CypherValue, String> {
-    match tag {
-        TAG_DATETIME_LEGACY | TAG_DATETIME_UTC => {
-            let secs = struct_int(&fields, 0, tag)?;
-            let nanos = struct_int(&fields, 1, tag)?;
-            let offset = struct_int(&fields, 2, tag)?;
-            // Legacy 0x46 stores local wall-clock seconds (UTC = secs - offset);
-            // 0x49 stores the UTC instant directly (offset is display-only).
-            let utc = if tag == TAG_DATETIME_LEGACY {
-                secs - offset
-            } else {
-                secs
-            };
-            Ok(CypherValue::String(format_iso_datetime(utc, nanos, true)))
-        }
-        TAG_LOCAL_DATETIME => {
-            let secs = struct_int(&fields, 0, tag)?;
-            let nanos = struct_int(&fields, 1, tag)?;
-            Ok(CypherValue::String(format_iso_datetime(secs, nanos, false)))
-        }
-        TAG_DATE => {
-            let (y, m, d) = civil_from_days(struct_int(&fields, 0, tag)?);
-            Ok(CypherValue::String(format!("{y:04}-{m:02}-{d:02}")))
-        }
-        _ => Err(format!(
+        Value::Structure { tag, .. } => Err(format!(
             "PackStream Structure(0x{tag:02X}) is not a valid Cypher parameter"
         )),
     }
-}
-
-fn struct_int(fields: &[Value], idx: usize, tag: u8) -> Result<i64, String> {
-    match fields.get(idx) {
-        Some(Value::Integer(i)) => Ok(*i),
-        _ => Err(format!(
-            "PackStream Structure(0x{tag:02X}) has a missing or non-integer field at index {idx}"
-        )),
-    }
-}
-
-/// Format an instant (epoch seconds + nanoseconds) as ISO-8601. When `utc` is
-/// set the `+00:00` zone suffix is appended (drevo normalises zoned DateTimes to
-/// UTC); otherwise the value is a zone-less LocalDateTime and no suffix is added.
-/// Rendered at microsecond precision — the neo4j driver sends nanos as
-/// `micros * 1000`, so 6 fractional digits is exact and `fromisoformat`-safe.
-fn format_iso_datetime(epoch_seconds: i64, nanos: i64, utc: bool) -> String {
-    let days = epoch_seconds.div_euclid(86_400);
-    let sod = epoch_seconds.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    let (hh, mm, ss) = (sod / 3600, (sod % 3600) / 60, sod % 60);
-    let suffix = if utc { "+00:00" } else { "" };
-    let micros = nanos.rem_euclid(1_000_000_000) / 1000;
-    if micros > 0 {
-        format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{micros:06}{suffix}")
-    } else {
-        format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}{suffix}")
-    }
-}
-
-/// Civil `(year, month, day)` from days since 1970-01-01, via Howard Hinnant's
-/// `civil_from_days` (valid across the full range, no external date library).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 fn cypher_to_pack(v: CypherValue) -> Value {
@@ -1450,132 +1366,12 @@ mod tests {
 
     #[test]
     fn pack_to_cypher_rejects_structure_parameter() {
-        // Non-temporal structures (here a Node, 0x4E) are still not valid params.
         let err = pack_to_cypher(Value::Structure {
             tag: 0x4E,
             fields: vec![],
         })
         .unwrap_err();
         assert!(err.contains("Structure"));
-    }
-
-    fn cypher_string(v: CypherValue) -> String {
-        match v {
-            CypherValue::String(s) => s,
-            other => panic!("expected String, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn pack_to_cypher_decodes_datetime_epoch_zero() {
-        // DateTime (0x46): seconds, nanos, tz_offset. UTC epoch 0, offset 0.
-        let v = pack_to_cypher(Value::Structure {
-            tag: 0x46,
-            fields: vec![Value::Integer(0), Value::Integer(0), Value::Integer(0)],
-        })
-        .unwrap();
-        assert_eq!(cypher_string(v), "1970-01-01T00:00:00+00:00");
-    }
-
-    #[test]
-    fn pack_to_cypher_decodes_datetime_known_instant_with_nanos() {
-        // 1_000_000_000s since epoch = 2001-09-09T01:46:40Z; 123_456_000 ns -> .123456
-        let v = pack_to_cypher(Value::Structure {
-            tag: 0x46,
-            fields: vec![
-                Value::Integer(1_000_000_000),
-                Value::Integer(123_456_000),
-                Value::Integer(0),
-            ],
-        })
-        .unwrap();
-        assert_eq!(cypher_string(v), "2001-09-09T01:46:40.123456+00:00");
-    }
-
-    #[test]
-    fn pack_to_cypher_datetime_0x46_subtracts_offset_to_utc() {
-        // Legacy 0x46: `seconds` is local wall-clock; UTC instant = seconds - offset.
-        // 1_000_000_000 local at +01:00 -> 999_996_400 UTC = 2001-09-09T00:46:40Z.
-        let v = pack_to_cypher(Value::Structure {
-            tag: 0x46,
-            fields: vec![
-                Value::Integer(1_000_000_000),
-                Value::Integer(0),
-                Value::Integer(3600),
-            ],
-        })
-        .unwrap();
-        assert_eq!(cypher_string(v), "2001-09-09T00:46:40+00:00");
-    }
-
-    #[test]
-    fn pack_to_cypher_datetime_0x49_is_already_utc() {
-        // Bolt 5 UTC DateTime (0x49): `seconds` is the UTC instant; offset is display-only.
-        let v = pack_to_cypher(Value::Structure {
-            tag: 0x49,
-            fields: vec![
-                Value::Integer(1_000_000_000),
-                Value::Integer(0),
-                Value::Integer(3600),
-            ],
-        })
-        .unwrap();
-        assert_eq!(cypher_string(v), "2001-09-09T01:46:40+00:00");
-    }
-
-    #[test]
-    fn pack_to_cypher_decodes_local_datetime_as_naive() {
-        // LocalDateTime (0x64): seconds, nanos — no zone, so no offset suffix.
-        let v = pack_to_cypher(Value::Structure {
-            tag: 0x64,
-            fields: vec![Value::Integer(0), Value::Integer(0)],
-        })
-        .unwrap();
-        assert_eq!(cypher_string(v), "1970-01-01T00:00:00");
-    }
-
-    #[test]
-    fn pack_to_cypher_decodes_date() {
-        // Date (0x44): days since epoch. day 0 = 1970-01-01, day 1 = 1970-01-02.
-        assert_eq!(
-            cypher_string(
-                pack_to_cypher(Value::Structure {
-                    tag: 0x44,
-                    fields: vec![Value::Integer(0)],
-                })
-                .unwrap()
-            ),
-            "1970-01-01"
-        );
-        assert_eq!(
-            cypher_string(
-                pack_to_cypher(Value::Structure {
-                    tag: 0x44,
-                    fields: vec![Value::Integer(1)],
-                })
-                .unwrap()
-            ),
-            "1970-01-02"
-        );
-    }
-
-    #[test]
-    fn pack_to_cypher_datetime_malformed_fields_error() {
-        // Wrong arity / non-integer fields must error, not panic.
-        assert!(pack_to_cypher(Value::Structure {
-            tag: 0x46,
-            fields: vec![Value::Integer(0)],
-        })
-        .is_err());
-        assert!(pack_to_cypher(Value::Structure {
-            tag: 0x46,
-            fields: vec![
-                Value::String('x'.to_string()),
-                Value::Integer(0),
-                Value::Integer(0),
-            ],
-        })
-        .is_err());
     }
 
     #[test]

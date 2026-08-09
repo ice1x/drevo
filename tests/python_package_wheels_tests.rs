@@ -484,23 +484,18 @@ fn cibuildwheel_workflow_exists_with_full_matrix() {
              §2 wheel matrix"
         );
     }
-    // Runner target — GitHub-hosted since the public-repo migration: macOS
-    // wheels build on `macos-latest` (free + unlimited on a public repo), the
-    // sdist on `ubuntu-latest`. The self-hosted runner is retired (a self-hosted
-    // runner on a public repo is a security risk).
-    for line in wf
-        .lines()
-        .map(str::trim_start)
-        .filter(|l| l.starts_with("runs-on:"))
-    {
-        assert!(
-            !line.contains("self-hosted"),
-            "python-wheels.yml must NOT run on self-hosted (retired) — found `{line}`"
-        );
-    }
+    // Runner target — `self-hosted` since 2026-05-27. The previous
+    // matrix (`ubuntu-latest, macos-latest, windows-latest` × cp310-313
+    // = 12 cells) billed against GitHub-hosted infrastructure with a
+    // ×10 multiplier on macOS cells; one push to main matching the
+    // path filter cost ~520 billable minutes. Linux + Windows wheel
+    // builds are deferred to the future release-time workflow that
+    // explicitly opts into cross-platform GitHub-hosted minutes for
+    // the PyPI upload step.
     assert!(
-        wf.contains("runs-on: macos-latest"),
-        "python-wheels.yml `build_wheels` must run on macos-latest"
+        wf.contains("runs-on: self-hosted"),
+        "python-wheels.yml must run on `self-hosted` (see KG \
+         `incident_2026_05_27_ci_minutes_burn` for the cost rationale)"
     );
     // `twine check dist/*` validates wheel metadata before any future
     // release task uploads — locks the contract today.
@@ -563,11 +558,15 @@ fn python_ci_workflow_runs_full_lint_and_test_gate() {
         "mypy --strict",
         "ruff check",
         "black --check",
-        // Runner target — GitHub-hosted since the public-repo migration. The
-        // repo-wide policy (locked by `tests/ci_self_hosted_runner_tests.rs`)
-        // is now that every workflow runs on a GitHub-hosted runner; the
-        // self-hosted runner is retired.
-        "runs-on: ubuntu-latest",
+        // Runner target — `self-hosted` since 2026-05-27. Earlier
+        // landings of this file mistakenly used `ubuntu-latest`,
+        // which billed GitHub-hosted minutes against the account.
+        // The repo-wide policy (locked by
+        // `tests/ci_self_hosted_runner_tests.rs`) is that every
+        // workflow runs on `self-hosted` unless a documented
+        // cross-platform need (Linux + Windows matrix in
+        // `python-wheels.yml`) forces GitHub-hosted runners.
+        "runs-on: self-hosted",
     ] {
         assert!(
             wf.contains(needle),
