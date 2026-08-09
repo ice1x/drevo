@@ -103,7 +103,7 @@ jobs:
   # each `CI / <Job>` context, so no dual-workflow status race.
   changes:
     name: changes
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       code: ${{ steps.detect.outputs.code }}
@@ -143,7 +143,7 @@ jobs:
     # Run unless the change is provably docs-only. `always()` keeps this
     # fail-safe even if `changes` errored (empty output != 'false' → runs).
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # timeout-minutes (added 2026-06-10): GitHub's default job timeout is
     # 360 minutes. On the single self-hosted runner, two concurrent CI
     # runs' jobs share one `$CARGO_TARGET_DIR`, so a job can block on the
@@ -192,7 +192,7 @@ jobs:
     name: Test
     needs: changes
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # See the `check` job for the rationale. MEASURED ROOT CAUSE: the
     # *test execution* is fast — all 2857 tests run in ~18 min
     # (`nextest` reported `1069s`). The multi-hour `Test` step was almost
@@ -336,7 +336,7 @@ jobs:
     name: Clippy
     needs: changes
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # See the `check` job rationale. Clippy compiles three feature sets
     # (default + bolt-tls + bolt-auth) and has reached ~86min under
     # contention; 120 leaves margin below the 360 default.
@@ -373,7 +373,7 @@ jobs:
     name: Format
     needs: changes
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # See the `check` job rationale. `cargo fmt --check` does no compile;
     # 20 min is generous slack over its few-second real runtime.
     timeout-minutes: 20
@@ -405,7 +405,7 @@ jobs:
     name: K8s manifests
     needs: changes
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # See the `check` job rationale. Pure `kubectl kustomize` resolution,
     # no compile; 20 min is ample.
     timeout-minutes: 20
@@ -437,7 +437,7 @@ jobs:
     name: Doc
     needs: changes
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # See the `check` job rationale.
     timeout-minutes: 75
     env:
@@ -454,7 +454,7 @@ jobs:
     name: MSRV
     needs: changes
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # See the `check` job rationale. Two `cargo check`s (native +
     # wasm32) on the MSRV toolchain.
     timeout-minutes: 90
@@ -506,7 +506,7 @@ jobs:
     name: Fuzz
     needs: changes
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # Pin the whole job to nightly. The smoke steps below call bare
     # `cargo fuzz run`, which reads the machine-global `rustup default`.
     # On the single self-hosted runner that default is shared mutable
