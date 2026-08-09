@@ -72,7 +72,7 @@ jobs:
     # `project_state_2026_05_25`) missed this file and python-wheels.yml;
     # both burned ~2,700 of the 3,000 monthly Actions minutes during the
     # Phase 10 Cypher merge burst before being corrected on 2026-05-27.
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Configure persistent paths (cargo target + python venv)
         # `runner.tool_cache` expression is ONLY available at step level —
