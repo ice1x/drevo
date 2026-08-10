@@ -270,6 +270,73 @@ fn readers_writers_and_collector_never_tear_or_deadlock() {
     assert!(store.get(&"k".into(), &snap).unwrap().is_some());
 }
 
+/// Regression for the `begin_snapshot` capture/register race: the snapshot's
+/// view and its GC pin must be established atomically. If the `xmin` is
+/// registered a moment *after* the view is captured, a concurrent vacuum can
+/// read a horizon that excludes the new snapshot, advance past a version the
+/// snapshot still resolves to, and reclaim it — making a committed key
+/// momentarily read as `None`. A dedicated tight writer + a dedicated tight
+/// vacuum loop (far more adversarial than the 1ms `GcWorker`) hammer that
+/// nanosecond window; on the buggy code a reader observes the key vanish.
+#[test]
+fn begin_snapshot_pins_horizon_atomically_against_vacuum() {
+    let mgr = Arc::new(TransactionManager::new());
+    let store: Arc<VersionedStore<String, i64>> = Arc::new(VersionedStore::new(mgr.clone()));
+    let seed = mgr.begin().unwrap();
+    store.put(seed, "k".into(), 0).unwrap();
+    mgr.commit(seed).unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::new();
+
+    // One tight writer: rapidly supersede "k" so the live head keeps advancing
+    // and every read has a just-superseded predecessor eligible for GC.
+    {
+        let (mgr, store, stop) = (mgr.clone(), store.clone(), stop.clone());
+        handles.push(thread::spawn(move || {
+            let mut v = 1i64;
+            while !stop.load(Ordering::Relaxed) {
+                let w = mgr.begin().unwrap();
+                store.put(w, "k".into(), v).unwrap();
+                mgr.commit(w).unwrap();
+                v += 1;
+            }
+        }));
+    }
+    // One tight vacuum loop: reclaim to the live horizon as fast as possible,
+    // maximizing the chance of firing inside the capture/register window.
+    {
+        let (store, stop) = (store.clone(), stop.clone());
+        handles.push(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                store.vacuum_to_horizon().unwrap();
+            }
+        }));
+    }
+    // Many readers: register a snapshot and immediately read it. The seeded key
+    // has always been committed, so a correctly-pinned snapshot must always
+    // resolve it to some value — never `None`.
+    for _ in 0..8 {
+        let (mgr, store, stop) = (mgr.clone(), store.clone(), stop.clone());
+        handles.push(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let snap = mgr.begin_snapshot(INVALID_XID).unwrap();
+                assert!(
+                    store.get(&"k".into(), &snap).unwrap().is_some(),
+                    "registered snapshot lost the committed key to GC"
+                );
+            }
+        }));
+    }
+
+    thread::sleep(Duration::from_millis(400));
+    stop.store(true, Ordering::Relaxed);
+    for h in handles {
+        h.join()
+            .expect("a thread panicked — begin_snapshot/GC race regression");
+    }
+}
+
 proptest! {
     /// Safety invariant: vacuuming never changes what a registered reader sees.
     /// We apply a random history of committed updates and deletes, registering
