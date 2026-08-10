@@ -187,6 +187,15 @@ impl TransactionManager {
     /// [`MvccError::LockPoisoned`] on a poisoned lock.
     pub fn snapshot(&self, my_xid: Xid) -> Result<Snapshot> {
         let reg = self.read()?;
+        Ok(Self::snapshot_locked(&reg, my_xid))
+    }
+
+    /// Capture a [`Snapshot`] from an already-held registry guard.
+    ///
+    /// Factored out so [`begin_snapshot`](Self::begin_snapshot) can capture the
+    /// view **and** register its `xmin` under a *single* write-lock section —
+    /// see the atomicity note there. Pure: it only reads `reg`.
+    fn snapshot_locked(reg: &Registry, my_xid: Xid) -> Snapshot {
         let xmax = reg.next;
         let active: BTreeSet<Xid> = reg
             .status
@@ -195,12 +204,12 @@ impl TransactionManager {
             .map(|(x, _)| *x)
             .collect();
         let xmin = active.iter().copied().next().unwrap_or(xmax);
-        Ok(Snapshot {
+        Snapshot {
             xmin,
             xmax,
             active,
             my_xid,
-        })
+        }
     }
 
     /// Capture a snapshot **and register it** so the garbage collector
@@ -221,9 +230,22 @@ impl TransactionManager {
     ///
     /// [`MvccError::LockPoisoned`] on a poisoned lock.
     pub fn begin_snapshot(self: &Arc<Self>, my_xid: Xid) -> Result<SnapshotGuard> {
-        let snap = self.snapshot(my_xid)?;
+        // ATOMIC capture + register: the snapshot's view (`xmax`, `active`,
+        // `xmin`) is read from the SAME write-locked registry section that then
+        // pins `xmin` into `active_snaps`. This closes a TOCTOU race — capturing
+        // under a read lock and registering under a *separate* write lock left a
+        // window in which the collector could read a `gc_horizon` that excluded
+        // this not-yet-registered snapshot, advance past a version the snapshot
+        // still resolves to, and reclaim it (a committed key then read as
+        // `None`). Holding the write lock across both steps means every
+        // `gc_horizon` read is serialized either fully before the capture (so
+        // the snapshot sees only live heads the vacuum preserved) or fully after
+        // the registration (so the horizon already respects this xmin).
+        let mut reg = self.write()?;
+        let snap = Self::snapshot_locked(&reg, my_xid);
         let xmin = snap.xmin;
-        *self.write()?.active_snaps.entry(xmin).or_insert(0) += 1;
+        *reg.active_snaps.entry(xmin).or_insert(0) += 1;
+        drop(reg);
         Ok(SnapshotGuard {
             mgr: Arc::clone(self),
             snap,
@@ -261,7 +283,35 @@ impl TransactionManager {
     /// [`MvccError::LockPoisoned`] on a poisoned lock.
     pub fn gc_horizon(&self) -> Result<Xid> {
         let reg = self.read()?;
-        Ok(reg.active_snaps.keys().next().copied().unwrap_or(reg.next))
+        // The horizon must bound BOTH sources of a still-needed old version:
+        //
+        //  * the oldest registered reader snapshot's `xmin` (a long reader that
+        //    already captured its view), and
+        //  * the oldest **in-progress** transaction id (a writer that is not yet
+        //    committed). A version this writer retired — `xmax == w` — is still
+        //    visible to any snapshot that captures `w` in its active set, and
+        //    such a snapshot can be taken (and atomically registered) at any
+        //    instant while `w` runs. If the horizon ignored in-progress writers,
+        //    a vacuum could read a horizon above `w`, commit `w`, and reclaim
+        //    that version before/just as a reader pins it — the bug this closes.
+        //    This is PostgreSQL's `OldestXmin`: the min xid of every running
+        //    transaction, not only registered readers.
+        //
+        // When neither source has an entry the horizon is `next` (nothing older
+        // than the next id to be allocated can still be needed).
+        let oldest_reader = reg.active_snaps.keys().next().copied();
+        let oldest_in_progress = reg
+            .status
+            .iter()
+            .filter(|(_, s)| matches!(s, XidStatus::InProgress))
+            .map(|(x, _)| *x)
+            .min();
+        let horizon = oldest_reader
+            .into_iter()
+            .chain(oldest_in_progress)
+            .min()
+            .unwrap_or(reg.next);
+        Ok(horizon)
     }
 }
 
@@ -543,7 +593,12 @@ mod tests {
         // horizon pinned at the registered reader's xmin (==1)
         assert_eq!(m.gc_horizon().unwrap(), reader_tx);
         drop(guard);
-        // once released, the horizon jumps forward to `next`
+        // The registered snapshot is gone, but `reader_tx` is itself still an
+        // in-progress transaction, so it keeps holding the horizon (a snapshot
+        // could still capture it as active). Finishing it releases the last
+        // holder and the horizon jumps forward to `next`.
+        assert_eq!(m.gc_horizon().unwrap(), reader_tx);
+        m.commit(reader_tx).unwrap();
         let next = m.snapshot(INVALID_XID).unwrap().xmax();
         assert_eq!(m.gc_horizon().unwrap(), next);
     }
@@ -578,6 +633,32 @@ mod tests {
         // one guard still holds xmin 1 -> horizon unchanged
         assert_eq!(m.gc_horizon().unwrap(), reader_tx);
         drop(g2);
+        // Both guards gone, but `reader_tx` is still in progress and holds the
+        // horizon on its own; finish it so the horizon can advance to `next`.
+        assert_eq!(m.gc_horizon().unwrap(), reader_tx);
+        m.commit(reader_tx).unwrap();
+        assert_eq!(
+            m.gc_horizon().unwrap(),
+            m.snapshot(INVALID_XID).unwrap().xmax()
+        );
+    }
+
+    #[test]
+    fn in_progress_writer_holds_gc_horizon() {
+        // An in-progress transaction pins the GC horizon even with NO registered
+        // snapshot: a reader may still capture it in its active set, so versions
+        // it retired must be preserved. This is PostgreSQL's OldestXmin rule and
+        // the fix for the collector-vs-just-registered-reader race.
+        let m = Arc::new(TransactionManager::new());
+        let old = m.begin().unwrap(); // 1, a writer mid-transaction (in progress)
+        for _ in 0..3 {
+            let w = m.begin().unwrap();
+            m.commit(w).unwrap();
+        }
+        // No registered snapshot, yet the horizon cannot pass `old`.
+        assert_eq!(m.gc_horizon().unwrap(), old);
+        // Once it finishes, the horizon advances to `next`.
+        m.commit(old).unwrap();
         assert_eq!(
             m.gc_horizon().unwrap(),
             m.snapshot(INVALID_XID).unwrap().xmax()
