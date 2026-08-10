@@ -1,0 +1,24 @@
+# systemd service (oneshot) for scripts/drevo-watchdog.sh — paired with the
+# .timer beside it. Install as a *user* unit so it runs the watchdog as you (the
+# user who owns the Docker context and the bind-mounted redb file):
+#
+#   mkdir -p ~/.config/systemd/user
+#   # EDIT WorkingDirectory/ExecStart below to your checkout path first.
+#   cp scripts/watchdog/drevo-watchdog.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now drevo-watchdog.timer   # start (also at login)
+#   systemctl --user disable --now drevo-watchdog.timer  # stop
+#
+# Pause self-healing without disabling the timer:
+#   touch ~/.drevo-watchdog.disabled     # resume: rm it
+[Unit]
+Description=drevo container watchdog (recreate if removed / not running)
+After=docker.service
+
+[Service]
+Type=oneshot
+# EDIT: absolute path to your drevo checkout.
+WorkingDirectory=/ABSOLUTE/PATH/TO/drevo
+ExecStart=/usr/bin/env bash scripts/drevo-watchdog.sh
+# For a bare `docker run` deployment instead of Compose, uncomment:
+# Environment=DREVO_UP_CMD=/ABSOLUTE/PATH/TO/drevo/scripts/drevo-restart.sh

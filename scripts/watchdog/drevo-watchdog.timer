@@ -1,0 +1,14 @@
+# systemd timer that fires scripts/drevo-watchdog.sh every 30s. See the
+# companion drevo-watchdog.service for install instructions.
+[Unit]
+Description=Run the drevo container watchdog every 30s
+
+[Timer]
+# First run 30s after the timer starts, then every 30s thereafter.
+OnActiveSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=drevo-watchdog.service
+
+[Install]
+WantedBy=timers.target
