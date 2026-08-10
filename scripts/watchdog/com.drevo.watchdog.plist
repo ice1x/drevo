@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd agent for scripts/drevo-watchdog.sh.
+
+  Runs the watchdog every 30s so an accidentally removed drevo container is
+  recreated within half a minute. Install:
+
+    # 1. Edit ProgramArguments below to your absolute checkout path.
+    cp scripts/watchdog/com.drevo.watchdog.plist ~/Library/LaunchAgents/
+    launchctl load  ~/Library/LaunchAgents/com.drevo.watchdog.plist   # start
+    launchctl unload ~/Library/LaunchAgents/com.drevo.watchdog.plist  # stop
+
+  Pause self-healing without unloading (e.g. to stop the container on purpose):
+    touch ~/.drevo-watchdog.disabled     # resume: rm it
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.drevo.watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <!-- EDIT: absolute path to your drevo checkout. -->
+        <string>/ABSOLUTE/PATH/TO/drevo/scripts/drevo-watchdog.sh</string>
+    </array>
+
+    <!-- Run at load and then every 30 seconds. -->
+    <key>StartInterval</key>
+    <integer>30</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- For a bare `docker run` deployment, point the watchdog at your restart
+         command and drop the Compose default. Leave commented for Compose. -->
+    <!--
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DREVO_UP_CMD</key>
+        <string>/ABSOLUTE/PATH/TO/drevo/scripts/drevo-restart.sh</string>
+    </dict>
+    -->
+
+    <key>StandardOutPath</key>
+    <string>/tmp/drevo-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/drevo-watchdog.log</string>
+</dict>
+</plist>

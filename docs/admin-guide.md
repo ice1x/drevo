@@ -121,6 +121,23 @@ docker compose down         # stop (data volume kept)
 docker compose down -v      # stop and wipe data
 ```
 
+### Keeping the container alive
+
+Two layers cover two different failures (see [`scripts/README.md`](../scripts/README.md)):
+
+- **Docker restart policy** — the compose service sets `restart: unless-stopped`
+  (and [`scripts/drevo-restart.sh`](../scripts/drevo-restart.sh), the bare-`docker
+  run` path, passes `--restart unless-stopped`). This relaunches the container
+  after a crash, an OOM-kill, or a Docker/host reboot. It does **not** act on an
+  intentional stop, and it **cannot** resurrect a *removed* container — a stray
+  `docker rm -f drevo` (e.g. another project reusing the name) deletes the
+  container object, leaving the restart policy nothing to act on.
+- **Watchdog** — [`scripts/drevo-watchdog.sh`](../scripts/drevo-watchdog.sh),
+  scheduled every 30s via the launchd/systemd templates in
+  [`scripts/watchdog/`](../scripts/watchdog), recreates the container whenever it
+  is missing or not running. This is the layer that survives an accidental
+  `docker rm -f`. Pause it without a fight by `touch ~/.drevo-watchdog.disabled`.
+
 ---
 
 ## 4. Kubernetes
