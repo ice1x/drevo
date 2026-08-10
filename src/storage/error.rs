@@ -81,6 +81,24 @@ pub enum StorageError {
         /// Highest on-disk major version this build can read.
         supported_major: u32,
     },
+
+    /// An online [`shrink_rebuild`](crate::storage::StorageBackend::shrink_rebuild)
+    /// produced a compacted copy that failed its self-diagnostic: the row counts
+    /// of the rebuilt file did not match the source (a duplicate-key collision or
+    /// short read that would have silently dropped data). The diagnostic runs
+    /// **before** the live file is touched, so the rebuild is discarded and the
+    /// live database is left completely untouched — **no data is lost**.
+    /// `expected` / `got` are `(data_rows, meta_rows)`.
+    #[error(
+        "shrink verification failed: rebuilt file has {got:?} rows, expected {expected:?}; \
+         the live database was left untouched"
+    )]
+    ShrinkVerificationFailed {
+        /// `(data_rows, meta_rows)` streamed from the source into the rebuild.
+        expected: (u64, u64),
+        /// `(data_rows, meta_rows)` actually found in the rebuilt file.
+        got: (u64, u64),
+    },
 }
 
 // Lift redb sub-error types into `StorageError::Redb` so `?` works at every

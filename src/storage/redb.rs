@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableTableMetadata, TableDefinition};
 
 use crate::storage::error::{Result, StorageError};
 use crate::storage::StorageBackend;
@@ -97,6 +97,8 @@ impl RedbBackend {
     /// create the file.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        // Roll forward/back any shrink that a crash interrupted before opening.
+        Self::recover_interrupted_shrink(&path)?;
         let db = Database::create(&path)?;
         let backend = Self {
             db: RwLock::new(Arc::new(db)),
@@ -104,6 +106,65 @@ impl RedbBackend {
         };
         backend.check_or_stamp_format_version()?;
         Ok(backend)
+    }
+
+    /// Recover from a crash mid-[`shrink_rebuild`](StorageBackend::shrink_rebuild).
+    ///
+    /// The shrink renames the original file to `<name>.backup.redb`, installs the
+    /// compacted copy at the live path, self-verifies it, and only then deletes
+    /// the backup. If the process dies mid-way it can leave a stale
+    /// `.shrinking.redb` temp and/or a `.backup.redb`:
+    ///
+    /// * live file **missing** but backup present → the crash landed between the
+    ///   two renames; restore the backup as the live file (no data is lost).
+    /// * live file **present** and backup present → the rebuild was installed and
+    ///   is durable (redb committed it before the rename), so the backup is stale
+    ///   and is discarded.
+    ///
+    /// A leftover `.shrinking.redb` temp (an incomplete rebuild) is always
+    /// discarded. Idempotent and cheap when nothing was interrupted.
+    fn recover_interrupted_shrink(path: &Path) -> Result<()> {
+        let tmp = path.with_extension("shrinking.redb");
+        if tmp.exists() {
+            std::fs::remove_file(&tmp)?;
+        }
+        let backup = path.with_extension("backup.redb");
+        if backup.exists() {
+            if path.exists() {
+                // Rebuild already installed and durable → backup is stale.
+                std::fs::remove_file(&backup)?;
+            } else {
+                // Interrupted between the renames → put the original back.
+                std::fs::rename(&backup, path)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Count `DATA_TABLE` + `META_TABLE` rows in `db` and confirm they match the
+    /// `(data, meta)` counts streamed into a [`shrink_rebuild`](StorageBackend::shrink_rebuild)
+    /// copy — the post-swap self-diagnostic that decides whether the automatic
+    /// backup can be discarded. A table absent from the rebuild counts as zero
+    /// rows (it was empty in the source too).
+    fn verify_row_counts(db: &Database, expected_data: u64, expected_meta: u64) -> Result<()> {
+        let read_txn = db.begin_read()?;
+        let data = match read_txn.open_table(DATA_TABLE) {
+            Ok(t) => t.len()?,
+            Err(redb::TableError::TableDoesNotExist(_)) => 0,
+            Err(e) => return Err(e.into()),
+        };
+        let meta = match read_txn.open_table(META_TABLE) {
+            Ok(t) => t.len()?,
+            Err(redb::TableError::TableDoesNotExist(_)) => 0,
+            Err(e) => return Err(e.into()),
+        };
+        if (data, meta) != (expected_data, expected_meta) {
+            return Err(StorageError::ShrinkVerificationFailed {
+                expected: (expected_data, expected_meta),
+                got: (data, meta),
+            });
+        }
+        Ok(())
     }
 
     /// Path of the underlying redb database file.
@@ -455,28 +516,40 @@ impl StorageBackend for RedbBackend {
 
         let before = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
 
-        // Build the compact copy beside the live file; discard a stale temp left
-        // by a crashed prior run first.
+        // Build the compact copy beside the live file; discard any stale temp or
+        // backup a crashed prior run left behind first.
         let tmp = self.path.with_extension("shrinking.redb");
-        if tmp.exists() {
-            std::fs::remove_file(&tmp)?;
+        let backup = self.path.with_extension("backup.redb");
+        for stale in [&tmp, &backup] {
+            if stale.exists() {
+                std::fs::remove_file(stale)?;
+            }
         }
-        let fresh = Database::create(&tmp)?;
 
         // Copy every row of BOTH tables verbatim — the graph never migrates.
         // DATA_TABLE holds nodes/edges/indexes AND drevo's `meta:` keys
         // (counters, semantic registry, fts format marker); META_TABLE holds
         // the redb format-version marker. Streaming via redb range iterators
-        // keeps peak memory bounded regardless of database size.
-        {
+        // keeps peak memory bounded regardless of database size. Count the rows
+        // streamed so the rebuild can be self-verified before its backup is
+        // discarded.
+        // Keep `fresh` alive past the streaming block: it is the compacted
+        // rebuild, and installing this very handle (rather than reopening the
+        // file) is what keeps the result small — a `Database::open` of a fresh
+        // file re-lays-out its regions and re-grows it.
+        let fresh = Database::create(&tmp)?;
+        let (src_data, src_meta) = {
             let read_txn = guard.begin_read()?;
             let write_txn = fresh.begin_write()?;
+            let mut data_rows = 0u64;
+            let mut meta_rows = 0u64;
             match read_txn.open_table(DATA_TABLE) {
                 Ok(src) => {
                     let mut dst = write_txn.open_table(DATA_TABLE)?;
                     for entry in src.range::<&[u8]>(..)? {
                         let entry = entry?;
                         dst.insert(entry.0.value(), entry.1.value())?;
+                        data_rows += 1;
                     }
                 }
                 Err(redb::TableError::TableDoesNotExist(_)) => {}
@@ -488,20 +561,50 @@ impl StorageBackend for RedbBackend {
                     for entry in src.range::<&str>(..)? {
                         let entry = entry?;
                         dst.insert(entry.0.value(), entry.1.value())?;
+                        meta_rows += 1;
                     }
                 }
                 Err(redb::TableError::TableDoesNotExist(_)) => {}
                 Err(e) => return Err(e.into()),
             }
             write_txn.commit()?;
+            (data_rows, meta_rows)
+        };
+
+        // SELF-DIAGNOSTIC — run it *before* we touch the original. The compacted
+        // rebuild must hold exactly the rows we streamed; a mismatch means a
+        // duplicate-key collision or a short read silently dropped/merged data.
+        // Verifying here means a bad rebuild is discarded with the live file still
+        // completely untouched — the safest possible failure.
+        if let Err(verify_err) = Self::verify_row_counts(&fresh, src_data, src_meta) {
+            drop(fresh);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(verify_err);
         }
 
-        // Swap: installing `fresh` drops the old `Arc<Database>`, closing the old
-        // file; the new handle's fd then follows the inode through the rename, so
-        // the live file ends up back at `self.path`. The write lock is still held
-        // throughout, so there is no window of unavailability.
+        // AUTO-BACKUP: move the verified-good original aside instead of
+        // overwriting it. This is a rename, not a copy — same inode, so it is
+        // instant and costs no extra disk (the original's blocks live on under
+        // `backup` until it is deleted). Peak disk is unchanged: original-as-backup
+        // + rebuild-as-live is the same 2× footprint the build already used. If a
+        // crash strikes between these two renames, `recover_interrupted_shrink`
+        // rolls the backup forward on the next open.
+        std::fs::rename(&self.path, &backup)?;
+        if let Err(e) = std::fs::rename(&tmp, &self.path) {
+            // Could not install the rebuild → put the original straight back.
+            std::fs::rename(&backup, &self.path)?;
+            return Err(e.into());
+        }
+
+        // Swap in the rebuilt handle: `fresh`'s fd follows the inode through the
+        // rename, and dropping the old `Arc<Database>` closes the pre-shrink file.
+        // The write lock is held throughout, so there is no unavailability window.
         *guard = Arc::new(fresh);
-        std::fs::rename(&tmp, &self.path)?;
+
+        // Rebuild verified and installed → the automatic backup is no longer
+        // needed. (A failure to unlink it is non-fatal: the next open would just
+        // treat a live-file-present backup as stale and discard it.)
+        std::fs::remove_file(&backup)?;
 
         let after = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
         Ok(Some((before, after)))
@@ -588,6 +691,92 @@ mod tests {
         // The swapped-in handle is fully writable afterwards.
         backend.put(b"after", b"ok").unwrap();
         assert_eq!(backend.get(b"after").unwrap(), Some(b"ok".to_vec()));
+    }
+
+    #[test]
+    fn shrink_rebuild_leaves_no_backup_or_temp_on_success() {
+        let (backend, _dir) = open_temp_db();
+        backend.put(b"k1", b"v1").unwrap();
+        backend.put(b"k2", b"v2").unwrap();
+        backend
+            .shrink_rebuild()
+            .unwrap()
+            .expect("disk-backed rebuild");
+        // Data intact through the backup-verify-swap.
+        assert_eq!(backend.get(b"k1").unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(backend.get(b"k2").unwrap(), Some(b"v2".to_vec()));
+        // The automatic backup and the temp are gone once the self-diagnostic
+        // passed — a clean shrink leaves only the live file.
+        assert!(
+            !backend.path().with_extension("backup.redb").exists(),
+            "backup must be deleted after a verified shrink"
+        );
+        assert!(
+            !backend.path().with_extension("shrinking.redb").exists(),
+            "temp rebuild file must not linger"
+        );
+    }
+
+    #[test]
+    fn open_restores_orphaned_backup_when_live_file_missing() {
+        // Crash mid-shrink: the original was renamed to `.backup.redb` and the
+        // process died before the rebuild was installed, so the live path is
+        // missing. Reopening must RESTORE the backup, never create an empty DB.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.redb");
+        {
+            let backend = RedbBackend::open(&path).unwrap();
+            backend.put(b"survivor", b"data").unwrap();
+        }
+        let backup = path.with_extension("backup.redb");
+        std::fs::rename(&path, &backup).unwrap();
+        assert!(!path.exists() && backup.exists());
+
+        let backend = RedbBackend::open(&path).unwrap();
+        assert_eq!(
+            backend.get(b"survivor").unwrap(),
+            Some(b"data".to_vec()),
+            "the interrupted shrink's original must be restored, not lost"
+        );
+        assert!(!backup.exists(), "the restored backup is consumed");
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn open_discards_stale_backup_when_live_file_present() {
+        // Crash after the rebuild was installed but before the backup was
+        // deleted: the live file is the durable rebuild, and the leftover
+        // `.backup.redb` is stale and must be removed on the next open.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.redb");
+        {
+            let backend = RedbBackend::open(&path).unwrap();
+            backend.put(b"live", b"current").unwrap();
+        }
+        let backup = path.with_extension("backup.redb");
+        std::fs::write(&backup, b"stale").unwrap(); // contents irrelevant; discarded
+
+        let backend = RedbBackend::open(&path).unwrap();
+        assert_eq!(backend.get(b"live").unwrap(), Some(b"current".to_vec()));
+        assert!(!backup.exists(), "a stale backup must be discarded on open");
+    }
+
+    #[test]
+    fn verify_row_counts_flags_a_mismatch() {
+        let (backend, _dir) = open_temp_db();
+        backend.put(b"a", b"1").unwrap(); // DATA_TABLE: 1 row; META_TABLE: format marker
+        let db = backend.db();
+        // The true counts pass the self-diagnostic.
+        RedbBackend::verify_row_counts(&db, 1, 1).unwrap();
+        // A wrong expected count is rejected with the typed error.
+        let err = RedbBackend::verify_row_counts(&db, 999, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::ShrinkVerificationFailed {
+                expected: (999, 1),
+                got: (1, 1)
+            }
+        ));
     }
 
     #[test]
