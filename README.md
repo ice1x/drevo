@@ -16,7 +16,12 @@ A lightweight, embeddable graph database written in Rust. Designed as the storag
 **Run it in a container** — HTTP API + embedded Web UI on `:8080`, Neo4j-compatible Bolt on `:7687`:
 
 ```bash
+# Published image (Container badge above):
 docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data ghcr.io/ice1x/drevo:latest
+
+# …or build it from this repo (no registry access needed):
+docker build -t drevo . && \
+  docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data drevo
 ```
 
 Then open <http://localhost:8080/ui>. Full deploy options — Compose, host bind-mounts, custom Bolt port, Kubernetes — are in the [Admin Guide](docs/admin-guide.md#3-docker).
