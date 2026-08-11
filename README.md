@@ -1,8 +1,25 @@
 # drevo — Embedded Graph Database for Knowledge Management
 
+[![CI](https://github.com/ice1x/drevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ice1x/drevo/actions/workflows/ci.yml)
+[![Container image](https://img.shields.io/badge/ghcr.io-ice1x%2Fdrevo-2496ED?logo=docker&logoColor=white)](https://github.com/ice1x/drevo/pkgs/container/drevo)
+[![Release](https://img.shields.io/github/v/tag/ice1x/drevo?sort=semver&label=release)](https://github.com/ice1x/drevo/tags)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.85-orange?logo=rust&logoColor=white)](Cargo.toml)
+[![Agent memory](https://img.shields.io/badge/agent_memory-HTTP_%7C_Bolt_%7C_MCP-8A2BE2)](#agent-memory-graph)
+
 A lightweight, embeddable graph database written in Rust. Designed as the storage engine for cross-platform knowledge-base applications (similar to Obsidian), drevo runs natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings), and in the browser (via WebAssembly). It also ships as a standalone HTTP server for containerised deployments.
 
+**Drop-in memory backend for AI agents** (LangGraph, Claude Code, CrewAI, Cursor, multi-agent swarms) over HTTP / Bolt / MCP — persistent recall that survives sessions, agents, and machines. See the [Agent Memory Graph](#agent-memory-graph) use case.
+
 > **📖 User documentation lives in [`docs/`](docs/)** — start with the [User Guide](docs/user-guide.md), then the [Cypher Reference](docs/cypher-reference.md), [SDK Reference](docs/sdk-reference.md), [Admin Guide](docs/admin-guide.md), and [Migration Guide](docs/migration-guide.md). This README is the design-and-roadmap companion to those guides.
+
+**Run it in a container** — HTTP API + embedded Web UI on `:8080`, Neo4j-compatible Bolt on `:7687`:
+
+```bash
+docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data ghcr.io/ice1x/drevo:latest
+```
+
+Then open <http://localhost:8080/ui>. Full deploy options — Compose, host bind-mounts, custom Bolt port, Kubernetes — are in the [Admin Guide](docs/admin-guide.md#3-docker).
 
 ---
 
