@@ -2240,7 +2240,7 @@ impl Drevo {
     /// allocates a new id and its own journal, so concurrent connections
     /// (e.g. a pooled driver's `execute_write` calls) each open an
     /// independent transaction instead of colliding (issue #298). While a
-    /// statement runs under this id's [`enter_tx_scope`], every successful
+    /// statement runs under this id's `enter_tx_scope`, every successful
     /// mutation appends an inverse op to *this* transaction's journal.
     /// [`tx_commit`] discards the journal; [`tx_rollback`] replays it in
     /// reverse to restore the pre-transaction state of the entities *this*
@@ -2280,7 +2280,7 @@ impl Drevo {
     /// performed. The entry is marked `RollingBack` for the duration of the
     /// replay so a racing second rollback / commit of the same id no-ops
     /// rather than replaying twice; the ops applied by the replay itself run
-    /// outside any [`enter_tx_scope`] and so do not re-journal.
+    /// outside any `enter_tx_scope` and so do not re-journal.
     ///
     /// # Errors
     ///
