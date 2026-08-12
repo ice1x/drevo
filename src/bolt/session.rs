@@ -391,10 +391,6 @@ mod codes {
     /// [`Authenticator`](crate::bolt::auth::Authenticator). Phase 11
     /// task `00074`.
     pub const UNAUTHORIZED: &str = "Neo.ClientError.Security.Unauthorized";
-    /// Returned for a second `BEGIN` while one transaction is already
-    /// in flight on the same `Drevo` handle. Phase 11 task `00072` is
-    /// single-writer; proper multi-tx isolation lands with MVCC.
-    pub const TRANSACTION_OUTDATED: &str = "Neo.TransientError.Transaction.Outdated";
 }
 
 // -------------------------------------------------------------------------
@@ -425,20 +421,16 @@ pub struct Session<'a> {
     /// `scheme`/`principal`/`credentials` tuple before reaching
     /// [`State::Ready`]. Phase 11 task `00074`.
     authenticator: Option<&'a dyn Authenticator>,
-    /// `true` while *this* session holds the `Drevo` handle's single
-    /// explicit-transaction slot — set on a successful `BEGIN`, cleared
-    /// on `COMMIT` / `ROLLBACK` (and by the cleanup on `RESET` / drop).
+    /// The [`TxId`](crate::db::TxId) of *this* session's open explicit
+    /// transaction, if any — set on `BEGIN`, cleared on `COMMIT` / `ROLLBACK`
+    /// (and by the cleanup on `RESET` / `GOODBYE` / drop).
     ///
-    /// The transaction slot is global to the `Drevo` handle, but the
-    /// lifecycle hooks that tear an open transaction down (`RESET`,
-    /// `GOODBYE`, a dropped connection) must only roll back a transaction
-    /// *this* session opened. Gating on this flag — rather than the
-    /// global [`Drevo::is_tx_active`](crate::db::Drevo::is_tx_active) —
-    /// stops a pooled driver's `RESET` on one connection from silently
-    /// rolling back a managed transaction in flight on another, which
-    /// otherwise surfaced as an intermittent `no active transaction`
-    /// failure at `COMMIT` (issue #236).
-    owns_tx: bool,
+    /// Each connection's `BEGIN` allocates its own id, so concurrent pooled
+    /// connections never collide on a shared slot (issue #298), and the
+    /// lifecycle teardown hooks roll back only *this* session's transaction —
+    /// a pooled driver's `RESET` on one connection can never disturb a
+    /// managed transaction in flight on another (issue #236).
+    tx: Option<crate::db::TxId>,
 }
 
 struct PendingResult {
@@ -479,7 +471,7 @@ impl<'a> Session<'a> {
             connection_id: format!("drevo-bolt-{id}"),
             pending: None,
             authenticator,
-            owns_tx: false,
+            tx: None,
         }
     }
 
@@ -573,9 +565,8 @@ impl<'a> Session<'a> {
     /// no-reply teardown paths (`GOODBYE`, connection drop) where there is
     /// no client left to receive a `FAILURE`.
     fn roll_back_own_tx(&mut self) {
-        if self.owns_tx {
-            self.owns_tx = false;
-            let _ = self.drevo.tx_rollback();
+        if let Some(id) = self.tx.take() {
+            let _ = self.drevo.tx_rollback(id);
         }
     }
 
@@ -602,9 +593,8 @@ impl<'a> Session<'a> {
         // in flight on another (issue #236). Any rollback failure surfaces
         // as FAILURE so the driver gets a deterministic signal rather than
         // a torn connection.
-        if self.owns_tx {
-            self.owns_tx = false;
-            if let Err(e) = self.drevo.tx_rollback() {
+        if let Some(id) = self.tx.take() {
+            if let Err(e) = self.drevo.tx_rollback(id) {
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
                     metadata: failure_metadata(
@@ -630,21 +620,18 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
-        match self.drevo.tx_begin() {
-            Ok(()) => {
-                self.state = State::TxReady;
-                self.owns_tx = true;
-                vec![ServerMessage::Success {
-                    metadata: BTreeMap::new(),
-                }]
-            }
-            Err(e) => {
-                self.state = State::Failed;
-                vec![ServerMessage::Failure {
-                    metadata: failure_metadata(codes::TRANSACTION_OUTDATED, &format!("{e}")),
-                }]
-            }
-        }
+        // Per-connection transactions (issue #298): `tx_begin` allocates a
+        // fresh id and never collides with another connection's in-flight
+        // transaction, so a pooled driver's concurrent `execute_write` calls
+        // each open their own instead of one getting `transaction already
+        // active`. Nesting on a *single* connection is still rejected above by
+        // the `state != Ready` guard.
+        let id = self.drevo.tx_begin();
+        self.state = State::TxReady;
+        self.tx = Some(id);
+        vec![ServerMessage::Success {
+            metadata: BTreeMap::new(),
+        }]
     }
 
     fn handle_commit(&mut self) -> Vec<ServerMessage> {
@@ -657,9 +644,16 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
-        // Whatever the outcome, the slot is no longer ours to clean up.
-        self.owns_tx = false;
-        match self.drevo.tx_commit() {
+        // Whatever the outcome, the slot is no longer ours to clean up. The
+        // TxReady state guarantees an id is present; treat its absence
+        // defensively rather than panicking.
+        let Some(id) = self.tx.take() else {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(codes::STORAGE, "COMMIT without an active transaction"),
+            }];
+        };
+        match self.drevo.tx_commit(id) {
             Ok(()) => {
                 self.state = State::Ready;
                 vec![ServerMessage::Success {
@@ -686,8 +680,16 @@ impl<'a> Session<'a> {
             }];
         }
         // Whatever the outcome, the slot is no longer ours to clean up.
-        self.owns_tx = false;
-        match self.drevo.tx_rollback() {
+        let Some(id) = self.tx.take() else {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::STORAGE,
+                    "ROLLBACK without an active transaction",
+                ),
+            }];
+        };
+        match self.drevo.tx_rollback(id) {
             Ok(()) => {
                 self.state = State::Ready;
                 vec![ServerMessage::Success {
@@ -746,8 +748,21 @@ impl<'a> Session<'a> {
                 }];
             }
         };
-        // Execute (already returns a fully-materialised ExecResult).
-        let result = match executor::execute(&ast, self.drevo, cypher_params) {
+        // Execute (already returns a fully-materialised ExecResult). Inside an
+        // explicit transaction, bind this statement's mutations to *this*
+        // connection's transaction for its duration, so its undo ops journal
+        // into the right per-connection slot (issue #298). The guard drops at
+        // the end of this block — the scope never outlives the synchronous
+        // execute call, so it cannot leak onto a later statement.
+        let exec = {
+            let _tx_scope = if in_tx {
+                self.tx.map(crate::db::enter_tx_scope)
+            } else {
+                None
+            };
+            executor::execute(&ast, self.drevo, cypher_params)
+        };
+        let result = match exec {
             Ok(r) => r,
             Err(e) => {
                 self.state = State::Failed;

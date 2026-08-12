@@ -36,6 +36,8 @@
 //!
 //! See `tests/wal_crash_recovery_tests.rs` for the contract surface.
 
+use std::cell::Cell;
+use std::collections::HashMap;
 #[cfg(feature = "redb-backend")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -174,19 +176,25 @@ pub struct Drevo {
     /// [`IntegrityReport::counter_drift_repaired`] — see the module-level
     /// "WAL / crash recovery" section.
     counter_drift_repaired: AtomicBool,
-    /// Active explicit-transaction slot (Phase 11 task `00072`).
+    /// In-flight explicit transactions, keyed by [`TxId`] (Phase 11 task
+    /// `00072`; per-connection isolation, issue #298).
     ///
-    /// `Idle` is the no-transaction state — every mutation autocommits as
-    /// before. `Active(journal)` is set by [`Self::tx_begin`]; while held
-    /// every mutation pushes its inverse [`UndoOp`] onto the journal so
-    /// [`Self::tx_rollback`] can undo them in reverse order.
-    /// `RollingBack` is held briefly inside `tx_rollback` to keep
-    /// concurrent `tx_begin` callers from racing in while the replay is
-    /// in flight.
+    /// Each [`Self::tx_begin`] allocates a **fresh** id and inserts an
+    /// `Active(journal)`, so concurrent connections — e.g. a Neo4j driver's
+    /// pooled `execute_write` calls — each get their own slot and never
+    /// collide. While a statement executes, the mutation it runs journals its
+    /// inverse [`UndoOp`] into the transaction named by the thread-local
+    /// [`CURRENT_TX`] (set by [`enter_tx_scope`] for exactly that statement's
+    /// duration), so one connection's rollback only ever undoes its own work.
+    /// `RollingBack` marks an entry whose journal is mid-replay so a racing
+    /// second rollback / commit of the same id no-ops instead of re-running.
     ///
-    /// The MVP allows only one in-flight transaction per `Drevo` handle;
-    /// proper multi-writer isolation lands with MVCC (`00081`).
-    tx_state: Mutex<TxState>,
+    /// Note this gives write-side transaction *ownership*, not snapshot read
+    /// isolation — writes still autocommit to storage and are visible to
+    /// concurrent readers; full MVCC isolation lands with `00081`.
+    txs: Mutex<HashMap<TxId, TxEntry>>,
+    /// Monotonic source of [`TxId`]s. Starts at 1 so 0 is never a live id.
+    next_tx_id: AtomicU64,
     /// #275 — serializes FTS posting-list writes. The FTS index stores one row
     /// per trigram whose value is the packed posting list, so indexing a node is
     /// a read-modify-write of each trigram's list; without this lock two
@@ -297,18 +305,110 @@ pub struct SemanticTargetStatus {
     pub degraded: bool,
 }
 
-/// Per-`Drevo` explicit-transaction state — see the `tx_state` field on
-/// [`Drevo`] for the lifecycle.
-#[derive(Debug, Default)]
-enum TxState {
-    /// No explicit transaction is active.
-    #[default]
-    Idle,
-    /// `tx_begin` was called; mutations append to the journal.
+/// Opaque identifier for one in-flight explicit transaction. Allocated by
+/// [`Drevo::tx_begin`]; every connection's `BEGIN` gets its own, so managed
+/// transactions from a pooled Neo4j driver never share a slot (issue #298).
+pub type TxId = u64;
+
+/// One entry in [`Drevo::txs`] — see that field for the lifecycle.
+#[derive(Debug)]
+enum TxEntry {
+    /// The transaction is open; mutations journal their inverses here.
     Active(TxJournal),
-    /// `tx_rollback` is replaying inverses; further `tx_begin` calls are
-    /// rejected until the replay finishes.
+    /// The journal is mid-replay inside [`Drevo::tx_rollback`]; a racing
+    /// second rollback / commit of the same id treats this as "not active".
     RollingBack,
+}
+
+thread_local! {
+    /// The transaction the *current thread* journals into, if any. Set only
+    /// for the strict duration of a mutation-executing statement, via
+    /// [`enter_tx_scope`], and cleared when that scope drops — never left set
+    /// across an `.await`. That is what keeps a pooled async worker thread
+    /// from leaking one connection's transaction onto another connection's
+    /// autocommit statement.
+    static CURRENT_TX: Cell<Option<TxId>> = const { Cell::new(None) };
+}
+
+/// RAII guard binding [`CURRENT_TX`] to `id` for the current thread until it
+/// drops, restoring the previous value (so nested scopes compose). The Bolt
+/// session wraps each in-transaction `RUN` in one of these so the executor's
+/// mutations journal into the right per-connection transaction.
+#[must_use = "the tx scope ends as soon as the guard is dropped"]
+pub(crate) struct TxScopeGuard {
+    prev: Option<TxId>,
+}
+
+impl Drop for TxScopeGuard {
+    fn drop(&mut self) {
+        CURRENT_TX.with(|c| c.set(self.prev));
+    }
+}
+
+/// Enter a transaction scope: mutations on this thread journal into `id` until
+/// the returned guard drops. See [`TxScopeGuard`].
+pub(crate) fn enter_tx_scope(id: TxId) -> TxScopeGuard {
+    let prev = CURRENT_TX.with(|c| c.replace(Some(id)));
+    TxScopeGuard { prev }
+}
+
+/// An open explicit transaction on a [`Drevo`] handle, obtained from
+/// [`Drevo::begin_transaction`].
+///
+/// While this guard is alive, every mutation on the **current thread** journals
+/// its inverse into this transaction; call [`commit`](Self::commit) to keep the
+/// writes or [`rollback`](Self::rollback) to undo them. If the guard is dropped
+/// without either — including on a panic or an early `?` return — the
+/// transaction is rolled back, so a half-finished unit of work never lingers.
+///
+/// This is the ergonomic entry point for embedded / synchronous callers; the
+/// lower-level [`Drevo::tx_begin`] / [`Drevo::tx_commit`] / [`Drevo::tx_rollback`]
+/// trio (id-addressed, no thread binding) backs the Bolt server, whose
+/// transaction can span multiple network round-trips on different threads.
+#[must_use = "a dropped Transaction rolls back; hold it, then commit() or rollback()"]
+pub struct Transaction<'a> {
+    drevo: &'a Drevo,
+    id: TxId,
+    // Field order matters: `_scope` (the thread-local binding) is declared
+    // after `id` so it is dropped first, but its drop only touches the
+    // thread-local, never the map, so ordering is not load-bearing here.
+    _scope: TxScopeGuard,
+    done: bool,
+}
+
+impl Transaction<'_> {
+    /// This transaction's id.
+    pub fn id(&self) -> TxId {
+        self.id
+    }
+
+    /// Commit: keep every mutation made since [`Drevo::begin_transaction`].
+    ///
+    /// # Errors
+    /// [`DrevoError::NoActiveTransaction`] if the transaction was already
+    /// closed (it cannot be, given the type consumes `self`, but the backing
+    /// call is fallible).
+    pub fn commit(mut self) -> Result<()> {
+        self.done = true;
+        self.drevo.tx_commit(self.id)
+    }
+
+    /// Roll back: undo every mutation made since [`Drevo::begin_transaction`].
+    ///
+    /// # Errors
+    /// The first error encountered while replaying the undo journal.
+    pub fn rollback(mut self) -> Result<()> {
+        self.done = true;
+        self.drevo.tx_rollback(self.id)
+    }
+}
+
+impl Drop for Transaction<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = self.drevo.tx_rollback(self.id);
+        }
+    }
 }
 
 /// Append-only undo log captured during an explicit transaction.
@@ -700,7 +800,8 @@ impl Drevo {
             next_node_id: AtomicU64::new(next_node_id),
             next_edge_id: AtomicU64::new(next_edge_id),
             counter_drift_repaired: AtomicBool::new(drift_repaired),
-            tx_state: Mutex::new(TxState::Idle),
+            txs: Mutex::new(HashMap::new()),
+            next_tx_id: AtomicU64::new(1),
             fts_lock: Mutex::new(()),
             semantic: Mutex::new(semantic),
             #[cfg(feature = "http")]
@@ -1727,7 +1828,8 @@ impl Drevo {
             next_node_id: AtomicU64::new(1),
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
-            tx_state: Mutex::new(TxState::Idle),
+            txs: Mutex::new(HashMap::new()),
+            next_tx_id: AtomicU64::new(1),
             fts_lock: Mutex::new(()),
             semantic: Mutex::new(SemanticIndexRegistry::new()),
             #[cfg(feature = "http")]
@@ -2132,83 +2234,78 @@ impl Drevo {
     // are not blocked but *are* journaled, so a rollback affects them
     // as well — proper isolation lands with MVCC (`00080`–`00084`).
 
-    /// Begin an explicit transaction on this `Drevo` handle.
+    /// Begin an explicit transaction and return its fresh [`TxId`].
     ///
-    /// While a transaction is active, every successful mutation appends
-    /// an inverse operation to an internal journal. [`tx_commit`]
-    /// discards the journal; [`tx_rollback`] replays it in reverse to
-    /// restore the pre-transaction state of the mutated entities.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DrevoError::TransactionAlreadyActive`] if a previous
-    /// transaction is still in flight (the MVP is single-writer; proper
-    /// isolation lands with `00081`).
+    /// Unlike the original single-slot MVP this **never fails**: each call
+    /// allocates a new id and its own journal, so concurrent connections
+    /// (e.g. a pooled driver's `execute_write` calls) each open an
+    /// independent transaction instead of colliding (issue #298). While a
+    /// statement runs under this id's [`enter_tx_scope`], every successful
+    /// mutation appends an inverse op to *this* transaction's journal.
+    /// [`tx_commit`] discards the journal; [`tx_rollback`] replays it in
+    /// reverse to restore the pre-transaction state of the entities *this*
+    /// transaction mutated.
     ///
     /// [`tx_commit`]: Self::tx_commit
     /// [`tx_rollback`]: Self::tx_rollback
-    pub fn tx_begin(&self) -> Result<()> {
-        let mut state = self.lock_tx_state();
-        match &*state {
-            TxState::Idle => {
-                *state = TxState::Active(TxJournal::default());
-                Ok(())
-            }
-            TxState::Active(_) | TxState::RollingBack => Err(DrevoError::TransactionAlreadyActive),
-        }
+    pub fn tx_begin(&self) -> TxId {
+        let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
+        self.lock_txs()
+            .insert(id, TxEntry::Active(TxJournal::default()));
+        id
     }
 
-    /// Commit the in-flight explicit transaction.
+    /// Commit the explicit transaction `id`.
     ///
-    /// The mutations performed since [`tx_begin`](Self::tx_begin) are
-    /// already durable on disk (each redb `put` / `delete` autocommitted
-    /// at the storage level). This call simply discards the undo
-    /// journal so no rollback is possible afterwards.
+    /// The mutations performed under `id` are already durable on disk (each
+    /// redb `put` / `delete` autocommitted at the storage level). This call
+    /// simply drops the undo journal so no rollback is possible afterwards.
     ///
     /// # Errors
     ///
-    /// Returns [`DrevoError::NoActiveTransaction`] if no transaction is
-    /// active.
-    pub fn tx_commit(&self) -> Result<()> {
-        let mut state = self.lock_tx_state();
-        match &*state {
-            TxState::Active(_) => {
-                *state = TxState::Idle;
-                Ok(())
-            }
-            TxState::Idle | TxState::RollingBack => Err(DrevoError::NoActiveTransaction),
+    /// Returns [`DrevoError::NoActiveTransaction`] if `id` is not an active
+    /// transaction (never begun, or already committed / rolled back).
+    pub fn tx_commit(&self, id: TxId) -> Result<()> {
+        match self.lock_txs().remove(&id) {
+            Some(TxEntry::Active(_)) => Ok(()),
+            // Unknown id, or one whose rollback is already in flight.
+            _ => Err(DrevoError::NoActiveTransaction),
         }
     }
 
-    /// Roll back the in-flight explicit transaction.
+    /// Roll back the explicit transaction `id`.
     ///
-    /// Replays the captured inverse operations in reverse order, undoing
-    /// every `create_*` / `update_*` / `delete_*` performed since
-    /// [`tx_begin`](Self::tx_begin). The journal slot is moved to
-    /// `RollingBack` before the replay starts so concurrent `tx_begin`
-    /// calls from other sessions are rejected until the rollback
-    /// completes; further mutations executed by the replay itself see
-    /// `RollingBack` and skip journaling.
+    /// Replays that transaction's captured inverse operations in reverse
+    /// order, undoing every `create_*` / `update_*` / `delete_*` it
+    /// performed. The entry is marked `RollingBack` for the duration of the
+    /// replay so a racing second rollback / commit of the same id no-ops
+    /// rather than replaying twice; the ops applied by the replay itself run
+    /// outside any [`enter_tx_scope`] and so do not re-journal.
     ///
     /// # Errors
     ///
-    /// * [`DrevoError::NoActiveTransaction`] if no transaction is
-    ///   active.
-    /// * The first error encountered while replaying an inverse op.
-    ///   In that case the rollback is left partially applied and the
-    ///   tx slot transitions back to `Idle` (the caller's session will
-    ///   already be `Failed` and require `RESET` to recover).
-    pub fn tx_rollback(&self) -> Result<()> {
+    /// * [`DrevoError::NoActiveTransaction`] if `id` is not an active
+    ///   transaction.
+    /// * The first error encountered while replaying an inverse op. In that
+    ///   case the rollback is left partially applied and the entry is
+    ///   dropped (the caller's session is already `Failed` and needs
+    ///   `RESET` to recover).
+    pub fn tx_rollback(&self, id: TxId) -> Result<()> {
         let journal = {
-            let mut state = self.lock_tx_state();
-            match std::mem::replace(&mut *state, TxState::RollingBack) {
-                TxState::Active(j) => j,
-                prev @ (TxState::Idle | TxState::RollingBack) => {
-                    // Restore the pre-call state so we don't leak a
-                    // bogus `RollingBack` slot on the error path.
-                    *state = prev;
+            let mut txs = self.lock_txs();
+            match txs.remove(&id) {
+                Some(TxEntry::Active(j)) => {
+                    // Leave a marker so a concurrent commit / rollback of the
+                    // same id sees "not active" while the replay runs.
+                    txs.insert(id, TxEntry::RollingBack);
+                    j
+                }
+                Some(other) => {
+                    // Already rolling back — restore and reject.
+                    txs.insert(id, other);
                     return Err(DrevoError::NoActiveTransaction);
                 }
+                None => return Err(DrevoError::NoActiveTransaction),
             }
         };
         let mut replay_err: Option<DrevoError> = None;
@@ -2218,46 +2315,66 @@ impl Drevo {
                 break;
             }
         }
-        {
-            let mut state = self.lock_tx_state();
-            *state = TxState::Idle;
-        }
+        self.lock_txs().remove(&id);
         match replay_err {
             Some(e) => Err(e),
             None => Ok(()),
         }
     }
 
-    /// `true` while an explicit transaction is in flight. Inspected by
-    /// the Bolt session machinery so it can refuse stray `COMMIT` /
-    /// `ROLLBACK` messages without going through the locking dance.
+    /// Open an explicit transaction as an RAII [`Transaction`] guard.
+    ///
+    /// Every mutation on the current thread while the guard is alive is
+    /// journaled into it; call [`Transaction::commit`] to keep them or
+    /// [`Transaction::rollback`] to undo them. Dropping the guard without
+    /// either rolls back. This is the convenient synchronous / embedded entry
+    /// point; the Bolt server drives the lower-level [`Self::tx_begin`] trio
+    /// directly because its transaction spans several network round-trips.
+    pub fn begin_transaction(&self) -> Transaction<'_> {
+        let id = self.tx_begin();
+        Transaction {
+            drevo: self,
+            id,
+            _scope: enter_tx_scope(id),
+            done: false,
+        }
+    }
+
+    /// `true` while at least one explicit transaction is open on this handle.
+    /// Retained for the Bolt session's coarse checks and existing tests; the
+    /// session's own commit / rollback gate on the id it holds, not this.
     pub fn is_tx_active(&self) -> bool {
-        matches!(*self.lock_tx_state(), TxState::Active(_))
+        self.lock_txs()
+            .values()
+            .any(|e| matches!(e, TxEntry::Active(_)))
     }
 
-    /// Acquire the transaction-state mutex, recovering transparently
-    /// from a poisoned lock. `unwrap_or_else(|p| p.into_inner())` is
-    /// the standard idiom for "I am OK reading the inner state even if
-    /// a previous holder panicked" — we have no consistency invariant
-    /// the panic could have broken (the journal is structurally
-    /// independent of every other field).
-    fn lock_tx_state(&self) -> std::sync::MutexGuard<'_, TxState> {
-        self.tx_state.lock().unwrap_or_else(|p| p.into_inner())
+    /// Acquire the transactions-map mutex, recovering transparently from a
+    /// poisoned lock. `unwrap_or_else(|p| p.into_inner())` is the standard
+    /// idiom for "I am OK reading the inner state even if a previous holder
+    /// panicked" — the journals are structurally independent of every other
+    /// field, so no consistency invariant the panic could have broken.
+    fn lock_txs(&self) -> std::sync::MutexGuard<'_, HashMap<TxId, TxEntry>> {
+        self.txs.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Push an inverse op onto the active journal, if any. No-op when
-    /// the slot is `Idle` or `RollingBack`. Called by every mutation
-    /// method after the change has successfully landed on disk.
+    /// Push an inverse op onto the journal of the transaction the current
+    /// thread is executing under, if any. No-op when the thread is not inside
+    /// an [`enter_tx_scope`] (autocommit) or the id has no active entry.
+    /// Called by every mutation method after the change lands on disk.
     fn record_undo(&self, op: UndoOp) {
-        let mut state = self.lock_tx_state();
-        if let TxState::Active(j) = &mut *state {
+        let Some(id) = CURRENT_TX.with(|c| c.get()) else {
+            return;
+        };
+        if let Some(TxEntry::Active(j)) = self.lock_txs().get_mut(&id) {
             j.ops.push(op);
         }
     }
 
-    /// Apply one captured inverse op against the live backend. Called
-    /// only from [`Self::tx_rollback`]; the tx slot is `RollingBack`
-    /// for the duration, so mutations performed here do not re-journal.
+    /// Apply one captured inverse op against the live backend. Called only
+    /// from [`Self::tx_rollback`], which runs outside any [`enter_tx_scope`]
+    /// and drives the `*_no_journal` variants, so the replay does not
+    /// re-journal into any transaction.
     fn apply_undo(&self, op: UndoOp) -> Result<()> {
         match op {
             UndoOp::CreatedNode(id) => self.purge_node_no_journal(id),
@@ -6068,7 +6185,8 @@ mod tests {
             next_node_id: AtomicU64::new(1),
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
-            tx_state: Mutex::new(TxState::Idle),
+            txs: Mutex::new(HashMap::new()),
+            next_tx_id: AtomicU64::new(1),
             fts_lock: Mutex::new(()),
             semantic: Mutex::new(SemanticIndexRegistry::new()),
             #[cfg(feature = "http")]
@@ -6890,41 +7008,48 @@ mod tests {
     fn tx_begin_then_commit_returns_to_idle() {
         let db = Drevo::open_in_memory().unwrap();
         assert!(!db.is_tx_active());
-        db.tx_begin().unwrap();
+        let tx = db.tx_begin();
         assert!(db.is_tx_active());
-        db.tx_commit().unwrap();
+        db.tx_commit(tx).unwrap();
         assert!(!db.is_tx_active());
     }
 
     #[test]
-    fn tx_begin_twice_in_a_row_is_rejected() {
+    fn tx_begin_allocates_distinct_ids_for_concurrent_transactions() {
+        // Per-connection transactions (issue #298): a second BEGIN no longer
+        // collides on a single global slot — it opens its own independent one.
         let db = Drevo::open_in_memory().unwrap();
-        db.tx_begin().unwrap();
-        let err = db.tx_begin().unwrap_err();
-        assert!(matches!(err, DrevoError::TransactionAlreadyActive));
+        let a = db.tx_begin();
+        let b = db.tx_begin();
+        assert_ne!(a, b, "each BEGIN must allocate a distinct transaction id");
+        assert!(db.is_tx_active());
+        db.tx_commit(a).unwrap();
+        db.tx_commit(b).unwrap();
+        assert!(!db.is_tx_active());
     }
 
     #[test]
-    fn tx_commit_without_begin_is_rejected() {
+    fn tx_commit_of_unknown_id_is_rejected() {
         let db = Drevo::open_in_memory().unwrap();
-        let err = db.tx_commit().unwrap_err();
+        let err = db.tx_commit(1).unwrap_err();
         assert!(matches!(err, DrevoError::NoActiveTransaction));
     }
 
     #[test]
-    fn tx_rollback_without_begin_is_rejected() {
+    fn tx_rollback_of_unknown_id_is_rejected() {
         let db = Drevo::open_in_memory().unwrap();
-        let err = db.tx_rollback().unwrap_err();
+        let err = db.tx_rollback(1).unwrap_err();
         assert!(matches!(err, DrevoError::NoActiveTransaction));
     }
 
     #[test]
     fn tx_rollback_undoes_create_node() {
         let db = Drevo::open_in_memory().unwrap();
-        db.tx_begin().unwrap();
+        let tx = db.tx_begin();
+        let _scope = enter_tx_scope(tx);
         let node = db.create_node(sample_node("alpha")).unwrap();
         assert!(db.get_node(node.id).unwrap().is_some());
-        db.tx_rollback().unwrap();
+        db.tx_rollback(tx).unwrap();
         assert!(db.get_node(node.id).unwrap().is_none());
         // Title index also rolled back so the title is free again.
         let again = db.create_node(sample_node("alpha")).unwrap();
@@ -6934,9 +7059,10 @@ mod tests {
     #[test]
     fn tx_commit_keeps_create_node() {
         let db = Drevo::open_in_memory().unwrap();
-        db.tx_begin().unwrap();
+        let tx = db.tx_begin();
+        let _scope = enter_tx_scope(tx);
         let node = db.create_node(sample_node("alpha")).unwrap();
-        db.tx_commit().unwrap();
+        db.tx_commit(tx).unwrap();
         assert!(db.get_node(node.id).unwrap().is_some());
     }
 
@@ -6944,7 +7070,8 @@ mod tests {
     fn tx_rollback_undoes_update_node_restoring_title_and_properties() {
         let db = Drevo::open_in_memory().unwrap();
         let node = db.create_node(sample_node("alpha")).unwrap();
-        db.tx_begin().unwrap();
+        let tx = db.tx_begin();
+        let _scope = enter_tx_scope(tx);
         let patch = NodePatch {
             title: Some("alpha2".into()),
             body: Some("changed".into()),
@@ -6953,7 +7080,7 @@ mod tests {
         db.update_node(node.id, patch).unwrap();
         let mid = db.get_node(node.id).unwrap().unwrap();
         assert_eq!(mid.title, "alpha2");
-        db.tx_rollback().unwrap();
+        db.tx_rollback(tx).unwrap();
         let after = db.get_node(node.id).unwrap().unwrap();
         assert_eq!(after.title, "alpha");
         assert_eq!(after.body, "body");
@@ -6978,12 +7105,13 @@ mod tests {
                 properties: Default::default(),
             })
             .unwrap();
-        db.tx_begin().unwrap();
+        let tx = db.tx_begin();
+        let _scope = enter_tx_scope(tx);
         db.delete_node(a.id).unwrap();
         // Mid-tx: A and its edge are gone.
         assert!(db.get_node(a.id).unwrap().is_none());
         assert!(db.get_edge(e.id).unwrap().is_none());
-        db.tx_rollback().unwrap();
+        db.tx_rollback(tx).unwrap();
         let restored_a = db.get_node(a.id).unwrap().expect("A re-created");
         assert_eq!(restored_a.title, "a");
         let restored_e = db.get_edge(e.id).unwrap().expect("edge re-created");
@@ -6999,7 +7127,8 @@ mod tests {
     fn tx_rollback_undoes_mixed_create_update_delete_chain() {
         let db = Drevo::open_in_memory().unwrap();
         let pre = db.create_node(sample_node("keep")).unwrap();
-        db.tx_begin().unwrap();
+        let tx = db.tx_begin();
+        let _scope = enter_tx_scope(tx);
         let _new = db.create_node(sample_node("tmp")).unwrap();
         let patch = NodePatch {
             body: Some("twiddled".into()),
@@ -7007,7 +7136,7 @@ mod tests {
         };
         db.update_node(pre.id, patch).unwrap();
         db.delete_node(pre.id).unwrap();
-        db.tx_rollback().unwrap();
+        db.tx_rollback(tx).unwrap();
         // Everything pre-tx is back; everything tx-only is gone.
         let restored = db.get_node(pre.id).unwrap().unwrap();
         assert_eq!(restored.title, "keep");
@@ -7029,7 +7158,8 @@ mod tests {
                 properties: Default::default(),
             })
             .unwrap();
-        db.tx_begin().unwrap();
+        let tx = db.tx_begin();
+        let _scope = enter_tx_scope(tx);
         let e2 = db
             .create_edge(NewEdge {
                 from_id: b.id,
@@ -7045,7 +7175,7 @@ mod tests {
             properties: None,
         };
         db.update_edge(e.id, patch).unwrap();
-        db.tx_rollback().unwrap();
+        db.tx_rollback(tx).unwrap();
         assert!(db.get_edge(e2.id).unwrap().is_none());
         let original = db.get_edge(e.id).unwrap().unwrap();
         assert_eq!(original.kind, "links_to");
@@ -7055,14 +7185,54 @@ mod tests {
     #[test]
     fn rollback_does_not_re_journal_replayed_mutations() {
         let db = Drevo::open_in_memory().unwrap();
-        db.tx_begin().unwrap();
-        db.create_node(sample_node("alpha")).unwrap();
-        // Rollback walks the journal, calling delete_node. If that call
-        // re-journaled itself we would end up looping; the
-        // RollingBack-state guard documented on `tx_state` prevents it.
-        db.tx_rollback().unwrap();
-        // Slot must be Idle again — a follow-up tx_begin succeeds.
-        db.tx_begin().unwrap();
-        db.tx_commit().unwrap();
+        let tx = db.tx_begin();
+        {
+            let _scope = enter_tx_scope(tx);
+            db.create_node(sample_node("alpha")).unwrap();
+        }
+        // Rollback walks the journal, calling delete_node. It runs outside any
+        // enter_tx_scope and drives the `*_no_journal` variants, so the replay
+        // does not re-journal — no infinite loop, and the entry is dropped.
+        db.tx_rollback(tx).unwrap();
+        assert!(!db.is_tx_active());
+        // A follow-up transaction still works.
+        let tx2 = db.tx_begin();
+        db.tx_commit(tx2).unwrap();
+    }
+
+    #[test]
+    fn transaction_guard_commit_persists() {
+        let db = Drevo::open_in_memory().unwrap();
+        let tx = db.begin_transaction();
+        let n = db.create_node(sample_node("kept")).unwrap();
+        tx.commit().unwrap();
+        assert!(db.get_node(n.id).unwrap().is_some());
+        assert!(!db.is_tx_active());
+    }
+
+    #[test]
+    fn transaction_guard_rollback_undoes() {
+        let db = Drevo::open_in_memory().unwrap();
+        let tx = db.begin_transaction();
+        let n = db.create_node(sample_node("gone")).unwrap();
+        tx.rollback().unwrap();
+        assert!(db.get_node(n.id).unwrap().is_none());
+        assert!(!db.is_tx_active());
+    }
+
+    #[test]
+    fn transaction_guard_drop_without_commit_rolls_back() {
+        let db = Drevo::open_in_memory().unwrap();
+        let id;
+        {
+            let _tx = db.begin_transaction();
+            id = db.create_node(sample_node("dropped")).unwrap().id;
+            // `_tx` falls out of scope here without commit()/rollback().
+        }
+        assert!(
+            db.get_node(id).unwrap().is_none(),
+            "dropping a Transaction without commit must roll back"
+        );
+        assert!(!db.is_tx_active());
     }
 }
