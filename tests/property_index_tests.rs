@@ -266,11 +266,11 @@ fn deleting_the_last_match_leaves_an_empty_lookup() {
 #[test]
 fn rolling_back_a_create_unindexes_the_property() {
     let db = Drevo::open_in_memory().unwrap();
-    db.tx_begin().unwrap();
+    let tx = db.begin_transaction();
     let _n = db
         .create_node(node("bug", "Temp", &[("status", json!("open"))]))
         .unwrap();
-    db.tx_rollback().unwrap();
+    tx.rollback().unwrap();
 
     assert!(db
         .nodes_by_property("status", &json!("open"))
@@ -285,7 +285,7 @@ fn rolling_back_a_property_update_restores_the_old_value() {
         .create_node(node("bug", "B", &[("status", json!("open"))]))
         .unwrap();
 
-    db.tx_begin().unwrap();
+    let tx = db.begin_transaction();
     let mut map = HashMap::new();
     map.insert("status".to_string(), json!("closed"));
     db.update_node(
@@ -296,7 +296,7 @@ fn rolling_back_a_property_update_restores_the_old_value() {
         },
     )
     .unwrap();
-    db.tx_rollback().unwrap();
+    tx.rollback().unwrap();
 
     assert_eq!(lookup_ids(&db, "status", json!("open")), vec![bug.id]);
     assert!(lookup_ids(&db, "status", json!("closed")).is_empty());
@@ -309,9 +309,9 @@ fn rolling_back_a_delete_reindexes_the_property() {
         .create_node(node("bug", "B", &[("status", json!("open"))]))
         .unwrap();
 
-    db.tx_begin().unwrap();
+    let tx = db.begin_transaction();
     db.delete_node(bug.id).unwrap();
-    db.tx_rollback().unwrap();
+    tx.rollback().unwrap();
 
     assert_eq!(lookup_ids(&db, "status", json!("open")), vec![bug.id]);
 }
