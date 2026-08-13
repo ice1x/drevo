@@ -226,3 +226,99 @@ fn double_unwind_produces_cartesian_product() {
     assert_eq!(int(&rows, 3, 0), 2);
     assert_eq!(string(&rows, 3, 1), "y");
 }
+
+// ===== Empty UNWIND + write clause — issue #300 ==============================
+//
+// A write clause (CREATE / MERGE, with or without a trailing SET) that follows
+// an `UNWIND $xs AS v` where `$xs` is empty must run ZERO times and yield zero
+// rows — the standard "empty driving table" semantics — NOT resurrect one empty
+// row and dereference the now-unbound loop variable `v`. Regression guard: this
+// exact shape (graphiti's `get_entity_edge_save_bulk_query` on an empty batch)
+// previously failed with `unbound variable v`.
+
+fn count_label(db: &Drevo, label: &str) -> i64 {
+    let rows = run(&format!("MATCH (n:{label}) RETURN count(n) AS c"), db);
+    int(&rows, 0, 0)
+}
+
+#[test]
+fn empty_unwind_then_create_is_zero_rows_and_writes_nothing() {
+    let db = db();
+    let rows = run(
+        "UNWIND [] AS edge CREATE (a:Zz {uuid: edge.x}) RETURN edge.x AS u",
+        &db,
+    );
+    assert!(
+        rows.is_empty(),
+        "empty UNWIND + CREATE must yield zero rows"
+    );
+    assert_eq!(count_label(&db, "Zz"), 0, "nothing must be created");
+}
+
+#[test]
+fn empty_unwind_then_merge_is_zero_rows_and_writes_nothing() {
+    let db = db();
+    let rows = run(
+        "UNWIND [] AS edge MERGE (a:Zz {uuid: edge.x}) RETURN edge.x AS u",
+        &db,
+    );
+    assert!(rows.is_empty());
+    assert_eq!(count_label(&db, "Zz"), 0);
+}
+
+#[test]
+fn empty_unwind_then_merge_and_whole_map_set_is_zero_rows() {
+    // graphiti's entity-edge bulk shape on an empty batch.
+    let db = db();
+    run("CREATE (:Entity {uuid: 'a'})", &db);
+    run("CREATE (:Entity {uuid: 'b'})", &db);
+    let rows = run(
+        "UNWIND [] AS edge \
+         MATCH (source:Entity {uuid: edge.source_node_uuid}) \
+         MATCH (target:Entity {uuid: edge.target_node_uuid}) \
+         MERGE (source)-[e:RELATES_TO {uuid: edge.uuid}]->(target) \
+         SET e = edge RETURN edge.uuid AS uuid",
+        &db,
+    );
+    assert!(
+        rows.is_empty(),
+        "empty batch must be a no-op yielding zero rows"
+    );
+}
+
+#[test]
+fn empty_unwind_then_write_returning_a_constant_is_zero_rows() {
+    // The failure did not depend on the loop var appearing in RETURN.
+    let db = db();
+    let rows = run(
+        "UNWIND [] AS edge MERGE (a:Zz {uuid: edge.x}) RETURN 1 AS u",
+        &db,
+    );
+    assert!(rows.is_empty());
+    assert_eq!(count_label(&db, "Zz"), 0);
+}
+
+#[test]
+fn standalone_create_and_merge_still_run_once() {
+    // The initial seeded driving row must still let a write with no prior
+    // row-producing clause execute exactly once.
+    let db = db();
+    run("CREATE (:Zz {uuid: 'solo'})", &db);
+    assert_eq!(count_label(&db, "Zz"), 1);
+    run("MERGE (:Zz {uuid: 'solo'})", &db); // matches, no new node
+    run("MERGE (:Zz {uuid: 'other'})", &db); // creates
+    assert_eq!(count_label(&db, "Zz"), 2);
+}
+
+#[test]
+fn nonempty_unwind_then_merge_and_set_creates_and_returns() {
+    let db = db();
+    let rows = run(
+        "UNWIND [{uuid: 'k'}] AS edge MERGE (a:Zz {uuid: edge.uuid}) \
+         SET a = edge RETURN edge.uuid AS u",
+        &db,
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(string(&rows, 0, 0), "k");
+    assert_eq!(count_label(&db, "Zz"), 1);
+}

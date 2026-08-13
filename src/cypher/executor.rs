@@ -2548,12 +2548,14 @@ impl<'a> Executor<'a> {
     // ----- CREATE ----------------------------------------------------------
 
     fn run_create(&mut self, c: &CreateClause) -> ExecResultT<()> {
-        // CREATE multiplies every existing binding row by the created
-        // pattern. If there is no prior MATCH, the executor starts
-        // with a single empty row so CREATE works in isolation.
-        if self.bindings.is_empty() {
-            self.bindings.push(HashMap::new());
-        }
+        // CREATE multiplies every current driving row by the created pattern.
+        // The query begins with a single empty driving row (seeded in
+        // `execute_single`), so a standalone `CREATE` still runs once. When a
+        // prior clause produced ZERO rows — `UNWIND [] AS x`, or a MATCH with
+        // no results — the driving table is legitimately empty and CREATE must
+        // run zero times. Resurrecting an empty row here (as an earlier guard
+        // did) instead evaluated the now-unbound loop variable and raised
+        // "unbound variable" (issue #300); iterate whatever rows exist.
         let mut new_bindings = Vec::with_capacity(self.bindings.len());
         for mut row in std::mem::take(&mut self.bindings).into_iter() {
             for pattern in &c.patterns {
@@ -2848,9 +2850,11 @@ impl<'a> Executor<'a> {
     }
 
     fn run_merge(&mut self, m: &crate::cypher::ast::MergeClause) -> ExecResultT<()> {
-        if self.bindings.is_empty() {
-            self.bindings.push(HashMap::new());
-        }
+        // Like CREATE, MERGE runs once per current driving row. The initial
+        // seeded empty row (see `execute_single`) lets a standalone MERGE run
+        // once; an empty driving table after a zero-row `UNWIND []` / MATCH
+        // means MERGE runs zero times rather than resurrecting an empty row
+        // and dereferencing the unbound loop variable (issue #300).
         let prior = std::mem::take(&mut self.bindings);
         let mut new_bindings: Vec<Bindings> = Vec::new();
         let path_var = m.pattern.variable.as_ref();
