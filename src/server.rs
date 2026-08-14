@@ -337,6 +337,7 @@ fn configure_query_embedder(_catalog: &crate::catalog::Catalog) -> Result<(), Ru
 /// caller (`main`) is expected to log the error and exit with a
 /// non-zero status.
 pub async fn run(cfg: Config) -> Result<(), RunError> {
+    log_startup();
     let addr = cfg.socket_addr()?;
 
     if cfg.is_privileged_port() {
@@ -463,5 +464,26 @@ pub async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {},
         () = terminate => {},
+    }
+}
+
+/// Log the running build's version at startup so every log stream records which
+/// drevo binary is serving — parity with the version reported by `/`, `/status`,
+/// and the Bolt handshake. Kept as a tiny seam so it can be unit-tested.
+fn log_startup() {
+    tracing::info!(version = crate::VERSION, "starting drevo");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    #[test]
+    fn log_startup_records_the_build_version() {
+        log_startup();
+        assert!(logs_contain("starting drevo"));
+        assert!(logs_contain(crate::VERSION));
     }
 }

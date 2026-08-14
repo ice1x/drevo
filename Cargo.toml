@@ -179,6 +179,9 @@ js-sys = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+# Captures `tracing` events in-process so the startup version log is unit-tested
+# (issue: version-in-startup-log). Test-only; never in the library/FFI/WASM build.
+tracing-test = "0.2"
 criterion = { version = "0.5", features = ["html_reports"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
