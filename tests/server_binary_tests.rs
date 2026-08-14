@@ -21,6 +21,7 @@ mod server_tests {
     use drevo::api::{build_router, ApiState};
     use drevo::db::Drevo;
     use std::sync::Arc;
+    use tracing_test::traced_test;
 
     fn test_router() -> axum::Router {
         let db = Drevo::open_in_memory().unwrap();
@@ -406,5 +407,51 @@ mod server_tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "method not allowed");
         assert_eq!(json["status"], 405);
+    }
+
+    // -----------------------------------------------------------------
+    // Startup version log — wiring guard (issue: version-in-startup-log)
+    // -----------------------------------------------------------------
+
+    #[traced_test]
+    #[tokio::test]
+    async fn run_logs_the_build_version_at_startup() {
+        // The startup version line must be emitted by `run()` itself, so this
+        // drives the real entry point rather than a helper — deleting the
+        // `tracing::info!(... "starting drevo")` line from `run()` fails here.
+        // That log is `run`'s first statement, emitted on the first poll before
+        // any bind/catalog work, so awaiting `run()` directly (default
+        // `#[tokio::test]` is current-thread, so `#[traced_test]`'s subscriber
+        // sees it) under a short timeout that then drops the still-serving
+        // future is enough to observe it.
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let port = {
+            let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = probe.local_addr().unwrap().port();
+            drop(probe);
+            p
+        };
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let port_str = port.to_string();
+        let cfg = drevo::server::Config::from_env(move |k| match k {
+            "DREVO_HOST" => Some("127.0.0.1".to_string()),
+            "DREVO_PORT" => Some(port_str.clone()),
+            "DREVO_DATA_DIR" => Some(data_dir.clone()),
+            _ => None,
+        })
+        .unwrap();
+
+        let _ = tokio::time::timeout(Duration::from_millis(500), drevo::server::run(cfg)).await;
+
+        assert!(
+            logs_contain("starting drevo"),
+            "run() must log the startup line"
+        );
+        assert!(
+            logs_contain(drevo::VERSION),
+            "the startup log must carry the build version"
+        );
     }
 }
