@@ -149,7 +149,15 @@ if [ "${1:-}" = "image" ]; then
   # context, so `build.rs` can't `git describe` there. Without this arg the image
   # would report `CARGO_PKG_VERSION` (0.0.0) at `/`, `/status`, the Bolt `server`
   # agent, and metrics — the git tag is the source of truth, not Cargo.toml.
-  docker build --build-arg "DREVO_VERSION=$next" -t "$img:$next" -t "$img:latest" .
+  # Thread build metadata for `CALL drevo.info()` (issue #303) — `.git` is
+  # excluded from the build context, so these must come from the host here.
+  git_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+  build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  docker build \
+    --build-arg "DREVO_VERSION=$next" \
+    --build-arg "DREVO_GIT_SHA=$git_sha" \
+    --build-arg "DREVO_BUILD_DATE=$build_date" \
+    -t "$img:$next" -t "$img:latest" .
   echo "Pushing $img:$next and $img:latest …"
   docker push "$img:$next"
   docker push "$img:latest"

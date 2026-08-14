@@ -70,6 +70,14 @@ ARG CARGO_FEATURES="http,redb-backend,embeddings-proxy"
 # `tests/dockerfile_tests.rs::dockerfile_threads_the_version_build_arg`.
 ARG DREVO_VERSION=""
 ENV DREVO_VERSION=${DREVO_VERSION}
+# Build metadata surfaced by `CALL drevo.info()` (issue #303). `.git` is excluded
+# from the build context, so — like the version — the release flow passes these
+# as build-args (`scripts/release.sh`); empty defaults resolve to `null` in
+# `drevo.info()`.
+ARG DREVO_GIT_SHA=""
+ENV DREVO_GIT_SHA=${DREVO_GIT_SHA}
+ARG DREVO_BUILD_DATE=""
+ENV DREVO_BUILD_DATE=${DREVO_BUILD_DATE}
 RUN cargo build --release --bin drevo-server \
         --no-default-features --features "${CARGO_FEATURES}"
 

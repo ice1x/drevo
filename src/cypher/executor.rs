@@ -925,6 +925,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.semantic.embed, \
                           drevo.semantic.reindex, drevo.semantic.register, \
                           drevo.semantic.status, drevo.semantic.info, \
+                          drevo.info, \
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
                           drevo.semantic.reindexRel, fts.search, \
                           fts.searchRelationships"
@@ -3946,6 +3947,33 @@ impl<'a> Executor<'a> {
         ]])
     }
 
+    /// `CALL drevo.info() YIELD version, git_sha, build_date, protocol` (#303).
+    ///
+    /// One row of build/version metadata so a Bolt client can learn which drevo
+    /// it is talking to and assert a minimum-compatible version. Read-only, no
+    /// arguments, no auth, no side effects — safe to call on connect. `version`
+    /// is the running build's semver (bare, e.g. `0.0.16`, no `v`); `git_sha`
+    /// and `build_date` are `null` when the build did not capture them (see
+    /// [`crate::GIT_SHA`] / [`crate::BUILD_DATE`]); `protocol` is a coarse
+    /// capability integer ([`crate::INFO_PROTOCOL`]) clients can gate on without
+    /// parsing semver. An associated fn — it reads only compile-time constants.
+    fn proc_drevo_info() -> ExecResultT<Vec<Vec<Value>>> {
+        // Treat an empty override as absent → null. A release image sets
+        // `ENV DREVO_GIT_SHA=""` / `DREVO_BUILD_DATE=""` as the build-arg
+        // default, which `option_env!` surfaces as `Some("")` when no real
+        // value is passed.
+        let opt = |s: Option<&str>| match s {
+            Some(s) if !s.is_empty() => Value::String(s.to_string()),
+            _ => Value::Null,
+        };
+        Ok(vec![vec![
+            Value::String(crate::VERSION.to_string()),
+            opt(crate::GIT_SHA),
+            opt(crate::BUILD_DATE),
+            Value::Integer(crate::INFO_PROTOCOL),
+        ]])
+    }
+
     /// `CALL drevo.semantic.reindex(label, embedding_property, batch_size)
     /// YIELD scanned, embedded, skipped, remaining` (#262) — backfill embeddings
     /// for nodes that already existed when an `Auto` target was registered.
@@ -4272,6 +4300,7 @@ impl<'a> Executor<'a> {
             #[cfg(feature = "http")]
             "drevo.semantic.reindexRel" => self.proc_semantic_reindex_rel(args, span),
             "drevo.semantic.status" => self.proc_semantic_status(args, span),
+            "drevo.info" => Self::proc_drevo_info(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
             "db.labels" => {
@@ -5855,6 +5884,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         ]),
         // #267 embedder capability introspection.
         "drevo.semantic.info" => Some(&["embedder_present", "model", "dimension", "upstream"]),
+        // #303 — build/version introspection so a Bolt client can assert a
+        // minimum-compatible drevo. Read-only, no auth; stable YIELD contract.
+        "drevo.info" => Some(&["version", "git_sha", "build_date", "protocol"]),
         // Full-text search (issue #208): BM25-ranked matching nodes.
         "fts.search" => Some(&["node", "score"]),
         // Relationship full-text search (issue #227-B): BM25-ranked edges.
@@ -5893,6 +5925,9 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.semantic.register" => 4,
         // drevo.semantic.status() — no arguments.
         "drevo.semantic.status" => 0,
+        // #303: drevo.info() — no arguments (explicit; the `_ => 0` default
+        // would also cover it).
+        "drevo.info" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
         "fts.search" | "fts.searchRelationships" => 2,
         // The db.* introspection procedures take no arguments.

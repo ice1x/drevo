@@ -5,6 +5,8 @@ include!("version_resolve.rs");
 
 fn main() {
     emit_version();
+    emit_git_sha();
+    emit_build_date();
 
     #[cfg(feature = "cbindgen")]
     {
@@ -61,6 +63,60 @@ fn emit_version() {
     );
 
     println!("cargo:rustc-env=DREVO_VERSION={version}");
+}
+
+/// Expose the short git SHA the binary was built from as the optional
+/// compile-time `DREVO_GIT_SHA` env, read via `option_env!` in `lib.rs` and
+/// surfaced by `CALL drevo.info()` (issue #303).
+///
+/// Like the version, a release image cannot `git` (its Docker context excludes
+/// `.git`), so a `DREVO_GIT_SHA` build-arg takes precedence; a native/dev build
+/// falls back to `git rev-parse`. When neither is available the env is left
+/// unset — `option_env!` then yields `None` — so the build stays infallible.
+fn emit_git_sha() {
+    println!("cargo:rerun-if-env-changed=DREVO_GIT_SHA");
+    let sha = std::env::var("DREVO_GIT_SHA")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(git_short_sha);
+    if let Some(sha) = sha {
+        println!("cargo:rustc-env=DREVO_GIT_SHA={}", sha.trim());
+    }
+}
+
+/// `git rev-parse --short HEAD`. `None` when git is unavailable or fails.
+fn git_short_sha() -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(out.stdout).ok()?;
+    let sha = sha.trim();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha.to_string())
+    }
+}
+
+/// Expose an ISO-8601 build timestamp as the optional compile-time
+/// `DREVO_BUILD_DATE` env (surfaced by `CALL drevo.info()`, issue #303).
+///
+/// Populated only when the build supplies it — the release flow passes a
+/// `DREVO_BUILD_DATE` build-arg. build.rs deliberately does not invent a
+/// timestamp: doing so would make every build non-reproducible and pull in a
+/// date-formatting dependency. When unset, `option_env!` yields `None`.
+fn emit_build_date() {
+    println!("cargo:rerun-if-env-changed=DREVO_BUILD_DATE");
+    if let Ok(date) = std::env::var("DREVO_BUILD_DATE") {
+        let date = date.trim();
+        if !date.is_empty() {
+            println!("cargo:rustc-env=DREVO_BUILD_DATE={date}");
+        }
+    }
 }
 
 /// `git describe --tags --always --dirty`, with any leading `v` stripped so

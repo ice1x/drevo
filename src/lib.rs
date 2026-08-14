@@ -61,6 +61,22 @@
 /// crate version would show `0.0.0` on every deployed build.
 pub const VERSION: &str = env!("DREVO_VERSION");
 
+/// Short git commit the binary was built from, or `None` when unavailable
+/// (e.g. a release image whose Docker context excludes `.git` and whose build
+/// did not pass a `DREVO_GIT_SHA` build-arg). Surfaced by `CALL drevo.info()`
+/// (issue #303). Injected by `build.rs` as the optional `DREVO_GIT_SHA` env.
+pub const GIT_SHA: Option<&str> = option_env!("DREVO_GIT_SHA");
+
+/// ISO-8601 build timestamp, or `None` when the build did not supply one.
+/// Surfaced by `CALL drevo.info()` (issue #303). Injected by `build.rs` as the
+/// optional `DREVO_BUILD_DATE` env.
+pub const BUILD_DATE: Option<&str> = option_env!("DREVO_BUILD_DATE");
+
+/// Coarse capability/protocol level clients can gate on without parsing semver
+/// (issue #303). Bumped when the Bolt/Cypher surface gains a
+/// backwards-incompatible-to-assume capability. Surfaced by `CALL drevo.info()`.
+pub const INFO_PROTOCOL: i64 = 1;
+
 /// Built-in global graph algorithms — Phase 15 task `00098`. Adds the two
 /// whole-graph analytics algorithms that complement the local traversals in
 /// [`traversal`]: [`algorithms::pagerank`] (weighted PageRank centrality via

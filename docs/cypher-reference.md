@@ -505,6 +505,7 @@ procedures.
 | `db.labels()` | `label` | every distinct node label (the primary kind plus any secondary `:Extra` labels), sorted |
 | `db.relationshipTypes()` | `relationshipType` | every distinct relationship type, sorted |
 | `db.propertyKeys()` | `propertyKey` | every distinct property key across nodes and relationships, sorted (the reserved `_labels` key is never exposed) |
+| `drevo.info()` | `version, git_sha, build_date, protocol` | the running build's version + metadata, so a Bolt client can assert a minimum-compatible drevo (issue #303) |
 
 ### CALL
 
@@ -789,6 +790,24 @@ the Okapi BM25 relevance. Post-filter with a `WHERE` on any node property and
 ```cypher
 CALL fts.search('anxious thoughts about work', 25) YIELD node, score
 RETURN node, score ORDER BY score DESC
+```
+
+### Server info (#303)
+
+`CALL drevo.info() YIELD version, git_sha, build_date, protocol` returns one row
+of build metadata so a Bolt client can learn which drevo it is connected to and
+fail fast against an incompatible server. It is read-only, takes no arguments,
+needs no auth, and has no side effects — safe to call on connect. `version` is
+the running build's semver (bare, e.g. `0.0.16`, no leading `v`); `git_sha` and
+`build_date` are `null` when the build did not capture them (a plain
+`docker build` without the release build-args, for instance); `protocol` is a
+coarse capability integer clients can gate on without parsing semver. The YIELD
+contract is stable across versions, and a client that finds the procedure absent
+(an older drevo) should fall back gracefully.
+
+```cypher
+CALL drevo.info() YIELD version, git_sha, build_date, protocol
+RETURN version, git_sha, build_date, protocol
 ```
 
 ### Semantic-index control plane (#251, Phase 21)

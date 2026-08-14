@@ -9,6 +9,13 @@
 #include <stdlib.h>
 
 /**
+ * Coarse capability/protocol level clients can gate on without parsing semver
+ * (issue #303). Bumped when the Bolt/Cypher surface gains a
+ * backwards-incompatible-to-assume capability. Surfaced by `CALL drevo.info()`.
+ */
+#define INFO_PROTOCOL 1
+
+/**
  * Default `limit` applied to `GET /nodes` and `GET /edges` when the
  * client omits the query parameter. Kept in lockstep with
  * [`DEFAULT_SEARCH_LIMIT`] for predictable client behaviour across
