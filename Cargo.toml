@@ -179,6 +179,12 @@ js-sys = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+# Captures `tracing` events in-process so the startup version log is verified
+# end-to-end through `server::run()` (issue: version-in-startup-log). Test-only;
+# never in the library/FFI/WASM build. `no-env-filter` is required because the
+# integration test is a separate crate from `drevo`, and tracing-test otherwise
+# filters to the test crate's own target — dropping `drevo::server` events.
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

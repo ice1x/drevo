@@ -337,6 +337,11 @@ fn configure_query_embedder(_catalog: &crate::catalog::Catalog) -> Result<(), Ru
 /// caller (`main`) is expected to log the error and exit with a
 /// non-zero status.
 pub async fn run(cfg: Config) -> Result<(), RunError> {
+    // Announce the running build up front so every log stream records which
+    // drevo binary is serving — parity with the version reported by `/`,
+    // `/status`, and the Bolt handshake. This is the first thing `run` does, so
+    // the `tests/server_binary_tests.rs` wiring test can observe it immediately.
+    tracing::info!(version = crate::VERSION, "starting drevo");
     let addr = cfg.socket_addr()?;
 
     if cfg.is_privileged_port() {
