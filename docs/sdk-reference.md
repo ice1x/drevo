@@ -1,8 +1,8 @@
 # SDK Reference
 
 How to call drevo from code and over the wire. Signatures are grounded in the source; the
-authoritative definitions live in [`src/db.rs`](../src/db.rs), [`src/model.rs`](../src/model.rs),
-and the Python type stubs under [`drevo-py/`](../drevo-py).
+authoritative definitions live in [`src/db.rs`](https://github.com/ice1x/drevo/tree/main/src/db.rs), [`src/model.rs`](https://github.com/ice1x/drevo/tree/main/src/model.rs),
+and the Python type stubs under [`drevo-py/`](https://github.com/ice1x/drevo/tree/main/drevo-py).
 
 - [Rust API](#rust-api)
 - [Python SDK](#python-sdk)
@@ -16,7 +16,7 @@ and the Python type stubs under [`drevo-py/`](../drevo-py).
 
 ## Rust API
 
-The whole surface hangs off the [`Drevo`](../src/db.rs) handle. All fallible methods return
+The whole surface hangs off the [`Drevo`](https://github.com/ice1x/drevo/tree/main/src/db.rs) handle. All fallible methods return
 `Result<T, DrevoError>`.
 
 ### Lifecycle
@@ -93,7 +93,7 @@ fn embedding_count(&self) -> Result<usize>
 fn build_vector_index(&self, config: HnswConfig) -> Result<HnswIndex>
 ```
 
-Distances (cosine, Euclidean, dot product) live in [`src/vector/`](../src/vector); the HNSW
+Distances (cosine, Euclidean, dot product) live in [`src/vector/`](https://github.com/ice1x/drevo/tree/main/src/vector); the HNSW
 index gives approximate nearest-neighbour search.
 
 ### Graph analytics
@@ -104,7 +104,7 @@ fn louvain_communities(&self, config: &LouvainConfig) -> Result<LouvainResult>
 ```
 
 Both run over an in-memory adjacency snapshot of the whole graph and are deterministic. See
-[`src/algorithms/`](../src/algorithms).
+[`src/algorithms/`](https://github.com/ice1x/drevo/tree/main/src/algorithms).
 
 ### Transactions
 
@@ -120,14 +120,14 @@ fn is_tx_active(&self) -> bool
 `Node { id, uuid, kind, title, body, body_html, created_at, updated_at, properties }`,
 `Edge { id, uuid, from_id, to_id, kind, weight, created_at, properties }`, and their creation
 (`NewNode`, `NewEdge`) and patch (`NodePatch`, `EdgePatch`) companions are defined in
-[`src/model.rs`](../src/model.rs). `properties` is a `HashMap<String, serde_json::Value>`.
+[`src/model.rs`](https://github.com/ice1x/drevo/tree/main/src/model.rs). `properties` is a `HashMap<String, serde_json::Value>`.
 
 ---
 
 ## Python SDK
 
 The Python package wraps the Rust core via PyO3 (releasing the GIL around storage work). The
-authoritative type stubs are [`drevo-py/python/drevo/__init__.pyi`](../drevo-py/python/drevo/__init__.pyi).
+authoritative type stubs are [`drevo-py/python/drevo/__init__.pyi`](https://github.com/ice1x/drevo/tree/main/drevo-py/python/drevo/__init__.pyi).
 
 ```python
 import drevo
@@ -157,7 +157,7 @@ Classes mirror the Rust model: `Node`, `Edge`, `NewNode`, `NewEdge`, `NodePatch`
 
 ### Graph-RAG helpers
 
-The pure-Python [`drevo.rag`](../drevo-py/python/drevo/rag) module packages the
+The pure-Python [`drevo.rag`](https://github.com/ice1x/drevo/tree/main/drevo-py/python/drevo/rag) module packages the
 search → expand → format pipeline for retrieval-augmented generation:
 
 ```python
@@ -182,7 +182,7 @@ Other building blocks: `ingest_documents` (load LangChain-style `Document`s into
 
 ## HTTP API
 
-Enabled by the `http` feature (default). The [`drevo-server`](../src/bin/server.rs) binary
+Enabled by the `http` feature (default). The [`drevo-server`](https://github.com/ice1x/drevo/tree/main/src/bin/server.rs) binary
 listens on `${DREVO_HOST}:${DREVO_PORT}` (default `0.0.0.0:8080`). All bodies are JSON.
 
 | Method | Path | Purpose |

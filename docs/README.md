@@ -6,7 +6,7 @@ Python, HTTP, and MCP interfaces. It runs as a single binary, in-process as a li
 compiled to WebAssembly — no external services required.
 
 These guides are the user-facing companion to the design-oriented
-[project README](../README.md). They are organised by audience and task.
+[project README](https://github.com/ice1x/drevo/tree/main/README.md). They are organised by audience and task.
 
 ## Guides
 

@@ -12,7 +12,7 @@ drevo builds one binary (`Cargo.toml` `[[bin]]`):
 
 | Binary | Source | Features | Role |
 |--------|--------|----------|------|
-| `drevo-server` | [`src/bin/server.rs`](../src/bin/server.rs) | `http`, `redb-backend` | HTTP API + Web UI + Bolt listener. |
+| `drevo-server` | [`src/bin/server.rs`](https://github.com/ice1x/drevo/tree/main/src/bin/server.rs) | `http`, `redb-backend` | HTTP API + Web UI + Bolt listener. |
 
 ```bash
 cargo build --release --bin drevo-server --features http,redb-backend
@@ -103,7 +103,7 @@ destination is still config-only — a forwarded field never changes it.)
 
 ## 3. Docker
 
-The [`Dockerfile`](../Dockerfile) is a multi-stage build (Rust builder → `debian:bookworm-slim`
+The [`Dockerfile`](https://github.com/ice1x/drevo/tree/main/Dockerfile) is a multi-stage build (Rust builder → `debian:bookworm-slim`
 runtime) that compiles `--features http,redb-backend`, runs as a non-root `drevo` user (UID/GID
 `999`), exposes port `8080`, and persists to the `/data` volume.
 
@@ -112,7 +112,7 @@ docker build -t drevo .
 docker run -d -p 8080:8080 -v drevo-data:/data drevo
 ```
 
-[`docker-compose.yml`](../docker-compose.yml) wires the same up with a healthcheck on `/health`:
+[`docker-compose.yml`](https://github.com/ice1x/drevo/tree/main/docker-compose.yml) wires the same up with a healthcheck on `/health`:
 
 ```bash
 docker compose up -d        # build + start
@@ -123,18 +123,18 @@ docker compose down -v      # stop and wipe data
 
 ### Keeping the container alive
 
-Two layers cover two different failures (see [`scripts/README.md`](../scripts/README.md)):
+Two layers cover two different failures (see [`scripts/README.md`](https://github.com/ice1x/drevo/tree/main/scripts/README.md)):
 
 - **Docker restart policy** — the compose service sets `restart: unless-stopped`
-  (and [`scripts/drevo-restart.sh`](../scripts/drevo-restart.sh), the bare-`docker
+  (and [`scripts/drevo-restart.sh`](https://github.com/ice1x/drevo/tree/main/scripts/drevo-restart.sh), the bare-`docker
   run` path, passes `--restart unless-stopped`). This relaunches the container
   after a crash, an OOM-kill, or a Docker/host reboot. It does **not** act on an
   intentional stop, and it **cannot** resurrect a *removed* container — a stray
   `docker rm -f drevo` (e.g. another project reusing the name) deletes the
   container object, leaving the restart policy nothing to act on.
-- **Watchdog** — [`scripts/drevo-watchdog.sh`](../scripts/drevo-watchdog.sh),
+- **Watchdog** — [`scripts/drevo-watchdog.sh`](https://github.com/ice1x/drevo/tree/main/scripts/drevo-watchdog.sh),
   scheduled every 30s via the launchd/systemd templates in
-  [`scripts/watchdog/`](../scripts/watchdog), recreates the container whenever it
+  [`scripts/watchdog/`](https://github.com/ice1x/drevo/tree/main/scripts/watchdog), recreates the container whenever it
   is missing or not running. This is the layer that survives an accidental
   `docker rm -f`. Pause it without a fight by `touch ~/.drevo-watchdog.disabled`.
 
@@ -142,7 +142,7 @@ Two layers cover two different failures (see [`scripts/README.md`](../scripts/RE
 
 ## 4. Kubernetes
 
-Manifests live under [`k8s/`](../k8s) as a Kustomize base plus `dev` / `prod` overlays.
+Manifests live under [`k8s/`](https://github.com/ice1x/drevo/tree/main/k8s) as a Kustomize base plus `dev` / `prod` overlays.
 
 ```bash
 kubectl apply -k k8s/base/            # base
@@ -171,7 +171,7 @@ external exposure.
 ### Prometheus metrics
 
 `GET /metrics` on `drevo-server` returns the Prometheus text exposition format. The standard
-bundle (dependency-free, always compiled — see [`src/observability/`](../src/observability)):
+bundle (dependency-free, always compiled — see [`src/observability/`](https://github.com/ice1x/drevo/tree/main/src/observability)):
 
 | Metric | Type | Labels |
 |--------|------|--------|
@@ -310,7 +310,7 @@ and the seams to plug in transports — but are **not yet wired into the running
 A deployment integrates them programmatically. The guide is honest about that so you don't go
 looking for a config flag that isn't there.
 
-### Replication ([`src/replication/`](../src/replication))
+### Replication ([`src/replication/`](https://github.com/ice1x/drevo/tree/main/src/replication))
 
 A Write-Ahead-Log-based MAIN/REPLICA model. A `Primary<B>` wraps a `StorageBackend`, tees every
 write into a `WriteAheadLog` stamped with a monotonic `Lsn`, and returns the assigned LSN. A
@@ -318,7 +318,7 @@ read-only `Replica<B>` replays the log in LSN order, enforcing strict ordering a
 detection. It ships no network transport — you stream the log delta over Bolt, HTTP long-poll,
 or an in-process channel.
 
-### Streaming ingestion ([`src/streaming/`](../src/streaming))
+### Streaming ingestion ([`src/streaming/`](https://github.com/ice1x/drevo/tree/main/src/streaming))
 
 A transport-agnostic, broker-grade ingestion engine. An `IngestConsumer` drives a `StreamSource`
 (Kafka / NATS / HTTP long-poll / CDC, behind a trait) into an `IngestSink` (a live `Drevo`
@@ -326,7 +326,7 @@ handle, behind a trait), polling batches, decoding `IngestEvent`s addressed by p
 keys, applying them idempotently (last-writer-wins), committing offsets, and dead-lettering
 un-ingestable messages. Re-delivery after a crash converges on the identical graph.
 
-### CDC from PostgreSQL ([`src/streaming/cdc.rs`](../src/streaming/cdc.rs))
+### CDC from PostgreSQL ([`src/streaming/cdc.rs`](https://github.com/ice1x/drevo/tree/main/src/streaming/cdc.rs))
 
 Decodes a Postgres logical-replication feed in the **wal2json** format and maps row changes into
 streaming `IngestEvent`s via a declarative `SchemaMap`: a row's primary key becomes a namespaced

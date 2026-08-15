@@ -1,0 +1,23 @@
+# mdBook configuration for the documentation site (https://ice1x.github.io/drevo/).
+#
+# The book's source IS the existing `docs/` directory — the same files that are
+# browsable on GitHub and executed by `tests/docs_examples.rs` — so there is no
+# parallel copy to drift. `docs/SUMMARY.md` is the table of contents; chapters
+# not listed there are not rendered. Built and deployed by
+# `.github/workflows/docs.yml`; invariants locked by `tests/docs_site_tests.rs`.
+
+[book]
+title = "drevo documentation"
+authors = ["ice1x"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/ice1x/drevo"
+edit-url-template = "https://github.com/ice1x/drevo/edit/main/{path}"
+# Project Pages are served under /drevo/, not the domain root — without this
+# the theme's asset URLs would 404.
+site-url = "/drevo/"

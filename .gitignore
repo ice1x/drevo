@@ -51,3 +51,6 @@ actions-runner/
 
 # Scratch / temporary migration workspace
 migr_tmp/
+
+# mdBook build output (docs site) — built in CI by .github/workflows/docs.yml
+/book

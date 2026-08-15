@@ -2,19 +2,19 @@
 
 drevo speaks a **subset of [Cypher](https://opencypher.org/)**, the openCypher query
 language popularised by Neo4j. The subset is implemented bottom-up by a hand-written
-lexer ([`src/cypher/lexer.rs`](../src/cypher/lexer.rs)), a recursive-descent + Pratt
-parser ([`src/cypher/parser.rs`](../src/cypher/parser.rs)), and a tree-walking executor
-([`src/cypher/executor.rs`](../src/cypher/executor.rs)) that runs against a live
-[`Drevo`](../src/db.rs) handle.
+lexer ([`src/cypher/lexer.rs`](https://github.com/ice1x/drevo/tree/main/src/cypher/lexer.rs)), a recursive-descent + Pratt
+parser ([`src/cypher/parser.rs`](https://github.com/ice1x/drevo/tree/main/src/cypher/parser.rs)), and a tree-walking executor
+([`src/cypher/executor.rs`](https://github.com/ice1x/drevo/tree/main/src/cypher/executor.rs)) that runs against a live
+[`Drevo`](https://github.com/ice1x/drevo/tree/main/src/db.rs) handle.
 
 > **Every fenced `cypher` block in this document is executed as a test.**
-> [`tests/docs_examples.rs`](../tests/docs_examples.rs) extracts each block, parses it,
+> [`tests/docs_examples.rs`](https://github.com/ice1x/drevo/tree/main/tests/docs_examples.rs) extracts each block, parses it,
 > and runs it through the executor on a fresh in-memory database, asserting it neither
 > fails to parse nor returns an executor error. The reference therefore cannot drift
 > from the implementation: if drevo stops supporting a construct shown here, CI goes red.
 
 This is a *living subset* — clauses that are not yet implemented return a deterministic
-[`ExecError::Unsupported`](../src/cypher/executor.rs) error naming the construct, never a
+[`ExecError::Unsupported`](https://github.com/ice1x/drevo/tree/main/src/cypher/executor.rs) error naming the construct, never a
 panic or a wrong answer. See [Not yet supported](#not-yet-supported) for the current edge.
 
 ---
@@ -740,7 +740,7 @@ RETURN count(*) AS nan_count
 drevo adds two scalar functions that bridge Cypher to its full-text and vector engines.
 
 `keywords(text, k [, stem])` extracts the top-`k` salient terms from a string via BM25-IDF
-(see [task `00132`](../README.md)):
+(see [task `00132`](https://github.com/ice1x/drevo/tree/main/README.md)):
 
 ```cypher
 RETURN keywords('the anxious thought spiraled into catastrophic predictions about work', 3) AS top_terms
