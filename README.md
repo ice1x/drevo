@@ -1,7 +1,7 @@
 # drevo — Embedded Graph Database for Knowledge Management
 
 [![CI](https://github.com/ice1x/drevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ice1x/drevo/actions/workflows/ci.yml)
-[![Container image](https://img.shields.io/badge/ghcr.io-ice1x%2Fdrevo-2496ED?logo=docker&logoColor=white)](https://github.com/ice1x/drevo/pkgs/container/drevo)
+[![Container image](https://img.shields.io/docker/v/ice1x/drevo?sort=semver&logo=docker&logoColor=white&label=docker%20hub)](https://hub.docker.com/r/ice1x/drevo)
 [![Release](https://img.shields.io/github/v/tag/ice1x/drevo?sort=semver&label=release)](https://github.com/ice1x/drevo/tags)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.85-orange?logo=rust&logoColor=white)](Cargo.toml)
@@ -16,8 +16,8 @@ A lightweight, embeddable graph database written in Rust. Designed as the storag
 **Run it in a container** — HTTP API + embedded Web UI on `:8080`, Neo4j-compatible Bolt on `:7687`:
 
 ```bash
-# Published image (Container badge above):
-docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data ghcr.io/ice1x/drevo:latest
+# Published image (Docker Hub badge above):
+docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data ice1x/drevo:latest
 
 # …or build it from this repo (no registry access needed):
 docker build -t drevo . && \
@@ -1446,7 +1446,7 @@ Equivalent plain `docker run` (also enables the Neo4j-compatible Bolt listener �
 the Bolt drop-in MCP below — and survives reboots):
 
 ```bash
-docker build -t drevo:latest .     # or: docker pull ghcr.io/ice1x/drevo
+docker build -t drevo:latest .     # or: docker pull ice1x/drevo
 docker run -d --name drevo --restart unless-stopped \
   --user "$(id -u):$(id -g)" \
   -p 8080:8080 -p 7688:7687 \      # host 7688 → container Bolt 7687 (7687 often taken by Neo4j)

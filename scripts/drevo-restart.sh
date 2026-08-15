@@ -13,12 +13,12 @@
 #
 # Usage:
 #   scripts/drevo-restart.sh
-#   DREVO_IMAGE=ghcr.io/ice1x/drevo:0.1.0 scripts/drevo-restart.sh
+#   DREVO_IMAGE=ice1x/drevo:0.1.0 scripts/drevo-restart.sh
 #   DREVO_BOLT_PORT_HOST=7688 scripts/drevo-restart.sh   # avoid a local 7687 clash
 #
 # Env (all optional):
 #   DREVO_NAME            container name                 (default: drevo)
-#   DREVO_IMAGE           image ref                      (default: ghcr.io/ice1x/drevo:latest)
+#   DREVO_IMAGE           image ref                      (default: ice1x/drevo:latest — Docker Hub)
 #   DREVO_DATA_DIR        host data dir bind-mounted /data (default: ./data)
 #   DREVO_HTTP_PORT       host port -> container 8080     (default: 8080)
 #   DREVO_BOLT_PORT_HOST  host port -> container 7687     (default: 7687)
@@ -37,7 +37,10 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 NAME="${DREVO_NAME:-drevo}"
-IMAGE="${DREVO_IMAGE:-ghcr.io/ice1x/drevo:latest}"
+# Docker Hub is the registry the release flow (`make release-image`) actually
+# pushes to and the one that allows anonymous pulls; ghcr.io mirrors tags via CI
+# but is not the deploy default.
+IMAGE="${DREVO_IMAGE:-ice1x/drevo:latest}"
 DATA_DIR="${DREVO_DATA_DIR:-./data}"
 HTTP_PORT="${DREVO_HTTP_PORT:-8080}"        # host -> container 8080 (HTTP + Web UI)
 BOLT_PORT="${DREVO_BOLT_PORT_HOST:-7687}"   # host -> container 7687 (Bolt)
