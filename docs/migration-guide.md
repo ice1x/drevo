@@ -4,7 +4,7 @@ How to move an existing **Neo4j** database into drevo, and what to expect from d
 Neo4j-compatibility surface afterwards.
 
 drevo is deliberately ignorant of Neo4j: the database and its Python bindings know nothing
-about it. Migration is handled by a **standalone tool** — [`tools/neo4j-to-drevo`](../tools/neo4j-to-drevo)
+about it. Migration is handled by a **standalone tool** — [`tools/neo4j-to-drevo`](https://github.com/ice1x/drevo/tree/main/tools/neo4j-to-drevo)
 — that depends on `drevo`, never the reverse. It is a pure database → database data move,
 independent of how you later query drevo (HTTP, Bolt, MCP, or embedded).
 

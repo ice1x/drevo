@@ -117,7 +117,7 @@ The Python [`drevo.rag`](sdk-reference.md#graph-rag-helpers) module packages exa
 
 ## 5. Worked scenarios
 
-These mirror the integration suites in [`tests/`](../tests). Each shows the kind of graph and a
+These mirror the integration suites in [`tests/`](https://github.com/ice1x/drevo/tree/main/tests). Each shows the kind of graph and a
 representative Cypher query (all queries below also appear, verified, in the
 [Cypher Reference](cypher-reference.md)).
 

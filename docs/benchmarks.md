@@ -1,7 +1,7 @@
 # Benchmarks — drevo vs. competitors
 
 > Phase 15 task `00101`. This guide pairs with the executable harness
-> [`benches/comparison_bench.rs`](../benches/comparison_bench.rs). The whole point
+> [`benches/comparison_bench.rs`](https://github.com/ice1x/drevo/tree/main/benches/comparison_bench.rs). The whole point
 > is **reproducibility**: drevo's numbers are measured by the harness on *your*
 > machine, and the identical workload is specified below as runnable code against
 > each competitor, so a comparison is something you *run* — never a figure copied
@@ -55,7 +55,7 @@ Criterion prints a confidence interval per operation and writes HTML reports to
 `target/criterion/`. This bench is **not** in the per-PR test path — criterion
 benches only run under `cargo bench`, never `cargo test` — so it never contends
 for the shared CI runner. The scheduled / manual
-[`benchmarks.yml`](../.github/workflows/benchmarks.yml) workflow is the only place
+[`benchmarks.yml`](https://github.com/ice1x/drevo/tree/main/.github/workflows/benchmarks.yml) workflow is the only place
 it runs in CI.
 
 ### Reference run (in-memory backend)
@@ -78,7 +78,7 @@ here.
 | FTS — broad (top 10, all match) | ~135 ms | — | — | — |
 
 > The broad-FTS cost reflects the known trigram-scan hotspot flagged in
-> [`audit/AUDIT-fts.md`](../audit/AUDIT-fts.md) (Performance Watch List); the
+> [`audit/AUDIT-fts.md`](https://github.com/ice1x/drevo/tree/main/audit/AUDIT-fts.md) (Performance Watch List); the
 > [SDK reference](sdk-reference.md) documents `search_fts` semantics.
 
 The redb-backed (persistent) backend is intentionally **not** in this table:
