@@ -160,6 +160,7 @@ use crate::cypher::ast::{
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
+use crate::engine::GraphEngine;
 use crate::error::DrevoError;
 use crate::model::{
     new_uuid_v7, Direction as ModelDirection, Edge, NewEdge, NewNode, Node, Properties,
@@ -1830,6 +1831,18 @@ struct Executor<'a> {
 
 // Default initial result fields — Rust struct init helper.
 impl<'a> Executor<'a> {
+    /// The graph store viewed through the [`GraphEngine`] seam (RFC
+    /// `docs/rfc-native-core.md`, #307). Node/edge **read** paths go through
+    /// this rather than reaching into the concrete [`Drevo`] inherent methods,
+    /// so those paths follow the engine when a native `drevo-core` is swapped
+    /// in. The returned reference carries the `'a` lifetime of the borrowed
+    /// store (not `&self`), so it composes in `&mut self` contexts exactly like
+    /// the former direct field access. Operations not yet on the seam (FTS,
+    /// property/vector indexes, counters, transactions) still use `self.drevo`.
+    fn engine(&self) -> &'a dyn GraphEngine {
+        self.drevo
+    }
+
     fn take_result(self) -> ExecResult {
         ExecResult {
             columns: self.result_columns,
@@ -2138,7 +2151,7 @@ impl<'a> Executor<'a> {
                     } else {
                         edge.from_id
                     };
-                    let next_node = match self.drevo.get_node(other_id)? {
+                    let next_node = match self.engine().get_node(other_id)? {
                         Some(n) => node_to_value(&n),
                         None => continue,
                     };
@@ -2332,7 +2345,7 @@ impl<'a> Executor<'a> {
                 AstDirection::Incoming if edge.to_id != prev_node.id => continue,
                 _ => {}
             }
-            let target = match self.drevo.get_node(other_id)? {
+            let target = match self.engine().get_node(other_id)? {
                 Some(n) => node_to_value(&n),
                 None => continue,
             };
@@ -2519,7 +2532,7 @@ impl<'a> Executor<'a> {
                     } else {
                         edge.from_id
                     };
-                    let next_node = match self.drevo.get_node(other_id)? {
+                    let next_node = match self.engine().get_node(other_id)? {
                         Some(n) => node_to_value(&n),
                         None => continue,
                     };
@@ -2825,13 +2838,13 @@ impl<'a> Executor<'a> {
         }
         // Relationships first so they're not cascade-deleted by node removal.
         for id in &rel_ids {
-            if self.drevo.get_edge(*id)?.is_some() {
+            if self.engine().get_edge(*id)?.is_some() {
                 self.drevo.delete_edge(*id)?;
                 self.stats.relationships_deleted += 1;
             }
         }
         for id in &node_ids {
-            if let Some(_node) = self.drevo.get_node(*id)? {
+            if let Some(_node) = self.engine().get_node(*id)? {
                 let connected = self.drevo.edges_of(*id, ModelDirection::Both)?;
                 if !d.detach && !connected.is_empty() {
                     return Err(ExecError::InvalidMutation(format!(
@@ -3048,7 +3061,7 @@ impl<'a> Executor<'a> {
             self.persist_node_labels(&stored, &current)?;
             self.stats.labels_added += changed;
             // Refresh binding so subsequent clauses see the new labels.
-            if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+            if let Some(refreshed) = self.engine().get_node(nv.id)? {
                 row.insert(var_name.clone(), Value::Node(node_to_value(&refreshed)));
             }
         }
@@ -3144,7 +3157,7 @@ impl<'a> Executor<'a> {
         if removed > 0 {
             self.persist_node_labels(&stored, &current)?;
             self.stats.labels_removed += removed;
-            if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+            if let Some(refreshed) = self.engine().get_node(nv.id)? {
                 row.insert(var_name.clone(), Value::Node(node_to_value(&refreshed)));
             }
         }
@@ -3189,7 +3202,7 @@ impl<'a> Executor<'a> {
             }
         }
         self.drevo.update_node(nv.id, patch)?;
-        if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+        if let Some(refreshed) = self.engine().get_node(nv.id)? {
             row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
         }
         Ok(())
@@ -3203,7 +3216,7 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
-        let stored = self.drevo.get_edge(rv.id)?.ok_or_else(|| {
+        let stored = self.engine().get_edge(rv.id)?.ok_or_else(|| {
             ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
         })?;
         let mut props = stored.properties.clone();
@@ -3224,7 +3237,7 @@ impl<'a> Executor<'a> {
             ..Default::default()
         };
         self.drevo.update_edge(rv.id, patch)?;
-        if let Some(refreshed) = self.drevo.get_edge(rv.id)? {
+        if let Some(refreshed) = self.engine().get_edge(rv.id)? {
             row.insert(
                 var_name.to_string(),
                 Value::Relationship(edge_to_value(&refreshed)),
@@ -3293,7 +3306,7 @@ impl<'a> Executor<'a> {
         }
         patch.properties = Some(next_props);
         self.drevo.update_node(nv.id, patch)?;
-        if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+        if let Some(refreshed) = self.engine().get_node(nv.id)? {
             row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
         }
         Ok(())
@@ -3307,7 +3320,7 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
-        let stored = self.drevo.get_edge(rv.id)?.ok_or_else(|| {
+        let stored = self.engine().get_edge(rv.id)?.ok_or_else(|| {
             ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
         })?;
         let mut next = if merge {
@@ -3334,7 +3347,7 @@ impl<'a> Executor<'a> {
             ..Default::default()
         };
         self.drevo.update_edge(rv.id, patch)?;
-        if let Some(refreshed) = self.drevo.get_edge(rv.id)? {
+        if let Some(refreshed) = self.engine().get_edge(rv.id)? {
             row.insert(
                 var_name.to_string(),
                 Value::Relationship(edge_to_value(&refreshed)),
@@ -3365,7 +3378,7 @@ impl<'a> Executor<'a> {
             }
         }
         self.drevo.update_node(nv.id, patch)?;
-        if let Some(refreshed) = self.drevo.get_node(nv.id)? {
+        if let Some(refreshed) = self.engine().get_node(nv.id)? {
             row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
         }
         Ok(())
@@ -3378,7 +3391,7 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
-        let stored = self.drevo.get_edge(rv.id)?.ok_or_else(|| {
+        let stored = self.engine().get_edge(rv.id)?.ok_or_else(|| {
             ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
         })?;
         let mut props = stored.properties.clone();
@@ -3388,7 +3401,7 @@ impl<'a> Executor<'a> {
             ..Default::default()
         };
         self.drevo.update_edge(rv.id, patch)?;
-        if let Some(refreshed) = self.drevo.get_edge(rv.id)? {
+        if let Some(refreshed) = self.engine().get_edge(rv.id)? {
             row.insert(
                 var_name.to_string(),
                 Value::Relationship(edge_to_value(&refreshed)),
@@ -5649,7 +5662,7 @@ impl<'a> Executor<'a> {
                     Endpoint::Start => rv.from_id,
                     Endpoint::End => rv.to_id,
                 };
-                match self.drevo.get_node(node_id)? {
+                match self.engine().get_node(node_id)? {
                     Some(node) => Ok(Value::Node(node_to_value(&node))),
                     None => Ok(Value::Null),
                 }
