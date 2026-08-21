@@ -3236,7 +3236,7 @@ impl<'a> Executor<'a> {
             properties: Some(props),
             ..Default::default()
         };
-        self.drevo.update_edge(rv.id, patch)?;
+        self.engine().update_edge(rv.id, patch)?;
         if let Some(refreshed) = self.engine().get_edge(rv.id)? {
             row.insert(
                 var_name.to_string(),
@@ -3346,7 +3346,7 @@ impl<'a> Executor<'a> {
             properties: Some(next),
             ..Default::default()
         };
-        self.drevo.update_edge(rv.id, patch)?;
+        self.engine().update_edge(rv.id, patch)?;
         if let Some(refreshed) = self.engine().get_edge(rv.id)? {
             row.insert(
                 var_name.to_string(),
@@ -3400,7 +3400,7 @@ impl<'a> Executor<'a> {
             properties: Some(props),
             ..Default::default()
         };
-        self.drevo.update_edge(rv.id, patch)?;
+        self.engine().update_edge(rv.id, patch)?;
         if let Some(refreshed) = self.engine().get_edge(rv.id)? {
             row.insert(
                 var_name.to_string(),

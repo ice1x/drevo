@@ -26,7 +26,7 @@
 
 use crate::db::Drevo;
 use crate::error::Result;
-use crate::model::{Direction, Edge, NewEdge, NewNode, Node, NodePatch};
+use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 
 /// Graph-level storage and traversal, expressed in graph terms rather than the
 /// byte-key KV vocabulary of [`crate::storage::StorageBackend`].
@@ -80,6 +80,14 @@ pub trait GraphEngine {
     /// # Errors
     /// Propagates any [`crate::error::DrevoError`] from the underlying store.
     fn get_edge(&self, id: u64) -> Result<Option<Edge>>;
+
+    /// Apply a partial update to an edge (kind / weight / properties). Mirrors
+    /// [`Drevo::update_edge`].
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::DrevoError`] from the underlying store
+    /// (e.g. the edge not existing, or a non-finite weight).
+    fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge>;
 
     /// Delete an edge (and its adjacency/index entries). Mirrors
     /// [`Drevo::delete_edge`].
@@ -140,6 +148,10 @@ impl GraphEngine for Drevo {
 
     fn get_edge(&self, id: u64) -> Result<Option<Edge>> {
         Drevo::get_edge(self, id)
+    }
+
+    fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
+        Drevo::update_edge(self, id, patch)
     }
 
     fn delete_edge(&self, id: u64) -> Result<()> {
