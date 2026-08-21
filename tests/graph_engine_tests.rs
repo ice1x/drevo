@@ -135,3 +135,46 @@ fn executor_read_paths_resolve_nodes_and_edges_through_the_seam() {
     assert_eq!(text(&row[1]), "KNOWS");
     assert_eq!(text(&row[2]), "bob");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1.3 — the Cypher executor's node/edge write paths flow through the seam.
+//
+// CREATE (create_node + create_edge), SET (update_node) and DELETE
+// (delete_edge + delete_node) must still mutate the store correctly after the
+// write call sites are routed through the `GraphEngine` accessor.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn executor_write_paths_create_update_delete_through_the_seam() {
+    let db = Drevo::open_in_memory().unwrap();
+
+    // CREATE → create_node ×2 + create_edge ×1.
+    let q = parse("CREATE (a:person {title: 'ann'})-[:KNOWS]->(b:person {title: 'ben'})").unwrap();
+    execute(&q, &db, HashMap::new()).unwrap();
+
+    let ann = db.get_node_by_title("ann").unwrap().expect("ann exists");
+    let ben = db.get_node_by_title("ben").unwrap().expect("ben exists");
+    assert_eq!(
+        db.neighbor_ids(ann.id, Direction::Outgoing, Some("KNOWS"))
+            .unwrap(),
+        vec![ben.id]
+    );
+
+    // SET → update_node.
+    let q = parse("MATCH (a {title: 'ann'}) SET a.body = 'hello'").unwrap();
+    execute(&q, &db, HashMap::new()).unwrap();
+    assert_eq!(db.get_node(ann.id).unwrap().unwrap().body, "hello");
+
+    // DELETE → delete the relationship, then the nodes.
+    let q = parse("MATCH (a {title: 'ann'})-[r]->(b) DELETE r").unwrap();
+    execute(&q, &db, HashMap::new()).unwrap();
+    assert!(db
+        .neighbor_ids(ann.id, Direction::Outgoing, None)
+        .unwrap()
+        .is_empty());
+
+    let q = parse("MATCH (n:person) DELETE n").unwrap();
+    execute(&q, &db, HashMap::new()).unwrap();
+    assert!(db.get_node(ann.id).unwrap().is_none());
+    assert!(db.get_node(ben.id).unwrap().is_none());
+}

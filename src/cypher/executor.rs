@@ -2690,7 +2690,7 @@ impl<'a> Executor<'a> {
             body_html: String::new(),
             properties: Properties::from(storage_props),
         };
-        let stored = self.drevo.create_node(new_node)?;
+        let stored = self.engine().create_node(new_node)?;
         self.stats.nodes_created += 1;
         let nv = node_to_value(&stored);
         if let Some(name) = &pattern.variable {
@@ -2746,7 +2746,7 @@ impl<'a> Executor<'a> {
             weight: 1.0,
             properties: Properties::from(storage_props),
         };
-        let stored = self.drevo.create_edge(new_edge)?;
+        let stored = self.engine().create_edge(new_edge)?;
         self.stats.relationships_created += 1;
         let rv = edge_to_value(&stored);
         if let Some(name) = &rel.variable {
@@ -2839,7 +2839,7 @@ impl<'a> Executor<'a> {
         // Relationships first so they're not cascade-deleted by node removal.
         for id in &rel_ids {
             if self.engine().get_edge(*id)?.is_some() {
-                self.drevo.delete_edge(*id)?;
+                self.engine().delete_edge(*id)?;
                 self.stats.relationships_deleted += 1;
             }
         }
@@ -2853,7 +2853,7 @@ impl<'a> Executor<'a> {
                     )));
                 }
                 let edge_count = connected.len();
-                self.drevo.delete_node(*id)?;
+                self.engine().delete_node(*id)?;
                 self.stats.nodes_deleted += 1;
                 if d.detach {
                     self.stats.relationships_deleted += edge_count;
@@ -3201,7 +3201,7 @@ impl<'a> Executor<'a> {
                 patch.properties = Some(props);
             }
         }
-        self.drevo.update_node(nv.id, patch)?;
+        self.engine().update_node(nv.id, patch)?;
         if let Some(refreshed) = self.engine().get_node(nv.id)? {
             row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
         }
@@ -3305,7 +3305,7 @@ impl<'a> Executor<'a> {
             }
         }
         patch.properties = Some(next_props);
-        self.drevo.update_node(nv.id, patch)?;
+        self.engine().update_node(nv.id, patch)?;
         if let Some(refreshed) = self.engine().get_node(nv.id)? {
             row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
         }
@@ -3377,7 +3377,7 @@ impl<'a> Executor<'a> {
                 patch.properties = Some(props);
             }
         }
-        self.drevo.update_node(nv.id, patch)?;
+        self.engine().update_node(nv.id, patch)?;
         if let Some(refreshed) = self.engine().get_node(nv.id)? {
             row.insert(var_name.to_string(), Value::Node(node_to_value(&refreshed)));
         }
@@ -3430,7 +3430,7 @@ impl<'a> Executor<'a> {
             properties: Some(props),
             ..Default::default()
         };
-        self.drevo.update_node(stored.id, patch)?;
+        self.engine().update_node(stored.id, patch)?;
         Ok(())
     }
 
