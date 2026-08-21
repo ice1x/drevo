@@ -130,6 +130,13 @@ pub mod dump;
 /// `reqwest`-backed proxy backend is further gated on `embeddings-proxy`.
 #[cfg(feature = "http")]
 pub mod embeddings;
+/// The `GraphEngine` seam (RFC `docs/rfc-native-core.md`, issue #307) — the
+/// graph-level abstraction (nodes / edges / adjacency) the query layers will
+/// depend on instead of a concrete store's KV-encoded internals. Introduced
+/// additively: [`db::Drevo`] implements it by delegating to its inherent
+/// methods, so a future native `drevo-core` engine can be a drop-in
+/// alternative.
+pub mod engine;
 pub mod error;
 /// `extern "C"` FFI surface for desktop / mobile embedders. Not built on
 /// `wasm32-unknown-unknown` because the platform has no C ABI.
