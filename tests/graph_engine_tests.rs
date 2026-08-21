@@ -13,7 +13,7 @@ use drevo::cypher::executor::{execute, Value};
 use drevo::cypher::parser::parse;
 use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
-use drevo::model::{Direction, NewEdge, NewNode, NodePatch};
+use drevo::model::{Direction, EdgePatch, NewEdge, NewNode, NodePatch};
 
 fn node(kind: &str, title: &str) -> NewNode {
     NewNode {
@@ -177,4 +177,44 @@ fn executor_write_paths_create_update_delete_through_the_seam() {
     execute(&q, &db, HashMap::new()).unwrap();
     assert!(db.get_node(ann.id).unwrap().is_none());
     assert!(db.get_node(ben.id).unwrap().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1.4 — update_edge on the seam.
+//
+// The seam now carries edge updates. Assert both the direct trait call and a
+// Cypher `SET r.<prop>` (which the executor routes through the seam) mutate
+// the edge.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_edge_through_the_seam_direct_and_via_cypher() {
+    let db = Drevo::open_in_memory().unwrap();
+    let a = db.create_node(node("person", "u")).unwrap();
+    let b = db.create_node(node("person", "v")).unwrap();
+    let e = db.create_edge(edge(a.id, b.id, "LINKS")).unwrap();
+
+    // Direct: bump the weight through &dyn GraphEngine.
+    let engine: &dyn GraphEngine = &db;
+    let updated = engine
+        .update_edge(
+            e.id,
+            EdgePatch {
+                weight: Some(2.5),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.weight, 2.5);
+    assert_eq!(db.get_edge(e.id).unwrap().unwrap().weight, 2.5);
+
+    // Via Cypher: SET on the relationship property flows through the executor's
+    // update_edge site (now on the seam).
+    let q = parse("MATCH ()-[r:LINKS]->() SET r.note = 'x' RETURN r").unwrap();
+    execute(&q, &db, HashMap::new()).unwrap();
+    let stored = db.get_edge(e.id).unwrap().unwrap();
+    assert_eq!(
+        stored.properties.get("note").and_then(|v| v.as_str()),
+        Some("x")
+    );
 }
