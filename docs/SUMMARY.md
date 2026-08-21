@@ -15,3 +15,7 @@
 - [Benchmarks](benchmarks.md)
 - [Load Harness](load-harness.md)
 - [Adjacency Key Schema](adjacency-key-schema.md)
+
+# Design
+
+- [RFC: Native Graph Core](rfc-native-core.md)
