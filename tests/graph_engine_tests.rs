@@ -7,6 +7,10 @@
 //! behaviour as the inherent API. That gives a future native `drevo-core`
 //! engine an executable contract to match.
 
+use std::collections::HashMap;
+
+use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::parser::parse;
 use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{Direction, NewEdge, NewNode, NodePatch};
@@ -97,4 +101,37 @@ fn seam_matches_inherent_api_for_update_and_delete() {
 
     engine.delete_node(b.id).unwrap();
     assert!(db.get_node(b.id).unwrap().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1.2 — the Cypher executor's node/edge read paths flow through the seam.
+//
+// After routing `Executor::get_node` / `get_edge` call sites through the
+// `GraphEngine` accessor, a MATCH that resolves a node, expands a relationship
+// and loads the far node must still return the correct data. This is the
+// behaviour guard for that refactor (the whole cypher_* corpus is the broader
+// net; this pins the specific read paths that were re-routed).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn executor_read_paths_resolve_nodes_and_edges_through_the_seam() {
+    let db = Drevo::open_in_memory().unwrap();
+    let a = db.create_node(node("person", "alice")).unwrap();
+    let b = db.create_node(node("person", "bob")).unwrap();
+    db.create_edge(edge(a.id, b.id, "KNOWS")).unwrap();
+
+    // MATCH resolves `a` (get_node), expands the relationship, loads `b`
+    // (get_node) and materialises the edge (get_edge) for `type(r)`.
+    let q = parse("MATCH (x)-[r]->(y) RETURN x.title, type(r), y.title").unwrap();
+    let res = execute(&q, &db, HashMap::new()).unwrap();
+
+    assert_eq!(res.rows.len(), 1);
+    let row = &res.rows[0];
+    let text = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        other => panic!("expected a string, got {other:?}"),
+    };
+    assert_eq!(text(&row[0]), "alice");
+    assert_eq!(text(&row[1]), "KNOWS");
+    assert_eq!(text(&row[2]), "bob");
 }
