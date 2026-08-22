@@ -533,6 +533,12 @@ pub enum WalOp {
 #[derive(Default)]
 pub struct NativeGraph {
     inner: RwLock<Arc<Inner>>,
+    /// The write-ahead log sink, when the engine was opened durable via
+    /// [`open_durable`](Self::open_durable). `None` for an in-memory-only
+    /// engine ([`new`](Self::new)). Each direct write appends and fsyncs before
+    /// returning, so an acknowledged write survives a crash.
+    #[cfg(not(target_arch = "wasm32"))]
+    wal: Option<std::sync::Mutex<std::fs::File>>,
 }
 
 impl NativeGraph {
@@ -629,7 +635,63 @@ impl NativeGraph {
         }
         NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
+            #[cfg(not(target_arch = "wasm32"))]
+            wal: None,
         }
+    }
+
+    /// Open a **durable** engine backed by a write-ahead log at `path` (RFC
+    /// ACID "D", Phase 3). If the file exists its ops are replayed to
+    /// reconstruct the graph; then the file is opened for append and every
+    /// subsequent direct write is logged and fsynced before it returns, so a
+    /// write that has returned survives a crash. Reopening the same path
+    /// recovers the graph.
+    ///
+    /// Transactions ([`begin`](Self::begin)) are not yet WAL-backed — that is a
+    /// later slice; use the direct write methods for durable mutations.
+    ///
+    /// # Errors
+    /// [`DrevoError::Io`] / [`DrevoError::Json`] on a filesystem or log-parse
+    /// failure.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_durable(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        use std::io::{BufRead, BufReader};
+        let path = path.as_ref();
+        let mut inner = Inner::default();
+        if path.exists() {
+            let f = std::fs::File::open(path)?;
+            for line in BufReader::new(f).lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let op: WalOp = serde_json::from_str(&line)?;
+                inner.apply_wal_op(op);
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(NativeGraph {
+            inner: RwLock::new(Arc::new(inner)),
+            wal: Some(std::sync::Mutex::new(file)),
+        })
+    }
+
+    /// Append one op to the WAL and fsync, when this engine is durable. A no-op
+    /// for an in-memory-only engine.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wal_append(&self, op: &WalOp) -> Result<()> {
+        use std::io::Write;
+        if let Some(wal) = &self.wal {
+            let mut f = wal.lock().unwrap_or_else(|e| e.into_inner());
+            let mut line = serde_json::to_string(op)?;
+            line.push('\n');
+            f.write_all(line.as_bytes())?;
+            f.sync_all()?;
+        }
+        Ok(())
     }
 }
 
@@ -769,7 +831,10 @@ fn write(inner: &RwLock<Arc<Inner>>) -> std::sync::RwLockWriteGuard<'_, Arc<Inne
 
 impl GraphEngine for NativeGraph {
     fn create_node(&self, new_node: NewNode) -> Result<Node> {
-        Arc::make_mut(&mut write(&self.inner)).create_node(new_node)
+        let node = Arc::make_mut(&mut write(&self.inner)).create_node(new_node)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.wal_append(&WalOp::UpsertNode(node.clone()))?;
+        Ok(node)
     }
 
     fn get_node(&self, id: u64) -> Result<Option<Node>> {
@@ -777,15 +842,24 @@ impl GraphEngine for NativeGraph {
     }
 
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
-        Arc::make_mut(&mut write(&self.inner)).update_node(id, patch)
+        let node = Arc::make_mut(&mut write(&self.inner)).update_node(id, patch)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.wal_append(&WalOp::UpsertNode(node.clone()))?;
+        Ok(node)
     }
 
     fn delete_node(&self, id: u64) -> Result<()> {
-        Arc::make_mut(&mut write(&self.inner)).delete_node(id)
+        Arc::make_mut(&mut write(&self.inner)).delete_node(id)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.wal_append(&WalOp::DeleteNode(id))?;
+        Ok(())
     }
 
     fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
-        Arc::make_mut(&mut write(&self.inner)).create_edge(new_edge)
+        let edge = Arc::make_mut(&mut write(&self.inner)).create_edge(new_edge)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.wal_append(&WalOp::UpsertEdge(edge.clone()))?;
+        Ok(edge)
     }
 
     fn get_edge(&self, id: u64) -> Result<Option<Edge>> {
@@ -793,11 +867,17 @@ impl GraphEngine for NativeGraph {
     }
 
     fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
-        Arc::make_mut(&mut write(&self.inner)).update_edge(id, patch)
+        let edge = Arc::make_mut(&mut write(&self.inner)).update_edge(id, patch)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.wal_append(&WalOp::UpsertEdge(edge.clone()))?;
+        Ok(edge)
     }
 
     fn delete_edge(&self, id: u64) -> Result<()> {
-        Arc::make_mut(&mut write(&self.inner)).delete_edge(id)
+        Arc::make_mut(&mut write(&self.inner)).delete_edge(id)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.wal_append(&WalOp::DeleteEdge(id))?;
+        Ok(())
     }
 
     fn neighbor_ids(

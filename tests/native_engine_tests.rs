@@ -760,3 +760,50 @@ fn wal_replay_honours_delete_ops_and_advances_ids() {
     let c = g.create_node(new_node("k", "c")).unwrap();
     assert!(c.id > a.id && c.id > b.id);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.5 — file-backed WAL (ACID "D"): direct writes are fsynced to a log,
+// and reopening the path reconstructs the graph after a "crash" (drop).
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn durable_wal_survives_reopen() {
+    use drevo::native::NativeGraph;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.wal");
+
+    let (a_id, b_id, e_id) = {
+        let g = NativeGraph::open_durable(&path).unwrap();
+        let a = g.create_node(new_node("k", "a")).unwrap();
+        let b = g.create_node(new_node("k", "b")).unwrap();
+        let e = g.create_edge(new_edge(a.id, b.id, "KNOWS", 2.0)).unwrap();
+        g.update_node(
+            b.id,
+            NodePatch {
+                body: Some("hi".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // A create+delete pair must not resurrect on replay.
+        let ghost = g.create_node(new_node("k", "ghost")).unwrap();
+        g.delete_node(ghost.id).unwrap();
+        (a.id, b.id, e.id)
+    }; // engine dropped — equivalent to a crash (every write already fsynced)
+
+    // Reopen: the graph is reconstructed purely from the WAL.
+    let g2 = NativeGraph::open_durable(&path).unwrap();
+    assert_eq!(g2.all_nodes().unwrap().len(), 2);
+    assert_eq!(g2.get_node(b_id).unwrap().unwrap().body, "hi");
+    assert_eq!(
+        g2.neighbor_ids(a_id, Direction::Outgoing, None).unwrap(),
+        vec![b_id]
+    );
+    assert_eq!(g2.get_edge(e_id).unwrap().unwrap().weight, 2.0);
+
+    // Recovery advanced the id counters: a new node gets a fresh id.
+    let n = g2.create_node(new_node("k", "after")).unwrap();
+    assert!(n.id > b_id);
+}
