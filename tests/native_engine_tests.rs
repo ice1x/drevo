@@ -488,3 +488,62 @@ fn native_matches_drevo_under_randomized_workload() {
     assert!(a.all_nodes().unwrap().len() > 5);
     assert!(a.all_edges().unwrap().len() > 5);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.1 — snapshot isolation for reads.
+//
+// A GraphSnapshot is a frozen, consistent view: writes to the engine after the
+// snapshot is taken must not change what the snapshot reports, and a fresh
+// snapshot must reflect them.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn snapshot_is_isolated_from_later_writes() {
+    use drevo::native::NativeGraph;
+
+    let g = NativeGraph::new();
+    let a = g.create_node(new_node("person", "a")).unwrap();
+    let b = g.create_node(new_node("person", "b")).unwrap();
+    let e = g.create_edge(new_edge(a.id, b.id, "KNOWS", 1.0)).unwrap();
+
+    // Freeze the state.
+    let snap = g.snapshot();
+    assert_eq!(snap.all_nodes().len(), 2);
+    assert_eq!(snap.all_edges().len(), 1);
+    assert_eq!(
+        snap.neighbor_ids(a.id, Direction::Outgoing, None),
+        vec![b.id]
+    );
+
+    // Mutate the live engine every which way.
+    let c = g.create_node(new_node("person", "c")).unwrap();
+    g.create_edge(new_edge(a.id, c.id, "KNOWS", 1.0)).unwrap();
+    g.delete_edge(e.id).unwrap();
+    g.update_node(
+        b.id,
+        NodePatch {
+            title: Some("b2".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // The snapshot is unchanged — still the frozen 2-node, 1-edge graph.
+    assert_eq!(snap.all_nodes().len(), 2);
+    assert_eq!(snap.all_edges().len(), 1);
+    assert_eq!(
+        snap.neighbor_ids(a.id, Direction::Outgoing, None),
+        vec![b.id]
+    );
+    assert_eq!(snap.get_node(b.id).unwrap().title, "b");
+    assert!(snap.get_node(c.id).is_none());
+
+    // A fresh snapshot reflects the writes.
+    let snap2 = g.snapshot();
+    assert_eq!(snap2.all_nodes().len(), 3);
+    assert_eq!(snap2.all_edges().len(), 1); // e deleted, a->c added
+    let mut ns = snap2.neighbor_ids(a.id, Direction::Outgoing, None);
+    ns.sort_unstable();
+    assert_eq!(ns, vec![c.id]);
+    assert_eq!(snap2.get_node(b.id).unwrap().title, "b2");
+}
