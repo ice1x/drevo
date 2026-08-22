@@ -495,6 +495,9 @@ pub enum CommitError {
     Conflict,
     /// The transaction's writes would violate a declared [`Constraint`].
     Constraint(ConstraintViolation),
+    /// Writing the transaction to the write-ahead log failed (durable engine
+    /// only). The transaction is not applied; the message is the I/O error.
+    Io(String),
 }
 
 impl std::fmt::Display for CommitError {
@@ -505,6 +508,7 @@ impl std::fmt::Display for CommitError {
                 "transaction conflict: the graph changed since the transaction began; retry"
             ),
             CommitError::Constraint(v) => write!(f, "{v}"),
+            CommitError::Io(e) => write!(f, "write-ahead log write failed: {e}"),
         }
     }
 }
@@ -573,6 +577,7 @@ impl NativeGraph {
             engine: self,
             working: Arc::clone(&base),
             base,
+            ops: Vec::new(),
         }
     }
 
@@ -647,8 +652,9 @@ impl NativeGraph {
     /// write that has returned survives a crash. Reopening the same path
     /// recovers the graph.
     ///
-    /// Transactions ([`begin`](Self::begin)) are not yet WAL-backed — that is a
-    /// later slice; use the direct write methods for durable mutations.
+    /// Both direct writes and transactions ([`begin`](Self::begin)) are durable:
+    /// a committed transaction is logged as one fsynced batch, so it recovers
+    /// all-or-nothing.
     ///
     /// # Errors
     /// [`DrevoError::Io`] / [`DrevoError::Json`] on a filesystem or log-parse
@@ -683,12 +689,25 @@ impl NativeGraph {
     /// for an in-memory-only engine.
     #[cfg(not(target_arch = "wasm32"))]
     fn wal_append(&self, op: &WalOp) -> Result<()> {
+        self.wal_append_batch(std::slice::from_ref(op))
+    }
+
+    /// Append a batch of ops and fsync **once**, when this engine is durable —
+    /// the transaction path, so a whole commit costs a single fsync. A no-op for
+    /// an in-memory-only engine or an empty batch.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wal_append_batch(&self, ops: &[WalOp]) -> Result<()> {
         use std::io::Write;
+        if ops.is_empty() {
+            return Ok(());
+        }
         if let Some(wal) = &self.wal {
             let mut f = wal.lock().unwrap_or_else(|e| e.into_inner());
-            let mut line = serde_json::to_string(op)?;
-            line.push('\n');
-            f.write_all(line.as_bytes())?;
+            for op in ops {
+                let mut line = serde_json::to_string(op)?;
+                line.push('\n');
+                f.write_all(line.as_bytes())?;
+            }
             f.sync_all()?;
         }
         Ok(())
@@ -708,6 +727,10 @@ pub struct NativeTx<'a> {
     /// The private working copy; starts shared with `base` and copy-on-writes
     /// on the first mutation.
     working: Arc<Inner>,
+    /// The write-ahead-log ops this transaction produced, in causal order,
+    /// flushed to the engine's WAL as one atomic batch at commit (durable
+    /// engine only).
+    ops: Vec<WalOp>,
 }
 
 impl NativeTx<'_> {
@@ -729,6 +752,13 @@ impl NativeTx<'_> {
         self.working
             .validate_constraints()
             .map_err(CommitError::Constraint)?;
+        // Durability: log the whole transaction as one fsynced batch *before*
+        // the swap, so the commit is all-or-nothing — an I/O failure leaves the
+        // graph and the log untouched. A no-op on a non-durable engine.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.engine
+            .wal_append_batch(&self.ops)
+            .map_err(|e| CommitError::Io(e.to_string()))?;
         *live = self.working;
         Ok(())
     }
@@ -772,7 +802,9 @@ impl NativeTx<'_> {
     /// [`DrevoError::DuplicateTitle`]
     /// if the title is taken in the transaction's view.
     pub fn create_node(&mut self, new_node: NewNode) -> Result<Node> {
-        Arc::make_mut(&mut self.working).create_node(new_node)
+        let node = Arc::make_mut(&mut self.working).create_node(new_node)?;
+        self.ops.push(WalOp::UpsertNode(node.clone()));
+        Ok(node)
     }
 
     /// Update a node within the transaction.
@@ -780,7 +812,9 @@ impl NativeTx<'_> {
     /// # Errors
     /// Propagates any [`DrevoError`] from the update.
     pub fn update_node(&mut self, id: u64, patch: NodePatch) -> Result<Node> {
-        Arc::make_mut(&mut self.working).update_node(id, patch)
+        let node = Arc::make_mut(&mut self.working).update_node(id, patch)?;
+        self.ops.push(WalOp::UpsertNode(node.clone()));
+        Ok(node)
     }
 
     /// Delete a node (and its incident edges) within the transaction.
@@ -789,7 +823,9 @@ impl NativeTx<'_> {
     /// [`DrevoError::NodeNotFound`] if
     /// absent in the transaction's view.
     pub fn delete_node(&mut self, id: u64) -> Result<()> {
-        Arc::make_mut(&mut self.working).delete_node(id)
+        Arc::make_mut(&mut self.working).delete_node(id)?;
+        self.ops.push(WalOp::DeleteNode(id));
+        Ok(())
     }
 
     /// Create an edge within the transaction.
@@ -797,7 +833,9 @@ impl NativeTx<'_> {
     /// # Errors
     /// Propagates any [`DrevoError`] from the create.
     pub fn create_edge(&mut self, new_edge: NewEdge) -> Result<Edge> {
-        Arc::make_mut(&mut self.working).create_edge(new_edge)
+        let edge = Arc::make_mut(&mut self.working).create_edge(new_edge)?;
+        self.ops.push(WalOp::UpsertEdge(edge.clone()));
+        Ok(edge)
     }
 
     /// Update an edge within the transaction.
@@ -805,7 +843,9 @@ impl NativeTx<'_> {
     /// # Errors
     /// Propagates any [`DrevoError`] from the update.
     pub fn update_edge(&mut self, id: u64, patch: EdgePatch) -> Result<Edge> {
-        Arc::make_mut(&mut self.working).update_edge(id, patch)
+        let edge = Arc::make_mut(&mut self.working).update_edge(id, patch)?;
+        self.ops.push(WalOp::UpsertEdge(edge.clone()));
+        Ok(edge)
     }
 
     /// Delete an edge within the transaction.
@@ -814,7 +854,9 @@ impl NativeTx<'_> {
     /// [`DrevoError::EdgeNotFound`] if
     /// absent in the transaction's view.
     pub fn delete_edge(&mut self, id: u64) -> Result<()> {
-        Arc::make_mut(&mut self.working).delete_edge(id)
+        Arc::make_mut(&mut self.working).delete_edge(id)?;
+        self.ops.push(WalOp::DeleteEdge(id));
+        Ok(())
     }
 }
 
