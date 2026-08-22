@@ -547,3 +547,73 @@ fn snapshot_is_isolated_from_later_writes() {
     assert_eq!(ns, vec![c.id]);
     assert_eq!(snap2.get_node(b.id).unwrap().title, "b2");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.2 — transactions: snapshot-isolated buffered writes, atomic commit,
+// rollback, and optimistic conflict detection.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn native_tx_buffers_writes_until_commit() {
+    use drevo::native::NativeGraph;
+    let g = NativeGraph::new();
+    let seed = g.create_node(new_node("k", "seed")).unwrap();
+
+    let mut tx = g.begin();
+    let a = tx.create_node(new_node("k", "a")).unwrap();
+    tx.create_edge(new_edge(seed.id, a.id, "E", 1.0)).unwrap();
+
+    // The tx sees its own writes; the live engine does not yet.
+    assert!(tx.get_node(a.id).is_some());
+    assert!(g.get_node(a.id).unwrap().is_none());
+    assert_eq!(g.all_nodes().unwrap().len(), 1);
+
+    tx.commit().unwrap();
+
+    // After commit the live engine reflects everything atomically.
+    assert!(g.get_node(a.id).unwrap().is_some());
+    assert_eq!(g.all_nodes().unwrap().len(), 2);
+    assert_eq!(
+        g.neighbor_ids(seed.id, Direction::Outgoing, None).unwrap(),
+        vec![a.id]
+    );
+}
+
+#[test]
+fn native_tx_rollback_discards_writes() {
+    use drevo::native::NativeGraph;
+    let g = NativeGraph::new();
+    g.create_node(new_node("k", "keep")).unwrap();
+    let before = g.all_nodes().unwrap().len();
+
+    let mut tx = g.begin();
+    tx.create_node(new_node("k", "ghost")).unwrap();
+    tx.rollback();
+
+    assert_eq!(g.all_nodes().unwrap().len(), before);
+}
+
+#[test]
+fn native_tx_detects_write_conflict() {
+    use drevo::native::NativeGraph;
+    let g = NativeGraph::new();
+
+    // Two transactions from the same base.
+    let mut t1 = g.begin();
+    let mut t2 = g.begin();
+    t1.create_node(new_node("k", "x")).unwrap();
+    t2.create_node(new_node("k", "y")).unwrap();
+
+    // First commit wins; the second sees the graph moved under it and conflicts.
+    t1.commit().unwrap();
+    assert!(t2.commit().is_err());
+
+    // The winner's write is the only one applied.
+    let titles: Vec<String> = g
+        .all_nodes()
+        .unwrap()
+        .into_iter()
+        .map(|n| n.title)
+        .collect();
+    assert_eq!(titles, vec!["x".to_string()]);
+}

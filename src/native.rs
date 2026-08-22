@@ -381,6 +381,161 @@ impl NativeGraph {
             inner: Arc::clone(&read(&self.inner)),
         }
     }
+
+    /// Begin a [`NativeTx`] — a transaction that reads a consistent snapshot of
+    /// the graph as of now, buffers its writes privately, and applies them all
+    /// atomically on [`commit`](NativeTx::commit) (RFC ACID "I"/"A", Phase 3).
+    ///
+    /// Isolation is snapshot: the transaction never sees another writer's
+    /// changes made after it began. Concurrency control is optimistic — the
+    /// commit succeeds only if the graph has not changed since the transaction
+    /// began, otherwise it returns [`TransactionConflict`] and the caller
+    /// retries. Dropping the transaction without committing rolls it back.
+    pub fn begin(&self) -> NativeTx<'_> {
+        let base = Arc::clone(&read(&self.inner));
+        NativeTx {
+            engine: self,
+            working: Arc::clone(&base),
+            base,
+        }
+    }
+}
+
+/// Returned by [`NativeTx::commit`] when the graph changed since the
+/// transaction began, so the transaction's snapshot is stale. The write was
+/// **not** applied; the caller should retry the transaction against the new
+/// state. (A local error type, so it does not widen the crate-wide
+/// [`DrevoError`].)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionConflict;
+
+impl std::fmt::Display for TransactionConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "transaction conflict: the graph changed since the transaction began; retry"
+        )
+    }
+}
+
+impl std::error::Error for TransactionConflict {}
+
+/// A transaction over a [`NativeGraph`]: reads a consistent snapshot taken at
+/// [`begin`](NativeGraph::begin), buffers writes on a private working copy, and
+/// applies them atomically at [`commit`](Self::commit) (or discards them on
+/// [`rollback`](Self::rollback) / drop). Reads reflect the transaction's own
+/// buffered writes (read-your-writes). See [`NativeGraph::begin`].
+pub struct NativeTx<'a> {
+    engine: &'a NativeGraph,
+    /// The snapshot the transaction began from — used to detect, at commit, a
+    /// concurrent change (the live `Arc` pointer will differ).
+    base: Arc<Inner>,
+    /// The private working copy; starts shared with `base` and copy-on-writes
+    /// on the first mutation.
+    working: Arc<Inner>,
+}
+
+impl NativeTx<'_> {
+    /// Commit the buffered writes atomically. Succeeds only if the graph has
+    /// not changed since [`begin`](NativeGraph::begin); otherwise the write is
+    /// discarded and [`TransactionConflict`] is returned for the caller to
+    /// retry.
+    ///
+    /// # Errors
+    /// [`TransactionConflict`] if another writer committed since this
+    /// transaction began.
+    pub fn commit(self) -> std::result::Result<(), TransactionConflict> {
+        let mut live = write(&self.engine.inner);
+        if !Arc::ptr_eq(&live, &self.base) {
+            return Err(TransactionConflict);
+        }
+        *live = self.working;
+        Ok(())
+    }
+
+    /// Discard the transaction's buffered writes. Equivalent to dropping it.
+    pub fn rollback(self) {}
+
+    // ----- reads (reflect the transaction's own buffered writes) -------------
+
+    /// Fetch a node by id within the transaction.
+    pub fn get_node(&self, id: u64) -> Option<Node> {
+        self.working.get_node(id)
+    }
+
+    /// Fetch an edge by id within the transaction.
+    pub fn get_edge(&self, id: u64) -> Option<Edge> {
+        self.working.get_edge(id)
+    }
+
+    /// Distinct neighbour ids within the transaction.
+    pub fn neighbor_ids(&self, node_id: u64, direction: Direction, kind: Option<&str>) -> Vec<u64> {
+        self.working.neighbor_ids(node_id, direction, kind)
+    }
+
+    /// Every node visible within the transaction.
+    pub fn all_nodes(&self) -> Vec<Node> {
+        self.working.all_nodes()
+    }
+
+    /// Every edge visible within the transaction.
+    pub fn all_edges(&self) -> Vec<Edge> {
+        self.working.all_edges()
+    }
+
+    // ----- writes (buffered on the private working copy) ---------------------
+
+    /// Create a node within the transaction. Mirrors
+    /// [`GraphEngine::create_node`].
+    ///
+    /// # Errors
+    /// [`DrevoError::DuplicateTitle`]
+    /// if the title is taken in the transaction's view.
+    pub fn create_node(&mut self, new_node: NewNode) -> Result<Node> {
+        Arc::make_mut(&mut self.working).create_node(new_node)
+    }
+
+    /// Update a node within the transaction.
+    ///
+    /// # Errors
+    /// Propagates any [`DrevoError`] from the update.
+    pub fn update_node(&mut self, id: u64, patch: NodePatch) -> Result<Node> {
+        Arc::make_mut(&mut self.working).update_node(id, patch)
+    }
+
+    /// Delete a node (and its incident edges) within the transaction.
+    ///
+    /// # Errors
+    /// [`DrevoError::NodeNotFound`] if
+    /// absent in the transaction's view.
+    pub fn delete_node(&mut self, id: u64) -> Result<()> {
+        Arc::make_mut(&mut self.working).delete_node(id)
+    }
+
+    /// Create an edge within the transaction.
+    ///
+    /// # Errors
+    /// Propagates any [`DrevoError`] from the create.
+    pub fn create_edge(&mut self, new_edge: NewEdge) -> Result<Edge> {
+        Arc::make_mut(&mut self.working).create_edge(new_edge)
+    }
+
+    /// Update an edge within the transaction.
+    ///
+    /// # Errors
+    /// Propagates any [`DrevoError`] from the update.
+    pub fn update_edge(&mut self, id: u64, patch: EdgePatch) -> Result<Edge> {
+        Arc::make_mut(&mut self.working).update_edge(id, patch)
+    }
+
+    /// Delete an edge within the transaction.
+    ///
+    /// # Errors
+    /// [`DrevoError::EdgeNotFound`] if
+    /// absent in the transaction's view.
+    pub fn delete_edge(&mut self, id: u64) -> Result<()> {
+        Arc::make_mut(&mut self.working).delete_edge(id)
+    }
 }
 
 /// Recover a poisoned lock rather than propagating the panic — matches the
