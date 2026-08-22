@@ -443,20 +443,66 @@ impl Inner {
     /// Neo4j), and flags the first pair that shares a value.
     fn validate_constraints(&self) -> std::result::Result<(), ConstraintViolation> {
         for c in &self.constraints {
-            let Constraint::UniqueNodeProperty { kind, property } = c;
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for n in self.nodes.values() {
-                if &n.kind != kind {
-                    continue;
+            match c {
+                Constraint::UniqueNodeProperty { kind, property } => {
+                    let mut seen: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    for n in self.nodes.values().filter(|n| &n.kind == kind) {
+                        if let Some(v) = n.properties.0.get(property) {
+                            let value = v.to_string();
+                            if !seen.insert(value.clone()) {
+                                return Err(ConstraintViolation {
+                                    kind: kind.clone(),
+                                    message: format!(
+                                        "duplicate value {value} for unique property `{property}`"
+                                    ),
+                                });
+                            }
+                        }
+                    }
                 }
-                if let Some(v) = n.properties.0.get(property) {
-                    let value = v.to_string();
-                    if !seen.insert(value.clone()) {
-                        return Err(ConstraintViolation {
-                            kind: kind.clone(),
-                            property: property.clone(),
-                            value,
-                        });
+                Constraint::PropertyExists { kind, property } => {
+                    for n in self.nodes.values().filter(|n| &n.kind == kind) {
+                        if !n.properties.0.contains_key(property) {
+                            return Err(ConstraintViolation {
+                                kind: kind.clone(),
+                                message: format!(
+                                    "node {} is missing required property `{property}`",
+                                    n.id
+                                ),
+                            });
+                        }
+                    }
+                }
+                Constraint::NodeKey { kind, properties } => {
+                    let mut seen: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    for n in self.nodes.values().filter(|n| &n.kind == kind) {
+                        let mut parts = Vec::with_capacity(properties.len());
+                        for p in properties {
+                            match n.properties.0.get(p) {
+                                Some(v) => parts.push(v.to_string()),
+                                None => {
+                                    return Err(ConstraintViolation {
+                                        kind: kind.clone(),
+                                        message: format!(
+                                            "node {} is missing node-key property `{p}`",
+                                            n.id
+                                        ),
+                                    })
+                                }
+                            }
+                        }
+                        // Unit separator joins the tuple into one comparable key.
+                        let key = parts.join("\u{1f}");
+                        if !seen.insert(key) {
+                            return Err(ConstraintViolation {
+                                kind: kind.clone(),
+                                message: format!(
+                                    "duplicate node key {parts:?} on properties {properties:?}"
+                                ),
+                            });
+                        }
                     }
                 }
             }
@@ -466,7 +512,8 @@ impl Inner {
 }
 
 /// A schema constraint a [`NativeGraph`] enforces at transaction commit
-/// (RFC ACID "C", Phase 3).
+/// (RFC ACID "C", Phase 3) — the Neo4j-parity set: UNIQUE, property EXISTS, and
+/// NODE KEY.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Constraint {
     /// Among nodes of `kind`, the value of `property` must be unique. Nodes of
@@ -477,26 +524,41 @@ pub enum Constraint {
         /// The property whose value must be unique within that kind.
         property: String,
     },
+    /// Every node of `kind` must carry `property` (Neo4j property-existence
+    /// constraint).
+    PropertyExists {
+        /// The node kind the constraint applies to.
+        kind: String,
+        /// The property every such node must have.
+        property: String,
+    },
+    /// The tuple of `properties` is unique among nodes of `kind`, **and** every
+    /// such node must carry all of them — Neo4j's NODE KEY (existence +
+    /// uniqueness of the combination).
+    NodeKey {
+        /// The node kind the constraint applies to.
+        kind: String,
+        /// The properties whose combination forms the key.
+        properties: Vec<String>,
+    },
 }
 
-/// The details of a [`Constraint`] that was violated: which kind/property, and
-/// the (JSON-encoded) value that appeared more than once.
+/// The details of a [`Constraint`] that was violated: the node kind and a
+/// human-readable description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstraintViolation {
     /// The node kind whose constraint was violated.
     pub kind: String,
-    /// The constrained property.
-    pub property: String,
-    /// The duplicated value, JSON-encoded.
-    pub value: String,
+    /// A human-readable description of the violation.
+    pub message: String,
 }
 
 impl std::fmt::Display for ConstraintViolation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "unique constraint on {}.{} violated by duplicate value {}",
-            self.kind, self.property, self.value
+            "constraint on `{}` violated: {}",
+            self.kind, self.message
         )
     }
 }
