@@ -120,6 +120,35 @@ pub trait GraphEngine {
         direction: Direction,
         kind: Option<&str>,
     ) -> Result<Vec<Node>>;
+
+    /// Return the full [`Edge`] records incident to `node_id` in `direction`
+    /// (the weighted/full-edge expansion, which loads each edge record —
+    /// unlike [`neighbor_ids`](Self::neighbor_ids)). Mirrors [`Drevo::edges_of`].
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::DrevoError`] from the underlying store.
+    fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>>;
+
+    /// Return **every** node in the store (a full scan — the label-less
+    /// `MATCH (n)`). Mirrors `Drevo::collect_all_nodes`.
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::DrevoError`] from the underlying store.
+    fn all_nodes(&self) -> Result<Vec<Node>>;
+
+    /// Return **every** edge in the store (a full scan — the anonymous
+    /// `MATCH ()-[r]->()`). Mirrors `Drevo::collect_all_edges`.
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::DrevoError`] from the underlying store.
+    fn all_edges(&self) -> Result<Vec<Edge>>;
+
+    /// Return nodes of a given `kind` (label scan), paginated by `limit` /
+    /// `offset`. Mirrors [`Drevo::list_nodes_by_kind`].
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::DrevoError`] from the underlying store.
+    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>>;
 }
 
 /// The current KV-backed store is the first `GraphEngine` implementation. Every
@@ -174,5 +203,21 @@ impl GraphEngine for Drevo {
         kind: Option<&str>,
     ) -> Result<Vec<Node>> {
         Drevo::neighbors(self, node_id, direction, kind)
+    }
+
+    fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>> {
+        Drevo::edges_of(self, node_id, direction)
+    }
+
+    fn all_nodes(&self) -> Result<Vec<Node>> {
+        Drevo::collect_all_nodes(self)
+    }
+
+    fn all_edges(&self) -> Result<Vec<Edge>> {
+        Drevo::collect_all_edges(self)
+    }
+
+    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>> {
+        Drevo::list_nodes_by_kind(self, kind, limit, offset)
     }
 }

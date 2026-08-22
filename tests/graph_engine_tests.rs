@@ -218,3 +218,51 @@ fn update_edge_through_the_seam_direct_and_via_cypher() {
         Some("x")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1.5 — read-scan surface on the seam.
+//
+// Full scans (all_nodes / all_edges), the kind (label) scan, and full-edge
+// expansion (edges_of) now go through GraphEngine. Assert both the direct
+// trait calls and the Cypher forms that the executor routes onto them.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scans_and_edges_of_through_the_seam() {
+    let db = Drevo::open_in_memory().unwrap();
+    let a = db.create_node(node("person", "p1")).unwrap();
+    let b = db.create_node(node("person", "p2")).unwrap();
+    let t = db.create_node(node("tag", "t1")).unwrap();
+    db.create_edge(edge(a.id, b.id, "KNOWS")).unwrap();
+    db.create_edge(edge(a.id, t.id, "TAGGED")).unwrap();
+
+    let engine: &dyn GraphEngine = &db;
+
+    // Full scans.
+    assert_eq!(engine.all_nodes().unwrap().len(), 3);
+    assert_eq!(engine.all_edges().unwrap().len(), 2);
+
+    // Label scan.
+    let people = engine.nodes_by_kind("person", 10, 0).unwrap();
+    assert_eq!(people.len(), 2);
+    assert!(people.iter().all(|n| n.kind == "person"));
+
+    // Full-edge expansion loads the whole Edge records.
+    let mut out = engine.edges_of(a.id, Direction::Outgoing).unwrap();
+    out.sort_by(|x, y| x.kind.cmp(&y.kind));
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].kind, "KNOWS");
+    assert_eq!(out[1].kind, "TAGGED");
+
+    // Via Cypher: label-less scan, label scan, anonymous relationship scan.
+    let count = |src: &str| -> i64 {
+        let q = parse(src).unwrap();
+        match &execute(&q, &db, HashMap::new()).unwrap().rows[0][0] {
+            Value::Integer(n) => *n,
+            other => panic!("expected int, got {other:?}"),
+        }
+    };
+    assert_eq!(count("MATCH (n) RETURN count(n)"), 3);
+    assert_eq!(count("MATCH (n:person) RETURN count(n)"), 2);
+    assert_eq!(count("MATCH ()-[r]->() RETURN count(r)"), 2);
+}
