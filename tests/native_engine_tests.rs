@@ -846,3 +846,55 @@ fn durable_tx_commit_persists_and_rollback_does_not() {
     let edges = g2.all_edges().unwrap();
     assert_eq!(edges[0].weight, 1.5);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.7 — WAL compaction: rewrite the log as the compact snapshot form so
+// it does not grow without bound, without changing the recovered graph.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn compact_wal_shrinks_log_and_preserves_state() {
+    use drevo::native::NativeGraph;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.wal");
+
+    let node_id;
+    {
+        let g = NativeGraph::open_durable(&path).unwrap();
+        let a = g.create_node(new_node("k", "a")).unwrap();
+        let b = g.create_node(new_node("k", "b")).unwrap();
+        g.create_edge(new_edge(a.id, b.id, "E", 1.0)).unwrap();
+        node_id = a.id;
+
+        // Many overwrites of the same node append many superseded log lines.
+        for i in 0..50 {
+            g.update_node(
+                a.id,
+                NodePatch {
+                    body: Some(format!("v{i}")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let lines_before = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert!(lines_before > 50);
+
+        g.compact_wal().unwrap();
+        let lines_after = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines_after, 3); // 2 nodes + 1 edge, snapshot form
+        assert!(lines_after < lines_before);
+
+        // The engine keeps working; a further write appends to the compacted log.
+        g.create_node(new_node("k", "c")).unwrap();
+    } // crash
+
+    // Reopen: the compacted snapshot plus the post-compaction write replay to
+    // the correct final state.
+    let g2 = NativeGraph::open_durable(&path).unwrap();
+    assert_eq!(g2.all_nodes().unwrap().len(), 3);
+    assert_eq!(g2.get_node(node_id).unwrap().unwrap().body, "v49");
+    assert_eq!(g2.all_edges().unwrap().len(), 1);
+}
