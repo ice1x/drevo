@@ -898,3 +898,114 @@ fn compact_wal_shrinks_log_and_preserves_state() {
     assert_eq!(g2.get_node(node_id).unwrap().unwrap().body, "v49");
     assert_eq!(g2.all_edges().unwrap().len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.8 — EXISTS and NODE KEY constraints, rounding out ACID "C" to full
+// Neo4j schema-constraint parity. All validated at transaction commit.
+// ---------------------------------------------------------------------------
+
+fn node_with_props(kind: &str, title: &str, props: &[(&str, &str)]) -> NewNode {
+    let mut nn = new_node(kind, title);
+    nn.properties = drevo::model::Properties(
+        props
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+            .collect(),
+    );
+    nn
+}
+
+#[test]
+fn native_property_exists_constraint() {
+    use drevo::native::{CommitError, Constraint, NativeGraph};
+
+    let g = NativeGraph::new();
+    g.add_constraint(Constraint::PropertyExists {
+        kind: "user".into(),
+        property: "email".into(),
+    })
+    .unwrap();
+
+    // A user without the required property is rejected at commit.
+    let mut tx = g.begin();
+    tx.create_node(new_node("user", "no-email")).unwrap();
+    assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
+    assert_eq!(g.all_nodes().unwrap().len(), 0);
+
+    // With the property, it commits; other kinds are unaffected.
+    let mut tx = g.begin();
+    tx.create_node(node_with_props("user", "u", &[("email", "a@x")]))
+        .unwrap();
+    tx.create_node(new_node("bot", "b")).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(g.all_nodes().unwrap().len(), 2);
+}
+
+#[test]
+fn native_node_key_constraint() {
+    use drevo::native::{CommitError, Constraint, NativeGraph};
+
+    let g = NativeGraph::new();
+    g.add_constraint(Constraint::NodeKey {
+        kind: "person".into(),
+        properties: vec!["first".into(), "last".into()],
+    })
+    .unwrap();
+
+    // Missing a key property → rejected.
+    let mut tx = g.begin();
+    tx.create_node(node_with_props("person", "p", &[("first", "ann")]))
+        .unwrap();
+    assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
+
+    // Duplicate (first,last) tuple → rejected.
+    let mut tx = g.begin();
+    tx.create_node(node_with_props(
+        "person",
+        "p1",
+        &[("first", "ann"), ("last", "lee")],
+    ))
+    .unwrap();
+    tx.create_node(node_with_props(
+        "person",
+        "p2",
+        &[("first", "ann"), ("last", "lee")],
+    ))
+    .unwrap();
+    assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
+    assert_eq!(g.all_nodes().unwrap().len(), 0);
+
+    // Distinct tuples commit.
+    let mut tx = g.begin();
+    tx.create_node(node_with_props(
+        "person",
+        "p1",
+        &[("first", "ann"), ("last", "lee")],
+    ))
+    .unwrap();
+    tx.create_node(node_with_props(
+        "person",
+        "p2",
+        &[("first", "ann"), ("last", "kim")],
+    ))
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(g.all_nodes().unwrap().len(), 2);
+}
+
+#[test]
+fn native_add_exists_constraint_rejects_violating_data() {
+    use drevo::native::{Constraint, NativeGraph};
+
+    let g = NativeGraph::new();
+    let mut tx = g.begin();
+    tx.create_node(new_node("user", "no-email")).unwrap();
+    tx.commit().unwrap();
+
+    assert!(g
+        .add_constraint(Constraint::PropertyExists {
+            kind: "user".into(),
+            property: "email".into(),
+        })
+        .is_err());
+}
