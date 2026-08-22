@@ -83,20 +83,30 @@ fn write(inner: &RwLock<Inner>) -> std::sync::RwLockWriteGuard<'_, Inner> {
 }
 
 impl Inner {
-    /// Edge ids incident to `node_id` in `direction`, in the same two-pass
-    /// order as `Drevo::edges_of` (outgoing pass then incoming pass), so a
-    /// self-loop under [`Direction::Both`] is reported by each pass exactly
-    /// as `Drevo` does.
+    /// Edge ids incident to `node_id` in `direction`, in `Drevo::edges_of`
+    /// order: the outgoing pass first, then the incoming pass with any edge
+    /// already seen skipped. The dedup matters for a **self-loop** under
+    /// [`Direction::Both`], which appears in both adjacency lists — `Drevo`
+    /// reports it once, so we do too.
     fn incident_edge_ids(&self, node_id: u64, direction: Direction) -> Vec<u64> {
         let mut ids = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         if matches!(direction, Direction::Outgoing | Direction::Both) {
             if let Some(v) = self.out_adj.get(&node_id) {
-                ids.extend(v.iter().copied());
+                for &e in v {
+                    if seen.insert(e) {
+                        ids.push(e);
+                    }
+                }
             }
         }
         if matches!(direction, Direction::Incoming | Direction::Both) {
             if let Some(v) = self.in_adj.get(&node_id) {
-                ids.extend(v.iter().copied());
+                for &e in v {
+                    if seen.insert(e) {
+                        ids.push(e);
+                    }
+                }
             }
         }
         ids
@@ -230,6 +240,9 @@ impl GraphEngine for NativeGraph {
 
     fn delete_edge(&self, id: u64) -> Result<()> {
         let mut g = write(&self.inner);
+        if !g.edges.contains_key(&id) {
+            return Err(DrevoError::EdgeNotFound(id));
+        }
         remove_edge(&mut g, id);
         Ok(())
     }
