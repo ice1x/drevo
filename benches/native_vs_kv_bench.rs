@@ -170,5 +170,62 @@ fn bench_reads(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_build, bench_reads);
+// ---------------------------------------------------------------------------
+// Zero-copy reads: owned deep-clone vs `Arc` handle on realistic (large-body)
+// nodes. This is where the arena/`Arc`-backed storage pays off — the cost of an
+// owned read scales with the node's body/property size, while an `Arc` handle
+// is a constant-time refcount bump.
+// ---------------------------------------------------------------------------
+
+/// A node with a ~4 KiB body and a handful of properties — closer to a real
+/// drevo record (a journal entry, a book chapter) than the tiny standard node.
+fn make_large_node(i: usize) -> NewNode {
+    let mut properties = Properties::default();
+    for p in 0..8 {
+        properties.0.insert(
+            format!("prop_{p}"),
+            serde_json::Value::String(format!("value {i}-{p} with some length to it")),
+        );
+    }
+    NewNode {
+        kind: format!("kind_{}", i % 10),
+        title: format!("large_node_{i:08}"),
+        body: "x".repeat(4096),
+        body_html: String::new(),
+        properties,
+    }
+}
+
+fn bench_zero_copy(c: &mut Criterion) {
+    const N: usize = 5_000;
+
+    let native = NativeGraph::new();
+    let mut ids = Vec::with_capacity(N);
+    for i in 0..N {
+        ids.push(native.create_node(make_large_node(i)).unwrap().id);
+    }
+
+    let mut group = c.benchmark_group("native/read_large_nodes");
+    // Owned read: `GraphEngine::get_node` must deep-clone the 4 KiB body and the
+    // property map on every access to honour its owned-return contract.
+    group.bench_function("get_node_owned", |b| {
+        b.iter(|| {
+            for &id in &ids {
+                black_box(GraphEngine::get_node(&native, id).unwrap());
+            }
+        })
+    });
+    // Zero-copy read: `get_node_arc` hands back an `Arc<Node>` — a refcount bump
+    // regardless of node size.
+    group.bench_function("get_node_arc", |b| {
+        b.iter(|| {
+            for &id in &ids {
+                black_box(native.get_node_arc(id));
+            }
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_build, bench_reads, bench_zero_copy);
 criterion_main!(benches);

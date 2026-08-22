@@ -74,8 +74,12 @@ struct AdjEntry {
 /// makes that copy-on-write possible.
 #[derive(Default, Clone)]
 struct Inner {
-    nodes: HashMap<u64, Node>,
-    edges: HashMap<u64, Edge>,
+    // Nodes and edges are stored behind `Arc` so a read can hand back a cheap
+    // pointer-bump handle (`get_node_arc`/`neighbors_arc`) instead of deep-
+    // cloning the record, and so copy-on-write of `Inner` for a snapshot clones
+    // `Arc`s rather than every node body/property map.
+    nodes: HashMap<u64, Arc<Node>>,
+    edges: HashMap<u64, Arc<Edge>>,
     /// `from_id → entries` (neighbour = the edge's `to_id`), insertion order.
     out_adj: HashMap<u64, Vec<AdjEntry>>,
     /// `to_id → entries` (neighbour = the edge's `from_id`), insertion order.
@@ -152,10 +156,20 @@ impl Inner {
     // ----- read operations (shared by the engine and by GraphSnapshot) -------
 
     fn get_node(&self, id: u64) -> Option<Node> {
-        self.nodes.get(&id).cloned()
+        self.nodes.get(&id).map(|a| (**a).clone())
     }
 
     fn get_edge(&self, id: u64) -> Option<Edge> {
+        self.edges.get(&id).map(|a| (**a).clone())
+    }
+
+    /// Zero-copy node fetch: clones the `Arc` (a refcount bump), not the record.
+    fn get_node_arc(&self, id: u64) -> Option<Arc<Node>> {
+        self.nodes.get(&id).cloned()
+    }
+
+    /// Zero-copy edge fetch: clones the `Arc`, not the record.
+    fn get_edge_arc(&self, id: u64) -> Option<Arc<Edge>> {
         self.edges.get(&id).cloned()
     }
 
@@ -185,6 +199,21 @@ impl Inner {
     fn neighbors(&self, node_id: u64, direction: Direction, kind: Option<&str>) -> Vec<Node> {
         self.neighbor_ids(node_id, direction, kind)
             .into_iter()
+            .filter_map(|id| self.nodes.get(&id).map(|a| (**a).clone()))
+            .collect()
+    }
+
+    /// Zero-copy neighbour fetch: each neighbour comes back as an `Arc<Node>`
+    /// handle (refcount bump), so a fan-out that reads many neighbours never
+    /// deep-clones their bodies/properties.
+    fn neighbors_arc(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind: Option<&str>,
+    ) -> Vec<Arc<Node>> {
+        self.neighbor_ids(node_id, direction, kind)
+            .into_iter()
             .filter_map(|id| self.nodes.get(&id).cloned())
             .collect()
     }
@@ -193,18 +222,18 @@ impl Inner {
         let mut out = Vec::new();
         self.for_each_incident(node_id, direction, |e| {
             if let Some(edge) = self.edges.get(&e.edge_id) {
-                out.push(edge.clone());
+                out.push((**edge).clone());
             }
         });
         out
     }
 
     fn all_nodes(&self) -> Vec<Node> {
-        self.nodes.values().cloned().collect()
+        self.nodes.values().map(|a| (**a).clone()).collect()
     }
 
     fn all_edges(&self) -> Vec<Edge> {
-        self.edges.values().cloned().collect()
+        self.edges.values().map(|a| (**a).clone()).collect()
     }
 
     fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Node> {
@@ -212,7 +241,7 @@ impl Inner {
             .nodes
             .values()
             .filter(|n| n.kind == kind)
-            .cloned()
+            .map(|a| (**a).clone())
             .collect();
         // Drevo returns kind scans in ascending id order; match that so
         // pagination (offset/limit) is deterministic and comparable.
@@ -230,7 +259,7 @@ impl Inner {
         let id = self.next_node_id;
         let node = new_node.into_node(id);
         self.titles.insert(node.title.clone(), id);
-        self.nodes.insert(id, node.clone());
+        self.nodes.insert(id, Arc::new(node.clone()));
         Ok(node)
     }
 
@@ -238,7 +267,7 @@ impl Inner {
         let mut node = self
             .nodes
             .get(&id)
-            .cloned()
+            .map(|a| (**a).clone())
             .ok_or(DrevoError::NodeNotFound(id))?;
         if let Some(ref new_title) = patch.title {
             // A rename collides only when a *different* node owns the title.
@@ -264,7 +293,7 @@ impl Inner {
         if let Some(properties) = patch.properties {
             node.properties = properties;
         }
-        self.nodes.insert(id, node.clone());
+        self.nodes.insert(id, Arc::new(node.clone()));
         Ok(node)
     }
 
@@ -272,7 +301,7 @@ impl Inner {
         let node = self
             .nodes
             .get(&id)
-            .cloned()
+            .map(|a| (**a).clone())
             .ok_or(DrevoError::NodeNotFound(id))?;
         let edge_ids: Vec<u64> = self
             .incident_entries(id, Direction::Both)
@@ -314,7 +343,7 @@ impl Inner {
             neighbor_id: edge.from_id,
             kind_id,
         });
-        self.edges.insert(id, edge.clone());
+        self.edges.insert(id, Arc::new(edge.clone()));
         Ok(edge)
     }
 
@@ -329,7 +358,7 @@ impl Inner {
         let mut edge = self
             .edges
             .get(&id)
-            .cloned()
+            .map(|a| (**a).clone())
             .ok_or(DrevoError::EdgeNotFound(id))?;
         if let Some(kind) = patch.kind {
             edge.kind = kind;
@@ -353,7 +382,7 @@ impl Inner {
                 }
             }
         }
-        self.edges.insert(id, edge.clone());
+        self.edges.insert(id, Arc::new(edge.clone()));
         Ok(edge)
     }
 
@@ -370,15 +399,15 @@ impl Inner {
     /// snapshot form used by `dump_wal` and WAL compaction.
     fn to_wal_ops(&self) -> Vec<WalOp> {
         let mut ops = Vec::with_capacity(self.nodes.len() + self.edges.len());
-        let mut nodes: Vec<&Node> = self.nodes.values().collect();
+        let mut nodes: Vec<&Arc<Node>> = self.nodes.values().collect();
         nodes.sort_by_key(|n| n.id);
         for n in nodes {
-            ops.push(WalOp::UpsertNode(n.clone()));
+            ops.push(WalOp::UpsertNode((**n).clone()));
         }
-        let mut edges: Vec<&Edge> = self.edges.values().collect();
+        let mut edges: Vec<&Arc<Edge>> = self.edges.values().collect();
         edges.sort_by_key(|e| e.id);
         for e in edges {
-            ops.push(WalOp::UpsertEdge(e.clone()));
+            ops.push(WalOp::UpsertEdge((**e).clone()));
         }
         ops
     }
@@ -398,10 +427,10 @@ impl Inner {
                 }
                 self.titles.insert(node.title.clone(), node.id);
                 self.next_node_id = self.next_node_id.max(node.id);
-                self.nodes.insert(node.id, node);
+                self.nodes.insert(node.id, Arc::new(node));
             }
             WalOp::DeleteNode(id) => {
-                if let Some(node) = self.nodes.get(&id).cloned() {
+                if let Some(node) = self.nodes.get(&id).map(|a| (**a).clone()) {
                     let edge_ids: Vec<u64> = self
                         .incident_entries(id, Direction::Both)
                         .into_iter()
@@ -434,7 +463,7 @@ impl Inner {
                     kind_id,
                 });
                 self.next_edge_id = self.next_edge_id.max(edge.id);
-                self.edges.insert(edge.id, edge);
+                self.edges.insert(edge.id, Arc::new(edge));
             }
             WalOp::DeleteEdge(id) => self.remove_edge(id),
         }
@@ -656,6 +685,34 @@ impl NativeGraph {
     /// Create an empty engine. Ids start at 1, matching `Drevo`.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Zero-copy node fetch: returns an `Arc<Node>` handle (a refcount bump)
+    /// rather than deep-cloning the record the way
+    /// [`GraphEngine::get_node`] must to
+    /// honour its owned-return contract. Prefer this on read-hot paths where the
+    /// caller only needs to *read* the node — a node with a large body/property
+    /// map costs the same here as a tiny one.
+    pub fn get_node_arc(&self, id: u64) -> Option<Arc<Node>> {
+        read(&self.inner).get_node_arc(id)
+    }
+
+    /// Zero-copy edge fetch — the [`get_node_arc`](Self::get_node_arc) analogue
+    /// for edges.
+    pub fn get_edge_arc(&self, id: u64) -> Option<Arc<Edge>> {
+        read(&self.inner).get_edge_arc(id)
+    }
+
+    /// Distinct neighbours as zero-copy `Arc<Node>` handles — the fan-out
+    /// counterpart to [`get_node_arc`](Self::get_node_arc), so expanding a
+    /// high-degree node never deep-clones every neighbour's record.
+    pub fn neighbors_arc(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind: Option<&str>,
+    ) -> Vec<Arc<Node>> {
+        read(&self.inner).neighbors_arc(node_id, direction, kind)
     }
 
     /// Take a consistent, read-only [`GraphSnapshot`] of the current state.
@@ -1212,9 +1269,32 @@ impl GraphSnapshot {
         self.inner.get_edge(id)
     }
 
+    /// Zero-copy node fetch within the snapshot — an `Arc<Node>` handle instead
+    /// of a deep clone (see [`NativeGraph::get_node_arc`]).
+    pub fn get_node_arc(&self, id: u64) -> Option<Arc<Node>> {
+        self.inner.get_node_arc(id)
+    }
+
+    /// Zero-copy edge fetch within the snapshot (see
+    /// [`NativeGraph::get_edge_arc`]).
+    pub fn get_edge_arc(&self, id: u64) -> Option<Arc<Edge>> {
+        self.inner.get_edge_arc(id)
+    }
+
     /// Distinct neighbour ids in `direction`, optionally kind-filtered.
     pub fn neighbor_ids(&self, node_id: u64, direction: Direction, kind: Option<&str>) -> Vec<u64> {
         self.inner.neighbor_ids(node_id, direction, kind)
+    }
+
+    /// Distinct neighbours as zero-copy `Arc<Node>` handles (see
+    /// [`NativeGraph::neighbors_arc`]).
+    pub fn neighbors_arc(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind: Option<&str>,
+    ) -> Vec<Arc<Node>> {
+        self.inner.neighbors_arc(node_id, direction, kind)
     }
 
     /// Adjacent nodes in `direction`, optionally kind-filtered.

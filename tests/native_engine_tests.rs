@@ -1009,3 +1009,110 @@ fn native_add_exists_constraint_rejects_violating_data() {
         })
         .is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Zero-copy reads (Arc-backed storage) — native-core 8.0
+// ---------------------------------------------------------------------------
+
+#[test]
+fn get_node_arc_returns_same_content_as_owned() {
+    use drevo::native::NativeGraph;
+
+    let g = NativeGraph::new();
+    let a = g.create_node(new_node("k", "alice")).unwrap();
+    let e = g.create_node(new_node("k", "bob")).unwrap();
+    let edge = g.create_edge(new_edge(a.id, e.id, "KNOWS", 2.0)).unwrap();
+
+    let na = g.get_node_arc(a.id).unwrap();
+    assert_eq!(node_key(&na), node_key(&g.get_node(a.id).unwrap().unwrap()));
+    let ea = g.get_edge_arc(edge.id).unwrap();
+    assert_eq!(
+        edge_key(&ea),
+        edge_key(&g.get_edge(edge.id).unwrap().unwrap())
+    );
+    assert!(g.get_node_arc(999).is_none());
+}
+
+#[test]
+fn get_node_arc_shares_storage_and_is_copy_on_write() {
+    use drevo::native::NativeGraph;
+    use std::sync::Arc;
+
+    let g = NativeGraph::new();
+    let a = g.create_node(new_node("k", "alice")).unwrap();
+
+    // Two fetches with no write between them hand back the *same* Arc.
+    let first = g.get_node_arc(a.id).unwrap();
+    let again = g.get_node_arc(a.id).unwrap();
+    assert!(Arc::ptr_eq(&first, &again), "reads should share storage");
+
+    // A write copies-on-write: the handle taken before the write still sees the
+    // old content, and a fresh fetch is a different Arc with the new content.
+    g.update_node(
+        a.id,
+        NodePatch {
+            body: Some("updated".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let after = g.get_node_arc(a.id).unwrap();
+    assert!(
+        !Arc::ptr_eq(&first, &after),
+        "write must not mutate the old Arc"
+    );
+    assert_eq!(first.body, "");
+    assert_eq!(after.body, "updated");
+}
+
+#[test]
+fn neighbors_arc_matches_neighbors() {
+    use drevo::native::NativeGraph;
+
+    let g = NativeGraph::new();
+    let a = g.create_node(new_node("k", "a")).unwrap();
+    let b = g.create_node(new_node("k", "b")).unwrap();
+    let c = g.create_node(new_node("k", "c")).unwrap();
+    g.create_edge(new_edge(a.id, b.id, "KNOWS", 1.0)).unwrap();
+    g.create_edge(new_edge(a.id, c.id, "KNOWS", 1.0)).unwrap();
+
+    let mut owned: Vec<_> = g
+        .neighbors(a.id, Direction::Outgoing, None)
+        .unwrap()
+        .iter()
+        .map(node_key)
+        .collect();
+    let mut arc: Vec<_> = g
+        .neighbors_arc(a.id, Direction::Outgoing, None)
+        .iter()
+        .map(|n| node_key(n))
+        .collect();
+    owned.sort();
+    arc.sort();
+    assert_eq!(owned, arc);
+}
+
+#[test]
+fn snapshot_arc_read_is_frozen_against_later_writes() {
+    use drevo::native::NativeGraph;
+
+    let g = NativeGraph::new();
+    let a = g.create_node(new_node("k", "alice")).unwrap();
+
+    let snap = g.snapshot();
+    let snap_arc = snap.get_node_arc(a.id).unwrap();
+
+    g.update_node(
+        a.id,
+        NodePatch {
+            body: Some("mutated".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // The snapshot's zero-copy handle still shows the state at snapshot time.
+    assert_eq!(snap_arc.body, "");
+    assert_eq!(snap.get_node_arc(a.id).unwrap().body, "");
+    assert_eq!(g.get_node(a.id).unwrap().unwrap().body, "mutated");
+}
