@@ -54,9 +54,10 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
+use crate::dump::{Dump, DumpError, ImportReport, FORMAT_V1};
 use crate::engine::GraphEngine;
 use crate::error::{DrevoError, Result};
-use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
+use crate::model::{now_ms, Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 
 /// A denormalized adjacency entry: the incident edge, the node at its other
 /// end, and that edge's kind interned to a `u32`. Storing the neighbour id and
@@ -1077,6 +1078,101 @@ impl GraphEngine for NativeGraph {
 
     fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>> {
         Ok(read(&self.inner).nodes_by_kind(kind, limit, offset))
+    }
+
+    fn export_dump(&self) -> Result<Dump> {
+        let g = read(&self.inner);
+        let nodes = g.all_nodes();
+        let edges = g.all_edges();
+        // Derive the counters from the live max id (`max + 1`), matching
+        // `Drevo::build_dump` byte-for-byte so a dump is engine-independent.
+        let next_node_id = nodes.iter().map(|n| n.id).max().map_or(1, |m| m + 1);
+        let next_edge_id = edges.iter().map(|e| e.id).max().map_or(1, |m| m + 1);
+        Ok(Dump {
+            format: FORMAT_V1.to_string(),
+            exported_at: now_ms(),
+            next_node_id,
+            next_edge_id,
+            nodes,
+            edges,
+        })
+    }
+
+    fn apply_dump(&self, dump: Dump) -> Result<ImportReport> {
+        let mut report = ImportReport::default();
+        // Buffer the ops that actually land so they can be journaled in one
+        // fsync after the in-memory apply succeeds (durability parity with the
+        // live write paths).
+        let mut applied: Vec<WalOp> = Vec::with_capacity(dump.nodes.len() + dump.edges.len());
+        {
+            let mut guard = write(&self.inner);
+            let g = Arc::make_mut(&mut guard);
+
+            // --- Nodes: skip byte-equal, reject id-collision, else upsert ---
+            for node in &dump.nodes {
+                match g.get_node(node.id) {
+                    Some(existing) if existing == *node => {
+                        report.nodes_skipped += 1;
+                        continue;
+                    }
+                    Some(_) => {
+                        return Err(DumpError::IdCollision(format!(
+                            "node id {} already exists with different content",
+                            node.id
+                        ))
+                        .into());
+                    }
+                    None => {}
+                }
+                g.apply_wal_op(WalOp::UpsertNode(node.clone()));
+                applied.push(WalOp::UpsertNode(node.clone()));
+                report.nodes_imported += 1;
+            }
+
+            // --- Edges: endpoints must resolve (nodes are already applied) ---
+            for edge in &dump.edges {
+                match g.get_edge(edge.id) {
+                    Some(existing) if existing == *edge => {
+                        report.edges_skipped += 1;
+                        continue;
+                    }
+                    Some(_) => {
+                        return Err(DumpError::IdCollision(format!(
+                            "edge id {} already exists with different content",
+                            edge.id
+                        ))
+                        .into());
+                    }
+                    None => {}
+                }
+                if g.get_node(edge.from_id).is_none() {
+                    return Err(DrevoError::NodeNotFound(edge.from_id));
+                }
+                if g.get_node(edge.to_id).is_none() {
+                    return Err(DrevoError::NodeNotFound(edge.to_id));
+                }
+                g.apply_wal_op(WalOp::UpsertEdge(edge.clone()));
+                applied.push(WalOp::UpsertEdge(edge.clone()));
+                report.edges_imported += 1;
+            }
+
+            // Clamp id counters above every imported id so a post-migration
+            // create never reuses one (`apply_wal_op` already raised them to
+            // the max imported id; honour a higher producer counter too).
+            g.next_node_id = g.next_node_id.max(dump.next_node_id.saturating_sub(1));
+            g.next_edge_id = g.next_edge_id.max(dump.next_edge_id.saturating_sub(1));
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if !applied.is_empty() {
+            self.wal_append_batch(&applied)?;
+        }
+        // `applied` is consumed by the WAL append above on native targets; on
+        // wasm there is no journal, so the buffer is simply dropped.
+        #[cfg(target_arch = "wasm32")]
+        let _ = applied;
+
+        Ok(report)
     }
 }
 
