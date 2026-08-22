@@ -151,6 +151,12 @@ pub mod model;
 /// the rest of Phase 13 (GC `00082`, OCC `00083`, isolation levels
 /// `00084`) builds on. Dependency-free and always compiled.
 pub mod mvcc;
+/// The native in-memory graph engine (RFC `docs/rfc-native-core.md`, #307,
+/// Phase 2) — an implementation of [`engine::GraphEngine`] that holds nodes and
+/// edges directly with maintained adjacency, instead of encoding them as
+/// byte-keyed rows over a [`storage::StorageBackend`]. Correctness-first seed of
+/// the arena/CSR core; pinned against [`db::Drevo`] by differential test.
+pub mod native;
 /// Observability — Phase 15 task `00130`. A dependency-free, lock-free
 /// metrics registry ([`observability::Registry`] with
 /// [`observability::Counter`] / [`observability::Gauge`] /
