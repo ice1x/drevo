@@ -348,6 +348,24 @@ impl Inner {
         Ok(())
     }
 
+    /// The state as a compact op log: every node then every edge as an
+    /// `Upsert`, ascending id. Replaying it reproduces the graph, so it is the
+    /// snapshot form used by `dump_wal` and WAL compaction.
+    fn to_wal_ops(&self) -> Vec<WalOp> {
+        let mut ops = Vec::with_capacity(self.nodes.len() + self.edges.len());
+        let mut nodes: Vec<&Node> = self.nodes.values().collect();
+        nodes.sort_by_key(|n| n.id);
+        for n in nodes {
+            ops.push(WalOp::UpsertNode(n.clone()));
+        }
+        let mut edges: Vec<&Edge> = self.edges.values().collect();
+        edges.sort_by_key(|e| e.id);
+        for e in edges {
+            ops.push(WalOp::UpsertEdge(e.clone()));
+        }
+        ops
+    }
+
     /// Apply one [`WalOp`] during replay. Upserts re-insert a stored record
     /// verbatim (ids/uuids/timestamps preserved) and advance the id counters so
     /// a post-recovery create never reuses an id; deletes mirror the live paths.
@@ -542,7 +560,17 @@ pub struct NativeGraph {
     /// engine ([`new`](Self::new)). Each direct write appends and fsyncs before
     /// returning, so an acknowledged write survives a crash.
     #[cfg(not(target_arch = "wasm32"))]
-    wal: Option<std::sync::Mutex<std::fs::File>>,
+    wal: Option<std::sync::Mutex<WalSink>>,
+}
+
+/// The write-ahead-log file plus its path (needed so [`compact_wal`] can
+/// atomically rewrite the log in place).
+///
+/// [`compact_wal`]: NativeGraph::compact_wal
+#[cfg(not(target_arch = "wasm32"))]
+struct WalSink {
+    path: std::path::PathBuf,
+    file: std::fs::File,
 }
 
 impl NativeGraph {
@@ -613,19 +641,7 @@ impl NativeGraph {
     /// which is what lets a periodic snapshot compact/truncate the incremental
     /// WAL. Constraints are schema, not data, and are not part of the dump.
     pub fn dump_wal(&self) -> Vec<WalOp> {
-        let g = read(&self.inner);
-        let mut ops = Vec::with_capacity(g.nodes.len() + g.edges.len());
-        let mut nodes: Vec<&Node> = g.nodes.values().collect();
-        nodes.sort_by_key(|n| n.id);
-        for n in nodes {
-            ops.push(WalOp::UpsertNode(n.clone()));
-        }
-        let mut edges: Vec<&Edge> = g.edges.values().collect();
-        edges.sort_by_key(|e| e.id);
-        for e in edges {
-            ops.push(WalOp::UpsertEdge(e.clone()));
-        }
-        ops
+        read(&self.inner).to_wal_ops()
     }
 
     /// Rebuild an engine by replaying a [`WalOp`] sequence in order (RFC ACID
@@ -681,8 +697,53 @@ impl NativeGraph {
             .open(path)?;
         Ok(NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
-            wal: Some(std::sync::Mutex::new(file)),
+            wal: Some(std::sync::Mutex::new(WalSink {
+                path: path.to_path_buf(),
+                file,
+            })),
         })
+    }
+
+    /// Compact the write-ahead log: rewrite it as the current state's snapshot
+    /// form (every node/edge as one `Upsert`), discarding the superseded
+    /// incremental history that has accumulated from overwrites and deletes
+    /// (RFC ACID "D", Phase 3). Bounds the log's growth without changing the
+    /// recovered graph.
+    ///
+    /// Atomic and crash-safe: the snapshot is written to a temp file and fsynced,
+    /// then `rename`d over the live log (an atomic replace on the same
+    /// filesystem), then the append handle is reopened on the new file. A crash
+    /// at any point leaves either the old or the new complete log — never a torn
+    /// one. Writes are quiesced for the duration (the inner write lock is held).
+    /// A no-op for an in-memory-only engine.
+    ///
+    /// # Errors
+    /// [`DrevoError::Io`] / [`DrevoError::Json`] on a filesystem or encode
+    /// failure.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn compact_wal(&self) -> Result<()> {
+        use std::io::Write;
+        let Some(wal) = &self.wal else {
+            return Ok(());
+        };
+        // Hold the write lock so no mutation appends to the log mid-compaction.
+        let inner = write(&self.inner);
+        let ops = inner.to_wal_ops();
+        let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
+
+        let tmp = sink.path.with_extension("wal.tmp");
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            for op in &ops {
+                let mut line = serde_json::to_string(op)?;
+                line.push('\n');
+                f.write_all(line.as_bytes())?;
+            }
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, &sink.path)?;
+        sink.file = std::fs::OpenOptions::new().append(true).open(&sink.path)?;
+        Ok(())
     }
 
     /// Append one op to the WAL and fsync, when this engine is durable. A no-op
@@ -702,13 +763,13 @@ impl NativeGraph {
             return Ok(());
         }
         if let Some(wal) = &self.wal {
-            let mut f = wal.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
             for op in ops {
                 let mut line = serde_json::to_string(op)?;
                 line.push('\n');
-                f.write_all(line.as_bytes())?;
+                sink.file.write_all(line.as_bytes())?;
             }
-            f.sync_all()?;
+            sink.file.sync_all()?;
         }
         Ok(())
     }
