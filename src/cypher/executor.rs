@@ -2130,9 +2130,9 @@ impl<'a> Executor<'a> {
                     AstDirection::Incoming => self
                         .drevo
                         .edges_of(state.node.id, ModelDirection::Incoming)?,
-                    AstDirection::Undirected => {
-                        self.drevo.edges_of(state.node.id, ModelDirection::Both)?
-                    }
+                    AstDirection::Undirected => self
+                        .engine()
+                        .edges_of(state.node.id, ModelDirection::Both)?,
                 };
                 for edge in edges {
                     if state.used_ids.contains(&edge.id) {
@@ -2266,7 +2266,7 @@ impl<'a> Executor<'a> {
         if let Some(label) = pattern.labels.first() {
             // Merge in primary-kind hits in case `list_recent` is bounded
             // by some future backend implementation.
-            let primary = self.drevo.list_nodes_by_kind(label, usize::MAX, 0)?;
+            let primary = self.engine().nodes_by_kind(label, usize::MAX, 0)?;
             for node in primary {
                 if !nodes.iter().any(|n| n.id == node.id) {
                     nodes.push(node);
@@ -2325,7 +2325,9 @@ impl<'a> Executor<'a> {
             AstDirection::Incoming => self
                 .drevo
                 .edges_of(prev_node.id, ModelDirection::Incoming)?,
-            AstDirection::Undirected => self.drevo.edges_of(prev_node.id, ModelDirection::Both)?,
+            AstDirection::Undirected => {
+                self.engine().edges_of(prev_node.id, ModelDirection::Both)?
+            }
         };
         for edge in edges {
             if !edge_matches_pattern(&edge, rel_pattern, existing, self)? {
@@ -2511,9 +2513,9 @@ impl<'a> Executor<'a> {
                     AstDirection::Incoming => self
                         .drevo
                         .edges_of(state.node.id, ModelDirection::Incoming)?,
-                    AstDirection::Undirected => {
-                        self.drevo.edges_of(state.node.id, ModelDirection::Both)?
-                    }
+                    AstDirection::Undirected => self
+                        .engine()
+                        .edges_of(state.node.id, ModelDirection::Both)?,
                 };
                 for edge in edges {
                     if state.used_ids.contains(&edge.id) {
@@ -2845,7 +2847,7 @@ impl<'a> Executor<'a> {
         }
         for id in &node_ids {
             if let Some(_node) = self.engine().get_node(*id)? {
-                let connected = self.drevo.edges_of(*id, ModelDirection::Both)?;
+                let connected = self.engine().edges_of(*id, ModelDirection::Both)?;
                 if !d.detach && !connected.is_empty() {
                     return Err(ExecError::InvalidMutation(format!(
                         "cannot DELETE node {} — it has {} connected relationship(s); use DETACH DELETE",
@@ -3749,7 +3751,7 @@ impl<'a> Executor<'a> {
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
         let mut scored: Vec<(f32, Arc<NodeValue>)> = Vec::new();
-        for node in self.drevo.collect_all_nodes()? {
+        for node in self.engine().all_nodes()? {
             if !node_labels_from_storage(&node).iter().any(|l| l == label) {
                 continue;
             }
@@ -4130,7 +4132,7 @@ impl<'a> Executor<'a> {
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
         let mut scored: Vec<(f32, Arc<RelationshipValue>)> = Vec::new();
-        for edge in self.drevo.collect_all_edges()? {
+        for edge in self.engine().all_edges()? {
             if edge.kind != rel_type {
                 continue;
             }
@@ -4318,7 +4320,7 @@ impl<'a> Executor<'a> {
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
             "db.labels" => {
                 let mut labels: Vec<String> = Vec::new();
-                for node in self.drevo.collect_all_nodes()? {
+                for node in self.engine().all_nodes()? {
                     for label in node_labels_from_storage(&node) {
                         if !labels.contains(&label) {
                             labels.push(label);
@@ -4330,7 +4332,7 @@ impl<'a> Executor<'a> {
             }
             "db.relationshipTypes" => {
                 let mut kinds: Vec<String> = Vec::new();
-                for edge in self.drevo.collect_all_edges()? {
+                for edge in self.engine().all_edges()? {
                     if !kinds.contains(&edge.kind) {
                         kinds.push(edge.kind);
                     }
@@ -4340,14 +4342,14 @@ impl<'a> Executor<'a> {
             }
             "db.propertyKeys" => {
                 let mut keys: Vec<String> = Vec::new();
-                for node in self.drevo.collect_all_nodes()? {
+                for node in self.engine().all_nodes()? {
                     for key in node_to_value(&node).properties.keys() {
                         if !keys.contains(key) {
                             keys.push(key.clone());
                         }
                     }
                 }
-                for edge in self.drevo.collect_all_edges()? {
+                for edge in self.engine().all_edges()? {
                     for key in edge_to_value(&edge).properties.keys() {
                         if !keys.contains(key) {
                             keys.push(key.clone());
