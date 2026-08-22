@@ -107,32 +107,45 @@ impl Inner {
         self.kind_ids.get(kind).copied()
     }
 
-    /// The adjacency entries incident to `node_id` in `direction`, in
-    /// `Drevo::edges_of` order: the outgoing pass first, then the incoming pass
-    /// with any edge already seen skipped. The dedup matters for a **self-loop**
-    /// under [`Direction::Both`], which appears in both adjacency lists —
-    /// `Drevo` reports it once, so we do too.
-    fn incident_entries(&self, node_id: u64, direction: Direction) -> Vec<AdjEntry> {
-        let mut entries = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+    /// Invoke `f` for each adjacency entry incident to `node_id` in `direction`,
+    /// in `Drevo::edges_of` order (the outgoing pass, then the incoming pass) —
+    /// **without allocating**, so the hot fan-out paths spend no time on a
+    /// scratch `Vec`/`HashSet`.
+    ///
+    /// A **self-loop** under [`Direction::Both`] sits in both the out- and
+    /// in-lists; `Drevo` reports it once, so the incoming pass skips it. That is
+    /// exact: a self-loop is the *only* way one edge lands in both a node's out-
+    /// and in-lists (a non-loop edge `x→y` is in `out[x]` and `in[y]` only), and
+    /// a self-loop's entry is exactly the one whose `neighbor_id == node_id`.
+    fn for_each_incident<F: FnMut(&AdjEntry)>(&self, node_id: u64, direction: Direction, mut f: F) {
         if matches!(direction, Direction::Outgoing | Direction::Both) {
             if let Some(v) = self.out_adj.get(&node_id) {
                 for e in v {
-                    if seen.insert(e.edge_id) {
-                        entries.push(*e);
-                    }
+                    f(e);
                 }
             }
         }
         if matches!(direction, Direction::Incoming | Direction::Both) {
             if let Some(v) = self.in_adj.get(&node_id) {
                 for e in v {
-                    if seen.insert(e.edge_id) {
-                        entries.push(*e);
+                    // Under `Both`, the outgoing pass already emitted any
+                    // self-loop; skip its mirror here to keep `Drevo`'s count.
+                    if matches!(direction, Direction::Both) && e.neighbor_id == node_id {
+                        continue;
                     }
+                    f(e);
                 }
             }
         }
+    }
+
+    /// The adjacency entries incident to `node_id`, collected into a `Vec`. Used
+    /// by the **mutating** paths (`delete_node`), which need an owned list
+    /// because they borrow `self` mutably while iterating; read paths use the
+    /// allocation-free [`for_each_incident`](Self::for_each_incident).
+    fn incident_entries(&self, node_id: u64, direction: Direction) -> Vec<AdjEntry> {
+        let mut entries = Vec::new();
+        self.for_each_incident(node_id, direction, |e| entries.push(*e));
         entries
     }
 
@@ -158,14 +171,14 @@ impl Inner {
         let mut seen = std::collections::HashSet::new();
         seen.insert(node_id);
         let mut ids = Vec::new();
-        for e in self.incident_entries(node_id, direction) {
+        self.for_each_incident(node_id, direction, |e| {
             if want_kind.is_some_and(|k| k != e.kind_id) {
-                continue;
+                return;
             }
             if seen.insert(e.neighbor_id) {
                 ids.push(e.neighbor_id);
             }
-        }
+        });
         ids
     }
 
@@ -177,10 +190,13 @@ impl Inner {
     }
 
     fn edges_of(&self, node_id: u64, direction: Direction) -> Vec<Edge> {
-        self.incident_entries(node_id, direction)
-            .into_iter()
-            .filter_map(|e| self.edges.get(&e.edge_id).cloned())
-            .collect()
+        let mut out = Vec::new();
+        self.for_each_incident(node_id, direction, |e| {
+            if let Some(edge) = self.edges.get(&e.edge_id) {
+                out.push(edge.clone());
+            }
+        });
+        out
     }
 
     fn all_nodes(&self) -> Vec<Node> {
