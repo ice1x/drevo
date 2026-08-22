@@ -617,3 +617,82 @@ fn native_tx_detects_write_conflict() {
         .collect();
     assert_eq!(titles, vec!["x".to_string()]);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.3 — constraints (ACID "C"): UNIQUE(kind, property) validated at
+// transaction commit, and when the constraint is declared over existing data.
+// ---------------------------------------------------------------------------
+
+fn node_with_prop(kind: &str, title: &str, prop: &str, val: &str) -> NewNode {
+    let mut nn = new_node(kind, title);
+    nn.properties = drevo::model::Properties(std::collections::HashMap::from([(
+        prop.to_string(),
+        serde_json::Value::String(val.to_string()),
+    )]));
+    nn
+}
+
+#[test]
+fn native_unique_constraint_enforced_at_commit() {
+    use drevo::native::{CommitError, Constraint, NativeGraph};
+
+    let g = NativeGraph::new();
+    g.add_constraint(Constraint::UniqueNodeProperty {
+        kind: "user".into(),
+        property: "email".into(),
+    })
+    .unwrap();
+
+    // Two users with the same email → the whole commit is rejected, nothing lands.
+    let mut tx = g.begin();
+    tx.create_node(node_with_prop("user", "u1", "email", "a@x"))
+        .unwrap();
+    tx.create_node(node_with_prop("user", "u2", "email", "a@x"))
+        .unwrap();
+    assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
+    assert_eq!(g.all_nodes().unwrap().len(), 0);
+
+    // Distinct emails commit fine.
+    let mut tx = g.begin();
+    tx.create_node(node_with_prop("user", "u1", "email", "a@x"))
+        .unwrap();
+    tx.create_node(node_with_prop("user", "u2", "email", "b@x"))
+        .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(g.all_nodes().unwrap().len(), 2);
+
+    // A different kind with the same property value is unaffected by the constraint.
+    let mut tx = g.begin();
+    tx.create_node(node_with_prop("bot", "b1", "email", "a@x"))
+        .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(g.all_nodes().unwrap().len(), 3);
+}
+
+#[test]
+fn native_add_constraint_rejects_violating_existing_data() {
+    use drevo::native::{Constraint, NativeGraph};
+
+    let g = NativeGraph::new();
+    // Seed two accounts sharing a code.
+    let mut tx = g.begin();
+    tx.create_node(node_with_prop("acct", "x", "code", "1"))
+        .unwrap();
+    tx.create_node(node_with_prop("acct", "y", "code", "1"))
+        .unwrap();
+    tx.commit().unwrap();
+
+    // Declaring UNIQUE over the already-duplicated data fails and is not stored.
+    assert!(g
+        .add_constraint(Constraint::UniqueNodeProperty {
+            kind: "acct".into(),
+            property: "code".into(),
+        })
+        .is_err());
+
+    // Since it was not stored, a later duplicate still commits (constraint absent).
+    let mut tx = g.begin();
+    tx.create_node(node_with_prop("acct", "z", "code", "1"))
+        .unwrap();
+    assert!(tx.commit().is_ok());
+}

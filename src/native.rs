@@ -81,6 +81,8 @@ struct Inner {
     titles: HashMap<String, u64>,
     /// Edge-kind string → interned `u32` id (adjacency stores the id).
     kind_ids: HashMap<String, u32>,
+    /// Declared schema constraints, validated at transaction commit.
+    constraints: Vec<Constraint>,
     next_node_id: u64,
     next_edge_id: u64,
 }
@@ -357,7 +359,98 @@ impl Inner {
             v.retain(|e| e.edge_id != id);
         }
     }
+
+    /// Check every declared constraint against the current node set, returning
+    /// the first [`ConstraintViolation`] found. A `UNIQUE(kind, property)`
+    /// constraint ignores nodes of that kind that lack the property (matching
+    /// Neo4j), and flags the first pair that shares a value.
+    fn validate_constraints(&self) -> std::result::Result<(), ConstraintViolation> {
+        for c in &self.constraints {
+            let Constraint::UniqueNodeProperty { kind, property } = c;
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for n in self.nodes.values() {
+                if &n.kind != kind {
+                    continue;
+                }
+                if let Some(v) = n.properties.0.get(property) {
+                    let value = v.to_string();
+                    if !seen.insert(value.clone()) {
+                        return Err(ConstraintViolation {
+                            kind: kind.clone(),
+                            property: property.clone(),
+                            value,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
+
+/// A schema constraint a [`NativeGraph`] enforces at transaction commit
+/// (RFC ACID "C", Phase 3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Constraint {
+    /// Among nodes of `kind`, the value of `property` must be unique. Nodes of
+    /// that kind that do not carry the property are not constrained.
+    UniqueNodeProperty {
+        /// The node kind (label) the constraint applies to.
+        kind: String,
+        /// The property whose value must be unique within that kind.
+        property: String,
+    },
+}
+
+/// The details of a [`Constraint`] that was violated: which kind/property, and
+/// the (JSON-encoded) value that appeared more than once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstraintViolation {
+    /// The node kind whose constraint was violated.
+    pub kind: String,
+    /// The constrained property.
+    pub property: String,
+    /// The duplicated value, JSON-encoded.
+    pub value: String,
+}
+
+impl std::fmt::Display for ConstraintViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unique constraint on {}.{} violated by duplicate value {}",
+            self.kind, self.property, self.value
+        )
+    }
+}
+
+impl std::error::Error for ConstraintViolation {}
+
+/// Why a [`NativeTx::commit`] failed. Both cases leave the graph unchanged and
+/// the transaction's writes discarded. A local error type, so the crate-wide
+/// [`DrevoError`] is not widened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitError {
+    /// The graph changed since the transaction began (optimistic conflict);
+    /// retry against the new state.
+    Conflict,
+    /// The transaction's writes would violate a declared [`Constraint`].
+    Constraint(ConstraintViolation),
+}
+
+impl std::fmt::Display for CommitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommitError::Conflict => write!(
+                f,
+                "transaction conflict: the graph changed since the transaction began; retry"
+            ),
+            CommitError::Constraint(v) => write!(f, "{v}"),
+        }
+    }
+}
+
+impl std::error::Error for CommitError {}
 
 /// An in-memory, native [`GraphEngine`] (RFC Phase 2/3). See the module docs.
 #[derive(Default)]
@@ -389,7 +482,7 @@ impl NativeGraph {
     /// Isolation is snapshot: the transaction never sees another writer's
     /// changes made after it began. Concurrency control is optimistic — the
     /// commit succeeds only if the graph has not changed since the transaction
-    /// began, otherwise it returns [`TransactionConflict`] and the caller
+    /// began, otherwise it returns [`CommitError::Conflict`] and the caller
     /// retries. Dropping the transaction without committing rolls it back.
     pub fn begin(&self) -> NativeTx<'_> {
         let base = Arc::clone(&read(&self.inner));
@@ -399,26 +492,32 @@ impl NativeGraph {
             base,
         }
     }
-}
 
-/// Returned by [`NativeTx::commit`] when the graph changed since the
-/// transaction began, so the transaction's snapshot is stale. The write was
-/// **not** applied; the caller should retry the transaction against the new
-/// state. (A local error type, so it does not widen the crate-wide
-/// [`DrevoError`].)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransactionConflict;
-
-impl std::fmt::Display for TransactionConflict {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "transaction conflict: the graph changed since the transaction began; retry"
-        )
+    /// Declare a schema [`Constraint`] the engine enforces at transaction
+    /// commit (RFC ACID "C").
+    ///
+    /// The constraint is validated against the current data first: if existing
+    /// nodes already violate it, it is **not** stored and the
+    /// [`ConstraintViolation`] is returned (matching Neo4j, which refuses to
+    /// create a constraint the data does not already satisfy).
+    ///
+    /// # Errors
+    /// [`ConstraintViolation`] if the current graph already violates the
+    /// constraint.
+    pub fn add_constraint(
+        &self,
+        constraint: Constraint,
+    ) -> std::result::Result<(), ConstraintViolation> {
+        let mut guard = write(&self.inner);
+        let g = Arc::make_mut(&mut guard);
+        g.constraints.push(constraint);
+        if let Err(e) = g.validate_constraints() {
+            g.constraints.pop();
+            return Err(e);
+        }
+        Ok(())
     }
 }
-
-impl std::error::Error for TransactionConflict {}
 
 /// A transaction over a [`NativeGraph`]: reads a consistent snapshot taken at
 /// [`begin`](NativeGraph::begin), buffers writes on a private working copy, and
@@ -436,19 +535,24 @@ pub struct NativeTx<'a> {
 }
 
 impl NativeTx<'_> {
-    /// Commit the buffered writes atomically. Succeeds only if the graph has
-    /// not changed since [`begin`](NativeGraph::begin); otherwise the write is
-    /// discarded and [`TransactionConflict`] is returned for the caller to
-    /// retry.
+    /// Commit the buffered writes atomically. Succeeds only if (a) the graph
+    /// has not changed since [`begin`](NativeGraph::begin) and (b) the resulting
+    /// state satisfies every declared [`Constraint`]; otherwise the writes are
+    /// discarded and the reason is returned for the caller to handle.
     ///
     /// # Errors
-    /// [`TransactionConflict`] if another writer committed since this
-    /// transaction began.
-    pub fn commit(self) -> std::result::Result<(), TransactionConflict> {
+    /// - [`CommitError::Conflict`] if another writer committed since this
+    ///   transaction began.
+    /// - [`CommitError::Constraint`] if the transaction's writes would violate a
+    ///   declared constraint.
+    pub fn commit(self) -> std::result::Result<(), CommitError> {
         let mut live = write(&self.engine.inner);
         if !Arc::ptr_eq(&live, &self.base) {
-            return Err(TransactionConflict);
+            return Err(CommitError::Conflict);
         }
+        self.working
+            .validate_constraints()
+            .map_err(CommitError::Constraint)?;
         *live = self.working;
         Ok(())
     }
