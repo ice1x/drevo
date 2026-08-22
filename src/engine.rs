@@ -25,6 +25,7 @@
 //! executable contract — exercised by `tests/graph_engine_tests.rs`.
 
 use crate::db::Drevo;
+use crate::dump::{Dump, ImportReport};
 use crate::error::Result;
 use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 
@@ -149,6 +150,34 @@ pub trait GraphEngine {
     /// # Errors
     /// Propagates any [`crate::error::DrevoError`] from the underlying store.
     fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>>;
+
+    /// Export the entire graph as a `drevo-json-v1` [`Dump`] — every node and
+    /// edge plus the id-allocation counters — the interchange format used for
+    /// backup, JSON/GraphML round-trips, and cross-engine migration.
+    ///
+    /// This is the read half of the migration seam: `dst.apply_dump(src.
+    /// export_dump()?)` moves a live graph between any two engines
+    /// (see [`crate::migrate::migrate`]).
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::DrevoError`] from the underlying store.
+    fn export_dump(&self) -> Result<Dump>;
+
+    /// Bulk-load a [`Dump`] into this engine **verbatim**, preserving every
+    /// node/edge id (so edges stay connected) and clamping the id counters
+    /// above every imported id. Nodes/edges already present byte-for-byte are
+    /// skipped (idempotent re-import); an id that collides with *different*
+    /// content, or an edge whose endpoint is missing, is an error.
+    ///
+    /// This is the write half of the migration seam. The counts in the
+    /// returned [`ImportReport`] separate freshly-inserted from skipped rows.
+    ///
+    /// # Errors
+    /// * [`crate::error::DrevoError::NodeNotFound`] — an edge references an
+    ///   endpoint that neither exists nor is supplied by the dump.
+    /// * Other [`crate::error::DrevoError`] variants — an id collision against
+    ///   different content, a title/uuid clash, or a backend failure.
+    fn apply_dump(&self, dump: Dump) -> Result<ImportReport>;
 }
 
 /// The current KV-backed store is the first `GraphEngine` implementation. Every
@@ -219,5 +248,13 @@ impl GraphEngine for Drevo {
 
     fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>> {
         Drevo::list_nodes_by_kind(self, kind, limit, offset)
+    }
+
+    fn export_dump(&self) -> Result<Dump> {
+        self.build_dump()
+    }
+
+    fn apply_dump(&self, dump: Dump) -> Result<ImportReport> {
+        self.apply_dump_records(dump)
     }
 }

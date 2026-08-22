@@ -143,6 +143,11 @@ pub mod error;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ffi;
 pub mod fts;
+/// Cross-engine data migration (RFC `docs/rfc-native-core.md`, #307). Moves a
+/// live graph between any two [`engine::GraphEngine`] implementations
+/// (KV-backed [`db::Drevo`] ⇄ native [`native::NativeGraph`]) over the shared
+/// `drevo-json-v1` dump interchange, preserving every node/edge id.
+pub mod migrate;
 pub mod model;
 /// Multi-version concurrency control — Phase 13 task `00081`. The
 /// transaction-id allocator + commit log ([`mvcc::TransactionManager`]),

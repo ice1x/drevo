@@ -270,7 +270,7 @@ impl Drevo {
         if dump.format != FORMAT_V1 {
             return Err(DumpError::UnsupportedFormat(dump.format).into());
         }
-        self.apply_dump(dump)
+        self.apply_dump_records(dump)
     }
 
     /// Read a JSON dump from `path` (filesystem read, not available on WASM)
@@ -342,7 +342,7 @@ impl Drevo {
         let (nodes, edges) = self.graphml_to_records(xml)?;
         let next_node_id = nodes.iter().map(|n| n.id).max().map_or(1, |m| m + 1);
         let next_edge_id = edges.iter().map(|e| e.id).max().map_or(1, |m| m + 1);
-        self.apply_dump(Dump {
+        self.apply_dump_records(Dump {
             format: FORMAT_V1.to_string(),
             exported_at: now_ms(),
             next_node_id,
@@ -560,7 +560,7 @@ impl Drevo {
         Ok((nodes, edges))
     }
 
-    fn build_dump(&self) -> Result<Dump> {
+    pub(crate) fn build_dump(&self) -> Result<Dump> {
         let nodes = self.collect_all_nodes()?;
         let edges = self.collect_all_edges()?;
         let next_node_id = nodes.iter().map(|n| n.id).max().map_or(1, |m| m + 1);
@@ -575,7 +575,7 @@ impl Drevo {
         })
     }
 
-    fn apply_dump(&self, dump: Dump) -> Result<ImportReport> {
+    pub(crate) fn apply_dump_records(&self, dump: Dump) -> Result<ImportReport> {
         let mut report = ImportReport::default();
 
         // --- Nodes ---
