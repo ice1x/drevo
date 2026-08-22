@@ -807,3 +807,42 @@ fn durable_wal_survives_reopen() {
     let n = g2.create_node(new_node("k", "after")).unwrap();
     assert!(n.id > b_id);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.6 — durable transactions: a committed transaction's writes are WAL-
+// logged and survive reopen; a rolled-back transaction leaves no trace.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn durable_tx_commit_persists_and_rollback_does_not() {
+    use drevo::native::NativeGraph;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tx.wal");
+
+    let committed_node;
+    {
+        let g = NativeGraph::open_durable(&path).unwrap();
+
+        // A committed transaction is durable as one atomic batch.
+        let mut tx = g.begin();
+        let a = tx.create_node(new_node("k", "a")).unwrap();
+        let b = tx.create_node(new_node("k", "b")).unwrap();
+        tx.create_edge(new_edge(a.id, b.id, "E", 1.5)).unwrap();
+        committed_node = a.id;
+        tx.commit().unwrap();
+
+        // A rolled-back transaction writes nothing to the log.
+        let mut tx2 = g.begin();
+        tx2.create_node(new_node("k", "ghost")).unwrap();
+        tx2.rollback();
+    } // crash
+
+    let g2 = NativeGraph::open_durable(&path).unwrap();
+    assert_eq!(g2.all_nodes().unwrap().len(), 2); // a, b — ghost never persisted
+    assert!(g2.get_node(committed_node).unwrap().is_some());
+    assert_eq!(g2.all_edges().unwrap().len(), 1);
+    let edges = g2.all_edges().unwrap();
+    assert_eq!(edges[0].weight, 1.5);
+}
