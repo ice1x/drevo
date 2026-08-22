@@ -52,6 +52,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use serde::{Deserialize, Serialize};
+
 use crate::engine::GraphEngine;
 use crate::error::{DrevoError, Result};
 use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
@@ -346,6 +348,63 @@ impl Inner {
         Ok(())
     }
 
+    /// Apply one [`WalOp`] during replay. Upserts re-insert a stored record
+    /// verbatim (ids/uuids/timestamps preserved) and advance the id counters so
+    /// a post-recovery create never reuses an id; deletes mirror the live paths.
+    /// Derived structures (adjacency, title and kind indexes) are rebuilt from
+    /// the record.
+    fn apply_wal_op(&mut self, op: WalOp) {
+        match op {
+            WalOp::UpsertNode(node) => {
+                if let Some(old) = self.nodes.get(&node.id) {
+                    if old.title != node.title {
+                        self.titles.remove(&old.title);
+                    }
+                }
+                self.titles.insert(node.title.clone(), node.id);
+                self.next_node_id = self.next_node_id.max(node.id);
+                self.nodes.insert(node.id, node);
+            }
+            WalOp::DeleteNode(id) => {
+                if let Some(node) = self.nodes.get(&id).cloned() {
+                    let edge_ids: Vec<u64> = self
+                        .incident_entries(id, Direction::Both)
+                        .into_iter()
+                        .map(|e| e.edge_id)
+                        .collect();
+                    for eid in edge_ids {
+                        self.remove_edge(eid);
+                    }
+                    self.titles.remove(&node.title);
+                    self.nodes.remove(&id);
+                }
+            }
+            WalOp::UpsertEdge(edge) => {
+                // On update, drop the old adjacency entries before re-adding.
+                if self.edges.contains_key(&edge.id) {
+                    self.remove_edge(edge.id);
+                }
+                let kind_id = self.intern_kind(&edge.kind);
+                self.out_adj
+                    .entry(edge.from_id)
+                    .or_default()
+                    .push(AdjEntry {
+                        edge_id: edge.id,
+                        neighbor_id: edge.to_id,
+                        kind_id,
+                    });
+                self.in_adj.entry(edge.to_id).or_default().push(AdjEntry {
+                    edge_id: edge.id,
+                    neighbor_id: edge.from_id,
+                    kind_id,
+                });
+                self.next_edge_id = self.next_edge_id.max(edge.id);
+                self.edges.insert(edge.id, edge);
+            }
+            WalOp::DeleteEdge(id) => self.remove_edge(id),
+        }
+    }
+
     /// Remove an edge and its adjacency entries. A missing id is a no-op;
     /// callers that must error (`delete_edge`) check existence first.
     fn remove_edge(&mut self, id: u64) {
@@ -452,6 +511,24 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
+/// One entry in the write-ahead log (RFC ACID "D", Phase 3): the durable,
+/// replayable record of a single graph mutation. Upserts carry the **applied**
+/// record (id/uuid/timestamps already assigned) so replay is deterministic and
+/// never regenerates them; deletes carry the id. Appended in commit order and
+/// replayed in order by [`NativeGraph::replay`] to reconstruct the in-memory
+/// graph after a restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WalOp {
+    /// Insert or replace a node (create and update both log this).
+    UpsertNode(Node),
+    /// Delete a node (and, on replay, cascade its incident edges).
+    DeleteNode(u64),
+    /// Insert or replace an edge (create and update both log this).
+    UpsertEdge(Edge),
+    /// Delete an edge.
+    DeleteEdge(u64),
+}
+
 /// An in-memory, native [`GraphEngine`] (RFC Phase 2/3). See the module docs.
 #[derive(Default)]
 pub struct NativeGraph {
@@ -516,6 +593,43 @@ impl NativeGraph {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// Dump the current state as a write-ahead-log op sequence: every node then
+    /// every edge as an `Upsert`, in ascending id order (RFC ACID "D",
+    /// Phase 3). This is the "snapshot" form of the log — replaying it into a
+    /// fresh engine via [`replay`](Self::replay) reproduces the graph exactly,
+    /// which is what lets a periodic snapshot compact/truncate the incremental
+    /// WAL. Constraints are schema, not data, and are not part of the dump.
+    pub fn dump_wal(&self) -> Vec<WalOp> {
+        let g = read(&self.inner);
+        let mut ops = Vec::with_capacity(g.nodes.len() + g.edges.len());
+        let mut nodes: Vec<&Node> = g.nodes.values().collect();
+        nodes.sort_by_key(|n| n.id);
+        for n in nodes {
+            ops.push(WalOp::UpsertNode(n.clone()));
+        }
+        let mut edges: Vec<&Edge> = g.edges.values().collect();
+        edges.sort_by_key(|e| e.id);
+        for e in edges {
+            ops.push(WalOp::UpsertEdge(e.clone()));
+        }
+        ops
+    }
+
+    /// Rebuild an engine by replaying a [`WalOp`] sequence in order (RFC ACID
+    /// "D", Phase 3) — the recovery path: load a snapshot then replay the WAL
+    /// tail, or replay a full WAL from empty. Ids/uuids/timestamps come from the
+    /// logged records; the id counters advance past every replayed id so a
+    /// post-recovery create never collides with a recovered node/edge.
+    pub fn replay(ops: impl IntoIterator<Item = WalOp>) -> Self {
+        let mut inner = Inner::default();
+        for op in ops {
+            inner.apply_wal_op(op);
+        }
+        NativeGraph {
+            inner: RwLock::new(Arc::new(inner)),
+        }
     }
 }
 

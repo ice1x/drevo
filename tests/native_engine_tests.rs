@@ -696,3 +696,67 @@ fn native_add_constraint_rejects_violating_existing_data() {
         .unwrap();
     assert!(tx.commit().is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.4 — WAL substrate (ACID "D" foundation): a logical operation log the
+// engine's state can be dumped to and deterministically replayed from.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wal_dump_and_replay_roundtrip() {
+    use drevo::native::NativeGraph;
+
+    let g = NativeGraph::new();
+    let a = g.create_node(new_node("person", "a")).unwrap();
+    let b = g.create_node(new_node("person", "b")).unwrap();
+    let t = g.create_node(new_node("tag", "t")).unwrap();
+    g.create_edge(new_edge(a.id, b.id, "KNOWS", 2.0)).unwrap();
+    g.create_edge(new_edge(a.id, t.id, "TAGGED", 1.0)).unwrap();
+    g.update_node(
+        b.id,
+        NodePatch {
+            body: Some("hi".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Dump the state as an op log, round-trip it through JSON, replay into a
+    // fresh engine, and assert observable parity.
+    let ops = g.dump_wal();
+    let json = serde_json::to_string(&ops).unwrap();
+    let ops2: Vec<drevo::native::WalOp> = serde_json::from_str(&json).unwrap();
+    let g2 = NativeGraph::replay(ops2);
+
+    assert_same_state(&g, &g2);
+}
+
+#[test]
+fn wal_replay_honours_delete_ops_and_advances_ids() {
+    use drevo::native::{NativeGraph, WalOp};
+
+    // Build source records with real ids/uuids.
+    let src = NativeGraph::new();
+    let a = src.create_node(new_node("k", "a")).unwrap();
+    let b = src.create_node(new_node("k", "b")).unwrap();
+    let e = src.create_edge(new_edge(a.id, b.id, "E", 1.0)).unwrap();
+
+    // An explicit log: create both nodes + edge, then delete the edge and node b.
+    let log = vec![
+        WalOp::UpsertNode(a.clone()),
+        WalOp::UpsertNode(b.clone()),
+        WalOp::UpsertEdge(e.clone()),
+        WalOp::DeleteEdge(e.id),
+        WalOp::DeleteNode(b.id),
+    ];
+    let g = NativeGraph::replay(log);
+
+    assert_eq!(g.all_nodes().unwrap().len(), 1);
+    assert!(g.get_node(a.id).unwrap().is_some());
+    assert!(g.get_node(b.id).unwrap().is_none());
+    assert!(g.all_edges().unwrap().is_empty());
+
+    // Replayed ids advance the counters: a fresh create gets a new id.
+    let c = g.create_node(new_node("k", "c")).unwrap();
+    assert!(c.id > a.id && c.id > b.id);
+}
