@@ -669,6 +669,42 @@ pub struct NativeGraph {
     /// returning, so an acknowledged write survives a crash.
     #[cfg(not(target_arch = "wasm32"))]
     wal: Option<std::sync::Mutex<WalSink>>,
+    /// The ordered change-feed: every committed write, in commit order, as a
+    /// [`WalOp`] (RFC `docs/rfc-native-core.md`, #307, Phase 6). Secondary
+    /// indexes off the graph seam (FTS, vector) keep themselves current by
+    /// **tailing** this feed — snapshot the graph once, then apply each change
+    /// since a cursor — instead of coupling to the write path. See
+    /// [`changes_since`](Self::changes_since).
+    feed: std::sync::Mutex<ChangeFeed>,
+}
+
+/// The in-memory tail of committed [`WalOp`]s backing [`NativeGraph`]'s
+/// change-feed. `start_seq` is the sequence number *before* `ops[0]`, so the
+/// change at index `i` carries sequence `start_seq + i + 1` and the current
+/// head is `start_seq + ops.len()`. (Trimming consumed history — advancing
+/// `start_seq` and draining `ops` — is a later slice; for now the tail is
+/// retained in full.)
+#[derive(Default)]
+struct ChangeFeed {
+    start_seq: u64,
+    ops: Vec<WalOp>,
+}
+
+/// A batch of change-feed entries plus the cursor to resume from.
+///
+/// Returned by [`NativeGraph::changes_since`]. `cursor` is the sequence number
+/// of the last change in `ops` (or the caller's cursor when `ops` is empty), so
+/// the next poll is `changes_since(batch.cursor)`.
+#[derive(Debug, Clone)]
+pub struct ChangeBatch {
+    /// The resume cursor — pass to the next [`changes_since`](NativeGraph::changes_since).
+    pub cursor: u64,
+    /// The changes after the requested cursor, in commit order.
+    pub ops: Vec<WalOp>,
+    /// `true` when the requested cursor was older than the retained history, so
+    /// some changes were skipped and the subscriber must re-snapshot the graph
+    /// before applying `ops`. Always `false` until history trimming lands.
+    pub lagged: bool,
 }
 
 /// The write-ahead-log file plus its path (needed so [`compact_wal`] can
@@ -713,6 +749,59 @@ impl NativeGraph {
         kind: Option<&str>,
     ) -> Vec<Arc<Node>> {
         read(&self.inner).neighbors_arc(node_id, direction, kind)
+    }
+
+    /// The current change-feed head — the sequence number of the most recent
+    /// committed change. A caught-up subscriber holds this as its cursor;
+    /// `changes_since(change_head())` returns an empty batch.
+    pub fn change_head(&self) -> u64 {
+        let feed = self.feed.lock().unwrap_or_else(|e| e.into_inner());
+        feed.start_seq + feed.ops.len() as u64
+    }
+
+    /// Read every committed change after `cursor`, in commit order (RFC
+    /// `docs/rfc-native-core.md`, #307, Phase 6 change-feed). The returned
+    /// [`ChangeBatch`] carries the resume cursor and, if the cursor had fallen
+    /// behind the retained history, a `lagged` flag telling the subscriber to
+    /// re-snapshot first.
+    ///
+    /// Subscribers follow snapshot-then-tail: seed the index from a
+    /// [`snapshot`](Self::snapshot), remember [`change_head`](Self::change_head)
+    /// at that instant, then poll `changes_since(cursor)` and advance the cursor
+    /// by each batch — so an FTS or vector index stays current without touching
+    /// the write path.
+    pub fn changes_since(&self, cursor: u64) -> ChangeBatch {
+        let feed = self.feed.lock().unwrap_or_else(|e| e.into_inner());
+        let head = feed.start_seq + feed.ops.len() as u64;
+        if cursor < feed.start_seq {
+            // The cursor predates the retained window — history was trimmed, so
+            // the subscriber must re-snapshot before applying what remains.
+            return ChangeBatch {
+                cursor: head,
+                ops: feed.ops.clone(),
+                lagged: true,
+            };
+        }
+        let from = (cursor - feed.start_seq).min(feed.ops.len() as u64) as usize;
+        ChangeBatch {
+            cursor: head,
+            ops: feed.ops[from..].to_vec(),
+            lagged: false,
+        }
+    }
+
+    /// Record committed changes into the WAL (when the engine is durable) and
+    /// the change-feed, in commit order. The single record point for every
+    /// mutation path, so the change-feed sees exactly what the WAL persists.
+    ///
+    /// The WAL append happens **first**: if it fails the feed is left untouched,
+    /// so the feed never advertises a change the WAL did not persist.
+    fn record(&self, ops: &[WalOp]) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.wal_append_batch(ops)?;
+        let mut feed = self.feed.lock().unwrap_or_else(|e| e.into_inner());
+        feed.ops.extend_from_slice(ops);
+        Ok(())
     }
 
     /// Take a consistent, read-only [`GraphSnapshot`] of the current state.
@@ -794,6 +883,7 @@ impl NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
             #[cfg(not(target_arch = "wasm32"))]
             wal: None,
+            feed: std::sync::Mutex::new(ChangeFeed::default()),
         }
     }
 
@@ -837,6 +927,7 @@ impl NativeGraph {
                 path: path.to_path_buf(),
                 file,
             })),
+            feed: std::sync::Mutex::new(ChangeFeed::default()),
         })
     }
 
@@ -880,13 +971,6 @@ impl NativeGraph {
         std::fs::rename(&tmp, &sink.path)?;
         sink.file = std::fs::OpenOptions::new().append(true).open(&sink.path)?;
         Ok(())
-    }
-
-    /// Append one op to the WAL and fsync, when this engine is durable. A no-op
-    /// for an in-memory-only engine.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn wal_append(&self, op: &WalOp) -> Result<()> {
-        self.wal_append_batch(std::slice::from_ref(op))
     }
 
     /// Append a batch of ops and fsync **once**, when this engine is durable —
@@ -949,12 +1033,12 @@ impl NativeTx<'_> {
         self.working
             .validate_constraints()
             .map_err(CommitError::Constraint)?;
-        // Durability: log the whole transaction as one fsynced batch *before*
-        // the swap, so the commit is all-or-nothing — an I/O failure leaves the
-        // graph and the log untouched. A no-op on a non-durable engine.
-        #[cfg(not(target_arch = "wasm32"))]
+        // Durability + change-feed: record the whole transaction as one fsynced
+        // batch *before* the swap, so the commit is all-or-nothing — an I/O
+        // failure leaves the graph, the log, and the feed untouched. On a
+        // non-durable engine the WAL step is a no-op and only the feed advances.
         self.engine
-            .wal_append_batch(&self.ops)
+            .record(&self.ops)
             .map_err(|e| CommitError::Io(e.to_string()))?;
         *live = self.working;
         Ok(())
@@ -1071,8 +1155,7 @@ fn write(inner: &RwLock<Arc<Inner>>) -> std::sync::RwLockWriteGuard<'_, Arc<Inne
 impl GraphEngine for NativeGraph {
     fn create_node(&self, new_node: NewNode) -> Result<Node> {
         let node = Arc::make_mut(&mut write(&self.inner)).create_node(new_node)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        self.wal_append(&WalOp::UpsertNode(node.clone()))?;
+        self.record(&[WalOp::UpsertNode(node.clone())])?;
         Ok(node)
     }
 
@@ -1082,22 +1165,19 @@ impl GraphEngine for NativeGraph {
 
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
         let node = Arc::make_mut(&mut write(&self.inner)).update_node(id, patch)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        self.wal_append(&WalOp::UpsertNode(node.clone()))?;
+        self.record(&[WalOp::UpsertNode(node.clone())])?;
         Ok(node)
     }
 
     fn delete_node(&self, id: u64) -> Result<()> {
         Arc::make_mut(&mut write(&self.inner)).delete_node(id)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        self.wal_append(&WalOp::DeleteNode(id))?;
+        self.record(&[WalOp::DeleteNode(id)])?;
         Ok(())
     }
 
     fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
         let edge = Arc::make_mut(&mut write(&self.inner)).create_edge(new_edge)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        self.wal_append(&WalOp::UpsertEdge(edge.clone()))?;
+        self.record(&[WalOp::UpsertEdge(edge.clone())])?;
         Ok(edge)
     }
 
@@ -1107,15 +1187,13 @@ impl GraphEngine for NativeGraph {
 
     fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
         let edge = Arc::make_mut(&mut write(&self.inner)).update_edge(id, patch)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        self.wal_append(&WalOp::UpsertEdge(edge.clone()))?;
+        self.record(&[WalOp::UpsertEdge(edge.clone())])?;
         Ok(edge)
     }
 
     fn delete_edge(&self, id: u64) -> Result<()> {
         Arc::make_mut(&mut write(&self.inner)).delete_edge(id)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        self.wal_append(&WalOp::DeleteEdge(id))?;
+        self.record(&[WalOp::DeleteEdge(id)])?;
         Ok(())
     }
 
@@ -1236,14 +1314,9 @@ impl GraphEngine for NativeGraph {
             g.next_edge_id = g.next_edge_id.max(dump.next_edge_id.saturating_sub(1));
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
         if !applied.is_empty() {
-            self.wal_append_batch(&applied)?;
+            self.record(&applied)?;
         }
-        // `applied` is consumed by the WAL append above on native targets; on
-        // wasm there is no journal, so the buffer is simply dropped.
-        #[cfg(target_arch = "wasm32")]
-        let _ = applied;
 
         Ok(report)
     }
