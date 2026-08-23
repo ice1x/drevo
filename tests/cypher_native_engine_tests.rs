@@ -154,3 +154,69 @@ fn fts_search_works_on_native_with_an_index() {
     }
     assert!(matches!(&rows[0][0], Value::Node(_)));
 }
+
+/// Extract the `Float` score column from `[node, score]` rows.
+fn scores(rows: &[Vec<Value>]) -> Vec<f64> {
+    rows.iter()
+        .map(|r| match &r[1] {
+            Value::Float(f) => *f,
+            other => panic!("expected Float score, got {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn vector_query_works_on_native_and_matches_kv() {
+    // `drevo.vector.query` (bring-your-own-vector) reads through the GraphEngine
+    // seam (`all_nodes` + cosine), so it needs no KV secondary — it works on the
+    // native engine, and produces the same ranking as the KV store.
+    let corpus = [
+        "CREATE (:Emb {title: 'x-axis', vec: [1.0, 0.0, 0.0]})",
+        "CREATE (:Emb {title: 'y-axis', vec: [0.0, 1.0, 0.0]})",
+        "CREATE (:Emb {title: 'near-x', vec: [0.9, 0.1, 0.0]})",
+        "CREATE (:Other {title: 'wrong-label', vec: [1.0, 0.0, 0.0]})",
+    ];
+    let native = NativeGraph::new();
+    let kv = Drevo::open_in_memory().unwrap();
+    for stmt in corpus {
+        let q = parse(stmt).unwrap();
+        execute_on_engine(&q, &native, HashMap::new()).unwrap();
+        execute(&q, &kv, HashMap::new()).unwrap();
+    }
+
+    let q = parse(
+        "CALL drevo.vector.query('Emb', 'vec', [1.0, 0.0, 0.0], 10) \
+         YIELD node, score RETURN node, score",
+    )
+    .unwrap();
+    let native_rows = execute_on_engine(&q, &native, HashMap::new())
+        .expect("vector.query on native")
+        .rows;
+    let kv_rows = execute(&q, &kv, HashMap::new()).unwrap().rows;
+
+    // Only the three `Emb` nodes match (the `Other`-labelled node is excluded),
+    // exact match ranks first, and the scores are identical to the KV ranker.
+    assert_eq!(native_rows.len(), 3);
+    assert_eq!(scores(&native_rows), scores(&kv_rows));
+    assert!((scores(&native_rows)[0] - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn semantic_query_needs_the_embedder_on_native() {
+    // `drevo.semantic.query` embeds the query text server-side before scanning,
+    // so it needs the KV embedder — on the native engine it must surface a clear
+    // capability error rather than a wrong answer.
+    let g = NativeGraph::new();
+    run_native("CREATE (:Emb {title: 'a', vec: [1.0, 0.0]})", &g);
+
+    let q = parse(
+        "CALL drevo.semantic.query('Emb', 'vec', 'find me', 3) \
+         YIELD node, score RETURN node, score",
+    )
+    .unwrap();
+    let err = execute_on_engine(&q, &g, HashMap::new()).unwrap_err();
+    assert!(
+        matches!(err, ExecError::EngineCapability { ref feature } if feature == "semantic embedding"),
+        "expected EngineCapability(semantic embedding), got: {err:?}"
+    );
+}
