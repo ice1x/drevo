@@ -127,3 +127,30 @@ fn secondary_subsystem_reports_engine_capability_on_native() {
         "expected EngineCapability for fts.search, got: {err:?}"
     );
 }
+
+#[test]
+fn fts_search_works_on_native_with_an_index() {
+    use drevo::cypher::executor::execute_on_engine_with_fts;
+    use drevo::native_fts::NativeFtsIndex;
+
+    let g = NativeGraph::new();
+    run_native("CREATE (:Doc {title: 'the quick brown fox'})", &g);
+    run_native("CREATE (:Doc {title: 'the lazy dog'})", &g);
+
+    // Build + sync the change-feed-fed index, then query through the executor.
+    let mut fts = NativeFtsIndex::new();
+    fts.sync(&g);
+
+    let q = parse("CALL fts.search('quick', 10) YIELD node, score RETURN node, score").unwrap();
+    let rows = execute_on_engine_with_fts(&q, &g, &fts, HashMap::new())
+        .expect("fts.search on native")
+        .rows;
+
+    // Exactly the fox matches, with a positive BM25 score.
+    assert_eq!(rows.len(), 1);
+    match &rows[0][1] {
+        Value::Float(s) => assert!(*s > 0.0, "score should be positive, got {s}"),
+        other => panic!("expected Float score, got {other:?}"),
+    }
+    assert!(matches!(&rows[0][0], Value::Node(_)));
+}
