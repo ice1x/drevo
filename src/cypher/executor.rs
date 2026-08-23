@@ -706,7 +706,7 @@ pub fn execute(
 ) -> ExecResultT<ExecResult> {
     // The KV store is both the graph engine and the home of the secondary
     // subsystems, so it is passed in both roles.
-    execute_inner(query, drevo, Some(drevo), params)
+    execute_inner(query, drevo, Some(drevo), None, params)
 }
 
 /// Execute a Cypher query over **any** [`GraphEngine`] — the native
@@ -726,19 +726,41 @@ pub fn execute_on_engine(
     engine: &dyn GraphEngine,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, params)
+    execute_inner(query, engine, None, None, params)
+}
+
+/// Like [`execute_on_engine`], but with a native full-text index so
+/// `CALL fts.search(...)` is answered on the native engine (RFC
+/// `docs/rfc-native-core.md`, #307, Phase 6.3).
+///
+/// The caller owns the [`NativeFtsIndex`](crate::native_fts::NativeFtsIndex) and
+/// is responsible for keeping it synced with the engine's change-feed (call its
+/// `sync` before querying for read-your-writes). Other KV-only subsystems
+/// (vector/semantic, recency, keyword extraction) still surface
+/// [`ExecError::EngineCapability`].
+///
+/// # Errors
+/// Returns the first [`ExecError`] encountered (see [`execute`]).
+pub fn execute_on_engine_with_fts(
+    query: &Query,
+    engine: &dyn GraphEngine,
+    fts: &crate::native_fts::NativeFtsIndex,
+    params: HashMap<String, Value>,
+) -> ExecResultT<ExecResult> {
+    execute_inner(query, engine, None, Some(fts), params)
 }
 
 fn execute_inner(
     query: &Query,
     engine: &dyn GraphEngine,
     secondary: Option<&Drevo>,
+    native_fts: Option<&crate::native_fts::NativeFtsIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Fast path — a query with no `UNION` is a single arm, executed
     // directly with no row combination.
     if query.parts.len() == 1 {
-        return execute_single(&query.parts[0].query, engine, secondary, params);
+        return execute_single(&query.parts[0].query, engine, secondary, native_fts, params);
     }
 
     // Multi-arm `UNION`. The parser guarantees `parts[i].union` is
@@ -773,7 +795,7 @@ fn execute_inner(
     let mut rows: Vec<Vec<Value>> = Vec::new();
     let mut stats = ExecStats::default();
     for part in &query.parts {
-        let arm = execute_single(&part.query, engine, secondary, params.clone())?;
+        let arm = execute_single(&part.query, engine, secondary, native_fts, params.clone())?;
         match &columns {
             None => columns = Some(arm.columns),
             Some(expected) if *expected != arm.columns => {
@@ -809,6 +831,7 @@ fn execute_single(
     single: &SingleQuery,
     engine: &dyn GraphEngine,
     secondary: Option<&Drevo>,
+    native_fts: Option<&crate::native_fts::NativeFtsIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
@@ -822,6 +845,7 @@ fn execute_single(
     let mut executor = Executor {
         engine,
         secondary,
+        native_fts,
         params,
         bindings: vec![HashMap::new()],
         stats: ExecStats::default(),
@@ -1876,6 +1900,12 @@ struct Executor<'a> {
     /// so those subsystems surface [`ExecError::EngineCapability`] instead of a
     /// panic or a wrong answer.
     secondary: Option<&'a Drevo>,
+    /// A native full-text index tailing the engine's change-feed, when running
+    /// over a non-KV engine that has one. Lets `fts.search` be answered on the
+    /// native engine; `None` on the KV path (which uses `secondary`) or when no
+    /// index was supplied (then `fts.search` surfaces
+    /// [`ExecError::EngineCapability`]).
+    native_fts: Option<&'a crate::native_fts::NativeFtsIndex>,
     params: HashMap<String, Value>,
     /// Pattern bindings produced so far. Each `MATCH` multiplies the
     /// binding set; `CREATE` augments every existing binding (or
@@ -4327,7 +4357,21 @@ impl<'a> Executor<'a> {
         let query = query.as_string(span)?.to_string();
         let k = self.eval_usize(&args[1], &empty)?;
 
-        // `search_fts` already returns nodes ranked by descending BM25 score.
+        // On the native engine, answer from the change-feed-fed full-text index;
+        // otherwise use the KV store's `search_fts`. Both return nodes ranked by
+        // descending BM25 score.
+        if let Some(fts) = self.native_fts {
+            let mut rows = Vec::new();
+            for (id, score) in fts.search(&query, k) {
+                if let Some(node) = self.engine().get_node(id)? {
+                    rows.push(vec![
+                        Value::Node(node_to_value(&node)),
+                        Value::Float(f64::from(score)),
+                    ]);
+                }
+            }
+            return Ok(rows);
+        }
         let hits = self.secondary("fts.search")?.search_fts(&query, k)?;
         Ok(hits
             .into_iter()
