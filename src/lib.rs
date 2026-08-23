@@ -162,6 +162,11 @@ pub mod mvcc;
 /// byte-keyed rows over a [`storage::StorageBackend`]. Correctness-first seed of
 /// the arena/CSR core; pinned against [`db::Drevo`] by differential test.
 pub mod native;
+/// In-memory full-text index that tails a [`native::NativeGraph`]'s change-feed
+/// (RFC `docs/rfc-native-core.md`, #307, Phase 6.3) — the first secondary index
+/// kept current off the graph seam, matching the KV store's trigram BM25
+/// full-text semantics so `fts.search` can be served on the native engine.
+pub mod native_fts;
 /// Observability — Phase 15 task `00130`. A dependency-free, lock-free
 /// metrics registry ([`observability::Registry`] with
 /// [`observability::Counter`] / [`observability::Gauge`] /
