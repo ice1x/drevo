@@ -1295,7 +1295,7 @@ fn parse_error_metadata(e: &ParseError) -> BTreeMap<String, Value> {
 
 fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
     let code = match e {
-        ExecError::Unsupported { .. } => codes::UNSUPPORTED,
+        ExecError::Unsupported { .. } | ExecError::EngineCapability { .. } => codes::UNSUPPORTED,
         ExecError::UnboundVariable { .. }
         | ExecError::InvalidCreate(_)
         | ExecError::InvalidMutation(_)

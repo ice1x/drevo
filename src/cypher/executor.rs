@@ -395,6 +395,19 @@ pub enum ExecError {
     /// Underlying storage / serialization failure.
     #[error("storage error: {0}")]
     Storage(#[from] DrevoError),
+    /// The query used a subsystem the active graph engine does not provide.
+    /// The native `drevo-core` engine implements the core graph (nodes, edges,
+    /// adjacency) but not the KV store's secondary indexes — full-text search,
+    /// vector/semantic similarity, recency scans, keyword extraction. Those
+    /// require the KV (`Drevo`) engine (they will be fed to the native engine
+    /// via a change-feed in a later Phase-6 slice).
+    #[error(
+        "`{feature}` is not available on the active graph engine (requires the KV storage engine)"
+    )]
+    EngineCapability {
+        /// Short label of the unavailable subsystem (`"fts.search"`).
+        feature: String,
+    },
 }
 
 impl ExecError {
@@ -412,6 +425,7 @@ impl ExecError {
             Self::MissingParameter(_)
             | Self::InvalidCreate(_)
             | Self::InvalidMutation(_)
+            | Self::EngineCapability { .. }
             | Self::Storage(_) => None,
         }
     }
@@ -690,10 +704,41 @@ pub fn execute(
     drevo: &Drevo,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
+    // The KV store is both the graph engine and the home of the secondary
+    // subsystems, so it is passed in both roles.
+    execute_inner(query, drevo, Some(drevo), params)
+}
+
+/// Execute a Cypher query over **any** [`GraphEngine`] — the native
+/// `drevo-core` engine or the KV [`Drevo`] — without a KV secondary store
+/// (RFC `docs/rfc-native-core.md`, #307, Phase 6).
+///
+/// Core graph work (node/edge/adjacency CRUD, MATCH, MERGE, SET, DELETE,
+/// traversal) runs directly on `engine`. Queries that reach for a KV-only
+/// secondary subsystem — full-text search, vector/semantic similarity, recency
+/// scans, keyword extraction — fail with [`ExecError::EngineCapability`]
+/// because those indexes are not (yet) fed to a non-KV engine.
+///
+/// # Errors
+/// Returns the first [`ExecError`] encountered (see [`execute`]).
+pub fn execute_on_engine(
+    query: &Query,
+    engine: &dyn GraphEngine,
+    params: HashMap<String, Value>,
+) -> ExecResultT<ExecResult> {
+    execute_inner(query, engine, None, params)
+}
+
+fn execute_inner(
+    query: &Query,
+    engine: &dyn GraphEngine,
+    secondary: Option<&Drevo>,
+    params: HashMap<String, Value>,
+) -> ExecResultT<ExecResult> {
     // Fast path — a query with no `UNION` is a single arm, executed
     // directly with no row combination.
     if query.parts.len() == 1 {
-        return execute_single(&query.parts[0].query, drevo, params);
+        return execute_single(&query.parts[0].query, engine, secondary, params);
     }
 
     // Multi-arm `UNION`. The parser guarantees `parts[i].union` is
@@ -728,7 +773,7 @@ pub fn execute(
     let mut rows: Vec<Vec<Value>> = Vec::new();
     let mut stats = ExecStats::default();
     for part in &query.parts {
-        let arm = execute_single(&part.query, drevo, params.clone())?;
+        let arm = execute_single(&part.query, engine, secondary, params.clone())?;
         match &columns {
             None => columns = Some(arm.columns),
             Some(expected) if *expected != arm.columns => {
@@ -758,10 +803,12 @@ pub fn execute(
     })
 }
 
-/// Execute one `UNION`-free arm against a fresh executor.
+/// Execute one `UNION`-free arm against a fresh executor over the given engine
+/// (and optional KV secondary store).
 fn execute_single(
     single: &SingleQuery,
-    drevo: &Drevo,
+    engine: &dyn GraphEngine,
+    secondary: Option<&Drevo>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
@@ -773,7 +820,8 @@ fn execute_single(
     }
 
     let mut executor = Executor {
-        drevo,
+        engine,
+        secondary,
         params,
         bindings: vec![HashMap::new()],
         stats: ExecStats::default(),
@@ -1818,7 +1866,16 @@ type KeyedRows = Vec<(Vec<Value>, Bindings)>;
 type SortableRows = Vec<(Vec<(Value, OrderDirection)>, (Vec<Value>, Bindings))>;
 
 struct Executor<'a> {
-    drevo: &'a Drevo,
+    /// The graph store viewed through the [`GraphEngine`] seam — the KV-backed
+    /// [`Drevo`] or the native `drevo-core`. All node/edge/adjacency work goes
+    /// through this.
+    engine: &'a dyn GraphEngine,
+    /// The KV store, when it is the active engine — the home of the secondary
+    /// subsystems (FTS, vector/semantic, recency, keyword extraction) that are
+    /// not (yet) on the graph seam. `None` when running over a non-KV engine,
+    /// so those subsystems surface [`ExecError::EngineCapability`] instead of a
+    /// panic or a wrong answer.
+    secondary: Option<&'a Drevo>,
     params: HashMap<String, Value>,
     /// Pattern bindings produced so far. Each `MATCH` multiplies the
     /// binding set; `CREATE` augments every existing binding (or
@@ -1832,15 +1889,25 @@ struct Executor<'a> {
 // Default initial result fields — Rust struct init helper.
 impl<'a> Executor<'a> {
     /// The graph store viewed through the [`GraphEngine`] seam (RFC
-    /// `docs/rfc-native-core.md`, #307). Node/edge **read** paths go through
-    /// this rather than reaching into the concrete [`Drevo`] inherent methods,
-    /// so those paths follow the engine when a native `drevo-core` is swapped
-    /// in. The returned reference carries the `'a` lifetime of the borrowed
-    /// store (not `&self`), so it composes in `&mut self` contexts exactly like
-    /// the former direct field access. Operations not yet on the seam (FTS,
-    /// property/vector indexes, counters, transactions) still use `self.drevo`.
+    /// `docs/rfc-native-core.md`, #307). Node/edge/adjacency paths go through
+    /// this rather than reaching into a concrete store's inherent methods, so
+    /// they follow the engine when a native `drevo-core` is swapped in. The
+    /// returned reference carries the `'a` lifetime of the borrowed store (not
+    /// `&self`), so it composes in `&mut self` contexts exactly like a direct
+    /// field access.
     fn engine(&self) -> &'a dyn GraphEngine {
-        self.drevo
+        self.engine
+    }
+
+    /// The KV store backing the secondary subsystems (FTS, vector/semantic,
+    /// recency, keyword extraction) that are not yet on the graph seam. Returns
+    /// [`ExecError::EngineCapability`] when the active engine is not the KV
+    /// store, so a query that reaches for one of those subsystems on a native
+    /// engine fails deterministically instead of panicking.
+    fn secondary(&self, feature: &str) -> ExecResultT<&'a Drevo> {
+        self.secondary.ok_or_else(|| ExecError::EngineCapability {
+            feature: feature.to_string(),
+        })
     }
 
     fn take_result(self) -> ExecResult {
@@ -2125,10 +2192,10 @@ impl<'a> Executor<'a> {
             for state in &frontier {
                 let edges = match dir {
                     AstDirection::Outgoing => self
-                        .drevo
+                        .engine()
                         .edges_of(state.node.id, ModelDirection::Outgoing)?,
                     AstDirection::Incoming => self
-                        .drevo
+                        .engine()
                         .edges_of(state.node.id, ModelDirection::Incoming)?,
                     AstDirection::Undirected => self
                         .engine()
@@ -2262,7 +2329,14 @@ impl<'a> Executor<'a> {
         // practice list_recent on the in-memory backend is O(n) which
         // matches list_nodes_by_kind, and an optimised index lands with
         // task `00086` (cost-based planner).
-        let mut nodes: Vec<Node> = self.drevo.list_recent(usize::MAX)?;
+        // On the KV engine, `list_recent` returns every node (and its recency
+        // order) and also surfaces secondary-label nodes; on a non-KV engine we
+        // scan the full node set through the seam. Either way the primary-kind
+        // hits below are merged in.
+        let mut nodes: Vec<Node> = match self.secondary {
+            Some(kv) => kv.list_recent(usize::MAX)?,
+            None => self.engine().all_nodes()?,
+        };
         if let Some(label) = pattern.labels.first() {
             // Merge in primary-kind hits in case `list_recent` is bounded
             // by some future backend implementation.
@@ -2320,10 +2394,10 @@ impl<'a> Executor<'a> {
         let mut out = Vec::new();
         let edges = match dir {
             AstDirection::Outgoing => self
-                .drevo
+                .engine()
                 .edges_of(prev_node.id, ModelDirection::Outgoing)?,
             AstDirection::Incoming => self
-                .drevo
+                .engine()
                 .edges_of(prev_node.id, ModelDirection::Incoming)?,
             AstDirection::Undirected => {
                 self.engine().edges_of(prev_node.id, ModelDirection::Both)?
@@ -2508,10 +2582,10 @@ impl<'a> Executor<'a> {
             for state in &frontier {
                 let edges = match dir {
                     AstDirection::Outgoing => self
-                        .drevo
+                        .engine()
                         .edges_of(state.node.id, ModelDirection::Outgoing)?,
                     AstDirection::Incoming => self
-                        .drevo
+                        .engine()
                         .edges_of(state.node.id, ModelDirection::Incoming)?,
                     AstDirection::Undirected => self
                         .engine()
@@ -3048,7 +3122,7 @@ impl<'a> Executor<'a> {
             });
         };
         let stored = self
-            .drevo
+            .engine()
             .get_node(nv.id)?
             .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
         let mut current = node_labels_from_storage(&stored);
@@ -3140,7 +3214,7 @@ impl<'a> Executor<'a> {
             });
         };
         let stored = self
-            .drevo
+            .engine()
             .get_node(nv.id)?
             .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
         // Cannot remove the primary label (drevo `kind`).
@@ -3175,7 +3249,7 @@ impl<'a> Executor<'a> {
         var_name: &str,
     ) -> ExecResultT<()> {
         let stored = self
-            .drevo
+            .engine()
             .get_node(nv.id)?
             .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
         let mut patch = crate::model::NodePatch::default();
@@ -3257,7 +3331,7 @@ impl<'a> Executor<'a> {
         var_name: &str,
     ) -> ExecResultT<()> {
         let stored = self
-            .drevo
+            .engine()
             .get_node(nv.id)?
             .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
         // Start either from existing storage props (merge) or empty (replace).
@@ -3366,7 +3440,7 @@ impl<'a> Executor<'a> {
         var_name: &str,
     ) -> ExecResultT<()> {
         let stored = self
-            .drevo
+            .engine()
             .get_node(nv.id)?
             .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
         let mut patch = crate::model::NodePatch::default();
@@ -3812,7 +3886,7 @@ impl<'a> Executor<'a> {
         let k = self.eval_usize(&args[3], &empty)?;
 
         let query = self
-            .drevo
+            .secondary("semantic embedding")?
             .embed_text(&text)
             .map_err(|e| ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.query".to_string(),
@@ -3848,7 +3922,7 @@ impl<'a> Executor<'a> {
         let text = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
 
         let vector = self
-            .drevo
+            .secondary("semantic embedding")?
             .embed_text(&text)
             .map_err(|e| ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.embed".to_string(),
@@ -3894,7 +3968,7 @@ impl<'a> Executor<'a> {
             span,
         })?;
         let target = self
-            .drevo
+            .secondary("drevo.semantic.register")?
             .semantic_register(&label, &text_property, &embedding_property, mode, None)
             .map_err(|e| ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.register".to_string(),
@@ -3928,7 +4002,7 @@ impl<'a> Executor<'a> {
         _span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
         Ok(self
-            .drevo
+            .secondary("drevo.semantic.status")?
             .semantic_status_detailed()?
             .iter()
             .map(semantic_status_row)
@@ -3950,7 +4024,7 @@ impl<'a> Executor<'a> {
         _args: &[Expression],
         _span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
-        let cap = self.drevo.embedder_info();
+        let cap = self.secondary("semantic embedding")?.embedder_info();
         let dimension = cap.dimension.map_or(Value::Null, |d| {
             Value::Integer(i64::try_from(d).unwrap_or(i64::MAX))
         });
@@ -4018,7 +4092,7 @@ impl<'a> Executor<'a> {
         // Resolve and validate the registered target (keeps db.rs registry-free
         // and maps a missing target to a clean procedure error).
         let target = self
-            .drevo
+            .secondary("drevo.semantic.status")?
             .semantic_status()
             .into_iter()
             .find(|t| t.label == label && t.embedding_property == embedding_property);
@@ -4034,7 +4108,7 @@ impl<'a> Executor<'a> {
         };
 
         let report = if matches!(target.mode, IndexMode::Auto) {
-            self.drevo
+            self.secondary("drevo.semantic.reindex")?
                 .semantic_reindex(
                     &target.label,
                     &target.text_property,
@@ -4080,7 +4154,7 @@ impl<'a> Executor<'a> {
             span,
         })?;
         let target = self
-            .drevo
+            .secondary("drevo.semantic.registerRel")?
             .semantic_register_rel(&rel_type, &text_property, &embedding_property, mode, None)
             .map_err(|e| ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.registerRel".to_string(),
@@ -4108,7 +4182,7 @@ impl<'a> Executor<'a> {
         let k = self.eval_usize(&args[3], &empty)?;
 
         let query = self
-            .drevo
+            .secondary("semantic embedding")?
             .embed_text(&text)
             .map_err(|e| ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.queryRel".to_string(),
@@ -4177,7 +4251,7 @@ impl<'a> Executor<'a> {
         let batch_size = self.eval_usize(&args[2], &empty)?;
 
         let target = self
-            .drevo
+            .secondary("drevo.semantic.status")?
             .semantic_status_detailed()
             .map_err(|e| ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.reindexRel".to_string(),
@@ -4203,7 +4277,7 @@ impl<'a> Executor<'a> {
         };
 
         let report = if matches!(status.index.mode, IndexMode::Auto) {
-            self.drevo
+            self.secondary("drevo.semantic.reindexRel")?
                 .semantic_reindex_rel(
                     &status.index.label,
                     &status.index.text_property,
@@ -4254,7 +4328,7 @@ impl<'a> Executor<'a> {
         let k = self.eval_usize(&args[1], &empty)?;
 
         // `search_fts` already returns nodes ranked by descending BM25 score.
-        let hits = self.drevo.search_fts(&query, k)?;
+        let hits = self.secondary("fts.search")?.search_fts(&query, k)?;
         Ok(hits
             .into_iter()
             .map(|scored| {
@@ -4279,7 +4353,9 @@ impl<'a> Executor<'a> {
         let query = query.as_string(span)?.to_string();
         let k = self.eval_usize(&args[1], &empty)?;
 
-        let hits = self.drevo.search_fts_relationships(&query, k)?;
+        let hits = self
+            .secondary("fts.searchRelationships")?
+            .search_fts_relationships(&query, k)?;
         Ok(hits
             .into_iter()
             .map(|scored| {
@@ -5752,7 +5828,12 @@ impl<'a> Executor<'a> {
             },
         };
 
-        let terms = crate::fts::keywords::extract_keywords(self.drevo.backend(), &text, k, stem)?;
+        let terms = crate::fts::keywords::extract_keywords(
+            self.secondary("keywords()")?.backend(),
+            &text,
+            k,
+            stem,
+        )?;
         Ok(Value::List(terms.into_iter().map(Value::String).collect()))
     }
 
