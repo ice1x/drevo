@@ -1116,3 +1116,82 @@ fn snapshot_arc_read_is_frozen_against_later_writes() {
     assert_eq!(snap.get_node_arc(a.id).unwrap().body, "");
     assert_eq!(g.get_node(a.id).unwrap().unwrap().body, "mutated");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6.5 — node-kind index: `nodes_by_kind` must be index-driven yet stay
+// observably identical to the old full scan across every mutation, including a
+// node changing kind (its id must move buckets) and deletion (it must leave).
+// ---------------------------------------------------------------------------
+
+fn kinds(g: &drevo::native::NativeGraph, kind: &str) -> Vec<u64> {
+    g.nodes_by_kind(kind, usize::MAX, 0)
+        .unwrap()
+        .iter()
+        .map(|n| n.id)
+        .collect()
+}
+
+#[test]
+fn native_kind_index_tracks_updates_and_deletes() {
+    use drevo::native::NativeGraph;
+
+    let g = NativeGraph::new();
+    let a = g.create_node(new_node("person", "a")).unwrap();
+    let b = g.create_node(new_node("person", "b")).unwrap();
+    let c = g.create_node(new_node("city", "c")).unwrap();
+
+    assert_eq!(kinds(&g, "person"), vec![a.id, b.id]);
+    assert_eq!(kinds(&g, "city"), vec![c.id]);
+    assert!(kinds(&g, "ghost").is_empty());
+
+    // Re-kind b: person -> city. It must leave the person bucket and join
+    // city, still in ascending-id order.
+    g.update_node(
+        b.id,
+        NodePatch {
+            kind: Some("city".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(kinds(&g, "person"), vec![a.id]);
+    assert_eq!(kinds(&g, "city"), vec![b.id, c.id]);
+
+    // Deleting the last person empties (and drops) the bucket.
+    g.delete_node(a.id).unwrap();
+    assert!(kinds(&g, "person").is_empty());
+    assert_eq!(kinds(&g, "city"), vec![b.id, c.id]);
+}
+
+#[test]
+fn native_kind_index_survives_replay_and_migrate() {
+    use drevo::native::NativeGraph;
+
+    let g = NativeGraph::new();
+    let a = g.create_node(new_node("person", "a")).unwrap();
+    let b = g.create_node(new_node("person", "b")).unwrap();
+    let _c = g.create_node(new_node("city", "c")).unwrap();
+    // A kind change makes the WAL carry a replacing UpsertNode whose kind
+    // differs from the record already present in a replay target.
+    g.update_node(
+        b.id,
+        NodePatch {
+            kind: Some("city".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Replay rebuilds the kind index purely from the op log.
+    let replayed = NativeGraph::replay(g.dump_wal());
+    assert_eq!(kinds(&replayed, "person"), kinds(&g, "person"));
+    assert_eq!(kinds(&replayed, "city"), kinds(&g, "city"));
+    assert_eq!(kinds(&g, "person"), vec![a.id]);
+
+    // Cross-engine migrate (apply_dump on a fresh engine) must land the same
+    // buckets: apply_dump routes node inserts through the same op path.
+    let fresh = NativeGraph::new();
+    drevo::migrate::migrate(&g, &fresh).unwrap();
+    assert_eq!(kinds(&fresh, "person"), kinds(&g, "person"));
+    assert_eq!(kinds(&fresh, "city"), kinds(&g, "city"));
+}
