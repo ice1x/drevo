@@ -790,6 +790,39 @@ impl NativeGraph {
         }
     }
 
+    /// Drop change-feed history at or before `cursor`, bounding the feed's
+    /// memory (RFC `docs/rfc-native-core.md`, #307, Phase 6).
+    ///
+    /// The caller passes the **minimum cursor across its live subscribers**, so
+    /// no subscriber that is still catching up loses a change it has not seen.
+    /// After trimming, a subscriber whose cursor is below the new floor gets
+    /// `lagged = true` from [`changes_since`](Self::changes_since) and must
+    /// re-snapshot. `cursor` is clamped to the current head (the feed never
+    /// trims a change that has not been produced). Returns the new retained
+    /// floor — the sequence number before the oldest retained change.
+    pub fn trim_before(&self, cursor: u64) -> u64 {
+        let mut feed = self.feed.lock().unwrap_or_else(|e| e.into_inner());
+        let head = feed.start_seq + feed.ops.len() as u64;
+        let target = cursor.min(head);
+        if target <= feed.start_seq {
+            return feed.start_seq;
+        }
+        let drop = (target - feed.start_seq) as usize;
+        feed.ops.drain(..drop);
+        feed.start_seq = target;
+        feed.start_seq
+    }
+
+    /// The oldest sequence number still retained on the change-feed — the floor
+    /// below which [`changes_since`](Self::changes_since) reports `lagged`. `0`
+    /// until [`trim_before`](Self::trim_before) advances it.
+    pub fn change_floor(&self) -> u64 {
+        self.feed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .start_seq
+    }
+
     /// Record committed changes into the WAL (when the engine is durable) and
     /// the change-feed, in commit order. The single record point for every
     /// mutation path, so the change-feed sees exactly what the WAL persists.

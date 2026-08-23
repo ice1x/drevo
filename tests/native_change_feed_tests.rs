@@ -177,3 +177,86 @@ fn delete_emits_delete_ops_on_the_feed() {
     assert!(matches!(ops[1], WalOp::DeleteNode(id) if id == a.id));
     let _ = b;
 }
+
+// ---------------------------------------------------------------------------
+// History trimming (bounded memory + the lagged/re-snapshot path)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trim_before_drops_history_and_advances_the_floor() {
+    let g = NativeGraph::new();
+    for i in 0..5 {
+        g.create_node(new_node("k", &format!("n{i}"))).unwrap();
+    }
+    assert_eq!(g.change_head(), 5);
+    assert_eq!(g.change_floor(), 0);
+
+    // A subscriber that has consumed through seq 3 lets the owner trim <= 3.
+    let floor = g.trim_before(3);
+    assert_eq!(floor, 3);
+    assert_eq!(g.change_floor(), 3);
+
+    // Reading from the floor still returns the retained suffix (seq 4, 5).
+    let batch = g.changes_since(3);
+    assert!(!batch.lagged);
+    assert_eq!(batch.ops.len(), 2);
+    assert!(matches!(&batch.ops[0], WalOp::UpsertNode(n) if n.title == "n3"));
+    assert!(matches!(&batch.ops[1], WalOp::UpsertNode(n) if n.title == "n4"));
+    assert_eq!(batch.cursor, 5);
+}
+
+#[test]
+fn trim_is_clamped_and_never_loses_unproduced_or_reverses() {
+    let g = NativeGraph::new();
+    g.create_node(new_node("k", "a")).unwrap();
+    g.create_node(new_node("k", "b")).unwrap();
+
+    // Trimming beyond head is clamped to head — never trims a future change.
+    assert_eq!(g.trim_before(999), 2);
+    assert_eq!(g.change_floor(), 2);
+
+    // A lower cursor cannot move the floor backwards.
+    assert_eq!(g.trim_before(1), 2);
+    assert_eq!(g.change_floor(), 2);
+
+    // trim_before(0) on a fresh feed is a no-op.
+    let g2 = NativeGraph::new();
+    assert_eq!(g2.trim_before(0), 0);
+}
+
+#[test]
+fn lagged_subscriber_re_snapshots_then_tails_to_correct_state() {
+    let g = NativeGraph::new();
+
+    // A subscriber catches up, then goes idle.
+    let mut index = TitleIndex::default();
+    g.create_node(new_node("k", "alice")).unwrap();
+    index.pull(&g);
+    assert_eq!(index.titles, live_titles(&g));
+    let stale_cursor = index.cursor;
+
+    // Meanwhile the graph churns and the owner trims past the idle subscriber.
+    let b = g.create_node(new_node("k", "bob")).unwrap();
+    g.create_node(new_node("k", "carol")).unwrap();
+    g.delete_node(b.id).unwrap();
+    g.trim_before(g.change_head());
+
+    // The idle subscriber's cursor is now below the floor: it must be told to
+    // re-snapshot rather than silently miss the trimmed changes.
+    let batch = g.changes_since(stale_cursor);
+    assert!(batch.lagged, "a cursor below the floor must report lagged");
+
+    // On `lagged`, the subscriber discards its state, re-seeds from a fresh
+    // snapshot, and resumes tailing from the reported cursor — reaching the
+    // correct state.
+    let mut resynced = TitleIndex {
+        titles: live_titles(&g),
+        cursor: batch.cursor,
+    };
+    assert_eq!(resynced.titles, live_titles(&g));
+    // A subsequent write is picked up incrementally on the resumed cursor.
+    g.create_node(new_node("k", "dave")).unwrap();
+    resynced.pull(&g);
+    assert_eq!(resynced.titles, live_titles(&g));
+    assert!(resynced.titles.values().any(|t| t == "dave"));
+}
