@@ -227,5 +227,52 @@ fn bench_zero_copy(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_build, bench_reads, bench_zero_copy);
+/// `nodes_by_kind` on a large, low-selectivity graph: the maintained kind
+/// index walks only the matching ids, versus the `O(n)` full scan it replaced.
+/// A manual scan-and-filter over `all_nodes()` is measured alongside as the
+/// pre-index baseline, so the speed-up is quantified on the same data.
+fn bench_kind_index(c: &mut Criterion) {
+    const N: usize = 50_000;
+    const KINDS: usize = 500; // ~100 nodes per kind — a selective label
+
+    let native = NativeGraph::new();
+    for i in 0..N {
+        let nn = NewNode {
+            kind: format!("kind_{}", i % KINDS),
+            title: format!("kn_{i:08}"),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        };
+        native.create_node(nn).unwrap();
+    }
+    let target = "kind_7";
+
+    let mut group = c.benchmark_group("native/nodes_by_kind_selective");
+    // Indexed lookup: touches only the ~100 ids in the target bucket.
+    group.bench_function("indexed", |b| {
+        b.iter(|| black_box(native.nodes_by_kind(black_box(target), usize::MAX, 0)))
+    });
+    // Pre-index baseline: scan every node and filter by kind (what the engine
+    // did before the kind index landed).
+    group.bench_function("full_scan_baseline", |b| {
+        b.iter(|| {
+            let hits: Vec<_> = GraphEngine::all_nodes(&native)
+                .unwrap()
+                .into_iter()
+                .filter(|n| n.kind == target)
+                .collect();
+            black_box(hits)
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_build,
+    bench_reads,
+    bench_zero_copy,
+    bench_kind_index
+);
 criterion_main!(benches);

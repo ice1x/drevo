@@ -49,7 +49,7 @@
 //! intentionally **not** part of this engine — the RFC keeps them off the core
 //! graph seam, fed separately via a change-feed.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -86,6 +86,11 @@ struct Inner {
     in_adj: HashMap<u64, Vec<AdjEntry>>,
     /// `title → node id`, mirroring `Drevo`'s title-uniqueness index.
     titles: HashMap<String, u64>,
+    /// `node kind → ids of that kind`, mirroring `Drevo`'s primary-kind index
+    /// so `nodes_by_kind` is `O(matches · log)` instead of a full `O(n)` scan.
+    /// The `BTreeSet` keeps ids ascending, which is the order `Drevo` returns
+    /// (and what `offset`/`limit` pagination is defined against).
+    kind_index: HashMap<String, BTreeSet<u64>>,
     /// Edge-kind string → interned `u32` id (adjacency stores the id).
     kind_ids: HashMap<String, u32>,
     /// Declared schema constraints, validated at transaction commit.
@@ -109,6 +114,25 @@ impl Inner {
     /// existed (so a kind-filtered scan can short-circuit to empty).
     fn kind_id_of(&self, kind: &str) -> Option<u32> {
         self.kind_ids.get(kind).copied()
+    }
+
+    /// Add `id` to the `kind` bucket of the node-kind index.
+    fn index_node_kind(&mut self, id: u64, kind: &str) {
+        self.kind_index
+            .entry(kind.to_string())
+            .or_default()
+            .insert(id);
+    }
+
+    /// Remove `id` from the `kind` bucket, dropping the bucket when it empties
+    /// so an absent kind is truly absent (no lingering empty set).
+    fn unindex_node_kind(&mut self, id: u64, kind: &str) {
+        if let Some(set) = self.kind_index.get_mut(kind) {
+            set.remove(&id);
+            if set.is_empty() {
+                self.kind_index.remove(kind);
+            }
+        }
     }
 
     /// Invoke `f` for each adjacency entry incident to `node_id` in `direction`,
@@ -237,16 +261,17 @@ impl Inner {
     }
 
     fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Node> {
-        let mut matching: Vec<Node> = self
-            .nodes
-            .values()
-            .filter(|n| n.kind == kind)
-            .map(|a| (**a).clone())
-            .collect();
-        // Drevo returns kind scans in ascending id order; match that so
-        // pagination (offset/limit) is deterministic and comparable.
-        matching.sort_by_key(|n| n.id);
-        matching.into_iter().skip(offset).take(limit).collect()
+        // Index-driven: walk only this kind's ids (already ascending in the
+        // `BTreeSet`, matching Drevo's order) and materialise the page. An
+        // unknown kind has no bucket → empty, no scan.
+        let Some(ids) = self.kind_index.get(kind) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .skip(offset)
+            .take(limit)
+            .filter_map(|id| self.nodes.get(id).map(|a| (**a).clone()))
+            .collect()
     }
 
     // ----- write operations (mutate through Arc::make_mut) -------------------
@@ -259,6 +284,7 @@ impl Inner {
         let id = self.next_node_id;
         let node = new_node.into_node(id);
         self.titles.insert(node.title.clone(), id);
+        self.index_node_kind(id, &node.kind);
         self.nodes.insert(id, Arc::new(node.clone()));
         Ok(node)
     }
@@ -269,6 +295,7 @@ impl Inner {
             .get(&id)
             .map(|a| (**a).clone())
             .ok_or(DrevoError::NodeNotFound(id))?;
+        let old_kind = node.kind.clone();
         if let Some(ref new_title) = patch.title {
             // A rename collides only when a *different* node owns the title.
             match self.titles.get(new_title) {
@@ -293,6 +320,10 @@ impl Inner {
         if let Some(properties) = patch.properties {
             node.properties = properties;
         }
+        if old_kind != node.kind {
+            self.unindex_node_kind(id, &old_kind);
+            self.index_node_kind(id, &node.kind);
+        }
         self.nodes.insert(id, Arc::new(node.clone()));
         Ok(node)
     }
@@ -312,6 +343,7 @@ impl Inner {
             self.remove_edge(eid);
         }
         self.titles.remove(&node.title);
+        self.unindex_node_kind(id, &node.kind);
         self.nodes.remove(&id);
         Ok(())
     }
@@ -420,12 +452,18 @@ impl Inner {
     fn apply_wal_op(&mut self, op: WalOp) {
         match op {
             WalOp::UpsertNode(node) => {
-                if let Some(old) = self.nodes.get(&node.id) {
+                // A replacing upsert may change the record's title and/or kind;
+                // clone the previous record so the derived indexes can be moved
+                // off the old values before the new record lands.
+                let old = self.nodes.get(&node.id).map(|a| (**a).clone());
+                if let Some(ref old) = old {
                     if old.title != node.title {
                         self.titles.remove(&old.title);
                     }
+                    self.unindex_node_kind(node.id, &old.kind);
                 }
                 self.titles.insert(node.title.clone(), node.id);
+                self.index_node_kind(node.id, &node.kind);
                 self.next_node_id = self.next_node_id.max(node.id);
                 self.nodes.insert(node.id, Arc::new(node));
             }
@@ -440,6 +478,7 @@ impl Inner {
                         self.remove_edge(eid);
                     }
                     self.titles.remove(&node.title);
+                    self.unindex_node_kind(id, &node.kind);
                     self.nodes.remove(&id);
                 }
             }
@@ -1426,5 +1465,74 @@ impl GraphSnapshot {
     /// Nodes of `kind`, paginated by `limit`/`offset`.
     pub fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Node> {
         self.inner.nodes_by_kind(kind, limit, offset)
+    }
+}
+
+#[cfg(test)]
+mod kind_index_tests {
+    //! The private node-kind index must always equal the ground truth derived
+    //! from the live node set — the definitive guard that every node-map
+    //! mutation site (create / update / delete / WAL replay) keeps it in sync.
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn nn(kind: &str, title: &str) -> NewNode {
+        NewNode {
+            kind: kind.into(),
+            title: title.into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Default::default(),
+        }
+    }
+
+    /// The kind index recomputed from scratch off `nodes` — what any correct
+    /// incremental maintenance must converge to.
+    fn ground_truth(inner: &Inner) -> HashMap<String, BTreeSet<u64>> {
+        let mut truth: HashMap<String, BTreeSet<u64>> = HashMap::new();
+        for node in inner.nodes.values() {
+            truth.entry(node.kind.clone()).or_default().insert(node.id);
+        }
+        truth
+    }
+
+    #[test]
+    fn index_matches_ground_truth_after_mixed_workload() {
+        let mut inner = Inner::default();
+        let a = inner.create_node(nn("person", "a")).unwrap();
+        let b = inner.create_node(nn("person", "b")).unwrap();
+        let _c = inner.create_node(nn("city", "c")).unwrap();
+        assert_eq!(inner.kind_index, ground_truth(&inner));
+
+        // Re-kind b (person -> city): must move buckets.
+        inner
+            .update_node(
+                b.id,
+                NodePatch {
+                    kind: Some("city".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(inner.kind_index, ground_truth(&inner));
+
+        // Delete a: person bucket empties and is dropped (no empty bucket left).
+        inner.delete_node(a.id).unwrap();
+        assert_eq!(inner.kind_index, ground_truth(&inner));
+        assert!(!inner.kind_index.contains_key("person"));
+
+        // A replacing WAL upsert that changes an existing node's kind must
+        // unindex the old kind and index the new one.
+        let mut c_rekind = inner.get_node(_c.id).unwrap();
+        c_rekind.kind = "town".into();
+        inner.apply_wal_op(WalOp::UpsertNode(c_rekind));
+        assert_eq!(inner.kind_index, ground_truth(&inner));
+        // c left `city` for `town`; b (re-kinded to city earlier) still holds it.
+        assert_eq!(inner.kind_index["town"], BTreeSet::from([_c.id]));
+        assert_eq!(inner.kind_index["city"], BTreeSet::from([b.id]));
+
+        // A WAL delete removes its id from the index.
+        inner.apply_wal_op(WalOp::DeleteNode(_c.id));
+        assert_eq!(inner.kind_index, ground_truth(&inner));
     }
 }
