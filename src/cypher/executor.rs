@@ -907,7 +907,7 @@ fn execute_single(
         native_fts,
         native_labels,
         native_props,
-        pushdown_eq: HashMap::new(),
+        pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
         stats: ExecStats::default(),
@@ -1980,15 +1980,16 @@ struct Executor<'a> {
     /// instead of a full node scan. `None` on the KV path (which scans
     /// `list_recent`) or when no index was supplied (then the scan is used).
     native_props: Option<&'a crate::native_property_index::NativePropertyIndex>,
-    /// Conjunctive equality constraints lifted from the current `MATCH`'s
-    /// `WHERE` clause (`variable → [(property key, value expression)]`), so an
-    /// equality like `WHERE n.status = 'open'` narrows the head-node scan
-    /// through the native property index exactly as an inline `{status: 'open'}`
-    /// pattern would. Set per `MATCH` in [`run_match`](Self::run_match); empty
-    /// for a `MATCH` with no `WHERE`. Only used on the native engine's scan path;
-    /// the full `WHERE` predicate is still evaluated exactly afterwards, so this
-    /// only ever narrows the candidate set, never changes the result.
-    pushdown_eq: HashMap<String, Vec<(String, Expression)>>,
+    /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
+    /// `WHERE` clause (`variable → [constraint]`), so a term like
+    /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
+    /// narrows the head-node scan through the native property index exactly as an
+    /// inline `{status: 'open'}` pattern would. Set per `MATCH` in
+    /// [`run_match`](Self::run_match); empty for a `MATCH` with no `WHERE`. Only
+    /// used on the native engine's scan path; the full `WHERE` predicate is still
+    /// evaluated exactly afterwards, so this only ever narrows the candidate set,
+    /// never changes the result.
+    pushdown: HashMap<String, Vec<PushConstraint>>,
     params: HashMap<String, Value>,
     /// Pattern bindings produced so far. Each `MATCH` multiplies the
     /// binding set; `CREATE` augments every existing binding (or
@@ -2050,16 +2051,16 @@ impl<'a> Executor<'a> {
     // ----- MATCH -----------------------------------------------------------
 
     fn run_match(&mut self, m: &MatchClause) -> ExecResultT<()> {
-        // Lift conjunctive equality constraints out of this MATCH's WHERE so the
-        // head-node scan can push them into the native property index (see
+        // Lift conjunctive equality / IN constraints out of this MATCH's WHERE so
+        // the head-node scan can push them into the native property index (see
         // `native_property_candidates`). Recomputed per MATCH — empty when there
         // is no WHERE — so it never leaks into a later clause. This only narrows
         // candidates; the full WHERE below still runs as the exact filter.
-        let mut pushdown_eq = HashMap::new();
+        let mut pushdown = HashMap::new();
         if let Some(expr) = &m.where_clause {
-            extract_pushdown_equalities(expr, &mut pushdown_eq);
+            extract_pushdown_constraints(expr, &mut pushdown);
         }
-        self.pushdown_eq = pushdown_eq;
+        self.pushdown = pushdown;
 
         // Process each prior binding independently so OPTIONAL MATCH
         // can fall back to a single all-null row per input when no
@@ -2541,50 +2542,65 @@ impl<'a> Executor<'a> {
         };
 
         let mut candidate_ids: Option<std::collections::BTreeSet<u64>> = None;
-        // Fold one `key = value_expr` equality into the running intersection.
-        // Returns `Err` on an eval failure the caller must not swallow, `Ok(true)`
-        // when the constraint drove the intersection empty (no rows possible).
-        let fold = |key: &str, value: &Value, acc: &mut Option<std::collections::BTreeSet<u64>>| {
-            let Some(json) = value_to_json(value) else {
-                return false;
-            };
-            if !crate::native_property_index::is_indexable(&json) {
-                return false;
-            }
-            let ids: std::collections::BTreeSet<u64> =
-                idx.node_ids(key, &json).into_iter().collect();
+        // Intersect an `allowed` id set (one constraint's matching ids) into the
+        // running candidate set; returns true when that drove it empty (no rows).
+        let intersect = |acc: &mut Option<std::collections::BTreeSet<u64>>,
+                         allowed: std::collections::BTreeSet<u64>| {
             *acc = Some(match acc.take() {
-                None => ids,
-                Some(prev) => prev.intersection(&ids).copied().collect(),
+                None => allowed,
+                Some(prev) => prev.intersection(&allowed).copied().collect(),
             });
             acc.as_ref().is_some_and(|s| s.is_empty())
         };
 
-        // Inline pattern properties. A row-dependent value that fails to evaluate
-        // abandons the index path so the caller's exact filter re-evaluates and
-        // surfaces the identical error rather than a silently different one.
+        // Inline pattern properties are always equalities. A row-dependent value
+        // that fails to evaluate abandons the index path so the caller's exact
+        // filter re-evaluates and surfaces the identical error rather than a
+        // silently different one.
         if let Some(map) = &pattern.properties {
             for (key, expr) in &map.entries {
                 let Ok(value) = self.eval(expr, row) else {
                     return Ok(None);
                 };
-                if fold(key, &value, &mut candidate_ids) {
+                // A non-indexable value cannot narrow through the index; skip it
+                // (the exact check still applies it).
+                let Some(allowed) = eq_allowed(idx, key, &value) else {
+                    continue;
+                };
+                if intersect(&mut candidate_ids, allowed) {
                     return Ok(Some(Vec::new()));
                 }
             }
         }
 
-        // WHERE-pushdown equalities on this pattern's variable. Here an eval
-        // failure is *skipped*, not abandoned — the full WHERE predicate runs
-        // afterwards and surfaces any error, so a term we cannot pre-evaluate
-        // simply does not narrow.
+        // WHERE-pushdown constraints (equality and `IN`) on this pattern's
+        // variable. An eval failure or a constraint the index cannot represent is
+        // *skipped*, not abandoned — the full WHERE predicate runs afterwards and
+        // surfaces any error, so a term we cannot push simply does not narrow.
         if let Some(var) = &pattern.variable {
-            if let Some(constraints) = self.pushdown_eq.get(var) {
-                for (key, expr) in constraints {
-                    let Ok(value) = self.eval(expr, row) else {
-                        continue;
+            if let Some(constraints) = self.pushdown.get(var) {
+                for constraint in constraints {
+                    let allowed = match constraint {
+                        PushConstraint::Eq { key, value } => {
+                            let Ok(value) = self.eval(value, row) else {
+                                continue;
+                            };
+                            match eq_allowed(idx, key, &value) {
+                                Some(a) => a,
+                                None => continue,
+                            }
+                        }
+                        PushConstraint::In { key, list } => {
+                            let Ok(list) = self.eval(list, row) else {
+                                continue;
+                            };
+                            match in_allowed(idx, key, &list) {
+                                Some(a) => a,
+                                None => continue,
+                            }
+                        }
                     };
-                    if fold(key, &value, &mut candidate_ids) {
+                    if intersect(&mut candidate_ids, allowed) {
                         return Ok(Some(Vec::new()));
                     }
                 }
@@ -6373,21 +6389,39 @@ fn intersect_nodes_by_id(a: Vec<Node>, b: Vec<Node>) -> Vec<Node> {
     a.into_iter().filter(|n| keep.contains(&n.id)).collect()
 }
 
-/// Lift conjunctive equality constraints `var.key = value_expr` out of a `WHERE`
-/// predicate into `out` (`variable → [(key, value_expr)]`).
+/// A single equality / membership constraint on a node variable's property,
+/// lifted from a `MATCH`'s `WHERE` clause for pushdown into the native property
+/// index. The value/list expression is stored verbatim and evaluated later
+/// against the row, so `$param` and already-bound references work.
+enum PushConstraint {
+    /// `variable.key = value`.
+    Eq { key: String, value: Expression },
+    /// `variable.key IN list` — the property equals one of the list's elements.
+    In { key: String, list: Expression },
+}
+
+impl PushConstraint {
+    /// The property key this constraint applies to (used by tests).
+    #[cfg(test)]
+    fn key(&self) -> &str {
+        match self {
+            PushConstraint::Eq { key, .. } | PushConstraint::In { key, .. } => key,
+        }
+    }
+}
+
+/// Lift conjunctive `variable.key = value` and `variable.key IN list`
+/// constraints out of a `WHERE` predicate into `out` (`variable →
+/// [constraint]`).
 ///
 /// Only top-level `AND` conjuncts are traversed, so a constraint sitting under
 /// an `OR` / `NOT` / any other operator is never treated as required — pushing
-/// one of those down would drop real matches. Each `=` term that has a bare
-/// `variable.key` property access on one side contributes `(variable, key,
-/// other_side)`. The value expression is stored verbatim and evaluated later
-/// against the row, so `$param` and already-bound references work; a term whose
-/// value cannot be pre-evaluated (or is non-indexable) simply fails to narrow,
-/// while the exact `WHERE` still runs.
-fn extract_pushdown_equalities(
-    expr: &Expression,
-    out: &mut HashMap<String, Vec<(String, Expression)>>,
-) {
+/// one of those down would drop real matches. An `=` term matches when a bare
+/// `variable.key` property access sits on either side; an `IN` term matches when
+/// its left operand is such a property access. A constraint whose value cannot
+/// be pre-evaluated (or is non-indexable) simply fails to narrow, while the exact
+/// `WHERE` still runs.
+fn extract_pushdown_constraints(expr: &Expression, out: &mut HashMap<String, Vec<PushConstraint>>) {
     match expr {
         Expression::Binary {
             op: BinaryOp::And,
@@ -6395,8 +6429,8 @@ fn extract_pushdown_equalities(
             rhs,
             ..
         } => {
-            extract_pushdown_equalities(lhs, out);
-            extract_pushdown_equalities(rhs, out);
+            extract_pushdown_constraints(lhs, out);
+            extract_pushdown_constraints(rhs, out);
         }
         Expression::Binary {
             op: BinaryOp::Eq,
@@ -6405,9 +6439,23 @@ fn extract_pushdown_equalities(
             ..
         } => {
             if let Some((var, key)) = property_var_key(lhs) {
-                out.entry(var).or_default().push((key, (**rhs).clone()));
+                out.entry(var).or_default().push(PushConstraint::Eq {
+                    key,
+                    value: (**rhs).clone(),
+                });
             } else if let Some((var, key)) = property_var_key(rhs) {
-                out.entry(var).or_default().push((key, (**lhs).clone()));
+                out.entry(var).or_default().push(PushConstraint::Eq {
+                    key,
+                    value: (**lhs).clone(),
+                });
+            }
+        }
+        Expression::In { expr, list, .. } => {
+            if let Some((var, key)) = property_var_key(expr) {
+                out.entry(var).or_default().push(PushConstraint::In {
+                    key,
+                    list: (**list).clone(),
+                });
             }
         }
         _ => {}
@@ -6423,6 +6471,49 @@ fn property_var_key(expr: &Expression) -> Option<(String, String)> {
         }
     }
     None
+}
+
+/// The id set a `key = value` equality allows through the property index, or
+/// `None` when `value` is not an indexable type (so it cannot narrow and must be
+/// left to the exact filter).
+fn eq_allowed(
+    idx: &crate::native_property_index::NativePropertyIndex,
+    key: &str,
+    value: &Value,
+) -> Option<std::collections::BTreeSet<u64>> {
+    let json = value_to_json(value)?;
+    if !crate::native_property_index::is_indexable(&json) {
+        return None;
+    }
+    Some(idx.node_ids(key, &json).into_iter().collect())
+}
+
+/// The id set a `key IN list` membership allows through the property index — the
+/// **union** of the elements' postings — or `None` when `list` is not a list or
+/// **any** element is non-indexable.
+///
+/// The all-or-nothing rule is a correctness guard: the elements are OR-ed within
+/// the one constraint, so if even one element cannot be looked up (e.g. a float),
+/// the index-derived union would omit that element's matches — a false negative.
+/// In that case we do not narrow at all and leave the whole `IN` to the exact
+/// filter.
+fn in_allowed(
+    idx: &crate::native_property_index::NativePropertyIndex,
+    key: &str,
+    list: &Value,
+) -> Option<std::collections::BTreeSet<u64>> {
+    let Value::List(items) = list else {
+        return None;
+    };
+    let mut union = std::collections::BTreeSet::new();
+    for item in items {
+        let json = value_to_json(item)?;
+        if !crate::native_property_index::is_indexable(&json) {
+            return None;
+        }
+        union.extend(idx.node_ids(key, &json));
+    }
+    Some(union)
 }
 
 fn node_matches_pattern(
@@ -10776,25 +10867,24 @@ mod tests {
 
     /// Parse `MATCH … WHERE <pred> …` and return the pushdown map the executor
     /// would lift from its WHERE clause.
-    fn pushdown_of(query: &str) -> HashMap<String, Vec<(String, Expression)>> {
+    fn pushdown_of(query: &str) -> HashMap<String, Vec<PushConstraint>> {
         let q = crate::cypher::parser::parse(query).expect("parse");
         let mut out = HashMap::new();
         for clause in &q.parts[0].query.clauses {
             if let Clause::Match(m) = clause {
                 if let Some(expr) = &m.where_clause {
-                    extract_pushdown_equalities(expr, &mut out);
+                    extract_pushdown_constraints(expr, &mut out);
                 }
             }
         }
         out
     }
 
-    /// The `(key, value-as-debug)` pairs pushed down for `var`, sorted for a
-    /// stable comparison.
-    fn keys_for(map: &HashMap<String, Vec<(String, Expression)>>, var: &str) -> Vec<String> {
+    /// The constraint keys pushed down for `var`, sorted for a stable comparison.
+    fn keys_for(map: &HashMap<String, Vec<PushConstraint>>, var: &str) -> Vec<String> {
         let mut ks: Vec<String> = map
             .get(var)
-            .map(|v| v.iter().map(|(k, _)| k.clone()).collect())
+            .map(|v| v.iter().map(|c| c.key().to_string()).collect())
             .unwrap_or_default();
         ks.sort();
         ks
@@ -10821,6 +10911,21 @@ mod tests {
     }
 
     #[test]
+    fn pushdown_extracts_in_membership() {
+        // `IN` on a bare variable property is lifted as an In constraint.
+        let m = pushdown_of("MATCH (n) WHERE n.status IN ['open', 'pending'] RETURN n");
+        assert_eq!(keys_for(&m, "n"), vec!["status".to_string()]);
+        assert!(matches!(m["n"].as_slice(), [PushConstraint::In { .. }]));
+
+        // Mixed with a conjunctive equality.
+        let m = pushdown_of("MATCH (n) WHERE n.status IN ['a','b'] AND n.prio = 1 RETURN n");
+        assert_eq!(
+            keys_for(&m, "n"),
+            vec!["prio".to_string(), "status".to_string()]
+        );
+    }
+
+    #[test]
     fn pushdown_ignores_non_conjunctive_and_non_equality_terms() {
         // OR must never be pushed — narrowing on one arm would drop matches.
         assert!(pushdown_of("MATCH (n) WHERE n.a = 1 OR n.b = 2 RETURN n").is_empty());
@@ -10829,6 +10934,8 @@ mod tests {
         // Inequalities / comparisons are not equalities.
         assert!(pushdown_of("MATCH (n) WHERE n.a > 1 RETURN n").is_empty());
         assert!(pushdown_of("MATCH (n) WHERE n.a <> 1 RETURN n").is_empty());
+        // An IN under OR must not be pushed either.
+        assert!(pushdown_of("MATCH (n) WHERE n.a IN [1] OR n.b = 2 RETURN n").is_empty());
         // A conjunct that IS a top-level equality is still lifted even when a
         // sibling conjunct is an OR (the OR sibling contributes nothing).
         let m = pushdown_of("MATCH (n) WHERE n.a = 1 AND (n.b = 2 OR n.c = 3) RETURN n");

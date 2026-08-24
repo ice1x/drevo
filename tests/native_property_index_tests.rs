@@ -397,3 +397,104 @@ fn where_equality_pushdown_equals_full_scan_and_kv() {
         );
     }
 }
+
+#[test]
+fn where_in_pushdown_equals_full_scan_and_kv() {
+    // `WHERE n.prop IN [...]` narrows through the property index as the UNION of
+    // the elements' postings — but only when every element is indexable. All
+    // shapes must agree across native full-scan, native indexed, and KV.
+    let build = |eng: &dyn GraphEngine| {
+        eng.create_node(node(
+            "task",
+            "a",
+            &[
+                ("status", serde_json::json!("open")),
+                ("prio", serde_json::json!(1)),
+            ],
+        ))
+        .unwrap();
+        eng.create_node(node(
+            "task",
+            "b",
+            &[
+                ("status", serde_json::json!("pending")),
+                ("prio", serde_json::json!(2)),
+            ],
+        ))
+        .unwrap();
+        eng.create_node(node(
+            "task",
+            "c",
+            &[("status", serde_json::json!("closed"))],
+        ))
+        .unwrap();
+        eng.create_node(node("note", "d", &[("status", serde_json::json!("open"))]))
+            .unwrap();
+    };
+    let native = NativeGraph::new();
+    let kv = Drevo::open_in_memory().unwrap();
+    build(&native);
+    build(&kv);
+
+    let mut labels = NativeLabelIndex::new();
+    labels.sync(&native);
+    let mut props = NativePropertyIndex::new();
+    props.sync(&native);
+
+    let vals = Value::List(vec![
+        Value::String("open".into()),
+        Value::String("pending".into()),
+    ]);
+    for (cypher, params) in [
+        // union of two postings
+        (
+            "MATCH (n) WHERE n.status IN ['open', 'pending'] RETURN n",
+            None,
+        ),
+        // IN combined with a label
+        (
+            "MATCH (n:task) WHERE n.status IN ['open', 'closed'] RETURN n",
+            None,
+        ),
+        // IN combined with an equality
+        (
+            "MATCH (n) WHERE n.status IN ['open','pending'] AND n.prio = 1 RETURN n",
+            None,
+        ),
+        // a non-indexable element (float) means the whole IN must NOT narrow
+        ("MATCH (n) WHERE n.status IN ['open', 4.2] RETURN n", None),
+        // empty list matches nothing
+        ("MATCH (n) WHERE n.status IN [] RETURN n", None),
+        // integer list on a numeric property
+        ("MATCH (n) WHERE n.prio IN [1, 2] RETURN n", None),
+        // $param list on the right-hand side
+        (
+            "MATCH (n) WHERE n.status IN $vals RETURN n",
+            Some(HashMap::from([("vals".to_string(), vals.clone())])),
+        ),
+    ] {
+        let query = parse(cypher).unwrap();
+        let params = params.unwrap_or_default();
+        let full_scan = matched_ids(execute_on_engine(&query, &native, params.clone()).unwrap());
+        let indexed = matched_ids(
+            execute_on_engine_with_indexes(
+                &query,
+                &native,
+                None,
+                Some(&labels),
+                Some(&props),
+                params.clone(),
+            )
+            .unwrap(),
+        );
+        let kv_rows = matched_ids(execute(&query, &kv, params).unwrap());
+        assert_eq!(
+            full_scan, indexed,
+            "indexed diverged from full scan for `{cypher}`"
+        );
+        assert_eq!(
+            indexed, kv_rows,
+            "native indexed diverged from KV for `{cypher}`"
+        );
+    }
+}
