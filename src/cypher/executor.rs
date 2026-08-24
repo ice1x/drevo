@@ -907,6 +907,7 @@ fn execute_single(
         native_fts,
         native_labels,
         native_props,
+        pushdown_eq: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
         stats: ExecStats::default(),
@@ -1979,6 +1980,15 @@ struct Executor<'a> {
     /// instead of a full node scan. `None` on the KV path (which scans
     /// `list_recent`) or when no index was supplied (then the scan is used).
     native_props: Option<&'a crate::native_property_index::NativePropertyIndex>,
+    /// Conjunctive equality constraints lifted from the current `MATCH`'s
+    /// `WHERE` clause (`variable → [(property key, value expression)]`), so an
+    /// equality like `WHERE n.status = 'open'` narrows the head-node scan
+    /// through the native property index exactly as an inline `{status: 'open'}`
+    /// pattern would. Set per `MATCH` in [`run_match`](Self::run_match); empty
+    /// for a `MATCH` with no `WHERE`. Only used on the native engine's scan path;
+    /// the full `WHERE` predicate is still evaluated exactly afterwards, so this
+    /// only ever narrows the candidate set, never changes the result.
+    pushdown_eq: HashMap<String, Vec<(String, Expression)>>,
     params: HashMap<String, Value>,
     /// Pattern bindings produced so far. Each `MATCH` multiplies the
     /// binding set; `CREATE` augments every existing binding (or
@@ -2040,6 +2050,17 @@ impl<'a> Executor<'a> {
     // ----- MATCH -----------------------------------------------------------
 
     fn run_match(&mut self, m: &MatchClause) -> ExecResultT<()> {
+        // Lift conjunctive equality constraints out of this MATCH's WHERE so the
+        // head-node scan can push them into the native property index (see
+        // `native_property_candidates`). Recomputed per MATCH — empty when there
+        // is no WHERE — so it never leaks into a later clause. This only narrows
+        // candidates; the full WHERE below still runs as the exact filter.
+        let mut pushdown_eq = HashMap::new();
+        if let Some(expr) = &m.where_clause {
+            extract_pushdown_equalities(expr, &mut pushdown_eq);
+        }
+        self.pushdown_eq = pushdown_eq;
+
         // Process each prior binding independently so OPTIONAL MATCH
         // can fall back to a single all-null row per input when no
         // pattern matches (Cypher's left-join semantics — see
@@ -2494,18 +2515,22 @@ impl<'a> Executor<'a> {
         Ok(acc)
     }
 
-    /// Candidate nodes for an inline equality pattern's properties
-    /// `MATCH (n {key: value})`, narrowed through the native property index
-    /// (RFC `docs/rfc-native-core.md`, #307, Phase 6.7).
+    /// Candidate nodes for an equality pattern narrowed through the native
+    /// property index (RFC `docs/rfc-native-core.md`, #307, Phases 6.7–6.9).
     ///
-    /// Returns `Ok(None)` when the index cannot narrow this pattern — no index
-    /// present, no inline properties, or none of the inline values are of an
-    /// indexable type — so the caller uses another source (label candidates, or
-    /// a full scan). Otherwise the
-    /// returned nodes are the intersection of the indexable pairs' postings: a
-    /// *superset* of the real matches (only the indexable equality constraints
-    /// are applied here), which the exact `node_matches_pattern` filter then
-    /// narrows to the precise set — including any non-indexable constraints.
+    /// Two constraint sources are intersected: the pattern's **inline**
+    /// properties `MATCH (n {key: value})` and the conjunctive equality terms
+    /// lifted from the current `MATCH`'s `WHERE` into
+    /// [`pushdown_eq`](Self::pushdown_eq) for this pattern's variable
+    /// (`WHERE n.key = value`).
+    ///
+    /// Returns `Ok(None)` when the index cannot narrow the pattern — no index
+    /// present, or no indexable equality constraint from either source — so the
+    /// caller uses another source (label candidates, or a full scan). Otherwise
+    /// the returned nodes are the intersection of the indexable pairs' postings:
+    /// a *superset* of the real matches (only the indexable equality constraints
+    /// are applied here), which the exact `node_matches_pattern` / `WHERE` filter
+    /// then narrows to the precise set — including any non-indexable constraints.
     fn native_property_candidates(
         &self,
         pattern: &NodePattern,
@@ -2514,42 +2539,59 @@ impl<'a> Executor<'a> {
         let Some(idx) = self.native_props else {
             return Ok(None);
         };
-        let Some(map) = &pattern.properties else {
-            return Ok(None);
-        };
 
-        // Intersect the posting lists of every *indexable* inline pair. A pair
-        // whose value evaluates to a non-indexable type (float, list, map, null)
-        // is skipped here — it cannot narrow through the index and its empty
-        // posting must not be intersected in — but it is still enforced exactly
-        // by the caller's per-candidate check.
         let mut candidate_ids: Option<std::collections::BTreeSet<u64>> = None;
-        for (key, expr) in &map.entries {
-            // A row-dependent value may fail to evaluate; if it does, abandon
-            // the index path so the caller's exact filter re-evaluates and
-            // surfaces the identical error rather than a silently different one.
-            let Ok(value) = self.eval(expr, row) else {
-                return Ok(None);
-            };
-            let Some(json) = value_to_json(&value) else {
-                continue;
+        // Fold one `key = value_expr` equality into the running intersection.
+        // Returns `Err` on an eval failure the caller must not swallow, `Ok(true)`
+        // when the constraint drove the intersection empty (no rows possible).
+        let fold = |key: &str, value: &Value, acc: &mut Option<std::collections::BTreeSet<u64>>| {
+            let Some(json) = value_to_json(value) else {
+                return false;
             };
             if !crate::native_property_index::is_indexable(&json) {
-                continue;
+                return false;
             }
             let ids: std::collections::BTreeSet<u64> =
                 idx.node_ids(key, &json).into_iter().collect();
-            candidate_ids = Some(match candidate_ids {
+            *acc = Some(match acc.take() {
                 None => ids,
                 Some(prev) => prev.intersection(&ids).copied().collect(),
             });
-            if candidate_ids.as_ref().is_some_and(|s| s.is_empty()) {
-                // An indexable constraint with no matches → no rows at all.
-                return Ok(Some(Vec::new()));
+            acc.as_ref().is_some_and(|s| s.is_empty())
+        };
+
+        // Inline pattern properties. A row-dependent value that fails to evaluate
+        // abandons the index path so the caller's exact filter re-evaluates and
+        // surfaces the identical error rather than a silently different one.
+        if let Some(map) = &pattern.properties {
+            for (key, expr) in &map.entries {
+                let Ok(value) = self.eval(expr, row) else {
+                    return Ok(None);
+                };
+                if fold(key, &value, &mut candidate_ids) {
+                    return Ok(Some(Vec::new()));
+                }
             }
         }
 
-        // No indexable pair narrowed the set → let the caller full-scan.
+        // WHERE-pushdown equalities on this pattern's variable. Here an eval
+        // failure is *skipped*, not abandoned — the full WHERE predicate runs
+        // afterwards and surfaces any error, so a term we cannot pre-evaluate
+        // simply does not narrow.
+        if let Some(var) = &pattern.variable {
+            if let Some(constraints) = self.pushdown_eq.get(var) {
+                for (key, expr) in constraints {
+                    let Ok(value) = self.eval(expr, row) else {
+                        continue;
+                    };
+                    if fold(key, &value, &mut candidate_ids) {
+                        return Ok(Some(Vec::new()));
+                    }
+                }
+            }
+        }
+
+        // No indexable constraint narrowed the set → let the caller full-scan.
         let Some(ids) = candidate_ids else {
             return Ok(None);
         };
@@ -6329,6 +6371,58 @@ fn synth_title(label: &str) -> String {
 fn intersect_nodes_by_id(a: Vec<Node>, b: Vec<Node>) -> Vec<Node> {
     let keep: std::collections::HashSet<u64> = b.iter().map(|n| n.id).collect();
     a.into_iter().filter(|n| keep.contains(&n.id)).collect()
+}
+
+/// Lift conjunctive equality constraints `var.key = value_expr` out of a `WHERE`
+/// predicate into `out` (`variable → [(key, value_expr)]`).
+///
+/// Only top-level `AND` conjuncts are traversed, so a constraint sitting under
+/// an `OR` / `NOT` / any other operator is never treated as required — pushing
+/// one of those down would drop real matches. Each `=` term that has a bare
+/// `variable.key` property access on one side contributes `(variable, key,
+/// other_side)`. The value expression is stored verbatim and evaluated later
+/// against the row, so `$param` and already-bound references work; a term whose
+/// value cannot be pre-evaluated (or is non-indexable) simply fails to narrow,
+/// while the exact `WHERE` still runs.
+fn extract_pushdown_equalities(
+    expr: &Expression,
+    out: &mut HashMap<String, Vec<(String, Expression)>>,
+) {
+    match expr {
+        Expression::Binary {
+            op: BinaryOp::And,
+            lhs,
+            rhs,
+            ..
+        } => {
+            extract_pushdown_equalities(lhs, out);
+            extract_pushdown_equalities(rhs, out);
+        }
+        Expression::Binary {
+            op: BinaryOp::Eq,
+            lhs,
+            rhs,
+            ..
+        } => {
+            if let Some((var, key)) = property_var_key(lhs) {
+                out.entry(var).or_default().push((key, (**rhs).clone()));
+            } else if let Some((var, key)) = property_var_key(rhs) {
+                out.entry(var).or_default().push((key, (**lhs).clone()));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `variable.key` → `(variable, key)` when `expr` is a property access on a bare
+/// variable; `None` otherwise.
+fn property_var_key(expr: &Expression) -> Option<(String, String)> {
+    if let Expression::Property { base, name, .. } = expr {
+        if let Expression::Variable(var, _) = base.as_ref() {
+            return Some((var.clone(), name.clone()));
+        }
+    }
+    None
 }
 
 fn node_matches_pattern(
@@ -10676,6 +10770,69 @@ mod tests {
         );
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0][0], Value::String("keep".into()));
+    }
+
+    // ---- WHERE-equality pushdown extraction (Phase 6.9) ------------------
+
+    /// Parse `MATCH … WHERE <pred> …` and return the pushdown map the executor
+    /// would lift from its WHERE clause.
+    fn pushdown_of(query: &str) -> HashMap<String, Vec<(String, Expression)>> {
+        let q = crate::cypher::parser::parse(query).expect("parse");
+        let mut out = HashMap::new();
+        for clause in &q.parts[0].query.clauses {
+            if let Clause::Match(m) = clause {
+                if let Some(expr) = &m.where_clause {
+                    extract_pushdown_equalities(expr, &mut out);
+                }
+            }
+        }
+        out
+    }
+
+    /// The `(key, value-as-debug)` pairs pushed down for `var`, sorted for a
+    /// stable comparison.
+    fn keys_for(map: &HashMap<String, Vec<(String, Expression)>>, var: &str) -> Vec<String> {
+        let mut ks: Vec<String> = map
+            .get(var)
+            .map(|v| v.iter().map(|(k, _)| k.clone()).collect())
+            .unwrap_or_default();
+        ks.sort();
+        ks
+    }
+
+    #[test]
+    fn pushdown_extracts_conjunctive_equalities() {
+        // A single equality on a bare variable property.
+        let m = pushdown_of("MATCH (n) WHERE n.status = 'open' RETURN n");
+        assert_eq!(keys_for(&m, "n"), vec!["status".to_string()]);
+
+        // Top-level AND splits into two constraints; the property may sit on
+        // either side of `=`.
+        let m = pushdown_of("MATCH (n) WHERE n.status = 'open' AND 1 = n.prio RETURN n");
+        assert_eq!(
+            keys_for(&m, "n"),
+            vec!["prio".to_string(), "status".to_string()]
+        );
+
+        // Multiple variables are keyed independently.
+        let m = pushdown_of("MATCH (a)-->(b) WHERE a.x = 1 AND b.y = 2 RETURN a");
+        assert_eq!(keys_for(&m, "a"), vec!["x".to_string()]);
+        assert_eq!(keys_for(&m, "b"), vec!["y".to_string()]);
+    }
+
+    #[test]
+    fn pushdown_ignores_non_conjunctive_and_non_equality_terms() {
+        // OR must never be pushed — narrowing on one arm would drop matches.
+        assert!(pushdown_of("MATCH (n) WHERE n.a = 1 OR n.b = 2 RETURN n").is_empty());
+        // A term under NOT is not a required equality.
+        assert!(pushdown_of("MATCH (n) WHERE NOT n.a = 1 RETURN n").is_empty());
+        // Inequalities / comparisons are not equalities.
+        assert!(pushdown_of("MATCH (n) WHERE n.a > 1 RETURN n").is_empty());
+        assert!(pushdown_of("MATCH (n) WHERE n.a <> 1 RETURN n").is_empty());
+        // A conjunct that IS a top-level equality is still lifted even when a
+        // sibling conjunct is an OR (the OR sibling contributes nothing).
+        let m = pushdown_of("MATCH (n) WHERE n.a = 1 AND (n.b = 2 OR n.c = 3) RETURN n");
+        assert_eq!(keys_for(&m, "n"), vec!["a".to_string()]);
     }
 
     // ---- Aggregations nested inside a CASE arm (00142) -------------------

@@ -303,3 +303,97 @@ fn indexed_label_and_property_intersection_equals_full_scan_and_kv() {
         );
     }
 }
+
+#[test]
+fn where_equality_pushdown_equals_full_scan_and_kv() {
+    // A WHERE equality must narrow through the property index exactly like an
+    // inline `{key: value}`, while OR / non-indexable terms must NOT wrongly
+    // narrow. All shapes must agree across native full-scan, native indexed, and
+    // KV. The graph mixes `task` and `note` kinds with varying status/prio.
+    let build = |eng: &dyn GraphEngine| {
+        eng.create_node(node(
+            "task",
+            "a",
+            &[
+                ("status", serde_json::json!("open")),
+                ("prio", serde_json::json!(1)),
+            ],
+        ))
+        .unwrap();
+        eng.create_node(node(
+            "task",
+            "b",
+            &[
+                ("status", serde_json::json!("open")),
+                ("prio", serde_json::json!(2)),
+            ],
+        ))
+        .unwrap();
+        eng.create_node(node(
+            "task",
+            "c",
+            &[("status", serde_json::json!("closed"))],
+        ))
+        .unwrap();
+        eng.create_node(node(
+            "note",
+            "d",
+            &[
+                ("status", serde_json::json!("open")),
+                ("score", serde_json::json!(4.2)),
+            ],
+        ))
+        .unwrap();
+    };
+    let native = NativeGraph::new();
+    let kv = Drevo::open_in_memory().unwrap();
+    build(&native);
+    build(&kv);
+
+    let mut labels = NativeLabelIndex::new();
+    labels.sync(&native);
+    let mut props = NativePropertyIndex::new();
+    props.sync(&native);
+
+    for cypher in [
+        // label-less WHERE equality → pushdown narrows on the property index
+        "MATCH (n) WHERE n.status = 'open' RETURN n",
+        // label + WHERE equality → label ∩ property(pushdown)
+        "MATCH (n:task) WHERE n.status = 'open' RETURN n",
+        // two conjunctive equalities
+        "MATCH (n) WHERE n.status = 'open' AND n.prio = 1 RETURN n",
+        // OR must NOT be pushed down — pushing either side would drop matches
+        "MATCH (n) WHERE n.status = 'open' OR n.status = 'closed' RETURN n",
+        // inline property + WHERE equality + label, all combined
+        "MATCH (n:task {prio: 1}) WHERE n.status = 'open' RETURN n",
+        // non-indexable WHERE term (float) must be left to the exact filter
+        "MATCH (n) WHERE n.score = 4.2 RETURN n",
+        // param on the right-hand side of the equality
+        "MATCH (n) WHERE n.status = $s RETURN n",
+    ] {
+        let query = parse(cypher).unwrap();
+        let params: HashMap<String, Value> =
+            HashMap::from([("s".to_string(), Value::String("open".to_string()))]);
+        let full_scan = matched_ids(execute_on_engine(&query, &native, params.clone()).unwrap());
+        let indexed = matched_ids(
+            execute_on_engine_with_indexes(
+                &query,
+                &native,
+                None,
+                Some(&labels),
+                Some(&props),
+                params.clone(),
+            )
+            .unwrap(),
+        );
+        let kv_rows = matched_ids(execute(&query, &kv, params).unwrap());
+        assert_eq!(
+            full_scan, indexed,
+            "indexed diverged from full scan for `{cypher}`"
+        );
+        assert_eq!(
+            indexed, kv_rows,
+            "native indexed diverged from KV for `{cypher}`"
+        );
+    }
+}
