@@ -569,7 +569,27 @@ fn value_to_json(v: &Value) -> Option<serde_json::Value> {
 /// as a JSON array of strings, never visible to user-level Cypher
 /// `n.<prop>` access (the executor filters it out when surfacing the
 /// property map).
-const SECONDARY_LABELS_KEY: &str = "_labels";
+pub(crate) const SECONDARY_LABELS_KEY: &str = "_labels";
+
+/// The secondary labels carried by `node` in its reserved
+/// [`SECONDARY_LABELS_KEY`] property (a JSON array of strings), in stored
+/// order. Empty when the property is absent or malformed.
+///
+/// This is the single source of truth for the `_labels` convention: the native
+/// secondary-label index
+/// ([`NativeLabelIndex`](crate::native_label_index::NativeLabelIndex)) parses
+/// labels through here so it can never drift from what `node_to_value` surfaces.
+pub(crate) fn secondary_labels(node: &Node) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(serde_json::Value::Array(arr)) = node.properties.0.get(SECONDARY_LABELS_KEY) {
+        for item in arr {
+            if let serde_json::Value::String(s) = item {
+                out.push(s.clone());
+            }
+        }
+    }
+    out
+}
 
 fn node_to_value(node: &Node) -> Arc<NodeValue> {
     let mut properties = BTreeMap::new();
@@ -583,22 +603,14 @@ fn node_to_value(node: &Node) -> Arc<NodeValue> {
     if !node.body.is_empty() {
         properties.insert("body".to_string(), Value::String(node.body.clone()));
     }
-    let mut secondary: Vec<String> = Vec::new();
     for (k, v) in node.properties.iter() {
         if k == SECONDARY_LABELS_KEY {
-            if let serde_json::Value::Array(arr) = v {
-                for item in arr {
-                    if let serde_json::Value::String(s) = item {
-                        secondary.push(s.clone());
-                    }
-                }
-            }
-            continue;
+            continue; // surfaced as labels below, never as a user property
         }
         properties.insert(k.clone(), json_to_value(v));
     }
     let mut labels = vec![node.kind.clone()];
-    labels.extend(secondary);
+    labels.extend(secondary_labels(node));
     Arc::new(NodeValue {
         id: node.id,
         uuid: node.uuid,
@@ -706,7 +718,7 @@ pub fn execute(
 ) -> ExecResultT<ExecResult> {
     // The KV store is both the graph engine and the home of the secondary
     // subsystems, so it is passed in both roles.
-    execute_inner(query, drevo, Some(drevo), None, params)
+    execute_inner(query, drevo, Some(drevo), None, None, params)
 }
 
 /// Execute a Cypher query over **any** [`GraphEngine`] — the native
@@ -726,7 +738,7 @@ pub fn execute_on_engine(
     engine: &dyn GraphEngine,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, None, params)
+    execute_inner(query, engine, None, None, None, params)
 }
 
 /// Like [`execute_on_engine`], but with a native full-text index so
@@ -747,7 +759,32 @@ pub fn execute_on_engine_with_fts(
     fts: &crate::native_fts::NativeFtsIndex,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, Some(fts), params)
+    execute_inner(query, engine, None, Some(fts), None, params)
+}
+
+/// Like [`execute_on_engine`], but with native secondary indexes so both
+/// `CALL fts.search(...)` and `MATCH (n:Label)` are served on the native engine
+/// without falling back to a full node scan (RFC `docs/rfc-native-core.md`,
+/// #307, Phase 6.6).
+///
+/// The caller owns both indexes and is responsible for keeping them synced with
+/// the engine's change-feed (call each one's `sync` before querying for
+/// read-your-writes). Either may be `None`; a `None` label index just means
+/// native label scans fall back to `all_nodes`, and a `None` FTS index means
+/// `fts.search` surfaces [`ExecError::EngineCapability`]. Other KV-only
+/// subsystems (vector/semantic, recency, keyword extraction) still surface
+/// [`ExecError::EngineCapability`].
+///
+/// # Errors
+/// Returns the first [`ExecError`] encountered (see [`execute`]).
+pub fn execute_on_engine_with_indexes(
+    query: &Query,
+    engine: &dyn GraphEngine,
+    fts: Option<&crate::native_fts::NativeFtsIndex>,
+    labels: Option<&crate::native_label_index::NativeLabelIndex>,
+    params: HashMap<String, Value>,
+) -> ExecResultT<ExecResult> {
+    execute_inner(query, engine, None, fts, labels, params)
 }
 
 fn execute_inner(
@@ -755,12 +792,20 @@ fn execute_inner(
     engine: &dyn GraphEngine,
     secondary: Option<&Drevo>,
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
+    native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Fast path — a query with no `UNION` is a single arm, executed
     // directly with no row combination.
     if query.parts.len() == 1 {
-        return execute_single(&query.parts[0].query, engine, secondary, native_fts, params);
+        return execute_single(
+            &query.parts[0].query,
+            engine,
+            secondary,
+            native_fts,
+            native_labels,
+            params,
+        );
     }
 
     // Multi-arm `UNION`. The parser guarantees `parts[i].union` is
@@ -795,7 +840,14 @@ fn execute_inner(
     let mut rows: Vec<Vec<Value>> = Vec::new();
     let mut stats = ExecStats::default();
     for part in &query.parts {
-        let arm = execute_single(&part.query, engine, secondary, native_fts, params.clone())?;
+        let arm = execute_single(
+            &part.query,
+            engine,
+            secondary,
+            native_fts,
+            native_labels,
+            params.clone(),
+        )?;
         match &columns {
             None => columns = Some(arm.columns),
             Some(expected) if *expected != arm.columns => {
@@ -832,6 +884,7 @@ fn execute_single(
     engine: &dyn GraphEngine,
     secondary: Option<&Drevo>,
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
+    native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
@@ -846,6 +899,7 @@ fn execute_single(
         engine,
         secondary,
         native_fts,
+        native_labels,
         params,
         bindings: vec![HashMap::new()],
         stats: ExecStats::default(),
@@ -1906,6 +1960,12 @@ struct Executor<'a> {
     /// index was supplied (then `fts.search` surfaces
     /// [`ExecError::EngineCapability`]).
     native_fts: Option<&'a crate::native_fts::NativeFtsIndex>,
+    /// A native secondary-label index tailing the engine's change-feed, when
+    /// running over a non-KV engine that has one. Lets `MATCH (n:Label)` gather
+    /// candidates from `nodes_by_kind(label) ∪ node_ids(label)` instead of a
+    /// full node scan. `None` on the KV path (which scans `list_recent`) or when
+    /// no index was supplied (then native label scans fall back to `all_nodes`).
+    native_labels: Option<&'a crate::native_label_index::NativeLabelIndex>,
     params: HashMap<String, Value>,
     /// Pattern bindings produced so far. Each `MATCH` multiplies the
     /// binding set; `CREATE` augments every existing binding (or
@@ -2350,26 +2410,42 @@ impl<'a> Executor<'a> {
         pattern: &NodePattern,
         row: &Bindings,
     ) -> ExecResultT<Vec<Arc<NodeValue>>> {
-        // For a single label we can prefer `list_nodes_by_kind` (drevo's
-        // primary-kind index) as a fast path, but the pattern label may
-        // match a secondary label — added via `SET n:Label` and stored
-        // in the reserved `_labels` property. Secondary labels have no
-        // dedicated index, so we always fall back to `list_recent` to
-        // catch them. Picking the union is more work than necessary; in
-        // practice list_recent on the in-memory backend is O(n) which
-        // matches list_nodes_by_kind, and an optimised index lands with
-        // task `00086` (cost-based planner).
-        // On the KV engine, `list_recent` returns every node (and its recency
-        // order) and also surfaces secondary-label nodes; on a non-KV engine we
-        // scan the full node set through the seam. Either way the primary-kind
-        // hits below are merged in.
-        let mut nodes: Vec<Node> = match self.secondary {
-            Some(kv) => kv.list_recent(usize::MAX)?,
-            None => self.engine().all_nodes()?,
+        // A labelled pattern can match on the primary `kind` (indexed) or on a
+        // secondary label stored in the reserved `_labels` property. The
+        // candidate set must be a *superset* of the real matches; the
+        // per-candidate `node_matches_pattern` filter below does the exact test.
+        //
+        // Three candidate sources, in order of preference:
+        //  * KV engine — `list_recent` returns every node (recency-ordered) and
+        //    surfaces secondary-label nodes; unchanged, byte-identical behaviour.
+        //  * Native engine + a secondary-label index + a label — gather
+        //    `nodes_by_kind(label) ∪ NativeLabelIndex::node_ids(label)`: only the
+        //    nodes that carry the label as their primary kind or a secondary
+        //    label, never a full scan.
+        //  * Native engine otherwise (no index, or an unlabelled `MATCH (n)`
+        //    that genuinely enumerates everything) — full node scan through the
+        //    seam.
+        let first_label = pattern.labels.first();
+        let mut nodes: Vec<Node> = match (self.secondary, self.native_labels, first_label) {
+            (Some(kv), _, _) => kv.list_recent(usize::MAX)?,
+            (None, Some(label_idx), Some(label)) => {
+                let mut acc = self.engine().nodes_by_kind(label, usize::MAX, 0)?;
+                let mut seen: std::collections::HashSet<u64> = acc.iter().map(|n| n.id).collect();
+                for id in label_idx.node_ids(label) {
+                    if seen.insert(id) {
+                        if let Some(node) = self.engine().get_node(id)? {
+                            acc.push(node);
+                        }
+                    }
+                }
+                acc
+            }
+            (None, _, _) => self.engine().all_nodes()?,
         };
-        if let Some(label) = pattern.labels.first() {
-            // Merge in primary-kind hits in case `list_recent` is bounded
-            // by some future backend implementation.
+        if let Some(label) = first_label {
+            // Merge in primary-kind hits: required for the KV and native-scan
+            // sources (whose base set may not be kind-first), and a cheap no-op
+            // for the indexed source, which already unioned them in.
             let primary = self.engine().nodes_by_kind(label, usize::MAX, 0)?;
             for node in primary {
                 if !nodes.iter().any(|n| n.id == node.id) {
