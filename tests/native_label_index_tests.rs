@@ -166,7 +166,8 @@ fn indexed_label_scan_equals_full_scan_and_kv() {
     // must agree on exactly which nodes carry the label `employee`.
     let full_scan = matched_ids(execute_on_engine(&query, &native, HashMap::new()).unwrap());
     let indexed = matched_ids(
-        execute_on_engine_with_indexes(&query, &native, None, Some(&idx), HashMap::new()).unwrap(),
+        execute_on_engine_with_indexes(&query, &native, None, Some(&idx), None, HashMap::new())
+            .unwrap(),
     );
     let kv_rows = matched_ids(execute(&query, &kv, HashMap::new()).unwrap());
 

@@ -173,6 +173,11 @@ pub mod native_fts;
 /// `MATCH (n:Label)` gathers candidates from an index union instead of a full
 /// node scan.
 pub mod native_label_index;
+/// In-memory property-value index that tails a [`native::NativeGraph`]'s
+/// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.7) — the native
+/// counterpart of the KV [`property_index`], so a `MATCH (n {key: value})`
+/// equality pattern resolves through an index instead of a full node scan.
+pub mod native_property_index;
 /// Observability — Phase 15 task `00130`. A dependency-free, lock-free
 /// metrics registry ([`observability::Registry`] with
 /// [`observability::Counter`] / [`observability::Gauge`] /
