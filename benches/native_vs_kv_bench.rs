@@ -268,11 +268,77 @@ fn bench_kind_index(c: &mut Criterion) {
     group.finish();
 }
 
+/// A selective **secondary-label** scan on the native engine: the label index
+/// gathers only the matching ids, versus the full `all_nodes()` scan + `_labels`
+/// parse the executor did before this index existed. Same data, both ways.
+fn bench_label_index(c: &mut Criterion) {
+    const N: usize = 50_000;
+    const EVERY: usize = 500; // ~100 nodes carry the target secondary label
+
+    let native = NativeGraph::new();
+    for i in 0..N {
+        // Every EVERY-th node carries the secondary label `vip`, stored the way
+        // `SET n:Vip` stores it (the reserved `_labels` JSON-array property).
+        let properties = if i % EVERY == 0 {
+            Properties(std::collections::HashMap::from([(
+                "_labels".to_string(),
+                serde_json::json!(["vip"]),
+            )]))
+        } else {
+            Properties::default()
+        };
+        native
+            .create_node(NewNode {
+                kind: "person".into(),
+                title: format!("ln_{i:08}"),
+                body: String::new(),
+                body_html: String::new(),
+                properties,
+            })
+            .unwrap();
+    }
+    let mut idx = drevo::native_label_index::NativeLabelIndex::new();
+    idx.sync(&native);
+    let target = "vip";
+
+    let mut group = c.benchmark_group("native/secondary_label_selective");
+    // Indexed lookup: the label index yields ~100 ids; fetch each node.
+    group.bench_function("indexed", |b| {
+        b.iter(|| {
+            let hits: Vec<_> = idx
+                .node_ids(black_box(target))
+                .into_iter()
+                .filter_map(|id| GraphEngine::get_node(&native, id).unwrap())
+                .collect();
+            black_box(hits)
+        })
+    });
+    // Pre-index baseline: scan every node and parse its `_labels` property.
+    group.bench_function("full_scan_baseline", |b| {
+        b.iter(|| {
+            let hits: Vec<_> = GraphEngine::all_nodes(&native)
+                .unwrap()
+                .into_iter()
+                .filter(|n| {
+                    matches!(
+                        n.properties.0.get("_labels"),
+                        Some(serde_json::Value::Array(a))
+                            if a.iter().any(|v| v.as_str() == Some(target))
+                    )
+                })
+                .collect();
+            black_box(hits)
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_build,
     bench_reads,
     bench_zero_copy,
-    bench_kind_index
+    bench_kind_index,
+    bench_label_index
 );
 criterion_main!(benches);
