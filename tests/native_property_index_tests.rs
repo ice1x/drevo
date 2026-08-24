@@ -16,6 +16,7 @@ use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewNode, NodePatch, Properties};
 use drevo::native::NativeGraph;
+use drevo::native_label_index::NativeLabelIndex;
 use drevo::native_property_index::NativePropertyIndex;
 use std::collections::HashMap;
 
@@ -226,6 +227,70 @@ fn indexed_property_scan_equals_full_scan_and_kv() {
         let indexed = matched_ids(
             execute_on_engine_with_indexes(&query, &native, None, None, Some(&idx), HashMap::new())
                 .unwrap(),
+        );
+        let kv_rows = matched_ids(execute(&query, &kv, HashMap::new()).unwrap());
+        assert_eq!(
+            full_scan, indexed,
+            "indexed diverged from full scan for `{cypher}`"
+        );
+        assert_eq!(
+            indexed, kv_rows,
+            "native indexed diverged from KV for `{cypher}`"
+        );
+    }
+}
+
+#[test]
+fn indexed_label_and_property_intersection_equals_full_scan_and_kv() {
+    // `MATCH (n:Label {key: value})` — the common form — must use the
+    // intersection of the label and property candidate sets on native and still
+    // agree with the full scan and the KV store. The graph mixes the label
+    // `user` as a primary kind and (for one node) as a secondary label, with
+    // varying `status`, so the intersection is non-trivial.
+    let build = |eng: &dyn GraphEngine| {
+        // (kind, title, status, secondary-labels)
+        let mk = |kind: &str, title: &str, status: &str, labels: &[&str]| {
+            let mut props: Vec<(&str, serde_json::Value)> =
+                vec![("status", serde_json::json!(status))];
+            if !labels.is_empty() {
+                props.push(("_labels", serde_json::json!(labels)));
+            }
+            node(kind, title, &props)
+        };
+        eng.create_node(mk("user", "a", "active", &[])).unwrap(); // kind user, active
+        eng.create_node(mk("user", "b", "banned", &[])).unwrap(); // kind user, banned
+        eng.create_node(mk("admin", "c", "active", &["user"]))
+            .unwrap(); // secondary user, active
+        eng.create_node(mk("task", "d", "active", &[])).unwrap(); // not a user
+    };
+    let native = NativeGraph::new();
+    let kv = Drevo::open_in_memory().unwrap();
+    build(&native);
+    build(&kv);
+
+    let mut labels = NativeLabelIndex::new();
+    labels.sync(&native);
+    let mut props = NativePropertyIndex::new();
+    props.sync(&native);
+
+    for cypher in [
+        "MATCH (n:user {status: 'active'}) RETURN n", // a + c (b banned, d not user)
+        "MATCH (n:user {status: 'banned'}) RETURN n", // b
+        "MATCH (n:user) RETURN n",                    // a, b, c
+        "MATCH (n:admin {status: 'active'}) RETURN n", // c
+    ] {
+        let query = parse(cypher).unwrap();
+        let full_scan = matched_ids(execute_on_engine(&query, &native, HashMap::new()).unwrap());
+        let indexed = matched_ids(
+            execute_on_engine_with_indexes(
+                &query,
+                &native,
+                None,
+                Some(&labels),
+                Some(&props),
+                HashMap::new(),
+            )
+            .unwrap(),
         );
         let kv_rows = matched_ids(execute(&query, &kv, HashMap::new()).unwrap());
         assert_eq!(
