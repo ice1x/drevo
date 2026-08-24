@@ -718,7 +718,7 @@ pub fn execute(
 ) -> ExecResultT<ExecResult> {
     // The KV store is both the graph engine and the home of the secondary
     // subsystems, so it is passed in both roles.
-    execute_inner(query, drevo, Some(drevo), None, None, params)
+    execute_inner(query, drevo, Some(drevo), None, None, None, params)
 }
 
 /// Execute a Cypher query over **any** [`GraphEngine`] — the native
@@ -738,7 +738,7 @@ pub fn execute_on_engine(
     engine: &dyn GraphEngine,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, None, None, params)
+    execute_inner(query, engine, None, None, None, None, params)
 }
 
 /// Like [`execute_on_engine`], but with a native full-text index so
@@ -759,20 +759,21 @@ pub fn execute_on_engine_with_fts(
     fts: &crate::native_fts::NativeFtsIndex,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, Some(fts), None, params)
+    execute_inner(query, engine, None, Some(fts), None, None, params)
 }
 
-/// Like [`execute_on_engine`], but with native secondary indexes so both
-/// `CALL fts.search(...)` and `MATCH (n:Label)` are served on the native engine
-/// without falling back to a full node scan (RFC `docs/rfc-native-core.md`,
-/// #307, Phase 6.6).
+/// Like [`execute_on_engine`], but with the native secondary indexes so
+/// `CALL fts.search(...)`, `MATCH (n:Label)`, and `MATCH (n {key: value})` are
+/// all served on the native engine without falling back to a full node scan
+/// (RFC `docs/rfc-native-core.md`, #307, Phases 6.6–6.7).
 ///
-/// The caller owns both indexes and is responsible for keeping them synced with
+/// The caller owns the indexes and is responsible for keeping them synced with
 /// the engine's change-feed (call each one's `sync` before querying for
-/// read-your-writes). Either may be `None`; a `None` label index just means
-/// native label scans fall back to `all_nodes`, and a `None` FTS index means
-/// `fts.search` surfaces [`ExecError::EngineCapability`]. Other KV-only
-/// subsystems (vector/semantic, recency, keyword extraction) still surface
+/// read-your-writes). Any may be `None`: a `None` label index means native label
+/// scans fall back to `all_nodes`, a `None` property index means inline equality
+/// patterns fall back to `all_nodes`, and a `None` FTS index means `fts.search`
+/// surfaces [`ExecError::EngineCapability`]. Other KV-only subsystems
+/// (vector/semantic, recency, keyword extraction) still surface
 /// [`ExecError::EngineCapability`].
 ///
 /// # Errors
@@ -782,9 +783,10 @@ pub fn execute_on_engine_with_indexes(
     engine: &dyn GraphEngine,
     fts: Option<&crate::native_fts::NativeFtsIndex>,
     labels: Option<&crate::native_label_index::NativeLabelIndex>,
+    props: Option<&crate::native_property_index::NativePropertyIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, fts, labels, params)
+    execute_inner(query, engine, None, fts, labels, props, params)
 }
 
 fn execute_inner(
@@ -793,6 +795,7 @@ fn execute_inner(
     secondary: Option<&Drevo>,
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
+    native_props: Option<&crate::native_property_index::NativePropertyIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Fast path — a query with no `UNION` is a single arm, executed
@@ -804,6 +807,7 @@ fn execute_inner(
             secondary,
             native_fts,
             native_labels,
+            native_props,
             params,
         );
     }
@@ -846,6 +850,7 @@ fn execute_inner(
             secondary,
             native_fts,
             native_labels,
+            native_props,
             params.clone(),
         )?;
         match &columns {
@@ -885,6 +890,7 @@ fn execute_single(
     secondary: Option<&Drevo>,
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
+    native_props: Option<&crate::native_property_index::NativePropertyIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
@@ -900,6 +906,7 @@ fn execute_single(
         secondary,
         native_fts,
         native_labels,
+        native_props,
         params,
         bindings: vec![HashMap::new()],
         stats: ExecStats::default(),
@@ -1966,6 +1973,12 @@ struct Executor<'a> {
     /// full node scan. `None` on the KV path (which scans `list_recent`) or when
     /// no index was supplied (then native label scans fall back to `all_nodes`).
     native_labels: Option<&'a crate::native_label_index::NativeLabelIndex>,
+    /// A native property-value index tailing the engine's change-feed, when
+    /// running over a non-KV engine that has one. Lets an inline equality
+    /// pattern `MATCH (n {key: value})` gather candidates from an index lookup
+    /// instead of a full node scan. `None` on the KV path (which scans
+    /// `list_recent`) or when no index was supplied (then the scan is used).
+    native_props: Option<&'a crate::native_property_index::NativePropertyIndex>,
     params: HashMap<String, Value>,
     /// Pattern bindings produced so far. Each `MATCH` multiplies the
     /// binding set; `CREATE` augments every existing binding (or
@@ -2422,9 +2435,13 @@ impl<'a> Executor<'a> {
         //    `nodes_by_kind(label) ∪ NativeLabelIndex::node_ids(label)`: only the
         //    nodes that carry the label as their primary kind or a secondary
         //    label, never a full scan.
-        //  * Native engine otherwise (no index, or an unlabelled `MATCH (n)`
-        //    that genuinely enumerates everything) — full node scan through the
-        //    seam.
+        //  * Native engine, no label, but an inline equality pattern
+        //    `MATCH (n {key: value})` with a property index — gather the
+        //    intersection of the indexable pairs' postings (see
+        //    `native_property_candidates`), never a full scan.
+        //  * Native engine otherwise (no usable index, or an unlabelled
+        //    `MATCH (n)` that genuinely enumerates everything) — full node scan
+        //    through the seam.
         let first_label = pattern.labels.first();
         let mut nodes: Vec<Node> = match (self.secondary, self.native_labels, first_label) {
             (Some(kv), _, _) => kv.list_recent(usize::MAX)?,
@@ -2440,7 +2457,16 @@ impl<'a> Executor<'a> {
                 }
                 acc
             }
-            (None, _, _) => self.engine().all_nodes()?,
+            (None, _, _) => {
+                // Property fast path only when there is no label (a labelled
+                // pattern is served by the kind/label sources above); the
+                // trailing primary-kind merge below is skipped for a label-less
+                // pattern, so it never interferes with these candidates.
+                match self.native_property_candidates(pattern, row)? {
+                    Some(candidates) => candidates,
+                    None => self.engine().all_nodes()?,
+                }
+            }
         };
         if let Some(label) = first_label {
             // Merge in primary-kind hits: required for the KV and native-scan
@@ -2462,6 +2488,73 @@ impl<'a> Executor<'a> {
             out.push(nv);
         }
         Ok(out)
+    }
+
+    /// Candidate nodes for an unlabelled inline equality pattern
+    /// `MATCH (n {key: value})`, narrowed through the native property index
+    /// (RFC `docs/rfc-native-core.md`, #307, Phase 6.7).
+    ///
+    /// Returns `Ok(None)` when the index cannot narrow this pattern — no index
+    /// present, no inline properties, or none of the inline values are of an
+    /// indexable type — so the caller falls back to a full scan. Otherwise the
+    /// returned nodes are the intersection of the indexable pairs' postings: a
+    /// *superset* of the real matches (only the indexable equality constraints
+    /// are applied here), which the exact `node_matches_pattern` filter then
+    /// narrows to the precise set — including any non-indexable constraints.
+    fn native_property_candidates(
+        &self,
+        pattern: &NodePattern,
+        row: &Bindings,
+    ) -> ExecResultT<Option<Vec<Node>>> {
+        let Some(idx) = self.native_props else {
+            return Ok(None);
+        };
+        let Some(map) = &pattern.properties else {
+            return Ok(None);
+        };
+
+        // Intersect the posting lists of every *indexable* inline pair. A pair
+        // whose value evaluates to a non-indexable type (float, list, map, null)
+        // is skipped here — it cannot narrow through the index and its empty
+        // posting must not be intersected in — but it is still enforced exactly
+        // by the caller's per-candidate check.
+        let mut candidate_ids: Option<std::collections::BTreeSet<u64>> = None;
+        for (key, expr) in &map.entries {
+            // A row-dependent value may fail to evaluate; if it does, abandon
+            // the index path so the caller's exact filter re-evaluates and
+            // surfaces the identical error rather than a silently different one.
+            let Ok(value) = self.eval(expr, row) else {
+                return Ok(None);
+            };
+            let Some(json) = value_to_json(&value) else {
+                continue;
+            };
+            if !crate::native_property_index::is_indexable(&json) {
+                continue;
+            }
+            let ids: std::collections::BTreeSet<u64> =
+                idx.node_ids(key, &json).into_iter().collect();
+            candidate_ids = Some(match candidate_ids {
+                None => ids,
+                Some(prev) => prev.intersection(&ids).copied().collect(),
+            });
+            if candidate_ids.as_ref().is_some_and(|s| s.is_empty()) {
+                // An indexable constraint with no matches → no rows at all.
+                return Ok(Some(Vec::new()));
+            }
+        }
+
+        // No indexable pair narrowed the set → let the caller full-scan.
+        let Some(ids) = candidate_ids else {
+            return Ok(None);
+        };
+        let mut nodes = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(node) = self.engine().get_node(id)? {
+                nodes.push(node);
+            }
+        }
+        Ok(Some(nodes))
     }
 
     fn match_segment(

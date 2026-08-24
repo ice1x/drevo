@@ -333,12 +333,68 @@ fn bench_label_index(c: &mut Criterion) {
     group.finish();
 }
 
+/// A selective **property-value** lookup on the native engine: the property
+/// index yields only the matching ids, versus the full `all_nodes()` scan +
+/// per-node equality check the executor did before this index existed. Same
+/// data, both ways.
+fn bench_property_index(c: &mut Criterion) {
+    const N: usize = 50_000;
+    const STATES: usize = 500; // ~100 nodes share each status value
+
+    let native = NativeGraph::new();
+    for i in 0..N {
+        let properties = Properties(std::collections::HashMap::from([(
+            "status".to_string(),
+            serde_json::json!(format!("s{}", i % STATES)),
+        )]));
+        native
+            .create_node(NewNode {
+                kind: "task".into(),
+                title: format!("pn_{i:08}"),
+                body: String::new(),
+                body_html: String::new(),
+                properties,
+            })
+            .unwrap();
+    }
+    let mut idx = drevo::native_property_index::NativePropertyIndex::new();
+    idx.sync(&native);
+    let key = "status";
+    let value = serde_json::json!("s7");
+
+    let mut group = c.benchmark_group("native/property_lookup_selective");
+    // Indexed lookup: the property index yields ~100 ids; fetch each node.
+    group.bench_function("indexed", |b| {
+        b.iter(|| {
+            let hits: Vec<_> = idx
+                .node_ids(black_box(key), black_box(&value))
+                .into_iter()
+                .filter_map(|id| GraphEngine::get_node(&native, id).unwrap())
+                .collect();
+            black_box(hits)
+        })
+    });
+    // Pre-index baseline: scan every node and compare its `status` property.
+    group.bench_function("full_scan_baseline", |b| {
+        b.iter(|| {
+            let hits: Vec<_> = GraphEngine::all_nodes(&native)
+                .unwrap()
+                .into_iter()
+                .filter(|n| n.properties.0.get("status") == Some(&value))
+                .collect();
+            black_box(hits)
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_build,
     bench_reads,
     bench_zero_copy,
     bench_kind_index,
-    bench_label_index
+    bench_label_index,
+    bench_property_index
 );
 criterion_main!(benches);
