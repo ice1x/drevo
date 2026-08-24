@@ -2423,62 +2423,44 @@ impl<'a> Executor<'a> {
         pattern: &NodePattern,
         row: &Bindings,
     ) -> ExecResultT<Vec<Arc<NodeValue>>> {
-        // A labelled pattern can match on the primary `kind` (indexed) or on a
-        // secondary label stored in the reserved `_labels` property. The
-        // candidate set must be a *superset* of the real matches; the
+        // The candidate set must be a *superset* of the real matches; the
         // per-candidate `node_matches_pattern` filter below does the exact test.
+        // Pick the most selective correct source available:
         //
-        // Three candidate sources, in order of preference:
-        //  * KV engine — `list_recent` returns every node (recency-ordered) and
-        //    surfaces secondary-label nodes; unchanged, byte-identical behaviour.
-        //  * Native engine + a secondary-label index + a label — gather
-        //    `nodes_by_kind(label) ∪ NativeLabelIndex::node_ids(label)`: only the
-        //    nodes that carry the label as their primary kind or a secondary
-        //    label, never a full scan.
-        //  * Native engine, no label, but an inline equality pattern
-        //    `MATCH (n {key: value})` with a property index — gather the
-        //    intersection of the indexable pairs' postings (see
-        //    `native_property_candidates`), never a full scan.
-        //  * Native engine otherwise (no usable index, or an unlabelled
-        //    `MATCH (n)` that genuinely enumerates everything) — full node scan
-        //    through the seam.
+        //  * KV engine — `list_recent` returns every node and surfaces
+        //    secondary-label nodes; unchanged, byte-identical behaviour.
+        //  * Native engine — up to two index-derived candidate sets:
+        //      - by **label** (`nodes_by_kind(label) ∪ NativeLabelIndex`, a
+        //        complete superset), available when a label index is present;
+        //      - by **property** (`native_property_candidates`, the intersection
+        //        of the indexable inline pairs' postings), available when a
+        //        property index can narrow the pattern.
+        //    When both exist the two supersets are **intersected** (each already
+        //    contains every match, so their intersection does too) for the
+        //    tightest correct set; otherwise whichever exists is used; if neither
+        //    does, a full node scan through the seam.
         let first_label = pattern.labels.first();
-        let mut nodes: Vec<Node> = match (self.secondary, self.native_labels, first_label) {
-            (Some(kv), _, _) => kv.list_recent(usize::MAX)?,
-            (None, Some(label_idx), Some(label)) => {
-                let mut acc = self.engine().nodes_by_kind(label, usize::MAX, 0)?;
-                let mut seen: std::collections::HashSet<u64> = acc.iter().map(|n| n.id).collect();
-                for id in label_idx.node_ids(label) {
-                    if seen.insert(id) {
-                        if let Some(node) = self.engine().get_node(id)? {
-                            acc.push(node);
-                        }
-                    }
+        let nodes: Vec<Node> = if let Some(kv) = self.secondary {
+            kv.list_recent(usize::MAX)?
+        } else {
+            // Native. A label candidate set is only *complete* when a label
+            // index is present (it catches secondary-label-only matches that
+            // `nodes_by_kind` alone would miss); without one, leave label
+            // narrowing to the exact filter and rely on the property set / scan.
+            let label_cands = match (self.native_labels, first_label) {
+                (Some(label_idx), Some(label)) => {
+                    Some(self.native_label_candidates(label_idx, label)?)
                 }
-                acc
-            }
-            (None, _, _) => {
-                // Property fast path only when there is no label (a labelled
-                // pattern is served by the kind/label sources above); the
-                // trailing primary-kind merge below is skipped for a label-less
-                // pattern, so it never interferes with these candidates.
-                match self.native_property_candidates(pattern, row)? {
-                    Some(candidates) => candidates,
-                    None => self.engine().all_nodes()?,
-                }
+                _ => None,
+            };
+            let prop_cands = self.native_property_candidates(pattern, row)?;
+            match (label_cands, prop_cands) {
+                (Some(l), Some(p)) => intersect_nodes_by_id(l, p),
+                (Some(l), None) => l,
+                (None, Some(p)) => p,
+                (None, None) => self.engine().all_nodes()?,
             }
         };
-        if let Some(label) = first_label {
-            // Merge in primary-kind hits: required for the KV and native-scan
-            // sources (whose base set may not be kind-first), and a cheap no-op
-            // for the indexed source, which already unioned them in.
-            let primary = self.engine().nodes_by_kind(label, usize::MAX, 0)?;
-            for node in primary {
-                if !nodes.iter().any(|n| n.id == node.id) {
-                    nodes.push(node);
-                }
-            }
-        }
         let mut out = Vec::with_capacity(nodes.len());
         for node in &nodes {
             let nv = node_to_value(node);
@@ -2490,13 +2472,36 @@ impl<'a> Executor<'a> {
         Ok(out)
     }
 
-    /// Candidate nodes for an unlabelled inline equality pattern
+    /// Candidate nodes carrying `label` on the native engine —
+    /// `nodes_by_kind(label) ∪ NativeLabelIndex::node_ids(label)`, i.e. every
+    /// node with the label as its primary kind or a secondary label. A
+    /// *complete* superset of the label matches (RFC `docs/rfc-native-core.md`,
+    /// #307, Phase 6.6).
+    fn native_label_candidates(
+        &self,
+        label_idx: &crate::native_label_index::NativeLabelIndex,
+        label: &str,
+    ) -> ExecResultT<Vec<Node>> {
+        let mut acc = self.engine().nodes_by_kind(label, usize::MAX, 0)?;
+        let mut seen: std::collections::HashSet<u64> = acc.iter().map(|n| n.id).collect();
+        for id in label_idx.node_ids(label) {
+            if seen.insert(id) {
+                if let Some(node) = self.engine().get_node(id)? {
+                    acc.push(node);
+                }
+            }
+        }
+        Ok(acc)
+    }
+
+    /// Candidate nodes for an inline equality pattern's properties
     /// `MATCH (n {key: value})`, narrowed through the native property index
     /// (RFC `docs/rfc-native-core.md`, #307, Phase 6.7).
     ///
     /// Returns `Ok(None)` when the index cannot narrow this pattern — no index
     /// present, no inline properties, or none of the inline values are of an
-    /// indexable type — so the caller falls back to a full scan. Otherwise the
+    /// indexable type — so the caller uses another source (label candidates, or
+    /// a full scan). Otherwise the
     /// returned nodes are the intersection of the indexable pairs' postings: a
     /// *superset* of the real matches (only the indexable equality constraints
     /// are applied here), which the exact `node_matches_pattern` filter then
@@ -6315,6 +6320,15 @@ fn synth_title(label: &str) -> String {
     // staying deterministic for the storage layer's title index.
     let uuid = uuid::Uuid::from_bytes(new_uuid_v7());
     format!("__cypher__:{}:{}", label, uuid.as_simple())
+}
+
+/// Intersect two node candidate sets by id, preserving `a`'s order. Both inputs
+/// are supersets of the real matches, so their intersection is too — this is how
+/// the native label and property index candidates are combined for the tightest
+/// correct set for `MATCH (n:Label {key: value})`.
+fn intersect_nodes_by_id(a: Vec<Node>, b: Vec<Node>) -> Vec<Node> {
+    let keep: std::collections::HashSet<u64> = b.iter().map(|n| n.id).collect();
+    a.into_iter().filter(|n| keep.contains(&n.id)).collect()
 }
 
 fn node_matches_pattern(
