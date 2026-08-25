@@ -11,3 +11,7 @@
 //! `drevo-core` directly.
 
 pub mod model;
+/// Pure text tokenization — normalization plus trigram/word extraction, with no
+/// storage or error dependencies. Shared by the KV full-text index and the
+/// native `NativeFtsIndex`; re-exported from `drevo::fts::tokenizer`.
+pub mod tokenizer;

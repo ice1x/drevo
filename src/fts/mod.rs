@@ -36,7 +36,10 @@ pub(crate) mod stemmer;
 pub(crate) mod stopwords;
 /// Pure tokenizer: `normalize` → `trigrams` → `extract_trigrams(title,
 /// body)` plus the word-level `words` tokenizer for keyword extraction.
-pub mod tokenizer;
+/// Extracted to the [`drevo-core`](drevo_core) crate (Phase 7 slice 2) and
+/// re-exported so `crate::fts::tokenizer::…` / `drevo::fts::tokenizer::…` paths
+/// keep resolving.
+pub use drevo_core::tokenizer;
 
 pub use facet::{Facet, FacetCollapse};
 pub use tokenizer::{
