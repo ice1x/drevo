@@ -485,6 +485,7 @@ dependencies = [
  "bincode",
  "cbindgen",
  "criterion",
+ "drevo-core",
  "getrandom 0.4.2",
  "http-body-util",
  "idna_adapter",
@@ -507,6 +508,18 @@ dependencies = [
  "tracing-test",
  "uuid",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "drevo-core"
+version = "0.0.0"
+dependencies = [
+ "bincode",
+ "getrandom 0.4.2",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
