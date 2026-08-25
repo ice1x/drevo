@@ -21,8 +21,12 @@
 # want to compile `drevo-py` locally run `cargo build -p drevo-py`
 # with a Python install on PATH.
 [workspace]
-members = [".", "drevo-py"]
-default-members = ["."]
+members = [".", "drevo-core", "drevo-py"]
+# `drevo-core` IS in the default set (unlike `drevo-py`, which needs a Python
+# interpreter): it is pure Rust, so every existing CI gate — `cargo check`,
+# `cargo test`, `cargo clippy --all-targets`, `cargo doc` — should cover it too,
+# and its moved unit tests must keep running.
+default-members = [".", "drevo-core"]
 resolver = "2"
 
 # --- Build profiles ----------------------------------------------------------
@@ -75,6 +79,9 @@ description = "Embedded graph database for cross-platform knowledge management"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
+# The storage-agnostic core (domain model today; native engine in later slices),
+# re-exported below so `drevo::model::…` keeps resolving. See `drevo-core/`.
+drevo-core = { path = "drevo-core" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 bincode = { version = "2", features = ["serde"] }
@@ -146,7 +153,7 @@ cbindgen = { version = "0.27", optional = true }
 [features]
 default = ["redb-backend", "cbindgen", "http"]
 redb-backend = ["redb"]
-wasm = ["wasm-bindgen", "js-sys", "getrandom/wasm_js"]
+wasm = ["wasm-bindgen", "js-sys", "getrandom/wasm_js", "drevo-core/wasm"]
 http = ["dep:axum", "dep:tokio", "dep:tower", "dep:tracing", "dep:tracing-subscriber"]
 # Phase 11 task `00073` — Bolt over TLS. Compiles `src/bolt/tls.rs`
 # and the `_tls` variants of the listener entry points. Implies

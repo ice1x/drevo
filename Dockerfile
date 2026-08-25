@@ -10,6 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock* build.rs version_resolve.rs cbindgen.toml ./
 COPY src/ src/
+# Phase 7 slice 1 promoted the storage-agnostic core into a `drevo-core`
+# workspace member that `drevo` depends on (`pub use drevo_core::model`), so —
+# unlike `drevo-py` below, which is copied only so the workspace manifest parses
+# — its source is genuinely compiled into `drevo-server`. Copy the whole crate.
+# Locked by `tests/dockerfile_tests.rs::dockerfile_copies_every_workspace_member_dir`.
+COPY drevo-core/ drevo-core/
 # Cargo parses every `[[bench]]` / `[[bin]]` / `[[test]]` declaration in
 # Cargo.toml even when we ask it to build a single bin — the file must
 # exist or the manifest fails to parse with:

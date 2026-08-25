@@ -193,7 +193,7 @@ pub enum Direction {
 
 /// A search result with a relevance score.
 ///
-/// Returned by [`crate::db::Drevo::search_fts`] — nodes are ranked by
+/// Returned by `Drevo::search_fts` (in the `drevo` crate) — nodes are ranked by
 /// Okapi BM25 score (see [`FtsRanking`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredNode {
@@ -205,8 +205,8 @@ pub struct ScoredNode {
 
 /// A relationship search result with a relevance score (#227-B).
 ///
-/// Returned by [`crate::db::Drevo::search_fts_relationships`] — edges are ranked
-/// by Okapi BM25 over their string properties.
+/// Returned by `Drevo::search_fts_relationships` (in the `drevo` crate) — edges
+/// are ranked by Okapi BM25 over their string properties.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredEdge {
     /// The matching edge.
@@ -217,12 +217,11 @@ pub struct ScoredEdge {
 
 /// Relevance-ranking strategy for full-text search.
 ///
-/// [`Drevo::search_fts`](crate::db::Drevo::search_fts) ranks with
+/// `Drevo::search_fts` (in the `drevo` crate) ranks with
 /// [`FtsRanking::default`] (Okapi BM25). The legacy
 /// [`FtsRanking::TfIdf`] scorer is retained so callers that need a
 /// deterministic, length-insensitive baseline (e.g. golden-ranking
-/// regression tests) can opt back into it via
-/// [`Drevo::search_fts_ranked`](crate::db::Drevo::search_fts_ranked).
+/// regression tests) can opt back into it via `Drevo::search_fts_ranked`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FtsRanking {
     /// Okapi BM25: term-frequency saturation (`k1`) plus document-length

@@ -148,7 +148,10 @@ pub mod fts;
 /// (KV-backed [`db::Drevo`] ⇄ native [`native::NativeGraph`]) over the shared
 /// `drevo-json-v1` dump interchange, preserving every node/edge id.
 pub mod migrate;
-pub mod model;
+/// Core domain types ([`model::Node`], [`model::Edge`], …) — re-exported from
+/// the extracted [`drevo-core`](drevo_core) crate so `drevo::model::…` and
+/// in-crate `crate::model::…` paths keep resolving unchanged.
+pub use drevo_core::model;
 /// Multi-version concurrency control — Phase 13 task `00081`. The
 /// transaction-id allocator + commit log ([`mvcc::TransactionManager`]),
 /// snapshot capture ([`mvcc::Snapshot`]), `xmin`/`xmax` tuple versioning

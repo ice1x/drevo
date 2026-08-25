@@ -1,0 +1,46 @@
+# --- drevo-core --------------------------------------------------------------
+#
+# The storage-agnostic core of drevo: the domain model (and, in later slices,
+# the native graph engine and its indexes) that the main `drevo` crate inherits
+# and re-exports. Extracted so the engine can be depended on directly by other
+# projects ("древо просто унаследует") without pulling in the KV store, HTTP,
+# Bolt, or Python bindings.
+#
+# Kept deliberately dependency-light. The only external crates here are the ones
+# the model itself needs: serde/serde_json/bincode for (de)serialization and
+# uuid for node/edge identifiers. The wasm clock/RNG plumbing mirrors the main
+# crate exactly (see the `wasm` feature and the wasm32 target block) so a
+# `wasm32-unknown-unknown` build of the model keeps working.
+[package]
+name = "drevo-core"
+version = "0.0.0"
+edition = "2021"
+# Match the workspace MSRV (locked by the `msrv` CI job).
+rust-version = "1.85"
+description = "Core domain types and (future) native graph engine for drevo"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "v7", "rng-getrandom"] }
+# No direct `use getrandom` — it is pulled in only to enable the wasm backend
+# (via the `wasm` feature) for uuid's getrandom-backed RNG on wasm32, exactly as
+# the main crate does. Listed in the cargo-machete ignore set below.
+getrandom = { version = "0.4", optional = true }
+
+# `js-sys` is the clock source for `now_ms` / `new_uuid_v7` on wasm32, where
+# `std::time::SystemTime::now()` aborts — mirrors the main crate's model path.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+
+[features]
+# Enables the wasm getrandom backend so uuid v7's random bits resolve on
+# `wasm32-unknown-unknown`. Forwarded from the main crate's `wasm` feature.
+wasm = ["getrandom/wasm_js"]
+
+# `getrandom` has no direct use site here (see the dependency comment); it is
+# only present to flip on the `wasm_js` backend. Ignore it in cargo-machete so
+# the unused-dependency audit stays green, mirroring the main crate.
+[package.metadata.cargo-machete]
+ignored = ["getrandom"]
