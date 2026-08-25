@@ -2599,6 +2599,15 @@ impl<'a> Executor<'a> {
                                 None => continue,
                             }
                         }
+                        PushConstraint::Range { key, op, bound } => {
+                            let Ok(bound) = self.eval(bound, row) else {
+                                continue;
+                            };
+                            match range_allowed(idx, key, *op, &bound) {
+                                Some(a) => a,
+                                None => continue,
+                            }
+                        }
                     };
                     if intersect(&mut candidate_ids, allowed) {
                         return Ok(Some(Vec::new()));
@@ -6398,6 +6407,13 @@ enum PushConstraint {
     Eq { key: String, value: Expression },
     /// `variable.key IN list` — the property equals one of the list's elements.
     In { key: String, list: Expression },
+    /// `variable.key <op> bound` — an inequality against a numeric bound
+    /// (`>`, `>=`, `<`, `<=`), resolved through the ordered numeric index.
+    Range {
+        key: String,
+        op: crate::native_property_index::RangeOp,
+        bound: Expression,
+    },
 }
 
 impl PushConstraint {
@@ -6405,7 +6421,9 @@ impl PushConstraint {
     #[cfg(test)]
     fn key(&self) -> &str {
         match self {
-            PushConstraint::Eq { key, .. } | PushConstraint::In { key, .. } => key,
+            PushConstraint::Eq { key, .. }
+            | PushConstraint::In { key, .. }
+            | PushConstraint::Range { key, .. } => key,
         }
     }
 }
@@ -6458,7 +6476,59 @@ fn extract_pushdown_constraints(expr: &Expression, out: &mut HashMap<String, Vec
                 });
             }
         }
+        Expression::Binary {
+            op: op @ (BinaryOp::Gt | BinaryOp::Ge | BinaryOp::Lt | BinaryOp::Le),
+            lhs,
+            rhs,
+            ..
+        } => {
+            // `prop <op> bound`, or `bound <op> prop` (operator flipped so it
+            // always reads relative to the property).
+            if let Some((var, key)) = property_var_key(lhs) {
+                if let Some(range_op) = binary_to_range_op(*op) {
+                    out.entry(var).or_default().push(PushConstraint::Range {
+                        key,
+                        op: range_op,
+                        bound: (**rhs).clone(),
+                    });
+                }
+            } else if let Some((var, key)) = property_var_key(rhs) {
+                if let Some(range_op) = binary_to_range_op(*op).map(flip_range_op) {
+                    out.entry(var).or_default().push(PushConstraint::Range {
+                        key,
+                        op: range_op,
+                        bound: (**lhs).clone(),
+                    });
+                }
+            }
+        }
         _ => {}
+    }
+}
+
+/// Map a comparison [`BinaryOp`] to a [`RangeOp`](crate::native_property_index::RangeOp);
+/// `None` for a non-comparison operator.
+fn binary_to_range_op(op: BinaryOp) -> Option<crate::native_property_index::RangeOp> {
+    use crate::native_property_index::RangeOp;
+    match op {
+        BinaryOp::Gt => Some(RangeOp::Gt),
+        BinaryOp::Ge => Some(RangeOp::Ge),
+        BinaryOp::Lt => Some(RangeOp::Lt),
+        BinaryOp::Le => Some(RangeOp::Le),
+        _ => None,
+    }
+}
+
+/// Flip a range operator so `bound <op> prop` becomes `prop <flipped> bound`.
+fn flip_range_op(
+    op: crate::native_property_index::RangeOp,
+) -> crate::native_property_index::RangeOp {
+    use crate::native_property_index::RangeOp;
+    match op {
+        RangeOp::Gt => RangeOp::Lt,
+        RangeOp::Ge => RangeOp::Le,
+        RangeOp::Lt => RangeOp::Gt,
+        RangeOp::Le => RangeOp::Ge,
     }
 }
 
@@ -6514,6 +6584,20 @@ fn in_allowed(
         union.extend(idx.node_ids(key, &json));
     }
     Some(union)
+}
+
+/// The id set a `key <op> bound` inequality allows through the ordered numeric
+/// index, or `None` when `bound` is not numeric (a numeric range never matches a
+/// non-numeric property, and a non-numeric bound is not served — leave it to the
+/// exact filter). The result is a superset; the exact `WHERE` trims it.
+fn range_allowed(
+    idx: &crate::native_property_index::NativePropertyIndex,
+    key: &str,
+    op: crate::native_property_index::RangeOp,
+    bound: &Value,
+) -> Option<std::collections::BTreeSet<u64>> {
+    let json = value_to_json(bound)?;
+    idx.range_ids(key, op, &json)
 }
 
 fn node_matches_pattern(
@@ -10926,16 +11010,52 @@ mod tests {
     }
 
     #[test]
+    fn pushdown_extracts_range_comparisons() {
+        use crate::native_property_index::RangeOp;
+
+        // `prop > bound` lifts a Range with the operator as written.
+        let m = pushdown_of("MATCH (n) WHERE n.age > 30 RETURN n");
+        assert!(matches!(
+            m["n"].as_slice(),
+            [PushConstraint::Range {
+                op: RangeOp::Gt,
+                ..
+            }]
+        ));
+
+        // `bound < prop` flips so it reads relative to the property (`prop > bound`).
+        let m = pushdown_of("MATCH (n) WHERE 30 < n.age RETURN n");
+        assert!(matches!(
+            m["n"].as_slice(),
+            [PushConstraint::Range {
+                op: RangeOp::Gt,
+                ..
+            }]
+        ));
+
+        // BETWEEN as two conjunctive range constraints on the same key.
+        let m = pushdown_of("MATCH (n) WHERE n.age >= 18 AND n.age <= 65 RETURN n");
+        assert_eq!(
+            keys_for(&m, "n"),
+            vec!["age".to_string(), "age".to_string()]
+        );
+        assert!(m["n"]
+            .iter()
+            .all(|c| matches!(c, PushConstraint::Range { .. })));
+    }
+
+    #[test]
     fn pushdown_ignores_non_conjunctive_and_non_equality_terms() {
         // OR must never be pushed — narrowing on one arm would drop matches.
         assert!(pushdown_of("MATCH (n) WHERE n.a = 1 OR n.b = 2 RETURN n").is_empty());
         // A term under NOT is not a required equality.
         assert!(pushdown_of("MATCH (n) WHERE NOT n.a = 1 RETURN n").is_empty());
-        // Inequalities / comparisons are not equalities.
-        assert!(pushdown_of("MATCH (n) WHERE n.a > 1 RETURN n").is_empty());
+        // `<>` (not-equal) is neither an equality nor a range comparison.
         assert!(pushdown_of("MATCH (n) WHERE n.a <> 1 RETURN n").is_empty());
         // An IN under OR must not be pushed either.
         assert!(pushdown_of("MATCH (n) WHERE n.a IN [1] OR n.b = 2 RETURN n").is_empty());
+        // A range under OR must not be pushed.
+        assert!(pushdown_of("MATCH (n) WHERE n.a > 1 OR n.b < 2 RETURN n").is_empty());
         // A conjunct that IS a top-level equality is still lifted even when a
         // sibling conjunct is an OR (the OR sibling contributes nothing).
         let m = pushdown_of("MATCH (n) WHERE n.a = 1 AND (n.b = 2 OR n.c = 3) RETURN n");

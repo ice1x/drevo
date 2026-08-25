@@ -498,3 +498,128 @@ fn where_in_pushdown_equals_full_scan_and_kv() {
         );
     }
 }
+
+#[test]
+fn where_range_pushdown_equals_full_scan_and_kv() {
+    // Range predicates resolve through the ordered numeric index as a UNION of
+    // the integer and float maps, so a key holding BOTH kinds is fully covered.
+    // Every shape must agree across native full-scan, native indexed, and KV.
+    let build = |eng: &dyn GraphEngine| {
+        eng.create_node(node("task", "a", &[("val", serde_json::json!(10))]))
+            .unwrap();
+        eng.create_node(node("task", "b", &[("val", serde_json::json!(25))]))
+            .unwrap();
+        eng.create_node(node("task", "c", &[("val", serde_json::json!(30))]))
+            .unwrap();
+        eng.create_node(node("task", "d", &[("val", serde_json::json!(15.5))]))
+            .unwrap();
+        eng.create_node(node("task", "e", &[("val", serde_json::json!(27.5))]))
+            .unwrap();
+        eng.create_node(node("task", "g", &[("val", serde_json::json!(30.0))]))
+            .unwrap();
+        eng.create_node(node("task", "h", &[("val", serde_json::json!(-5))]))
+            .unwrap();
+    };
+    let native = NativeGraph::new();
+    let kv = Drevo::open_in_memory().unwrap();
+    build(&native);
+    build(&kv);
+
+    let mut labels = NativeLabelIndex::new();
+    labels.sync(&native);
+    let mut props = NativePropertyIndex::new();
+    props.sync(&native);
+
+    let run = |cypher: &str, params: HashMap<String, Value>| {
+        let query = parse(cypher).unwrap();
+        let full = matched_ids(execute_on_engine(&query, &native, params.clone()).unwrap());
+        let idxd = matched_ids(
+            execute_on_engine_with_indexes(
+                &query,
+                &native,
+                None,
+                Some(&labels),
+                Some(&props),
+                params.clone(),
+            )
+            .unwrap(),
+        );
+        let kvr = matched_ids(execute(&query, &kv, params).unwrap());
+        assert_eq!(full, idxd, "indexed diverged from full scan for `{cypher}`");
+        assert_eq!(idxd, kvr, "native indexed diverged from KV for `{cypher}`");
+        idxd
+    };
+
+    // Crux: a bound between int and float values must union both maps.
+    run("MATCH (n) WHERE n.val > 20 RETURN n", HashMap::new());
+    run("MATCH (n) WHERE n.val >= 30 RETURN n", HashMap::new());
+    run("MATCH (n) WHERE n.val < 20 RETURN n", HashMap::new());
+    run("MATCH (n) WHERE n.val <= 25 RETURN n", HashMap::new());
+    // Float bound against integer + float values.
+    run("MATCH (n) WHERE n.val > 25.5 RETURN n", HashMap::new());
+    // Negative bound.
+    run("MATCH (n) WHERE n.val < 0 RETURN n", HashMap::new());
+    // Operator flipped (bound on the left).
+    run("MATCH (n) WHERE 20 < n.val RETURN n", HashMap::new());
+    // BETWEEN as two conjunctive range constraints on the same key.
+    run(
+        "MATCH (n) WHERE n.val > 15 AND n.val < 28 RETURN n",
+        HashMap::new(),
+    );
+    // Range combined with a label.
+    run("MATCH (n:task) WHERE n.val >= 27 RETURN n", HashMap::new());
+    // Range combined with an equality on another (here same) key path.
+    run(
+        "MATCH (n:task) WHERE n.val > 20 AND n.val <= 30 RETURN n",
+        HashMap::new(),
+    );
+    // Empty result.
+    run("MATCH (n) WHERE n.val > 1000 RETURN n", HashMap::new());
+    // $param bound.
+    run(
+        "MATCH (n) WHERE n.val > $b RETURN n",
+        HashMap::from([("b".to_string(), Value::Integer(20))]),
+    );
+    // Range under OR must not be pushed.
+    run(
+        "MATCH (n) WHERE n.val > 100 OR n.val < 0 RETURN n",
+        HashMap::new(),
+    );
+}
+
+#[test]
+fn range_on_mixed_type_key_falls_back_without_diverging() {
+    // When a key also holds a non-numeric value, drevo type-errors on an ordering
+    // comparison. The range index must REFUSE to serve that key (so it can't
+    // silently exclude the offending node and turn the error into a success):
+    // both the full scan and the indexed path must behave identically — here,
+    // both error.
+    let build = |eng: &dyn GraphEngine| {
+        eng.create_node(node("task", "a", &[("val", serde_json::json!(10))]))
+            .unwrap();
+        eng.create_node(node("task", "b", &[("val", serde_json::json!(30))]))
+            .unwrap();
+        eng.create_node(node("task", "s", &[("val", serde_json::json!("text"))]))
+            .unwrap();
+    };
+    let native = NativeGraph::new();
+    let kv = Drevo::open_in_memory().unwrap();
+    build(&native);
+    build(&kv);
+    let mut props = NativePropertyIndex::new();
+    props.sync(&native);
+
+    let query = parse("MATCH (n) WHERE n.val > 20 RETURN n").unwrap();
+    let full = execute_on_engine(&query, &native, HashMap::new());
+    let indexed =
+        execute_on_engine_with_indexes(&query, &native, None, None, Some(&props), HashMap::new());
+    let kvr = execute(&query, &kv, HashMap::new());
+    // The string value makes `n.val > 20` a type error on every path — the
+    // index must not paper over it by excluding the string node.
+    assert!(
+        full.is_err(),
+        "full scan should type-error on the string value"
+    );
+    assert!(indexed.is_err(), "indexed path must NOT silently succeed");
+    assert!(kvr.is_err(), "KV should type-error too");
+}
