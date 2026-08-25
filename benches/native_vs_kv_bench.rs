@@ -388,6 +388,69 @@ fn bench_property_index(c: &mut Criterion) {
     group.finish();
 }
 
+/// A selective **range** lookup on the native engine: the ordered numeric index
+/// range-scans only the matching ids, versus the full `all_nodes()` scan +
+/// per-node comparison the executor did before this index existed.
+fn bench_range_index(c: &mut Criterion) {
+    const N: usize = 50_000;
+    const SPAN: i64 = 1000; // val in 0..1000; `> 995` selects ~0.4%
+
+    let native = NativeGraph::new();
+    for i in 0..N {
+        let properties = Properties(std::collections::HashMap::from([(
+            "val".to_string(),
+            serde_json::json!((i as i64) % SPAN),
+        )]));
+        native
+            .create_node(NewNode {
+                kind: "row".into(),
+                title: format!("rn_{i:08}"),
+                body: String::new(),
+                body_html: String::new(),
+                properties,
+            })
+            .unwrap();
+    }
+    let mut idx = drevo::native_property_index::NativePropertyIndex::new();
+    idx.sync(&native);
+    let bound = serde_json::json!(995);
+
+    let mut group = c.benchmark_group("native/range_lookup_selective");
+    group.bench_function("indexed", |b| {
+        b.iter(|| {
+            let ids = idx
+                .range_ids(
+                    black_box("val"),
+                    drevo::native_property_index::RangeOp::Gt,
+                    black_box(&bound),
+                )
+                .unwrap();
+            let hits: Vec<_> = ids
+                .into_iter()
+                .filter_map(|id| GraphEngine::get_node(&native, id).unwrap())
+                .collect();
+            black_box(hits)
+        })
+    });
+    group.bench_function("full_scan_baseline", |b| {
+        b.iter(|| {
+            let hits: Vec<_> = GraphEngine::all_nodes(&native)
+                .unwrap()
+                .into_iter()
+                .filter(|n| {
+                    n.properties
+                        .0
+                        .get("val")
+                        .and_then(|v| v.as_i64())
+                        .is_some_and(|v| v > 995)
+                })
+                .collect();
+            black_box(hits)
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_build,
@@ -395,6 +458,7 @@ criterion_group!(
     bench_zero_copy,
     bench_kind_index,
     bench_label_index,
-    bench_property_index
+    bench_property_index,
+    bench_range_index
 );
 criterion_main!(benches);
