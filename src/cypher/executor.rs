@@ -562,34 +562,12 @@ fn value_to_json(v: &Value) -> Option<serde_json::Value> {
     })
 }
 
-/// Reserved property key holding a node's secondary Cypher labels.
-///
-/// drevo storage has a single primary `kind` per node. Cypher allows a
-/// node to carry any number of labels; the extras live in this property
-/// as a JSON array of strings, never visible to user-level Cypher
-/// `n.<prop>` access (the executor filters it out when surfacing the
-/// property map).
-pub(crate) const SECONDARY_LABELS_KEY: &str = "_labels";
-
-/// The secondary labels carried by `node` in its reserved
-/// [`SECONDARY_LABELS_KEY`] property (a JSON array of strings), in stored
-/// order. Empty when the property is absent or malformed.
-///
-/// This is the single source of truth for the `_labels` convention: the native
-/// secondary-label index
-/// ([`NativeLabelIndex`](crate::native_label_index::NativeLabelIndex)) parses
-/// labels through here so it can never drift from what `node_to_value` surfaces.
-pub(crate) fn secondary_labels(node: &Node) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(serde_json::Value::Array(arr)) = node.properties.0.get(SECONDARY_LABELS_KEY) {
-        for item in arr {
-            if let serde_json::Value::String(s) = item {
-                out.push(s.clone());
-            }
-        }
-    }
-    out
-}
+// The `_labels` secondary-label convention — the `SECONDARY_LABELS_KEY` constant
+// and the `secondary_labels` parser — was extracted to the `drevo-core` crate
+// (Phase 7 slice 5) so the native label index (also moving to core) shares the
+// exact same source of truth. Re-exported here so the executor's many
+// `SECONDARY_LABELS_KEY` / `secondary_labels(...)` call sites resolve unchanged.
+pub(crate) use drevo_core::labels::{secondary_labels, SECONDARY_LABELS_KEY};
 
 fn node_to_value(node: &Node) -> Arc<NodeValue> {
     let mut properties = BTreeMap::new();
