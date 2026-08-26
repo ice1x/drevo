@@ -31,16 +31,17 @@
 //! native) and are deliberately out of scope here, as are non-deterministic
 //! functions (`rand()`, `randomUUID()`, `timestamp()`, `datetime()`).
 //!
-//! # Known, deliberate scope limit: unordered scan order
+//! # Unordered scan order is converged (id-ascending on both engines)
 //!
-//! Without an `ORDER BY`, Cypher row order is unspecified — and the two engines
-//! genuinely differ there: the KV path enumerates full scans through
-//! `list_recent` (**newest-first**, reverse id) while the native engine scans
-//! **id-ascending**. Every multi-row check in this corpus therefore pins its
-//! order (`ORDER BY`, or a per-arm `WITH … ORDER BY` inside `UNION`, since a
-//! trailing `ORDER BY` binds to the last arm on both engines). Converging the
-//! unordered scan order is tracked as a prerequisite of the `DREVO_ENGINE`
-//! default flip, not of this corpus.
+//! Without an `ORDER BY`, Cypher row order is unspecified — which historically
+//! let the engines differ (the KV path enumerated full scans newest-first via
+//! `list_recent`; native scanned in `HashMap` iteration order). Both now
+//! enumerate **id-ascending** (`collect_all_nodes` on KV, sorted `all_nodes`
+//! on native), and the "unordered scans" scenario below pins that parity
+//! without any `ORDER BY`. Ordered checks still pin their order explicitly —
+//! note a trailing `ORDER BY` binds to the *last arm* of a `UNION` on both
+//! engines, so union checks that need whole-result determinism sort per arm
+//! via `WITH … ORDER BY`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -271,6 +272,22 @@ fn create_and_match_parity() {
                 "MATCH (n) RETURN id(n), labels(n) ORDER BY id(n)",
                 "MATCH (n:Person) RETURN properties(n) ORDER BY n.title",
                 "MATCH (n:Person {title: 'ada'}) RETURN keys(n)",
+            ],
+        },
+        Scenario {
+            // Even *without* an ORDER BY, both engines must enumerate a scan
+            // in the same (id-ascending) order — the row-order convergence
+            // the DREVO_ENGINE flip depends on. This is the one scenario
+            // that deliberately omits ORDER BY.
+            name: "unordered scans enumerate id-ascending on both engines",
+            setup: TEAM,
+            checks: &[
+                "MATCH (n) RETURN id(n)",
+                "MATCH (n:Person) RETURN n.title",
+                "MATCH (n:Person) WHERE n.age > 30 RETURN n.title",
+                "MATCH (a)-[r:LIKES]->(t) RETURN a.title, t.title",
+                "MATCH (n:Person) RETURN n.title AS t UNION MATCH (n:Tag) \
+                 RETURN n.title AS t",
             ],
         },
         Scenario {
