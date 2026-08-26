@@ -410,6 +410,19 @@ pub enum ExecError {
     },
 }
 
+/// A [`GraphEngine`] method returns the storage-agnostic
+/// [`drevo_core::error::CoreError`] (Phase 7 slice 6). Lift it into the
+/// executor's [`ExecError::Storage`] arm the same way an inherent KV
+/// [`DrevoError`] is — the shared graph variants map through structurally (via
+/// `From<CoreError> for DrevoError`), and `ExecError::Storage(_)` is the outer
+/// arm the Bolt layer keys its status code on, so routing engine errors here is
+/// behaviour-identical to the pre-seam `#[from] DrevoError` path.
+impl From<drevo_core::error::CoreError> for ExecError {
+    fn from(err: drevo_core::error::CoreError) -> Self {
+        ExecError::Storage(err.into())
+    }
+}
+
 impl ExecError {
     /// Return the [`Span`] of the offending source construct, when
     /// available.

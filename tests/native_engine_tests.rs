@@ -4,7 +4,7 @@
 //! The core assertion: [`drevo::native::NativeGraph`] and [`drevo::db::Drevo`],
 //! driven through the shared [`drevo::engine::GraphEngine`] seam, are
 //! **observably identical** — same ids, same node/edge content, same adjacency,
-//! and the same [`drevo::error::DrevoError`] variants on the error paths. That
+//! and the same [`drevo_core::error::CoreError`] variants on the error paths. That
 //! makes `NativeGraph` a drop-in the query layers can be pointed at, and locks
 //! the contract before the fast arena/CSR internals replace the `HashMap`
 //! skeleton in a later slice.
@@ -14,8 +14,8 @@
 
 use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
-use drevo::error::DrevoError;
 use drevo::model::{Direction, EdgePatch, NewEdge, NewNode, Node, NodePatch};
+use drevo_core::error::CoreError;
 
 // ---------------------------------------------------------------------------
 // Comparable projections (drop uuid / created_at / updated_at)
@@ -70,7 +70,7 @@ fn new_edge(from: u64, to: u64, kind: &str, weight: f32) -> NewEdge {
 // Op-parity checkers — run the same call on both engines, compare the outcome
 // ---------------------------------------------------------------------------
 
-fn ck_node(a: drevo::error::Result<Node>, b: drevo::error::Result<Node>) {
+fn ck_node(a: drevo_core::error::Result<Node>, b: drevo_core::error::Result<Node>) {
     match (a, b) {
         (Ok(x), Ok(y)) => assert_eq!(node_key(&x), node_key(&y), "node results diverged"),
         (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "node errors diverged"),
@@ -83,8 +83,8 @@ fn ck_node(a: drevo::error::Result<Node>, b: drevo::error::Result<Node>) {
 }
 
 fn ck_edge(
-    a: drevo::error::Result<drevo::model::Edge>,
-    b: drevo::error::Result<drevo::model::Edge>,
+    a: drevo_core::error::Result<drevo::model::Edge>,
+    b: drevo_core::error::Result<drevo::model::Edge>,
 ) {
     match (a, b) {
         (Ok(x), Ok(y)) => assert_eq!(edge_key(&x), edge_key(&y), "edge results diverged"),
@@ -97,7 +97,7 @@ fn ck_edge(
     }
 }
 
-fn ck_unit(a: drevo::error::Result<()>, b: drevo::error::Result<()>) {
+fn ck_unit(a: drevo_core::error::Result<()>, b: drevo_core::error::Result<()>) {
     assert_eq!(
         a.as_ref().map_err(|e| format!("{e:?}")),
         b.as_ref().map_err(|e| format!("{e:?}")),
@@ -333,17 +333,17 @@ fn native_enforces_core_semantics() {
     // Title uniqueness.
     assert!(matches!(
         g.create_node(new_node("k", "a")),
-        Err(DrevoError::DuplicateTitle(t)) if t == "a"
+        Err(CoreError::DuplicateTitle(t)) if t == "a"
     ));
 
     // Edge endpoint validation + invalid weight.
     assert!(matches!(
         g.create_edge(new_edge(1, 42, "E", 1.0)),
-        Err(DrevoError::NodeNotFound(42))
+        Err(CoreError::NodeNotFound(42))
     ));
     assert!(matches!(
         g.create_edge(new_edge(1, 2, "E", f32::INFINITY)),
-        Err(DrevoError::InvalidWeight(_))
+        Err(CoreError::InvalidWeight(_))
     ));
 
     // Self-loop contributes no neighbour.

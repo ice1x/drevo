@@ -19,6 +19,10 @@ pub mod dump;
 /// The storage-agnostic error type ([`crate::error::CoreError`]) shared by the
 /// native engine, its indexes, and the dump seam. Converts structurally to and
 /// from the main crate's `DrevoError`.
+/// The [`engine::GraphEngine`] seam — the graph-level trait the query layers
+/// depend on, implemented by both the KV store (main crate) and the native
+/// engine. Re-exported from `drevo::engine`.
+pub mod engine;
 pub mod error;
 /// The `_labels` secondary-label convention
 /// ([`crate::labels::secondary_labels`] / [`crate::labels::SECONDARY_LABELS_KEY`])
@@ -26,6 +30,19 @@ pub mod error;
 /// Cypher executor and the native label index. Re-exported into the main crate.
 pub mod labels;
 pub mod model;
+/// The native in-memory graph engine ([`native::NativeGraph`]) — index-free
+/// adjacency, the KV store's observable semantics without key encoding, and a
+/// change-feed of [`native::WalOp`] ops. Re-exported from `drevo::native`.
+pub mod native;
+/// In-memory secondary-label index ([`native_label_index::NativeLabelIndex`])
+/// that tails a [`native::NativeGraph`] change-feed. Re-exported from
+/// `drevo::native_label_index`.
+pub mod native_label_index;
+/// In-memory property-value index
+/// ([`native_property_index::NativePropertyIndex`]) that tails a
+/// [`native::NativeGraph`] change-feed. Re-exported from
+/// `drevo::native_property_index`.
+pub mod native_property_index;
 /// Pure text tokenization — normalization plus trigram/word extraction, with no
 /// storage or error dependencies. Shared by the KV full-text index and the
 /// native `NativeFtsIndex`; re-exported from `drevo::fts::tokenizer`.
