@@ -45,13 +45,11 @@ use crate::storage::StorageBackend;
 /// Key prefix for the property index: `prop:{...}` -> empty value.
 const PREFIX_PROP: &[u8] = b"prop:";
 
-/// Canonical byte encoding of a property value (sorted-key JSON).
-///
-/// Deterministic because `drevo` builds `serde_json` without the
-/// `preserve_order` feature, so object keys serialize in `BTreeMap` order.
-pub fn encode_value(value: &Value) -> Result<Vec<u8>> {
-    Ok(serde_json::to_vec(value)?)
-}
+// The canonical value encoder was extracted to the `drevo-core` crate (Phase 7
+// slice 5) so the native property index (also moving to core) shares the exact
+// same byte encoding. Re-exported here so `crate::property_index::encode_value`
+// keeps resolving for this module and its native counterpart.
+pub use drevo_core::value_encoding::encode_value;
 
 /// The scan prefix selecting every node whose `key` property equals the
 /// value encoded as `value_bytes`. Full index keys are this prefix
