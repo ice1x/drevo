@@ -2440,8 +2440,13 @@ impl<'a> Executor<'a> {
         // per-candidate `node_matches_pattern` filter below does the exact test.
         // Pick the most selective correct source available:
         //
-        //  * KV engine — `list_recent` returns every node and surfaces
-        //    secondary-label nodes; unchanged, byte-identical behaviour.
+        //  * KV engine — a full id-ascending scan (`collect_all_nodes`), which
+        //    surfaces secondary-label nodes too. This deliberately matches the
+        //    native engine's scan order, so an unordered `MATCH` enumerates
+        //    rows identically on both engines — the row-order convergence the
+        //    `DREVO_ENGINE` flip depends on (Cypher leaves order unspecified
+        //    without `ORDER BY`, so equalising it is allowed; it also drops
+        //    the per-scan `updated_at` sort `list_recent` paid).
         //  * Native engine — up to two index-derived candidate sets:
         //      - by **label** (`nodes_by_kind(label) ∪ NativeLabelIndex`, a
         //        complete superset), available when a label index is present;
@@ -2454,7 +2459,7 @@ impl<'a> Executor<'a> {
         //    does, a full node scan through the seam.
         let first_label = pattern.labels.first();
         let nodes: Vec<Node> = if let Some(kv) = self.secondary {
-            kv.list_recent(usize::MAX)?
+            kv.collect_all_nodes()?
         } else {
             // Native. A label candidate set is only *complete* when a label
             // index is present (it catches secondary-label-only matches that

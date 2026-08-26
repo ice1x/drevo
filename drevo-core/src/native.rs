@@ -253,11 +253,20 @@ impl Inner {
     }
 
     fn all_nodes(&self) -> Vec<Node> {
-        self.nodes.values().map(|a| (**a).clone()).collect()
+        // Id-ascending, not HashMap iteration order: full scans must
+        // enumerate deterministically (and identically to the KV engine's
+        // `collect_all_nodes`) so an unordered Cypher `MATCH` produces the
+        // same row order on both engines.
+        let mut nodes: Vec<Node> = self.nodes.values().map(|a| (**a).clone()).collect();
+        nodes.sort_unstable_by_key(|n| n.id);
+        nodes
     }
 
     fn all_edges(&self) -> Vec<Edge> {
-        self.edges.values().map(|a| (**a).clone()).collect()
+        // Id-ascending, for the same determinism contract as `all_nodes`.
+        let mut edges: Vec<Edge> = self.edges.values().map(|a| (**a).clone()).collect();
+        edges.sort_unstable_by_key(|e| e.id);
+        edges
     }
 
     fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Node> {
