@@ -10,6 +10,10 @@
 //! unchanged; downstream projects that only need the engine can depend on
 //! `drevo-core` directly.
 
+/// The storage-agnostic error type ([`error::CoreError`]) shared by the native
+/// engine, its indexes, and the dump seam. Converts structurally to and from the
+/// main crate's `DrevoError`.
+pub mod error;
 pub mod model;
 /// Pure text tokenization — normalization plus trigram/word extraction, with no
 /// storage or error dependencies. Shared by the KV full-text index and the
