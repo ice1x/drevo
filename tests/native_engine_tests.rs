@@ -110,8 +110,8 @@ fn ck_unit(a: drevo_core::error::Result<()>, b: drevo_core::error::Result<()>) {
 /// with and without a kind filter). Order-independent where the seam does not
 /// contractually fix order.
 fn assert_same_state(a: &dyn GraphEngine, b: &dyn GraphEngine) {
-    let mut na: Vec<NodeKey> = a.all_nodes().unwrap().iter().map(node_key).collect();
-    let mut nb: Vec<NodeKey> = b.all_nodes().unwrap().iter().map(node_key).collect();
+    let mut na: Vec<NodeKey> = a.all_nodes().unwrap().iter().map(|n| node_key(n)).collect();
+    let mut nb: Vec<NodeKey> = b.all_nodes().unwrap().iter().map(|n| node_key(n)).collect();
     na.sort();
     nb.sort();
     assert_eq!(na, nb, "node sets diverged");
@@ -302,13 +302,13 @@ fn native_matches_drevo_on_a_scripted_workload() {
             .nodes_by_kind("person", limit, offset)
             .unwrap()
             .iter()
-            .map(node_key)
+            .map(|n| node_key(n))
             .collect();
         let pb: Vec<NodeKey> = b
             .nodes_by_kind("person", limit, offset)
             .unwrap()
             .iter()
-            .map(node_key)
+            .map(|n| node_key(n))
             .collect();
         assert_eq!(
             pa, pb,
@@ -613,7 +613,7 @@ fn native_tx_detects_write_conflict() {
         .all_nodes()
         .unwrap()
         .into_iter()
-        .map(|n| n.title)
+        .map(|n| n.title.clone())
         .collect();
     assert_eq!(titles, vec!["x".to_string()]);
 }
@@ -1080,7 +1080,7 @@ fn neighbors_arc_matches_neighbors() {
         .neighbors(a.id, Direction::Outgoing, None)
         .unwrap()
         .iter()
-        .map(node_key)
+        .map(|n| node_key(n))
         .collect();
     let mut arc: Vec<_> = g
         .neighbors_arc(a.id, Direction::Outgoing, None)
@@ -1194,4 +1194,43 @@ fn native_kind_index_survives_replay_and_migrate() {
     drevo::migrate::migrate(&g, &fresh).unwrap();
     assert_eq!(kinds(&fresh, "person"), kinds(&g, "person"));
     assert_eq!(kinds(&fresh, "city"), kinds(&g, "city"));
+}
+
+#[test]
+fn seam_reads_share_the_stored_record_on_native() {
+    // The zero-copy contract of the Arc seam: two reads of the same unchanged
+    // node through the `GraphEngine` trait return handles to the *same*
+    // allocation (a refcount bump, not a deep clone of body/properties).
+    use std::sync::Arc;
+    let g = drevo::native::NativeGraph::new();
+    let created = GraphEngine::create_node(&g, new_node("person", "zoe")).unwrap();
+
+    let a = GraphEngine::get_node(&g, created.id).unwrap().unwrap();
+    let b = GraphEngine::get_node(&g, created.id).unwrap().unwrap();
+    assert!(
+        Arc::ptr_eq(&a, &b),
+        "repeated seam reads must share the stored Arc, not clone the node"
+    );
+
+    let scan = GraphEngine::all_nodes(&g).unwrap();
+    assert!(
+        Arc::ptr_eq(&a, &scan[0]),
+        "full scans share the same records"
+    );
+
+    // A write to the node replaces the stored record; new reads see the new
+    // allocation while the old handle keeps the old content (snapshot-ish).
+    let _ = GraphEngine::update_node(
+        &g,
+        created.id,
+        NodePatch {
+            title: Some("zoe2".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let c = GraphEngine::get_node(&g, created.id).unwrap().unwrap();
+    assert!(!Arc::ptr_eq(&a, &c));
+    assert_eq!(a.title, "zoe");
+    assert_eq!(c.title, "zoe2");
 }

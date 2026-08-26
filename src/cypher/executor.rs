@@ -2474,8 +2474,11 @@ impl<'a> Executor<'a> {
         }
 
         let first_label = pattern.labels.first();
-        let nodes: Vec<Node> = if let Some(kv) = self.secondary {
-            kv.collect_all_nodes()?
+        let nodes: Vec<Arc<Node>> = if self.secondary.is_some() {
+            // KV: the engine and the secondary store are the same `Drevo`; a
+            // full id-ascending scan through the seam (owned decodes wrapped
+            // in `Arc` once).
+            self.engine().all_nodes()?
         } else {
             // Native. A label candidate set is only *complete* when a label
             // index is present (it catches secondary-label-only matches that
@@ -2515,7 +2518,7 @@ impl<'a> Executor<'a> {
         &self,
         label_idx: &crate::native_label_index::NativeLabelIndex,
         label: &str,
-    ) -> ExecResultT<Vec<Node>> {
+    ) -> ExecResultT<Vec<Arc<Node>>> {
         let mut acc = self.engine().nodes_by_kind(label, usize::MAX, 0)?;
         let mut seen: std::collections::HashSet<u64> = acc.iter().map(|n| n.id).collect();
         for id in label_idx.node_ids(label) {
@@ -2556,7 +2559,7 @@ impl<'a> Executor<'a> {
         &self,
         pattern: &NodePattern,
         row: &Bindings,
-    ) -> ExecResultT<Option<Vec<Node>>> {
+    ) -> ExecResultT<Option<Vec<Arc<Node>>>> {
         let Some(var) = &pattern.variable else {
             return Ok(None);
         };
@@ -2631,7 +2634,7 @@ impl<'a> Executor<'a> {
         &self,
         pattern: &NodePattern,
         row: &Bindings,
-    ) -> ExecResultT<Option<Vec<Node>>> {
+    ) -> ExecResultT<Option<Vec<Arc<Node>>>> {
         let Some(idx) = self.native_props else {
             return Ok(None);
         };
@@ -6491,7 +6494,7 @@ fn synth_title(label: &str) -> String {
 /// are supersets of the real matches, so their intersection is too — this is how
 /// the native label and property index candidates are combined for the tightest
 /// correct set for `MATCH (n:Label {key: value})`.
-fn intersect_nodes_by_id(a: Vec<Node>, b: Vec<Node>) -> Vec<Node> {
+fn intersect_nodes_by_id(a: Vec<Arc<Node>>, b: Vec<Arc<Node>>) -> Vec<Arc<Node>> {
     let keep: std::collections::HashSet<u64> = b.iter().map(|n| n.id).collect();
     a.into_iter().filter(|n| keep.contains(&n.id)).collect()
 }

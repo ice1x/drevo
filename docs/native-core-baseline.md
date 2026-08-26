@@ -74,6 +74,32 @@ The other rows are unchanged within noise (scan-bound workloads do not touch
 the seek path). Remaining absolute cost in this query is the `b`-side edge
 loading and aggregation, not candidate enumeration.
 
+## Run 3 — after the zero-copy `Arc<Node>` seam (2026-08-26, same machine & snapshot)
+
+The node-reading seam methods (`get_node`, `neighbors`, `all_nodes`,
+`nodes_by_kind`) now return `Arc<Node>` handles: the native engine shares its
+stored records (a refcount bump instead of deep-cloning every body/property map
+on every enumeration — the `Arc::ptr_eq` contract is pinned by
+`tests/native_engine_tests.rs::seam_reads_share_the_stored_record_on_native`),
+while the KV engine wraps its owned decodes once.
+
+| Workload | native + indexes (run 2 → run 3) |
+|---|---|
+| `MATCH (n) RETURN count(*)` | 52.2 ms → **20.6 ms** (2.5×) |
+| label scan `:Entity` | 42.6 ms → **20.2 ms** (2.1×) |
+| property equality `{type: 'Trait'}` | 0.36 ms → **0.18 ms** (2×) |
+| Cypher 1-hop from hub | 2.29 ms → **0.93 ms** (2.5×) |
+| seam `neighbor_ids(hub)` | 6.1 µs → 4.3 µs |
+
+(The KV column also shifted down ~25% in this run across all rows — ambient
+machine variance between runs, not a KV change; compare within-run only.)
+
+The remaining native scan cost is now dominated by rebuilding the executor's
+`NodeValue` projection per node per query — a per-node value cache tailing the
+change-feed is the natural next step, but needs a versioning design so a
+mid-query write can never serve a stale value (`updated_at` alone is
+millisecond-resolution and insufficient).
+
 ## Standing items toward "surpass Memgraph" (RFC Phase 0)
 
 - Add the Memgraph column: same GraphML, same queries over Bolt, dockerised —

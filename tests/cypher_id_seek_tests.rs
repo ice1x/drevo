@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use drevo::cypher::executor::{execute_on_engine, ExecResult, Value};
 use drevo::cypher::parser::parse;
@@ -55,7 +56,7 @@ impl GraphEngine for CountingEngine {
     fn create_node(&self, new_node: NewNode) -> Result<Node> {
         self.inner.create_node(new_node)
     }
-    fn get_node(&self, id: u64) -> Result<Option<Node>> {
+    fn get_node(&self, id: u64) -> Result<Option<Arc<Node>>> {
         self.get_node_calls.fetch_add(1, Ordering::SeqCst);
         GraphEngine::get_node(&self.inner, id)
     }
@@ -90,20 +91,20 @@ impl GraphEngine for CountingEngine {
         node_id: u64,
         direction: Direction,
         kind: Option<&str>,
-    ) -> Result<Vec<Node>> {
+    ) -> Result<Vec<Arc<Node>>> {
         GraphEngine::neighbors(&self.inner, node_id, direction, kind)
     }
     fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>> {
         GraphEngine::edges_of(&self.inner, node_id, direction)
     }
-    fn all_nodes(&self) -> Result<Vec<Node>> {
+    fn all_nodes(&self) -> Result<Vec<Arc<Node>>> {
         self.all_nodes_calls.fetch_add(1, Ordering::SeqCst);
         GraphEngine::all_nodes(&self.inner)
     }
     fn all_edges(&self) -> Result<Vec<Edge>> {
         GraphEngine::all_edges(&self.inner)
     }
-    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>> {
+    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Arc<Node>>> {
         GraphEngine::nodes_by_kind(&self.inner, kind, limit, offset)
     }
     fn export_dump(&self) -> Result<Dump> {
