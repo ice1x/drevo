@@ -315,25 +315,41 @@ impl NativePropertyIndex {
         let mut pairs: Vec<(String, Vec<u8>)> = Vec::new();
         let mut nums: Vec<(String, NumEntry)> = Vec::new();
         let mut blocked: Vec<String> = Vec::new();
-        for (key, value) in node.properties.0.iter() {
+        // The executor surfaces the model `title` / `body` fields as ordinary
+        // Cypher properties (aliases, overridden by an explicit properties
+        // entry of the same name). Index the *effective* property set the same
+        // way, or `MATCH (n {title: ...})` through this index would wrongly
+        // drop every node whose title lives only in the model field — a false
+        // negative, which the superset contract forbids.
+        let title_alias = (!node.title.is_empty() && !node.properties.0.contains_key("title"))
+            .then(|| JsonValue::String(node.title.clone()));
+        let body_alias = (!node.body.is_empty() && !node.properties.0.contains_key("body"))
+            .then(|| JsonValue::String(node.body.clone()));
+        let entries = title_alias
+            .as_ref()
+            .map(|v| ("title", v))
+            .into_iter()
+            .chain(body_alias.as_ref().map(|v| ("body", v)))
+            .chain(node.properties.0.iter().map(|(k, v)| (k.as_str(), v)));
+        for (key, value) in entries {
             if key == SECONDARY_LABELS_KEY {
                 continue;
             }
             // A non-numeric value blocks range scans on this key.
             if is_range_blocking(value) {
-                *self.range_blocked.entry(key.clone()).or_default() += 1;
-                blocked.push(key.clone());
+                *self.range_blocked.entry(key.to_string()).or_default() += 1;
+                blocked.push(key.to_string());
             }
             // Exact posting for equality lookups (string / bool / i64).
             if is_indexable(value) {
                 if let Ok(bytes) = encode_value(value) {
                     self.postings
-                        .entry(key.clone())
+                        .entry(key.to_string())
                         .or_default()
                         .entry(bytes.clone())
                         .or_default()
                         .insert(node.id);
-                    pairs.push((key.clone(), bytes));
+                    pairs.push((key.to_string(), bytes));
                 }
             }
             // Ordered numeric entry for range scans. Every numeric value is
@@ -342,22 +358,22 @@ impl NativePropertyIndex {
             if let JsonValue::Number(n) = value {
                 if let Some(i) = n.as_i64() {
                     self.numeric_int
-                        .entry(key.clone())
+                        .entry(key.to_string())
                         .or_default()
                         .entry(i)
                         .or_default()
                         .insert(node.id);
-                    nums.push((key.clone(), NumEntry::Int(i)));
+                    nums.push((key.to_string(), NumEntry::Int(i)));
                 } else if let Some(f) = n.as_f64() {
                     if f.is_finite() {
                         let f = TotalF64(f);
                         self.numeric_float
-                            .entry(key.clone())
+                            .entry(key.to_string())
                             .or_default()
                             .entry(f)
                             .or_default()
                             .insert(node.id);
-                        nums.push((key.clone(), NumEntry::Float(f)));
+                        nums.push((key.to_string(), NumEntry::Float(f)));
                     }
                 }
             }
@@ -490,5 +506,88 @@ fn float_map_bounds(
                 RangeOp::Le => (Bound::Unbounded, Bound::Included(b)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+    use crate::model::{NewNode, Properties};
+
+    fn node(title: &str, body: &str, props: Properties) -> NativeGraph {
+        let g = NativeGraph::new();
+        g.create_node(NewNode {
+            kind: "doc".into(),
+            title: title.into(),
+            body: body.into(),
+            body_html: String::new(),
+            properties: props,
+        })
+        .expect("create");
+        g
+    }
+
+    fn synced(g: &NativeGraph) -> NativePropertyIndex {
+        let mut idx = NativePropertyIndex::new();
+        idx.sync(g);
+        idx
+    }
+
+    #[test]
+    fn model_title_and_body_are_indexed_as_alias_properties() {
+        // The executor surfaces `title` / `body` as ordinary Cypher
+        // properties, so `MATCH (n {title: 'ada'})` probes the index under
+        // the "title" key — the model fields must be indexed there or the
+        // probe returns a false negative (found by the differential corpus).
+        let g = node("ada", "hello", Properties::default());
+        let idx = synced(&g);
+        assert_eq!(idx.node_ids("title", &serde_json::json!("ada")), vec![1]);
+        assert_eq!(idx.node_ids("body", &serde_json::json!("hello")), vec![1]);
+        assert!(idx.node_ids("title", &serde_json::json!("bob")).is_empty());
+    }
+
+    #[test]
+    fn an_explicit_title_property_overrides_the_model_alias() {
+        // `node_to_value` lets an explicit properties entry shadow the model
+        // field; the index must agree on which value wins.
+        let props = Properties(std::collections::HashMap::from([(
+            "title".to_string(),
+            serde_json::json!("shadow"),
+        )]));
+        let g = node("model-title", "", props);
+        let idx = synced(&g);
+        assert_eq!(idx.node_ids("title", &serde_json::json!("shadow")), vec![1]);
+        assert!(idx
+            .node_ids("title", &serde_json::json!("model-title"))
+            .is_empty());
+    }
+
+    #[test]
+    fn empty_model_fields_are_not_indexed() {
+        // node_to_value omits empty title/body from the property map, so the
+        // index must not create postings for them either.
+        let g = node("", "", Properties::default());
+        let idx = synced(&g);
+        assert!(idx.node_ids("title", &serde_json::json!("")).is_empty());
+        assert!(idx.node_ids("body", &serde_json::json!("")).is_empty());
+    }
+
+    #[test]
+    fn title_update_moves_the_alias_posting() {
+        use crate::model::NodePatch;
+        let g = node("before", "", Properties::default());
+        g.update_node(
+            1,
+            NodePatch {
+                title: Some("after".into()),
+                ..Default::default()
+            },
+        )
+        .expect("update");
+        let idx = synced(&g);
+        assert_eq!(idx.node_ids("title", &serde_json::json!("after")), vec![1]);
+        assert!(idx
+            .node_ids("title", &serde_json::json!("before"))
+            .is_empty());
     }
 }
