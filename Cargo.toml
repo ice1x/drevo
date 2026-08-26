@@ -278,3 +278,7 @@ harness = false
 # it has no direct `use` site, so cargo-machete would otherwise flag it.
 [package.metadata.cargo-machete]
 ignored = ["getrandom", "idna_adapter"]
+
+[[bench]]
+name = "real_data_baseline_bench"
+harness = false
