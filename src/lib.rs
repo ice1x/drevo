@@ -164,7 +164,9 @@ pub mod mvcc;
 /// edges directly with maintained adjacency, instead of encoding them as
 /// byte-keyed rows over a [`storage::StorageBackend`]. Correctness-first seed of
 /// the arena/CSR core; pinned against [`db::Drevo`] by differential test.
-pub mod native;
+/// Extracted to the [`drevo-core`](drevo_core) crate (Phase 7 slice 6) and
+/// re-exported so `crate::native::…` / `drevo::native::…` paths keep resolving.
+pub use drevo_core::native;
 /// In-memory full-text index that tails a [`native::NativeGraph`]'s change-feed
 /// (RFC `docs/rfc-native-core.md`, #307, Phase 6.3) — the first secondary index
 /// kept current off the graph seam, matching the KV store's trigram BM25
@@ -174,13 +176,14 @@ pub mod native_fts;
 /// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.6) — indexes the
 /// `_labels` Cypher labels the primary-kind index does not cover, so a native
 /// `MATCH (n:Label)` gathers candidates from an index union instead of a full
-/// node scan.
-pub mod native_label_index;
+/// node scan. Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
+pub use drevo_core::native_label_index;
 /// In-memory property-value index that tails a [`native::NativeGraph`]'s
 /// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.7) — the native
 /// counterpart of the KV [`property_index`], so a `MATCH (n {key: value})`
 /// equality pattern resolves through an index instead of a full node scan.
-pub mod native_property_index;
+/// Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
+pub use drevo_core::native_property_index;
 /// Observability — Phase 15 task `00130`. A dependency-free, lock-free
 /// metrics registry ([`observability::Registry`] with
 /// [`observability::Counter`] / [`observability::Gauge`] /

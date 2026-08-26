@@ -8,8 +8,8 @@
 //! of an `O(N)` full-node scan. Numeric values are additionally kept in ordered
 //! maps so an inequality (`WHERE n.age > 30`) range-scans through `range_ids`
 //! rather than scanning every node.
-//! It is the native counterpart of the KV store's
-//! [`property_index`](crate::property_index) (`Drevo::nodes_by_property`), kept —
+//! It is the native counterpart of the KV store's `property_index`
+//! (`Drevo::nodes_by_property`, in the main crate), kept —
 //! like the trigram FTS and the secondary-label index — off the core graph seam
 //! and current by **tailing the change-feed** (see
 //! [`NativeGraph::changes_since`](crate::native::NativeGraph::changes_since)).
@@ -34,13 +34,13 @@
 //! rebuild.
 //!
 //! ```
-//! use drevo::native::NativeGraph;
-//! use drevo::native_property_index::NativePropertyIndex;
-//! use drevo::engine::GraphEngine; // brings `create_node` into scope
-//! use drevo::model::{NewNode, Properties};
+//! use drevo_core::native::NativeGraph;
+//! use drevo_core::native_property_index::NativePropertyIndex;
+//! use drevo_core::engine::GraphEngine; // brings `create_node` into scope
+//! use drevo_core::model::{NewNode, Properties};
 //! use std::collections::HashMap;
 //!
-//! # fn main() -> drevo::error::Result<()> {
+//! # fn main() -> drevo_core::error::Result<()> {
 //! let g = NativeGraph::new();
 //! let props = Properties(HashMap::from([(
 //!     "status".to_string(),
@@ -66,7 +66,7 @@ use serde_json::Value as JsonValue;
 use crate::engine::GraphEngine;
 use crate::model::Node;
 use crate::native::{NativeGraph, WalOp};
-use crate::property_index::encode_value;
+use crate::value_encoding::encode_value;
 
 /// Reserved property key holding a node's secondary Cypher labels — owned by the
 /// [`NativeLabelIndex`](crate::native_label_index::NativeLabelIndex), so this

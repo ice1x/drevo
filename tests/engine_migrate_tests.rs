@@ -256,7 +256,7 @@ fn apply_dump_rejects_edge_with_missing_endpoint() {
 
     let err = native.apply_dump(dump).unwrap_err();
     assert!(
-        matches!(err, drevo::error::DrevoError::NodeNotFound(12345)),
+        matches!(err, drevo_core::error::CoreError::NodeNotFound(12345)),
         "expected NodeNotFound(12345), got: {err}"
     );
 }

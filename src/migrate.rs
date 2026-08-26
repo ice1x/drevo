@@ -54,5 +54,8 @@ use crate::error::Result;
 /// read failure, or a destination id collision / missing endpoint / backend
 /// write failure.
 pub fn migrate(src: &dyn GraphEngine, dst: &dyn GraphEngine) -> Result<ImportReport> {
-    dst.apply_dump(src.export_dump()?)
+    // Both engine calls now return the core `CoreError` (Phase 7 slice 6); the
+    // `?` operators lift them into this function's `DrevoError` result, mapping
+    // the shared graph variants (e.g. `NodeNotFound`) structurally.
+    Ok(dst.apply_dump(src.export_dump()?)?)
 }

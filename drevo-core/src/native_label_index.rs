@@ -11,9 +11,9 @@
 //! `MATCH (n:Label)` on the native engine had to fall back to a full scan of
 //! every node to catch `_labels` matches.
 //!
-//! This index closes that gap. Like the trigram FTS
-//! ([`NativeFtsIndex`](crate::native_fts::NativeFtsIndex)), it is a secondary
-//! index kept off the core graph seam and current by **tailing the change-feed**
+//! This index closes that gap. Like the trigram FTS (`NativeFtsIndex`, in the
+//! main crate), it is a secondary index kept off the core graph seam and current
+//! by **tailing the change-feed**
 //! (see [`NativeGraph::changes_since`](crate::native::NativeGraph::changes_since))
 //! rather than coupling to the write path. Combined with the primary-kind index,
 //! it lets the executor gather label candidates as
@@ -27,13 +27,13 @@
 //! trimmed past the cursor it transparently rebuilds from a fresh snapshot.
 //!
 //! ```
-//! use drevo::native::NativeGraph;
-//! use drevo::native_label_index::NativeLabelIndex;
-//! use drevo::engine::GraphEngine; // brings `create_node` into scope
-//! use drevo::model::{NewNode, Properties};
+//! use drevo_core::native::NativeGraph;
+//! use drevo_core::native_label_index::NativeLabelIndex;
+//! use drevo_core::engine::GraphEngine; // brings `create_node` into scope
+//! use drevo_core::model::{NewNode, Properties};
 //! use std::collections::HashMap;
 //!
-//! # fn main() -> drevo::error::Result<()> {
+//! # fn main() -> drevo_core::error::Result<()> {
 //! let g = NativeGraph::new();
 //! // A node whose primary kind is `person` and which also carries the
 //! // secondary label `employee` (as `SET n:Employee` would store it).
@@ -54,8 +54,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::cypher::executor::secondary_labels;
 use crate::engine::GraphEngine;
+use crate::labels::secondary_labels;
 use crate::model::Node;
 use crate::native::{NativeGraph, WalOp};
 

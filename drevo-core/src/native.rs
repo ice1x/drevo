@@ -5,8 +5,8 @@
 //!
 //! An **in-memory, native** implementation of the [`GraphEngine`](crate::engine::GraphEngine)
 //! seam — nodes and edges held directly in Rust maps, rather than encoded as
-//! byte-keyed rows over a [`StorageBackend`](crate::storage::StorageBackend) the
-//! way [`Drevo`](crate::db::Drevo) does.
+//! byte-keyed rows over a storage backend the way the main crate's KV-backed
+//! `Drevo` store does.
 //!
 //! Adjacency is **denormalized**: each entry carries the neighbour node id and
 //! the edge's kind (interned to a `u32`) inline alongside the edge id, so a
@@ -31,14 +31,14 @@
 //!
 //! `NativeGraph` reproduces `Drevo`'s *observable* graph semantics exactly —
 //! monotonic ids from 1, title uniqueness
-//! ([`DrevoError::DuplicateTitle`](crate::error::DrevoError::DuplicateTitle)),
+//! ([`CoreError::DuplicateTitle`](crate::error::CoreError::DuplicateTitle)),
 //! endpoint existence on edge create
-//! ([`DrevoError::NodeNotFound`](crate::error::DrevoError::NodeNotFound)), weight
-//! finiteness ([`DrevoError::InvalidWeight`](crate::error::DrevoError::InvalidWeight)),
-//! [`EdgeNotFound`](crate::error::DrevoError::EdgeNotFound) on missing edge
+//! ([`CoreError::NodeNotFound`](crate::error::CoreError::NodeNotFound)), weight
+//! finiteness ([`CoreError::InvalidWeight`](crate::error::CoreError::InvalidWeight)),
+//! [`EdgeNotFound`](crate::error::CoreError::EdgeNotFound) on missing edge
 //! update/delete, cascade edge deletion when a node is removed, and the
 //! direction/kind-filtered adjacency contract — and returns the **same**
-//! [`DrevoError`](crate::error::DrevoError) variants, so
+//! [`CoreError`](crate::error::CoreError) variants, so
 //! `tests/native_engine_tests.rs` can compare the two engines op-for-op
 //! (including a randomized differential workload). uuid/timestamp fields come
 //! from the shared [`NewNode::into_node`](crate::model::NewNode::into_node) /
@@ -56,7 +56,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dump::{Dump, DumpError, ImportReport, FORMAT_V1};
 use crate::engine::GraphEngine;
-use crate::error::{DrevoError, Result};
+use crate::error::{CoreError, Result};
 use crate::model::{now_ms, Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 
 /// A denormalized adjacency entry: the incident edge, the node at its other
@@ -278,7 +278,7 @@ impl Inner {
 
     fn create_node(&mut self, new_node: NewNode) -> Result<Node> {
         if self.titles.contains_key(&new_node.title) {
-            return Err(DrevoError::DuplicateTitle(new_node.title));
+            return Err(CoreError::DuplicateTitle(new_node.title));
         }
         self.next_node_id += 1;
         let id = self.next_node_id;
@@ -294,13 +294,13 @@ impl Inner {
             .nodes
             .get(&id)
             .map(|a| (**a).clone())
-            .ok_or(DrevoError::NodeNotFound(id))?;
+            .ok_or(CoreError::NodeNotFound(id))?;
         let old_kind = node.kind.clone();
         if let Some(ref new_title) = patch.title {
             // A rename collides only when a *different* node owns the title.
             match self.titles.get(new_title) {
                 Some(&owner) if owner != id => {
-                    return Err(DrevoError::DuplicateTitle(new_title.clone()));
+                    return Err(CoreError::DuplicateTitle(new_title.clone()));
                 }
                 _ => {}
             }
@@ -333,7 +333,7 @@ impl Inner {
             .nodes
             .get(&id)
             .map(|a| (**a).clone())
-            .ok_or(DrevoError::NodeNotFound(id))?;
+            .ok_or(CoreError::NodeNotFound(id))?;
         let edge_ids: Vec<u64> = self
             .incident_entries(id, Direction::Both)
             .into_iter()
@@ -350,13 +350,13 @@ impl Inner {
 
     fn create_edge(&mut self, new_edge: NewEdge) -> Result<Edge> {
         if !new_edge.weight.is_finite() {
-            return Err(DrevoError::InvalidWeight(new_edge.weight));
+            return Err(CoreError::InvalidWeight(new_edge.weight));
         }
         if !self.nodes.contains_key(&new_edge.from_id) {
-            return Err(DrevoError::NodeNotFound(new_edge.from_id));
+            return Err(CoreError::NodeNotFound(new_edge.from_id));
         }
         if !self.nodes.contains_key(&new_edge.to_id) {
-            return Err(DrevoError::NodeNotFound(new_edge.to_id));
+            return Err(CoreError::NodeNotFound(new_edge.to_id));
         }
         self.next_edge_id += 1;
         let id = self.next_edge_id;
@@ -383,7 +383,7 @@ impl Inner {
         // Weight finiteness is validated before existence, matching Drevo.
         if let Some(w) = patch.weight {
             if !w.is_finite() {
-                return Err(DrevoError::InvalidWeight(w));
+                return Err(CoreError::InvalidWeight(w));
             }
         }
         let kind_changed = patch.kind.is_some();
@@ -391,7 +391,7 @@ impl Inner {
             .edges
             .get(&id)
             .map(|a| (**a).clone())
-            .ok_or(DrevoError::EdgeNotFound(id))?;
+            .ok_or(CoreError::EdgeNotFound(id))?;
         if let Some(kind) = patch.kind {
             edge.kind = kind;
         }
@@ -420,7 +420,7 @@ impl Inner {
 
     fn delete_edge(&mut self, id: u64) -> Result<()> {
         if !self.edges.contains_key(&id) {
-            return Err(DrevoError::EdgeNotFound(id));
+            return Err(CoreError::EdgeNotFound(id));
         }
         self.remove_edge(id);
         Ok(())
@@ -652,7 +652,7 @@ impl std::error::Error for ConstraintViolation {}
 
 /// Why a [`NativeTx::commit`] failed. Both cases leave the graph unchanged and
 /// the transaction's writes discarded. A local error type, so the crate-wide
-/// [`DrevoError`] is not widened.
+/// [`CoreError`] is not widened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError {
     /// The graph changed since the transaction began (optimistic conflict);
@@ -971,7 +971,7 @@ impl NativeGraph {
     /// all-or-nothing.
     ///
     /// # Errors
-    /// [`DrevoError::Io`] / [`DrevoError::Json`] on a filesystem or log-parse
+    /// [`CoreError::Io`] / [`CoreError::Json`] on a filesystem or log-parse
     /// failure.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_durable(path: impl AsRef<std::path::Path>) -> Result<Self> {
@@ -1017,7 +1017,7 @@ impl NativeGraph {
     /// A no-op for an in-memory-only engine.
     ///
     /// # Errors
-    /// [`DrevoError::Io`] / [`DrevoError::Json`] on a filesystem or encode
+    /// [`CoreError::Io`] / [`CoreError::Json`] on a filesystem or encode
     /// failure.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn compact_wal(&self) -> Result<()> {
@@ -1152,7 +1152,7 @@ impl NativeTx<'_> {
     /// [`GraphEngine::create_node`].
     ///
     /// # Errors
-    /// [`DrevoError::DuplicateTitle`]
+    /// [`CoreError::DuplicateTitle`]
     /// if the title is taken in the transaction's view.
     pub fn create_node(&mut self, new_node: NewNode) -> Result<Node> {
         let node = Arc::make_mut(&mut self.working).create_node(new_node)?;
@@ -1163,7 +1163,7 @@ impl NativeTx<'_> {
     /// Update a node within the transaction.
     ///
     /// # Errors
-    /// Propagates any [`DrevoError`] from the update.
+    /// Propagates any [`CoreError`] from the update.
     pub fn update_node(&mut self, id: u64, patch: NodePatch) -> Result<Node> {
         let node = Arc::make_mut(&mut self.working).update_node(id, patch)?;
         self.ops.push(WalOp::UpsertNode(node.clone()));
@@ -1173,7 +1173,7 @@ impl NativeTx<'_> {
     /// Delete a node (and its incident edges) within the transaction.
     ///
     /// # Errors
-    /// [`DrevoError::NodeNotFound`] if
+    /// [`CoreError::NodeNotFound`] if
     /// absent in the transaction's view.
     pub fn delete_node(&mut self, id: u64) -> Result<()> {
         Arc::make_mut(&mut self.working).delete_node(id)?;
@@ -1184,7 +1184,7 @@ impl NativeTx<'_> {
     /// Create an edge within the transaction.
     ///
     /// # Errors
-    /// Propagates any [`DrevoError`] from the create.
+    /// Propagates any [`CoreError`] from the create.
     pub fn create_edge(&mut self, new_edge: NewEdge) -> Result<Edge> {
         let edge = Arc::make_mut(&mut self.working).create_edge(new_edge)?;
         self.ops.push(WalOp::UpsertEdge(edge.clone()));
@@ -1194,7 +1194,7 @@ impl NativeTx<'_> {
     /// Update an edge within the transaction.
     ///
     /// # Errors
-    /// Propagates any [`DrevoError`] from the update.
+    /// Propagates any [`CoreError`] from the update.
     pub fn update_edge(&mut self, id: u64, patch: EdgePatch) -> Result<Edge> {
         let edge = Arc::make_mut(&mut self.working).update_edge(id, patch)?;
         self.ops.push(WalOp::UpsertEdge(edge.clone()));
@@ -1204,7 +1204,7 @@ impl NativeTx<'_> {
     /// Delete an edge within the transaction.
     ///
     /// # Errors
-    /// [`DrevoError::EdgeNotFound`] if
+    /// [`CoreError::EdgeNotFound`] if
     /// absent in the transaction's view.
     pub fn delete_edge(&mut self, id: u64) -> Result<()> {
         Arc::make_mut(&mut self.working).delete_edge(id)?;
@@ -1369,10 +1369,10 @@ impl GraphEngine for NativeGraph {
                     None => {}
                 }
                 if g.get_node(edge.from_id).is_none() {
-                    return Err(DrevoError::NodeNotFound(edge.from_id));
+                    return Err(CoreError::NodeNotFound(edge.from_id));
                 }
                 if g.get_node(edge.to_id).is_none() {
-                    return Err(DrevoError::NodeNotFound(edge.to_id));
+                    return Err(CoreError::NodeNotFound(edge.to_id));
                 }
                 g.apply_wal_op(WalOp::UpsertEdge(edge.clone()));
                 applied.push(WalOp::UpsertEdge(edge.clone()));
