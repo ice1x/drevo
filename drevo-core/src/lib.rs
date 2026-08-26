@@ -13,6 +13,11 @@
 /// The storage-agnostic error type ([`error::CoreError`]) shared by the native
 /// engine, its indexes, and the dump seam. Converts structurally to and from the
 /// main crate's `DrevoError`.
+/// The `drevo-json-v1` dump wire-format types ([`dump::Dump`],
+/// [`dump::ImportReport`], [`dump::DumpError`], [`dump::FORMAT_V1`]) — the
+/// storage-agnostic interchange the native engine produces and consumes, and the
+/// cross-engine migration seam moves. Re-exported from `drevo::dump`.
+pub mod dump;
 pub mod error;
 pub mod model;
 /// Pure text tokenization — normalization plus trigram/word extraction, with no

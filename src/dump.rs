@@ -128,84 +128,24 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
 use crate::db::Drevo;
 use crate::error::{DrevoError, Result};
 use crate::model::{new_uuid_v7, now_ms, Edge, NewEdge, Node, Properties};
 
-/// Wire-format identifier for the v1 dump schema. Always emitted in the
-/// `format` field; import refuses to load any other value.
-pub const FORMAT_V1: &str = "drevo-json-v1";
+// The `drevo-json-v1` wire-format types — `FORMAT_V1`, `Dump`, `ImportReport`,
+// and `DumpError` — were extracted to the `drevo-core` crate (Phase 7 slice 4)
+// so the native engine can produce and consume them directly. They are
+// re-exported here so existing `crate::dump::Dump` / `drevo::dump::Dump` paths
+// keep resolving unchanged; the KV-specific JSON/GraphML rendering + parsing
+// and the filesystem/HTTP entry points below stay in this crate.
+pub use drevo_core::dump::{Dump, DumpError, ImportReport, FORMAT_V1};
 
-/// Top-level wire format of a `drevo-json-v1` dump.
+/// Lift a dump-format failure into the main crate's [`DrevoError`].
 ///
-/// Public so external tooling (CLI dumpers, migration scripts) can parse a
-/// dump without re-deriving the schema. Field order is fixed for forward-
-/// compatibility — new fields will be added with serde defaults.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Dump {
-    /// Schema identifier. MUST be [`FORMAT_V1`] on import.
-    pub format: String,
-    /// Producer's wall-clock at export time (Unix milliseconds). Informational.
-    pub exported_at: i64,
-    /// Producer's `next_node_id` counter — the receiver clamps its counter
-    /// to be at least this value so freshly-allocated ids never collide with
-    /// imported ones.
-    pub next_node_id: u64,
-    /// Producer's `next_edge_id` counter (see [`next_node_id`](Self::next_node_id)).
-    pub next_edge_id: u64,
-    /// Every node in the source database.
-    pub nodes: Vec<Node>,
-    /// Every edge in the source database.
-    pub edges: Vec<Edge>,
-}
-
-/// Outcome of a successful [`Drevo::import_json`] call.
-///
-/// Counts are reported separately so callers can distinguish "newly inserted"
-/// from "already present, skipped". `*_skipped` rows were matched by id AND
-/// byte-equal content; an id collision with different content surfaces as a
-/// [`DrevoError`] before this struct is returned.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImportReport {
-    /// Number of nodes inserted into the receiver during this import.
-    pub nodes_imported: usize,
-    /// Number of edges inserted into the receiver during this import.
-    pub edges_imported: usize,
-    /// Number of nodes that already existed with byte-equal content and were
-    /// skipped (idempotent re-import).
-    pub nodes_skipped: usize,
-    /// Number of edges that already existed with byte-equal content and were
-    /// skipped (idempotent re-import).
-    pub edges_skipped: usize,
-}
-
-/// Import-time failure modes specific to the dump format.
-///
-/// Surfaced to callers as [`DrevoError::Io`] via the `From` impl below so the
-/// public error hierarchy stays at five well-known variants. The conversion
-/// preserves the human-readable message — `{err}` includes the original
-/// failure mode.
-#[derive(Debug, thiserror::Error)]
-pub enum DumpError {
-    /// The JSON payload was malformed and `serde_json` could not parse it.
-    #[error("malformed JSON dump: {0}")]
-    Malformed(#[from] serde_json::Error),
-    /// The `format` field is missing, empty, or names an unknown schema.
-    #[error("unsupported dump format: {0:?} — expected drevo-json-v1")]
-    UnsupportedFormat(String),
-    /// An imported node / edge collides with an existing row that has the
-    /// same id but different content.
-    #[error("id collision on import: {0}")]
-    IdCollision(String),
-    /// A GraphML payload was not well-formed XML, was missing a required
-    /// structural element (`<graphml>` / `<graph>` / a `<node>` id), or
-    /// referenced an undeclared node from an `<edge>`.
-    #[error("malformed GraphML: {0}")]
-    MalformedGraphml(String),
-}
-
+/// Kept in this crate (alongside `DrevoError`) so the KV file-I/O methods below
+/// can `?`-lift a [`DumpError`] straight to [`DrevoError::Io`], preserving the
+/// human-readable message — `{err}` includes the original failure mode. (The
+/// core crate has its own `From<DumpError> for CoreError` for the native path.)
 impl From<DumpError> for DrevoError {
     fn from(err: DumpError) -> Self {
         DrevoError::Io(std::io::Error::other(err.to_string()))
