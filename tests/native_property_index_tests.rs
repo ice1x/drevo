@@ -79,8 +79,12 @@ fn indexes_scalar_values_in_ascending_id_order() {
         .node_ids("status", &serde_json::json!("archived"))
         .is_empty());
     assert!(idx.node_ids("score", &serde_json::json!(3.5)).is_empty());
-    // a, b, c carry an indexable property; d (float only) does not.
-    assert_eq!(idx.len(), 3);
+    // All four nodes are tracked: a, b, c via their explicit indexable
+    // properties, and every node (d included) via the `title` alias — the
+    // model title/body fields are surfaced as ordinary Cypher properties by
+    // the executor, so the index serves them too (`MATCH (n {title: 'd'})`).
+    assert_eq!(idx.len(), 4);
+    assert_eq!(idx.node_ids("title", &serde_json::json!("d")), vec![_d.id]);
     assert!(!idx.is_empty());
 }
 
