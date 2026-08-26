@@ -46,7 +46,7 @@ use criterion::Criterion;
 use std::hint::black_box;
 
 use drevo::cypher::ast::Query;
-use drevo::cypher::executor::{execute, execute_on_engine_with_indexes, ExecResult};
+use drevo::cypher::executor::{execute, execute_on_engine_with_indexes_and_values, ExecResult};
 use drevo::cypher::parser::parse;
 use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
@@ -55,6 +55,7 @@ use drevo::model::Direction;
 use drevo::native::NativeGraph;
 use drevo::native_label_index::NativeLabelIndex;
 use drevo::native_property_index::NativePropertyIndex;
+use drevo::native_value_cache::NativeValueCache;
 
 /// Everything the workloads need, loaded once.
 struct Loaded {
@@ -62,6 +63,7 @@ struct Loaded {
     native: NativeGraph,
     labels: NativeLabelIndex,
     props: NativePropertyIndex,
+    values: NativeValueCache,
     /// The most frequent node kind (label-scan workload).
     top_kind: String,
     /// A `(key, string value)` property pair with mid selectivity
@@ -84,8 +86,10 @@ fn load() -> Result<Loaded, Box<dyn std::error::Error>> {
     migrate(&kv, &native)?;
     let mut labels = NativeLabelIndex::new();
     let mut props = NativePropertyIndex::new();
+    let mut values = NativeValueCache::new();
     labels.sync(&native);
     props.sync(&native);
+    values.sync(&native);
 
     // Derive workload parameters from the data itself (explicit trait
     // dispatch — NativeGraph also has inherent snapshot accessors).
@@ -137,6 +141,7 @@ fn load() -> Result<Loaded, Box<dyn std::error::Error>> {
         native,
         labels,
         props,
+        values,
         top_kind,
         prop_pair,
         hub_id,
@@ -148,12 +153,13 @@ fn run_kv(l: &Loaded, q: &Query) -> ExecResult {
 }
 
 fn run_native(l: &Loaded, q: &Query) -> ExecResult {
-    execute_on_engine_with_indexes(
+    execute_on_engine_with_indexes_and_values(
         q,
         &l.native,
         None,
         Some(&l.labels),
         Some(&l.props),
+        Some(&l.values),
         HashMap::new(),
     )
     .expect("native execute")
