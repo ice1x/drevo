@@ -20,12 +20,12 @@
 //! rebuilds from a fresh snapshot.
 //!
 //! ```
-//! use drevo::native::NativeGraph;
-//! use drevo::native_fts::NativeFtsIndex;
-//! use drevo::engine::GraphEngine; // brings `create_node` into scope
-//! use drevo::model::NewNode;
+//! use drevo_core::native::NativeGraph;
+//! use drevo_core::native_fts::NativeFtsIndex;
+//! use drevo_core::engine::GraphEngine; // brings `create_node` into scope
+//! use drevo_core::model::NewNode;
 //!
-//! # fn main() -> drevo::error::Result<()> {
+//! # fn main() -> drevo_core::error::Result<()> {
 //! let g = NativeGraph::new();
 //! g.create_node(NewNode { kind: "doc".into(), title: "the quick brown fox".into(),
 //!     body: String::new(), body_html: String::new(), properties: Default::default() })?;
@@ -40,11 +40,11 @@
 
 use std::collections::HashMap;
 
+use crate::bm25::bm25_idf;
 use crate::engine::GraphEngine;
-use crate::fts::index::bm25_idf;
-use crate::fts::tokenizer;
 use crate::model::Node;
 use crate::native::{NativeGraph, WalOp};
+use crate::tokenizer;
 
 /// BM25 term-frequency saturation, matching the KV store's `FtsRanking::default`.
 const K1: f32 = 1.2;

@@ -10,6 +10,9 @@
 //! unchanged; downstream projects that only need the engine can depend on
 //! `drevo-core` directly.
 
+/// Okapi BM25 scoring primitives ([`bm25::bm25_idf`]) shared by the KV and
+/// native full-text indexes. Re-exported into the main crate.
+pub mod bm25;
 /// The `drevo-json-v1` dump wire-format types ([`crate::dump::Dump`],
 /// [`crate::dump::ImportReport`], [`crate::dump::DumpError`],
 /// [`crate::dump::FORMAT_V1`]) — the storage-agnostic interchange the native
@@ -34,6 +37,10 @@ pub mod model;
 /// adjacency, the KV store's observable semantics without key encoding, and a
 /// change-feed of [`native::WalOp`] ops. Re-exported from `drevo::native`.
 pub mod native;
+/// In-memory full-text index ([`native_fts::NativeFtsIndex`]) that tails a
+/// [`native::NativeGraph`] change-feed, matching the KV trigram BM25 semantics.
+/// Re-exported from `drevo::native_fts`.
+pub mod native_fts;
 /// In-memory secondary-label index ([`native_label_index::NativeLabelIndex`])
 /// that tails a [`native::NativeGraph`] change-feed. Re-exported from
 /// `drevo::native_label_index`.

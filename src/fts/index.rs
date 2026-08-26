@@ -450,26 +450,11 @@ pub(crate) fn corpus_stats(backend: &dyn StorageBackend) -> Result<CorpusStats> 
     })
 }
 
-/// Okapi BM25 inverse document frequency for a term.
-///
-/// `n` is the total number of documents in the corpus and `df` is the
-/// number of documents containing the term. Uses the Robertson–Spärck-
-/// Jones form with `+0.5` smoothing, wrapped in `ln(1 + x)` (the
-/// Lucene/Elasticsearch default) so the result is always non-negative even
-/// when a term appears in more than half the corpus:
-///
-/// ```text
-/// idf(df) = ln(1 + (N − df + 0.5) / (df + 0.5))
-/// ```
-///
-/// This is the exact salience weight the keyword-extraction task (`00132`)
-/// reuses to pick candidate terms, which is why it lives here as a shared
-/// helper rather than inline in the ranker.
-pub(crate) fn bm25_idf(n: u64, df: u64) -> f32 {
-    let n = n as f32;
-    let df = df as f32;
-    ((n - df + 0.5) / (df + 0.5)).ln_1p()
-}
+// The pure BM25 IDF helper was extracted to the `drevo-core` crate (Phase 7
+// slice 7) so the native full-text index (also moving to core) shares the exact
+// same scoring. Re-exported here so `crate::fts::index::bm25_idf` keeps resolving
+// for this ranker, the keyword extractor, and `db.rs`.
+pub(crate) use drevo_core::bm25::bm25_idf;
 
 /// Retrieve all node IDs from the posting list of a single trigram (#275).
 ///

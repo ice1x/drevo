@@ -171,7 +171,8 @@ pub use drevo_core::native;
 /// (RFC `docs/rfc-native-core.md`, #307, Phase 6.3) — the first secondary index
 /// kept current off the graph seam, matching the KV store's trigram BM25
 /// full-text semantics so `fts.search` can be served on the native engine.
-pub mod native_fts;
+/// Extracted to `drevo-core` (Phase 7 slice 7) and re-exported.
+pub use drevo_core::native_fts;
 /// In-memory secondary-label index that tails a [`native::NativeGraph`]'s
 /// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.6) — indexes the
 /// `_labels` Cypher labels the primary-kind index does not cover, so a native
