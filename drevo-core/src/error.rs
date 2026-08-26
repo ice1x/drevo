@@ -1,6 +1,6 @@
 //! The storage-agnostic error type for the drevo graph core.
 //!
-//! [`CoreError`](crate::error::CoreError) is the error channel of everything that lives (or will live,
+//! [`crate::error::CoreError`] is the error channel of everything that lives (or will live,
 //! in later extraction slices) in `drevo-core`: the native graph engine, its
 //! indexes, and the cross-engine dump/migration seam. It carries only failures
 //! that make sense *without* naming a concrete backend — the graph-semantic
@@ -9,7 +9,7 @@
 //!
 //! Backend-specific failures a concrete engine hits — KV storage errors, vector
 //! index errors, transaction-state errors — have no structured home here; a
-//! backend lifts them into the opaque [`CoreError::Backend`](crate::error::CoreError::Backend)
+//! backend lifts them into the opaque [`crate::error::CoreError::Backend`]
 //! catch-all, carrying the lower layer's rendered message.
 //!
 //! # Relationship to `drevo::DrevoError`
@@ -18,7 +18,7 @@
 //! wraps `StorageError`, `VectorError`, the bincode codecs, and the
 //! transaction / migration states). The two convert **structurally** in both
 //! directions — the six shared variants map one-to-one, and everything with no
-//! counterpart degrades to [`CoreError::Backend`](crate::error::CoreError::Backend)
+//! counterpart degrades to [`crate::error::CoreError::Backend`]
 //! (going down) or `DrevoError::Io` (coming back up). Those `From` impls live in the main crate
 //! (`src/error.rs`), next to `DrevoError`, since only it can name both types.
 //!
