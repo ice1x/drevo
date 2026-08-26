@@ -275,6 +275,22 @@ fn create_and_match_parity() {
             ],
         },
         Scenario {
+            // `id()`-seek pushdown must stay row-identical across engines and
+            // index configurations (the seek path replaces the scan on both).
+            name: "id() seeks agree across engines",
+            setup: TEAM,
+            checks: &[
+                "MATCH (n) WHERE id(n) = 2 RETURN n.title",
+                "MATCH (n) WHERE id(n) IN [1, 3] RETURN n.title ORDER BY n.title",
+                "MATCH (n:Person) WHERE id(n) = 4 RETURN n.title",
+                "MATCH (n) WHERE id(n) = 999 RETURN n.title",
+                "MATCH (n) WHERE id(n) = -1 RETURN n.title",
+                "MATCH (a)-[:KNOWS]->(b) WHERE id(a) = 1 RETURN b.title",
+                "MATCH (n) WHERE id(n) = 2 AND n.team = 'core' RETURN n.title",
+                "MATCH (n) WHERE id(n) = 1 OR id(n) = 2 RETURN n.title ORDER BY n.title",
+            ],
+        },
+        Scenario {
             // Even *without* an ORDER BY, both engines must enumerate a scan
             // in the same (id-ascending) order — the row-order convergence
             // the DREVO_ENGINE flip depends on. This is the one scenario

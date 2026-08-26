@@ -2457,6 +2457,22 @@ impl<'a> Executor<'a> {
         //    contains every match, so their intersection does too) for the
         //    tightest correct set; otherwise whichever exists is used; if neither
         //    does, a full node scan through the seam.
+        // Engine-independent id seek FIRST: a conjunctive `WHERE id(var) = X` /
+        // `id(var) IN [...]` resolves through `get_node` point lookups on any
+        // engine — no scan, no index. The exact filter below still enforces
+        // labels, inline properties, and the full WHERE.
+        if let Some(seeked) = self.id_seek_candidates(pattern, row)? {
+            let mut out = Vec::with_capacity(seeked.len());
+            for node in &seeked {
+                let nv = node_to_value(node);
+                if !node_matches_pattern(&nv, pattern, row, self)? {
+                    continue;
+                }
+                out.push(nv);
+            }
+            return Ok(out);
+        }
+
         let first_label = pattern.labels.first();
         let nodes: Vec<Node> = if let Some(kv) = self.secondary {
             kv.collect_all_nodes()?
@@ -2528,6 +2544,89 @@ impl<'a> Executor<'a> {
     /// a *superset* of the real matches (only the indexable equality constraints
     /// are applied here), which the exact `node_matches_pattern` / `WHERE` filter
     /// then narrows to the precise set — including any non-indexable constraints.
+    /// Candidate nodes for `pattern` resolved through **storage-id point
+    /// seeks** (`WHERE id(var) = X` / `id(var) IN [...]` pushdown), on any
+    /// engine. Returns `None` when no id constraint can narrow — an eval
+    /// failure, a non-integer value, or a list with a non-integer element all
+    /// *skip* narrowing (never fabricate an empty set), so the ordinary path
+    /// reproduces the exact semantics, errors included. A genuine integer id
+    /// that matches no node yields an empty candidate set, which is exact: the
+    /// full WHERE would reject every row anyway.
+    fn id_seek_candidates(
+        &self,
+        pattern: &NodePattern,
+        row: &Bindings,
+    ) -> ExecResultT<Option<Vec<Node>>> {
+        let Some(var) = &pattern.variable else {
+            return Ok(None);
+        };
+        let Some(constraints) = self.pushdown.get(var) else {
+            return Ok(None);
+        };
+
+        let mut ids: Option<std::collections::BTreeSet<u64>> = None;
+        for constraint in constraints {
+            let allowed: std::collections::BTreeSet<u64> = match constraint {
+                PushConstraint::IdEq { value } => {
+                    let Ok(value) = self.eval(value, row) else {
+                        continue;
+                    };
+                    match value {
+                        // A negative id can never match — an empty set is exact.
+                        Value::Integer(i) if i >= 0 => std::iter::once(i as u64).collect(),
+                        Value::Integer(_) => std::collections::BTreeSet::new(),
+                        // Non-integer comparison semantics belong to the exact
+                        // WHERE — skip narrowing entirely.
+                        _ => continue,
+                    }
+                }
+                PushConstraint::IdIn { list } => {
+                    let Ok(list) = self.eval(list, row) else {
+                        continue;
+                    };
+                    let Value::List(items) = list else {
+                        continue;
+                    };
+                    let mut set = std::collections::BTreeSet::new();
+                    let mut all_integers = true;
+                    for item in &items {
+                        match item {
+                            Value::Integer(i) if *i >= 0 => {
+                                set.insert(*i as u64);
+                            }
+                            Value::Integer(_) => {}
+                            _ => {
+                                all_integers = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !all_integers {
+                        continue;
+                    }
+                    set
+                }
+                // Property constraints are handled by the index paths.
+                _ => continue,
+            };
+            ids = Some(match ids.take() {
+                None => allowed,
+                Some(prev) => prev.intersection(&allowed).copied().collect(),
+            });
+        }
+
+        let Some(ids) = ids else {
+            return Ok(None);
+        };
+        let mut nodes = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(node) = self.engine().get_node(id)? {
+                nodes.push(node);
+            }
+        }
+        Ok(Some(nodes))
+    }
+
     fn native_property_candidates(
         &self,
         pattern: &NodePattern,
@@ -2604,6 +2703,9 @@ impl<'a> Executor<'a> {
                                 None => continue,
                             }
                         }
+                        // Id seeks are resolved engine-independently by
+                        // `id_seek_candidates`, before any index path runs.
+                        PushConstraint::IdEq { .. } | PushConstraint::IdIn { .. } => continue,
                     };
                     if intersect(&mut candidate_ids, allowed) {
                         return Ok(Some(Vec::new()));
@@ -6410,16 +6512,23 @@ enum PushConstraint {
         op: crate::native_property_index::RangeOp,
         bound: Expression,
     },
+    /// `id(variable) = value` — a storage-id point seek, resolved through
+    /// [`GraphEngine::get_node`] on *any* engine (no index needed).
+    IdEq { value: Expression },
+    /// `id(variable) IN list` — a batch of storage-id point seeks.
+    IdIn { list: Expression },
 }
 
 impl PushConstraint {
-    /// The property key this constraint applies to (used by tests).
+    /// The property key this constraint applies to (used by tests); the
+    /// id-seek constraints report the pseudo-key `"id()"`.
     #[cfg(test)]
     fn key(&self) -> &str {
         match self {
             PushConstraint::Eq { key, .. }
             | PushConstraint::In { key, .. }
             | PushConstraint::Range { key, .. } => key,
+            PushConstraint::IdEq { .. } | PushConstraint::IdIn { .. } => "id()",
         }
     }
 }
@@ -6452,7 +6561,15 @@ fn extract_pushdown_constraints(expr: &Expression, out: &mut HashMap<String, Vec
             rhs,
             ..
         } => {
-            if let Some((var, key)) = property_var_key(lhs) {
+            if let Some(var) = id_call_var(lhs) {
+                out.entry(var).or_default().push(PushConstraint::IdEq {
+                    value: (**rhs).clone(),
+                });
+            } else if let Some(var) = id_call_var(rhs) {
+                out.entry(var).or_default().push(PushConstraint::IdEq {
+                    value: (**lhs).clone(),
+                });
+            } else if let Some((var, key)) = property_var_key(lhs) {
                 out.entry(var).or_default().push(PushConstraint::Eq {
                     key,
                     value: (**rhs).clone(),
@@ -6465,7 +6582,11 @@ fn extract_pushdown_constraints(expr: &Expression, out: &mut HashMap<String, Vec
             }
         }
         Expression::In { expr, list, .. } => {
-            if let Some((var, key)) = property_var_key(expr) {
+            if let Some(var) = id_call_var(expr) {
+                out.entry(var).or_default().push(PushConstraint::IdIn {
+                    list: (**list).clone(),
+                });
+            } else if let Some((var, key)) = property_var_key(expr) {
                 out.entry(var).or_default().push(PushConstraint::In {
                     key,
                     list: (**list).clone(),
@@ -6526,6 +6647,26 @@ fn flip_range_op(
         RangeOp::Lt => RangeOp::Gt,
         RangeOp::Le => RangeOp::Ge,
     }
+}
+
+/// `id(variable)` → `variable` when `expr` is exactly the scalar `id` function
+/// applied to a bare variable; `None` otherwise. Function names are compared
+/// case-insensitively (`ID(n)` parses with its source casing).
+fn id_call_var(expr: &Expression) -> Option<String> {
+    if let Expression::FunctionCall {
+        name,
+        distinct: false,
+        args,
+        ..
+    } = expr
+    {
+        if name.len() == 1 && name[0].eq_ignore_ascii_case("id") && args.len() == 1 {
+            if let Expression::Variable(var, _) = &args[0] {
+                return Some(var.clone());
+            }
+        }
+    }
+    None
 }
 
 /// `variable.key` → `(variable, key)` when `expr` is a property access on a bare
@@ -11003,6 +11144,28 @@ mod tests {
             keys_for(&m, "n"),
             vec!["prio".to_string(), "status".to_string()]
         );
+    }
+
+    #[test]
+    fn pushdown_extracts_id_seeks() {
+        // `id(n) = X` lifts an IdEq, on either side of the equality.
+        let m = pushdown_of("MATCH (n) WHERE id(n) = 5 RETURN n");
+        assert!(matches!(m["n"].as_slice(), [PushConstraint::IdEq { .. }]));
+        let m = pushdown_of("MATCH (n) WHERE 5 = id(n) RETURN n");
+        assert!(matches!(m["n"].as_slice(), [PushConstraint::IdEq { .. }]));
+
+        // Case-insensitive function name; `id(n) IN [...]` lifts an IdIn.
+        let m = pushdown_of("MATCH (n) WHERE ID(n) IN [1, 2] RETURN n");
+        assert!(matches!(m["n"].as_slice(), [PushConstraint::IdIn { .. }]));
+        assert_eq!(keys_for(&m, "n"), vec!["id()".to_string()]);
+
+        // Conjunctive with a property term — both lift, keyed to the variable.
+        let m = pushdown_of("MATCH (n) WHERE id(n) = 3 AND n.status = 'open' RETURN n");
+        assert_eq!(m["n"].len(), 2);
+
+        // Under OR nothing lifts; `id(expr)` on a non-variable lifts nothing.
+        assert!(pushdown_of("MATCH (n) WHERE id(n) = 1 OR n.x = 2 RETURN n").is_empty());
+        assert!(pushdown_of("MATCH (n)-->(m) WHERE id(head([n])) = 1 RETURN n").is_empty());
     }
 
     #[test]
