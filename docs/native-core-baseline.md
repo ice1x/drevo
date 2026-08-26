@@ -58,9 +58,25 @@ on a live copy).
   before filtering — an executor-planning gap (id-seek pushdown), independent
   of the engine, and a candidate follow-up.
 
+## Run 2 — after id-seek pushdown (2026-08-26, same machine & snapshot)
+
+The follow-up flagged above landed the same day: a conjunctive
+`WHERE id(n) = X` / `id(n) IN [...]` now resolves through
+`GraphEngine::get_node` point seeks on **any** engine instead of enumerating
+the pattern (`tests/cypher_id_seek_tests.rs` proves the scan is skipped via a
+counting engine decorator; the differential corpus pins cross-engine parity).
+
+| Workload | KV | native + indexes | vs run 1 |
+|---|---:|---:|---|
+| `MATCH (a)-->(b) WHERE id(a) = <hub> RETURN count(b)` | 19.5 ms | 2.29 ms | KV **63× faster**, native **61× faster** |
+
+The other rows are unchanged within noise (scan-bound workloads do not touch
+the seek path). Remaining absolute cost in this query is the `b`-side edge
+loading and aggregation, not candidate enumeration.
+
 ## Standing items toward "surpass Memgraph" (RFC Phase 0)
 
 - Add the Memgraph column: same GraphML, same queries over Bolt, dockerised —
   the cross-database half of this scoreboard.
 - Re-run after the arena/CSR native internals (RFC Phase 2 completion) and
-  after id-seek pushdown; update this table (append runs, keep history).
+  after id-seek pushdown (run 2 above); update this table (append runs, keep history).
