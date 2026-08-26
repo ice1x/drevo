@@ -21,6 +21,8 @@
 
 use crate::dump::{Dump, ImportReport};
 use crate::error::Result;
+use std::sync::Arc;
+
 use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 
 /// Graph-level storage and traversal, expressed in graph terms rather than a
@@ -41,7 +43,7 @@ pub trait GraphEngine {
     ///
     /// # Errors
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
-    fn get_node(&self, id: u64) -> Result<Option<Node>>;
+    fn get_node(&self, id: u64) -> Result<Option<Arc<Node>>>;
 
     /// Apply a partial update to a node.
     ///
@@ -104,7 +106,7 @@ pub trait GraphEngine {
         node_id: u64,
         direction: Direction,
         kind: Option<&str>,
-    ) -> Result<Vec<Node>>;
+    ) -> Result<Vec<Arc<Node>>>;
 
     /// Return the full [`Edge`] records incident to `node_id` in `direction`
     /// (the weighted/full-edge expansion, which loads each edge record — unlike
@@ -119,7 +121,7 @@ pub trait GraphEngine {
     ///
     /// # Errors
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
-    fn all_nodes(&self) -> Result<Vec<Node>>;
+    fn all_nodes(&self) -> Result<Vec<Arc<Node>>>;
 
     /// Return **every** edge in the store (a full scan — the anonymous
     /// `MATCH ()-[r]->()`).
@@ -133,7 +135,7 @@ pub trait GraphEngine {
     ///
     /// # Errors
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
-    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>>;
+    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Arc<Node>>>;
 
     /// Export the entire graph as a `drevo-json-v1` [`Dump`] — every node and
     /// edge plus the id-allocation counters — the interchange format used for

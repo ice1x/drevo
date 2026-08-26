@@ -70,7 +70,7 @@ fn live_titles(g: &NativeGraph) -> HashMap<u64, String> {
     g.all_nodes()
         .unwrap()
         .into_iter()
-        .map(|n| (n.id, n.title))
+        .map(|n| (n.id, n.title.clone()))
         .collect()
 }
 

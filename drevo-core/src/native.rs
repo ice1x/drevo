@@ -262,6 +262,14 @@ impl Inner {
         nodes
     }
 
+    /// Zero-copy full scan: id-ascending `Arc<Node>` handles (refcount bumps
+    /// only), so enumerating the whole graph never deep-clones node bodies.
+    fn all_nodes_arc(&self) -> Vec<Arc<Node>> {
+        let mut nodes: Vec<Arc<Node>> = self.nodes.values().cloned().collect();
+        nodes.sort_unstable_by_key(|n| n.id);
+        nodes
+    }
+
     fn all_edges(&self) -> Vec<Edge> {
         // Id-ascending, for the same determinism contract as `all_nodes`.
         let mut edges: Vec<Edge> = self.edges.values().map(|a| (**a).clone()).collect();
@@ -280,6 +288,19 @@ impl Inner {
             .skip(offset)
             .take(limit)
             .filter_map(|id| self.nodes.get(id).map(|a| (**a).clone()))
+            .collect()
+    }
+
+    /// Zero-copy label scan (see [`Inner::all_nodes_arc`]): the page's nodes
+    /// come back as `Arc<Node>` handles instead of deep clones.
+    fn nodes_by_kind_arc(&self, kind: &str, limit: usize, offset: usize) -> Vec<Arc<Node>> {
+        let Some(ids) = self.kind_index.get(kind) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .skip(offset)
+            .take(limit)
+            .filter_map(|id| self.nodes.get(id).cloned())
             .collect()
     }
 
@@ -1240,8 +1261,9 @@ impl GraphEngine for NativeGraph {
         Ok(node)
     }
 
-    fn get_node(&self, id: u64) -> Result<Option<Node>> {
-        Ok(read(&self.inner).get_node(id))
+    fn get_node(&self, id: u64) -> Result<Option<Arc<Node>>> {
+        // Zero-copy: an `Arc` handle to the stored record (refcount bump).
+        Ok(read(&self.inner).get_node_arc(id))
     }
 
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
@@ -1292,24 +1314,24 @@ impl GraphEngine for NativeGraph {
         node_id: u64,
         direction: Direction,
         kind: Option<&str>,
-    ) -> Result<Vec<Node>> {
-        Ok(read(&self.inner).neighbors(node_id, direction, kind))
+    ) -> Result<Vec<Arc<Node>>> {
+        Ok(read(&self.inner).neighbors_arc(node_id, direction, kind))
     }
 
     fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>> {
         Ok(read(&self.inner).edges_of(node_id, direction))
     }
 
-    fn all_nodes(&self) -> Result<Vec<Node>> {
-        Ok(read(&self.inner).all_nodes())
+    fn all_nodes(&self) -> Result<Vec<Arc<Node>>> {
+        Ok(read(&self.inner).all_nodes_arc())
     }
 
     fn all_edges(&self) -> Result<Vec<Edge>> {
         Ok(read(&self.inner).all_edges())
     }
 
-    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Node>> {
-        Ok(read(&self.inner).nodes_by_kind(kind, limit, offset))
+    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Arc<Node>>> {
+        Ok(read(&self.inner).nodes_by_kind_arc(kind, limit, offset))
     }
 
     fn export_dump(&self) -> Result<Dump> {

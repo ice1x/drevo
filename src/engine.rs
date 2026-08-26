@@ -17,6 +17,8 @@
 
 pub use drevo_core::engine::GraphEngine;
 
+use std::sync::Arc;
+
 use crate::db::Drevo;
 use crate::dump::{Dump, ImportReport};
 use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
@@ -31,8 +33,11 @@ impl GraphEngine for Drevo {
         Ok(Drevo::create_node(self, new_node)?)
     }
 
-    fn get_node(&self, id: u64) -> CoreResult<Option<Node>> {
-        Ok(Drevo::get_node(self, id)?)
+    fn get_node(&self, id: u64) -> CoreResult<Option<Arc<Node>>> {
+        // The KV store materialises an owned decode; wrap it so the seam is
+        // zero-copy where the engine can share (the native engine) and a cheap
+        // single allocation where it cannot (here).
+        Ok(Drevo::get_node(self, id)?.map(Arc::new))
     }
 
     fn update_node(&self, id: u64, patch: NodePatch) -> CoreResult<Node> {
@@ -73,24 +78,33 @@ impl GraphEngine for Drevo {
         node_id: u64,
         direction: Direction,
         kind: Option<&str>,
-    ) -> CoreResult<Vec<Node>> {
-        Ok(Drevo::neighbors(self, node_id, direction, kind)?)
+    ) -> CoreResult<Vec<Arc<Node>>> {
+        Ok(Drevo::neighbors(self, node_id, direction, kind)?
+            .into_iter()
+            .map(Arc::new)
+            .collect())
     }
 
     fn edges_of(&self, node_id: u64, direction: Direction) -> CoreResult<Vec<Edge>> {
         Ok(Drevo::edges_of(self, node_id, direction)?)
     }
 
-    fn all_nodes(&self) -> CoreResult<Vec<Node>> {
-        Ok(Drevo::collect_all_nodes(self)?)
+    fn all_nodes(&self) -> CoreResult<Vec<Arc<Node>>> {
+        Ok(Drevo::collect_all_nodes(self)?
+            .into_iter()
+            .map(Arc::new)
+            .collect())
     }
 
     fn all_edges(&self) -> CoreResult<Vec<Edge>> {
         Ok(Drevo::collect_all_edges(self)?)
     }
 
-    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> CoreResult<Vec<Node>> {
-        Ok(Drevo::list_nodes_by_kind(self, kind, limit, offset)?)
+    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> CoreResult<Vec<Arc<Node>>> {
+        Ok(Drevo::list_nodes_by_kind(self, kind, limit, offset)?
+            .into_iter()
+            .map(Arc::new)
+            .collect())
     }
 
     fn export_dump(&self) -> CoreResult<Dump> {
