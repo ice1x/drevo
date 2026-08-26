@@ -23,6 +23,9 @@ description = "Core domain types and (future) native graph engine for drevo"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = { version = "2", features = ["serde"] }
+# The storage-agnostic error type (`error::CoreError`) is a `thiserror` enum,
+# matching the main crate's `DrevoError` so the two convert structurally.
+thiserror = "2"
 uuid = { version = "1", features = ["v4", "v7", "rng-getrandom"] }
 # No direct `use getrandom` — it is pulled in only to enable the wasm backend
 # (via the `wasm` feature) for uuid's getrandom-backed RNG on wasm32, exactly as

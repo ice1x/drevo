@@ -123,3 +123,122 @@ pub enum DrevoError {
 
 /// Convenience type alias for drevo operations.
 pub type Result<T> = std::result::Result<T, DrevoError>;
+
+/// Lift a storage-agnostic [`drevo_core::error::CoreError`] into the main
+/// crate's richer [`DrevoError`].
+///
+/// The six shared variants map **one-to-one** (so a `NodeNotFound` raised deep
+/// in the native engine still surfaces as `DrevoError::NodeNotFound`, which the
+/// migrate seam and CRUD tests match on). The catch-all
+/// [`CoreError::Backend`](drevo_core::error::CoreError::Backend) — which only a
+/// concrete backend produces, never the native engine — degrades to
+/// [`DrevoError::Io`], carrying its rendered message. This is the direction used
+/// whenever a core-returning call (the `GraphEngine` seam, a dump helper) is `?`
+/// -lifted into a `DrevoError` context.
+impl From<drevo_core::error::CoreError> for DrevoError {
+    fn from(err: drevo_core::error::CoreError) -> Self {
+        use drevo_core::error::CoreError as C;
+        match err {
+            C::NodeNotFound(id) => DrevoError::NodeNotFound(id),
+            C::EdgeNotFound(id) => DrevoError::EdgeNotFound(id),
+            C::DuplicateTitle(t) => DrevoError::DuplicateTitle(t),
+            C::InvalidWeight(w) => DrevoError::InvalidWeight(w),
+            C::Io(e) => DrevoError::Io(e),
+            C::Json(e) => DrevoError::Json(e),
+            C::Backend(msg) => DrevoError::Io(std::io::Error::other(msg)),
+        }
+    }
+}
+
+/// Lower a [`DrevoError`] into the storage-agnostic
+/// [`drevo_core::error::CoreError`].
+///
+/// This is the direction a concrete backend (the KV-backed `Drevo`) uses when it
+/// implements a `drevo-core` seam whose signature speaks `CoreError`: the six
+/// shared variants map one-to-one, and every backend-specific variant
+/// (`Storage`, `Encode`, `Decode`, `Vector`, the transaction states,
+/// `NeedsMigration`) — which has no structured home in the core — collapses into
+/// [`CoreError::Backend`](drevo_core::error::CoreError::Backend), preserving the
+/// rendered message. Round-tripping a *shared* variant through both impls is
+/// lossless; a backend-specific one degrades to `Backend` then to
+/// `DrevoError::Io`, which is acceptable because those never flow *up* through
+/// the seam in a variant-matched path (they are matched only on the inherent KV
+/// API, which never crosses the trait).
+impl From<DrevoError> for drevo_core::error::CoreError {
+    fn from(err: DrevoError) -> Self {
+        use drevo_core::error::CoreError as C;
+        match err {
+            DrevoError::NodeNotFound(id) => C::NodeNotFound(id),
+            DrevoError::EdgeNotFound(id) => C::EdgeNotFound(id),
+            DrevoError::DuplicateTitle(t) => C::DuplicateTitle(t),
+            DrevoError::InvalidWeight(w) => C::InvalidWeight(w),
+            DrevoError::Io(e) => C::Io(e),
+            DrevoError::Json(e) => C::Json(e),
+            // No structured counterpart in the core — keep the message.
+            other => C::Backend(other.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use drevo_core::error::CoreError;
+
+    #[test]
+    fn shared_variants_round_trip_losslessly_core_to_drevo_to_core() {
+        // Each shared variant survives CoreError → DrevoError → CoreError with
+        // its payload intact — the property the migrate seam and the native
+        // engine rely on so `DrevoError::NodeNotFound(id)` stays matchable.
+        let cases = [
+            CoreError::NodeNotFound(42),
+            CoreError::EdgeNotFound(7),
+            CoreError::DuplicateTitle("Existing".into()),
+            CoreError::InvalidWeight(1.5),
+        ];
+        for original in cases {
+            let rendered = original.to_string();
+            let back: CoreError = DrevoError::from(original).into();
+            assert_eq!(back.to_string(), rendered);
+        }
+    }
+
+    #[test]
+    fn shared_variants_map_one_to_one_core_to_drevo() {
+        assert!(matches!(
+            DrevoError::from(CoreError::NodeNotFound(99)),
+            DrevoError::NodeNotFound(99)
+        ));
+        assert!(matches!(
+            DrevoError::from(CoreError::EdgeNotFound(99)),
+            DrevoError::EdgeNotFound(99)
+        ));
+        assert!(matches!(
+            DrevoError::from(CoreError::DuplicateTitle("Dup".into())),
+            DrevoError::DuplicateTitle(t) if t == "Dup"
+        ));
+        assert!(matches!(
+            DrevoError::from(CoreError::InvalidWeight(2.0)),
+            DrevoError::InvalidWeight(_)
+        ));
+    }
+
+    #[test]
+    fn backend_specific_drevo_variants_collapse_to_core_backend() {
+        // A variant with no structured core counterpart becomes `Backend`,
+        // keeping its message; it must not be silently dropped.
+        let core: CoreError = DrevoError::Locked.into();
+        assert!(matches!(core, CoreError::Backend(_)));
+        assert_eq!(core.to_string(), "backend error: database locked");
+
+        let core: CoreError = DrevoError::TransactionAlreadyActive.into();
+        assert!(matches!(core, CoreError::Backend(ref m) if m == "transaction already active"));
+    }
+
+    #[test]
+    fn core_backend_lifts_to_drevo_io() {
+        let drevo: DrevoError = CoreError::Backend("scan failed".into()).into();
+        assert!(matches!(drevo, DrevoError::Io(_)));
+        assert_eq!(drevo.to_string(), "io error: scan failed");
+    }
+}

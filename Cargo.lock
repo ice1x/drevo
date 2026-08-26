@@ -519,6 +519,7 @@ dependencies = [
  "js-sys",
  "serde",
  "serde_json",
+ "thiserror",
  "uuid",
 ]
 
