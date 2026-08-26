@@ -100,6 +100,29 @@ change-feed is the natural next step, but needs a versioning design so a
 mid-query write can never serve a stale value (`updated_at` alone is
 millisecond-resolution and insufficient).
 
+## Run 4 — after the `NodeValue` cache (2026-08-26, same machine & snapshot)
+
+The per-query projection rebuild flagged in run 3 is gone: a
+change-feed-maintained [`NativeValueCache`] memoises each node's `NodeValue`,
+and a hit is validated against the live record with `Arc::ptr_eq` — so a stale
+or never-resynced cache can only cost speed, never serve a wrong answer
+(`tests/native_value_cache_tests.rs` pins reuse, staleness rejection, and
+intra-statement write visibility; the differential corpus's indexed run now
+exercises the cache on every scenario).
+
+| Workload | native, run 3 → run 4 | vs KV (within-run) |
+|---|---|---:|
+| `MATCH (n) RETURN count(*)` | 20.6 ms → **537 µs** (38×) | **≈560×** |
+| label scan `:Entity` | 20.2 ms → **519 µs** (39×) | **≈580×** |
+| property equality `{type: 'Trait'}` | 182 µs → **9.3 µs** (20×) | **≈32 000×** |
+| Cypher 1-hop from hub | 0.93 ms → **60 µs** (15×) | **≈230×** |
+
+Cumulative across the day's four runs, the native path went: full scan
+52 ms → 0.54 ms, hub 1-hop 141 ms → 0.06 ms. At sub-millisecond full scans on
+real data, the executor's remaining per-row costs (bindings, filter
+evaluation) now dominate — the next meaningful comparison is the Memgraph
+column, not further micro-work on this path.
+
 ## Standing items toward "surpass Memgraph" (RFC Phase 0)
 
 - Add the Memgraph column: same GraphML, same queries over Bolt, dockerised —

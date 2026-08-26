@@ -582,7 +582,7 @@ fn value_to_json(v: &Value) -> Option<serde_json::Value> {
 // `SECONDARY_LABELS_KEY` / `secondary_labels(...)` call sites resolve unchanged.
 pub(crate) use drevo_core::labels::{secondary_labels, SECONDARY_LABELS_KEY};
 
-fn node_to_value(node: &Node) -> Arc<NodeValue> {
+pub(crate) fn node_to_value(node: &Node) -> Arc<NodeValue> {
     let mut properties = BTreeMap::new();
     // Surface `title` and `body` as ordinary properties so Cypher code
     // sees a homogeneous map. The user can override either via the
@@ -709,7 +709,7 @@ pub fn execute(
 ) -> ExecResultT<ExecResult> {
     // The KV store is both the graph engine and the home of the secondary
     // subsystems, so it is passed in both roles.
-    execute_inner(query, drevo, Some(drevo), None, None, None, params)
+    execute_inner(query, drevo, Some(drevo), None, None, None, None, params)
 }
 
 /// Execute a Cypher query over **any** [`GraphEngine`] — the native
@@ -729,7 +729,7 @@ pub fn execute_on_engine(
     engine: &dyn GraphEngine,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, None, None, None, params)
+    execute_inner(query, engine, None, None, None, None, None, params)
 }
 
 /// Like [`execute_on_engine`], but with a native full-text index so
@@ -750,7 +750,7 @@ pub fn execute_on_engine_with_fts(
     fts: &crate::native_fts::NativeFtsIndex,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, Some(fts), None, None, params)
+    execute_inner(query, engine, None, Some(fts), None, None, None, params)
 }
 
 /// Like [`execute_on_engine`], but with the native secondary indexes so
@@ -777,9 +777,32 @@ pub fn execute_on_engine_with_indexes(
     props: Option<&crate::native_property_index::NativePropertyIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, fts, labels, props, params)
+    execute_inner(query, engine, None, fts, labels, props, None, params)
 }
 
+/// Like [`execute_on_engine_with_indexes`], additionally supplying a
+/// [`NativeValueCache`](crate::native_value_cache::NativeValueCache) so
+/// enumeration reuses each unchanged node's cached `NodeValue` projection
+/// instead of rebuilding it per query. A hit is validated against the live
+/// record with `Arc::ptr_eq`, so a stale (or never-synced) cache can only cost
+/// speed, never correctness.
+///
+/// # Errors
+/// Returns the first [`ExecError`] encountered (see [`execute`]).
+#[allow(clippy::too_many_arguments)]
+pub fn execute_on_engine_with_indexes_and_values(
+    query: &Query,
+    engine: &dyn GraphEngine,
+    fts: Option<&crate::native_fts::NativeFtsIndex>,
+    labels: Option<&crate::native_label_index::NativeLabelIndex>,
+    props: Option<&crate::native_property_index::NativePropertyIndex>,
+    values: Option<&crate::native_value_cache::NativeValueCache>,
+    params: HashMap<String, Value>,
+) -> ExecResultT<ExecResult> {
+    execute_inner(query, engine, None, fts, labels, props, values, params)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_inner(
     query: &Query,
     engine: &dyn GraphEngine,
@@ -787,6 +810,7 @@ fn execute_inner(
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
     native_props: Option<&crate::native_property_index::NativePropertyIndex>,
+    native_values: Option<&crate::native_value_cache::NativeValueCache>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Fast path — a query with no `UNION` is a single arm, executed
@@ -799,6 +823,7 @@ fn execute_inner(
             native_fts,
             native_labels,
             native_props,
+            native_values,
             params,
         );
     }
@@ -842,6 +867,7 @@ fn execute_inner(
             native_fts,
             native_labels,
             native_props,
+            native_values,
             params.clone(),
         )?;
         match &columns {
@@ -875,6 +901,7 @@ fn execute_inner(
 
 /// Execute one `UNION`-free arm against a fresh executor over the given engine
 /// (and optional KV secondary store).
+#[allow(clippy::too_many_arguments)]
 fn execute_single(
     single: &SingleQuery,
     engine: &dyn GraphEngine,
@@ -882,6 +909,7 @@ fn execute_single(
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
     native_props: Option<&crate::native_property_index::NativePropertyIndex>,
+    native_values: Option<&crate::native_value_cache::NativeValueCache>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
@@ -898,6 +926,7 @@ fn execute_single(
         native_fts,
         native_labels,
         native_props,
+        native_values,
         pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
@@ -1971,6 +2000,10 @@ struct Executor<'a> {
     /// instead of a full node scan. `None` on the KV path (which scans
     /// `list_recent`) or when no index was supplied (then the scan is used).
     native_props: Option<&'a crate::native_property_index::NativePropertyIndex>,
+    /// Memoised `NodeValue` projections for unchanged native records; hits are
+    /// `Arc::ptr_eq`-validated against the live node, so staleness can only
+    /// cost speed, never correctness.
+    native_values: Option<&'a crate::native_value_cache::NativeValueCache>,
     /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
     /// `WHERE` clause (`variable → [constraint]`), so a term like
     /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
@@ -2335,7 +2368,7 @@ impl<'a> Executor<'a> {
                         edge.from_id
                     };
                     let next_node = match self.engine().get_node(other_id)? {
-                        Some(n) => node_to_value(&n),
+                        Some(n) => self.project_node(&n),
                         None => continue,
                     };
                     let mut rels = state.rels.clone();
@@ -2464,7 +2497,7 @@ impl<'a> Executor<'a> {
         if let Some(seeked) = self.id_seek_candidates(pattern, row)? {
             let mut out = Vec::with_capacity(seeked.len());
             for node in &seeked {
-                let nv = node_to_value(node);
+                let nv = self.project_node(node);
                 if !node_matches_pattern(&nv, pattern, row, self)? {
                     continue;
                 }
@@ -2500,13 +2533,24 @@ impl<'a> Executor<'a> {
         };
         let mut out = Vec::with_capacity(nodes.len());
         for node in &nodes {
-            let nv = node_to_value(node);
+            let nv = self.project_node(node);
             if !node_matches_pattern(&nv, pattern, row, self)? {
                 continue;
             }
             out.push(nv);
         }
         Ok(out)
+    }
+
+    /// The `NodeValue` projection of a live record — served from the value
+    /// cache when its `Arc::ptr_eq` validity check passes, rebuilt otherwise.
+    fn project_node(&self, node: &Arc<Node>) -> Arc<NodeValue> {
+        if let Some(cache) = self.native_values {
+            if let Some(hit) = cache.value_for(node) {
+                return hit;
+            }
+        }
+        node_to_value(node)
     }
 
     /// Candidate nodes carrying `label` on the native engine —
@@ -2794,7 +2838,7 @@ impl<'a> Executor<'a> {
                 _ => {}
             }
             let target = match self.engine().get_node(other_id)? {
-                Some(n) => node_to_value(&n),
+                Some(n) => self.project_node(&n),
                 None => continue,
             };
             if !node_matches_pattern(&target, &segment.node, existing, self)? {
@@ -2981,7 +3025,7 @@ impl<'a> Executor<'a> {
                         edge.from_id
                     };
                     let next_node = match self.engine().get_node(other_id)? {
-                        Some(n) => node_to_value(&n),
+                        Some(n) => self.project_node(&n),
                         None => continue,
                     };
                     let mut next_used_edges = state.used_edges.clone();

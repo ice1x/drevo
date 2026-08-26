@@ -12,8 +12,9 @@
 //! 2. native via [`execute_on_engine`](drevo::cypher::executor::execute_on_engine)
 //!    (full-scan paths),
 //! 3. native via
-//!    [`execute_on_engine_with_indexes`](drevo::cypher::executor::execute_on_engine_with_indexes)
-//!    with the label + property indexes synced (index-narrowed paths),
+//!    [`execute_on_engine_with_indexes_and_values`](drevo::cypher::executor::execute_on_engine_with_indexes_and_values)
+//!    with the label + property indexes and the `NodeValue` cache synced
+//!    (index-narrowed, cache-served paths),
 //!
 //! and asserts the columns, rows, and mutation stats are equal across all
 //! three. Write statements are compared two-ways as they are applied (each
@@ -47,14 +48,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use drevo::cypher::executor::{
-    execute, execute_on_engine, execute_on_engine_with_indexes, ExecResult, NodeValue, PathValue,
-    RelationshipValue, Value,
+    execute, execute_on_engine, execute_on_engine_with_indexes_and_values, ExecResult, NodeValue,
+    PathValue, RelationshipValue, Value,
 };
 use drevo::cypher::parser::parse;
 use drevo::db::Drevo;
 use drevo::native::NativeGraph;
 use drevo::native_label_index::NativeLabelIndex;
 use drevo::native_property_index::NativePropertyIndex;
+use drevo::native_value_cache::NativeValueCache;
 
 // ---------------------------------------------------------------------------
 // Normalisation — strip the per-engine non-determinism, keep everything else
@@ -170,17 +172,20 @@ impl Pair {
 
         let mut labels = NativeLabelIndex::new();
         let mut props = NativePropertyIndex::new();
+        let mut values = NativeValueCache::new();
         labels.sync(&self.native);
         props.sync(&self.native);
+        values.sync(&self.native);
 
         let kv = execute(&q, &self.kv, HashMap::new());
         let plain = execute_on_engine(&q, &self.native, HashMap::new());
-        let indexed = execute_on_engine_with_indexes(
+        let indexed = execute_on_engine_with_indexes_and_values(
             &q,
             &self.native,
             None,
             Some(&labels),
             Some(&props),
+            Some(&values),
             HashMap::new(),
         );
 
@@ -794,14 +799,23 @@ fn parameter_parity() {
 
     let mut labels = NativeLabelIndex::new();
     let mut props = NativePropertyIndex::new();
+    let mut values = NativeValueCache::new();
     labels.sync(&pair.native);
     props.sync(&pair.native);
+    values.sync(&pair.native);
 
     let kv = execute(&q, &pair.kv, params.clone()).expect("kv");
     let plain = execute_on_engine(&q, &pair.native, params.clone()).expect("native");
-    let indexed =
-        execute_on_engine_with_indexes(&q, &pair.native, None, Some(&labels), Some(&props), params)
-            .expect("native indexed");
+    let indexed = execute_on_engine_with_indexes_and_values(
+        &q,
+        &pair.native,
+        None,
+        Some(&labels),
+        Some(&props),
+        Some(&values),
+        params,
+    )
+    .expect("native indexed");
 
     assert_eq!(comparable(&kv), comparable(&plain));
     assert_eq!(comparable(&plain), comparable(&indexed));

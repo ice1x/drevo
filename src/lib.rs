@@ -185,6 +185,11 @@ pub use drevo_core::native_label_index;
 /// equality pattern resolves through an index instead of a full node scan.
 /// Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
 pub use drevo_core::native_property_index;
+/// Change-feed-maintained memo of the executor's `NodeValue` projection
+/// ([`native_value_cache::NativeValueCache`]) — a hit is validated against the
+/// live record with `Arc::ptr_eq`, so a stale cache costs speed, never answers
+/// (RFC `docs/rfc-native-core.md`, #307).
+pub mod native_value_cache;
 /// Observability — Phase 15 task `00130`. A dependency-free, lock-free
 /// metrics registry ([`observability::Registry`] with
 /// [`observability::Counter`] / [`observability::Gauge`] /
