@@ -123,9 +123,66 @@ real data, the executor's remaining per-row costs (bindings, filter
 evaluation) now dominate — the next meaningful comparison is the Memgraph
 column, not further micro-work on this path.
 
+## Run 5 — the Memgraph column (2026-08-27, same machine & snapshot)
+
+The cross-database half of the scoreboard: the same GraphML, the same Cypher
+text, measured through the **same client** (`scripts/memgraph_baseline_bench.py`,
+`neo4j` Python driver, localhost Bolt, medians of 30 runs) against
+
+- **drevo:** a locally built `drevo-server` at main (`0.0.18-49`), redb
+  on-disk data dir, Bolt — today's production path, i.e. the **KV engine**
+  (the native engine is not flipped in yet), and
+- **Memgraph:** official `memgraph/memgraph:latest` Docker image (v3.12.0),
+  default in-memory transactional storage, with a label index and a
+  label+property index created on the densest label — mirroring the native
+  drevo indexes the in-process runs use.
+
+The script asserts row parity between the two databases on every measured
+query before timing (label scan agrees at 2 181 — kind plus secondary
+`_labels` matches; property pair `type = 'Trait'` agrees at 26; hub
+out-degree agrees at 98).
+
+| Workload | drevo KV (Bolt) | Memgraph (Bolt) | Memgraph advantage |
+|---|---:|---:|---:|
+| `RETURN 1` (round-trip floor) | 269 µs | 1.22 ms | drevo 4.5× lighter |
+| `MATCH (n) RETURN count(*)` | 342 ms | 3.35 ms | **102×** |
+| label scan (densest label) | 325 ms | 1.01 ms | **321×** |
+| property equality (no label) | 304 ms | 1.95 ms | **156×** |
+| property equality (labelled) | 359 ms | 0.67 ms | **535×** |
+| Cypher 1-hop from hub (id seek) | 15.0 ms | 0.63 ms | **24×** |
+
+Reading it honestly:
+
+- **Today's production drevo loses to Memgraph by two orders of magnitude on
+  scans.** This is the KV engine paying a full decode-everything scan per
+  query — the same gap the in-process runs above measure, now confirmed on
+  the wire.
+- **The native engine is already in Memgraph's class.** Memgraph's own Bolt
+  round-trip floor is ~1.2 ms, so its server-side query cost is roughly
+  0–2 ms per workload. The native in-process numbers from run 4 (full scan
+  537 µs, label scan 519 µs, property equality 9.3 µs, hub 1-hop 60 µs) sit
+  at or below that — while drevo's Bolt stack itself is 4.5× lighter than
+  Memgraph's (269 µs vs 1.22 ms on `RETURN 1`).
+- **The comparison native-vs-Memgraph is not apples-to-apples until the
+  engine flip:** run 4 is in-process, the Memgraph column includes Bolt.
+  What this run establishes is the bound: native cost + drevo's measured
+  Bolt floor ≈ 0.3–0.8 ms per workload, below Memgraph's measured 0.6–3.4 ms
+  — so the flip (serve Bolt from the native engine) is what turns "in
+  Memgraph's class" into "surpass Memgraph" on this scoreboard.
+- Fair-play caveats: Memgraph runs its normal fully in-memory mode while
+  drevo serves redb from disk; and Memgraph's label+property index is only
+  used by the labelled query form (its unlabelled `{type: 'Trait'}` match
+  full-scans, same as semantically required), which is why the labelled row
+  is its best.
+
 ## Standing items toward "surpass Memgraph" (RFC Phase 0)
 
-- Add the Memgraph column: same GraphML, same queries over Bolt, dockerised —
-  the cross-database half of this scoreboard.
-- Re-run after the arena/CSR native internals (RFC Phase 2 completion) and
-  after id-seek pushdown (run 2 above); update this table (append runs, keep history).
+- ~~Add the Memgraph column~~ — run 5 above; rerun via
+  `scripts/memgraph_baseline_bench.py` (needs the `memgraph/memgraph` image
+  and a running `drevo-server`; see the script docstring).
+- **Engine flip** (`DREVO_ENGINE=native|kv`): serve Bolt/HTTP from the native
+  engine — the differential corpus and the id-ascending scan-order
+  convergence are already in place as guards, and run 5 shows the flip is
+  what closes the scoreboard.
+- Re-run after the arena/CSR native internals (RFC Phase 2 completion);
+  update this table (append runs, keep history).
