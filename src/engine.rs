@@ -100,6 +100,10 @@ impl GraphEngine for Drevo {
         Ok(Drevo::collect_all_edges(self)?)
     }
 
+    fn count_nodes(&self) -> CoreResult<u64> {
+        Ok(Drevo::count_node_records(self)?)
+    }
+
     fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> CoreResult<Vec<Arc<Node>>> {
         Ok(Drevo::list_nodes_by_kind(self, kind, limit, offset)?
             .into_iter()

@@ -116,6 +116,10 @@ impl StorageBackend for EpochBackend {
         self.inner.scan_prefix_limited(prefix, start_after, limit)
     }
 
+    fn count_prefix(&self, prefix: &[u8]) -> Result<u64> {
+        self.inner.count_prefix(prefix)
+    }
+
     fn flush(&self) -> Result<()> {
         self.inner.flush()
     }

@@ -899,6 +899,97 @@ fn execute_inner(
     })
 }
 
+/// The count pushdown (RFC `docs/rfc-native-core.md` #307): recognise
+/// exactly `MATCH (n)` / `MATCH (n:Label)` followed by a single
+/// non-`DISTINCT` `RETURN count(*)` (or `count(n)` of the matched, never
+/// `NULL`, node) — with no `OPTIONAL`, no `WHERE`, no inline properties, no
+/// relationship legs, and no `ORDER BY` / `SKIP` / `LIMIT` — and answer it
+/// from cardinalities instead of enumerating the graph.
+///
+/// Anything the detector does not recognise returns `Ok(None)` and takes
+/// the ordinary path, so the pushdown can only change speed, never
+/// semantics (cross-engine parity is pinned by the differential corpus).
+///
+/// The unlabelled form is answered by
+/// [`GraphEngine::count_nodes`] on **any** engine. The labelled form needs
+/// the full label semantics — primary kind **or** secondary `_labels` — so
+/// it is answered only when a [`crate::native_label_index::NativeLabelIndex`]
+/// is present (kind-bucket cardinality plus the index's extra ids,
+/// deduplicated); the KV path has no complete label index and keeps its
+/// ordinary scan.
+fn try_count_pushdown(
+    single: &SingleQuery,
+    engine: &dyn GraphEngine,
+    native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
+) -> ExecResultT<Option<ExecResult>> {
+    let [Clause::Match(m), Clause::Return(r)] = single.clauses.as_slice() else {
+        return Ok(None);
+    };
+    if m.optional || m.where_clause.is_some() || m.patterns.len() != 1 {
+        return Ok(None);
+    }
+    let pattern = &m.patterns[0];
+    if pattern.variable.is_some() || pattern.shortest.is_some() || !pattern.path.tail.is_empty() {
+        return Ok(None);
+    }
+    let node = &pattern.path.head;
+    if node.properties.is_some() || node.labels.len() > 1 {
+        return Ok(None);
+    }
+    if r.distinct || !r.order_by.is_empty() || r.skip.is_some() || r.limit.is_some() {
+        return Ok(None);
+    }
+    let [ProjectionItem::Expression { expr, alias }] = r.items.as_slice() else {
+        return Ok(None);
+    };
+    let Expression::FunctionCall {
+        name,
+        distinct,
+        args,
+        ..
+    } = expr
+    else {
+        return Ok(None);
+    };
+    if *distinct || name.len() != 1 || !name[0].eq_ignore_ascii_case("count") || args.len() != 1 {
+        return Ok(None);
+    }
+    match &args[0] {
+        // `count(*)`, or `count(n)` of the matched node — which a
+        // non-OPTIONAL match never binds to NULL, so the two agree.
+        Expression::Star(_) => {}
+        Expression::Variable(v, _) if Some(v) == node.variable.as_ref() => {}
+        _ => return Ok(None),
+    }
+
+    let count = match node.labels.first() {
+        None => engine.count_nodes()?,
+        Some(label) => {
+            let Some(label_idx) = native_labels else {
+                return Ok(None);
+            };
+            // Exact union: nodes whose primary kind is the label, plus the
+            // index's secondary-label carriers that do not already have it
+            // as their kind.
+            let mut count = engine.count_nodes_by_kind(label)?;
+            for id in label_idx.node_ids(label) {
+                if let Some(carrier) = engine.get_node(id)? {
+                    if carrier.kind != *label {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+    };
+    let column = alias.clone().unwrap_or_else(|| default_column_name(expr));
+    Ok(Some(ExecResult {
+        columns: vec![column],
+        rows: vec![vec![Value::Integer(count as i64)]],
+        stats: ExecStats::default(),
+    }))
+}
+
 /// Execute one `UNION`-free arm against a fresh executor over the given engine
 /// (and optional KV secondary store).
 #[allow(clippy::too_many_arguments)]
@@ -918,6 +1009,13 @@ fn execute_single(
     // the underlying graph is empty.
     for clause in &single.clauses {
         validate_clause_supported(clause)?;
+    }
+
+    // Count pushdown (RFC #307): a bare `MATCH (n[:L]) RETURN count(*)`
+    // needs no enumeration, no projection, and no row machinery — answer it
+    // from the engine's cardinality (and the label index's) directly.
+    if let Some(result) = try_count_pushdown(single, engine, native_labels)? {
+        return Ok(result);
     }
 
     let mut executor = Executor {
