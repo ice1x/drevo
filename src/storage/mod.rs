@@ -18,6 +18,9 @@
 /// The `StorageBackend` trait — the abstraction every higher-level
 /// drevo component takes a reference to.
 pub mod backend;
+/// Mutation-epoch decorator over any backend — staleness detection +
+/// quiesce gate for the native read mirror (engine flip, #307 Phase 6).
+pub mod epoch;
 /// Typed error hierarchy for the storage layer (`NotFound`, `Io`,
 /// `Encode`, `Decode`, `Redb`, `LockPoisoned`).
 pub mod error;
@@ -29,6 +32,7 @@ pub mod memory;
 pub mod redb;
 
 pub use backend::StorageBackend;
+pub use epoch::EpochBackend;
 pub use error::{Result, StorageError};
 pub use memory::MemoryBackend;
 #[cfg(feature = "redb-backend")]
