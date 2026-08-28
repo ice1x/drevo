@@ -265,3 +265,97 @@ fn non_mirror_procedures_execute_on_kv_through_the_mirror() {
     assert_eq!(mirror.stats().native_hits, 0);
     assert_eq!(mirror.stats().kv_routed, 1);
 }
+
+// ── drevo.engine.status observability ──────────────────────────────────
+
+#[test]
+fn engine_status_reports_kv_with_null_stats_when_no_mirror_is_attached() {
+    let db = seeded_db();
+    let result = run_kv(&db, "CALL drevo.engine.status()");
+    assert_eq!(
+        result.columns,
+        [
+            "engine",
+            "mirror_fresh",
+            "native_hits",
+            "kv_fallbacks",
+            "kv_routed",
+            "rebuild_errors"
+        ]
+    );
+    assert_eq!(
+        result.rows,
+        vec![vec![
+            Value::String("kv".to_string()),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+        ]]
+    );
+}
+
+#[test]
+fn engine_status_reports_the_attached_mirrors_live_counters() {
+    use drevo::native_mirror::MirrorRegistry;
+
+    let db = seeded_db();
+    let registry = MirrorRegistry::new();
+    let mirror = registry.for_db(&db);
+    mirror.rebuild_blocking(&db).expect("rebuild");
+    run_mirror(&mirror, &db, "MATCH (n) RETURN count(*)");
+
+    // The status call itself is not mirrorable, so routing it through the
+    // mirror counts as one more kv_routed — the counters it reports are
+    // live, including itself.
+    let result = run_mirror(&mirror, &db, "CALL drevo.engine.status()");
+    let stats = mirror.stats();
+    assert_eq!(
+        result.rows,
+        vec![vec![
+            Value::String("native".to_string()),
+            Value::Bool(true),
+            Value::Integer(stats.native_hits as i64),
+            Value::Integer(stats.kv_fallbacks as i64),
+            Value::Integer(stats.kv_routed as i64),
+            Value::Integer(stats.rebuild_errors as i64),
+        ]]
+    );
+    assert_eq!(stats.native_hits, 1, "the count read was served natively");
+    assert_eq!(stats.kv_routed, 1, "the status call routed to KV");
+
+    // YIELD projection works like any procedure.
+    let engine_only = run_mirror(
+        &mirror,
+        &db,
+        "CALL drevo.engine.status() YIELD engine RETURN engine",
+    );
+    assert_eq!(
+        engine_only.rows,
+        vec![vec![Value::String("native".to_string())]]
+    );
+
+    // A write stales the mirror; the status reflects it immediately.
+    run_mirror(&mirror, &db, "CREATE (:Person {title: 'zed'})");
+    let stale = run_mirror(
+        &mirror,
+        &db,
+        "CALL drevo.engine.status() YIELD mirror_fresh RETURN mirror_fresh",
+    );
+    assert_eq!(stale.rows, vec![vec![Value::Bool(false)]]);
+}
+
+#[test]
+fn engine_status_requires_the_kv_path() {
+    use drevo::cypher::executor::execute_on_engine;
+    use drevo::native::NativeGraph;
+
+    let graph = NativeGraph::new();
+    let q = parse("CALL drevo.engine.status()").expect("parse");
+    let err = execute_on_engine(&q, &graph, HashMap::new()).expect_err("no KV secondary");
+    assert!(
+        err.to_string().contains("drevo.engine.status"),
+        "unexpected error: {err}"
+    );
+}

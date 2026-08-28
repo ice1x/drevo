@@ -61,7 +61,9 @@ impl MirrorRegistry {
         Self::default()
     }
 
-    /// The mirror for `db`, created empty on first sight.
+    /// The mirror for `db`, created empty on first sight. The new mirror is
+    /// also attached to `db` (a weak back-reference) so the
+    /// `drevo.engine.status` procedure can report its routing statistics.
     pub fn for_db(&self, db: &Arc<Drevo>) -> Arc<NativeMirror> {
         let key = Arc::as_ptr(db) as usize;
         if let Some(mirror) = self
@@ -73,7 +75,9 @@ impl MirrorRegistry {
             return Arc::clone(mirror);
         }
         let mut mirrors = self.mirrors.write().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(mirrors.entry(key).or_default())
+        let mirror = Arc::clone(mirrors.entry(key).or_default());
+        db.attach_native_mirror(&mirror);
+        mirror
     }
 }
 
