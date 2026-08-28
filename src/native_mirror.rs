@@ -44,6 +44,39 @@ use crate::native_label_index::NativeLabelIndex;
 use crate::native_property_index::NativePropertyIndex;
 use crate::native_value_cache::NativeValueCache;
 
+/// Per-process registry handing out one [`NativeMirror`] per live database
+/// handle (engine flip slice B). Keyed by the handle's pointer identity:
+/// the catalog caches every opened database `Arc` for the process lifetime
+/// and never evicts, so the key is stable and unique — and cheaper than
+/// threading database names through every execution path.
+#[derive(Default)]
+pub struct MirrorRegistry {
+    /// `Arc::as_ptr` of the database handle → its mirror.
+    mirrors: RwLock<HashMap<usize, Arc<NativeMirror>>>,
+}
+
+impl MirrorRegistry {
+    /// An empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The mirror for `db`, created empty on first sight.
+    pub fn for_db(&self, db: &Arc<Drevo>) -> Arc<NativeMirror> {
+        let key = Arc::as_ptr(db) as usize;
+        if let Some(mirror) = self
+            .mirrors
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
+            return Arc::clone(mirror);
+        }
+        let mut mirrors = self.mirrors.write().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(mirrors.entry(key).or_default())
+    }
+}
+
 /// One built snapshot: the native graph plus its synced indexes, stamped
 /// with the KV mutation epoch it was exported at. Immutable once built —
 /// a rebuild publishes a fresh instance instead of mutating in place.
