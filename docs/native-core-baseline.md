@@ -175,14 +175,50 @@ Reading it honestly:
   full-scans, same as semantically required), which is why the labelled row
   is its best.
 
+## Run 6 — the engine flip closes the scoreboard (2026-08-28, same machine & snapshot)
+
+The same cross-database harness as run 5 (`scripts/memgraph_baseline_bench.py`,
+same client, same queries, row parity asserted), but drevo now runs with
+**`DREVO_ENGINE=native`** — the read mirror serving read-only Cypher from the
+native engine over the same Bolt wire (slices A/B of Phase 6). This is the
+apples-to-apples comparison run 5 said was missing.
+
+| Workload | drevo native (Bolt) | Memgraph (Bolt) | vs run 5's KV column |
+|---|---:|---:|---:|
+| `RETURN 1` (round-trip floor) | 232 µs | 693 µs | — |
+| `MATCH (n) RETURN count(*)` | 1.08 ms | **0.89 ms** | 317× faster |
+| label scan (densest label) | 935 µs | **789 µs** | 348× faster |
+| property equality (no label) | **276 µs** | 2.18 ms | 1 100× faster |
+| property equality (labelled) | **544 µs** | 672 µs | 660× faster |
+| Cypher 1-hop from hub (id seek) | **322 µs** | 665 µs | 47× faster |
+
+(Memgraph's own numbers moved vs run 5 — its round-trip floor halved — so
+compare within-run, as always.)
+
+Reading it:
+
+- **drevo wins four of six rows** through the identical client: both
+  property-equality forms (7.9× on the unlabelled one, where drevo's native
+  property index answers a query Memgraph must full-scan by semantics), the
+  hub 1-hop (2.1×), and the round-trip floor (3× lighter).
+- **Memgraph keeps a ~1.2× edge on the two bare count-scans** (0.89 ms vs
+  1.08 ms; 0.79 ms vs 0.94 ms). At this depth the remaining drevo cost is
+  the executor's per-row binding/aggregation work plus the HashMap-based
+  native layout — exactly what the arena/CSR internals (RFC Phase 2
+  completion) target. "Догнать" is done; the last 20% of "перегнать" on
+  full scans is Phase 2's job.
+- The production default stays `DREVO_ENGINE=kv`; the flip is opt-in until
+  the mirror has soaked. Writes always execute on KV either way — the flip
+  can change read latency, never durability or answers.
+
 ## Standing items toward "surpass Memgraph" (RFC Phase 0)
 
 - ~~Add the Memgraph column~~ — run 5 above; rerun via
   `scripts/memgraph_baseline_bench.py` (needs the `memgraph/memgraph` image
   and a running `drevo-server`; see the script docstring).
-- **Engine flip** (`DREVO_ENGINE=native|kv`): serve Bolt/HTTP from the native
-  engine — the differential corpus and the id-ascending scan-order
-  convergence are already in place as guards, and run 5 shows the flip is
-  what closes the scoreboard.
-- Re-run after the arena/CSR native internals (RFC Phase 2 completion);
-  update this table (append runs, keep history).
+- ~~Engine flip (`DREVO_ENGINE=native|kv`)~~ — shipped (Phase 6 slices A/B)
+  and measured in run 6: four of six rows now beat Memgraph through the
+  same Bolt client.
+- Arena/CSR native internals (RFC Phase 2 completion) — the remaining
+  ~1.2× count-scan gap in run 6 is executor-per-row + HashMap-layout cost;
+  re-run this scoreboard after it lands (append runs, keep history).
