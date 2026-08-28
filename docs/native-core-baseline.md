@@ -211,6 +211,42 @@ Reading it:
   the mirror has soaked. Writes always execute on KV either way — the flip
   can change read latency, never durability or answers.
 
+## Run 7 — count pushdown: the sweep (2026-08-28, same machine & snapshot)
+
+Run 6 left Memgraph a ~1.2× edge on the two bare count-scans, with the
+remaining drevo cost identified as executor per-row work spent producing a
+single integer. The count pushdown removes that work entirely: a bare
+`MATCH (n[:Label]) RETURN count(*)` is now answered from cardinalities —
+`GraphEngine::count_nodes` on any engine, the kind bucket + label index for
+the labelled form — with the detector conservative enough that any guarded
+shape (`WHERE`, properties, `DISTINCT`, relationships…) keeps the ordinary
+scan (`tests/cypher_count_pushdown_tests.rs`; corpus scenario pins
+cross-engine parity). Same harness as runs 5–6, drevo with
+`DREVO_ENGINE=native`:
+
+| Workload | drevo native (Bolt) | Memgraph (Bolt) | drevo advantage |
+|---|---:|---:|---:|
+| `RETURN 1` (round-trip floor) | 225 µs | 649 µs | 2.9× |
+| `MATCH (n) RETURN count(*)` | **234 µs** | 624 µs | **2.7×** |
+| label scan (densest label) | **285 µs** | 662 µs | **2.3×** |
+| property equality (no label) | **223 µs** | 1.30 ms | **5.8×** |
+| property equality (labelled) | **376 µs** | 536 µs | **1.4×** |
+| Cypher 1-hop from hub (id seek) | **283 µs** | 489 µs | **1.7×** |
+
+**drevo wins every row.** The count rows collapsed to the Bolt floor
+(234 µs vs the 225 µs `RETURN 1`) — the query cost is now the wire, not the
+engine. On this scoreboard, on this real-data snapshot, "догнать и
+перегнать Memgraph" is done: 1.4–5.8× ahead through the identical client on
+every measured workload.
+
+Honesty notes: this is one 2.6 k-node production KG snapshot, not a
+benchmark suite — bigger graphs, deeper traversals, and write throughput
+remain unmeasured; Memgraph runs its stock configuration; and the count
+rows now measure a cardinality lookup, which is precisely the point of a
+pushdown but says nothing further about scan speed (the arena/CSR work
+remains worthwhile for the scan-shaped queries the detector must not
+touch).
+
 ## Standing items toward "surpass Memgraph" (RFC Phase 0)
 
 - ~~Add the Memgraph column~~ — run 5 above; rerun via
@@ -219,6 +255,9 @@ Reading it:
 - ~~Engine flip (`DREVO_ENGINE=native|kv`)~~ — shipped (Phase 6 slices A/B)
   and measured in run 6: four of six rows now beat Memgraph through the
   same Bolt client.
-- Arena/CSR native internals (RFC Phase 2 completion) — the remaining
-  ~1.2× count-scan gap in run 6 is executor-per-row + HashMap-layout cost;
-  re-run this scoreboard after it lands (append runs, keep history).
+- ~~The count-scan gap~~ — closed by the count pushdown (run 7); every
+  scoreboard row is now drevo's.
+- Arena/CSR native internals (RFC Phase 2 completion) — still worthwhile
+  for the *scan-shaped* queries the count detector must not touch
+  (filtered scans, projections, aggregations over properties); re-run this
+  scoreboard after it lands (append runs, keep history).
