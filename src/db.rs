@@ -163,8 +163,11 @@ const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard
 /// `redb-backend` Cargo feature) or [`Drevo::open_in_memory`]
 /// (ephemeral). All graph operations are methods on this struct.
 pub struct Drevo {
-    /// The underlying key-value storage backend.
-    backend: Box<dyn StorageBackend>,
+    /// The underlying key-value storage backend, wrapped in the
+    /// mutation-epoch decorator so the native read mirror can detect
+    /// staleness and quiesce writes around a consistent dump export
+    /// (engine flip, #307 Phase 6 — see [`crate::storage::EpochBackend`]).
+    backend: crate::storage::EpochBackend,
     /// Auto-increment counter for node IDs.
     next_node_id: AtomicU64,
     /// Auto-increment counter for edge IDs.
@@ -788,13 +791,13 @@ impl Drevo {
     #[cfg(feature = "redb-backend")]
     fn open_ungated(path: &Path) -> Result<Self> {
         let backend = RedbBackend::open(path)?;
-        let backend = Box::new(backend);
-        let (next_node_id, next_edge_id, drift_repaired) = Self::load_counters(&*backend)?;
+        let backend = crate::storage::EpochBackend::new(Box::new(backend));
+        let (next_node_id, next_edge_id, drift_repaired) = Self::load_counters(&backend)?;
         // Restore any persisted semantic-index registry (#251) so registered
         // auto-embedding targets survive a restart. The relationship registry
         // (#266) is restored the same way from its own meta key.
-        let semantic = Self::load_semantic_registry(&*backend, META_SEMANTIC_REGISTRY);
-        let rel_semantic = Self::load_semantic_registry(&*backend, META_SEMANTIC_REL_REGISTRY);
+        let semantic = Self::load_semantic_registry(&backend, META_SEMANTIC_REGISTRY);
+        let rel_semantic = Self::load_semantic_registry(&backend, META_SEMANTIC_REL_REGISTRY);
         Ok(Self {
             backend,
             next_node_id: AtomicU64::new(next_node_id),
@@ -1822,7 +1825,7 @@ impl Drevo {
     /// Data is lost when the database is dropped. Useful for tests
     /// and temporary workloads.
     pub fn open_in_memory() -> Result<Self> {
-        let backend = Box::new(MemoryBackend::new());
+        let backend = crate::storage::EpochBackend::new(Box::new(MemoryBackend::new()));
         Ok(Self {
             backend,
             next_node_id: AtomicU64::new(1),
@@ -2113,20 +2116,20 @@ impl Drevo {
     /// create/update/delete). Grouped so each trigram is rewritten once.
     pub(crate) fn fts_index_nodes(&self, docs: &[(u64, &str, &str, &Properties)]) -> Result<()> {
         let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
-        fts_index::index_nodes_grouped(&*self.backend, docs)
+        fts_index::index_nodes_grouped(&self.backend, docs)
     }
 
     /// Edge counterpart of [`Self::fts_index_nodes`] — index a batch of edges'
     /// `efts:` posting lists under the same FTS write lock (#275).
     pub(crate) fn efts_index_edges(&self, docs: &[(u64, &Properties)]) -> Result<()> {
         let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
-        edge_index::index_edges_grouped(&*self.backend, docs)
+        edge_index::index_edges_grouped(&self.backend, docs)
     }
 
     /// Deindex one edge's `efts:` posting lists under the FTS write lock (#275).
     fn efts_deindex_edge(&self, edge_id: u64, properties: &Properties) -> Result<()> {
         let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
-        edge_index::deindex_edge(&*self.backend, edge_id, properties)
+        edge_index::deindex_edge(&self.backend, edge_id, properties)
     }
 
     /// Deindex one node's FTS posting lists under the FTS write lock (#275).
@@ -2138,7 +2141,7 @@ impl Drevo {
         properties: &Properties,
     ) -> Result<()> {
         let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
-        fts_index::deindex_node_with_props(&*self.backend, node_id, title, body, properties)
+        fts_index::deindex_node_with_props(&self.backend, node_id, title, body, properties)
     }
 
     /// Ensure the FTS index is in the #275 posting-list layout, rebuilding it
@@ -2211,7 +2214,33 @@ impl Drevo {
     /// Return a reference to the underlying storage backend.
     #[allow(dead_code)] // Reserved for future use (e.g. traversal, search)
     pub(crate) fn backend(&self) -> &dyn StorageBackend {
-        &*self.backend
+        &self.backend
+    }
+
+    /// The store's **mutation epoch** — a monotonic counter bumped by every
+    /// mutating storage call (engine flip, #307 Phase 6). The native read
+    /// mirror ([`crate::native_mirror::NativeMirror`]) stamps the epoch it
+    /// was built at and compares against this to detect staleness; equal
+    /// stamps mean no mutation has completed since the mirror's snapshot.
+    ///
+    /// Reads never change the epoch. Content-preserving maintenance
+    /// (`flush`, compaction, online shrink) does not either.
+    pub fn mutation_epoch(&self) -> u64 {
+        self.backend.epoch()
+    }
+
+    /// Export a [`crate::dump::Dump`] of the whole graph **consistently**: writes are
+    /// quiesced for the duration (see [`crate::storage::EpochBackend::quiesce`]),
+    /// so the returned epoch vouches for every row of the snapshot — the
+    /// contract the native read mirror needs to stamp itself correctly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any storage/decode failure from the underlying export.
+    pub fn export_dump_consistent(&self) -> Result<(crate::dump::Dump, u64)> {
+        let _quiesced = self.backend.quiesce();
+        let dump = self.build_dump()?;
+        Ok((dump, self.backend.epoch()))
     }
 
     // ---------------------------------------------------------------
@@ -2398,7 +2427,7 @@ impl Drevo {
             .put(&node_title_key(&node.title), &node.id.to_le_bytes())?;
         self.backend.put(&node_kind_key(&node.kind, node.id), &[])?;
         self.fts_index_nodes(&[(node.id, &node.title, &node.body, &node.properties)])?;
-        property_index::index_node(&*self.backend, node.id, &node.properties)?;
+        property_index::index_node(&self.backend, node.id, &node.properties)?;
         self.backend
             .put(&updated_key(node.updated_at, node.id), &[])?;
         Ok(())
@@ -2442,7 +2471,7 @@ impl Drevo {
             &current.body,
             &current.properties,
         )?;
-        property_index::deindex_node(&*self.backend, current.id, &current.properties)?;
+        property_index::deindex_node(&self.backend, current.id, &current.properties)?;
         self.backend
             .delete(&updated_key(current.updated_at, current.id))?;
         self.recreate_node_at_id(pre.clone())
@@ -2480,7 +2509,7 @@ impl Drevo {
         self.backend.delete(&node_title_key(&node.title))?;
         self.backend.delete(&node_kind_key(&node.kind, id))?;
         self.fts_deindex_node(id, &node.title, &node.body, &node.properties)?;
-        property_index::deindex_node(&*self.backend, id, &node.properties)?;
+        property_index::deindex_node(&self.backend, id, &node.properties)?;
         self.backend.delete(&updated_key(node.updated_at, id))?;
         Ok(())
     }
@@ -2542,7 +2571,7 @@ impl Drevo {
         self.fts_index_nodes(&[(id, &node.title, &node.body, &node.properties)])?;
 
         // Property index (Phase 14 task 00088)
-        property_index::index_node(&*self.backend, id, &node.properties)?;
+        property_index::index_node(&self.backend, id, &node.properties)?;
 
         // Updated-at index (newest-first ordering)
         self.backend.put(&updated_key(node.updated_at, id), &[])?;
@@ -2721,8 +2750,8 @@ impl Drevo {
         // task 00088). Comparing the whole map covers added, removed, and
         // changed keys in one shot.
         if node.properties != old_properties {
-            property_index::deindex_node(&*self.backend, id, &old_properties)?;
-            property_index::index_node(&*self.backend, id, &node.properties)?;
+            property_index::deindex_node(&self.backend, id, &old_properties)?;
+            property_index::index_node(&self.backend, id, &node.properties)?;
         }
 
         // Update updated-at index: remove old entry, add new one
@@ -2770,7 +2799,7 @@ impl Drevo {
         self.fts_deindex_node(id, &node.title, &node.body, &node.properties)?;
 
         // Remove property index
-        property_index::deindex_node(&*self.backend, id, &node.properties)?;
+        property_index::deindex_node(&self.backend, id, &node.properties)?;
 
         // Remove updated-at index
         self.backend.delete(&updated_key(node.updated_at, id))?;
@@ -2780,7 +2809,7 @@ impl Drevo {
         // space rather than mis-associate, but cleaning it up keeps the
         // store free of orphans. This deletion is not yet undo-logged —
         // embedding persistence becomes transaction-aware with MVCC.
-        vector_store::delete(&*self.backend, id)?;
+        vector_store::delete(&self.backend, id)?;
 
         self.record_undo(UndoOp::DeletedNode(node));
         Ok(())
@@ -2810,7 +2839,7 @@ impl Drevo {
         if self.get_node(node_id)?.is_none() {
             return Err(DrevoError::NodeNotFound(node_id));
         }
-        vector_store::put(&*self.backend, node_id, &embedding)
+        vector_store::put(&self.backend, node_id, &embedding)
     }
 
     /// Persist embeddings for many nodes in a single batched write.
@@ -2833,7 +2862,7 @@ impl Drevo {
                 return Err(DrevoError::NodeNotFound(*node_id));
             }
         }
-        vector_store::put_batch(&*self.backend, embeddings)
+        vector_store::put_batch(&self.backend, embeddings)
     }
 
     /// Fetch the embedding stored for a node, or `None` if it has none.
@@ -2843,7 +2872,7 @@ impl Drevo {
     /// Returns [`DrevoError::Decode`] if the stored bytes are corrupt, or
     /// [`DrevoError::Storage`] on backend failure.
     pub fn get_embedding(&self, node_id: u64) -> Result<Option<Vector>> {
-        vector_store::get(&*self.backend, node_id)
+        vector_store::get(&self.backend, node_id)
     }
 
     /// Remove the embedding stored for a node. A node with no embedding is
@@ -2853,7 +2882,7 @@ impl Drevo {
     ///
     /// Returns [`DrevoError::Storage`] on backend failure.
     pub fn delete_embedding(&self, node_id: u64) -> Result<()> {
-        vector_store::delete(&*self.backend, node_id)
+        vector_store::delete(&self.backend, node_id)
     }
 
     /// Count the embeddings currently persisted.
@@ -2862,7 +2891,7 @@ impl Drevo {
     ///
     /// Returns [`DrevoError::Storage`] on backend failure.
     pub fn embedding_count(&self) -> Result<usize> {
-        vector_store::count(&*self.backend)
+        vector_store::count(&self.backend)
     }
 
     /// Rebuild an in-memory HNSW index (`00076`) from every persisted
@@ -2880,7 +2909,7 @@ impl Drevo {
     ///   inserted (e.g. its dimension disagrees with the first vector).
     /// - [`DrevoError::Storage`] on backend failure.
     pub fn build_vector_index(&self, config: HnswConfig) -> Result<HnswIndex> {
-        vector_store::build_hnsw(&*self.backend, config)
+        vector_store::build_hnsw(&self.backend, config)
     }
 
     // ---------------------------------------------------------------
@@ -3212,7 +3241,7 @@ impl Drevo {
     /// * `key` — the property name to match (e.g. `"status"`)
     /// * `value` — the exact JSON value the property must equal
     pub fn nodes_by_property(&self, key: &str, value: &serde_json::Value) -> Result<Vec<Node>> {
-        let ids = property_index::node_ids_for_value(&*self.backend, key, value)?;
+        let ids = property_index::node_ids_for_value(&self.backend, key, value)?;
         let mut nodes = Vec::with_capacity(ids.len());
         for id in ids {
             if let Some(node) = self.get_node(id)? {
@@ -3227,7 +3256,7 @@ impl Drevo {
     /// (Phase 14), backed by the same persistent property index as
     /// [`Self::nodes_by_property`].
     pub fn count_nodes_by_property(&self, key: &str, value: &serde_json::Value) -> Result<usize> {
-        Ok(property_index::node_ids_for_value(&*self.backend, key, value)?.len())
+        Ok(property_index::node_ids_for_value(&self.backend, key, value)?.len())
     }
 
     /// List all edges with the given kind, with pagination.
@@ -3303,7 +3332,7 @@ impl Drevo {
     /// Returns an empty list if no nodes match. Useful for inspecting
     /// the FTS index directly in tests.
     pub fn fts_node_ids_for_trigram(&self, trigram: &str) -> Result<Vec<u64>> {
-        fts_index::node_ids_for_trigram(&*self.backend, trigram)
+        fts_index::node_ids_for_trigram(&self.backend, trigram)
     }
 
     /// Intersect posting lists for multiple trigrams.
@@ -3311,7 +3340,7 @@ impl Drevo {
     /// Returns node IDs that appear in ALL posting lists (AND semantics).
     /// Returns empty if trigrams is empty or no nodes match all trigrams.
     pub fn fts_intersect_trigrams(&self, trigrams: &[String]) -> Result<Vec<u64>> {
-        fts_index::intersect_trigrams(&*self.backend, trigrams)
+        fts_index::intersect_trigrams(&self.backend, trigrams)
     }
 
     /// Full-text search ranked by Okapi BM25.
@@ -3417,7 +3446,7 @@ impl Drevo {
         }
 
         // Find candidate nodes (intersection of all query trigram posting lists)
-        let candidate_ids = fts_index::intersect_trigrams(&*self.backend, &query_trigrams)?;
+        let candidate_ids = fts_index::intersect_trigrams(&self.backend, &query_trigrams)?;
         if candidate_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -3465,18 +3494,18 @@ impl Drevo {
         if query_trigrams.is_empty() {
             return Ok(Vec::new());
         }
-        let candidate_ids = edge_index::intersect_trigrams(&*self.backend, &query_trigrams)?;
+        let candidate_ids = edge_index::intersect_trigrams(&self.backend, &query_trigrams)?;
         if candidate_ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        let stats = edge_index::corpus_stats(&*self.backend)?;
+        let stats = edge_index::corpus_stats(&self.backend)?;
         let avgdl = stats.avgdl();
         let (k1, b) = (1.2_f32, 0.75_f32);
 
         let mut dfs: Vec<u64> = Vec::with_capacity(query_trigrams.len());
         for trigram in &query_trigrams {
-            dfs.push(edge_index::posting_list_len(&*self.backend, trigram)? as u64);
+            dfs.push(edge_index::posting_list_len(&self.backend, trigram)? as u64);
         }
         let n = dfs.iter().copied().max().unwrap_or(0).max(stats.doc_count);
         let idf_values: Vec<f32> = dfs.iter().map(|&df| fts_index::bm25_idf(n, df)).collect();
@@ -3491,7 +3520,7 @@ impl Drevo {
             if raw.is_empty() {
                 continue;
             }
-            let doc_len = edge_index::doc_length(&*self.backend, *edge_id)?
+            let doc_len = edge_index::doc_length(&self.backend, *edge_id)?
                 .map(|l| l as f32)
                 .unwrap_or(raw.len() as f32);
             let norm = if avgdl > 0.0 {
@@ -3532,7 +3561,7 @@ impl Drevo {
     ) -> Result<Vec<(u64, f32)>> {
         use std::collections::{HashMap, HashSet};
 
-        let stats = fts_index::corpus_stats(&*self.backend)?;
+        let stats = fts_index::corpus_stats(&self.backend)?;
         let avgdl = stats.avgdl();
 
         // Bound the worst-case scan (see [`Self::cap_candidates`]): a
@@ -3557,7 +3586,7 @@ impl Drevo {
         // candidate is scored without ever loading its node row.
         let mut doc_lens: HashMap<u64, f32> = HashMap::with_capacity(candidate_ids.len());
         for &id in candidate_ids {
-            let dl = fts_index::doc_length(&*self.backend, id)?
+            let dl = fts_index::doc_length(&self.backend, id)?
                 .map(|l| l as f32)
                 .unwrap_or(0.0);
             doc_lens.insert(id, dl);
@@ -3566,7 +3595,7 @@ impl Drevo {
         // Document frequency / IDF per query trigram.
         let mut dfs: Vec<u64> = Vec::with_capacity(query_trigrams.len());
         for trigram in query_trigrams {
-            dfs.push(fts_index::posting_list_len(&*self.backend, trigram)? as u64);
+            dfs.push(fts_index::posting_list_len(&self.backend, trigram)? as u64);
         }
         // `N` for the IDF. The `max` only matters for a legacy index written
         // before length stats existed, keeping IDF non-negative.
@@ -3578,7 +3607,7 @@ impl Drevo {
         let mut scores: HashMap<u64, f32> = HashMap::with_capacity(candidate_ids.len());
         for (i, trigram) in query_trigrams.iter().enumerate() {
             let idf = fts_index::bm25_idf(n, dfs[i]);
-            for (id, tf) in fts_index::postings_for_trigram(&*self.backend, trigram)? {
+            for (id, tf) in fts_index::postings_for_trigram(&self.backend, trigram)? {
                 if !candidate_set.contains(&id) {
                     continue;
                 }
@@ -3610,7 +3639,7 @@ impl Drevo {
         // Precompute IDF for each query trigram
         let mut idf_values: Vec<f32> = Vec::with_capacity(query_trigrams.len());
         for trigram in query_trigrams {
-            let df = fts_index::posting_list_len(&*self.backend, trigram)? as f32;
+            let df = fts_index::posting_list_len(&self.backend, trigram)? as f32;
             // Smoothed IDF: ln(1 + N / df) — avoids zero when df == N.
             let idf = if df > 0.0 {
                 (total_nodes / df).ln_1p()
@@ -3693,7 +3722,7 @@ impl Drevo {
             let Some(text) = node_property_text(&node, property) else {
                 continue;
             };
-            let keywords = crate::fts::keywords::extract_keywords(&*self.backend, &text, k, false)?;
+            let keywords = crate::fts::keywords::extract_keywords(&self.backend, &text, k, false)?;
             if !keywords.is_empty() {
                 per_doc.push((node.id, keywords));
             }
@@ -5841,13 +5870,13 @@ mod tests {
             .is_none());
         // Search rebuilt correctly from source: both nodes match "hel"/"gra".
         assert_eq!(
-            fts_index::node_ids_for_trigram(&*db.backend, "hel")
+            fts_index::node_ids_for_trigram(&db.backend, "hel")
                 .unwrap()
                 .len(),
             2
         );
         assert_eq!(
-            fts_index::node_ids_for_trigram(&*db.backend, "gra")
+            fts_index::node_ids_for_trigram(&db.backend, "gra")
                 .unwrap()
                 .len(),
             2
@@ -5893,7 +5922,7 @@ mod tests {
             "format marker upgraded to 3"
         );
         // Rebuilt postings carry tf: the repeated "rust" gives tf > 1.
-        let postings = fts_index::postings_for_trigram(&*db.backend, "rus").unwrap();
+        let postings = fts_index::postings_for_trigram(&db.backend, "rus").unwrap();
         assert_eq!(postings.len(), 1);
         assert_eq!(postings[0].0, node_id);
         assert!(postings[0].1 > 1, "reindex must restore term frequency");
@@ -5933,7 +5962,7 @@ mod tests {
         }
         // All 100 nodes contain "alp" (from "alpha"); none may be lost to a racy
         // read-modify-write.
-        let ids = fts_index::node_ids_for_trigram(&*db.backend, "alp").unwrap();
+        let ids = fts_index::node_ids_for_trigram(&db.backend, "alp").unwrap();
         assert_eq!(ids.len(), 100, "no postings lost under concurrent writers");
     }
 
@@ -6178,10 +6207,10 @@ mod tests {
 
         let edge_gets = std::sync::Arc::new(AtomicU64::new(0));
         let db = Drevo {
-            backend: Box::new(CountingBackend {
+            backend: crate::storage::EpochBackend::new(Box::new(CountingBackend {
                 inner: MemoryBackend::new(),
                 edge_gets: std::sync::Arc::clone(&edge_gets),
-            }),
+            })),
             next_node_id: AtomicU64::new(1),
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
@@ -6849,10 +6878,10 @@ mod tests {
         let n = db
             .create_node(test_node("note", "rust programming", ""))
             .unwrap();
-        let before = fts_index::corpus_stats(&*db.backend).unwrap();
+        let before = fts_index::corpus_stats(&db.backend).unwrap();
         assert_eq!(before.doc_count, 1);
         db.delete_node(n.id).unwrap();
-        let after = fts_index::corpus_stats(&*db.backend).unwrap();
+        let after = fts_index::corpus_stats(&db.backend).unwrap();
         assert_eq!(after.doc_count, 0);
         assert_eq!(after.total_len, 0);
     }

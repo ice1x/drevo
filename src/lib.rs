@@ -179,6 +179,13 @@ pub use drevo_core::native_fts;
 /// `MATCH (n:Label)` gathers candidates from an index union instead of a full
 /// node scan. Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
 pub use drevo_core::native_label_index;
+/// Native read mirror — the engine-flip execution router (RFC
+/// `docs/rfc-native-core.md`, #307, Phase 6 slice A). Serves fresh read-only
+/// Cypher from a [`native::NativeGraph`] snapshot with the native indexes and
+/// value cache synced; routes every write (and any stale or non-mirrorable
+/// read) to the durable KV engine, detecting staleness via
+/// [`db::Drevo::mutation_epoch`].
+pub mod native_mirror;
 /// In-memory property-value index that tails a [`native::NativeGraph`]'s
 /// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.7) — the native
 /// counterpart of the KV [`property_index`], so a `MATCH (n {key: value})`
