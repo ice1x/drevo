@@ -25,6 +25,7 @@
 //! | `DREVO_HOST`      | `0.0.0.0`   | Bind address (IPv4, IPv6, or DNS) |
 //! | `DREVO_PORT`      | `8080`      | TCP port (1..=65535)              |
 //! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `drevo.redb`    |
+//! | `DREVO_ENGINE`    | `kv`        | Cypher execution engine: `kv` (today's storage engine) or `native` (read-only queries served from the in-memory native mirror, writes still on KV — RFC #307 Phase 6) |
 //!
 //! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
 //! variables opt the server into hosting `POST /v1/embeddings` by proxying a
@@ -54,7 +55,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::api::{build_router, ApiState};
-use crate::bolt::listener::accept_and_run_session;
+use crate::bolt::listener::{accept_and_run_session, accept_and_run_session_with_mirror};
 use crate::catalog::Catalog;
 
 /// Default bind address — every interface (container convention).
@@ -86,6 +87,23 @@ pub struct Config {
     /// Directory that holds the redb database file. The full path is
     /// produced by [`Config::db_path`].
     pub data_dir: PathBuf,
+    /// Which engine serves Cypher queries (engine flip, RFC #307 Phase 6).
+    pub engine: EngineMode,
+}
+
+/// Cypher execution engine selection, parsed from `DREVO_ENGINE`.
+///
+/// `Native` routes read-only queries through the per-database
+/// [`crate::native_mirror::NativeMirror`]; writes (and reads while the
+/// mirror is stale) execute on the KV engine either way, so the choice
+/// never affects durability or answers — only read latency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EngineMode {
+    /// Every query executes on the KV storage engine (today's default).
+    #[default]
+    Kv,
+    /// Read-only queries are served from the native read mirror.
+    Native,
 }
 
 /// Errors produced while parsing or validating a [`Config`].
@@ -118,6 +136,12 @@ pub enum ConfigError {
     InvalidDataDir {
         /// Human-readable parse failure.
         reason: String,
+    },
+    /// `DREVO_ENGINE` was set to something other than `kv` or `native`.
+    #[error("invalid DREVO_ENGINE value `{value}`: expected `kv` or `native`")]
+    InvalidEngine {
+        /// The raw env-var value.
+        value: String,
     },
 }
 
@@ -157,10 +181,20 @@ impl Config {
             });
         }
 
+        let engine = match getter("DREVO_ENGINE") {
+            None => EngineMode::default(),
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "kv" => EngineMode::Kv,
+                "native" => EngineMode::Native,
+                _ => return Err(ConfigError::InvalidEngine { value: raw }),
+            },
+        };
+
         Ok(Self {
             host,
             port,
             data_dir: PathBuf::from(data_dir_raw),
+            engine,
         })
     }
 
@@ -364,7 +398,32 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     // shared default handle (#251 slice 3); no-op unless `embeddings-proxy` is
     // built and `DREVO_EMBEDDINGS_UPSTREAM` is set.
     configure_query_embedder(&catalog)?;
+    // Engine flip (RFC #307 Phase 6): in native mode, hand out per-database
+    // read mirrors and warm the default database's one so the first reads
+    // are already served natively. A failed initial build only degrades to
+    // KV-served reads (never wrong answers), so it warns instead of failing
+    // startup.
+    let mirrors = match cfg.engine {
+        EngineMode::Kv => None,
+        EngineMode::Native => {
+            let registry = Arc::new(crate::native_mirror::MirrorRegistry::new());
+            let default_db = catalog.default_db();
+            let default_mirror = registry.for_db(&default_db);
+            match default_mirror.rebuild_blocking(&default_db) {
+                Ok(()) => tracing::info!("engine=native — read mirror warm on default database"),
+                Err(err) => tracing::warn!(
+                    error = %err,
+                    "engine=native — initial mirror build failed; reads fall back to KV until a rebuild succeeds"
+                ),
+            }
+            Some(registry)
+        }
+    };
     let state = ApiState::with_catalog(Arc::clone(&catalog));
+    let state = match &mirrors {
+        Some(registry) => state.with_native_mirrors(Arc::clone(registry)),
+        None => state,
+    };
     // Opt-in embeddings proxy (Phase 19 task `00217`); no-op unless the
     // `embeddings-proxy` feature is built and `DREVO_EMBEDDINGS_UPSTREAM` set.
     let state = configure_embeddings(state)?;
@@ -391,13 +450,25 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
             })?;
         tracing::info!(%bolt_addr, "bolt listening");
         let bolt_db = Arc::clone(&db);
+        // In native mode Bolt shares the default database's read mirror —
+        // Bolt has no database selection wired, so the default handle's
+        // mirror covers every session.
+        let bolt_mirror = mirrors.as_ref().map(|registry| registry.for_db(&db));
         tokio::spawn(async move {
             loop {
                 match bolt_listener.accept().await {
                     Ok((socket, _peer)) => {
                         let conn_db = Arc::clone(&bolt_db);
+                        let conn_mirror = bolt_mirror.clone();
                         tokio::spawn(async move {
-                            if let Err(err) = accept_and_run_session(socket, &conn_db).await {
+                            let ended = match conn_mirror {
+                                Some(mirror) => {
+                                    accept_and_run_session_with_mirror(socket, &conn_db, &mirror)
+                                        .await
+                                }
+                                None => accept_and_run_session(socket, &conn_db).await,
+                            };
+                            if let Err(err) = ended {
                                 tracing::warn!(error = %err, "bolt session ended with error");
                             }
                         });

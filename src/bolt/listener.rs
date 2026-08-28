@@ -143,6 +143,30 @@ pub async fn accept_and_run_session(socket: TcpStream, drevo: &Drevo) -> BoltRes
     run_session_on(&mut stream, drevo).await
 }
 
+/// Engine-flip counterpart of [`accept_and_run_session`] (RFC #307
+/// Phase 6): the session's autocommit statements route through `mirror`
+/// (read-only queries served from the native read mirror, writes on KV);
+/// explicit transactions execute directly on the KV engine. `drevo` must
+/// be the handle `mirror` mirrors.
+///
+/// # Errors
+///
+/// Same as [`accept_and_run_session`].
+pub async fn accept_and_run_session_with_mirror(
+    socket: TcpStream,
+    drevo: &std::sync::Arc<crate::db::Drevo>,
+    mirror: &std::sync::Arc<crate::native_mirror::NativeMirror>,
+) -> BoltResult<()> {
+    let accepted = accept_handshake_on(socket).await?;
+    if accepted.negotiated.is_none() {
+        return Ok(());
+    }
+    let mut stream = accepted.stream;
+    let session = Session::new(drevo)
+        .with_native_mirror(std::sync::Arc::clone(drevo), std::sync::Arc::clone(mirror));
+    run_session_on_inner(&mut stream, session).await
+}
+
 /// Authenticating counterpart of [`accept_and_run_session`]. Every
 /// `HELLO` is checked against `authenticator` (a shared
 /// [`crate::bolt::auth::Authenticator`] — most commonly an
