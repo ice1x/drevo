@@ -312,6 +312,28 @@ fn create_and_match_parity() {
             ],
         },
         Scenario {
+            // Count pushdown: the bare shapes are answered from
+            // cardinalities (on every engine/index configuration of this
+            // harness), the guarded shapes from the ordinary scan — all of
+            // them must agree across engines either way.
+            name: "count pushdown agrees across engines",
+            setup: TEAM,
+            checks: &[
+                "MATCH (n) RETURN count(*)",
+                "MATCH () RETURN count(*)",
+                "MATCH (n) RETURN count(n)",
+                "MATCH (n) RETURN count(*) AS total",
+                "MATCH (n:Person) RETURN count(*)",
+                "MATCH (n:Missing) RETURN count(*)",
+                "MATCH (n) WHERE n.age > 30 RETURN count(*)",
+                "MATCH (n {team: 'core'}) RETURN count(*)",
+                "MATCH (n) RETURN count(DISTINCT n)",
+                "MATCH (a)-->(b) RETURN count(*)",
+                "MATCH (n:Person) RETURN count(*) AS c UNION ALL \
+                 MATCH (n:Tag) RETURN count(*) AS c",
+            ],
+        },
+        Scenario {
             name: "relationships project identically",
             setup: TEAM,
             checks: &[

@@ -2036,6 +2036,15 @@ impl Drevo {
     /// Used by JSON export (Phase 9 task `00055`). Returns nodes sorted by
     /// ascending id so the dump is deterministic regardless of `scan_prefix`
     /// implementation details on the chosen backend.
+    /// Count the stored node records without decoding a single one — the
+    /// KV half of the `count(*)` pushdown (RFC #307). Counts the `node:`
+    /// keyspace; only node records live under that prefix (uuid / title /
+    /// kind indexes use their own `node_*:` prefixes, which `node:` does
+    /// not string-prefix).
+    pub(crate) fn count_node_records(&self) -> Result<u64> {
+        Ok(self.backend.count_prefix(PREFIX_NODE)?)
+    }
+
     pub(crate) fn collect_all_nodes(&self) -> Result<Vec<Node>> {
         let entries = self.backend.scan_prefix(PREFIX_NODE)?;
         let mut nodes = Vec::with_capacity(entries.len());

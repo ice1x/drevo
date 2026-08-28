@@ -123,6 +123,34 @@ pub trait GraphEngine {
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
     fn all_nodes(&self) -> Result<Vec<Arc<Node>>>;
 
+    /// The number of nodes in the store — the `MATCH (n) RETURN count(*)`
+    /// pushdown target: a bare count needs no record materialisation at all.
+    ///
+    /// The default counts a full [`crate::engine::GraphEngine::all_nodes`]
+    /// scan, which is correct for any engine; implementations with a cheap
+    /// cardinality (the native engine's node map, the KV engine's key
+    /// population) override it.
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::CoreError`] from the underlying store.
+    fn count_nodes(&self) -> Result<u64> {
+        Ok(self.all_nodes()?.len() as u64)
+    }
+
+    /// The number of nodes whose **primary kind** equals `kind` — the
+    /// kind half of the labelled-count pushdown (secondary `_labels`
+    /// matches are the label index's business, not the engine's).
+    ///
+    /// The default counts a full
+    /// [`crate::engine::GraphEngine::nodes_by_kind`] page; engines with a
+    /// kind index override it with the bucket's cardinality.
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::CoreError`] from the underlying store.
+    fn count_nodes_by_kind(&self, kind: &str) -> Result<u64> {
+        Ok(self.nodes_by_kind(kind, usize::MAX, 0)?.len() as u64)
+    }
+
     /// Return **every** edge in the store (a full scan — the anonymous
     /// `MATCH ()-[r]->()`).
     ///

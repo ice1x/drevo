@@ -1326,6 +1326,17 @@ impl GraphEngine for NativeGraph {
         Ok(read(&self.inner).all_nodes_arc())
     }
 
+    fn count_nodes(&self) -> Result<u64> {
+        Ok(read(&self.inner).nodes.len() as u64)
+    }
+
+    fn count_nodes_by_kind(&self, kind: &str) -> Result<u64> {
+        Ok(read(&self.inner)
+            .kind_index
+            .get(kind)
+            .map_or(0, |ids| ids.len()) as u64)
+    }
+
     fn all_edges(&self) -> Result<Vec<Edge>> {
         Ok(read(&self.inner).all_edges())
     }

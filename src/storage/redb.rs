@@ -380,6 +380,25 @@ impl StorageBackend for RedbBackend {
         Ok(results)
     }
 
+    fn count_prefix(&self, prefix: &[u8]) -> Result<u64> {
+        let db = self.db();
+        let read_txn = db.begin_read()?;
+        let table = match read_txn.open_table(DATA_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        let mut count = 0u64;
+        for entry in table.range(prefix..)? {
+            let entry = entry?;
+            if !entry.0.value().starts_with(prefix) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
     fn scan_prefix_limited(
         &self,
         prefix: &[u8],

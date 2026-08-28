@@ -134,6 +134,23 @@ pub trait StorageBackend: Send + Sync {
             .collect())
     }
 
+    /// Count the keys under `prefix` without materialising their values —
+    /// the storage half of the `count(*)` pushdown (RFC
+    /// `docs/rfc-native-core.md` #307): a bare count needs no decode and no
+    /// row materialisation, only the key population.
+    ///
+    /// The default implementation counts a full
+    /// [`scan_prefix`](Self::scan_prefix), which is correct but copies every
+    /// row; backends with an ordered range (redb, the in-memory `BTreeMap`)
+    /// override it to walk keys only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`](super::error::StorageError) on I/O or backend failure.
+    fn count_prefix(&self, prefix: &[u8]) -> Result<u64> {
+        Ok(self.scan_prefix(prefix)?.len() as u64)
+    }
+
     /// Flush any buffered writes to durable storage.
     ///
     /// For in-memory backends this may be a no-op or trigger a snapshot.

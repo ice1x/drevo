@@ -164,6 +164,14 @@ impl StorageBackend for MemoryBackend {
         Ok(results)
     }
 
+    fn count_prefix(&self, prefix: &[u8]) -> Result<u64> {
+        let data = self.data.read().map_err(|_| StorageError::LockPoisoned)?;
+        Ok(data
+            .range(prefix.to_vec()..)
+            .take_while(|(k, _)| k.starts_with(prefix))
+            .count() as u64)
+    }
+
     fn scan_prefix_limited(
         &self,
         prefix: &[u8],
