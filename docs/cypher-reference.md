@@ -506,6 +506,7 @@ procedures.
 | `db.relationshipTypes()` | `relationshipType` | every distinct relationship type, sorted |
 | `db.propertyKeys()` | `propertyKey` | every distinct property key across nodes and relationships, sorted (the reserved `_labels` key is never exposed) |
 | `drevo.info()` | `version, git_sha, build_date, protocol` | the running build's version + metadata, so a Bolt client can assert a minimum-compatible drevo (issue #303) |
+| `drevo.engine.status()` | `engine, mirror_fresh, native_hits, kv_fallbacks, kv_routed, rebuild_errors` | which engine serves this database's Cypher (`kv` or `native`) and the native read mirror's routing counters (RFC #307) |
 
 ### CALL
 
@@ -808,6 +809,25 @@ contract is stable across versions, and a client that finds the procedure absent
 ```cypher
 CALL drevo.info() YIELD version, git_sha, build_date, protocol
 RETURN version, git_sha, build_date, protocol
+```
+
+### Engine status (RFC #307)
+
+`CALL drevo.engine.status()` reports which engine serves this database's
+Cypher and, when the server runs with `DREVO_ENGINE=native`, the read
+mirror's live routing counters — the soak signal for flipping the engine
+default. `engine` is `"kv"` (every query on the storage engine; the five
+counter columns are `null`) or `"native"`; `mirror_fresh` says whether the
+mirror's snapshot matches the store's mutation epoch right now;
+`native_hits` / `kv_fallbacks` / `kv_routed` count reads served natively,
+reads that fell back to KV while the mirror was stale, and queries (writes,
+non-mirrorable procedures — this call included) routed to KV by design;
+`rebuild_errors` counts failed background rebuilds. Read-only, no
+arguments, no side effects.
+
+```cypher
+CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits
+RETURN engine, mirror_fresh, native_hits
 ```
 
 ### Semantic-index control plane (#251, Phase 21)

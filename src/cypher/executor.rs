@@ -4577,6 +4577,45 @@ impl<'a> Executor<'a> {
         ]])
     }
 
+    /// `CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits,
+    /// kv_fallbacks, kv_routed, rebuild_errors` — engine-flip observability
+    /// (RFC #307): which engine serves this database's Cypher, and how the
+    /// native read mirror has routed queries so far. The soak signal for
+    /// flipping `DREVO_ENGINE` defaults.
+    ///
+    /// With no mirror attached (`DREVO_ENGINE=kv`, or an embedded `Drevo`),
+    /// reports `engine = "kv"` with `NULL` statistics. Deliberately **not**
+    /// on the mirror's own allowlist: the call routes to the KV path, where
+    /// the attached mirror's live counters are readable.
+    fn proc_engine_status(&self) -> ExecResultT<Vec<Vec<Value>>> {
+        let Some(db) = self.secondary else {
+            return Err(ExecError::EngineCapability {
+                feature: "drevo.engine.status".into(),
+            });
+        };
+        Ok(vec![match db.native_mirror() {
+            Some(mirror) => {
+                let stats = mirror.stats();
+                vec![
+                    Value::String("native".to_string()),
+                    Value::Bool(mirror.is_fresh(db)),
+                    Value::Integer(stats.native_hits as i64),
+                    Value::Integer(stats.kv_fallbacks as i64),
+                    Value::Integer(stats.kv_routed as i64),
+                    Value::Integer(stats.rebuild_errors as i64),
+                ]
+            }
+            None => vec![
+                Value::String("kv".to_string()),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            ],
+        }])
+    }
+
     /// `CALL drevo.semantic.reindex(label, embedding_property, batch_size)
     /// YIELD scanned, embedded, skipped, remaining` (#262) — backfill embeddings
     /// for nodes that already existed when an `Auto` target was registered.
@@ -4920,6 +4959,7 @@ impl<'a> Executor<'a> {
             "drevo.semantic.reindexRel" => self.proc_semantic_reindex_rel(args, span),
             "drevo.semantic.status" => self.proc_semantic_status(args, span),
             "drevo.info" => Self::proc_drevo_info(),
+            "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
             "db.labels" => {
@@ -6511,6 +6551,15 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // #303 — build/version introspection so a Bolt client can assert a
         // minimum-compatible drevo. Read-only, no auth; stable YIELD contract.
         "drevo.info" => Some(&["version", "git_sha", "build_date", "protocol"]),
+        // Engine-flip observability: engine mode + mirror routing counters.
+        "drevo.engine.status" => Some(&[
+            "engine",
+            "mirror_fresh",
+            "native_hits",
+            "kv_fallbacks",
+            "kv_routed",
+            "rebuild_errors",
+        ]),
         // Full-text search (issue #208): BM25-ranked matching nodes.
         "fts.search" => Some(&["node", "score"]),
         // Relationship full-text search (issue #227-B): BM25-ranked edges.
@@ -6552,6 +6601,8 @@ fn procedure_arity(name: &str) -> usize {
         // #303: drevo.info() — no arguments (explicit; the `_ => 0` default
         // would also cover it).
         "drevo.info" => 0,
+        // drevo.engine.status() — no arguments.
+        "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
         "fts.search" | "fts.searchRelationships" => 2,
         // The db.* introspection procedures take no arguments.
