@@ -990,33 +990,83 @@ impl NativeGraph {
     }
 
     /// Open a **durable** engine backed by a write-ahead log at `path` (RFC
-    /// ACID "D", Phase 3). If the file exists its ops are replayed to
+    /// ACID "D", Phase 3). If the file exists its records are replayed to
     /// reconstruct the graph; then the file is opened for append and every
     /// subsequent direct write is logged and fsynced before it returns, so a
     /// write that has returned survives a crash. Reopening the same path
     /// recovers the graph.
     ///
-    /// Both direct writes and transactions ([`begin`](Self::begin)) are durable:
-    /// a committed transaction is logged as one fsynced batch, so it recovers
-    /// all-or-nothing.
+    /// Both direct writes and transactions ([`begin`](Self::begin)) are
+    /// durable, and a committed transaction is logged as **one** record
+    /// (a JSON array of its ops), so it recovers all-or-nothing: a crash
+    /// that tears the batch mid-write loses the whole transaction — which
+    /// was never acknowledged — never half of it.
+    ///
+    /// # Crash recovery
+    ///
+    /// An acknowledged write returns only after fsync, so a crash can only
+    /// tear the **unacknowledged tail** of the log. Recovery therefore
+    /// truncates a torn final record (invalid bytes with nothing after
+    /// them) and opens successfully — losing only what was never
+    /// acknowledged — while an invalid record that is *followed by valid
+    /// data* is genuine corruption of acknowledged history and refuses to
+    /// open rather than silently dropping writes.
     ///
     /// # Errors
-    /// [`CoreError::Io`] / [`CoreError::Json`] on a filesystem or log-parse
-    /// failure.
+    /// [`CoreError::Io`] on a filesystem failure or on corruption before
+    /// the tail; [`CoreError::Json`] on an encode failure.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_durable(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        use std::io::{BufRead, BufReader};
+        use std::io::Read;
         let path = path.as_ref();
         let mut inner = Inner::default();
         if path.exists() {
-            let f = std::fs::File::open(path)?;
-            for line in BufReader::new(f).lines() {
-                let line = line?;
-                if line.trim().is_empty() {
-                    continue;
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+            let mut valid_end = 0usize; // byte offset just past the last valid record
+            let mut pos = 0usize;
+            let mut torn = false;
+            while pos < bytes.len() {
+                let (line_end, next) = match bytes[pos..].iter().position(|b| *b == b'\n') {
+                    Some(i) => (pos + i, pos + i + 1),
+                    None => (bytes.len(), bytes.len()),
+                };
+                match Self::parse_wal_record(&bytes[pos..line_end]) {
+                    Some(ops) => {
+                        for op in ops {
+                            inner.apply_wal_op(op);
+                        }
+                        valid_end = next;
+                        pos = next;
+                    }
+                    None => {
+                        // Invalid record: a torn tail only if nothing but
+                        // whitespace follows it; otherwise acknowledged
+                        // history is corrupt — refuse.
+                        let rest_is_blank = bytes[next..].iter().all(|b| b.is_ascii_whitespace());
+                        if rest_is_blank {
+                            torn = true;
+                            break;
+                        }
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "corrupt write-ahead-log record at byte {pos} of {} \
+                                 (valid records follow it, so this is not a torn tail); \
+                                 refusing to open rather than drop acknowledged writes",
+                                path.display()
+                            ),
+                        )
+                        .into());
+                    }
                 }
-                let op: WalOp = serde_json::from_str(&line)?;
-                inner.apply_wal_op(op);
+            }
+            if torn {
+                // Drop the unacknowledged tail so the log is clean for append.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(path)?
+                    .set_len(valid_end as u64)?;
             }
         }
         let file = std::fs::OpenOptions::new()
@@ -1031,6 +1081,24 @@ impl NativeGraph {
             })),
             feed: std::sync::Mutex::new(ChangeFeed::default()),
         })
+    }
+
+    /// Parse one write-ahead-log line: a bare [`WalOp`] object (direct
+    /// writes, and every record of the pre-batch format) or a JSON array of
+    /// ops (a transaction batch, all-or-nothing by construction). A blank
+    /// line parses as zero ops. `None` means the bytes are not a complete
+    /// valid record.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn parse_wal_record(line: &[u8]) -> Option<Vec<WalOp>> {
+        let text = std::str::from_utf8(line).ok()?.trim();
+        if text.is_empty() {
+            return Some(Vec::new());
+        }
+        if text.starts_with('[') {
+            serde_json::from_str::<Vec<WalOp>>(text).ok()
+        } else {
+            serde_json::from_str::<WalOp>(text).ok().map(|op| vec![op])
+        }
     }
 
     /// Compact the write-ahead log: rewrite it as the current state's snapshot
@@ -1076,8 +1144,12 @@ impl NativeGraph {
     }
 
     /// Append a batch of ops and fsync **once**, when this engine is durable —
-    /// the transaction path, so a whole commit costs a single fsync. A no-op for
-    /// an in-memory-only engine or an empty batch.
+    /// the transaction path, so a whole commit costs a single fsync. A
+    /// multi-op batch is written as **one** record (a JSON array), so a crash
+    /// that tears it loses the whole never-acknowledged batch — recovery can
+    /// never replay half a transaction. A single op stays a bare-object line
+    /// (the format every log has always used). A no-op for an in-memory-only
+    /// engine or an empty batch.
     #[cfg(not(target_arch = "wasm32"))]
     fn wal_append_batch(&self, ops: &[WalOp]) -> Result<()> {
         use std::io::Write;
@@ -1086,11 +1158,12 @@ impl NativeGraph {
         }
         if let Some(wal) = &self.wal {
             let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
-            for op in ops {
-                let mut line = serde_json::to_string(op)?;
-                line.push('\n');
-                sink.file.write_all(line.as_bytes())?;
-            }
+            let mut line = match ops {
+                [op] => serde_json::to_string(op)?,
+                many => serde_json::to_string(many)?,
+            };
+            line.push('\n');
+            sink.file.write_all(line.as_bytes())?;
             sink.file.sync_all()?;
         }
         Ok(())
