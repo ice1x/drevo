@@ -169,3 +169,81 @@ async fn run_boots_native_durable_without_creating_a_redb_file() {
     );
     server.abort();
 }
+
+// ── Bolt over the durable engine ───────────────────────────────────────
+
+mod bolt_durable {
+    use super::*;
+    use drevo::bolt::packstream::Value as BoltValue;
+    use drevo::bolt::session::{ClientMessage, ServerMessage, Session};
+    use std::collections::BTreeMap;
+
+    fn dict<I: IntoIterator<Item = (&'static str, BoltValue)>>(
+        entries: I,
+    ) -> BTreeMap<String, BoltValue> {
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
+    fn run_statement(session: &mut Session<'_>, query: &str) -> Vec<ServerMessage> {
+        session.handle(ClientMessage::Run {
+            query: query.to_string(),
+            parameters: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        })
+    }
+
+    fn pull_all(session: &mut Session<'_>) -> Vec<ServerMessage> {
+        session.handle(ClientMessage::Pull {
+            extra: dict([("n", BoltValue::Integer(-1))]),
+        })
+    }
+
+    fn assert_success(messages: &[ServerMessage]) {
+        assert!(
+            matches!(messages.last(), Some(ServerMessage::Success { .. })),
+            "expected SUCCESS, got {messages:?}"
+        );
+    }
+
+    #[test]
+    fn autocommit_write_and_read_flow_through_the_durable_session() {
+        let service = Arc::new(NativeService::in_memory());
+        let mut session = Session::new_durable(Arc::clone(&service));
+        assert_success(&session.handle(ClientMessage::Hello { extra: dict([]) }));
+
+        assert_success(&run_statement(
+            &mut session,
+            "CREATE (:Person {title: 'ada'})",
+        ));
+        assert_success(&pull_all(&mut session));
+
+        assert_success(&run_statement(&mut session, "MATCH (n) RETURN n.title"));
+        let records = pull_all(&mut session);
+        let titles: Vec<&str> = records
+            .iter()
+            .filter_map(|m| match m {
+                ServerMessage::Record { fields } => match &fields[0] {
+                    BoltValue::String(s) => Some(s.as_str()),
+                    other => panic!("expected string, got {other:?}"),
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(titles, ["ada"]);
+    }
+
+    #[test]
+    fn begin_is_refused_on_the_durable_engine() {
+        let service = Arc::new(NativeService::in_memory());
+        let mut session = Session::new_durable(service);
+        assert_success(&session.handle(ClientMessage::Hello { extra: dict([]) }));
+        let replies = session.handle(ClientMessage::Begin { extra: dict([]) });
+        assert!(
+            matches!(replies.last(), Some(ServerMessage::Failure { .. })),
+            "BEGIN must fail on the durable engine, got {replies:?}"
+        );
+    }
+}

@@ -106,8 +106,9 @@ pub enum EngineMode {
     Native,
     /// The durable native engine IS the store of record — no KV store at
     /// all. Serves the minimal native HTTP surface
-    /// ([`crate::native_api::build_native_router`]); the KV REST surface
-    /// and Bolt are not wired for this mode yet.
+    /// ([`crate::native_api::build_native_router`]) and, when
+    /// `DREVO_BOLT_PORT` is set, Bolt (autocommit statements only). The KV
+    /// REST surface is not wired for this mode.
     NativeDurable,
 }
 
@@ -522,9 +523,10 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
 /// Serve `DREVO_ENGINE=native-durable`: the WAL-backed native engine as the
 /// store of record — no KV store, no catalog. Opens (or creates)
 /// `<data_dir>/native.wal`, compacts and indexes it, and serves the minimal
-/// native HTTP surface. Bolt is not wired for this mode yet; a set
-/// `DREVO_BOLT_PORT` is ignored with a warning rather than silently serving
-/// a different engine.
+/// native HTTP surface plus (when `DREVO_BOLT_PORT` is set) a Bolt listener
+/// whose sessions execute on the durable service — autocommit statements
+/// only; `BEGIN` is refused until the executor can drive native
+/// transactions.
 async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunError> {
     let wal = cfg.data_dir.join("native.wal");
     tracing::info!(wal = %wal.display(), "engine=native-durable — opening the durable native store");
@@ -533,10 +535,41 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     );
     tracing::info!("durable native store ready");
 
-    if std::env::var("DREVO_BOLT_PORT").is_ok() {
-        tracing::warn!(
-            "DREVO_BOLT_PORT is set, but Bolt is not wired for native-durable yet — ignoring"
-        );
+    // Optional Bolt listener — same opt-in as the KV path, served by the
+    // durable-native session (autocommit only; BEGIN is refused).
+    if let Some(bolt_port) = std::env::var("DREVO_BOLT_PORT")
+        .ok()
+        .and_then(|raw| raw.parse::<u16>().ok())
+    {
+        let bolt_addr = SocketAddr::new(addr.ip(), bolt_port);
+        let bolt_listener = tokio::net::TcpListener::bind(bolt_addr)
+            .await
+            .map_err(|source| RunError::Bind {
+                addr: bolt_addr,
+                source,
+            })?;
+        tracing::info!(%bolt_addr, "bolt listening (native-durable)");
+        let bolt_service = std::sync::Arc::clone(&service);
+        tokio::spawn(async move {
+            loop {
+                match bolt_listener.accept().await {
+                    Ok((socket, _peer)) => {
+                        let conn_service = std::sync::Arc::clone(&bolt_service);
+                        tokio::spawn(async move {
+                            if let Err(err) = crate::bolt::listener::accept_and_run_session_durable(
+                                socket,
+                                &conn_service,
+                            )
+                            .await
+                            {
+                                tracing::warn!(error = %err, "bolt session ended with error");
+                            }
+                        });
+                    }
+                    Err(err) => tracing::warn!(error = %err, "bolt accept failed"),
+                }
+            }
+        });
     }
 
     let state = crate::native_api::NativeApiState::new(service);
