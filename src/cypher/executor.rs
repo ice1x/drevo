@@ -2615,13 +2615,25 @@ impl<'a> Executor<'a> {
             // index is present (it catches secondary-label-only matches that
             // `nodes_by_kind` alone would miss); without one, leave label
             // narrowing to the exact filter and rely on the property set / scan.
+            //
+            // Neither index may be trusted once THIS statement has written:
+            // the indexes are synced from the change-feed between statements,
+            // so a candidate set narrowed through them can be missing this
+            // statement's own writes — a false negative that would drop rows.
+            // Falling back to the scan + exact filter (which reads the live
+            // engine) keeps a stale index costing only speed, never answers.
+            let indexes_trusted = !self.statement_has_written();
             let label_cands = match (self.native_labels, first_label) {
-                (Some(label_idx), Some(label)) => {
+                (Some(label_idx), Some(label)) if indexes_trusted => {
                     Some(self.native_label_candidates(label_idx, label)?)
                 }
                 _ => None,
             };
-            let prop_cands = self.native_property_candidates(pattern, row)?;
+            let prop_cands = if indexes_trusted {
+                self.native_property_candidates(pattern, row)?
+            } else {
+                None
+            };
             match (label_cands, prop_cands) {
                 (Some(l), Some(p)) => intersect_nodes_by_id(l, p),
                 (Some(l), None) => l,
@@ -2638,6 +2650,20 @@ impl<'a> Executor<'a> {
             out.push(nv);
         }
         Ok(out)
+    }
+
+    /// `true` once this statement has performed any write — the point after
+    /// which the pre-statement index snapshots may be missing this
+    /// statement's own effects and must not narrow candidate sets.
+    fn statement_has_written(&self) -> bool {
+        let s = &self.stats;
+        s.nodes_created > 0
+            || s.relationships_created > 0
+            || s.properties_set > 0
+            || s.nodes_deleted > 0
+            || s.relationships_deleted > 0
+            || s.labels_added > 0
+            || s.labels_removed > 0
     }
 
     /// The `NodeValue` projection of a live record — served from the value
@@ -4882,8 +4908,11 @@ impl<'a> Executor<'a> {
 
         // On the native engine, answer from the change-feed-fed full-text index;
         // otherwise use the KV store's `search_fts`. Both return nodes ranked by
-        // descending BM25 score.
-        if let Some(fts) = self.native_fts {
+        // descending BM25 score. Once this statement has written, the
+        // pre-statement FTS snapshot may be missing those writes, and full-text
+        // has no exact-scan fallback — so the index is treated as absent
+        // (surfacing the engine-capability error) rather than answering stale.
+        if let Some(fts) = self.native_fts.filter(|_| !self.statement_has_written()) {
             let mut rows = Vec::new();
             for (id, score) in fts.search(&query, k) {
                 if let Some(node) = self.engine().get_node(id)? {
