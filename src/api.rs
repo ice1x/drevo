@@ -995,7 +995,7 @@ fn using_response(name: &str) -> CypherResponse {
 }
 
 /// Convert a JSON parameter value into a Cypher runtime value.
-fn json_to_cypher_value(v: serde_json::Value) -> CypherValue {
+pub(crate) fn json_to_cypher_value(v: serde_json::Value) -> CypherValue {
     match v {
         serde_json::Value::Null => CypherValue::Null,
         serde_json::Value::Bool(b) => CypherValue::Bool(b),
@@ -1125,7 +1125,7 @@ fn collect_graph(rows: &[Vec<CypherValue>]) -> CypherGraph {
     }
 }
 
-fn exec_result_to_response(result: ExecResult) -> CypherResponse {
+pub(crate) fn exec_result_to_response(result: ExecResult) -> CypherResponse {
     let rows: Vec<Vec<serde_json::Value>> = result
         .rows
         .iter()

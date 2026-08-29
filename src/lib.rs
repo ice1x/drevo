@@ -179,6 +179,11 @@ pub use drevo_core::native_fts;
 /// `MATCH (n:Label)` gathers candidates from an index union instead of a full
 /// node scan. Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
 pub use drevo_core::native_label_index;
+/// HTTP surface for the durable-native server mode
+/// (`DREVO_ENGINE=native-durable`, RFC `docs/rfc-native-core.md`, #307,
+/// Phase 4/7) — a minimal router over [`native_service::NativeService`]:
+/// liveness, identity, and Cypher. Compiled with the `http` feature.
+pub mod native_api;
 /// Native read mirror — the engine-flip execution router (RFC
 /// `docs/rfc-native-core.md`, #307, Phase 6 slice A). Serves fresh read-only
 /// Cypher from a [`native::NativeGraph`] snapshot with the native indexes and

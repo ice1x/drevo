@@ -25,7 +25,7 @@
 //! | `DREVO_HOST`      | `0.0.0.0`   | Bind address (IPv4, IPv6, or DNS) |
 //! | `DREVO_PORT`      | `8080`      | TCP port (1..=65535)              |
 //! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `drevo.redb`    |
-//! | `DREVO_ENGINE`    | `kv`        | Cypher execution engine: `kv` (today's storage engine) or `native` (read-only queries served from the in-memory native mirror, writes still on KV — RFC #307 Phase 6) |
+//! | `DREVO_ENGINE`    | `kv`        | Cypher execution engine: `kv` (today's storage engine), `native` (read-only queries served from the in-memory native mirror, writes still on KV — RFC #307 Phase 6), or `native-durable` (the WAL-backed native engine IS the store of record; minimal HTTP surface, no KV — Phase 4/7) |
 //!
 //! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
 //! variables opt the server into hosting `POST /v1/embeddings` by proxying a
@@ -104,6 +104,11 @@ pub enum EngineMode {
     Kv,
     /// Read-only queries are served from the native read mirror.
     Native,
+    /// The durable native engine IS the store of record — no KV store at
+    /// all. Serves the minimal native HTTP surface
+    /// ([`crate::native_api::build_native_router`]); the KV REST surface
+    /// and Bolt are not wired for this mode yet.
+    NativeDurable,
 }
 
 /// Errors produced while parsing or validating a [`Config`].
@@ -137,8 +142,8 @@ pub enum ConfigError {
         /// Human-readable parse failure.
         reason: String,
     },
-    /// `DREVO_ENGINE` was set to something other than `kv` or `native`.
-    #[error("invalid DREVO_ENGINE value `{value}`: expected `kv` or `native`")]
+    /// `DREVO_ENGINE` was set to an unknown engine name.
+    #[error("invalid DREVO_ENGINE value `{value}`: expected `kv`, `native`, or `native-durable`")]
     InvalidEngine {
         /// The raw env-var value.
         value: String,
@@ -186,6 +191,7 @@ impl Config {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
                 "kv" => EngineMode::Kv,
                 "native" => EngineMode::Native,
+                "native-durable" => EngineMode::NativeDurable,
                 _ => return Err(ConfigError::InvalidEngine { value: raw }),
             },
         };
@@ -285,6 +291,11 @@ pub enum RunError {
     /// opened).
     #[error("failed to open database catalog: {0}")]
     CatalogOpen(#[from] crate::catalog::CatalogError),
+    /// The durable native store could not be opened (WAL recovery,
+    /// compaction, or index build failed) in `DREVO_ENGINE=native-durable`
+    /// mode.
+    #[error("failed to open the durable native store: {0}")]
+    NativeOpen(#[source] crate::error::DrevoError),
     /// The embeddings proxy was requested via `DREVO_EMBEDDINGS_UPSTREAM` but
     /// its configuration is invalid (bad URL, unbuildable client). Fail fast
     /// so a misconfigured RAG backend is loud, not silently degraded.
@@ -386,6 +397,12 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
         );
     }
 
+    // Durable-native mode never opens a KV store at all — branch to its own
+    // serving path before the catalog exists.
+    if cfg.engine == EngineMode::NativeDurable {
+        return run_native_durable(cfg, addr).await;
+    }
+
     // Open the multi-database catalog rooted at the data directory. Every
     // `<name>.redb` file becomes a database; `default` maps to the legacy
     // `drevo.redb`, so a pre-catalog data directory opens unchanged. The
@@ -404,7 +421,8 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     // KV-served reads (never wrong answers), so it warns instead of failing
     // startup.
     let mirrors = match cfg.engine {
-        EngineMode::Kv => None,
+        // NativeDurable branched off above; it never reaches the KV path.
+        EngineMode::Kv | EngineMode::NativeDurable => None,
         EngineMode::Native => {
             let registry = Arc::new(crate::native_mirror::MirrorRegistry::new());
             let default_db = catalog.default_db();
@@ -491,6 +509,48 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
             // Flip /health and /ready to 503 *before* axum begins
             // draining in-flight requests so that load balancers stop
             // forwarding new traffic during the drain window.
+            shutdown_state.signal_shutdown();
+            tracing::info!("shutdown signal received, draining");
+        })
+        .await
+        .map_err(RunError::Serve)?;
+
+    tracing::info!("shut down cleanly");
+    Ok(())
+}
+
+/// Serve `DREVO_ENGINE=native-durable`: the WAL-backed native engine as the
+/// store of record — no KV store, no catalog. Opens (or creates)
+/// `<data_dir>/native.wal`, compacts and indexes it, and serves the minimal
+/// native HTTP surface. Bolt is not wired for this mode yet; a set
+/// `DREVO_BOLT_PORT` is ignored with a warning rather than silently serving
+/// a different engine.
+async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunError> {
+    let wal = cfg.data_dir.join("native.wal");
+    tracing::info!(wal = %wal.display(), "engine=native-durable — opening the durable native store");
+    let service = std::sync::Arc::new(
+        crate::native_service::NativeService::open(&wal).map_err(RunError::NativeOpen)?,
+    );
+    tracing::info!("durable native store ready");
+
+    if std::env::var("DREVO_BOLT_PORT").is_ok() {
+        tracing::warn!(
+            "DREVO_BOLT_PORT is set, but Bolt is not wired for native-durable yet — ignoring"
+        );
+    }
+
+    let state = crate::native_api::NativeApiState::new(service);
+    let shutdown_state = state.clone();
+    let router = crate::native_api::build_native_router(state);
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|source| RunError::Bind { addr, source })?;
+    tracing::info!(%addr, "listening (native-durable)");
+
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
             shutdown_state.signal_shutdown();
             tracing::info!("shutdown signal received, draining");
         })
