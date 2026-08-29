@@ -409,7 +409,7 @@ static CONNECTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// itself is not `Sync`; callers that want to multiplex requests across
 /// threads should wrap it in an [`std::sync::Mutex`].
 pub struct Session<'a> {
-    drevo: &'a Drevo,
+    engine: SessionEngine<'a>,
     state: State,
     server_agent: String,
     connection_id: String,
@@ -447,6 +447,17 @@ struct PendingResult {
     rows: std::vec::IntoIter<Vec<CypherValue>>,
 }
 
+/// Which engine this session executes against (engine flip, RFC #307).
+enum SessionEngine<'a> {
+    /// The KV store — today's default, optionally read-mirrored (see
+    /// [`Session::with_native_mirror`]).
+    Kv(&'a Drevo),
+    /// The durable native store of record (`DREVO_ENGINE=native-durable`).
+    /// Autocommit statements only; explicit transactions are refused until
+    /// the executor can drive [`crate::native::NativeTx`].
+    Durable(std::sync::Arc<crate::native_service::NativeService>),
+}
+
 impl<'a> Session<'a> {
     /// Create a new session bound to `drevo`. Starts in
     /// [`State::Connected`]; the caller must send `HELLO` next.
@@ -482,10 +493,36 @@ impl<'a> Session<'a> {
         self
     }
 
+    /// Create a session over the durable native store of record
+    /// (`DREVO_ENGINE=native-durable`, RFC #307 Phase 4/7). Autocommit
+    /// statements execute on the service; `BEGIN` is refused until the
+    /// executor can drive native transactions. No authentication (matching
+    /// [`Session::new`]).
+    pub fn new_durable(service: std::sync::Arc<crate::native_service::NativeService>) -> Self {
+        Self::build_engine(SessionEngine::Durable(service), None)
+    }
+
+    /// The KV handle, when this session runs on the KV engine. `None` on the
+    /// durable native engine — whose sessions never own a KV transaction, so
+    /// every `self.tx`-guarded path is KV-only by construction.
+    fn kv(&self) -> Option<&Drevo> {
+        match &self.engine {
+            SessionEngine::Kv(db) => Some(db),
+            SessionEngine::Durable(_) => None,
+        }
+    }
+
     fn build(drevo: &'a Drevo, authenticator: Option<&'a dyn Authenticator>) -> Self {
+        Self::build_engine(SessionEngine::Kv(drevo), authenticator)
+    }
+
+    fn build_engine(
+        engine: SessionEngine<'a>,
+        authenticator: Option<&'a dyn Authenticator>,
+    ) -> Self {
         let id = CONNECTION_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
-            drevo,
+            engine,
             state: State::Connected,
             // The `server` agent MUST start with `Neo4j/` — the official Neo4j
             // drivers reject any other product with `UnsupportedServerProduct`.
@@ -592,7 +629,9 @@ impl<'a> Session<'a> {
     /// no client left to receive a `FAILURE`.
     fn roll_back_own_tx(&mut self) {
         if let Some(id) = self.tx.take() {
-            let _ = self.drevo.tx_rollback(id);
+            if let Some(db) = self.kv() {
+                let _ = db.tx_rollback(id);
+            }
         }
     }
 
@@ -620,7 +659,15 @@ impl<'a> Session<'a> {
         // as FAILURE so the driver gets a deterministic signal rather than
         // a torn connection.
         if let Some(id) = self.tx.take() {
-            if let Err(e) = self.drevo.tx_rollback(id) {
+            // `self.tx` is only ever set on the KV engine (BEGIN is refused
+            // on the durable one), so a missing KV handle cannot happen with
+            // an open transaction; skipping the rollback is then a no-op.
+            let Some(db) = self.kv() else {
+                return vec![ServerMessage::Success {
+                    metadata: BTreeMap::new(),
+                }];
+            };
+            if let Err(e) = db.tx_rollback(id) {
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
                     metadata: failure_metadata(
@@ -652,7 +699,16 @@ impl<'a> Session<'a> {
         // each open their own instead of one getting `transaction already
         // active`. Nesting on a *single* connection is still rejected above by
         // the `state != Ready` guard.
-        let id = self.drevo.tx_begin();
+        let Some(db) = self.kv() else {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::REQUEST_INVALID,
+                    "explicit transactions are not supported on the native-durable engine yet",
+                ),
+            }];
+        };
+        let id = db.tx_begin();
         self.state = State::TxReady;
         self.tx = Some(id);
         vec![ServerMessage::Success {
@@ -679,7 +735,13 @@ impl<'a> Session<'a> {
                 metadata: failure_metadata(codes::STORAGE, "COMMIT without an active transaction"),
             }];
         };
-        match self.drevo.tx_commit(id) {
+        let Some(db) = self.kv() else {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(codes::STORAGE, "COMMIT without a KV engine"),
+            }];
+        };
+        match db.tx_commit(id) {
             Ok(()) => {
                 self.state = State::Ready;
                 vec![ServerMessage::Success {
@@ -715,7 +777,13 @@ impl<'a> Session<'a> {
                 ),
             }];
         };
-        match self.drevo.tx_rollback(id) {
+        let Some(db) = self.kv() else {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(codes::STORAGE, "ROLLBACK without a KV engine"),
+            }];
+        };
+        match db.tx_rollback(id) {
             Ok(()) => {
                 self.state = State::Ready;
                 vec![ServerMessage::Success {
@@ -780,18 +848,25 @@ impl<'a> Session<'a> {
         // into the right per-connection slot (issue #298). The guard drops at
         // the end of this block — the scope never outlives the synchronous
         // execute call, so it cannot leak onto a later statement.
-        let exec = match (&self.native, in_tx) {
-            // Autocommit + engine flip active: the mirror serves read-only
-            // queries natively and routes everything else to KV.
-            (Some((db, mirror)), false) => mirror.execute(db, &ast, cypher_params),
-            _ => {
-                let _tx_scope = if in_tx {
-                    self.tx.map(crate::db::enter_tx_scope)
-                } else {
-                    None
-                };
-                executor::execute(&ast, self.drevo, cypher_params)
-            }
+        let exec = match &self.engine {
+            // Durable native store of record: every autocommit statement
+            // (reads and writes) executes on the service. `in_tx` cannot be
+            // true here — BEGIN is refused on this engine.
+            SessionEngine::Durable(service) => service.execute(&ast, cypher_params),
+            SessionEngine::Kv(db) => match (&self.native, in_tx) {
+                // Autocommit + engine flip active: the mirror serves
+                // read-only queries natively and routes everything else to
+                // KV.
+                (Some((db_arc, mirror)), false) => mirror.execute(db_arc, &ast, cypher_params),
+                _ => {
+                    let _tx_scope = if in_tx {
+                        self.tx.map(crate::db::enter_tx_scope)
+                    } else {
+                        None
+                    };
+                    executor::execute(&ast, db, cypher_params)
+                }
+            },
         };
         let result = match exec {
             Ok(r) => r,

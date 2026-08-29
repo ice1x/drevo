@@ -167,6 +167,31 @@ pub async fn accept_and_run_session_with_mirror(
     run_session_on_inner(&mut stream, session).await
 }
 
+/// Durable-native counterpart of [`accept_and_run_session`]
+/// (`DREVO_ENGINE=native-durable`, RFC #307 Phase 4/7): the session executes
+/// every autocommit statement on the WAL-backed
+/// [`crate::native_service::NativeService`]; `BEGIN` is refused until the
+/// executor can drive native transactions.
+///
+/// # Errors
+///
+/// Same as [`accept_and_run_session`].
+pub async fn accept_and_run_session_durable(
+    socket: TcpStream,
+    service: &std::sync::Arc<crate::native_service::NativeService>,
+) -> BoltResult<()> {
+    let accepted = accept_handshake_on(socket).await?;
+    if accepted.negotiated.is_none() {
+        return Ok(());
+    }
+    let mut stream = accepted.stream;
+    run_session_on_inner(
+        &mut stream,
+        Session::new_durable(std::sync::Arc::clone(service)),
+    )
+    .await
+}
+
 /// Authenticating counterpart of [`accept_and_run_session`]. Every
 /// `HELLO` is checked against `authenticator` (a shared
 /// [`crate::bolt::auth::Authenticator`] — most commonly an
