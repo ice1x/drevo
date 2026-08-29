@@ -186,6 +186,12 @@ pub use drevo_core::native_label_index;
 /// read) to the durable KV engine, detecting staleness via
 /// [`db::Drevo::mutation_epoch`].
 pub mod native_mirror;
+/// Durable-native serving layer (RFC `docs/rfc-native-core.md`, #307,
+/// Phase 4/7) — a WAL-backed [`native::NativeGraph`] as the store of
+/// record, serving Cypher with the full native index stack (label,
+/// property, value cache, full-text) tailed off the change-feed. The
+/// step past the read mirror on the track toward retiring redb.
+pub mod native_service;
 /// In-memory property-value index that tails a [`native::NativeGraph`]'s
 /// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.7) — the native
 /// counterpart of the KV [`property_index`], so a `MATCH (n {key: value})`
