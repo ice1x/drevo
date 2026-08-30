@@ -1712,15 +1712,23 @@ async fn embeddings(
     body: Result<Json<EmbeddingsRequest>, JsonRejection>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let Json(req) = body?;
+    embeddings_response(state.embeddings.as_deref(), req).await
+}
+
+/// The engine-independent body of `POST /v1/embeddings`, shared by the KV
+/// router and the durable-native one (`crate::native_api`): validate, then
+/// proxy to the operator-configured backend — or answer the deterministic
+/// `400` / `503` without one.
+pub(crate) async fn embeddings_response(
+    backend: Option<&EmbeddingBackend>,
+    req: EmbeddingsRequest,
+) -> Result<Json<serde_json::Value>, ApiError> {
     if req.input.is_empty() {
         return Err(ApiError::from(EmbeddingsError::InvalidInput(
             "`input` must contain at least one non-empty string".to_string(),
         )));
     }
-    let backend = state
-        .embeddings
-        .as_ref()
-        .ok_or(EmbeddingsError::NotConfigured)?;
+    let backend = backend.ok_or(EmbeddingsError::NotConfigured)?;
     let resp = backend.embed(&req).await?;
     Ok(Json(resp))
 }

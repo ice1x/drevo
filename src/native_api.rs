@@ -27,10 +27,11 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::api::{
-    exec_result_to_response, json_to_cypher_value, ApiError, CypherRequest, CypherResponse,
-    ImportGraphmlRequest,
+    embeddings_response, exec_result_to_response, json_to_cypher_value, ApiError, CypherRequest,
+    CypherResponse, ImportGraphmlRequest,
 };
 use crate::cypher::parser;
+use crate::embeddings::{EmbeddingBackend, EmbeddingsRequest};
 use crate::native_service::NativeService;
 
 /// Shared state of the durable-native HTTP surface.
@@ -42,6 +43,9 @@ pub struct NativeApiState {
     started_at: Instant,
     /// Graceful-shutdown flag, mirroring [`crate::api::ApiState`]'s contract.
     shutting_down: Arc<AtomicBool>,
+    /// Optional embeddings proxy backend — `POST /v1/embeddings` answers
+    /// `503` ("not configured") without one, exactly like the KV router.
+    embeddings: Option<Arc<EmbeddingBackend>>,
 }
 
 impl NativeApiState {
@@ -51,7 +55,16 @@ impl NativeApiState {
             service,
             started_at: Instant::now(),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            embeddings: None,
         }
+    }
+
+    /// Attach an embeddings backend, enabling `POST /v1/embeddings` —
+    /// mirroring [`crate::api::ApiState::with_embeddings_backend`].
+    #[must_use]
+    pub fn with_embeddings_backend(mut self, backend: EmbeddingBackend) -> Self {
+        self.embeddings = Some(Arc::new(backend));
+        self
     }
 
     /// Mark the API as draining — `/health` and `/ready` answer 503 after.
@@ -72,6 +85,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/status", get(status))
         .route("/cypher", post(cypher))
         .route("/export/graphml", get(export_graphml))
+        .route("/v1/embeddings", post(embeddings))
         // Real backups are tens of megabytes; axum's default 2 MiB body
         // limit would make a restore of drevo's own export impossible, so
         // this route raises it (1 GiB) from day one.
@@ -80,6 +94,17 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             post(import_graphml).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .with_state(state)
+}
+
+/// `POST /v1/embeddings` — the OpenAI-compatible embeddings proxy, identical
+/// to the KV router's route (shared body); the restart tooling's key-check
+/// depends on it being present in every server mode.
+async fn embeddings(
+    State(state): State<NativeApiState>,
+    body: Result<Json<EmbeddingsRequest>, JsonRejection>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Json(req) = body?;
+    embeddings_response(state.embeddings.as_deref(), req).await
 }
 
 /// `GET /export/graphml` — the full graph as a GraphML 1.0 document, byte-

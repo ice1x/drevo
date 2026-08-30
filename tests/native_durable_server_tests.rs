@@ -448,3 +448,29 @@ async fn import_accepts_bodies_beyond_the_default_axum_limit() {
     assert_eq!(status, StatusCode::OK, "a >2MiB restore must be accepted");
     assert_eq!(report["nodes_imported"], 1);
 }
+
+// ── /v1/embeddings parity ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn embeddings_route_exists_with_kv_identical_unconfigured_semantics() {
+    // The restart tooling probes POST /v1/embeddings after boot, so the
+    // route must exist in every server mode with the same contract:
+    // deterministic 400 on empty input, 503 when no backend is configured.
+    let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+
+    let (status, _) = send(&app, "POST", "/v1/embeddings", Some(json!({ "input": [] }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "empty input is a 400");
+
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/v1/embeddings",
+        Some(json!({ "input": "ping" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no backend configured is a 503"
+    );
+}
