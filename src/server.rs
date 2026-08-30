@@ -395,6 +395,35 @@ fn configure_native_query_embedder(
     }
 }
 
+/// Attach the embeddings proxy backend to the durable-native HTTP state from
+/// the environment — the native counterpart of `configure_embeddings`.
+#[cfg(feature = "embeddings-proxy")]
+fn configure_native_embeddings(
+    state: crate::native_api::NativeApiState,
+) -> Result<crate::native_api::NativeApiState, RunError> {
+    use crate::embeddings::{EmbeddingBackend, EmbeddingsConfig, ProxyBackend};
+    match EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
+        .map_err(|e| RunError::Embeddings(e.to_string()))?
+    {
+        Some(cfg) => {
+            tracing::info!(upstream = %cfg.upstream, "embeddings proxy enabled");
+            let backend =
+                ProxyBackend::new(cfg).map_err(|e| RunError::Embeddings(e.to_string()))?;
+            Ok(state.with_embeddings_backend(EmbeddingBackend::Proxy(backend)))
+        }
+        None => Ok(state),
+    }
+}
+
+/// No-op when the proxy backend is not compiled in — `/v1/embeddings` then
+/// always answers `503`.
+#[cfg(not(feature = "embeddings-proxy"))]
+fn configure_native_embeddings(
+    state: crate::native_api::NativeApiState,
+) -> Result<crate::native_api::NativeApiState, RunError> {
+    Ok(state)
+}
+
 /// No-op when the proxy backend is not compiled in.
 #[cfg(not(feature = "embeddings-proxy"))]
 fn configure_native_query_embedder(
@@ -623,6 +652,9 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     }
 
     let state = crate::native_api::NativeApiState::new(service);
+    // Opt-in embeddings proxy, exactly like the KV path — the restart
+    // tooling probes POST /v1/embeddings after boot.
+    let state = configure_native_embeddings(state)?;
     let shutdown_state = state.clone();
     let router = crate::native_api::build_native_router(state);
 
