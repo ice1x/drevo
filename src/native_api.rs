@@ -28,6 +28,7 @@ use axum::Router;
 
 use crate::api::{
     exec_result_to_response, json_to_cypher_value, ApiError, CypherRequest, CypherResponse,
+    ImportGraphmlRequest,
 };
 use crate::cypher::parser;
 use crate::native_service::NativeService;
@@ -70,7 +71,39 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/ready", get(health))
         .route("/status", get(status))
         .route("/cypher", post(cypher))
+        .route("/export/graphml", get(export_graphml))
+        // Real backups are tens of megabytes; axum's default 2 MiB body
+        // limit would make a restore of drevo's own export impossible, so
+        // this route raises it (1 GiB) from day one.
+        .route(
+            "/import/graphml",
+            post(import_graphml).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
+        )
         .with_state(state)
+}
+
+/// `GET /export/graphml` — the full graph as a GraphML 1.0 document, byte-
+/// compatible with the KV server's export (the backup path).
+async fn export_graphml(State(state): State<NativeApiState>) -> Result<Response, ApiError> {
+    let xml = state.service.export_graphml()?;
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/xml; charset=utf-8")],
+        xml,
+    )
+        .into_response())
+}
+
+/// `POST /import/graphml` — restore a GraphML document (a drevo backup, or
+/// interop GraphML) into the durable graph. Idempotent for drevo's own
+/// exports; id collisions with different content are conflicts.
+async fn import_graphml(
+    State(state): State<NativeApiState>,
+    body: Result<Json<ImportGraphmlRequest>, JsonRejection>,
+) -> Result<Json<crate::dump::ImportReport>, ApiError> {
+    let Json(req) = body?;
+    let report = state.service.import_graphml(&req.graphml)?;
+    Ok(Json(report))
 }
 
 async fn health(State(state): State<NativeApiState>) -> Response {

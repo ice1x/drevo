@@ -316,3 +316,135 @@ fn migration_is_a_noop_without_kv_data() {
     assert!(report.is_none());
     assert!(!dir.path().join("native.wal").exists());
 }
+
+// ── GraphML export / import (the backup path) ──────────────────────────
+
+#[tokio::test]
+async fn graphml_round_trip_through_the_native_router() {
+    let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+    let (status, _) = cypher(
+        &app,
+        "CREATE (:Person {title: 'ada', team: 'core'})-[:KNOWS]->(:Person {title: 'bob'})",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Export returns XML, not JSON.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/export/graphml")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("application/xml"));
+    let xml = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(xml.contains("<graphml"));
+
+    // Restore into a FRESH durable service; the property-indexed query
+    // shape guards the feed-seeded index path.
+    let app2 = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+    let (status, report) = send(
+        &app2,
+        "POST",
+        "/import/graphml",
+        Some(json!({ "graphml": xml })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["nodes_imported"], 2);
+    assert_eq!(report["edges_imported"], 1);
+    let (_, body) = cypher(&app2, "MATCH (n {team: 'core'}) RETURN count(*)").await;
+    assert_eq!(body["rows"], json!([[1]]));
+    let (_, body) = cypher(&app2, "MATCH (a)-[:KNOWS]->(b) RETURN b.title").await;
+    assert_eq!(body["rows"], json!([["bob"]]));
+
+    // Re-importing drevo's own export is idempotent.
+    let (status, report) = send(
+        &app2,
+        "POST",
+        "/import/graphml",
+        Some(json!({ "graphml": xml })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["nodes_imported"], 0);
+    assert_eq!(report["nodes_skipped"], 2);
+}
+
+#[tokio::test]
+async fn a_kv_backup_restores_into_the_durable_engine() {
+    use drevo::cypher::executor::execute;
+    use drevo::cypher::parser::parse;
+    use std::collections::HashMap;
+
+    // A backup taken from the KV engine (the live deployment's format)…
+    let kv = drevo::db::Drevo::open_in_memory().expect("open kv");
+    for stmt in [
+        "CREATE (:Entity {title: 'kg-node', type: 'Trait'})",
+        "CREATE (:Entity {title: 'kg-other'})",
+    ] {
+        execute(&parse(stmt).unwrap(), &kv, HashMap::new()).expect("seed");
+    }
+    let backup = kv.export_graphml().expect("kv export");
+
+    // …restores into a zero-redb server.
+    let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+    let (status, report) = send(
+        &app,
+        "POST",
+        "/import/graphml",
+        Some(json!({ "graphml": backup })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["nodes_imported"], 2);
+    let (_, body) = cypher(&app, "MATCH (n {type: 'Trait'}) RETURN n.title").await;
+    assert_eq!(body["rows"], json!([["kg-node"]]));
+}
+
+#[tokio::test]
+async fn import_accepts_bodies_beyond_the_default_axum_limit() {
+    // The KV router's 2 MiB default body limit made restoring a real 71 MB
+    // backup impossible; the native route raises it from day one. A >2 MiB
+    // node body proves the raise without a slow test.
+    // Build the oversized graph directly on a service (POST /cypher itself
+    // keeps axum's default body limit — only the restore route is raised).
+    let source = NativeService::in_memory();
+    let big_body = "x".repeat(3 * 1024 * 1024);
+    let q = drevo::cypher::parser::parse(&format!(
+        "CREATE (:Blob {{title: 'big', body: '{big_body}'}})"
+    ))
+    .unwrap();
+    source
+        .execute(&q, std::collections::HashMap::new())
+        .unwrap();
+    let xml = source.export_graphml().unwrap();
+    assert!(xml.len() > 3 * 1024 * 1024);
+
+    let app2 = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+    let (status, report) = send(
+        &app2,
+        "POST",
+        "/import/graphml",
+        Some(json!({ "graphml": xml })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a >2MiB restore must be accepted");
+    assert_eq!(report["nodes_imported"], 1);
+}

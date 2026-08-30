@@ -188,6 +188,59 @@ impl NativeService {
         };
         execute_on_engine_with_context(query, &self.graph, &ctx, params)
     }
+    /// Export the whole graph as a GraphML 1.0 document — the same wire
+    /// format (and renderer) as the KV server's `GET /export/graphml`, so a
+    /// durable-native backup is interchangeable with a KV one.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`crate::error::DrevoError`] from the scan or a
+    /// non-serialisable property value.
+    pub fn export_graphml(&self) -> Result<String, DrevoError> {
+        use crate::engine::GraphEngine;
+        let nodes: Vec<crate::model::Node> = GraphEngine::all_nodes(&self.graph)?
+            .iter()
+            .map(|n| (**n).clone())
+            .collect();
+        let edges = GraphEngine::all_edges(&self.graph)?;
+        crate::dump::render_graphml(&nodes, &edges)
+    }
+
+    /// Import a GraphML document (drevo's own export, or any GraphML
+    /// following the same conventions) into the durable graph — the
+    /// engine-generic inverse of [`Self::export_graphml`]. Applied through
+    /// the engine's dump cycle, so everything lands in the WAL as one
+    /// fsynced atomic batch and the indexes catch up on the next statement.
+    /// Re-importing an own export is idempotent (identical rows are
+    /// skipped).
+    ///
+    /// # Errors
+    ///
+    /// Propagates parse failures ([`crate::dump::DumpError`] lifted into
+    /// [`crate::error::DrevoError`]) and id-collision conflicts, exactly as
+    /// the KV import reports them.
+    pub fn import_graphml(&self, xml: &str) -> Result<crate::dump::ImportReport, DrevoError> {
+        use crate::engine::GraphEngine;
+        let all = GraphEngine::all_nodes(&self.graph)?;
+        let db_max_node = all.iter().map(|n| n.id).max().unwrap_or(0);
+        let db_max_edge = GraphEngine::all_edges(&self.graph)?
+            .iter()
+            .map(|e| e.id)
+            .max()
+            .unwrap_or(0);
+        let (nodes, edges) = crate::dump::graphml_records(xml, db_max_node, db_max_edge)?;
+        let next_node_id = nodes.iter().map(|n| n.id).max().map_or(1, |m| m + 1);
+        let next_edge_id = edges.iter().map(|e| e.id).max().map_or(1, |m| m + 1);
+        let report = self.graph.apply_dump(crate::dump::Dump {
+            format: crate::dump::FORMAT_V1.to_string(),
+            exported_at: crate::model::now_ms(),
+            next_node_id,
+            next_edge_id,
+            nodes,
+            edges,
+        })?;
+        Ok(report)
+    }
 }
 
 /// First-boot migration into the durable-native store: when `wal` does not
