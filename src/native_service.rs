@@ -28,7 +28,7 @@ use std::sync::RwLock;
 
 use crate::cypher::ast::Query;
 use crate::cypher::executor::{
-    execute_on_engine_with_indexes_and_values, ExecError, ExecResult, Value,
+    execute_on_engine_with_context, ExecError, ExecResult, NativeQueryContext, Value,
 };
 use crate::error::DrevoError;
 use crate::native::NativeGraph;
@@ -80,6 +80,12 @@ pub struct NativeService {
     graph: NativeGraph,
     /// Index stack; shared for reads, exclusive to re-sync after writes.
     indexes: RwLock<ServiceIndexes>,
+    /// Server-side text embedder, when the operator configured one —
+    /// installed once at startup (mirroring the KV handle's embedder), read
+    /// lock-free afterwards. Lets `drevo.semantic.embed` / `.query` run on
+    /// the durable engine.
+    #[cfg(feature = "http")]
+    embedder: std::sync::OnceLock<std::sync::Arc<dyn crate::embeddings::TextEmbedder>>,
 }
 
 impl NativeService {
@@ -97,7 +103,23 @@ impl NativeService {
         let graph = NativeGraph::open_durable(path)?;
         graph.compact_wal()?;
         let indexes = RwLock::new(ServiceIndexes::synced_over(&graph));
-        Ok(Self { graph, indexes })
+        Ok(Self {
+            graph,
+            indexes,
+            #[cfg(feature = "http")]
+            embedder: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Install the server-side query embedder (once; later calls return
+    /// `false` and change nothing) — the durable-engine counterpart of
+    /// [`crate::db::Drevo::set_embedder`].
+    #[cfg(feature = "http")]
+    pub fn set_embedder(
+        &self,
+        embedder: std::sync::Arc<dyn crate::embeddings::TextEmbedder>,
+    ) -> bool {
+        self.embedder.set(embedder).is_ok()
     }
 
     /// An ephemeral (non-durable) service — the same serving stack over an
@@ -105,7 +127,12 @@ impl NativeService {
     pub fn in_memory() -> Self {
         let graph = NativeGraph::new();
         let indexes = RwLock::new(ServiceIndexes::synced_over(&graph));
-        Self { graph, indexes }
+        Self {
+            graph,
+            indexes,
+            #[cfg(feature = "http")]
+            embedder: std::sync::OnceLock::new(),
+        }
     }
 
     /// The underlying engine — read-side introspection (counts, status).
@@ -149,15 +176,17 @@ impl NativeService {
         query: &Query,
         params: HashMap<String, Value>,
     ) -> Result<ExecResult, ExecError> {
-        execute_on_engine_with_indexes_and_values(
-            query,
-            &self.graph,
-            Some(&idx.fts),
-            Some(&idx.labels),
-            Some(&idx.props),
-            Some(&idx.values),
-            params,
-        )
+        let ctx = NativeQueryContext {
+            fts: Some(&idx.fts),
+            labels: Some(&idx.labels),
+            properties: Some(&idx.props),
+            values: Some(&idx.values),
+            #[cfg(feature = "http")]
+            embedder: self.embedder.get(),
+            #[cfg(not(feature = "http"))]
+            embedder: None,
+        };
+        execute_on_engine_with_context(query, &self.graph, &ctx, params)
     }
 }
 

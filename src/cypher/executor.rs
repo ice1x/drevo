@@ -709,7 +709,17 @@ pub fn execute(
 ) -> ExecResultT<ExecResult> {
     // The KV store is both the graph engine and the home of the secondary
     // subsystems, so it is passed in both roles.
-    execute_inner(query, drevo, Some(drevo), None, None, None, None, params)
+    execute_inner(
+        query,
+        drevo,
+        Some(drevo),
+        None,
+        None,
+        None,
+        None,
+        None,
+        params,
+    )
 }
 
 /// Execute a Cypher query over **any** [`GraphEngine`] — the native
@@ -729,7 +739,7 @@ pub fn execute_on_engine(
     engine: &dyn GraphEngine,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, None, None, None, None, params)
+    execute_inner(query, engine, None, None, None, None, None, None, params)
 }
 
 /// Like [`execute_on_engine`], but with a native full-text index so
@@ -750,7 +760,17 @@ pub fn execute_on_engine_with_fts(
     fts: &crate::native_fts::NativeFtsIndex,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, Some(fts), None, None, None, params)
+    execute_inner(
+        query,
+        engine,
+        None,
+        Some(fts),
+        None,
+        None,
+        None,
+        None,
+        params,
+    )
 }
 
 /// Like [`execute_on_engine`], but with the native secondary indexes so
@@ -777,7 +797,7 @@ pub fn execute_on_engine_with_indexes(
     props: Option<&crate::native_property_index::NativePropertyIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, fts, labels, props, None, params)
+    execute_inner(query, engine, None, fts, labels, props, None, None, params)
 }
 
 /// Like [`execute_on_engine_with_indexes`], additionally supplying a
@@ -799,7 +819,64 @@ pub fn execute_on_engine_with_indexes_and_values(
     values: Option<&crate::native_value_cache::NativeValueCache>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, fts, labels, props, values, params)
+    execute_inner(
+        query, engine, None, fts, labels, props, values, None, params,
+    )
+}
+
+/// A borrowed handle to a server-side text embedder for the native path.
+///
+/// With the `http` feature this is the real
+/// [`TextEmbedder`](crate::embeddings::TextEmbedder); without it the type is
+/// uninhabited, so an `Option<QueryEmbedder>` is always `None` and every
+/// signature stays feature-free.
+#[cfg(feature = "http")]
+pub type QueryEmbedder<'a> = &'a std::sync::Arc<dyn crate::embeddings::TextEmbedder>;
+/// Feature-off placeholder — uninhabited, so the option is always `None`.
+#[cfg(not(feature = "http"))]
+pub type QueryEmbedder<'a> = &'a std::convert::Infallible;
+
+/// Everything a non-KV engine can attach to a query: the native index stack
+/// plus an optional server-side embedder (RFC #307 — the param-object form of
+/// the `execute_on_engine_with_*` family).
+#[derive(Default)]
+pub struct NativeQueryContext<'a> {
+    /// Full-text index (`fts.search`).
+    pub fts: Option<&'a crate::native_fts::NativeFtsIndex>,
+    /// Secondary-label index (`MATCH (n:Label)`).
+    pub labels: Option<&'a crate::native_label_index::NativeLabelIndex>,
+    /// Property-equality index (`MATCH (n {key: value})`).
+    pub properties: Option<&'a crate::native_property_index::NativePropertyIndex>,
+    /// `NodeValue` projection cache.
+    pub values: Option<&'a crate::native_value_cache::NativeValueCache>,
+    /// Server-side text embedder — lets `drevo.semantic.embed` /
+    /// `drevo.semantic.query` / `drevo.semantic.queryRel` run without a KV
+    /// secondary store.
+    pub embedder: Option<QueryEmbedder<'a>>,
+}
+
+/// Execute over any engine with a [`NativeQueryContext`] attached — the
+/// durable-native serving entry (RFC #307 Phase 4/7).
+///
+/// # Errors
+/// Returns the first [`ExecError`] encountered (see [`execute`]).
+pub fn execute_on_engine_with_context(
+    query: &Query,
+    engine: &dyn GraphEngine,
+    ctx: &NativeQueryContext<'_>,
+    params: HashMap<String, Value>,
+) -> ExecResultT<ExecResult> {
+    execute_inner(
+        query,
+        engine,
+        None,
+        ctx.fts,
+        ctx.labels,
+        ctx.properties,
+        ctx.values,
+        ctx.embedder,
+        params,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -811,6 +888,7 @@ fn execute_inner(
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
     native_props: Option<&crate::native_property_index::NativePropertyIndex>,
     native_values: Option<&crate::native_value_cache::NativeValueCache>,
+    native_embedder: Option<QueryEmbedder<'_>>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Fast path — a query with no `UNION` is a single arm, executed
@@ -824,6 +902,7 @@ fn execute_inner(
             native_labels,
             native_props,
             native_values,
+            native_embedder,
             params,
         );
     }
@@ -868,6 +947,7 @@ fn execute_inner(
             native_labels,
             native_props,
             native_values,
+            native_embedder,
             params.clone(),
         )?;
         match &columns {
@@ -1001,6 +1081,7 @@ fn execute_single(
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
     native_props: Option<&crate::native_property_index::NativePropertyIndex>,
     native_values: Option<&crate::native_value_cache::NativeValueCache>,
+    native_embedder: Option<QueryEmbedder<'_>>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
@@ -1025,6 +1106,7 @@ fn execute_single(
         native_labels,
         native_props,
         native_values,
+        native_embedder,
         pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
@@ -2102,6 +2184,11 @@ struct Executor<'a> {
     /// `Arc::ptr_eq`-validated against the live node, so staleness can only
     /// cost speed, never correctness.
     native_values: Option<&'a crate::native_value_cache::NativeValueCache>,
+    /// A server-side text embedder for the native path (RFC #307 Phase
+    /// 4/7): lets `drevo.semantic.embed` / `.query` / `.queryRel` run
+    /// without a KV secondary store. `None` on the KV path (which uses the
+    /// secondary's installed embedder) or when the serving layer has none.
+    native_embedder: Option<QueryEmbedder<'a>>,
     /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
     /// `WHERE` clause (`variable → [constraint]`), so a term like
     /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
@@ -2144,6 +2231,25 @@ impl<'a> Executor<'a> {
         self.secondary.ok_or_else(|| ExecError::EngineCapability {
             feature: feature.to_string(),
         })
+    }
+
+    /// Embed query text server-side: through the native path's attached
+    /// embedder when one is present (the durable-native serving layer),
+    /// otherwise through the KV secondary's installed embedder — surfacing
+    /// the same capability / not-configured errors either way.
+    #[cfg(feature = "http")]
+    fn embed_query_text(&self, proc_name: &str, text: &str, span: Span) -> ExecResultT<Vec<f32>> {
+        let embed_err = |e: crate::embeddings::EmbeddingsError| ExecError::InvalidProcedureCall {
+            name: proc_name.to_string(),
+            message: e.to_string(),
+            span,
+        };
+        if let Some(embedder) = self.native_embedder {
+            return embedder.embed_query(text).map_err(embed_err);
+        }
+        self.secondary("semantic embedding")?
+            .embed_text(text)
+            .map_err(embed_err)
     }
 
     fn take_result(self) -> ExecResult {
@@ -4425,14 +4531,7 @@ impl<'a> Executor<'a> {
         let text = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
         let k = self.eval_usize(&args[3], &empty)?;
 
-        let query = self
-            .secondary("semantic embedding")?
-            .embed_text(&text)
-            .map_err(|e| ExecError::InvalidProcedureCall {
-                name: "drevo.semantic.query".to_string(),
-                message: e.to_string(),
-                span,
-            })?;
+        let query = self.embed_query_text("drevo.semantic.query", &text, span)?;
 
         self.vector_scan(&label, &property, &query, k, span)
     }
@@ -4461,14 +4560,7 @@ impl<'a> Executor<'a> {
         let empty = Bindings::new();
         let text = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
 
-        let vector = self
-            .secondary("semantic embedding")?
-            .embed_text(&text)
-            .map_err(|e| ExecError::InvalidProcedureCall {
-                name: "drevo.semantic.embed".to_string(),
-                message: e.to_string(),
-                span,
-            })?;
+        let vector = self.embed_query_text("drevo.semantic.embed", &text, span)?;
 
         // One row, one `vector` column: the embedding as a Cypher list of floats
         // (widened f32 -> f64 to match every other numeric Value in the engine).
@@ -4760,14 +4852,7 @@ impl<'a> Executor<'a> {
         let text = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
         let k = self.eval_usize(&args[3], &empty)?;
 
-        let query = self
-            .secondary("semantic embedding")?
-            .embed_text(&text)
-            .map_err(|e| ExecError::InvalidProcedureCall {
-                name: "drevo.semantic.queryRel".to_string(),
-                message: e.to_string(),
-                span,
-            })?;
+        let query = self.embed_query_text("drevo.semantic.queryRel", &text, span)?;
 
         self.rel_vector_scan(&rel_type, &property, &query, k, span)
     }
