@@ -247,3 +247,72 @@ mod bolt_durable {
         );
     }
 }
+
+// ── first-boot KV → WAL migration ──────────────────────────────────────
+
+#[tokio::test]
+async fn first_boot_migrates_existing_kv_data_and_leaves_redb_untouched() {
+    use drevo::cypher::executor::execute;
+    use drevo::cypher::parser::parse;
+    use drevo::native_service::migrate_kv_into_wal_if_first_boot;
+    use std::collections::HashMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let redb = dir.path().join("drevo.redb");
+    let wal = dir.path().join("native.wal");
+
+    // Seed a real KV store the way production data exists today.
+    {
+        let kv = drevo::db::Drevo::open(&redb).expect("open kv");
+        for stmt in [
+            "CREATE (:Person {title: 'ada', team: 'core'})",
+            "CREATE (:Person {title: 'bob', team: 'infra'})",
+            "MATCH (a {title: 'ada'}), (b {title: 'bob'}) CREATE (a)-[:KNOWS]->(b)",
+        ] {
+            execute(&parse(stmt).unwrap(), &kv, HashMap::new()).expect("seed");
+        }
+        kv.close().expect("close kv");
+    }
+    let redb_bytes_before = std::fs::metadata(&redb).unwrap().len();
+
+    // First boot: the graph moves into the WAL.
+    let report = migrate_kv_into_wal_if_first_boot(&redb, &wal)
+        .expect("migrate")
+        .expect("a first boot with KV data migrates");
+    assert_eq!(report.nodes_imported, 2);
+    assert_eq!(report.edges_imported, 1);
+    assert!(wal.exists());
+
+    // The durable service serves the migrated graph.
+    let app = build_native_router(NativeApiState::new(Arc::new(
+        NativeService::open(&wal).expect("open service"),
+    )));
+    let (status, body) = cypher(&app, "MATCH (a)-[:KNOWS]->(b) RETURN a.title, b.title").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["rows"], json!([["ada", "bob"]]));
+    let (_, body) = cypher(&app, "MATCH (n {team: 'core'}) RETURN count(*)").await;
+    assert_eq!(body["rows"], json!([[1]]));
+
+    // The redb file is untouched (rollback stays possible), and a second
+    // boot never re-migrates.
+    assert_eq!(std::fs::metadata(&redb).unwrap().len(), redb_bytes_before);
+    assert!(
+        migrate_kv_into_wal_if_first_boot(&redb, &wal)
+            .expect("second boot")
+            .is_none(),
+        "an existing WAL must never be touched"
+    );
+}
+
+#[test]
+fn migration_is_a_noop_without_kv_data() {
+    use drevo::native_service::migrate_kv_into_wal_if_first_boot;
+    let dir = tempfile::tempdir().unwrap();
+    let report = migrate_kv_into_wal_if_first_boot(
+        &dir.path().join("drevo.redb"),
+        &dir.path().join("native.wal"),
+    )
+    .expect("noop");
+    assert!(report.is_none());
+    assert!(!dir.path().join("native.wal").exists());
+}

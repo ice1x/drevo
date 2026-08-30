@@ -981,11 +981,20 @@ impl NativeGraph {
         for op in ops {
             inner.apply_wal_op(op);
         }
+        // Seed the change-feed with the recovered state (its snapshot form),
+        // exactly as `apply_dump` records what it applies: subscribers that
+        // build themselves by tailing the feed (the secondary indexes, the
+        // value cache) must see recovered data too, not only post-recovery
+        // writes.
+        let seed = inner.to_wal_ops();
         NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
             #[cfg(not(target_arch = "wasm32"))]
             wal: None,
-            feed: std::sync::Mutex::new(ChangeFeed::default()),
+            feed: std::sync::Mutex::new(ChangeFeed {
+                start_seq: 0,
+                ops: seed,
+            }),
         }
     }
 
@@ -1073,13 +1082,20 @@ impl NativeGraph {
             .create(true)
             .append(true)
             .open(path)?;
+        // Seed the change-feed with the recovered state so feed-tailing
+        // subscribers (indexes, value cache) see recovered data — see
+        // [`Self::replay`].
+        let seed = inner.to_wal_ops();
         Ok(NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
             wal: Some(std::sync::Mutex::new(WalSink {
                 path: path.to_path_buf(),
                 file,
             })),
-            feed: std::sync::Mutex::new(ChangeFeed::default()),
+            feed: std::sync::Mutex::new(ChangeFeed {
+                start_seq: 0,
+                ops: seed,
+            }),
         })
     }
 
