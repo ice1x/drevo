@@ -194,3 +194,95 @@ fn concurrent_readers_and_writer_stay_consistent() {
     }
     assert_eq!(int(&run(&service, "MATCH (n:Seed) RETURN count(*)")), 51);
 }
+
+// ── vector + semantic on the durable engine ────────────────────────────
+
+#[test]
+fn vector_query_is_served_on_the_native_engine() {
+    let service = NativeService::in_memory();
+    run(
+        &service,
+        "CREATE (:Doc {title: 'a', emb: [1.0, 0.0]}), \
+                (:Doc {title: 'b', emb: [0.0, 1.0]}), \
+                (:Doc {title: 'c', emb: [0.9, 0.1]}), \
+                (:Other {title: 'd', emb: [1.0, 0.0]})",
+    );
+    let hits = run(
+        &service,
+        "CALL drevo.vector.query('Doc', 'emb', [1.0, 0.0], 2) YIELD node, score \
+         RETURN node.title, score",
+    );
+    let titles: Vec<&str> = hits
+        .rows
+        .iter()
+        .map(|r| match &r[0] {
+            Value::String(s) => s.as_str(),
+            other => panic!("expected title, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(titles, ["a", "c"], "top-2 by cosine, label-scoped");
+}
+
+/// Deterministic test embedder: 'rust'-ish text points at [1, 0], anything
+/// else at [0, 1].
+struct MockEmbedder;
+
+impl drevo::embeddings::TextEmbedder for MockEmbedder {
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, drevo::embeddings::EmbeddingsError> {
+        if text.contains("rust") {
+            Ok(vec![1.0, 0.0])
+        } else {
+            Ok(vec![0.0, 1.0])
+        }
+    }
+}
+
+#[test]
+fn semantic_embed_and_query_use_the_installed_native_embedder() {
+    let service = NativeService::in_memory();
+    assert!(service.set_embedder(Arc::new(MockEmbedder)));
+    run(
+        &service,
+        "CREATE (:Doc {title: 'rust-doc', emb: [1.0, 0.0]}), \
+                (:Doc {title: 'bread-doc', emb: [0.0, 1.0]})",
+    );
+
+    let vector = run(&service, "CALL drevo.semantic.embed('rust ownership')");
+    assert_eq!(
+        vector.rows,
+        vec![vec![Value::List(vec![
+            Value::Float(1.0),
+            Value::Float(0.0)
+        ])]]
+    );
+
+    let hits = run(
+        &service,
+        "CALL drevo.semantic.query('Doc', 'emb', 'rust ownership', 1) YIELD node, score \
+         RETURN node.title",
+    );
+    assert_eq!(hits.rows, vec![vec![Value::String("rust-doc".to_string())]]);
+    let hits = run(
+        &service,
+        "CALL drevo.semantic.query('Doc', 'emb', 'baking bread', 1) YIELD node, score \
+         RETURN node.title",
+    );
+    assert_eq!(
+        hits.rows,
+        vec![vec![Value::String("bread-doc".to_string())]]
+    );
+}
+
+#[test]
+fn semantic_embed_without_an_embedder_surfaces_the_capability_error() {
+    let service = NativeService::in_memory();
+    let q = parse("CALL drevo.semantic.embed('text')").expect("parse");
+    let err = service
+        .execute(&q, HashMap::new())
+        .expect_err("no embedder installed");
+    assert!(
+        err.to_string()
+            .contains("not available on the active graph engine"),
+        "unexpected error: {err}"
+    );
+}

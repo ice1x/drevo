@@ -370,6 +370,39 @@ fn configure_query_embedder(_catalog: &crate::catalog::Catalog) -> Result<(), Ru
     Ok(())
 }
 
+/// Install the server-side query embedder on the durable native service
+/// (`DREVO_ENGINE=native-durable`), when the `embeddings-proxy` feature is
+/// built and `DREVO_EMBEDDINGS_UPSTREAM` is set — so `drevo.semantic.embed`
+/// and `drevo.semantic.query` work on the zero-redb server too. A no-op
+/// otherwise (they report "not configured" / the capability error).
+#[cfg(feature = "embeddings-proxy")]
+fn configure_native_query_embedder(
+    service: &crate::native_service::NativeService,
+) -> Result<(), RunError> {
+    use crate::embeddings::{EmbeddingsConfig, SyncEmbedder};
+    match EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
+        .map_err(|e| RunError::Embeddings(e.to_string()))?
+    {
+        Some(cfg) => {
+            let embedder =
+                SyncEmbedder::from_config(cfg).map_err(|e| RunError::Embeddings(e.to_string()))?;
+            if service.set_embedder(std::sync::Arc::new(embedder)) {
+                tracing::info!("semantic query embedder installed on the durable native store");
+            }
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+/// No-op when the proxy backend is not compiled in.
+#[cfg(not(feature = "embeddings-proxy"))]
+fn configure_native_query_embedder(
+    _service: &crate::native_service::NativeService,
+) -> Result<(), RunError> {
+    Ok(())
+}
+
 /// Open the database, bind the TCP listener, and serve until a
 /// shutdown signal is observed.
 ///
@@ -547,6 +580,10 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
         crate::native_service::NativeService::open(&wal).map_err(RunError::NativeOpen)?,
     );
     tracing::info!("durable native store ready");
+    // Opt-in server-side query embedder — the durable-engine counterpart of
+    // `configure_query_embedder`; no-op unless the `embeddings-proxy` feature
+    // is built and `DREVO_EMBEDDINGS_UPSTREAM` is set.
+    configure_native_query_embedder(&service)?;
 
     // Optional Bolt listener — same opt-in as the KV path, served by the
     // durable-native session (autocommit only; BEGIN is refused).
