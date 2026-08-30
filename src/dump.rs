@@ -312,192 +312,19 @@ impl Drevo {
     /// document can never allocate over a preserved id. Edge `source`/`target`
     /// are resolved through the same node-id map.
     fn graphml_to_records(&self, xml: &str) -> Result<(Vec<Node>, Vec<Edge>)> {
-        let roots = parse_xml(xml).map_err(DrevoError::from)?;
-        let graphml = roots.iter().find(|e| e.name == "graphml").ok_or_else(|| {
-            DrevoError::from(DumpError::MalformedGraphml(
-                "no <graphml> root element".into(),
-            ))
-        })?;
-
-        // Map each `<key id=…>` to its human-readable `attr.name` so `<data>`
-        // elements can be interpreted by semantic name regardless of the id
-        // scheme the producer chose.
-        let mut keymap: HashMap<&str, &str> = HashMap::new();
-        for k in graphml.children.iter().filter(|e| e.name == "key") {
-            if let (Some(id), Some(name)) = (attr(&k.attrs, "id"), attr(&k.attrs, "attr.name")) {
-                keymap.insert(id, name);
-            }
-        }
-
-        let graph = graphml
-            .children
-            .iter()
-            .find(|e| e.name == "graph")
-            .ok_or_else(|| {
-                DrevoError::from(DumpError::MalformedGraphml("no <graph> element".into()))
-            })?;
-
-        // --- Collect raw node / edge shells (document order) ---
-        let mut raw_nodes: Vec<RawNode> = Vec::new();
-        let mut raw_edges: Vec<RawEdge> = Vec::new();
-        for child in &graph.children {
-            match child.name.as_str() {
-                "node" => {
-                    let raw_id = attr(&child.attrs, "id").ok_or_else(|| {
-                        DrevoError::from(DumpError::MalformedGraphml("<node> without id".into()))
-                    })?;
-                    raw_nodes.push(RawNode {
-                        raw_id,
-                        data: collect_data(child, &keymap),
-                    });
-                }
-                "edge" => {
-                    let source = attr(&child.attrs, "source").ok_or_else(|| {
-                        DrevoError::from(DumpError::MalformedGraphml(
-                            "<edge> without source".into(),
-                        ))
-                    })?;
-                    let target = attr(&child.attrs, "target").ok_or_else(|| {
-                        DrevoError::from(DumpError::MalformedGraphml(
-                            "<edge> without target".into(),
-                        ))
-                    })?;
-                    raw_edges.push(RawEdge {
-                        raw_id: attr(&child.attrs, "id"),
-                        source,
-                        target,
-                        data: collect_data(child, &keymap),
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        // --- Assign final node ids (preserve `n<id>`, else allocate) ---
         let db_max_node = self
             .collect_all_nodes()?
             .iter()
             .map(|n| n.id)
             .max()
             .unwrap_or(0);
-        let preserved_node: Vec<Option<u64>> = raw_nodes
-            .iter()
-            .map(|rn| parse_prefixed(rn.raw_id, 'n'))
-            .collect();
-        let max_preserved_node = preserved_node.iter().flatten().copied().max().unwrap_or(0);
-        let mut next_alloc_node = db_max_node.max(max_preserved_node);
-        let mut node_id_map: HashMap<&str, u64> = HashMap::new();
-        for (rn, pres) in raw_nodes.iter().zip(preserved_node.iter()) {
-            let id = match pres {
-                Some(id) => *id,
-                None => {
-                    next_alloc_node += 1;
-                    next_alloc_node
-                }
-            };
-            node_id_map.insert(rn.raw_id, id);
-        }
-
-        let mut nodes = Vec::with_capacity(raw_nodes.len());
-        for rn in &raw_nodes {
-            let id = node_id_map[rn.raw_id];
-            let mut kind = String::new();
-            let mut title = String::new();
-            let mut body = String::new();
-            let mut body_html = String::new();
-            let mut uuid: Option<[u8; 16]> = None;
-            let mut created_at: Option<i64> = None;
-            let mut updated_at: Option<i64> = None;
-            let mut properties = Properties::default();
-            for (name, value) in &rn.data {
-                match name.as_str() {
-                    "uuid" => uuid = parse_uuid(value),
-                    "kind" => kind = value.clone(),
-                    "title" => title = value.clone(),
-                    "body" => body = value.clone(),
-                    "body_html" => body_html = value.clone(),
-                    "created_at" => created_at = value.parse::<i64>().ok(),
-                    "updated_at" => updated_at = value.parse::<i64>().ok(),
-                    "properties" => merge_properties(&mut properties, value),
-                    other => fold_unknown_property(&mut properties, other, value),
-                }
-            }
-            let created = created_at.unwrap_or_else(now_ms);
-            nodes.push(Node {
-                id,
-                uuid: uuid.unwrap_or_else(new_uuid_v7),
-                kind,
-                title,
-                body,
-                body_html,
-                created_at: created,
-                updated_at: updated_at.unwrap_or(created),
-                properties,
-            });
-        }
-
-        // --- Assign final edge ids and resolve endpoints ---
         let db_max_edge = self
             .collect_all_edges()?
             .iter()
             .map(|e| e.id)
             .max()
             .unwrap_or(0);
-        let preserved_edge: Vec<Option<u64>> = raw_edges
-            .iter()
-            .map(|re| re.raw_id.and_then(|s| parse_prefixed(s, 'e')))
-            .collect();
-        let max_preserved_edge = preserved_edge.iter().flatten().copied().max().unwrap_or(0);
-        let mut next_alloc_edge = db_max_edge.max(max_preserved_edge);
-        let mut edges = Vec::with_capacity(raw_edges.len());
-        for (re, pres) in raw_edges.iter().zip(preserved_edge.iter()) {
-            let from_id = *node_id_map.get(re.source).ok_or_else(|| {
-                DrevoError::from(DumpError::MalformedGraphml(format!(
-                    "edge source '{}' references an undeclared node",
-                    re.source
-                )))
-            })?;
-            let to_id = *node_id_map.get(re.target).ok_or_else(|| {
-                DrevoError::from(DumpError::MalformedGraphml(format!(
-                    "edge target '{}' references an undeclared node",
-                    re.target
-                )))
-            })?;
-            let eid = match pres {
-                Some(id) => *id,
-                None => {
-                    next_alloc_edge += 1;
-                    next_alloc_edge
-                }
-            };
-            let mut kind = String::new();
-            let mut uuid: Option<[u8; 16]> = None;
-            let mut weight: Option<f32> = None;
-            let mut created_at: Option<i64> = None;
-            let mut properties = Properties::default();
-            for (name, value) in &re.data {
-                match name.as_str() {
-                    "uuid" => uuid = parse_uuid(value),
-                    "kind" => kind = value.clone(),
-                    "weight" => weight = Some(parse_weight_value(value)),
-                    "created_at" => created_at = value.parse::<i64>().ok(),
-                    "properties" => merge_properties(&mut properties, value),
-                    other => fold_unknown_property(&mut properties, other, value),
-                }
-            }
-            edges.push(Edge {
-                id: eid,
-                uuid: uuid.unwrap_or_else(new_uuid_v7),
-                from_id,
-                to_id,
-                kind,
-                weight: weight.unwrap_or(1.0),
-                created_at: created_at.unwrap_or_else(now_ms),
-                properties,
-            });
-        }
-
-        Ok((nodes, edges))
+        graphml_records(xml, db_max_node, db_max_edge)
     }
 
     pub(crate) fn build_dump(&self) -> Result<Dump> {
@@ -618,6 +445,194 @@ impl Drevo {
     }
 }
 
+/// Parse a GraphML document into node/edge records — the engine-independent
+/// half of [`crate::db::Drevo::import_graphml`], shared with the
+/// durable-native import (`crate::native_service`). `db_max_node` /
+/// `db_max_edge` are the target store's current maximum ids, used to
+/// allocate ids for records whose GraphML ids do not follow the `n<id>` /
+/// `e<id>` convention.
+///
+/// # Errors
+///
+/// [`crate::error::DrevoError::Io`] via [`DumpError::MalformedGraphml`] on
+/// malformed XML or structure, exactly as the KV import reports them.
+pub(crate) fn graphml_records(
+    xml: &str,
+    db_max_node: u64,
+    db_max_edge: u64,
+) -> Result<(Vec<Node>, Vec<Edge>)> {
+    let roots = parse_xml(xml).map_err(DrevoError::from)?;
+    let graphml = roots.iter().find(|e| e.name == "graphml").ok_or_else(|| {
+        DrevoError::from(DumpError::MalformedGraphml(
+            "no <graphml> root element".into(),
+        ))
+    })?;
+
+    // Map each `<key id=…>` to its human-readable `attr.name` so `<data>`
+    // elements can be interpreted by semantic name regardless of the id
+    // scheme the producer chose.
+    let mut keymap: HashMap<&str, &str> = HashMap::new();
+    for k in graphml.children.iter().filter(|e| e.name == "key") {
+        if let (Some(id), Some(name)) = (attr(&k.attrs, "id"), attr(&k.attrs, "attr.name")) {
+            keymap.insert(id, name);
+        }
+    }
+
+    let graph = graphml
+        .children
+        .iter()
+        .find(|e| e.name == "graph")
+        .ok_or_else(|| {
+            DrevoError::from(DumpError::MalformedGraphml("no <graph> element".into()))
+        })?;
+
+    // --- Collect raw node / edge shells (document order) ---
+    let mut raw_nodes: Vec<RawNode> = Vec::new();
+    let mut raw_edges: Vec<RawEdge> = Vec::new();
+    for child in &graph.children {
+        match child.name.as_str() {
+            "node" => {
+                let raw_id = attr(&child.attrs, "id").ok_or_else(|| {
+                    DrevoError::from(DumpError::MalformedGraphml("<node> without id".into()))
+                })?;
+                raw_nodes.push(RawNode {
+                    raw_id,
+                    data: collect_data(child, &keymap),
+                });
+            }
+            "edge" => {
+                let source = attr(&child.attrs, "source").ok_or_else(|| {
+                    DrevoError::from(DumpError::MalformedGraphml("<edge> without source".into()))
+                })?;
+                let target = attr(&child.attrs, "target").ok_or_else(|| {
+                    DrevoError::from(DumpError::MalformedGraphml("<edge> without target".into()))
+                })?;
+                raw_edges.push(RawEdge {
+                    raw_id: attr(&child.attrs, "id"),
+                    source,
+                    target,
+                    data: collect_data(child, &keymap),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // --- Assign final node ids (preserve `n<id>`, else allocate) ---
+    let preserved_node: Vec<Option<u64>> = raw_nodes
+        .iter()
+        .map(|rn| parse_prefixed(rn.raw_id, 'n'))
+        .collect();
+    let max_preserved_node = preserved_node.iter().flatten().copied().max().unwrap_or(0);
+    let mut next_alloc_node = db_max_node.max(max_preserved_node);
+    let mut node_id_map: HashMap<&str, u64> = HashMap::new();
+    for (rn, pres) in raw_nodes.iter().zip(preserved_node.iter()) {
+        let id = match pres {
+            Some(id) => *id,
+            None => {
+                next_alloc_node += 1;
+                next_alloc_node
+            }
+        };
+        node_id_map.insert(rn.raw_id, id);
+    }
+
+    let mut nodes = Vec::with_capacity(raw_nodes.len());
+    for rn in &raw_nodes {
+        let id = node_id_map[rn.raw_id];
+        let mut kind = String::new();
+        let mut title = String::new();
+        let mut body = String::new();
+        let mut body_html = String::new();
+        let mut uuid: Option<[u8; 16]> = None;
+        let mut created_at: Option<i64> = None;
+        let mut updated_at: Option<i64> = None;
+        let mut properties = Properties::default();
+        for (name, value) in &rn.data {
+            match name.as_str() {
+                "uuid" => uuid = parse_uuid(value),
+                "kind" => kind = value.clone(),
+                "title" => title = value.clone(),
+                "body" => body = value.clone(),
+                "body_html" => body_html = value.clone(),
+                "created_at" => created_at = value.parse::<i64>().ok(),
+                "updated_at" => updated_at = value.parse::<i64>().ok(),
+                "properties" => merge_properties(&mut properties, value),
+                other => fold_unknown_property(&mut properties, other, value),
+            }
+        }
+        let created = created_at.unwrap_or_else(now_ms);
+        nodes.push(Node {
+            id,
+            uuid: uuid.unwrap_or_else(new_uuid_v7),
+            kind,
+            title,
+            body,
+            body_html,
+            created_at: created,
+            updated_at: updated_at.unwrap_or(created),
+            properties,
+        });
+    }
+
+    // --- Assign final edge ids and resolve endpoints ---
+    let preserved_edge: Vec<Option<u64>> = raw_edges
+        .iter()
+        .map(|re| re.raw_id.and_then(|s| parse_prefixed(s, 'e')))
+        .collect();
+    let max_preserved_edge = preserved_edge.iter().flatten().copied().max().unwrap_or(0);
+    let mut next_alloc_edge = db_max_edge.max(max_preserved_edge);
+    let mut edges = Vec::with_capacity(raw_edges.len());
+    for (re, pres) in raw_edges.iter().zip(preserved_edge.iter()) {
+        let from_id = *node_id_map.get(re.source).ok_or_else(|| {
+            DrevoError::from(DumpError::MalformedGraphml(format!(
+                "edge source '{}' references an undeclared node",
+                re.source
+            )))
+        })?;
+        let to_id = *node_id_map.get(re.target).ok_or_else(|| {
+            DrevoError::from(DumpError::MalformedGraphml(format!(
+                "edge target '{}' references an undeclared node",
+                re.target
+            )))
+        })?;
+        let eid = match pres {
+            Some(id) => *id,
+            None => {
+                next_alloc_edge += 1;
+                next_alloc_edge
+            }
+        };
+        let mut kind = String::new();
+        let mut uuid: Option<[u8; 16]> = None;
+        let mut weight: Option<f32> = None;
+        let mut created_at: Option<i64> = None;
+        let mut properties = Properties::default();
+        for (name, value) in &re.data {
+            match name.as_str() {
+                "uuid" => uuid = parse_uuid(value),
+                "kind" => kind = value.clone(),
+                "weight" => weight = Some(parse_weight_value(value)),
+                "created_at" => created_at = value.parse::<i64>().ok(),
+                "properties" => merge_properties(&mut properties, value),
+                other => fold_unknown_property(&mut properties, other, value),
+            }
+        }
+        edges.push(Edge {
+            id: eid,
+            uuid: uuid.unwrap_or_else(new_uuid_v7),
+            from_id,
+            to_id,
+            kind,
+            weight: weight.unwrap_or(1.0),
+            created_at: created_at.unwrap_or_else(now_ms),
+            properties,
+        });
+    }
+
+    Ok((nodes, edges))
+}
+
 /// Helper used by [`Dump`] parsing to keep `Properties` symmetric with
 /// `serde_json::Value::Object`. Currently identical to `From<HashMap>` but
 /// kept for forward-compatibility with future Cypher-shaped property types.
@@ -635,7 +650,7 @@ fn properties_from_object(obj: serde_json::Map<String, serde_json::Value>) -> Pr
 /// `nodes` and `edges` are expected to be id-sorted (callers must use
 /// [`Drevo::collect_all_nodes`] / [`Drevo::collect_all_edges`] which already
 /// guarantee this).
-fn render_graphml(nodes: &[Node], edges: &[Edge]) -> Result<String> {
+pub(crate) fn render_graphml(nodes: &[Node], edges: &[Edge]) -> Result<String> {
     let mut out = String::with_capacity(512 + nodes.len() * 256 + edges.len() * 160);
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str(
