@@ -160,3 +160,31 @@ impl NativeService {
         )
     }
 }
+
+/// First-boot migration into the durable-native store: when `wal` does not
+/// exist but the KV redb file at `redb` does, copy the whole graph into a
+/// fresh durable WAL through the engine-independent dump cycle
+/// ([`crate::migrate::migrate`]) — the same byte-exact path the read mirror
+/// builds from — and report what moved. The redb file is never modified, an
+/// existing WAL is never touched (the migration runs at most once), and
+/// `Ok(None)` means there was nothing to do (already migrated, or no KV
+/// data).
+///
+/// # Errors
+///
+/// Propagates [`crate::error::DrevoError`] from opening either store or from
+/// the dump cycle; on error the WAL may exist partially and should be
+/// removed before retrying.
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb-backend"))]
+pub fn migrate_kv_into_wal_if_first_boot(
+    redb: &std::path::Path,
+    wal: &std::path::Path,
+) -> Result<Option<crate::dump::ImportReport>, DrevoError> {
+    if wal.exists() || !redb.exists() {
+        return Ok(None);
+    }
+    let kv = crate::db::Drevo::open(redb)?;
+    let native = crate::native::NativeGraph::open_durable(wal)?;
+    let report = crate::migrate::migrate(&kv, &native)?;
+    Ok(Some(report))
+}

@@ -529,6 +529,19 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
 /// transactions.
 async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunError> {
     let wal = cfg.data_dir.join("native.wal");
+    // First boot with existing KV data: copy the graph into the new durable
+    // store through the dump cycle. The redb file is left untouched, so the
+    // rollback is just flipping the engine env back.
+    if let Some(report) =
+        crate::native_service::migrate_kv_into_wal_if_first_boot(&cfg.db_path(), &wal)
+            .map_err(RunError::NativeOpen)?
+    {
+        tracing::info!(
+            nodes = report.nodes_imported,
+            edges = report.edges_imported,
+            "KV graph migrated into the durable native store (the redb file is untouched)"
+        );
+    }
     tracing::info!(wal = %wal.display(), "engine=native-durable — opening the durable native store");
     let service = std::sync::Arc::new(
         crate::native_service::NativeService::open(&wal).map_err(RunError::NativeOpen)?,
