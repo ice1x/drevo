@@ -24,6 +24,7 @@
 //! the exclusive lock.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use crate::cypher::ast::Query;
@@ -86,6 +87,15 @@ pub struct NativeService {
     /// the durable engine.
     #[cfg(feature = "http")]
     embedder: std::sync::OnceLock<std::sync::Arc<dyn crate::embeddings::TextEmbedder>>,
+    /// Compact the WAL (and trim the change-feed) after this many appended
+    /// ops since the last compaction — the runtime bound on log growth
+    /// (reopen-time compaction alone lets a long-running server's log grow
+    /// with history, not state).
+    compact_every_ops: u64,
+    /// [`crate::native::NativeGraph::change_head`] at the last compaction.
+    last_compact_head: AtomicU64,
+    /// Guards against overlapping compactions.
+    compacting: AtomicBool,
 }
 
 impl NativeService {
@@ -100,14 +110,36 @@ impl NativeService {
     /// or index construction.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, DrevoError> {
+        Self::open_with_compact_threshold(path, Self::DEFAULT_COMPACT_EVERY_OPS)
+    }
+
+    /// [`Self::open`] with an explicit runtime-compaction threshold: after
+    /// `compact_every_ops` appended ops, the next statement compacts the
+    /// WAL in place (writes are quiesced for the rewrite's duration) and
+    /// trims the consumed change-feed history. Exposed for operators and
+    /// tests; [`Self::open`] uses [`Self::DEFAULT_COMPACT_EVERY_OPS`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`crate::error::DrevoError`] from WAL recovery,
+    /// compaction, or index construction.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_with_compact_threshold(
+        path: impl AsRef<std::path::Path>,
+        compact_every_ops: u64,
+    ) -> Result<Self, DrevoError> {
         let graph = NativeGraph::open_durable(path)?;
         graph.compact_wal()?;
         let indexes = RwLock::new(ServiceIndexes::synced_over(&graph));
+        let last_compact_head = AtomicU64::new(graph.change_head());
         Ok(Self {
             graph,
             indexes,
             #[cfg(feature = "http")]
             embedder: std::sync::OnceLock::new(),
+            compact_every_ops,
+            last_compact_head,
+            compacting: AtomicBool::new(false),
         })
     }
 
@@ -132,8 +164,16 @@ impl NativeService {
             indexes,
             #[cfg(feature = "http")]
             embedder: std::sync::OnceLock::new(),
+            compact_every_ops: Self::DEFAULT_COMPACT_EVERY_OPS,
+            last_compact_head: AtomicU64::new(0),
+            compacting: AtomicBool::new(false),
         }
     }
+
+    /// Default runtime-compaction threshold (appended ops between
+    /// compactions). Large enough that steady write loads compact rarely,
+    /// small enough that the log never dwarfs the state.
+    pub const DEFAULT_COMPACT_EVERY_OPS: u64 = 4096;
 
     /// The underlying engine — read-side introspection (counts, status).
     pub fn graph(&self) -> &NativeGraph {
@@ -154,7 +194,59 @@ impl NativeService {
         query: &Query,
         params: HashMap<String, Value>,
     ) -> Result<ExecResult, ExecError> {
-        self.with_fresh_indexes(|idx| self.execute_with(idx, query, params))
+        let result = self.with_fresh_indexes(|idx| self.execute_with(idx, query, params));
+        self.maybe_compact();
+        result
+    }
+
+    /// Compact the WAL and trim the consumed change-feed once enough ops
+    /// have accumulated since the last compaction — the runtime bound on
+    /// disk (log rewrite as the state snapshot; a no-op for an in-memory
+    /// engine) and memory (feed history behind every index's cursor is
+    /// dropped). Runs inline on the statement that crosses the threshold:
+    /// the pause is one state rewrite, and only one caller compacts at a
+    /// time. A failed compaction leaves the log valid and is retried at
+    /// the next threshold crossing.
+    /// Rewrite the WAL as the state snapshot; `true` on success. On wasm
+    /// there is no WAL (the durable constructor is not compiled), so only
+    /// the feed trim applies.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compact_wal_ok(&self) -> bool {
+        self.graph.compact_wal().is_ok()
+    }
+
+    /// See the non-wasm variant — nothing on disk to rewrite here.
+    #[cfg(target_arch = "wasm32")]
+    fn compact_wal_ok(&self) -> bool {
+        true
+    }
+
+    fn maybe_compact(&self) {
+        let head = self.graph.change_head();
+        if head.saturating_sub(self.last_compact_head.load(Ordering::SeqCst))
+            < self.compact_every_ops
+        {
+            return;
+        }
+        if self.compacting.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if self.compact_wal_ok() {
+            self.last_compact_head
+                .store(self.graph.change_head(), Ordering::SeqCst);
+            // Every index re-syncs to the head before serving, so history at
+            // or before the synced cursor is consumed; trim it to bound the
+            // feed. (A cursor below the new floor would only mean a lagged
+            // rebuild — every index handles that — but by construction the
+            // service's indexes never lag past their own synced head.)
+            let synced = self
+                .indexes
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .synced_head;
+            self.graph.trim_before(synced);
+        }
+        self.compacting.store(false, Ordering::SeqCst);
     }
 
     /// Run `serve` with the index stack caught up to the change-feed head:

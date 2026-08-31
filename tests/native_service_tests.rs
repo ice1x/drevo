@@ -286,3 +286,66 @@ fn semantic_embed_without_an_embedder_surfaces_the_capability_error() {
         "unexpected error: {err}"
     );
 }
+
+// ── runtime WAL compaction + feed trimming ─────────────────────────────
+
+#[test]
+fn runtime_compaction_bounds_the_log_without_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native.wal");
+    let service = NativeService::open_with_compact_threshold(&path, 16).expect("open");
+    run(&service, "CREATE (:Counter {title: 'c', v: 0})");
+
+    // 60 overwrites cross the 16-op threshold several times; the log must
+    // stay bounded near the state size instead of accumulating history.
+    for i in 1..=60 {
+        run(&service, &format!("MATCH (n:Counter) SET n.v = {i}"));
+    }
+    let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+    assert!(
+        lines <= 17,
+        "the log must be compacted at runtime, found {lines} records"
+    );
+
+    // Correctness across the compactions, live and after reopen.
+    assert_eq!(
+        run(&service, "MATCH (n:Counter) RETURN n.v").rows,
+        vec![vec![Value::Integer(60)]]
+    );
+    drop(service);
+    let service = NativeService::open(&path).expect("reopen");
+    assert_eq!(
+        run(&service, "MATCH (n:Counter) RETURN n.v").rows,
+        vec![vec![Value::Integer(60)]]
+    );
+}
+
+#[test]
+fn below_the_threshold_the_log_keeps_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native.wal");
+    let service = NativeService::open_with_compact_threshold(&path, 1_000_000).expect("open");
+    run(&service, "CREATE (:Counter {title: 'c', v: 0})");
+    for i in 1..=10 {
+        run(&service, &format!("MATCH (n:Counter) SET n.v = {i}"));
+    }
+    let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+    assert_eq!(lines, 11, "no compaction below the threshold");
+}
+
+#[test]
+fn runtime_compaction_trims_the_change_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native.wal");
+    let service = NativeService::open_with_compact_threshold(&path, 8).expect("open");
+    run(&service, "CREATE (:Counter {title: 'c', v: 0})");
+    for i in 1..=40 {
+        run(&service, &format!("MATCH (n:Counter) SET n.v = {i}"));
+    }
+    assert!(
+        service.graph().change_floor() > 0,
+        "consumed feed history must be trimmed"
+    );
+    // Indexed reads stay correct over the trimmed feed.
+    assert_eq!(int(&run(&service, "MATCH (n {v: 40}) RETURN count(*)")), 1);
+}
