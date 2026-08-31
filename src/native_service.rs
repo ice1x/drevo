@@ -154,20 +154,72 @@ impl NativeService {
         query: &Query,
         params: HashMap<String, Value>,
     ) -> Result<ExecResult, ExecError> {
+        self.with_fresh_indexes(|idx| self.execute_with(idx, query, params))
+    }
+
+    /// Run `serve` with the index stack caught up to the change-feed head:
+    /// the shared lock when already fresh (reads run concurrently), the
+    /// exclusive lock to re-sync after a write. Running under the exclusive
+    /// guard in the stale case is deliberate: it only happens for the first
+    /// request after a write, and it keeps the sync + serve pair simple
+    /// (std's `RwLock` cannot downgrade).
+    fn with_fresh_indexes<R>(&self, serve: impl FnOnce(&ServiceIndexes) -> R) -> R {
         {
             let idx = self.indexes.read().unwrap_or_else(|e| e.into_inner());
             if idx.synced_head == self.graph.change_head() {
-                return self.execute_with(&idx, query, params);
+                return serve(&idx);
             }
         }
         let mut idx = self.indexes.write().unwrap_or_else(|e| e.into_inner());
         if idx.synced_head != self.graph.change_head() {
             idx.catch_up(&self.graph);
         }
-        // Executing under the exclusive guard is deliberate: it only happens
-        // for the first statement after a write, and it keeps the sync +
-        // serve pair simple (std's RwLock cannot downgrade).
-        self.execute_with(&idx, query, params)
+        serve(&idx)
+    }
+
+    /// Full-text search over the service's BM25 index — the engine of the
+    /// `POST /search/fts` route, matching the KV store's response shape.
+    pub fn search_fts(&self, query: &str, limit: usize) -> Vec<crate::model::ScoredNode> {
+        self.with_fresh_indexes(|idx| {
+            idx.fts
+                .search(query, limit)
+                .into_iter()
+                .filter_map(|(id, score)| {
+                    self.graph
+                        .get_node_arc(id)
+                        .map(|node| crate::model::ScoredNode {
+                            node: (*node).clone(),
+                            score,
+                        })
+                })
+                .collect()
+        })
+    }
+
+    /// The graph as the `drevo-json-v1` dump document — the engine of
+    /// `GET /export/json`, matching the KV route's body.
+    ///
+    /// # Errors
+    ///
+    /// Propagates scan failures and non-serialisable property values.
+    pub fn export_json(&self) -> Result<String, DrevoError> {
+        use crate::engine::GraphEngine;
+        let dump = GraphEngine::export_dump(&self.graph)?;
+        serde_json::to_string_pretty(&dump)
+            .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))
+    }
+
+    /// One node by storage id — the engine of `GET /nodes/{id}`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::DrevoError::NodeNotFound`] when the id does not
+    /// exist, exactly as the KV route reports it.
+    pub fn get_node(&self, id: u64) -> Result<crate::model::Node, DrevoError> {
+        self.graph
+            .get_node_arc(id)
+            .map(|n| (*n).clone())
+            .ok_or(crate::error::DrevoError::NodeNotFound(id))
     }
 
     fn execute_with(

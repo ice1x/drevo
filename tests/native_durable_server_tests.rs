@@ -474,3 +474,64 @@ async fn embeddings_route_exists_with_kv_identical_unconfigured_semantics() {
         "no backend configured is a 503"
     );
 }
+
+// ── Web-UI surface parity ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn web_ui_surface_is_served_on_the_native_router() {
+    let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+    let (status, _) = cypher(
+        &app,
+        "CREATE (:Doc {title: 'guide', body: 'ownership and borrowing', team: 'core'})",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Static assets.
+    for uri in [
+        "/ui",
+        "/ui/app.js",
+        "/ui/styles.css",
+        "/ui/vendor/cytoscape.min.js",
+    ] {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    }
+
+    // FTS search, KV-shaped.
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/search/fts",
+        Some(json!({ "query": "borrowing", "limit": 5 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["results"].as_array().unwrap().len(), 1);
+    assert_eq!(body["results"][0]["node"]["title"], "guide");
+
+    // Node detail fetch + 404.
+    let id = body["results"][0]["node"]["id"].as_u64().unwrap();
+    let (status, node) = send(&app, "GET", &format!("/nodes/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(node["title"], "guide");
+    let (status, _) = send(&app, "GET", "/nodes/99999", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // JSON dump.
+    let (status, dump) = send(&app, "GET", "/export/json", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dump["nodes"].as_array().unwrap().len(), 1);
+
+    // Database selector sees the single durable graph.
+    let (status, dbs) = send(&app, "GET", "/databases", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dbs["databases"], json!(["drevo"]));
+
+    // The redb storage panel answers a clear 501, not a lie.
+    let (status, _) = send(&app, "GET", "/storage/bloat", None).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    let (status, _) = send(&app, "POST", "/storage/shrink", None).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+}
