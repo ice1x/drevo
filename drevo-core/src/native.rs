@@ -738,6 +738,14 @@ pub struct NativeGraph {
     /// returning, so an acknowledged write survives a crash.
     #[cfg(not(target_arch = "wasm32"))]
     wal: Option<std::sync::Mutex<WalSink>>,
+    /// Registered (session-owned) transactions, keyed by [`NativeTxId`]
+    /// (RFC #307 — the executor-facing form of [`Self::begin`]): a Bolt
+    /// session keeps only the id between statements and re-derives an
+    /// ephemeral [`NativeTxEngine`] per statement, so no borrow outlives a
+    /// statement. Slots are removed by commit / rollback.
+    reg_txs: std::sync::Mutex<HashMap<u64, TxSlot>>,
+    /// Monotonic source of registered-transaction ids (starts at 1).
+    next_reg_tx: std::sync::atomic::AtomicU64,
     /// The ordered change-feed: every committed write, in commit order, as a
     /// [`WalOp`] (RFC `docs/rfc-native-core.md`, #307, Phase 6). Secondary
     /// indexes off the graph seam (FTS, vector) keep themselves current by
@@ -936,6 +944,99 @@ impl NativeGraph {
         }
     }
 
+    /// Begin a **registered** transaction — the executor-facing form of
+    /// [`Self::begin`] for callers (a Bolt session) that keep only an id
+    /// between statements: run each statement on
+    /// [`Self::tx_engine`]`(id)`, then [`Self::tx_commit`] /
+    /// [`Self::tx_rollback`]. Same semantics as [`NativeTx`]: buffered
+    /// writes, read-your-writes, snapshot isolation, first-committer-wins
+    /// conflict detection, one fsynced WAL batch at commit.
+    pub fn tx_begin(&self) -> NativeTxId {
+        let base = Arc::clone(&read(&self.inner));
+        let id = self
+            .next_reg_tx
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.reg_txs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                id,
+                TxSlot {
+                    working: Arc::clone(&base),
+                    base,
+                    ops: Vec::new(),
+                },
+            );
+        NativeTxId(id)
+    }
+
+    /// The per-statement [`GraphEngine`] view of a registered transaction,
+    /// or `None` once it has been committed / rolled back.
+    pub fn tx_engine(&self, id: NativeTxId) -> Option<NativeTxEngine<'_>> {
+        self.reg_txs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id.0)
+            .then_some(NativeTxEngine {
+                graph: self,
+                id: id.0,
+            })
+    }
+
+    /// Commit a registered transaction: apply its buffered writes
+    /// atomically (one fsynced WAL batch) if the graph has not changed
+    /// since [`Self::tx_begin`] and the result satisfies every declared
+    /// constraint. The slot is always closed — a failed commit discards
+    /// the buffered writes, exactly like [`NativeTx::commit`].
+    ///
+    /// # Errors
+    /// - [`CommitError::Conflict`] if another writer committed since begin.
+    /// - [`CommitError::Constraint`] on a constraint violation.
+    /// - [`CommitError::Io`] on a WAL failure, or for an unknown /
+    ///   already-closed id.
+    pub fn tx_commit(&self, id: NativeTxId) -> std::result::Result<(), CommitError> {
+        let slot = self
+            .reg_txs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id.0)
+            .ok_or_else(|| CommitError::Io("unknown or already-closed transaction".to_string()))?;
+        self.commit_parts(slot.base, slot.working, &slot.ops)
+    }
+
+    /// Discard a registered transaction's buffered writes. Returns whether
+    /// the slot was still open (a second call is a `false` no-op).
+    pub fn tx_rollback(&self, id: NativeTxId) -> bool {
+        self.reg_txs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id.0)
+            .is_some()
+    }
+
+    /// The shared commit tail of [`NativeTx::commit`] and
+    /// [`Self::tx_commit`]: conflict check, constraint validation, one
+    /// recorded (WAL + feed) batch, then the atomic swap.
+    fn commit_parts(
+        &self,
+        base: Arc<Inner>,
+        working: Arc<Inner>,
+        ops: &[WalOp],
+    ) -> std::result::Result<(), CommitError> {
+        let mut live = write(&self.inner);
+        if !Arc::ptr_eq(&live, &base) {
+            return Err(CommitError::Conflict);
+        }
+        working
+            .validate_constraints()
+            .map_err(CommitError::Constraint)?;
+        self.record(ops)
+            .map_err(|e| CommitError::Io(e.to_string()))?;
+        *live = working;
+        Ok(())
+    }
+
     /// Declare a schema [`Constraint`] the engine enforces at transaction
     /// commit (RFC ACID "C").
     ///
@@ -991,6 +1092,8 @@ impl NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
             #[cfg(not(target_arch = "wasm32"))]
             wal: None,
+            reg_txs: std::sync::Mutex::new(HashMap::new()),
+            next_reg_tx: std::sync::atomic::AtomicU64::new(0),
             feed: std::sync::Mutex::new(ChangeFeed {
                 start_seq: 0,
                 ops: seed,
@@ -1092,6 +1195,8 @@ impl NativeGraph {
                 path: path.to_path_buf(),
                 file,
             })),
+            reg_txs: std::sync::Mutex::new(HashMap::new()),
+            next_reg_tx: std::sync::atomic::AtomicU64::new(0),
             feed: std::sync::Mutex::new(ChangeFeed {
                 start_seq: 0,
                 ops: seed,
@@ -1186,6 +1291,152 @@ impl NativeGraph {
     }
 }
 
+/// One registered transaction's private state — the same triple
+/// [`NativeTx`] holds, parked inside the engine so a session can reference
+/// it by id across statements.
+struct TxSlot {
+    /// The snapshot the transaction began from (commit-time conflict check).
+    base: Arc<Inner>,
+    /// The private working copy (copy-on-write on first mutation).
+    working: Arc<Inner>,
+    /// The WAL ops produced so far, in causal order.
+    ops: Vec<WalOp>,
+}
+
+/// Handle to a registered (session-owned) transaction — see
+/// [`NativeGraph::tx_begin`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeTxId(u64);
+
+/// A per-statement [`GraphEngine`] view of one registered transaction:
+/// reads serve the transaction's working copy (read-your-writes), writes
+/// buffer onto it — nothing touches the live graph until
+/// [`NativeGraph::tx_commit`]. Derived fresh for each statement via
+/// [`NativeGraph::tx_engine`], so a session never holds a borrow across
+/// statements. Every operation locks the slot table briefly; concurrent
+/// statements in different transactions serialize per operation, not per
+/// statement.
+pub struct NativeTxEngine<'a> {
+    graph: &'a NativeGraph,
+    id: u64,
+}
+
+impl NativeTxEngine<'_> {
+    /// Run `f` on this transaction's slot; a closed slot (committed /
+    /// rolled back) surfaces as a backend error rather than a panic.
+    fn with_slot<R>(&self, f: impl FnOnce(&mut TxSlot) -> Result<R>) -> Result<R> {
+        let mut slots = self.graph.reg_txs.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = slots.get_mut(&self.id).ok_or_else(|| {
+            CoreError::Backend("the transaction has already been closed".to_string())
+        })?;
+        f(slot)
+    }
+}
+
+impl GraphEngine for NativeTxEngine<'_> {
+    fn create_node(&self, new_node: NewNode) -> Result<Node> {
+        self.with_slot(|slot| {
+            let node = Arc::make_mut(&mut slot.working).create_node(new_node)?;
+            slot.ops.push(WalOp::UpsertNode(node.clone()));
+            Ok(node)
+        })
+    }
+
+    fn get_node(&self, id: u64) -> Result<Option<Arc<Node>>> {
+        self.with_slot(|slot| Ok(slot.working.get_node_arc(id)))
+    }
+
+    fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
+        self.with_slot(|slot| {
+            let node = Arc::make_mut(&mut slot.working).update_node(id, patch)?;
+            slot.ops.push(WalOp::UpsertNode(node.clone()));
+            Ok(node)
+        })
+    }
+
+    fn delete_node(&self, id: u64) -> Result<()> {
+        self.with_slot(|slot| {
+            Arc::make_mut(&mut slot.working).delete_node(id)?;
+            slot.ops.push(WalOp::DeleteNode(id));
+            Ok(())
+        })
+    }
+
+    fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
+        self.with_slot(|slot| {
+            let edge = Arc::make_mut(&mut slot.working).create_edge(new_edge)?;
+            slot.ops.push(WalOp::UpsertEdge(edge.clone()));
+            Ok(edge)
+        })
+    }
+
+    fn get_edge(&self, id: u64) -> Result<Option<Edge>> {
+        self.with_slot(|slot| Ok(slot.working.get_edge(id)))
+    }
+
+    fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
+        self.with_slot(|slot| {
+            let edge = Arc::make_mut(&mut slot.working).update_edge(id, patch)?;
+            slot.ops.push(WalOp::UpsertEdge(edge.clone()));
+            Ok(edge)
+        })
+    }
+
+    fn delete_edge(&self, id: u64) -> Result<()> {
+        self.with_slot(|slot| {
+            Arc::make_mut(&mut slot.working).delete_edge(id)?;
+            slot.ops.push(WalOp::DeleteEdge(id));
+            Ok(())
+        })
+    }
+
+    fn neighbor_ids(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind: Option<&str>,
+    ) -> Result<Vec<u64>> {
+        self.with_slot(|slot| Ok(slot.working.neighbor_ids(node_id, direction, kind)))
+    }
+
+    fn neighbors(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind: Option<&str>,
+    ) -> Result<Vec<Arc<Node>>> {
+        self.with_slot(|slot| Ok(slot.working.neighbors_arc(node_id, direction, kind)))
+    }
+
+    fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>> {
+        self.with_slot(|slot| Ok(slot.working.edges_of(node_id, direction)))
+    }
+
+    fn all_nodes(&self) -> Result<Vec<Arc<Node>>> {
+        self.with_slot(|slot| Ok(slot.working.all_nodes_arc()))
+    }
+
+    fn all_edges(&self) -> Result<Vec<Edge>> {
+        self.with_slot(|slot| Ok(slot.working.all_edges()))
+    }
+
+    fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Arc<Node>>> {
+        self.with_slot(|slot| Ok(slot.working.nodes_by_kind_arc(kind, limit, offset)))
+    }
+
+    fn export_dump(&self) -> Result<Dump> {
+        Err(CoreError::Backend(
+            "export is not available inside a transaction".to_string(),
+        ))
+    }
+
+    fn apply_dump(&self, _dump: Dump) -> Result<ImportReport> {
+        Err(CoreError::Backend(
+            "bulk import is not available inside a transaction".to_string(),
+        ))
+    }
+}
+
 /// A transaction over a [`NativeGraph`]: reads a consistent snapshot taken at
 /// [`begin`](NativeGraph::begin), buffers writes on a private working copy, and
 /// applies them atomically at [`commit`](Self::commit) (or discards them on
@@ -1217,22 +1468,12 @@ impl NativeTx<'_> {
     /// - [`CommitError::Constraint`] if the transaction's writes would violate a
     ///   declared constraint.
     pub fn commit(self) -> std::result::Result<(), CommitError> {
-        let mut live = write(&self.engine.inner);
-        if !Arc::ptr_eq(&live, &self.base) {
-            return Err(CommitError::Conflict);
-        }
-        self.working
-            .validate_constraints()
-            .map_err(CommitError::Constraint)?;
-        // Durability + change-feed: record the whole transaction as one fsynced
-        // batch *before* the swap, so the commit is all-or-nothing — an I/O
-        // failure leaves the graph, the log, and the feed untouched. On a
-        // non-durable engine the WAL step is a no-op and only the feed advances.
-        self.engine
-            .record(&self.ops)
-            .map_err(|e| CommitError::Io(e.to_string()))?;
-        *live = self.working;
-        Ok(())
+        // Durability + change-feed: the shared commit tail records the whole
+        // transaction as one fsynced batch *before* the swap, so the commit
+        // is all-or-nothing — an I/O failure leaves the graph, the log, and
+        // the feed untouched. On a non-durable engine the WAL step is a
+        // no-op and only the feed advances.
+        self.engine.commit_parts(self.base, self.working, &self.ops)
     }
 
     /// Discard the transaction's buffered writes. Equivalent to dropping it.
