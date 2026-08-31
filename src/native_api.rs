@@ -28,8 +28,10 @@ use axum::Router;
 
 use crate::api::{
     embeddings_response, exec_result_to_response, json_to_cypher_value, ApiError, CypherRequest,
-    CypherResponse, ImportGraphmlRequest,
+    CypherResponse, DatabaseListResponse, ImportGraphmlRequest, SearchFtsRequest,
+    SearchFtsResponse,
 };
+use crate::catalog::DEFAULT_DB;
 use crate::cypher::parser;
 use crate::embeddings::{EmbeddingBackend, EmbeddingsRequest};
 use crate::native_service::NativeService;
@@ -86,6 +88,47 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/cypher", post(cypher))
         .route("/export/graphml", get(export_graphml))
         .route("/v1/embeddings", post(embeddings))
+        .route("/search/fts", post(search_fts))
+        .route("/export/json", get(export_json))
+        .route("/databases", get(list_databases))
+        .route("/nodes/{id}", get(get_node))
+        // The storage panel is redb-specific (bloat / keyspaces / shrink /
+        // benchmark measure the KV file); on the WAL-backed engine these
+        // answer 501 so the Web UI degrades loudly instead of lying.
+        .route("/storage/bloat", get(storage_unsupported))
+        .route("/storage/keyspaces", get(storage_unsupported))
+        .route("/storage/shrink", post(storage_unsupported))
+        .route("/storage/benchmark", post(storage_unsupported))
+        // The Web UI — the same embedded, same-origin assets as the KV
+        // server (`crate::web_ui`), pointed at the same-shape endpoints.
+        .route("/ui", get(crate::web_ui::serve_index))
+        .route("/ui/", get(crate::web_ui::redirect_ui_slash))
+        .route("/ui/app.js", get(crate::web_ui::serve_app_js))
+        .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
+        .route(
+            "/ui/vendor/cytoscape.min.js",
+            get(crate::web_ui::serve_vendor_cytoscape),
+        )
+        .route(
+            "/ui/vendor/layout-base.js",
+            get(crate::web_ui::serve_vendor_layout_base),
+        )
+        .route(
+            "/ui/vendor/cose-base.js",
+            get(crate::web_ui::serve_vendor_cose_base),
+        )
+        .route(
+            "/ui/vendor/cytoscape-fcose.js",
+            get(crate::web_ui::serve_vendor_fcose),
+        )
+        .route(
+            "/ui/vendor/cola.min.js",
+            get(crate::web_ui::serve_vendor_cola),
+        )
+        .route(
+            "/ui/vendor/cytoscape-cola.js",
+            get(crate::web_ui::serve_vendor_cytoscape_cola),
+        )
         // Real backups are tens of megabytes; axum's default 2 MiB body
         // limit would make a restore of drevo's own export impossible, so
         // this route raises it (1 GiB) from day one.
@@ -105,6 +148,56 @@ async fn embeddings(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let Json(req) = body?;
     embeddings_response(state.embeddings.as_deref(), req).await
+}
+
+/// `POST /search/fts` — BM25 full-text search over the native index, the
+/// same request/response shape as the KV route.
+async fn search_fts(
+    State(state): State<NativeApiState>,
+    body: Result<Json<SearchFtsRequest>, JsonRejection>,
+) -> Result<Json<SearchFtsResponse>, ApiError> {
+    let Json(SearchFtsRequest { query, limit }) = body?;
+    let query =
+        query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
+    let limit = limit.unwrap_or(10).min(100);
+    let results = state.service.search_fts(&query, limit);
+    Ok(Json(SearchFtsResponse { results }))
+}
+
+/// `GET /export/json` — the `drevo-json-v1` dump, same body as the KV route.
+async fn export_json(State(state): State<NativeApiState>) -> Result<Response, ApiError> {
+    let dump = state.service.export_json()?;
+    Ok((StatusCode::OK, [("content-type", "application/json")], dump).into_response())
+}
+
+/// `GET /databases` — this mode serves the single durable graph, reported in
+/// the KV route's response shape so the Web UI's selector keeps working.
+async fn list_databases() -> Json<DatabaseListResponse> {
+    Json(DatabaseListResponse {
+        databases: vec![DEFAULT_DB.to_string()],
+        default: DEFAULT_DB,
+    })
+}
+
+/// `GET /nodes/{id}` — one node, the KV route's shape (the Web UI's detail
+/// pane fetch).
+async fn get_node(
+    State(state): State<NativeApiState>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Result<Json<crate::model::Node>, ApiError> {
+    Ok(Json(state.service.get_node(id)?))
+}
+
+/// The redb storage panel has no meaning on the WAL store — a clear 501.
+async fn storage_unsupported() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "storage maintenance endpoints are redb-specific and not available on the native-durable engine",
+            "status": 501,
+        })),
+    )
+        .into_response()
 }
 
 /// `GET /export/graphml` — the full graph as a GraphML 1.0 document, byte-
