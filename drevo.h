@@ -172,6 +172,13 @@
 #define DEFAULT_COSINE_THRESHOLD 0.85
 
 /**
+ * Default runtime-compaction threshold (appended ops between
+ * compactions). Large enough that steady write loads compact rarely,
+ * small enough that the log never dwarfs the state.
+ */
+#define NativeService_DEFAULT_COMPACT_EVERY_OPS 4096
+
+/**
  * A coarse default for the in-memory width of one result row, in bytes, used
  * when a caller has no better figure. One of the planner's documented
  * `DEFAULT_*` magic numbers (see [`crate::planner::cardinality`]): a handful
