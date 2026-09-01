@@ -512,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "drevo-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bincode",
  "getrandom 0.4.2",

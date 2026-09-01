@@ -1,10 +1,11 @@
 # --- drevo-core --------------------------------------------------------------
 #
-# The storage-agnostic core of drevo: the domain model (and, in later slices,
-# the native graph engine and its indexes) that the main `drevo` crate inherits
-# and re-exports. Extracted so the engine can be depended on directly by other
-# projects ("древо просто унаследует") without pulling in the KV store, HTTP,
-# Bolt, or Python bindings.
+# The storage-agnostic core of drevo: the domain model, the native in-memory
+# graph engine, and its label / property / FTS / value-cache indexes, which the
+# main `drevo` crate inherits and re-exports. Extracted so the engine can be
+# depended on directly by other projects ("древо просто унаследует") without
+# pulling in the KV store, HTTP, Bolt, or Python bindings. Published to
+# crates.io on its own cadence (see the `[package]` metadata below).
 #
 # Kept deliberately dependency-light. The only external crates here are the ones
 # the model itself needs: serde/serde_json/bincode for (de)serialization and
@@ -13,11 +14,22 @@
 # `wasm32-unknown-unknown` build of the model keeps working.
 [package]
 name = "drevo-core"
-version = "0.0.0"
+# First published version. This crate carries a real semver (unlike the main
+# `drevo` crate, whose 0.0.0 is a build-arg seed) because it is published to
+# crates.io on its own cadence. The main crate consumes it by path with no
+# version pin, so bumping this does not touch the workspace build.
+version = "0.1.0"
 edition = "2021"
 # Match the workspace MSRV (locked by the `msrv` CI job).
 rust-version = "1.85"
-description = "Core domain types and (future) native graph engine for drevo"
+description = "Storage-agnostic core of drevo: domain model and native in-memory graph engine with its indexes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ice1x/drevo"
+homepage = "https://github.com/ice1x/drevo"
+documentation = "https://docs.rs/drevo-core"
+readme = "README.md"
+keywords = ["graph", "graph-database", "knowledge-graph", "cypher", "engine"]
+categories = ["database", "data-structures"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
