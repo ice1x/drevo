@@ -33,9 +33,13 @@
 //!   `execute_on_engine_with_indexes` with the label + property indexes synced
 //!   (the flip-target path),
 //!
-//! plus two seam-level adjacency expansions (`neighbor_ids` from the
-//! highest-degree node) that isolate the index-free-adjacency claim from
-//! executor overhead. Workload parameters (the densest kind, a mid-selectivity
+//! plus two seam-level adjacency workloads from the highest-degree node — a
+//! 1-hop `neighbor_ids` and a 2-hop frontier expansion — that isolate the
+//! index-free-adjacency claim from executor overhead. The 2-hop row is the
+//! before/after anchor for RFC Phase 2 (arena/CSR): a single 1-hop lookup
+//! hides the per-edge iteration a CSR rewrite reshapes, so the multi-probe
+//! expansion is the sensitive measurement. Workload parameters (the densest
+//! kind, a mid-selectivity
 //! property pair, the highest-degree node) are derived from the data itself so
 //! the bench stays meaningful as the graph evolves.
 
@@ -250,6 +254,70 @@ fn main() {
                         .unwrap()
                         .len(),
                 )
+            })
+        });
+        g.finish();
+    }
+
+    // Two-hop frontier expansion at the seam — the adjacency-layout-sensitive
+    // workload RFC Phase 2 (arena/CSR) targets. A single 1-hop lookup hides
+    // the per-edge iteration a CSR rewrite changes; expanding hub -> N1 -> N2
+    // and counting the second-hop endpoints exercises |N1| + 1 adjacency
+    // probes and the concatenation of their neighbour slices, which is exactly
+    // what the arena/CSR representation reshapes. This section is the Phase 2
+    // before/after anchor (see docs/native-core-baseline.md).
+    {
+        let hub = l.hub_id;
+        let kv_2hop: usize =
+            l.kv.neighbor_ids(hub, Direction::Outgoing, None)
+                .unwrap()
+                .iter()
+                .map(|n| {
+                    l.kv.neighbor_ids(*n, Direction::Outgoing, None)
+                        .unwrap()
+                        .len()
+                })
+                .sum();
+        let native_2hop: usize =
+            GraphEngine::neighbor_ids(&l.native, hub, Direction::Outgoing, None)
+                .unwrap()
+                .iter()
+                .map(|n| {
+                    GraphEngine::neighbor_ids(&l.native, *n, Direction::Outgoing, None)
+                        .unwrap()
+                        .len()
+                })
+                .sum();
+        assert_eq!(
+            kv_2hop, native_2hop,
+            "engines disagree on 2-hop count from hub — fix parity before benchmarking"
+        );
+
+        let mut g = c.benchmark_group("two_hop_from_hub_seam");
+        g.bench_function("kv", |b| {
+            b.iter(|| {
+                let first = l.kv.neighbor_ids(hub, Direction::Outgoing, None).unwrap();
+                let mut total = 0usize;
+                for n in &first {
+                    total +=
+                        l.kv.neighbor_ids(*n, Direction::Outgoing, None)
+                            .unwrap()
+                            .len();
+                }
+                black_box(total)
+            })
+        });
+        g.bench_function("native", |b| {
+            b.iter(|| {
+                let first =
+                    GraphEngine::neighbor_ids(&l.native, hub, Direction::Outgoing, None).unwrap();
+                let mut total = 0usize;
+                for n in &first {
+                    total += GraphEngine::neighbor_ids(&l.native, *n, Direction::Outgoing, None)
+                        .unwrap()
+                        .len();
+                }
+                black_box(total)
             })
         });
         g.finish();

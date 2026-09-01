@@ -290,4 +290,46 @@ does not.
 - Arena/CSR native internals (RFC Phase 2 completion) — still worthwhile
   for the *scan-shaped* queries the count detector must not touch
   (filtered scans, projections, aggregations over properties); re-run this
-  scoreboard after it lands (append runs, keep history).
+  scoreboard after it lands (append runs, keep history). The **pre-refactor
+  anchor** it must beat is recorded below.
+
+## Phase 2 pre-refactor anchor — arena/CSR before/after (2026-09-01)
+
+RFC Phase 2 replaces the native engine's `HashMap` vertices/edges plus the
+denormalised `Vec<AdjEntry>` adjacency with an arena/slot + CSR
+representation. Before that refactor lands, this is the in-process native
+baseline it must not regress — and should improve on the traversal rows —
+captured on the same real-data snapshot as runs 1–8 (2 596 nodes, 3 755
+edges; densest label `Entity` = 1 971 nodes; mid-selectivity property
+`type = 'Trait'`; hub node out-degree 98). Apple M1 Max, criterion
+midpoints, native in-process (no Bolt) with the label + property +
+value-cache indexes synced.
+
+| Workload | native (pre-Phase-2) | KV (redb) | note |
+|---|---:|---:|---|
+| `count(*)` all nodes | **192 ns** | 10.4 µs | cardinality pushdown |
+| label scan count (`Entity`, 1 971) | **57.4 µs** | 303 ms | scan-shaped — Phase 2 target |
+| property equality count (`type='Trait'`) | **9.26 µs** | 302 ms | scan-shaped — Phase 2 target |
+| 1-hop from hub, Cypher | **60.4 µs** | 14.3 ms | executor + adjacency |
+| 1-hop from hub, seam (`neighbor_ids`) | **4.35 µs** | 13.9 µs | adjacency only |
+| **2-hop from hub, seam (frontier expand)** | **36.7 µs** | 99.0 µs | **arena/CSR anchor** |
+
+The 2-hop seam row is the sensitive measurement and the reason it was added:
+98 first-hop nodes, each expanded through its own adjacency slice (~8× the
+1-hop cost), so it exposes the per-edge iteration a CSR rewrite reshapes
+rather than a single lookup a HashMap already serves well. Reproduce
+exactly with
+
+```sh
+DREVO_BASELINE_GRAPHML=$HOME/drevo_backups/drevo_kg_20260805_195240.graphml \
+    cargo bench --bench real_data_baseline_bench
+```
+
+This is a documentary anchor, not an enforced CI gate: criterion timings
+are machine-specific, and gating on them is the trap that produced the
+multi-hour CI stall (bench-on-push, #76/#77). Phase 2's before/after is a
+manual re-run of this exact command on the same snapshot and machine. The
+part that *is* mechanically enforced is the bench's built-in parity
+assertion — both engines must return identical rows (including the new
+2-hop count) before any timing is taken — so a wrong-answer speedup can
+never be recorded as a win.
