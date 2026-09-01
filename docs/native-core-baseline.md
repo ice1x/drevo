@@ -247,6 +247,36 @@ pushdown but says nothing further about scan speed (the arena/CSR work
 remains worthwhile for the scan-shaped queries the detector must not
 touch).
 
+## Run 8 — the durable serving path (2026-09-01, same machine & snapshot)
+
+Runs 6–7 measured `DREVO_ENGINE=native` — the in-memory read *mirror* beside
+a redb store of record. This run measures `DREVO_ENGINE=native-durable`: the
+**WAL-backed native engine as the store of record**, no redb at all
+(`NativeService` — crash-recovery log, the full index stack synced off the
+change-feed, runtime compaction, registered transactions). The graph was
+restored into a fresh zero-redb server through `POST /import/graphml` (the
+71 MB backup landed in **0.65 s**, one fsynced WAL batch — the live-migration
+path end to end), then queried over Bolt with the same client as runs 5–7.
+
+| Workload | drevo native-durable (Bolt) | Memgraph (Bolt) | drevo advantage |
+|---|---:|---:|---:|
+| `RETURN 1` (round-trip floor) | 259 µs | 612 µs | 2.4× |
+| `MATCH (n) RETURN count(*)` | **240 µs** | 693 µs | **2.9×** |
+| label scan (densest label) | **304 µs** | 683 µs | **2.2×** |
+| property equality (no label) | **244 µs** | 1.66 ms | **6.8×** |
+| property equality (labelled) | **478 µs** | 588 µs | **1.2×** |
+| Cypher 1-hop from hub (id seek) | **317 µs** | 596 µs | **1.9×** |
+
+**Durability is free on reads.** The WAL-backed engine matches the in-memory
+mirror of run 7 within noise (count 240 µs vs 234 µs; hub 317 µs vs 283 µs)
+and still wins every row against Memgraph, 1.2–6.8×. The whole durability
+track — crash-recovery WAL, the in-statement index-staleness gate, runtime
+compaction, the change-feed-fed index stack, registered transactions — added
+no measurable read cost: reads serve the same in-memory native structures
+either way; the WAL is on the write path only. This closes the evidence loop
+on Phase 4/7: the store that persists to disk performs like the one that
+does not.
+
 ## Standing items toward "surpass Memgraph" (RFC Phase 0)
 
 - ~~Add the Memgraph column~~ — run 5 above; rerun via
