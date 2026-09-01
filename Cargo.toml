@@ -69,6 +69,8 @@ edition = "2021"
 # `tests/crosscut_audit_tests.rs`.
 rust-version = "1.85"
 description = "Embedded graph database for cross-platform knowledge management"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ice1x/drevo"
 # NOTE: `0.0.0` is the pre-release seed for the deploy-image version line. The
 # release flow (`scripts/release.sh` / `make release-image`) derives the image
 # tag from git tags (`vX.Y.Z`), falling back to this value when none exist — so
