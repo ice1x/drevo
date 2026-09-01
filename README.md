@@ -368,6 +368,20 @@ Target numbers vs published competitor benchmarks. CI tracks measured drevo metr
 
 > Competitor numbers are approximate, derived from published benchmarks and vendor claims — a rough positioning sketch, not a measured head-to-head. For a reproducible comparison, Phase 15 task `00101` ships the [`comparison_bench`](benches/comparison_bench.rs) harness and the [benchmarks guide](docs/benchmarks.md): drevo's side is measured on your machine and the identical workload is specified as runnable code against each competitor, so the cross-engine numbers are something you *run* rather than copy from a slide.
 
+### Native-core scoreboard — measured history
+
+The native graph engine ([RFC #307](docs/rfc-native-core.md)) measured on a **copy of real production data** (2 596-node knowledge-graph snapshot), Apple M1 Max, criterion midpoints. Each run appends to the full [native-core baseline](docs/native-core-baseline.md) — the summary below is the headline per milestone.
+
+| Date | Version / milestone | Headline result |
+|---|---|---|
+| 2026-08-26 | native engine, in-process (runs 1–4) | native + secondary indexes vs today's KV on real data: full scan **537 µs (≈560×)**, property-equality **9.3 µs (≈32 000×)**, hub 1-hop **60 µs (≈230×)** |
+| 2026-08-27 | drevo `0.0.18` KV over Bolt vs Memgraph v3.12 (run 5) | production KV **loses** to Memgraph 24–535× over the same Bolt client; native in-process is already in Memgraph's class |
+| 2026-08-28 | `DREVO_ENGINE=native` read mirror over Bolt (run 6) | engine flip: drevo **wins 4/6** rows vs Memgraph; Memgraph keeps ~1.2× only on two bare count-scans |
+| 2026-08-28 | + count pushdown (run 7) | drevo **wins 6/6**, **1.4–5.8×** ahead through the identical Bolt client — "surpass Memgraph" met on this scoreboard |
+| 2026-09-01 | `DREVO_ENGINE=native-durable`, zero redb (run 8) | WAL-backed store of record **wins 6/6, 1.2–6.8×**; durability is free on reads (matches the in-memory mirror within noise) |
+
+> Numbers are drevo vs Memgraph on identical Cypher over the same Bolt client (runs 5–8) or native vs the KV engine in-process (runs 1–4). Reproduce with `scripts/memgraph_baseline_bench.py` (cross-DB) or `DREVO_BASELINE_GRAPHML=<graphml> cargo bench --bench real_data_baseline_bench` (KV-vs-native); the harness asserts both engines return identical rows before timing, so a wrong-answer speedup never counts.
+
 ---
 
 ## Crate Structure
