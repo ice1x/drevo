@@ -391,6 +391,12 @@ mod codes {
     /// [`Authenticator`](crate::bolt::auth::Authenticator). Phase 11
     /// task `00074`.
     pub const UNAUTHORIZED: &str = "Neo.ClientError.Security.Unauthorized";
+    /// A commit lost the first-committer-wins race on the durable native
+    /// engine — transient by contract, so official drivers retry the whole
+    /// transaction function automatically.
+    pub const TRANSIENT_OUTDATED: &str = "Neo.TransientError.Transaction.Outdated";
+    /// A commit violated a declared schema constraint.
+    pub const CONSTRAINT_FAILED: &str = "Neo.ClientError.Schema.ConstraintValidationFailed";
 }
 
 // -------------------------------------------------------------------------
@@ -441,6 +447,10 @@ pub struct Session<'a> {
         std::sync::Arc<crate::db::Drevo>,
         std::sync::Arc<crate::native_mirror::NativeMirror>,
     )>,
+    /// The open registered transaction on the durable engine, if any —
+    /// the [`SessionEngine::Durable`] counterpart of [`Self::tx`]. Set on
+    /// `BEGIN`, cleared on `COMMIT` / `ROLLBACK` and the teardown paths.
+    native_tx: Option<crate::native::NativeTxId>,
 }
 
 struct PendingResult {
@@ -535,6 +545,7 @@ impl<'a> Session<'a> {
             authenticator,
             tx: None,
             native: None,
+            native_tx: None,
         }
     }
 
@@ -633,6 +644,11 @@ impl<'a> Session<'a> {
                 let _ = db.tx_rollback(id);
             }
         }
+        if let Some(id) = self.native_tx.take() {
+            if let SessionEngine::Durable(service) = &self.engine {
+                let _ = service.rollback_tx(id);
+            }
+        }
     }
 
     fn handle_goodbye(&mut self) -> Vec<ServerMessage> {
@@ -699,18 +715,15 @@ impl<'a> Session<'a> {
         // each open their own instead of one getting `transaction already
         // active`. Nesting on a *single* connection is still rejected above by
         // the `state != Ready` guard.
-        let Some(db) = self.kv() else {
-            self.state = State::Failed;
-            return vec![ServerMessage::Failure {
-                metadata: failure_metadata(
-                    codes::REQUEST_INVALID,
-                    "explicit transactions are not supported on the native-durable engine yet",
-                ),
-            }];
-        };
-        let id = db.tx_begin();
+        match &self.engine {
+            SessionEngine::Durable(service) => {
+                self.native_tx = Some(service.begin_tx());
+            }
+            SessionEngine::Kv(db) => {
+                self.tx = Some(db.tx_begin());
+            }
+        }
         self.state = State::TxReady;
-        self.tx = Some(id);
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
         }]
@@ -729,6 +742,38 @@ impl<'a> Session<'a> {
         // Whatever the outcome, the slot is no longer ours to clean up. The
         // TxReady state guarantees an id is present; treat its absence
         // defensively rather than panicking.
+        // Durable engine: commit the registered transaction, mapping the
+        // conflict outcome to the transient class official drivers retry.
+        if let SessionEngine::Durable(service) = &self.engine {
+            let Some(id) = self.native_tx.take() else {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(
+                        codes::STORAGE,
+                        "COMMIT without an active transaction",
+                    ),
+                }];
+            };
+            return match service.commit_tx(id) {
+                Ok(()) => {
+                    self.state = State::Ready;
+                    vec![ServerMessage::Success {
+                        metadata: BTreeMap::new(),
+                    }]
+                }
+                Err(e) => {
+                    let code = match &e {
+                        crate::native::CommitError::Conflict => codes::TRANSIENT_OUTDATED,
+                        crate::native::CommitError::Constraint(_) => codes::CONSTRAINT_FAILED,
+                        crate::native::CommitError::Io(_) => codes::STORAGE,
+                    };
+                    self.state = State::Failed;
+                    vec![ServerMessage::Failure {
+                        metadata: failure_metadata(code, &format!("{e}")),
+                    }]
+                }
+            };
+        }
         let Some(id) = self.tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
@@ -768,6 +813,22 @@ impl<'a> Session<'a> {
             }];
         }
         // Whatever the outcome, the slot is no longer ours to clean up.
+        if let SessionEngine::Durable(service) = &self.engine {
+            let Some(id) = self.native_tx.take() else {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(
+                        codes::STORAGE,
+                        "ROLLBACK without an active transaction",
+                    ),
+                }];
+            };
+            service.rollback_tx(id);
+            self.state = State::Ready;
+            return vec![ServerMessage::Success {
+                metadata: BTreeMap::new(),
+            }];
+        }
         let Some(id) = self.tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
@@ -849,10 +910,22 @@ impl<'a> Session<'a> {
         // the end of this block — the scope never outlives the synchronous
         // execute call, so it cannot leak onto a later statement.
         let exec = match &self.engine {
-            // Durable native store of record: every autocommit statement
-            // (reads and writes) executes on the service. `in_tx` cannot be
-            // true here — BEGIN is refused on this engine.
-            SessionEngine::Durable(service) => service.execute(&ast, cypher_params),
+            // Durable native store of record: autocommit statements execute
+            // on the service; inside an explicit transaction the statement
+            // runs on the registered transaction's working copy.
+            SessionEngine::Durable(service) => match (in_tx, self.native_tx) {
+                (true, Some(tx)) => service.execute_in_tx(tx, &ast, cypher_params),
+                (true, None) => {
+                    self.state = State::Failed;
+                    return vec![ServerMessage::Failure {
+                        metadata: failure_metadata(
+                            codes::STORAGE,
+                            "RUN in transaction state without an open transaction",
+                        ),
+                    }];
+                }
+                (false, _) => service.execute(&ast, cypher_params),
+            },
             SessionEngine::Kv(db) => match (&self.native, in_tx) {
                 // Autocommit + engine flip active: the mirror serves
                 // read-only queries natively and routes everything else to
