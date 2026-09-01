@@ -235,15 +235,115 @@ mod bolt_durable {
         assert_eq!(titles, ["ada"]);
     }
 
+    fn failure_code(messages: &[ServerMessage]) -> String {
+        match messages.last() {
+            Some(ServerMessage::Failure { metadata }) => match metadata.get("code") {
+                Some(BoltValue::String(code)) => code.clone(),
+                other => panic!("failure without a code: {other:?}"),
+            },
+            other => panic!("expected FAILURE, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn begin_is_refused_on_the_durable_engine() {
+    fn managed_transaction_commits_atomically_on_the_durable_engine() {
         let service = Arc::new(NativeService::in_memory());
-        let mut session = Session::new_durable(service);
+        let mut session = Session::new_durable(Arc::clone(&service));
         assert_success(&session.handle(ClientMessage::Hello { extra: dict([]) }));
-        let replies = session.handle(ClientMessage::Begin { extra: dict([]) });
+
+        assert_success(&session.handle(ClientMessage::Begin { extra: dict([]) }));
+        assert_success(&run_statement(
+            &mut session,
+            "CREATE (:Person {title: 'ada'})",
+        ));
+        assert_success(&pull_all(&mut session));
+
+        // Read-your-writes inside the transaction…
+        assert_success(&run_statement(
+            &mut session,
+            "MATCH (n:Person) RETURN count(*)",
+        ));
+        let records = pull_all(&mut session);
         assert!(
-            matches!(replies.last(), Some(ServerMessage::Failure { .. })),
-            "BEGIN must fail on the durable engine, got {replies:?}"
+            records
+                .iter()
+                .any(|m| matches!(m, ServerMessage::Record { fields } if fields[0] == BoltValue::Integer(1))),
+            "the transaction must see its own write: {records:?}"
+        );
+        // …while a concurrent autocommit reader on the service sees nothing.
+        let q = drevo::cypher::parser::parse("MATCH (n) RETURN count(*)").unwrap();
+        let live = service
+            .execute(&q, std::collections::HashMap::new())
+            .unwrap();
+        assert_eq!(
+            live.rows,
+            vec![vec![drevo::cypher::executor::Value::Integer(0)]]
+        );
+
+        assert_success(&session.handle(ClientMessage::Commit));
+        let live = service
+            .execute(&q, std::collections::HashMap::new())
+            .unwrap();
+        assert_eq!(
+            live.rows,
+            vec![vec![drevo::cypher::executor::Value::Integer(1)]]
+        );
+    }
+
+    #[test]
+    fn managed_transaction_rollback_and_reset_discard() {
+        let service = Arc::new(NativeService::in_memory());
+        let q = drevo::cypher::parser::parse("MATCH (n) RETURN count(*)").unwrap();
+
+        let mut session = Session::new_durable(Arc::clone(&service));
+        assert_success(&session.handle(ClientMessage::Hello { extra: dict([]) }));
+        assert_success(&session.handle(ClientMessage::Begin { extra: dict([]) }));
+        assert_success(&run_statement(&mut session, "CREATE (:G {title: 'g1'})"));
+        assert_success(&pull_all(&mut session));
+        assert_success(&session.handle(ClientMessage::Rollback));
+        let live = service
+            .execute(&q, std::collections::HashMap::new())
+            .unwrap();
+        assert_eq!(
+            live.rows,
+            vec![vec![drevo::cypher::executor::Value::Integer(0)]]
+        );
+
+        // RESET inside a transaction rolls it back too.
+        assert_success(&session.handle(ClientMessage::Begin { extra: dict([]) }));
+        assert_success(&run_statement(&mut session, "CREATE (:G {title: 'g2'})"));
+        assert_success(&pull_all(&mut session));
+        session.handle(ClientMessage::Reset);
+        let live = service
+            .execute(&q, std::collections::HashMap::new())
+            .unwrap();
+        assert_eq!(
+            live.rows,
+            vec![vec![drevo::cypher::executor::Value::Integer(0)]]
+        );
+    }
+
+    #[test]
+    fn conflicting_commit_surfaces_the_transient_code() {
+        let service = Arc::new(NativeService::in_memory());
+        let mut session = Session::new_durable(Arc::clone(&service));
+        assert_success(&session.handle(ClientMessage::Hello { extra: dict([]) }));
+        assert_success(&session.handle(ClientMessage::Begin { extra: dict([]) }));
+        assert_success(&run_statement(&mut session, "CREATE (:T {title: 't'})"));
+        assert_success(&pull_all(&mut session));
+
+        // A concurrent autocommit write advances the live graph, so the
+        // transaction's commit loses the first-committer race.
+        let w = drevo::cypher::parser::parse("CREATE (:Race {title: 'r'})").unwrap();
+        service
+            .execute(&w, std::collections::HashMap::new())
+            .unwrap();
+
+        let replies = session.handle(ClientMessage::Commit);
+        assert_eq!(
+            failure_code(&replies),
+            "Neo.TransientError.Transaction.Outdated",
+            "drivers must see the retryable class"
         );
     }
 }

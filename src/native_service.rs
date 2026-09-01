@@ -301,6 +301,61 @@ impl NativeService {
             .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))
     }
 
+    /// Begin a registered transaction on the durable store — the session
+    /// keeps the returned id between statements. See
+    /// [`crate::native::NativeGraph::tx_begin`].
+    pub fn begin_tx(&self) -> crate::native::NativeTxId {
+        self.graph.tx_begin()
+    }
+
+    /// Execute one statement inside a registered transaction: the executor
+    /// runs over the transaction's working copy (read-your-writes, invisible
+    /// to concurrent statements) **without** index narrowing — the service's
+    /// indexes describe the committed graph, not this transaction's view.
+    ///
+    /// # Errors
+    ///
+    /// The executor's [`crate::cypher::executor::ExecError`]; a closed
+    /// transaction surfaces as a storage error rather than a panic.
+    pub fn execute_in_tx(
+        &self,
+        tx: crate::native::NativeTxId,
+        query: &Query,
+        params: HashMap<String, Value>,
+    ) -> Result<ExecResult, ExecError> {
+        let Some(engine) = self.graph.tx_engine(tx) else {
+            return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(
+                "the transaction has already been closed",
+            ))));
+        };
+        crate::cypher::executor::execute_on_engine(query, &engine, params)
+    }
+
+    /// Commit a registered transaction (one fsynced WAL batch, atomic swap),
+    /// then apply the runtime compaction policy — a committed batch counts
+    /// toward the threshold like any other write.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::native::CommitError`] — `Conflict` when another writer
+    /// committed since the transaction began (retryable), `Constraint` on a
+    /// schema violation, `Io` on a WAL failure or a closed transaction.
+    pub fn commit_tx(
+        &self,
+        tx: crate::native::NativeTxId,
+    ) -> std::result::Result<(), crate::native::CommitError> {
+        let result = self.graph.tx_commit(tx);
+        if result.is_ok() {
+            self.maybe_compact();
+        }
+        result
+    }
+
+    /// Discard a registered transaction. `false` when it was already closed.
+    pub fn rollback_tx(&self, tx: crate::native::NativeTxId) -> bool {
+        self.graph.tx_rollback(tx)
+    }
+
     /// One node by storage id — the engine of `GET /nodes/{id}`.
     ///
     /// # Errors
