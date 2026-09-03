@@ -242,6 +242,13 @@ required-features = ["redb-backend"]
 name = "http_load"
 required-features = ["http"]
 
+# Native-engine load harness (#307): concurrency sweep + deep (3-hop) traversal
+# + durable-write throughput, native-durable vs KV over the GraphEngine seam.
+# Needs `redb-backend` for the KV comparison side (`Drevo::open_in_memory`).
+[[example]]
+name = "native_load"
+required-features = ["redb-backend"]
+
 [[bench]]
 name = "storage_bench"
 harness = false
