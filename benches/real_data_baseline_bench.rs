@@ -33,13 +33,15 @@
 //!   `execute_on_engine_with_indexes` with the label + property indexes synced
 //!   (the flip-target path),
 //!
-//! plus two seam-level adjacency workloads from the highest-degree node — a
-//! 1-hop `neighbor_ids` and a 2-hop frontier expansion — that isolate the
-//! index-free-adjacency claim from executor overhead. The 2-hop row is the
-//! before/after anchor for RFC Phase 2 (arena/CSR): a single 1-hop lookup
-//! hides the per-edge iteration a CSR rewrite reshapes, so the multi-probe
-//! expansion is the sensitive measurement. Workload parameters (the densest
-//! kind, a mid-selectivity
+//! plus three seam-level adjacency workloads from the highest-degree node — a
+//! 1-hop `neighbor_ids`, a 2-hop frontier expansion, and a kind-filtered 1-hop
+//! fan-out — that isolate the index-free-adjacency claim from executor
+//! overhead. The 2-hop row is the before/after anchor for RFC Phase 2
+//! (arena/CSR): a single 1-hop lookup hides the per-edge iteration a CSR
+//! rewrite reshapes, so the multi-probe expansion is the sensitive
+//! measurement. The kind-filtered row exercises Phase 2 slice 1 (kind-sorted
+//! adjacency runs), whose payoff scales with the hub's relationship-type
+//! diversity. Workload parameters (the densest kind, a mid-selectivity
 //! property pair, the highest-degree node) are derived from the data itself so
 //! the bench stays meaningful as the graph evolves.
 
@@ -321,6 +323,64 @@ fn main() {
             })
         });
         g.finish();
+    }
+
+    // Kind-filtered fan-out from the hub — the path RFC Phase 2 slice 1
+    // (kind-sorted adjacency runs) turns from an O(degree) linear filter into an
+    // O(log degree + matches) binary-searched run. Filter the hub's outgoing
+    // edges to their densest relationship type on both engines; parity is
+    // asserted before timing.
+    {
+        let hub = l.hub_id;
+        let hub_edges = GraphEngine::edges_of(&l.native, hub, Direction::Outgoing).unwrap();
+        let mut kind_freq: HashMap<&str, usize> = HashMap::new();
+        for e in &hub_edges {
+            *kind_freq.entry(e.kind.as_str()).or_default() += 1;
+        }
+        if let Some((kind, run)) = kind_freq
+            .iter()
+            .max_by_key(|(_, c)| **c)
+            .map(|(k, c)| (k.to_string(), *c))
+        {
+            eprintln!(
+                "kind-filter workload: hub {hub} out-degree {} across {} kind(s); densest {kind:?} = {run} edges",
+                hub_edges.len(),
+                kind_freq.len(),
+            );
+            let mut kv_ids =
+                l.kv.neighbor_ids(hub, Direction::Outgoing, Some(&kind))
+                    .unwrap();
+            let mut native_ids =
+                GraphEngine::neighbor_ids(&l.native, hub, Direction::Outgoing, Some(&kind))
+                    .unwrap();
+            kv_ids.sort_unstable();
+            native_ids.sort_unstable();
+            assert_eq!(
+                kv_ids, native_ids,
+                "engines disagree on kind-filtered fan-out — fix parity before benchmarking"
+            );
+
+            let mut g = c.benchmark_group("kind_filtered_from_hub_seam");
+            g.bench_function("kv", |b| {
+                b.iter(|| {
+                    black_box(
+                        l.kv.neighbor_ids(hub, Direction::Outgoing, Some(&kind))
+                            .unwrap()
+                            .len(),
+                    )
+                })
+            });
+            g.bench_function("native", |b| {
+                b.iter(|| {
+                    black_box(
+                        GraphEngine::neighbor_ids(&l.native, hub, Direction::Outgoing, Some(&kind))
+                            .unwrap()
+                            .len(),
+                    )
+                })
+            });
+            g.finish();
+        }
     }
 
     c.final_summary();
