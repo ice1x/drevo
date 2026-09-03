@@ -62,11 +62,36 @@ use crate::model::{now_ms, Direction, Edge, EdgePatch, NewEdge, NewNode, Node, N
 /// A denormalized adjacency entry: the incident edge, the node at its other
 /// end, and that edge's kind interned to a `u32`. Storing the neighbour id and
 /// kind inline is what lets a fan-out avoid a second map lookup per edge.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct AdjEntry {
     edge_id: u64,
     neighbor_id: u64,
     kind_id: u32,
+}
+
+/// The total order every adjacency list is kept in: interned kind first — so a
+/// relationship-type filter is one contiguous run — then neighbour id, then
+/// edge id as a stable tie-break. Maintaining this lets a kind-filtered fan-out
+/// binary-search its run instead of scanning every incident edge (RFC #307
+/// Phase 2, arena/CSR slice 1).
+fn adj_sort_key(e: &AdjEntry) -> (u32, u64, u64) {
+    (e.kind_id, e.neighbor_id, e.edge_id)
+}
+
+/// Insert `entry` into a kind-sorted adjacency list at the position that keeps
+/// [`adj_sort_key`] ordering. Degrees are small, so the `insert` shift is cheap.
+fn insert_adj_sorted(v: &mut Vec<AdjEntry>, entry: AdjEntry) {
+    let key = adj_sort_key(&entry);
+    let pos = v.partition_point(|e| adj_sort_key(e) < key);
+    v.insert(pos, entry);
+}
+
+/// The contiguous sub-slice of a kind-sorted adjacency list whose entries have
+/// `kind_id == kind`, located by two binary searches (`O(log n)` to the run).
+fn kind_run(v: &[AdjEntry], kind: u32) -> &[AdjEntry] {
+    let start = v.partition_point(|e| e.kind_id < kind);
+    let end = v.partition_point(|e| e.kind_id <= kind);
+    &v[start..end]
 }
 
 /// Interior state of a [`NativeGraph`]. Held behind `Arc` so a snapshot is a
@@ -167,6 +192,36 @@ impl Inner {
         }
     }
 
+    /// Like [`for_each_incident`](Self::for_each_incident) but visits only the
+    /// entries whose interned kind is `kind_id`, using the kind-sorted invariant
+    /// to binary-search each direction's run instead of scanning the whole list.
+    /// The same self-loop-under-`Both` dedup as `for_each_incident` applies.
+    fn for_each_incident_of_kind<F: FnMut(&AdjEntry)>(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        kind_id: u32,
+        mut f: F,
+    ) {
+        if matches!(direction, Direction::Outgoing | Direction::Both) {
+            if let Some(v) = self.out_adj.get(&node_id) {
+                for e in kind_run(v, kind_id) {
+                    f(e);
+                }
+            }
+        }
+        if matches!(direction, Direction::Incoming | Direction::Both) {
+            if let Some(v) = self.in_adj.get(&node_id) {
+                for e in kind_run(v, kind_id) {
+                    if matches!(direction, Direction::Both) && e.neighbor_id == node_id {
+                        continue;
+                    }
+                    f(e);
+                }
+            }
+        }
+    }
+
     /// The adjacency entries incident to `node_id`, collected into a `Vec`. Used
     /// by the **mutating** paths (`delete_node`), which need an owned list
     /// because they borrow `self` mutably while iterating; read paths use the
@@ -209,14 +264,17 @@ impl Inner {
         let mut seen = std::collections::HashSet::new();
         seen.insert(node_id);
         let mut ids = Vec::new();
-        self.for_each_incident(node_id, direction, |e| {
-            if want_kind.is_some_and(|k| k != e.kind_id) {
-                return;
-            }
+        let push = |e: &AdjEntry| {
             if seen.insert(e.neighbor_id) {
                 ids.push(e.neighbor_id);
             }
-        });
+        };
+        // A relationship-type filter takes the binary-searched kind run; an
+        // unfiltered fan-out still walks every incident edge.
+        match want_kind {
+            Some(k) => self.for_each_incident_of_kind(node_id, direction, k, push),
+            None => self.for_each_incident(node_id, direction, push),
+        }
         ids
     }
 
@@ -392,19 +450,22 @@ impl Inner {
         let id = self.next_edge_id;
         let edge = new_edge.into_edge(id);
         let kind_id = self.intern_kind(&edge.kind);
-        self.out_adj
-            .entry(edge.from_id)
-            .or_default()
-            .push(AdjEntry {
+        insert_adj_sorted(
+            self.out_adj.entry(edge.from_id).or_default(),
+            AdjEntry {
                 edge_id: id,
                 neighbor_id: edge.to_id,
                 kind_id,
-            });
-        self.in_adj.entry(edge.to_id).or_default().push(AdjEntry {
-            edge_id: id,
-            neighbor_id: edge.from_id,
-            kind_id,
-        });
+            },
+        );
+        insert_adj_sorted(
+            self.in_adj.entry(edge.to_id).or_default(),
+            AdjEntry {
+                edge_id: id,
+                neighbor_id: edge.from_id,
+                kind_id,
+            },
+        );
         self.edges.insert(id, Arc::new(edge.clone()));
         Ok(edge)
     }
@@ -433,15 +494,19 @@ impl Inner {
         }
         if kind_changed {
             let new_kind_id = self.intern_kind(&edge.kind);
+            // Changing an entry's kind moves it in the `(kind_id, …)` order, so
+            // re-sort the two affected lists to preserve the kind-run invariant.
             if let Some(list) = self.out_adj.get_mut(&edge.from_id) {
                 for e in list.iter_mut().filter(|e| e.edge_id == id) {
                     e.kind_id = new_kind_id;
                 }
+                list.sort_unstable_by_key(adj_sort_key);
             }
             if let Some(list) = self.in_adj.get_mut(&edge.to_id) {
                 for e in list.iter_mut().filter(|e| e.edge_id == id) {
                     e.kind_id = new_kind_id;
                 }
+                list.sort_unstable_by_key(adj_sort_key);
             }
         }
         self.edges.insert(id, Arc::new(edge.clone()));
@@ -518,19 +583,22 @@ impl Inner {
                     self.remove_edge(edge.id);
                 }
                 let kind_id = self.intern_kind(&edge.kind);
-                self.out_adj
-                    .entry(edge.from_id)
-                    .or_default()
-                    .push(AdjEntry {
+                insert_adj_sorted(
+                    self.out_adj.entry(edge.from_id).or_default(),
+                    AdjEntry {
                         edge_id: edge.id,
                         neighbor_id: edge.to_id,
                         kind_id,
-                    });
-                self.in_adj.entry(edge.to_id).or_default().push(AdjEntry {
-                    edge_id: edge.id,
-                    neighbor_id: edge.from_id,
-                    kind_id,
-                });
+                    },
+                );
+                insert_adj_sorted(
+                    self.in_adj.entry(edge.to_id).or_default(),
+                    AdjEntry {
+                        edge_id: edge.id,
+                        neighbor_id: edge.from_id,
+                        kind_id,
+                    },
+                );
                 self.next_edge_id = self.next_edge_id.max(edge.id);
                 self.edges.insert(edge.id, Arc::new(edge));
             }
@@ -1906,5 +1974,136 @@ mod kind_index_tests {
         // A WAL delete removes its id from the index.
         inner.apply_wal_op(WalOp::DeleteNode(_c.id));
         assert_eq!(inner.kind_index, ground_truth(&inner));
+    }
+}
+
+#[cfg(test)]
+mod adjacency_kind_sort_tests {
+    //! Adjacency lists are kept sorted by `(kind_id, neighbor_id, edge_id)` so a
+    //! kind-filtered fan-out can binary-search the run for a relationship type
+    //! instead of scanning the whole list (RFC #307 Phase 2, arena/CSR slice 1).
+    //! These pin the invariant at every mutation site and prove the kind-run
+    //! fast path returns exactly what a full linear filter would.
+    use super::*;
+
+    fn nn(kind: &str, title: &str) -> NewNode {
+        NewNode {
+            kind: kind.into(),
+            title: title.into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Default::default(),
+        }
+    }
+
+    fn ne(from: u64, to: u64, kind: &str) -> NewEdge {
+        NewEdge {
+            from_id: from,
+            to_id: to,
+            kind: kind.into(),
+            weight: 1.0,
+            properties: Default::default(),
+        }
+    }
+
+    /// The invariant key an adjacency list must be ordered by.
+    fn key(e: &AdjEntry) -> (u32, u64, u64) {
+        (e.kind_id, e.neighbor_id, e.edge_id)
+    }
+
+    fn is_sorted(v: &[AdjEntry]) -> bool {
+        v.windows(2).all(|w| key(&w[0]) <= key(&w[1]))
+    }
+
+    fn assert_all_adjacency_sorted(inner: &Inner) {
+        for (n, v) in inner.out_adj.iter() {
+            assert!(is_sorted(v), "out_adj[{n}] not kind-sorted: {v:?}");
+        }
+        for (n, v) in inner.in_adj.iter() {
+            assert!(is_sorted(v), "in_adj[{n}] not kind-sorted: {v:?}");
+        }
+    }
+
+    /// Build a small hub whose out-edges are inserted in an order that is NOT
+    /// already `(kind_id, neighbor_id)` sorted, across several kinds.
+    fn hub_graph() -> (Inner, u64, Vec<u64>) {
+        let mut inner = Inner::default();
+        let hub = inner.create_node(nn("n", "hub")).unwrap().id;
+        let mut leaves = Vec::new();
+        for i in 0..6 {
+            leaves.push(inner.create_node(nn("n", &format!("l{i}"))).unwrap().id);
+        }
+        // Interleave kinds and neighbours so insertion order != sorted order.
+        // kinds get interned in first-seen order: b=0, a=1, c=2.
+        inner.create_edge(ne(hub, leaves[3], "b")).unwrap();
+        inner.create_edge(ne(hub, leaves[0], "a")).unwrap();
+        inner.create_edge(ne(hub, leaves[5], "c")).unwrap();
+        inner.create_edge(ne(hub, leaves[1], "a")).unwrap();
+        inner.create_edge(ne(hub, leaves[2], "b")).unwrap();
+        inner.create_edge(ne(hub, leaves[4], "a")).unwrap();
+        (inner, hub, leaves)
+    }
+
+    #[test]
+    fn adjacency_is_kind_sorted_after_interleaved_inserts() {
+        let (inner, _hub, _) = hub_graph();
+        assert_all_adjacency_sorted(&inner);
+    }
+
+    #[test]
+    fn adjacency_stays_sorted_after_kind_update() {
+        let (mut inner, hub, _) = hub_graph();
+        // Re-kind the very first out-edge (edge id 1, kind "b") to "a": its slot
+        // must migrate so the list stays `(kind_id, …)` ordered.
+        inner
+            .update_edge(
+                1,
+                EdgePatch {
+                    kind: Some("a".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_all_adjacency_sorted(&inner);
+        // And the incoming side of that edge's target too.
+        let _ = hub;
+    }
+
+    #[test]
+    fn adjacency_stays_sorted_after_delete_and_wal_upsert() {
+        let (mut inner, hub, leaves) = hub_graph();
+        inner.delete_edge(2).unwrap(); // remove one "a" edge
+        assert_all_adjacency_sorted(&inner);
+        // A replacing WAL upsert (kind change) must re-land sorted too.
+        inner.apply_wal_op(WalOp::UpsertEdge(Edge {
+            id: 3,
+            uuid: [0u8; 16],
+            from_id: hub,
+            to_id: leaves[5],
+            kind: "a".into(),
+            weight: 1.0,
+            created_at: 0,
+            properties: Default::default(),
+        }));
+        assert_all_adjacency_sorted(&inner);
+    }
+
+    #[test]
+    fn kind_run_fast_path_matches_full_linear_filter() {
+        let (inner, hub, _) = hub_graph();
+        for kind in ["a", "b", "c", "missing"] {
+            let want = inner.kind_id_of(kind);
+            // Brute-force reference: every incident out-entry whose kind matches.
+            let mut expect: Vec<u64> = Vec::new();
+            inner.for_each_incident(hub, Direction::Outgoing, |e| {
+                if want.is_some_and(|k| k == e.kind_id) {
+                    expect.push(e.neighbor_id);
+                }
+            });
+            expect.sort_unstable();
+            let mut got = inner.neighbor_ids(hub, Direction::Outgoing, Some(kind));
+            got.sort_unstable();
+            assert_eq!(got, expect, "kind={kind}");
+        }
     }
 }

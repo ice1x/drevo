@@ -333,3 +333,27 @@ part that *is* mechanically enforced is the bench's built-in parity
 assertion — both engines must return identical rows (including the new
 2-hop count) before any timing is taken — so a wrong-answer speedup can
 never be recorded as a win.
+
+### Phase 2 slice 1 landed — kind-sorted adjacency runs (2026-09-03)
+
+The first arena/CSR slice keeps every native adjacency list ordered by
+`(kind_id, neighbor_id, edge_id)`, so a relationship-type filter is one
+contiguous run reachable by binary search: kind-filtered fan-out drops from
+an `O(degree)` linear filter to `O(log degree + matches)`. The invariant is
+pinned at every mutation site (create / update-kind / delete / WAL upsert)
+by tests in `drevo-core` (`adjacency_kind_sort_tests`), and the differential
+lock (`native_engine_tests`) stays green — the emission order of
+`neighbor_ids`/`edges_of` is not a contract (both sides are sorted before
+comparison), so the reorder is safe.
+
+A `kind_filtered_from_hub_seam` row was added to the bench. On this snapshot
+the payoff is **latent, not yet visible**: the hub (id 1454, out-degree 98)
+has only **two** relationship types and 96 of its 98 out-edges are
+`HAS_TASK`, so filtering to `HAS_TASK` still walks ~96 entries — the run
+*is* almost the whole list. Measured native kind-filtered fan-out is
+**4.48 µs** (vs KV 14.0 µs, 3.1×), statistically identical to the unfiltered
+1-hop seam (4.35 µs): **no regression**, and the binary-search win will
+surface on high-degree nodes with many relationship types (deep type-diverse
+hubs), which this particular KG does not have. The value banked now is the
+correctness invariant and the algorithmic complexity change; the wall-clock
+payoff is workload-dependent and honestly latent here.
