@@ -168,10 +168,19 @@ if [ "${1:-}" = "image" ]; then
   fi
 
   echo
-  echo "Done. Redeploy where the drevo container + its bind-mounted ./data live:"
-  echo "  docker compose pull && DREVO_UID=\$(id -u) DREVO_GID=\$(id -g) docker compose up -d"
-  echo "The redb file is on the host and survives the image swap; format v1 stays"
-  echo "backward-compatible, so existing data opens unchanged."
+  echo "Done. Redeploy however this host runs drevo — recreate the container from"
+  echo "the new image, keeping its bind-mounted data dir and its configured engine:"
+  echo "  # bare 'docker run' deploy (native-durable, custom Bolt port, ~/.drevo.env):"
+  echo "  ~/drevo-restart.sh"
+  echo "  # or, only for a docker-compose deploy on this host:"
+  echo "  DREVO_DATA_DIR=<your data dir> docker compose pull && \\"
+  echo "    DREVO_UID=\$(id -u) DREVO_GID=\$(id -g) docker compose up -d"
+  echo
+  echo "Data lives in the host-mounted data dir and survives the image swap. NOTE:"
+  echo "on DREVO_ENGINE=native-durable the store of record is <data>/native.wal, and"
+  echo "any redb file there is frozen at the pre-flip snapshot — do NOT restart into"
+  echo "kv/native (mirror), which would serve that stale redb. Match the engine the"
+  echo "host already runs (see ~/.drevo.env / your compose env)."
   exit 0
 fi
 
