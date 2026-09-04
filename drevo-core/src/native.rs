@@ -821,6 +821,12 @@ pub struct NativeGraph {
     /// since a cursor — instead of coupling to the write path. See
     /// [`changes_since`](Self::changes_since).
     feed: std::sync::Mutex<ChangeFeed>,
+    /// Group-commit coordinator for durable writes (RFC #307): one `fsync`
+    /// amortized across every write concurrently enqueued, so autocommit write
+    /// throughput under concurrency is not one-fsync-per-edge. Idle for an
+    /// in-memory engine (nothing to flush).
+    #[cfg(not(target_arch = "wasm32"))]
+    group: GroupCommit,
 }
 
 /// The in-memory tail of committed [`WalOp`]s backing [`NativeGraph`]'s
@@ -860,6 +866,78 @@ pub struct ChangeBatch {
 struct WalSink {
     path: std::path::PathBuf,
     file: std::fs::File,
+}
+
+/// One writer's pending durable commit: its ops, the pre-serialized WAL line,
+/// and the commit sequence that fixes its order in the log.
+#[cfg(not(target_arch = "wasm32"))]
+struct PendingCommit {
+    seq: u64,
+    ops: Vec<WalOp>,
+    line: String,
+}
+
+/// Group-commit queue. Concurrent durable writers enqueue here; one elected
+/// leader flushes the whole pending batch with a **single** `fsync`, so N
+/// concurrent acknowledged writes cost far fewer than N fsyncs. Ordering is by
+/// `seq` (enqueue order), the same total order the WAL always had.
+#[cfg(not(target_arch = "wasm32"))]
+struct CommitQueue {
+    pending: Vec<PendingCommit>,
+    /// Next commit sequence to hand out. Sequences start at 1 so the initial
+    /// `durable_seq = 0` means "nothing durable yet" — a writer with seq ≥ 1 is
+    /// never mistaken for already-flushed before its group runs.
+    next_seq: u64,
+    /// Highest sequence whose WAL write + fsync has completed.
+    durable_seq: u64,
+    /// A leader is currently flushing; other writers wait.
+    leader: bool,
+    /// A flush failed: the WAL is unusable, so every in-flight and future
+    /// write fails rather than silently dropping durability.
+    broken: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for CommitQueue {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(),
+            next_seq: 1,
+            durable_seq: 0,
+            leader: false,
+            broken: false,
+        }
+    }
+}
+
+/// The group-commit coordinator. `std::sync::Condvar` has no `Default`, so this
+/// wrapper carries the manual `Default` that keeps `NativeGraph`'s derive.
+#[cfg(not(target_arch = "wasm32"))]
+struct GroupCommit {
+    queue: std::sync::Mutex<CommitQueue>,
+    committed: std::sync::Condvar,
+    /// Total fsyncs the WAL has performed since open — the coalescing metric
+    /// ([`NativeGraph::wal_fsync_count`]). A whole group counts as one.
+    fsyncs: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for GroupCommit {
+    fn default() -> Self {
+        Self {
+            queue: std::sync::Mutex::new(CommitQueue::default()),
+            committed: std::sync::Condvar::new(),
+            fsyncs: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+/// The error every in-flight and future durable write returns once a group
+/// flush has failed — the WAL is unusable, so failing loudly beats silently
+/// dropping durability.
+#[cfg(not(target_arch = "wasm32"))]
+fn wal_broken_err() -> CoreError {
+    std::io::Error::other("durable WAL is broken: a prior group commit failed to persist").into()
 }
 
 impl NativeGraph {
@@ -975,11 +1053,127 @@ impl NativeGraph {
     /// The WAL append happens **first**: if it fails the feed is left untouched,
     /// so the feed never advertises a change the WAL did not persist.
     fn record(&self, ops: &[WalOp]) -> Result<()> {
+        if ops.is_empty() {
+            return Ok(());
+        }
+        // Durable: the WAL append + feed extend go through group commit, so
+        // concurrent writers share a single fsync. The feed is extended by the
+        // flushing leader *after* fsync (in `flush_group`), preserving the
+        // invariant that the feed never advertises a change the WAL did not
+        // persist.
         #[cfg(not(target_arch = "wasm32"))]
-        self.wal_append_batch(ops)?;
+        if self.wal.is_some() {
+            return self.group_commit(ops);
+        }
+        // In-memory (or wasm): no WAL to flush, just the change-feed.
         let mut feed = self.feed.lock().unwrap_or_else(|e| e.into_inner());
         feed.ops.extend_from_slice(ops);
         Ok(())
+    }
+
+    /// Enqueue `ops` for durable commit and block until they are fsynced. One
+    /// elected leader flushes the whole pending batch with a single fsync
+    /// (see [`flush_group`](Self::flush_group)); everyone else waits and returns
+    /// once the leader has made their sequence durable. This is what turns N
+    /// concurrent autocommit writes into far fewer than N fsyncs.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn group_commit(&self, ops: &[WalOp]) -> Result<()> {
+        // Serialize the WAL line up front, off the queue lock. A single op is a
+        // bare object; a multi-op batch (a transaction) is one JSON array line,
+        // so it still recovers all-or-nothing.
+        let mut line = match ops {
+            [op] => serde_json::to_string(op)?,
+            many => serde_json::to_string(many)?,
+        };
+        line.push('\n');
+
+        let my_seq = {
+            let mut q = self.group.queue.lock().unwrap_or_else(|e| e.into_inner());
+            if q.broken {
+                return Err(wal_broken_err());
+            }
+            let seq = q.next_seq;
+            q.next_seq += 1;
+            q.pending.push(PendingCommit {
+                seq,
+                ops: ops.to_vec(),
+                line,
+            });
+            seq
+        };
+
+        let mut q = self.group.queue.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if q.durable_seq >= my_seq {
+                return Ok(());
+            }
+            if q.broken {
+                return Err(wal_broken_err());
+            }
+            if !q.leader {
+                q.leader = true;
+                // Take every currently-pending write (in seq order) and flush it
+                // as one group with a single fsync.
+                let batch: Vec<PendingCommit> = std::mem::take(&mut q.pending);
+                drop(q);
+                let result = self.flush_group(&batch);
+                let mut done = self.group.queue.lock().unwrap_or_else(|e| e.into_inner());
+                done.leader = false;
+                match &result {
+                    Ok(()) => {
+                        if let Some(last) = batch.last() {
+                            done.durable_seq = done.durable_seq.max(last.seq);
+                        }
+                    }
+                    Err(_) => done.broken = true,
+                }
+                drop(done);
+                self.group.committed.notify_all();
+                return result;
+            }
+            // Someone else is flushing; wait for them to make progress.
+            q = self
+                .group
+                .committed
+                .wait(q)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Flush one group: write every pending line, fsync **once**, then extend
+    /// the change-feed with the whole batch in seq order. On any I/O failure the
+    /// caller marks the WAL broken (the partial, unfsynced tail is a torn record
+    /// recovery truncates — never an acknowledged write).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flush_group(&self, batch: &[PendingCommit]) -> Result<()> {
+        use std::io::Write;
+        if batch.is_empty() {
+            return Ok(());
+        }
+        if let Some(wal) = &self.wal {
+            let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
+            for pc in batch {
+                sink.file.write_all(pc.line.as_bytes())?;
+            }
+            sink.file.sync_all()?;
+            self.group
+                .fsyncs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let mut feed = self.feed.lock().unwrap_or_else(|e| e.into_inner());
+        for pc in batch {
+            feed.ops.extend_from_slice(&pc.ops);
+        }
+        Ok(())
+    }
+
+    /// Total fsyncs the durable WAL has performed since open — the group-commit
+    /// coalescing metric: a batch of N writes flushed together counts as one, so
+    /// under concurrency this stays far below the write count. `0` for an
+    /// in-memory engine.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wal_fsync_count(&self) -> u64 {
+        self.group.fsyncs.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Take a consistent, read-only [`GraphSnapshot`] of the current state.
@@ -1166,6 +1360,8 @@ impl NativeGraph {
                 start_seq: 0,
                 ops: seed,
             }),
+            #[cfg(not(target_arch = "wasm32"))]
+            group: GroupCommit::default(),
         }
     }
 
@@ -1269,6 +1465,8 @@ impl NativeGraph {
                 start_seq: 0,
                 ops: seed,
             }),
+            #[cfg(not(target_arch = "wasm32"))]
+            group: GroupCommit::default(),
         })
     }
 
@@ -1329,32 +1527,6 @@ impl NativeGraph {
         }
         std::fs::rename(&tmp, &sink.path)?;
         sink.file = std::fs::OpenOptions::new().append(true).open(&sink.path)?;
-        Ok(())
-    }
-
-    /// Append a batch of ops and fsync **once**, when this engine is durable —
-    /// the transaction path, so a whole commit costs a single fsync. A
-    /// multi-op batch is written as **one** record (a JSON array), so a crash
-    /// that tears it loses the whole never-acknowledged batch — recovery can
-    /// never replay half a transaction. A single op stays a bare-object line
-    /// (the format every log has always used). A no-op for an in-memory-only
-    /// engine or an empty batch.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn wal_append_batch(&self, ops: &[WalOp]) -> Result<()> {
-        use std::io::Write;
-        if ops.is_empty() {
-            return Ok(());
-        }
-        if let Some(wal) = &self.wal {
-            let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
-            let mut line = match ops {
-                [op] => serde_json::to_string(op)?,
-                many => serde_json::to_string(many)?,
-            };
-            line.push('\n');
-            sink.file.write_all(line.as_bytes())?;
-            sink.file.sync_all()?;
-        }
         Ok(())
     }
 }

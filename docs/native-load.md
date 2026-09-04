@@ -71,11 +71,32 @@ asserting it: the same durable edge inserts run at
 
 a **~1 000× speedup**, which also puts native's batched write throughput
 ~20× *above* the KV engine's ~8 k/sec. So the fix is real, not just plausible.
-Write-heavy callers should wrap inserts in a transaction rather than firing
-autocommit statements. A group-commit path (coalescing *concurrent*
-autocommit writes into one fsync) is the natural follow-up if autocommit
-write throughput itself needs to rise.
+Write-heavy callers should still wrap bulk inserts in a transaction rather
+than firing autocommit statements — that is the ~1 000× path.
+
+### Group commit for autocommit (landed, measured)
+
+Autocommit itself no longer fsyncs once per edge under load: concurrent
+durable writers enqueue and **one elected leader flushes the whole pending
+batch with a single fsync** (`GroupCommit` in `drevo-core`; a batch of N
+writes counts as one, exposed as `NativeGraph::wal_fsync_count`). Measured
+effect on the concurrent autocommit workload (8 threads):
+
+* **p99 tail: ~737 ms → ~27 ms (~27× better)** — the catastrophic tail above
+  is gone, which is the point for many concurrent MCP writers;
+* **throughput: ~136 → ~595 inserts/sec (~4×)**, and it now *scales* with
+  threads instead of staying flat.
+
+It does **not** reach the tx-batched or KV numbers, because autocommit is now
+bounded by the **inner write lock** (each statement's in-memory apply is
+serialized), not by fsync. Coalescing is proven deterministically by
+`group_commit_coalesces_concurrent_fsyncs` (N concurrent writes ⇒ fsyncs ≪ N,
+all recover); an uncontended write still fsyncs once
+(`sequential_durable_writes_fsync_once_each`), so durability is unchanged.
+Lifting the inner-write-lock serialization is the remaining follow-up if
+autocommit write throughput must rise further; bulk writers should batch.
 
 The pieces this harness depends on — the BFS reach, KV/native traversal
-parity, error-free concurrent reads, and durable writes surviving a WAL
-reopen — are guarded on the normal PR gate by `tests/native_load_tests.rs`.
+parity, error-free concurrent reads, durable writes surviving a WAL reopen,
+group-commit fsync coalescing, and single-fsync transactions — are guarded on
+the normal PR gate by `tests/native_load_tests.rs`.
