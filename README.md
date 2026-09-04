@@ -382,6 +382,26 @@ The native graph engine ([RFC #307](docs/rfc-native-core.md)) measured on a **co
 
 > Numbers are drevo vs Memgraph on identical Cypher over the same Bolt client (runs 5–8) or native vs the KV engine in-process (runs 1–4). Reproduce with `scripts/memgraph_baseline_bench.py` (cross-DB) or `DREVO_BASELINE_GRAPHML=<graphml> cargo bench --bench real_data_baseline_bench` (KV-vs-native); the harness asserts both engines return identical rows before timing, so a wrong-answer speedup never counts.
 
+### Native-core load & concurrency — measured
+
+Beyond single-op latency: throughput under a concurrent thread sweep, deep
+traversal, and durable writes (`native-durable` with a real WAL vs the KV
+engine, same real-data snapshot, Apple M1 Max). Full numbers + p50/p95/p99 in
+[docs/native-load.md](docs/native-load.md).
+
+| Workload | native-durable | KV |
+|---|---:|---:|
+| point read, 8 threads | **3.1 M ops/s** | 56 k |
+| 3-hop BFS, 1 thread | **77 k ops/s** | 27 k |
+| edge write — autocommit (fsync each) | 174 /s | **8.1 k** |
+| edge write — **tx-batched** (one fsync/commit) | **172 k /s** | ~8 k |
+
+> Reads win 3–700× and scale. The write path is the honest caveat: autocommit
+> fsyncs every edge (~174/s), so **write-heavy callers must batch into a
+> transaction** — one fsync per commit lifts it to ~172 k/s (~1 000×), ~20×
+> above KV. Reproduce with `DREVO_BASELINE_GRAPHML=<graphml> cargo run --release
+> --example native_load`.
+
 ---
 
 ## Crate Structure
