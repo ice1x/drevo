@@ -1,4 +1,4 @@
-# drevo — Embedded Graph Database for Knowledge Management
+# 🎄 drevo — Embedded Graph Database for Knowledge Management
 
 [![CI](https://github.com/ice1x/drevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ice1x/drevo/actions/workflows/ci.yml)
 [![Container image](https://img.shields.io/docker/v/ice1x/drevo?sort=semver&logo=docker&logoColor=white&label=docker%20hub)](https://hub.docker.com/r/ice1x/drevo)

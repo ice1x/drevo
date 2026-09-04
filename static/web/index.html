@@ -4,6 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>drevo browser</title>
+  <!--
+    Favicon: the Christmas-tree emoji as an inline SVG *text* glyph. We ship the
+    Unicode code point (U+1F384), not any vendor's emoji artwork — the browser
+    renders it with the viewer's own system emoji font — so there is no
+    third-party image license to honour. No file, no route, no network.
+  -->
+  <link
+    rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%8E%84</text></svg>"
+  />
   <link rel="stylesheet" href="/ui/styles.css" />
   <!--
     Cytoscape.js (v3.30.2) is VENDORED same-origin under /ui/vendor/ and
