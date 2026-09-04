@@ -82,6 +82,11 @@ impl NativeApiState {
 /// Build the durable-native router. See the [module docs](self).
 pub fn build_native_router(state: NativeApiState) -> Router {
     Router::new()
+        // `GET /` — server info (name + version). The Web UI probes it on load
+        // (`loadServerInfo`); without it the UI shows "Cannot reach drevo HTTP
+        // API at /" even though every other endpoint is up. Serves the same
+        // body as `/status`.
+        .route("/", get(status))
         .route("/health", get(health))
         .route("/ready", get(health))
         .route("/status", get(status))

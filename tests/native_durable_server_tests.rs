@@ -90,6 +90,21 @@ async fn cypher_reads_writes_and_fts_flow_through_the_native_router() {
 }
 
 #[tokio::test]
+async fn root_serves_server_info_for_the_web_ui() {
+    // The Web UI probes `GET /` on load (`loadServerInfo`) for `{name, version}`
+    // and shows "Cannot reach drevo HTTP API at /" when it 404s. The durable
+    // router must serve it, like the KV router does.
+    let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+    let (status, info) = send(&app, "GET", "/", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(info["name"], "drevo");
+    assert!(
+        info["version"].is_string(),
+        "root must report a version string, got {info}"
+    );
+}
+
+#[tokio::test]
 async fn parse_and_execution_errors_are_bad_requests() {
     let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
     let (status, _) = cypher(&app, "MATCH (((").await;
