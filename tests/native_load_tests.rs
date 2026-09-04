@@ -184,3 +184,46 @@ fn concurrent_durable_writes_persist_across_reopen() {
     );
     assert_eq!(GraphEngine::all_nodes(&reopened).expect("nodes").len(), 5);
 }
+
+#[test]
+fn tx_batched_writes_commit_atomically_and_persist() {
+    // The write-fsync mitigation the harness measures: many edges in one
+    // transaction must land as one durable batch and survive a reopen.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wal = dir.path().join("txbatch.wal");
+    let ids;
+    {
+        let native = NativeGraph::open_durable(&wal).expect("open durable");
+        ids = path_graph(&native); // 5 nodes, 4 edges
+        let n = ids.len() as u64;
+
+        let tx = native.tx_begin();
+        {
+            let txe = native.tx_engine(tx).expect("tx engine");
+            for i in 0..50u64 {
+                txe.create_edge(NewEdge {
+                    from_id: ids[(i % n) as usize],
+                    to_id: ids[((i + 1) % n) as usize],
+                    kind: "e".into(),
+                    weight: 1.0,
+                    properties: Properties::default(),
+                })
+                .expect("tx edge");
+            }
+            // Buffered, not yet visible on the base graph.
+            assert_eq!(GraphEngine::all_edges(&native).expect("edges").len(), 4);
+        }
+        native.tx_commit(tx).expect("commit");
+        assert_eq!(
+            GraphEngine::all_edges(&native).expect("edges").len(),
+            4 + 50,
+            "committed transaction not visible on the base graph"
+        );
+    }
+    let reopened = NativeGraph::open_durable(&wal).expect("reopen durable");
+    assert_eq!(
+        GraphEngine::all_edges(&reopened).expect("edges").len(),
+        4 + 50,
+        "tx-batched writes did not recover from the WAL"
+    );
+}

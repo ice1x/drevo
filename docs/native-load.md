@@ -30,8 +30,9 @@ Throughput in ops/sec; latency in µs. `native` = `native-durable`.
 | three_hop_bfs | 1 | 27 k | **77 k** | 157 | **49** |
 | three_hop_bfs | 4 | 68 k | **113 k** | 243 | **159** |
 | three_hop_bfs | 8 | 57 k | 64 k | 672 | 655 |
-| **write_edge (fsync)** | 1 | **4.5 k** | 187 | **337** | 8 875 |
-| **write_edge (fsync)** | 8 | **8.1 k** | 136 | 12 396 | **737 205** |
+| **write_edge autocommit** | 1 | **4.5 k** | 187 | **337** | 8 875 |
+| **write_edge autocommit** | 8 | **8.1 k** | 136 | 12 396 | **737 205** |
+| **write_edge tx-batched** | 1 | — | **172 563** | — | — |
 
 ## What it shows — honestly
 
@@ -56,15 +57,22 @@ writers serialize behind the single WAL writer, so tail latency explodes
 under write contention. Reads are untouched (the WAL is off the read path);
 this is purely the write path.
 
-## Production implication + the fix
+## Production implication + the fix (measured)
 
 The live `native-durable` deployment is excellent for a read-heavy graph
 (which this KG is) but the autocommit write path is **not** suited to
-high-concurrency write bursts as-is. The fix already exists in the engine:
-**batch writes into a transaction** — `NativeTx` commits a whole batch with a
-*single* `fsync`, amortising the cost the per-edge autocommit pays every
-time. Write-heavy callers should wrap inserts in a transaction rather than
-firing autocommit statements. A group-commit path (coalescing concurrent
+high-concurrency write bursts as-is. The fix already exists in the engine —
+**batch writes into a transaction** (`NativeTx`), which commits a whole batch
+with a *single* `fsync` — and the harness now **measures** it rather than
+asserting it: the same durable edge inserts run at
+
+* **autocommit: ~174 inserts/sec** (one `fsync` each), versus
+* **tx-batched: ~172 600 inserts/sec** (one `fsync` at commit) —
+
+a **~1 000× speedup**, which also puts native's batched write throughput
+~20× *above* the KV engine's ~8 k/sec. So the fix is real, not just plausible.
+Write-heavy callers should wrap inserts in a transaction rather than firing
+autocommit statements. A group-commit path (coalescing *concurrent*
 autocommit writes into one fsync) is the natural follow-up if autocommit
 write throughput itself needs to rise.
 

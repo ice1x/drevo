@@ -38,7 +38,7 @@ use std::time::Instant;
 use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::migrate::migrate;
-use drevo::model::{Direction, NewEdge, Properties};
+use drevo::model::{Direction, NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
 use serde::Serialize;
 
@@ -269,6 +269,70 @@ fn pick_seeds<E: GraphEngine>(engine: &E, ids: &[u64], k: usize) -> Vec<u64> {
     by_deg.into_iter().map(|(id, _)| id).collect()
 }
 
+/// A fresh durable native store on its own WAL, seeded with 1 000 nodes.
+fn seed_durable(suffix: &str) -> (NativeGraph, std::path::PathBuf, Vec<u64>) {
+    let path = std::env::temp_dir().join(format!(
+        "drevo_native_load_{}_{suffix}.wal",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let g = NativeGraph::open_durable(&path).expect("open durable");
+    let ids = (0..1000)
+        .map(|i| {
+            g.create_node(NewNode {
+                kind: "n".into(),
+                title: format!("seed{i}"),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties::default(),
+            })
+            .expect("seed")
+            .id
+        })
+        .collect();
+    (g, path, ids)
+}
+
+fn load_edge(ids: &[u64], i: u64) -> NewEdge {
+    let n = ids.len() as u64;
+    NewEdge {
+        from_id: ids[(i % n) as usize],
+        to_id: ids[(mix(i, 7) % n) as usize],
+        kind: "load".to_string(),
+        weight: 1.0,
+        properties: Properties::default(),
+    }
+}
+
+/// The per-write-fsync mitigation, *measured* rather than asserted: autocommit
+/// (one fsync per edge) vs one transaction (one fsync at commit) for the same
+/// `writes` durable edge inserts. Returns (autocommit ops/s, tx-batched ops/s).
+fn batched_write_probe(writes: u64) -> (f64, f64) {
+    let (ga, pa, ids_a) = seed_durable("auto");
+    let t0 = Instant::now();
+    for i in 0..writes {
+        ga.create_edge(load_edge(&ids_a, i))
+            .expect("autocommit edge");
+    }
+    let auto = writes as f64 / t0.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+
+    let (gb, pb, ids_b) = seed_durable("tx");
+    let t1 = Instant::now();
+    let tx = gb.tx_begin();
+    {
+        let txe = gb.tx_engine(tx).expect("tx engine");
+        for i in 0..writes {
+            txe.create_edge(load_edge(&ids_b, i)).expect("tx edge");
+        }
+    }
+    gb.tx_commit(tx).expect("tx commit");
+    let batched = writes as f64 / t1.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+
+    let _ = std::fs::remove_file(&pa);
+    let _ = std::fs::remove_file(&pb);
+    (auto, batched)
+}
+
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -368,6 +432,30 @@ fn main() {
             points.push(kv_point);
             points.push(native_point);
         }
+    }
+
+    // The write-fsync mitigation, measured: batching the same durable edge
+    // inserts into one transaction turns the per-edge fsync into one fsync.
+    let (auto_ops, batch_ops) = batched_write_probe(write_ops.max(1) * 4);
+    eprintln!(
+        "durable write path: autocommit {auto_ops:.0} ops/s vs tx-batched {batch_ops:.0} ops/s \
+         ({:.0}x by amortizing fsync across the commit)",
+        batch_ops / auto_ops.max(f64::MIN_POSITIVE)
+    );
+    for (workload, ops_per_sec) in [
+        ("write_edge_autocommit", auto_ops),
+        ("write_edge_tx_batched", batch_ops),
+    ] {
+        points.push(Point {
+            engine: "native".to_string(),
+            workload: workload.to_string(),
+            threads: 1,
+            total_ops: write_ops.max(1) * 4,
+            errors: 0,
+            wall_ms: 0,
+            ops_per_sec,
+            latency: LatencySummary::default(),
+        });
     }
 
     let _ = std::fs::remove_file(&tmp);
