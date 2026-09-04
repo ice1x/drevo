@@ -250,6 +250,22 @@ mod tests {
     }
 
     #[test]
+    fn embedded_index_has_an_inline_emoji_favicon() {
+        // The favicon is the 🎄 code point (U+1F384) as an inline SVG *text*
+        // glyph in a data: URI — no vendor artwork shipped (the browser draws
+        // it with the viewer's font), no file, no external origin. Guards
+        // against it being dropped and against it regressing to a fetched icon.
+        assert!(
+            INDEX_HTML.contains("rel=\"icon\""),
+            "index.html must declare a favicon"
+        );
+        assert!(
+            INDEX_HTML.contains("data:image/svg+xml") && INDEX_HTML.contains("%F0%9F%8E%84"),
+            "the favicon must be the inline SVG 🎄 code point, not a fetched asset"
+        );
+    }
+
+    #[test]
     fn embedded_index_loads_cytoscape_from_local_vendor() {
         // Cytoscape.js is vendored same-origin under /ui/vendor/, NOT
         // pulled from a public CDN — see the module docs for why (Brave
