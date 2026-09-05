@@ -298,3 +298,7 @@ ignored = ["getrandom", "idna_adapter"]
 [[bench]]
 name = "real_data_baseline_bench"
 harness = false
+
+[[bench]]
+name = "pagerank_bench"
+harness = false
