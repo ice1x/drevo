@@ -43,9 +43,11 @@
 
 mod louvain;
 mod pagerank;
+mod wcc;
 
 pub use louvain::{louvain, LouvainConfig, LouvainResult};
 pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
+pub use wcc::{wcc, WccResult};
 
 use std::collections::HashMap;
 
@@ -84,6 +86,14 @@ pub fn louvain_native(
     config: &LouvainConfig,
 ) -> LouvainResult {
     louvain(&native_adjacency(engine), config)
+}
+
+/// Weakly connected components over the **native engine**, over a consistent
+/// MVCC snapshot (RFC #307 Phase 8). A single near-linear union-find pass —
+/// no config, always serial (the work is dominated by the snapshot build, not
+/// the union-find).
+pub fn wcc_native(engine: &crate::native::NativeGraph) -> WccResult {
+    wcc(&native_adjacency(engine))
 }
 
 /// A failure raised while configuring a graph algorithm.

@@ -509,6 +509,7 @@ procedures.
 | `drevo.engine.status()` | `engine, mirror_fresh, native_hits, kv_fallbacks, kv_routed, rebuild_errors` | which engine serves this database's Cypher (`kv` or `native`) and the native read mirror's routing counters (RFC #307) |
 | `drevo.pagerank()` | `node, score` | PageRank centrality over the whole graph, computed in parallel over an immutable adjacency snapshot; rows come back most-central-first (RFC #307 Phase 8) |
 | `drevo.louvain()` | `node, community` | Louvain community detection over the whole graph; each node is returned with its contiguously-numbered community id (RFC #307 Phase 8) |
+| `drevo.wcc()` | `node, component` | Weakly connected components over the whole graph; each node is returned with its component id (edges treated as undirected), numbered by the minimum node id per component (RFC #307 Phase 8) |
 
 ### CALL
 
