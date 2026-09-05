@@ -56,8 +56,10 @@ pub fn scc(graph: &AdjacencyList) -> SccResult {
     let mut on_stack: Vec<bool> = vec![false; n];
     let mut tarjan_stack: Vec<usize> = Vec::new();
 
-    // Each finished SCC is a list of dense indices; relabelled by min ID later.
-    let mut raw_components: Vec<Vec<usize>> = Vec::new();
+    // Each finished SCC is `(min node ID, dense indices)`; the min ID is
+    // accumulated while the component is popped so no fallible `min()` is
+    // needed afterwards. Relabelled into contiguous IDs below.
+    let mut raw_components: Vec<(u64, Vec<usize>)> = Vec::new();
 
     for start in 0..n {
         if dfs_num[start].is_some() {
@@ -78,7 +80,9 @@ pub fn scc(graph: &AdjacencyList) -> SccResult {
             let edges = graph.out_edges(v);
             if cursor < edges.len() {
                 // Advance this frame's cursor before descending.
-                work.last_mut().unwrap().1 = cursor + 1;
+                if let Some(frame) = work.last_mut() {
+                    frame.1 = cursor + 1;
+                }
                 let w = edges[cursor].0;
                 match dfs_num[w] {
                     None => {
@@ -97,37 +101,35 @@ pub fn scc(graph: &AdjacencyList) -> SccResult {
                     }
                 }
             } else {
-                // All out-edges of v explored.
-                if low[v] == dfs_num[v].unwrap() {
-                    // v is an SCC root: pop the component off the Tarjan stack.
+                // All out-edges of v explored. `dfs_num[v]` is always `Some`
+                // here (v was numbered before it was ever pushed).
+                if dfs_num[v] == Some(low[v]) {
+                    // v is an SCC root: pop the component off the Tarjan stack,
+                    // tracking the minimum node ID as we go.
                     let mut comp = Vec::new();
-                    loop {
-                        let x = tarjan_stack.pop().unwrap();
+                    let mut min_id = u64::MAX;
+                    while let Some(x) = tarjan_stack.pop() {
                         on_stack[x] = false;
+                        min_id = min_id.min(graph.id_at(x));
                         comp.push(x);
                         if x == v {
                             break;
                         }
                     }
-                    raw_components.push(comp);
+                    raw_components.push((min_id, comp));
                 }
+                let v_low = low[v];
                 work.pop();
                 // Propagate v's lowlink to its parent (the tree-edge return step).
                 if let Some(&(parent, _)) = work.last() {
-                    low[parent] = low[parent].min(low[v]);
+                    low[parent] = low[parent].min(v_low);
                 }
             }
         }
     }
 
-    // Assign each component a stable ID by the smallest node ID it contains.
-    let mut labelled: Vec<(u64, Vec<usize>)> = raw_components
-        .into_iter()
-        .map(|comp| {
-            let min_id = comp.iter().map(|&i| graph.id_at(i)).min().unwrap();
-            (min_id, comp)
-        })
-        .collect();
+    // Order components by their minimum node ID and number them `0..k`.
+    let mut labelled = raw_components;
     labelled.sort_unstable_by_key(|&(min_id, _)| min_id);
     let component_count = labelled.len();
 
