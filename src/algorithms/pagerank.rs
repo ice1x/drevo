@@ -164,6 +164,110 @@ pub fn pagerank(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResul
     }
 }
 
+/// Parallel PageRank over an immutable adjacency snapshot (RFC #307 Phase 8 —
+/// parallel runtime).
+///
+/// Same math as [`pagerank`], but **pull-based**: each step recomputes every
+/// node's rank from its *incoming* edges, which makes the per-node update of a
+/// step independent, so it parallelises with rayon (`next.par_iter_mut()`) —
+/// the "free over the MVCC snapshot" win, since the frozen snapshot is shared
+/// immutably across workers. Bit-for-bit equality with [`pagerank`] is not
+/// guaranteed (the parallel reduction sums in a different order), but the ranks
+/// agree within tolerance — pinned by `pagerank_parallel_matches_serial`.
+///
+/// Dangling nodes (zero out-weight) redistribute uniformly, identically to the
+/// serial version: their contribution is excluded from the pull sum (they have
+/// no usable outgoing mass) and folded into the teleport `base` instead.
+///
+/// On `wasm32` (no threads) this falls back to the serial [`pagerank`]; the API
+/// is the same everywhere.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pagerank_parallel(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResult {
+    use rayon::prelude::*;
+
+    let n = graph.node_count();
+    if n == 0 {
+        return PageRankResult {
+            ranks: Vec::new(),
+            iterations: 0,
+            converged: true,
+        };
+    }
+
+    let nf = n as f64;
+    let d = config.damping;
+
+    let out_weight: Vec<f64> = (0..n)
+        .map(|i| graph.out_edges(i).iter().map(|&(_, w)| w).sum::<f64>())
+        .collect();
+
+    // Reverse index (built once): `in_edges[j]` = every `(source i, weight)`
+    // with an edge i→j. Only sources with usable out-weight are kept, so the
+    // per-node pull never divides by a zero out-weight (dangling sources leak
+    // through `base`, matching the serial scatter's `continue`).
+    let mut in_edges: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+    for (i, &ow) in out_weight.iter().enumerate() {
+        if ow <= 0.0 {
+            continue;
+        }
+        for &(j, w) in graph.out_edges(i) {
+            in_edges[j].push((i, w));
+        }
+    }
+
+    let mut rank = vec![1.0 / nf; n];
+    let mut next = vec![0.0; n];
+    let mut iterations = 0;
+    let mut converged = false;
+
+    while iterations < config.max_iterations {
+        iterations += 1;
+
+        let dangling: f64 = (0..n)
+            .into_par_iter()
+            .filter(|&i| out_weight[i] <= 0.0)
+            .map(|i| rank[i])
+            .sum();
+        let base = (1.0 - d) / nf + d * dangling / nf;
+
+        let rank_ref = &rank;
+        let in_ref = &in_edges;
+        let ow_ref = &out_weight;
+        next.par_iter_mut().enumerate().for_each(|(j, slot)| {
+            let inflow: f64 = in_ref[j]
+                .iter()
+                .map(|&(i, w)| d * rank_ref[i] * w / ow_ref[i])
+                .sum();
+            *slot = base + inflow;
+        });
+
+        let delta: f64 = (0..n)
+            .into_par_iter()
+            .map(|i| (next[i] - rank[i]).abs())
+            .sum();
+        std::mem::swap(&mut rank, &mut next);
+
+        if delta <= config.tolerance {
+            converged = true;
+            break;
+        }
+    }
+
+    let ranks = (0..n).map(|i| (graph.id_at(i), rank[i])).collect();
+    PageRankResult {
+        ranks,
+        iterations,
+        converged,
+    }
+}
+
+/// `wasm32` has no thread pool — run the serial power iteration instead, so the
+/// `pagerank_parallel` API is available on every target.
+#[cfg(target_arch = "wasm32")]
+pub fn pagerank_parallel(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResult {
+    pagerank(graph, config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

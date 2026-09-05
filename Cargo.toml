@@ -186,6 +186,13 @@ embeddings-proxy = ["http", "dep:reqwest", "dep:idna_adapter"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 
+# Data-parallelism for whole-graph algorithms over an immutable MVCC snapshot
+# (RFC #307 Phase 8 — parallel PageRank). NOT on wasm32: that target has no
+# threads, so `pagerank_parallel` falls back to the serial power iteration there
+# (see src/algorithms/pagerank.rs) and rayon is not pulled in.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1"
+
 [dev-dependencies]
 tempfile = "3"
 # Captures `tracing` events in-process so the startup version log is verified
