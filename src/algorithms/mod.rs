@@ -66,7 +66,11 @@ pub fn pagerank_native(
         .into_iter()
         .map(|e| (e.from_id, e.to_id, e.weight));
     let graph = AdjacencyList::from_parts(node_ids, edges);
-    pagerank_parallel(&graph, config)
+    // Serial power iteration: benches/pagerank_bench.rs measured the naive rayon
+    // `pagerank_parallel` ~8–9× SLOWER (PageRank is memory-bandwidth-bound; the
+    // per-iteration fork/join and pull-based layout cost more than the cores
+    // save). Real parallel speedup needs a CSR layout — future work on #382.
+    pagerank(&graph, config)
 }
 
 /// A failure raised while configuring a graph algorithm.

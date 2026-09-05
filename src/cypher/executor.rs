@@ -4709,10 +4709,10 @@ impl<'a> Executor<'a> {
             .map(|e| (e.from_id, e.to_id, e.weight))
             .collect();
         let graph = crate::algorithms::AdjacencyList::from_parts(node_ids, edges);
-        let result = crate::algorithms::pagerank_parallel(
-            &graph,
-            &crate::algorithms::PageRankConfig::default(),
-        );
+        // Serial: the naive parallel version is measured slower (see
+        // `algorithms::pagerank_native` / benches/pagerank_bench.rs).
+        let result =
+            crate::algorithms::pagerank(&graph, &crate::algorithms::PageRankConfig::default());
 
         let ranked = result.ranked();
         let mut rows = Vec::with_capacity(ranked.len());

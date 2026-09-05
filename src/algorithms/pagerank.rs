@@ -167,6 +167,15 @@ pub fn pagerank(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResul
 /// Parallel PageRank over an immutable adjacency snapshot (RFC #307 Phase 8 —
 /// parallel runtime).
 ///
+/// **Measured slower than [`pagerank`], not faster** (benches/pagerank_bench.rs:
+/// ~8–9× at 10k–500k nodes). PageRank is memory-bandwidth-bound, so the
+/// per-iteration rayon fork/join and this pull-based `Vec<Vec>` layout cost more
+/// than the extra cores save. Kept as the correct baseline the bench compares
+/// against; a real parallel speedup needs a flat CSR layout and coarser
+/// parallelism (tracked on #382). The user-facing paths therefore call the
+/// serial [`pagerank`]. Correctness is identical (pinned by
+/// `tests/native_pagerank_tests.rs`).
+///
 /// Same math as [`pagerank`], but **pull-based**: each step recomputes every
 /// node's rank from its *incoming* edges, which makes the per-node update of a
 /// step independent, so it parallelises with rayon (`next.par_iter_mut()`) —
