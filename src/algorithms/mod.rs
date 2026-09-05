@@ -49,28 +49,41 @@ pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
 
 use std::collections::HashMap;
 
-/// PageRank over the **native engine**, computed in parallel over a single
-/// consistent MVCC snapshot (RFC #307 Phase 8). Freezes the graph once with
-/// [`NativeGraph::snapshot`](crate::native::NativeGraph::snapshot), builds an
-/// [`AdjacencyList`] from that snapshot's nodes + edges, and runs
-/// [`pagerank_parallel`]. Because the snapshot is immutable, concurrent writers
-/// never perturb the run and the workers share it without locking.
-pub fn pagerank_native(
-    engine: &crate::native::NativeGraph,
-    config: &PageRankConfig,
-) -> PageRankResult {
+/// Build an [`AdjacencyList`] from a single consistent MVCC snapshot of the
+/// native engine (RFC #307 Phase 8). Freezing once with
+/// [`NativeGraph::snapshot`](crate::native::NativeGraph::snapshot) means a
+/// concurrent writer can never perturb an algorithm mid-run.
+fn native_adjacency(engine: &crate::native::NativeGraph) -> AdjacencyList {
     let snap = engine.snapshot();
     let node_ids: Vec<u64> = snap.all_nodes().into_iter().map(|n| n.id).collect();
     let edges = snap
         .all_edges()
         .into_iter()
         .map(|e| (e.from_id, e.to_id, e.weight));
-    let graph = AdjacencyList::from_parts(node_ids, edges);
-    // Serial power iteration: benches/pagerank_bench.rs measured the naive rayon
-    // `pagerank_parallel` ~8–9× SLOWER (PageRank is memory-bandwidth-bound; the
-    // per-iteration fork/join and pull-based layout cost more than the cores
-    // save). Real parallel speedup needs a CSR layout — future work on #382.
-    pagerank(&graph, config)
+    AdjacencyList::from_parts(node_ids, edges)
+}
+
+/// PageRank over the **native engine**, over a consistent MVCC snapshot.
+///
+/// Uses the serial [`pagerank`]: benches/pagerank_bench.rs measured the naive
+/// rayon [`pagerank_parallel`] ~8–9× SLOWER (PageRank is memory-bandwidth-bound;
+/// the per-iteration fork/join and pull-based layout cost more than the cores
+/// save). A real parallel speedup needs a CSR layout — future work on #382.
+pub fn pagerank_native(
+    engine: &crate::native::NativeGraph,
+    config: &PageRankConfig,
+) -> PageRankResult {
+    pagerank(&native_adjacency(engine), config)
+}
+
+/// Louvain community detection over the **native engine**, over a consistent
+/// MVCC snapshot (RFC #307 Phase 8). Serial — Louvain's local-moving phase is
+/// inherently sequential.
+pub fn louvain_native(
+    engine: &crate::native::NativeGraph,
+    config: &LouvainConfig,
+) -> LouvainResult {
+    louvain(&native_adjacency(engine), config)
 }
 
 /// A failure raised while configuring a graph algorithm.
