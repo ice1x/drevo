@@ -512,6 +512,7 @@ procedures.
 | `drevo.wcc()` | `node, component` | Weakly connected components over the whole graph; each node is returned with its component id (edges treated as undirected), numbered by the minimum node id per component (RFC #307 Phase 8) |
 | `drevo.scc()` | `node, component` | Strongly connected components over the whole graph (iterative Tarjan); two nodes share a component only if mutually reachable **following edge direction** — i.e. on a common directed cycle — numbered by the minimum node id per component (RFC #307 Phase 8) |
 | `drevo.triangles()` | `node, triangles, coefficient` | Triangle count and local clustering coefficient per node over the undirected projection; `coefficient` is `2·triangles / (degree·(degree−1))` in `[0,1]`, `0` for degree `< 2` (RFC #307 Phase 8) |
+| `drevo.betweenness()` | `node, score` | Betweenness centrality (Brandes' algorithm) over the directed, unweighted graph; each node's `score` is the number of shortest paths through it, rows most-central first (RFC #307 Phase 8) |
 
 ### CALL
 
