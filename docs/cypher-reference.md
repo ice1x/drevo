@@ -507,6 +507,7 @@ procedures.
 | `db.propertyKeys()` | `propertyKey` | every distinct property key across nodes and relationships, sorted (the reserved `_labels` key is never exposed) |
 | `drevo.info()` | `version, git_sha, build_date, protocol` | the running build's version + metadata, so a Bolt client can assert a minimum-compatible drevo (issue #303) |
 | `drevo.engine.status()` | `engine, mirror_fresh, native_hits, kv_fallbacks, kv_routed, rebuild_errors` | which engine serves this database's Cypher (`kv` or `native`) and the native read mirror's routing counters (RFC #307) |
+| `drevo.pagerank()` | `node, score` | PageRank centrality over the whole graph, computed in parallel over an immutable adjacency snapshot; rows come back most-central-first (RFC #307 Phase 8) |
 
 ### CALL
 

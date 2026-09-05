@@ -11,6 +11,8 @@
 use std::collections::HashMap;
 
 use drevo::algorithms::{pagerank_native, PageRankConfig, PageRankResult};
+use drevo::cypher::executor::{execute, execute_on_engine, Value};
+use drevo::cypher::parser::parse;
 use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
@@ -112,6 +114,62 @@ fn ranks_conserve_mass_and_reflect_structure() {
             ranks[&leaf]
         );
     }
+}
+
+/// `CALL drevo.pagerank() YIELD node, score` — the top row's title and the
+/// score column, extracted from the Cypher result of `execute`d on `db`.
+fn cypher_pagerank_scores(rows: &[Vec<Value>]) -> (String, Vec<f64>) {
+    let top_title = match &rows[0][0] {
+        Value::String(t) => t.clone(),
+        other => panic!("expected a title string in column 0, got {other:?}"),
+    };
+    let scores = rows
+        .iter()
+        .map(|r| match &r[1] {
+            Value::Float(f) => *f,
+            other => panic!("expected a float score in column 1, got {other:?}"),
+        })
+        .collect();
+    (top_title, scores)
+}
+
+const PAGERANK_CYPHER: &str =
+    "CALL drevo.pagerank() YIELD node, score RETURN node.title AS t, score AS s ORDER BY s DESC";
+
+#[test]
+fn call_drevo_pagerank_over_cypher_ranks_the_hub_first_on_kv() {
+    // 0,1,2,3 → 4; index 4 (id 5, title "n4") is the hub everyone points to.
+    let kv = Drevo::open_in_memory().expect("kv");
+    build(&kv, 5, &[(0, 4), (1, 4), (2, 4), (3, 4)]);
+    let q = parse(PAGERANK_CYPHER).expect("parse");
+    let res = execute(&q, &kv, HashMap::new()).expect("execute");
+
+    assert_eq!(res.rows.len(), 5, "one row per node");
+    let (top, scores) = cypher_pagerank_scores(&res.rows);
+    assert_eq!(top, "n4", "the hub must rank first");
+    assert!(
+        (scores.iter().sum::<f64>() - 1.0).abs() < 1e-6,
+        "mass ≈ 1: {scores:?}"
+    );
+    assert!(
+        scores.windows(2).all(|w| w[0] >= w[1]),
+        "scores descending: {scores:?}"
+    );
+}
+
+#[test]
+fn call_drevo_pagerank_over_cypher_runs_on_the_native_engine() {
+    let native = NativeGraph::new();
+    build(&native, 5, &[(0, 4), (1, 4), (2, 4), (3, 4)]);
+    let q = parse(PAGERANK_CYPHER).expect("parse");
+    let res = execute_on_engine(&q, &native, HashMap::new()).expect("execute on native");
+
+    assert_eq!(res.rows.len(), 5);
+    let (top, _scores) = cypher_pagerank_scores(&res.rows);
+    assert_eq!(
+        top, "n4",
+        "native CALL drevo.pagerank must rank the hub first"
+    );
 }
 
 #[test]
