@@ -4753,6 +4753,35 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// `CALL drevo.wcc() YIELD node, component` (RFC #307 Phase 8) — weakly
+    /// connected components over the whole graph. Each node is returned with its
+    /// component id (nodes sharing an id are reachable from one another once
+    /// edges are treated as undirected), in ascending node order. Component ids
+    /// are keyed by the minimum node id per component, so they are deterministic
+    /// and independent of the engine's node-enumeration order.
+    fn proc_wcc(&self) -> ExecResultT<Vec<Vec<Value>>> {
+        let node_ids: Vec<u64> = self.engine().all_nodes()?.iter().map(|n| n.id).collect();
+        let edges: Vec<(u64, u64, f32)> = self
+            .engine()
+            .all_edges()?
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, e.weight))
+            .collect();
+        let graph = crate::algorithms::AdjacencyList::from_parts(node_ids, edges);
+        let result = crate::algorithms::wcc(&graph);
+
+        let mut rows = Vec::with_capacity(result.components.len());
+        for (id, component) in result.components {
+            if let Some(node) = self.engine().get_node(id)? {
+                rows.push(vec![
+                    Value::Node(node_to_value(&node)),
+                    Value::Integer(component as i64),
+                ]);
+            }
+        }
+        Ok(rows)
+    }
+
     /// `CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits,
     /// kv_fallbacks, kv_routed, rebuild_errors` — engine-flip observability
     /// (RFC #307): which engine serves this database's Cypher, and how the
@@ -5133,6 +5162,7 @@ impl<'a> Executor<'a> {
             "drevo.info" => Self::proc_drevo_info(),
             "drevo.pagerank" => self.proc_pagerank(),
             "drevo.louvain" => self.proc_louvain(),
+            "drevo.wcc" => self.proc_wcc(),
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
@@ -6727,6 +6757,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.info" => Some(&["version", "git_sha", "build_date", "protocol"]),
         "drevo.pagerank" => Some(&["node", "score"]),
         "drevo.louvain" => Some(&["node", "community"]),
+        "drevo.wcc" => Some(&["node", "component"]),
         // Engine-flip observability: engine mode + mirror routing counters.
         "drevo.engine.status" => Some(&[
             "engine",
@@ -6781,6 +6812,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.pagerank" => 0,
         // drevo.louvain() — no arguments (default config).
         "drevo.louvain" => 0,
+        // drevo.wcc() — no arguments.
+        "drevo.wcc" => 0,
         // drevo.engine.status() — no arguments.
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)

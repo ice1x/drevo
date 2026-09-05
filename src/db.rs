@@ -3899,6 +3899,22 @@ impl Drevo {
         Ok(crate::algorithms::louvain(&graph, config))
     }
 
+    /// Weakly connected components over the whole graph — RFC #307 Phase 8.
+    ///
+    /// Materialises the entire node + edge set into an in-memory
+    /// [`crate::algorithms::AdjacencyList`] snapshot and runs a union-find over
+    /// its undirected projection ([`crate::algorithms::wcc`]). Edge direction
+    /// and weight are irrelevant to connectivity. Component IDs are keyed by the
+    /// minimum node ID per component, so the labelling is deterministic and
+    /// engine-independent.
+    ///
+    /// Infallible except for a storage-scan failure. An empty graph yields an
+    /// empty result.
+    pub fn weakly_connected_components(&self) -> Result<crate::algorithms::WccResult> {
+        let graph = self.adjacency_snapshot()?;
+        Ok(crate::algorithms::wcc(&graph))
+    }
+
     /// Build an in-memory [`crate::algorithms::AdjacencyList`] snapshot of the
     /// entire graph for the global algorithms ([`Self::pagerank`] /
     /// [`Self::louvain_communities`]). Nodes are ordered by ascending ID so the
