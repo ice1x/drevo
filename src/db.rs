@@ -3915,6 +3915,23 @@ impl Drevo {
         Ok(crate::algorithms::wcc(&graph))
     }
 
+    /// Strongly connected components over the whole graph — RFC #307 Phase 8.
+    ///
+    /// Materialises the entire node + edge set into an in-memory
+    /// [`crate::algorithms::AdjacencyList`] snapshot and runs iterative Tarjan
+    /// ([`crate::algorithms::scc`]). Unlike
+    /// [`Self::weakly_connected_components`], direction matters: two nodes share
+    /// a component only if each is reachable from the other along edge
+    /// direction. Component IDs are keyed by the minimum node ID per component,
+    /// so the labelling is deterministic and engine-independent.
+    ///
+    /// Infallible except for a storage-scan failure. An empty graph yields an
+    /// empty result.
+    pub fn strongly_connected_components(&self) -> Result<crate::algorithms::SccResult> {
+        let graph = self.adjacency_snapshot()?;
+        Ok(crate::algorithms::scc(&graph))
+    }
+
     /// Build an in-memory [`crate::algorithms::AdjacencyList`] snapshot of the
     /// entire graph for the global algorithms ([`Self::pagerank`] /
     /// [`Self::louvain_communities`]). Nodes are ordered by ascending ID so the
