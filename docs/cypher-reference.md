@@ -510,6 +510,7 @@ procedures.
 | `drevo.pagerank()` | `node, score` | PageRank centrality over the whole graph, computed in parallel over an immutable adjacency snapshot; rows come back most-central-first (RFC #307 Phase 8) |
 | `drevo.louvain()` | `node, community` | Louvain community detection over the whole graph; each node is returned with its contiguously-numbered community id (RFC #307 Phase 8) |
 | `drevo.wcc()` | `node, component` | Weakly connected components over the whole graph; each node is returned with its component id (edges treated as undirected), numbered by the minimum node id per component (RFC #307 Phase 8) |
+| `drevo.scc()` | `node, component` | Strongly connected components over the whole graph (iterative Tarjan); two nodes share a component only if mutually reachable **following edge direction** — i.e. on a common directed cycle — numbered by the minimum node id per component (RFC #307 Phase 8) |
 
 ### CALL
 

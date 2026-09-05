@@ -43,10 +43,12 @@
 
 mod louvain;
 mod pagerank;
+mod scc;
 mod wcc;
 
 pub use louvain::{louvain, LouvainConfig, LouvainResult};
 pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
+pub use scc::{scc, SccResult};
 pub use wcc::{wcc, WccResult};
 
 use std::collections::HashMap;
@@ -94,6 +96,13 @@ pub fn louvain_native(
 /// the union-find).
 pub fn wcc_native(engine: &crate::native::NativeGraph) -> WccResult {
     wcc(&native_adjacency(engine))
+}
+
+/// Strongly connected components over the **native engine**, over a consistent
+/// MVCC snapshot (RFC #307 Phase 8). Iterative Tarjan — linear time, serial,
+/// no native recursion.
+pub fn scc_native(engine: &crate::native::NativeGraph) -> SccResult {
+    scc(&native_adjacency(engine))
 }
 
 /// A failure raised while configuring a graph algorithm.
