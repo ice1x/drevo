@@ -44,11 +44,13 @@
 mod louvain;
 mod pagerank;
 mod scc;
+mod triangles;
 mod wcc;
 
 pub use louvain::{louvain, LouvainConfig, LouvainResult};
 pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
 pub use scc::{scc, SccResult};
+pub use triangles::{triangles, TriangleResult};
 pub use wcc::{wcc, WccResult};
 
 use std::collections::HashMap;
@@ -103,6 +105,12 @@ pub fn wcc_native(engine: &crate::native::NativeGraph) -> WccResult {
 /// no native recursion.
 pub fn scc_native(engine: &crate::native::NativeGraph) -> SccResult {
     scc(&native_adjacency(engine))
+}
+
+/// Triangle counts and local clustering coefficients over the **native
+/// engine**, over a consistent MVCC snapshot (RFC #307 Phase 8). Serial.
+pub fn triangles_native(engine: &crate::native::NativeGraph) -> TriangleResult {
+    triangles(&native_adjacency(engine))
 }
 
 /// A failure raised while configuring a graph algorithm.

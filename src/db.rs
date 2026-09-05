@@ -3932,6 +3932,22 @@ impl Drevo {
         Ok(crate::algorithms::scc(&graph))
     }
 
+    /// Triangle counts and local clustering coefficients over the whole graph —
+    /// RFC #307 Phase 8.
+    ///
+    /// Materialises the entire node + edge set into an in-memory
+    /// [`crate::algorithms::AdjacencyList`] snapshot and runs
+    /// [`crate::algorithms::triangles`] over its undirected projection (edge
+    /// direction and weight do not affect the counts). Per-node results are
+    /// keyed by node ID, so the output is deterministic and engine-independent.
+    ///
+    /// Infallible except for a storage-scan failure. An empty graph yields an
+    /// empty result.
+    pub fn triangle_counts(&self) -> Result<crate::algorithms::TriangleResult> {
+        let graph = self.adjacency_snapshot()?;
+        Ok(crate::algorithms::triangles(&graph))
+    }
+
     /// Build an in-memory [`crate::algorithms::AdjacencyList`] snapshot of the
     /// entire graph for the global algorithms ([`Self::pagerank`] /
     /// [`Self::louvain_communities`]). Nodes are ordered by ascending ID so the

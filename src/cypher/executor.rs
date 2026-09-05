@@ -4812,6 +4812,36 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// `CALL drevo.triangles() YIELD node, triangles, coefficient` (RFC #307
+    /// Phase 8) — triangle count and local clustering coefficient per node over
+    /// the whole graph, computed on the undirected projection (edge direction
+    /// and weight do not affect the counts). Each node is returned with the
+    /// number of triangles through it and its local clustering coefficient in
+    /// `[0.0, 1.0]` (`0.0` for degree `< 2`), in ascending node order.
+    fn proc_triangles(&self) -> ExecResultT<Vec<Vec<Value>>> {
+        let node_ids: Vec<u64> = self.engine().all_nodes()?.iter().map(|n| n.id).collect();
+        let edges: Vec<(u64, u64, f32)> = self
+            .engine()
+            .all_edges()?
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, e.weight))
+            .collect();
+        let graph = crate::algorithms::AdjacencyList::from_parts(node_ids, edges);
+        let result = crate::algorithms::triangles(&graph);
+
+        let mut rows = Vec::with_capacity(result.per_node.len());
+        for (id, count, coefficient) in result.per_node {
+            if let Some(node) = self.engine().get_node(id)? {
+                rows.push(vec![
+                    Value::Node(node_to_value(&node)),
+                    Value::Integer(count as i64),
+                    Value::Float(coefficient),
+                ]);
+            }
+        }
+        Ok(rows)
+    }
+
     /// `CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits,
     /// kv_fallbacks, kv_routed, rebuild_errors` — engine-flip observability
     /// (RFC #307): which engine serves this database's Cypher, and how the
@@ -5194,6 +5224,7 @@ impl<'a> Executor<'a> {
             "drevo.louvain" => self.proc_louvain(),
             "drevo.wcc" => self.proc_wcc(),
             "drevo.scc" => self.proc_scc(),
+            "drevo.triangles" => self.proc_triangles(),
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
@@ -6790,6 +6821,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.louvain" => Some(&["node", "community"]),
         "drevo.wcc" => Some(&["node", "component"]),
         "drevo.scc" => Some(&["node", "component"]),
+        "drevo.triangles" => Some(&["node", "triangles", "coefficient"]),
         // Engine-flip observability: engine mode + mirror routing counters.
         "drevo.engine.status" => Some(&[
             "engine",
@@ -6848,6 +6880,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.wcc" => 0,
         // drevo.scc() — no arguments.
         "drevo.scc" => 0,
+        // drevo.triangles() — no arguments.
+        "drevo.triangles" => 0,
         // drevo.engine.status() — no arguments.
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
