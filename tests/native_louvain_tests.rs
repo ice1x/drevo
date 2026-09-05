@@ -45,7 +45,7 @@ fn edge(engine: &impl GraphEngine, from: u64, to: u64) {
 /// a single weak link 2→3 — a textbook two-community graph.
 fn two_clusters<E: GraphEngine>(engine: &E) -> Vec<u64> {
     let ids: Vec<u64> = (0..6).map(|i| node(engine, &format!("n{i}"))).collect();
-    let mut e = |a: usize, b: usize| {
+    let e = |a: usize, b: usize| {
         edge(engine, ids[a], ids[b]);
         edge(engine, ids[b], ids[a]);
     };
