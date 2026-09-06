@@ -23,20 +23,41 @@
 //! removes the record on the other once the delta is applied. A later upsert
 //! (a greater stamp) resurrects it, exactly as LWW dictates.
 //!
-//! # Scope of this slice
+//! # Identity is the `uuid`, not the local id
 //!
-//! This is the **state-transfer** half: full or incremental sync to a *fresh or
-//! lagging* replica, where node/edge ids do not collide (the receiver has never
-//! minted an id the sender also minted). That covers bootstrapping a new replica
-//! and catching up one that fell behind — the common offline-first case.
+//! drevo's node/edge ids are per-replica monotonic `u64`s: two replicas
+//! independently mint id `1`, `2`, … for *different* entities. Merging by id
+//! would therefore collide. So every change on the wire is keyed by the
+//! globally-unique `uuid` each record carries, and
+//! [`apply_delta`](crate::native::NativeGraph::apply_delta) **remaps** the
+//! sender's ids into the receiver's own id space:
 //!
-//! One caveat remains, an explicitly-gated follow-up:
+//! * a node/edge whose `uuid` the receiver already holds is merged in place at
+//!   the receiver's local id;
+//! * a `uuid` new to the receiver is minted a fresh local id;
+//! * an edge carries its **endpoints by `uuid`**
+//!   ([`from_uuid`](crate::delta::StampedEdge::from_uuid) /
+//!   [`to_uuid`](crate::delta::StampedEdge::to_uuid)), so the receiver resolves
+//!   them to *its* node ids regardless of what the sender called them;
+//! * a tombstone ([`DeleteNode`](crate::delta::StampedChange::DeleteNode) /
+//!   [`DeleteEdge`](crate::delta::StampedChange::DeleteEdge)) is keyed by `uuid`
+//!   too.
 //!
-//! * **Independent concurrent writers need id reconciliation.** drevo's ids are
-//!   per-replica monotonic `u64`s, so two replicas that both minted node id `1`
-//!   for *different* entities cannot be merged by id — that requires remapping on
-//!   the globally-unique `uuid` each record carries. Until then, apply is correct
-//!   only when the receiver's id space does not clash with the sender's.
+//! Independent concurrent writers therefore converge: this is symmetric,
+//! bidirectional exchange, not just bootstrap of a fresh replica.
+//!
+//! # Remaining limitations
+//!
+//! * **Title uniqueness is not reconciled.** A node's `title` is a natural key
+//!   inside one graph; two replicas that mint *different* uuids under the *same*
+//!   title merge into two nodes sharing a title (the title index resolves to the
+//!   last writer). Reconciling that is a semantic-merge concern beyond id remap.
+//! * **The uuid resolution is rebuilt per apply.** `apply_delta` scans the live
+//!   graph once to index `uuid → local id` (plus the in-memory tombstones), so a
+//!   merge is `O(n + delta)`; a persistent uuid index is a later optimisation.
+//! * **Stamps and tombstones live in memory**, rebuilt as writes happen after a
+//!   restart — persisting them into the WAL touches the on-disk format and is a
+//!   separate, explicitly-gated slice.
 
 use std::collections::HashMap;
 
@@ -106,22 +127,42 @@ impl VersionVector {
     }
 }
 
-/// One change carried in a [`Delta`]: an upsert (its full record plus the causal
-/// [`Stamp`] that produced it) or a tombstone (an id plus the stamp of its
-/// delete), so the receiver can Last-Writer-Wins merge purely by comparing
-/// stamps.
+/// An edge on the wire, carrying its endpoints by `uuid` so a receiver can remap
+/// them into its own id space. The wrapped [`Edge`]'s own `id`, `from_id` and
+/// `to_id` are the *sender's* local ids — meaningful only to the sender; the
+/// edge's identity is `edge.uuid` and its endpoints are [`from_uuid`] /
+/// [`to_uuid`].
+///
+/// [`from_uuid`]: Self::from_uuid
+/// [`to_uuid`]: Self::to_uuid
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StampedEdge {
+    /// The edge record. Identity is `edge.uuid`; the id fields are sender-local.
+    pub edge: Edge,
+    /// The `uuid` of the edge's source node.
+    pub from_uuid: [u8; 16],
+    /// The `uuid` of the edge's target node.
+    pub to_uuid: [u8; 16],
+    /// The causal stamp of this edge write.
+    pub stamp: Stamp,
+}
+
+/// One change carried in a [`Delta`], keyed by `uuid`: an upsert (the full
+/// record plus the causal [`Stamp`] that produced it) or a tombstone (the
+/// deleted entity's `uuid` plus the stamp of its delete). The receiver
+/// Last-Writer-Wins merges by comparing stamps and remaps ids by `uuid`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StampedChange {
-    /// A node upsert at this stamp.
+    /// A node upsert at this stamp. Identity is `node.uuid`.
     Node(Node, Stamp),
-    /// An edge upsert at this stamp.
-    Edge(Edge, Stamp),
-    /// A node deletion at this stamp — the tombstoned node id and the causal
-    /// stamp of the delete. Wins over any node upsert with a lesser stamp.
-    DeleteNode(u64, Stamp),
-    /// An edge deletion at this stamp — the tombstoned edge id and the causal
-    /// stamp of the delete.
-    DeleteEdge(u64, Stamp),
+    /// An edge upsert at this stamp, with its endpoints carried by `uuid`.
+    Edge(StampedEdge),
+    /// A node deletion at this stamp — the tombstoned node's `uuid` and the
+    /// causal stamp of the delete. Wins over any node upsert with a lesser stamp.
+    DeleteNode([u8; 16], Stamp),
+    /// An edge deletion at this stamp — the tombstoned edge's `uuid` and the
+    /// causal stamp of the delete.
+    DeleteEdge([u8; 16], Stamp),
 }
 
 impl StampedChange {
@@ -129,10 +170,8 @@ impl StampedChange {
     #[must_use]
     pub fn stamp(&self) -> Stamp {
         match self {
-            Self::Node(_, s)
-            | Self::Edge(_, s)
-            | Self::DeleteNode(_, s)
-            | Self::DeleteEdge(_, s) => *s,
+            Self::Node(_, s) | Self::DeleteNode(_, s) | Self::DeleteEdge(_, s) => *s,
+            Self::Edge(e) => e.stamp,
         }
     }
 
@@ -260,23 +299,28 @@ mod tests {
 
     #[test]
     fn delete_variants_report_stamp_and_order_after_upserts() {
-        let del_node = StampedChange::DeleteNode(7, stamp(9, 0, 1));
-        let del_edge = StampedChange::DeleteEdge(3, stamp(9, 1, 1));
+        let del_node = StampedChange::DeleteNode([7u8; 16], stamp(9, 0, 1));
+        let del_edge = StampedChange::DeleteEdge([3u8; 16], stamp(9, 1, 1));
         assert_eq!(del_node.stamp(), stamp(9, 0, 1));
         assert_eq!(del_edge.stamp(), stamp(9, 1, 1));
         assert!(!del_node.is_node());
         assert!(!del_edge.is_node());
         // Phases: upsert node (0) < upsert edge (1) < delete edge (2) < delete node (3).
         assert!(del_edge.apply_phase() < del_node.apply_phase());
-        assert!(
-            del_edge.apply_phase() > StampedChange::Edge(edge_stub(), stamp(1, 0, 1)).apply_phase()
-        );
+        let edge_upsert = StampedChange::Edge(StampedEdge {
+            edge: edge_stub(),
+            from_uuid: [1u8; 16],
+            to_uuid: [2u8; 16],
+            stamp: stamp(1, 0, 1),
+        });
+        assert_eq!(edge_upsert.stamp(), stamp(1, 0, 1));
+        assert!(del_edge.apply_phase() > edge_upsert.apply_phase());
     }
 
     fn edge_stub() -> Edge {
         Edge {
             id: 3,
-            uuid: [0u8; 16],
+            uuid: [9u8; 16],
             from_id: 1,
             to_id: 2,
             kind: "links".into(),
