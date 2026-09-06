@@ -839,11 +839,21 @@ pub struct NativeGraph {
     /// The Hybrid Logical Clock issuing causal timestamps for this replica.
     clock: std::sync::Mutex<HlcClock>,
     /// The causal [`Stamp`] of each **live** node/edge's last autocommit write
-    /// (issue #389). A create/update sets it, a delete drops it; queried via
-    /// [`stamp_of`]. In-memory only for now (rebuilt as writes
-    /// happen after a restart) — persisting stamps into the WAL touches the
-    /// on-disk format and is a later, explicitly-gated slice.
+    /// (issue #389). A create/update sets it, a delete moves it into
+    /// [`tombstones`]; queried via [`stamp_of`]. In-memory only for now (rebuilt
+    /// as writes happen after a restart) — persisting stamps into the WAL touches
+    /// the on-disk format and is a later, explicitly-gated slice.
+    ///
+    /// [`tombstones`]: Self::tombstones
     stamps: RwLock<HashMap<StampTarget, Stamp>>,
+    /// The causal [`Stamp`] of each **deleted** node/edge — a tombstone
+    /// (issue #389, primitive #3 wired into the write path). Kept disjoint from
+    /// [`stamps`]: a target is either live (in `stamps`) or deleted (here), and
+    /// the greater stamp wins. Tombstones let a [`Delta`] carry deletes so a peer
+    /// converges on removals, not just upserts. In-memory only, like `stamps`.
+    ///
+    /// [`stamps`]: Self::stamps
+    tombstones: RwLock<HashMap<StampTarget, Stamp>>,
 }
 
 /// A node or edge addressed by id, for the per-entity causal stamp table
@@ -1045,21 +1055,46 @@ impl NativeGraph {
             .copied()
     }
 
-    /// Record `target`'s causal version after a create/update.
+    /// Record `target`'s causal version after a create/update: it becomes live,
+    /// clearing any tombstone (a fresh write resurrects a previously-deleted id).
     fn stamp_write(&self, target: StampTarget) {
         let stamp = self.next_stamp();
         self.stamps
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(target, stamp);
+        self.tombstones
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&target);
     }
 
-    /// Drop `target`'s causal version after a delete (it no longer exists).
-    fn drop_stamp(&self, target: StampTarget) {
+    /// Record `target`'s causal version after a delete: it moves from live into
+    /// the tombstone table, so a [`Delta`] can carry the deletion to a peer.
+    fn stamp_tombstone(&self, target: StampTarget) {
+        let stamp = self.next_stamp();
         self.stamps
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&target);
+        self.tombstones
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(target, stamp);
+    }
+
+    /// The stamp governing `target`'s current LWW state — its live stamp if the
+    /// entity exists, otherwise its tombstone stamp if it was deleted, else
+    /// `None`. The two tables are disjoint, so at most one is present.
+    fn current_stamp(&self, target: StampTarget) -> Option<Stamp> {
+        if let Some(s) = self.stamp_of(target) {
+            return Some(s);
+        }
+        self.tombstones
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&target)
+            .copied()
     }
 
     /// This replica's [`VersionVector`] — the greatest causal
@@ -1073,31 +1108,44 @@ impl NativeGraph {
     ///
     /// [`delta_since`]: Self::delta_since
     pub fn version_vector(&self) -> VersionVector {
-        let stamps = self.stamps.read().unwrap_or_else(|e| e.into_inner());
         let mut vv = VersionVector::new();
-        for stamp in stamps.values() {
+        for stamp in self
+            .stamps
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            vv.observe(*stamp);
+        }
+        // Tombstones are writes too: folding them in tells a peer we have already
+        // seen the delete, so it never resends the upsert we have since removed.
+        for stamp in self
+            .tombstones
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
             vv.observe(*stamp);
         }
         vv
     }
 
-    /// The minimal [`Delta`] of live upserts a holder of `remote` is missing:
-    /// every live node/edge whose stamp `remote` has not already observed
+    /// The minimal [`Delta`] a holder of `remote` is missing: every live upsert
+    /// and every tombstone whose stamp `remote` has not already observed
     /// (issue #389, primitive #4). An empty `remote`
-    /// ([`VersionVector::new`]) returns the
-    /// entire live state — a full bootstrap.
+    /// ([`VersionVector::new`]) returns the entire state — a full bootstrap.
     ///
-    /// Deletes are not carried: a delete drops the stamp, leaving no tombstone
-    /// to ship, so a delta converges upserts only (see the [module docs] for the
-    /// gated follow-ups). The returned records are deep clones, safe to
-    /// serialise and send.
+    /// Deletes are carried as [`StampedChange::DeleteNode`] /
+    /// [`StampedChange::DeleteEdge`] tombstones, so a delta converges removals as
+    /// well as upserts (see the [module docs]). The returned records are deep
+    /// clones, safe to serialise and send.
     ///
     /// [module docs]: crate::delta
     pub fn delta_since(&self, remote: &VersionVector) -> Delta {
-        // Snapshot the missing targets under the stamp lock, then resolve
+        // Snapshot the missing targets under the stamp locks, then resolve
         // records under the graph lock — never hold both at once (the write path
         // takes them separately, so this keeps a single, consistent lock order).
-        let missing: Vec<(StampTarget, Stamp)> = {
+        let missing_live: Vec<(StampTarget, Stamp)> = {
             let stamps = self.stamps.read().unwrap_or_else(|e| e.into_inner());
             stamps
                 .iter()
@@ -1105,9 +1153,17 @@ impl NativeGraph {
                 .map(|(target, stamp)| (*target, *stamp))
                 .collect()
         };
+        let missing_dead: Vec<(StampTarget, Stamp)> = {
+            let tombstones = self.tombstones.read().unwrap_or_else(|e| e.into_inner());
+            tombstones
+                .iter()
+                .filter(|(_, stamp)| !remote.dominates(**stamp))
+                .map(|(target, stamp)| (*target, *stamp))
+                .collect()
+        };
         let inner = read(&self.inner);
-        let mut changes = Vec::with_capacity(missing.len());
-        for (target, stamp) in missing {
+        let mut changes = Vec::with_capacity(missing_live.len() + missing_dead.len());
+        for (target, stamp) in missing_live {
             match target {
                 StampTarget::Node(id) => {
                     if let Some(node) = inner.get_node_arc(id) {
@@ -1120,6 +1176,12 @@ impl NativeGraph {
                     }
                 }
             }
+        }
+        for (target, stamp) in missing_dead {
+            changes.push(match target {
+                StampTarget::Node(id) => StampedChange::DeleteNode(id, stamp),
+                StampTarget::Edge(id) => StampedChange::DeleteEdge(id, stamp),
+            });
         }
         Delta { changes }
     }
@@ -1139,11 +1201,12 @@ impl NativeGraph {
     /// [module docs]: crate::delta
     pub fn apply_delta(&self, delta: &Delta) -> Result<ApplyStats> {
         let mut stats = ApplyStats::default();
-        // Nodes first, then edges — a fresh replica must have the endpoints
-        // before the edge referencing them.
-        let (nodes, edges): (Vec<&StampedChange>, Vec<&StampedChange>) =
-            delta.changes.iter().partition(|c| c.is_node());
-        for change in nodes.into_iter().chain(edges) {
+        // Apply in phase order: upsert nodes, upsert edges, delete edges, delete
+        // nodes. Endpoints exist before an edge references them, and a node
+        // delete (which cascades to incident edges) runs last.
+        let mut ordered: Vec<&StampedChange> = delta.changes.iter().collect();
+        ordered.sort_by_key(|c| c.apply_phase());
+        for change in ordered {
             if self.apply_change(change)? {
                 stats.applied += 1;
             } else {
@@ -1154,27 +1217,57 @@ impl NativeGraph {
     }
 
     /// Apply one [`StampedChange`] under LWW; returns whether it won (was newer
-    /// than the local stamp and installed).
+    /// than the local stamp and installed). An upsert and a tombstone share one
+    /// timeline per target: whichever stamp is greater wins, so a delete removes
+    /// a live record and a later upsert resurrects it.
     fn apply_change(&self, change: &StampedChange) -> Result<bool> {
         let (target, incoming) = match change {
             StampedChange::Node(node, stamp) => (StampTarget::Node(node.id), *stamp),
             StampedChange::Edge(edge, stamp) => (StampTarget::Edge(edge.id), *stamp),
+            StampedChange::DeleteNode(id, stamp) => (StampTarget::Node(*id), *stamp),
+            StampedChange::DeleteEdge(id, stamp) => (StampTarget::Edge(*id), *stamp),
         };
-        // LWW: keep the local write when its stamp is greater-or-equal (equal ⇒
-        // the same write, so applying is a no-op either way).
-        if self.stamp_of(target).is_some_and(|local| local >= incoming) {
+        // LWW: keep the local state when its stamp is greater-or-equal (equal ⇒
+        // the same write, so applying is a no-op either way). `current_stamp`
+        // spans both live records and tombstones.
+        if self
+            .current_stamp(target)
+            .is_some_and(|local| local >= incoming)
+        {
             return Ok(false);
         }
         let op = match change {
             StampedChange::Node(node, _) => WalOp::UpsertNode(node.clone()),
             StampedChange::Edge(edge, _) => WalOp::UpsertEdge(edge.clone()),
+            StampedChange::DeleteNode(id, _) => WalOp::DeleteNode(*id),
+            StampedChange::DeleteEdge(id, _) => WalOp::DeleteEdge(*id),
         };
         Arc::make_mut(&mut write(&self.inner)).apply_wal_op(op.clone());
         self.record(&[op])?;
-        self.stamps
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(target, incoming);
+        // Route the winning stamp into the matching table, keeping the two
+        // disjoint: an upsert makes the target live, a delete tombstones it.
+        match change {
+            StampedChange::Node(..) | StampedChange::Edge(..) => {
+                self.stamps
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(target, incoming);
+                self.tombstones
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&target);
+            }
+            StampedChange::DeleteNode(..) | StampedChange::DeleteEdge(..) => {
+                self.tombstones
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(target, incoming);
+                self.stamps
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&target);
+            }
+        }
         self.clock
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1601,6 +1694,7 @@ impl NativeGraph {
             origin: mint_origin(),
             clock: std::sync::Mutex::new(HlcClock::new()),
             stamps: RwLock::new(HashMap::new()),
+            tombstones: RwLock::new(HashMap::new()),
         }
     }
 
@@ -1711,6 +1805,7 @@ impl NativeGraph {
             origin: load_or_mint_origin(&origin_sidecar(path)),
             clock: std::sync::Mutex::new(HlcClock::new()),
             stamps: RwLock::new(HashMap::new()),
+            tombstones: RwLock::new(HashMap::new()),
         })
     }
 
@@ -2091,7 +2186,7 @@ impl GraphEngine for NativeGraph {
     fn delete_node(&self, id: u64) -> Result<()> {
         Arc::make_mut(&mut write(&self.inner)).delete_node(id)?;
         self.record(&[WalOp::DeleteNode(id)])?;
-        self.drop_stamp(StampTarget::Node(id));
+        self.stamp_tombstone(StampTarget::Node(id));
         Ok(())
     }
 
@@ -2116,7 +2211,7 @@ impl GraphEngine for NativeGraph {
     fn delete_edge(&self, id: u64) -> Result<()> {
         Arc::make_mut(&mut write(&self.inner)).delete_edge(id)?;
         self.record(&[WalOp::DeleteEdge(id)])?;
-        self.drop_stamp(StampTarget::Edge(id));
+        self.stamp_tombstone(StampTarget::Edge(id));
         Ok(())
     }
 
@@ -2571,15 +2666,22 @@ mod adjacency_kind_sort_tests {
     }
 
     #[test]
-    fn delete_drops_the_stamp() {
+    fn delete_tombstones_the_stamp() {
         let g = NativeGraph::new();
         let a = g.create_node(nn("n", "a")).unwrap();
-        assert!(g.stamp_of(StampTarget::Node(a.id)).is_some());
+        let live = g.stamp_of(StampTarget::Node(a.id)).expect("a stamped");
         g.delete_node(a.id).unwrap();
+        // No live stamp — but the delete leaves a tombstone with a *later* stamp,
+        // still folded into the version vector so a peer learns of the removal.
         assert!(
             g.stamp_of(StampTarget::Node(a.id)).is_none(),
             "a deleted entity has no live stamp"
         );
+        let tomb = g
+            .version_vector()
+            .get(g.origin_id())
+            .expect("tombstone kept in the version vector");
+        assert!(tomb > live.hlc(), "the delete stamps later than the create");
     }
 
     #[test]
@@ -2683,5 +2785,106 @@ mod adjacency_kind_sort_tests {
         assert_eq!(stats.applied, 0);
         assert_eq!(stats.skipped, 1);
         assert_eq!(c.get_node(n.id).unwrap().unwrap().title, "v2");
+    }
+
+    #[test]
+    fn delete_converges_via_tombstone() {
+        // A and C converge on a node, then A deletes it; the delta carries the
+        // tombstone and C removes its copy.
+        let a = NativeGraph::new();
+        let n = a.create_node(nn("n", "gone")).unwrap();
+        let c = NativeGraph::new();
+        c.apply_delta(&a.delta_since(&c.version_vector())).unwrap();
+        assert!(c.get_node(n.id).unwrap().is_some(), "C has the node first");
+
+        a.delete_node(n.id).unwrap();
+        let delta = a.delta_since(&c.version_vector());
+        assert_eq!(delta.len(), 1, "just the tombstone");
+        let stats = c.apply_delta(&delta).unwrap();
+        assert_eq!(stats.applied, 1);
+
+        assert!(c.get_node(n.id).unwrap().is_none(), "C removed the node");
+        // Both replicas agree, and the delete is idempotent.
+        assert_eq!(a.version_vector(), c.version_vector());
+        assert_eq!(c.apply_delta(&delta).unwrap().applied, 0);
+    }
+
+    #[test]
+    fn delete_cascades_to_incident_edges_on_the_receiver() {
+        let a = NativeGraph::new();
+        let x = a.create_node(nn("n", "x")).unwrap();
+        let y = a.create_node(nn("n", "y")).unwrap();
+        let e = a.create_edge(stamp_edge(x.id, y.id)).unwrap();
+        let c = NativeGraph::new();
+        c.apply_delta(&a.delta_since(&c.version_vector())).unwrap();
+        assert!(c.get_edge(e.id).unwrap().is_some());
+
+        // Deleting the endpoint on A drops its incident edge; the delta ships the
+        // node tombstone (the edge delete rides A's own cascade) and applying it
+        // on C — nodes-then-edges, node-delete last — removes both.
+        a.delete_node(x.id).unwrap();
+        c.apply_delta(&a.delta_since(&c.version_vector())).unwrap();
+        assert!(c.get_node(x.id).unwrap().is_none());
+        assert!(
+            c.get_edge(e.id).unwrap().is_none(),
+            "edge cascaded away on C"
+        );
+        assert_eq!(a.version_vector(), c.version_vector());
+    }
+
+    #[test]
+    fn newer_upsert_resurrects_a_tombstoned_entity() {
+        // An upsert of a tombstoned id at a strictly-later stamp wins over the
+        // tombstone and brings the record back — LWW on one shared timeline.
+        let a = NativeGraph::new();
+        let n = a.create_node(nn("n", "v1")).unwrap();
+        a.delete_node(n.id).unwrap();
+        assert!(a.get_node(n.id).unwrap().is_none(), "tombstoned first");
+
+        // A fresh stamp is later than the delete's (the HLC only advances).
+        let later = a.next_stamp();
+        let resurrect = Delta {
+            changes: vec![StampedChange::Node(n.clone(), later)],
+        };
+        assert_eq!(a.apply_delta(&resurrect).unwrap().applied, 1);
+        assert_eq!(a.get_node(n.id).unwrap().expect("resurrected").title, "v1");
+
+        // It is genuinely live again: a fresh peer receives it as an upsert, and
+        // the tombstone no longer shadows it.
+        let peer = NativeGraph::new();
+        let d = a.delta_since(&peer.version_vector());
+        assert_eq!(d.len(), 1);
+        assert!(matches!(d.changes[0], StampedChange::Node(..)));
+    }
+
+    #[test]
+    fn stale_delete_loses_to_a_newer_live_write() {
+        // A tombstone whose stamp is dominated by the local live stamp must not
+        // remove the record. Capture the create-era stamp, let a later update
+        // raise the live stamp, then replay a delete carrying the *old* stamp:
+        // built on one origin so the two stamps are totally ordered (no flaky
+        // cross-origin tie).
+        let a = NativeGraph::new();
+        let n = a.create_node(nn("n", "v1")).unwrap();
+        let s1 = a.stamp_of(StampTarget::Node(n.id)).expect("v1 stamped");
+        a.update_node(
+            n.id,
+            NodePatch {
+                title: Some("v2".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let s2 = a.stamp_of(StampTarget::Node(n.id)).unwrap();
+        assert!(s2 > s1, "update raised the live stamp");
+
+        // A delete carrying the stale s1 loses to the live s2 — skipped, v2 kept.
+        let stale_delete = Delta {
+            changes: vec![StampedChange::DeleteNode(n.id, s1)],
+        };
+        let stats = a.apply_delta(&stale_delete).unwrap();
+        assert_eq!(stats.applied, 0);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(a.get_node(n.id).unwrap().unwrap().title, "v2");
     }
 }
