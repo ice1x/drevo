@@ -42,6 +42,7 @@
 //! always compiled, and WASM-safe.
 
 mod betweenness;
+mod closeness;
 mod louvain;
 mod pagerank;
 mod scc;
@@ -49,6 +50,7 @@ mod triangles;
 mod wcc;
 
 pub use betweenness::{betweenness, BetweennessResult};
+pub use closeness::{closeness, ClosenessResult};
 pub use louvain::{louvain, LouvainConfig, LouvainResult};
 pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
 pub use scc::{scc, SccResult};
@@ -119,6 +121,12 @@ pub fn triangles_native(engine: &crate::native::NativeGraph) -> TriangleResult {
 /// snapshot (RFC #307 Phase 8). Brandes' algorithm, serial.
 pub fn betweenness_native(engine: &crate::native::NativeGraph) -> BetweennessResult {
     betweenness(&native_adjacency(engine))
+}
+
+/// Harmonic closeness centrality over the **native engine**, over a consistent
+/// MVCC snapshot (RFC #307 Phase 8). One BFS per node, serial.
+pub fn closeness_native(engine: &crate::native::NativeGraph) -> ClosenessResult {
+    closeness(&native_adjacency(engine))
 }
 
 /// A failure raised while configuring a graph algorithm.

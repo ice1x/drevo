@@ -4867,6 +4867,32 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// `CALL drevo.closeness() YIELD node, score` (RFC #307 Phase 8) — harmonic
+    /// closeness centrality over the whole graph: each node's `score` is the sum
+    /// of reciprocal shortest-path distances to every node it can reach along
+    /// edge direction (directed, unweighted). The harmonic form stays finite on
+    /// a disconnected graph. Rows are most-central first (ties by ascending node
+    /// id).
+    fn proc_closeness(&self) -> ExecResultT<Vec<Vec<Value>>> {
+        let node_ids: Vec<u64> = self.engine().all_nodes()?.iter().map(|n| n.id).collect();
+        let edges: Vec<(u64, u64, f32)> = self
+            .engine()
+            .all_edges()?
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, e.weight))
+            .collect();
+        let graph = crate::algorithms::AdjacencyList::from_parts(node_ids, edges);
+        let result = crate::algorithms::closeness(&graph);
+
+        let mut rows = Vec::with_capacity(result.scores.len());
+        for (id, score) in result.scores {
+            if let Some(node) = self.engine().get_node(id)? {
+                rows.push(vec![Value::Node(node_to_value(&node)), Value::Float(score)]);
+            }
+        }
+        Ok(rows)
+    }
+
     /// `CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits,
     /// kv_fallbacks, kv_routed, rebuild_errors` — engine-flip observability
     /// (RFC #307): which engine serves this database's Cypher, and how the
@@ -5251,6 +5277,7 @@ impl<'a> Executor<'a> {
             "drevo.scc" => self.proc_scc(),
             "drevo.triangles" => self.proc_triangles(),
             "drevo.betweenness" => self.proc_betweenness(),
+            "drevo.closeness" => self.proc_closeness(),
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
@@ -6849,6 +6876,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.scc" => Some(&["node", "component"]),
         "drevo.triangles" => Some(&["node", "triangles", "coefficient"]),
         "drevo.betweenness" => Some(&["node", "score"]),
+        "drevo.closeness" => Some(&["node", "score"]),
         // Engine-flip observability: engine mode + mirror routing counters.
         "drevo.engine.status" => Some(&[
             "engine",
@@ -6911,6 +6939,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.triangles" => 0,
         // drevo.betweenness() — no arguments.
         "drevo.betweenness" => 0,
+        // drevo.closeness() — no arguments.
+        "drevo.closeness" => 0,
         // drevo.engine.status() — no arguments.
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
