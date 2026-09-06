@@ -41,12 +41,14 @@
 //! Dependency-free (only `thiserror` for the error type, already in-tree),
 //! always compiled, and WASM-safe.
 
+mod betweenness;
 mod louvain;
 mod pagerank;
 mod scc;
 mod triangles;
 mod wcc;
 
+pub use betweenness::{betweenness, BetweennessResult};
 pub use louvain::{louvain, LouvainConfig, LouvainResult};
 pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
 pub use scc::{scc, SccResult};
@@ -111,6 +113,12 @@ pub fn scc_native(engine: &crate::native::NativeGraph) -> SccResult {
 /// engine**, over a consistent MVCC snapshot (RFC #307 Phase 8). Serial.
 pub fn triangles_native(engine: &crate::native::NativeGraph) -> TriangleResult {
     triangles(&native_adjacency(engine))
+}
+
+/// Betweenness centrality over the **native engine**, over a consistent MVCC
+/// snapshot (RFC #307 Phase 8). Brandes' algorithm, serial.
+pub fn betweenness_native(engine: &crate::native::NativeGraph) -> BetweennessResult {
+    betweenness(&native_adjacency(engine))
 }
 
 /// A failure raised while configuring a graph algorithm.

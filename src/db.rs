@@ -3948,6 +3948,21 @@ impl Drevo {
         Ok(crate::algorithms::triangles(&graph))
     }
 
+    /// Betweenness centrality over the whole graph — RFC #307 Phase 8.
+    ///
+    /// Materialises the entire node + edge set into an in-memory
+    /// [`crate::algorithms::AdjacencyList`] snapshot and runs Brandes'
+    /// algorithm ([`crate::algorithms::betweenness`]) over the directed,
+    /// unweighted graph (hop count; edge weights are ignored). Scores are
+    /// structural, so the output is deterministic and engine-independent.
+    ///
+    /// Infallible except for a storage-scan failure. An empty graph yields an
+    /// empty result.
+    pub fn betweenness_centrality(&self) -> Result<crate::algorithms::BetweennessResult> {
+        let graph = self.adjacency_snapshot()?;
+        Ok(crate::algorithms::betweenness(&graph))
+    }
+
     /// Build an in-memory [`crate::algorithms::AdjacencyList`] snapshot of the
     /// entire graph for the global algorithms ([`Self::pagerank`] /
     /// [`Self::louvain_communities`]). Nodes are ordered by ascending ID so the
