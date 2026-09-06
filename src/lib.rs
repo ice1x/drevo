@@ -148,6 +148,10 @@ pub mod fts;
 /// (KV-backed [`db::Drevo`] ⇄ native [`native::NativeGraph`]) over the shared
 /// `drevo-json-v1` dump interchange, preserving every node/edge id.
 pub mod migrate;
+/// Hybrid Logical Clock ([`hlc::Hlc`] / [`hlc::HlcClock`]) — the causal
+/// versioning primitive for multi-writer / P2P convergence (issue #389,
+/// primitive #1). Re-exported from [`drevo-core`](drevo_core).
+pub use drevo_core::hlc;
 /// Core domain types ([`model::Node`], [`model::Edge`], …) — re-exported from
 /// the extracted [`drevo-core`](drevo_core) crate so `drevo::model::…` and
 /// in-crate `crate::model::…` paths keep resolving unchanged.
