@@ -11,6 +11,18 @@
 //! ([`apply_delta`](crate::native::NativeGraph::apply_delta)). Two replicas that
 //! exchange deltas in both directions converge.
 //!
+//! # Deletes converge too
+//!
+//! A delete is carried as a **tombstone**: the write path records the causal
+//! stamp of every deletion (see
+//! [`stamp_tombstone`](crate::native::NativeGraph)), so a delta ships
+//! [`DeleteNode`](crate::delta::StampedChange::DeleteNode) /
+//! [`DeleteEdge`](crate::delta::StampedChange::DeleteEdge) alongside its
+//! upserts. Each entity therefore has a single Last-Writer-Wins timeline —
+//! upsert or tombstone, whichever stamp is greater — and a delete on one replica
+//! removes the record on the other once the delta is applied. A later upsert
+//! (a greater stamp) resurrects it, exactly as LWW dictates.
+//!
 //! # Scope of this slice
 //!
 //! This is the **state-transfer** half: full or incremental sync to a *fresh or
@@ -18,12 +30,8 @@
 //! minted an id the sender also minted). That covers bootstrapping a new replica
 //! and catching up one that fell behind — the common offline-first case.
 //!
-//! Two caveats, each an explicitly-gated follow-up:
+//! One caveat remains, an explicitly-gated follow-up:
 //!
-//! * **Deletes are not carried.** A delete drops the entity's stamp
-//!   ([`drop_stamp`](crate::native::NativeGraph)), so there is no tombstone to
-//!   ship; a delta only converges *upserts*. Causal delete needs the
-//!   [`LwwSet`](crate::lww::LwwSet) tombstone wired into the write path first.
 //! * **Independent concurrent writers need id reconciliation.** drevo's ids are
 //!   per-replica monotonic `u64`s, so two replicas that both minted node id `1`
 //!   for *different* entities cannot be merged by id — that requires remapping on
@@ -98,15 +106,22 @@ impl VersionVector {
     }
 }
 
-/// One entity carried in a [`Delta`]: its full record plus the causal
-/// [`Stamp`] that produced it, so the receiver can Last-Writer-Wins
-/// merge purely by comparing stamps.
+/// One change carried in a [`Delta`]: an upsert (its full record plus the causal
+/// [`Stamp`] that produced it) or a tombstone (an id plus the stamp of its
+/// delete), so the receiver can Last-Writer-Wins merge purely by comparing
+/// stamps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StampedChange {
     /// A node upsert at this stamp.
     Node(Node, Stamp),
     /// An edge upsert at this stamp.
     Edge(Edge, Stamp),
+    /// A node deletion at this stamp — the tombstoned node id and the causal
+    /// stamp of the delete. Wins over any node upsert with a lesser stamp.
+    DeleteNode(u64, Stamp),
+    /// An edge deletion at this stamp — the tombstoned edge id and the causal
+    /// stamp of the delete.
+    DeleteEdge(u64, Stamp),
 }
 
 impl StampedChange {
@@ -114,15 +129,34 @@ impl StampedChange {
     #[must_use]
     pub fn stamp(&self) -> Stamp {
         match self {
-            Self::Node(_, s) | Self::Edge(_, s) => *s,
+            Self::Node(_, s)
+            | Self::Edge(_, s)
+            | Self::DeleteNode(_, s)
+            | Self::DeleteEdge(_, s) => *s,
         }
     }
 
-    /// Whether this change carries a node (nodes are applied before edges, so an
-    /// edge's endpoints exist first).
+    /// Whether this change carries a node upsert (an upserted node's endpoints
+    /// must exist before an edge referencing them — see [`apply_phase`]).
+    ///
+    /// [`apply_phase`]: Self::apply_phase
     #[must_use]
     pub fn is_node(&self) -> bool {
         matches!(self, Self::Node(..))
+    }
+
+    /// The phase in which this change must be applied within a delta, lowest
+    /// first: upsert nodes (0) → upsert edges (1) → delete edges (2) → delete
+    /// nodes (3). Endpoints thus exist before an edge that references them, and a
+    /// node deletion — which cascades to its incident edges — runs last.
+    #[must_use]
+    pub fn apply_phase(&self) -> u8 {
+        match self {
+            Self::Node(..) => 0,
+            Self::Edge(..) => 1,
+            Self::DeleteEdge(..) => 2,
+            Self::DeleteNode(..) => 3,
+        }
     }
 }
 
@@ -130,7 +164,9 @@ impl StampedChange {
 /// [`delta_since`](crate::native::NativeGraph::delta_since).
 ///
 /// The batch is unordered on the wire; [`apply_delta`](crate::native::NativeGraph::apply_delta)
-/// applies nodes before edges so an edge never lands before its endpoints.
+/// applies it in [`apply_phase`](StampedChange::apply_phase) order (upsert nodes,
+/// upsert edges, delete edges, delete nodes) so an edge never lands before its
+/// endpoints and a cascading node delete runs last.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Delta {
     /// The stamped upserts, in no particular order.
@@ -219,5 +255,34 @@ mod tests {
         let c = StampedChange::Node(n, stamp(1, 0, 1));
         assert_eq!(c.stamp(), stamp(1, 0, 1));
         assert!(c.is_node());
+        assert_eq!(c.apply_phase(), 0);
+    }
+
+    #[test]
+    fn delete_variants_report_stamp_and_order_after_upserts() {
+        let del_node = StampedChange::DeleteNode(7, stamp(9, 0, 1));
+        let del_edge = StampedChange::DeleteEdge(3, stamp(9, 1, 1));
+        assert_eq!(del_node.stamp(), stamp(9, 0, 1));
+        assert_eq!(del_edge.stamp(), stamp(9, 1, 1));
+        assert!(!del_node.is_node());
+        assert!(!del_edge.is_node());
+        // Phases: upsert node (0) < upsert edge (1) < delete edge (2) < delete node (3).
+        assert!(del_edge.apply_phase() < del_node.apply_phase());
+        assert!(
+            del_edge.apply_phase() > StampedChange::Edge(edge_stub(), stamp(1, 0, 1)).apply_phase()
+        );
+    }
+
+    fn edge_stub() -> Edge {
+        Edge {
+            id: 3,
+            uuid: [0u8; 16],
+            from_id: 1,
+            to_id: 2,
+            kind: "links".into(),
+            weight: 1.0,
+            created_at: 0,
+            properties: Properties::default(),
+        }
     }
 }
