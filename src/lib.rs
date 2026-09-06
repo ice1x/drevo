@@ -148,6 +148,10 @@ pub mod fts;
 /// (KV-backed [`db::Drevo`] ⇄ native [`native::NativeGraph`]) over the shared
 /// `drevo-json-v1` dump interchange, preserving every node/edge id.
 pub mod migrate;
+/// Version-vector delta exchange ([`delta::VersionVector`] / [`delta::Delta`])
+/// — minimal-diff state transfer between replicas (issue #389, primitive #4).
+/// Re-exported from [`drevo-core`](drevo_core).
+pub use drevo_core::delta;
 /// Hybrid Logical Clock ([`hlc::Hlc`] / [`hlc::HlcClock`]) — the causal
 /// versioning primitive for multi-writer / P2P convergence (issue #389,
 /// primitive #1). Re-exported from [`drevo-core`](drevo_core).

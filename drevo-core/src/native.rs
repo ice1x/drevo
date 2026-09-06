@@ -54,6 +54,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
+use crate::delta::{ApplyStats, Delta, StampedChange, VersionVector};
 use crate::dump::{Dump, DumpError, ImportReport, FORMAT_V1};
 use crate::engine::GraphEngine;
 use crate::error::{CoreError, Result};
@@ -1059,6 +1060,126 @@ impl NativeGraph {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&target);
+    }
+
+    /// This replica's [`VersionVector`] — the greatest causal
+    /// [`Stamp`] seen per origin across every live entity
+    /// (issue #389, primitive #4). A peer hands this to [`delta_since`] to learn
+    /// the minimal set of writes it is missing.
+    ///
+    /// Built from the in-memory stamp table, so (like the table itself) it
+    /// reflects only writes seen since the process started until stamps are
+    /// persisted — an explicitly-gated later slice.
+    ///
+    /// [`delta_since`]: Self::delta_since
+    pub fn version_vector(&self) -> VersionVector {
+        let stamps = self.stamps.read().unwrap_or_else(|e| e.into_inner());
+        let mut vv = VersionVector::new();
+        for stamp in stamps.values() {
+            vv.observe(*stamp);
+        }
+        vv
+    }
+
+    /// The minimal [`Delta`] of live upserts a holder of `remote` is missing:
+    /// every live node/edge whose stamp `remote` has not already observed
+    /// (issue #389, primitive #4). An empty `remote`
+    /// ([`VersionVector::new`]) returns the
+    /// entire live state — a full bootstrap.
+    ///
+    /// Deletes are not carried: a delete drops the stamp, leaving no tombstone
+    /// to ship, so a delta converges upserts only (see the [module docs] for the
+    /// gated follow-ups). The returned records are deep clones, safe to
+    /// serialise and send.
+    ///
+    /// [module docs]: crate::delta
+    pub fn delta_since(&self, remote: &VersionVector) -> Delta {
+        // Snapshot the missing targets under the stamp lock, then resolve
+        // records under the graph lock — never hold both at once (the write path
+        // takes them separately, so this keeps a single, consistent lock order).
+        let missing: Vec<(StampTarget, Stamp)> = {
+            let stamps = self.stamps.read().unwrap_or_else(|e| e.into_inner());
+            stamps
+                .iter()
+                .filter(|(_, stamp)| !remote.dominates(**stamp))
+                .map(|(target, stamp)| (*target, *stamp))
+                .collect()
+        };
+        let inner = read(&self.inner);
+        let mut changes = Vec::with_capacity(missing.len());
+        for (target, stamp) in missing {
+            match target {
+                StampTarget::Node(id) => {
+                    if let Some(node) = inner.get_node_arc(id) {
+                        changes.push(StampedChange::Node((*node).clone(), stamp));
+                    }
+                }
+                StampTarget::Edge(id) => {
+                    if let Some(edge) = inner.get_edge_arc(id) {
+                        changes.push(StampedChange::Edge((*edge).clone(), stamp));
+                    }
+                }
+            }
+        }
+        Delta { changes }
+    }
+
+    /// Fold a received [`Delta`] into this replica by Last-Writer-Wins on the
+    /// stamp (issue #389, primitive #4): each change is installed only if its
+    /// stamp beats the local one for that id, and the local HLC is advanced past
+    /// every stamp seen so a subsequent local write is causally after the merge.
+    /// Idempotent — re-applying a delta changes nothing.
+    ///
+    /// Nodes are applied before edges so an edge never lands before its
+    /// endpoints. Each winning change is persisted to the WAL exactly as a
+    /// normal upsert (durable stores only; in-memory graphs skip the durable
+    /// step), so a merge survives a restart. Correct when the receiver's id
+    /// space does not clash with the sender's (see the [module docs]).
+    ///
+    /// [module docs]: crate::delta
+    pub fn apply_delta(&self, delta: &Delta) -> Result<ApplyStats> {
+        let mut stats = ApplyStats::default();
+        // Nodes first, then edges — a fresh replica must have the endpoints
+        // before the edge referencing them.
+        let (nodes, edges): (Vec<&StampedChange>, Vec<&StampedChange>) =
+            delta.changes.iter().partition(|c| c.is_node());
+        for change in nodes.into_iter().chain(edges) {
+            if self.apply_change(change)? {
+                stats.applied += 1;
+            } else {
+                stats.skipped += 1;
+            }
+        }
+        Ok(stats)
+    }
+
+    /// Apply one [`StampedChange`] under LWW; returns whether it won (was newer
+    /// than the local stamp and installed).
+    fn apply_change(&self, change: &StampedChange) -> Result<bool> {
+        let (target, incoming) = match change {
+            StampedChange::Node(node, stamp) => (StampTarget::Node(node.id), *stamp),
+            StampedChange::Edge(edge, stamp) => (StampTarget::Edge(edge.id), *stamp),
+        };
+        // LWW: keep the local write when its stamp is greater-or-equal (equal ⇒
+        // the same write, so applying is a no-op either way).
+        if self.stamp_of(target).is_some_and(|local| local >= incoming) {
+            return Ok(false);
+        }
+        let op = match change {
+            StampedChange::Node(node, _) => WalOp::UpsertNode(node.clone()),
+            StampedChange::Edge(edge, _) => WalOp::UpsertEdge(edge.clone()),
+        };
+        Arc::make_mut(&mut write(&self.inner)).apply_wal_op(op.clone());
+        self.record(&[op])?;
+        self.stamps
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(target, incoming);
+        self.clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .observe(incoming.hlc());
+        Ok(true)
     }
 
     /// Zero-copy node fetch: returns an `Arc<Node>` handle (a refcount bump)
@@ -2474,5 +2595,93 @@ mod adjacency_kind_sort_tests {
             NativeGraph::new().origin_id(),
             NativeGraph::new().origin_id()
         );
+    }
+
+    #[test]
+    fn delta_bootstraps_a_fresh_replica() {
+        let a = NativeGraph::new();
+        let n1 = a.create_node(nn("n", "a")).unwrap();
+        let n2 = a.create_node(nn("n", "b")).unwrap();
+        let e = a.create_edge(stamp_edge(n1.id, n2.id)).unwrap();
+
+        // A fresh replica has observed nothing, so the delta is A's whole state.
+        let c = NativeGraph::new();
+        assert!(c.version_vector().is_empty());
+        let delta = a.delta_since(&c.version_vector());
+        assert_eq!(delta.len(), 3, "2 nodes + 1 edge");
+
+        let stats = c.apply_delta(&delta).unwrap();
+        assert_eq!(stats.applied, 3);
+        assert_eq!(stats.skipped, 0);
+
+        // C now mirrors A's live records and stamps: the replicas have converged.
+        assert_eq!(
+            *c.get_node(n1.id).unwrap().unwrap(),
+            *a.get_node(n1.id).unwrap().unwrap()
+        );
+        assert_eq!(
+            *c.get_node(n2.id).unwrap().unwrap(),
+            *a.get_node(n2.id).unwrap().unwrap()
+        );
+        assert_eq!(c.get_edge(e.id).unwrap(), a.get_edge(e.id).unwrap());
+        assert_eq!(
+            c.stamp_of(StampTarget::Node(n1.id)),
+            a.stamp_of(StampTarget::Node(n1.id))
+        );
+        assert_eq!(c.version_vector(), a.version_vector());
+    }
+
+    #[test]
+    fn delta_is_idempotent_and_incremental() {
+        let a = NativeGraph::new();
+        a.create_node(nn("n", "a")).unwrap();
+        let c = NativeGraph::new();
+
+        let d1 = a.delta_since(&c.version_vector());
+        assert_eq!(c.apply_delta(&d1).unwrap().applied, 1);
+
+        // Re-applying the same delta changes nothing (idempotent LWW).
+        let again = c.apply_delta(&d1).unwrap();
+        assert_eq!(again.applied, 0);
+        assert_eq!(again.skipped, 1);
+
+        // C is now caught up on A: nothing left to send.
+        assert!(a.delta_since(&c.version_vector()).is_empty());
+
+        // One more write on A reaches C incrementally — just that entity.
+        a.create_node(nn("n", "b")).unwrap();
+        let d2 = a.delta_since(&c.version_vector());
+        assert_eq!(d2.len(), 1);
+        assert_eq!(c.apply_delta(&d2).unwrap().applied, 1);
+        assert_eq!(a.version_vector(), c.version_vector());
+    }
+
+    #[test]
+    fn later_stamp_wins_and_stale_change_is_skipped() {
+        let a = NativeGraph::new();
+        let n = a.create_node(nn("n", "v1")).unwrap();
+        let c = NativeGraph::new();
+
+        // Capture the v1 delta, then update the node so A holds a higher stamp.
+        let d_v1 = a.delta_since(&c.version_vector());
+        a.update_node(
+            n.id,
+            NodePatch {
+                title: Some("v2".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d_v2 = a.delta_since(&c.version_vector());
+
+        // The newer write wins on C.
+        assert_eq!(c.apply_delta(&d_v2).unwrap().applied, 1);
+        assert_eq!(c.get_node(n.id).unwrap().unwrap().title, "v2");
+
+        // Replaying the stale v1 delta loses on stamp order — no regression.
+        let stats = c.apply_delta(&d_v1).unwrap();
+        assert_eq!(stats.applied, 0);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(c.get_node(n.id).unwrap().unwrap().title, "v2");
     }
 }

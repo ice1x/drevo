@@ -13,19 +13,24 @@
 /// Okapi BM25 scoring primitives ([`bm25::bm25_idf`]) shared by the KV and
 /// native full-text indexes. Re-exported into the main crate.
 pub mod bm25;
+/// Version-vector delta exchange ([`crate::delta::VersionVector`] /
+/// [`crate::delta::Delta`]) — the minimal-diff state-transfer built on the
+/// per-write causal stamp (issue #389, primitive #4). Re-exported as
+/// `drevo::delta`.
+pub mod delta;
 /// The `drevo-json-v1` dump wire-format types ([`crate::dump::Dump`],
 /// [`crate::dump::ImportReport`], [`crate::dump::DumpError`],
 /// [`crate::dump::FORMAT_V1`]) — the storage-agnostic interchange the native
 /// engine produces and consumes, and the cross-engine migration seam moves.
 /// Re-exported from `drevo::dump`.
 pub mod dump;
-/// The storage-agnostic error type ([`crate::error::CoreError`]) shared by the
-/// native engine, its indexes, and the dump seam. Converts structurally to and
-/// from the main crate's `DrevoError`.
 /// The [`engine::GraphEngine`] seam — the graph-level trait the query layers
 /// depend on, implemented by both the KV store (main crate) and the native
 /// engine. Re-exported from `drevo::engine`.
 pub mod engine;
+/// The storage-agnostic error type ([`crate::error::CoreError`]) shared by the
+/// native engine, its indexes, and the dump seam. Converts structurally to and
+/// from the main crate's `DrevoError`.
 pub mod error;
 /// Hybrid Logical Clock ([`crate::hlc::Hlc`] / [`crate::hlc::HlcClock`]) — the
 /// causal versioning primitive for multi-writer convergence (issue #389).
