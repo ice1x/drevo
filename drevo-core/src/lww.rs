@@ -11,10 +11,14 @@
 //! shared records: a [`LwwMap`](crate::lww::LwwMap) of a node's properties is a
 //! register-LWW CRDT over the graph.
 //!
-//! Deletes are deliberately **not** modelled here: a key that has never been
-//! written is simply absent, and a per-key remove that converges against a
-//! concurrent edit needs a *causal tombstone*, which is primitive #3 (a
-//! follow-up slice). Dependency-free, infallible, always compiled, WASM-safe.
+//! Deletes that converge against a concurrent edit are modelled by
+//! [`LwwSet`](crate::lww::LwwSet) (issue #389 primitive #3): membership is a
+//! per-element [`LwwRegister`](crate::lww::LwwRegister)`<bool>`, so a `remove` is a *causal tombstone* — a
+//! timestamped `false` — that wins or loses against a concurrent `add` purely
+//! by stamp order. This is the add/remove set drevo needs for node/edge
+//! *existence*. (A `LwwMap` deliberately has no per-key remove: property maps
+//! resolve values, not membership.) Dependency-free, infallible, always
+//! compiled, WASM-safe.
 
 use std::collections::BTreeMap;
 
@@ -197,6 +201,103 @@ impl<K: Ord + Clone, V: Clone> LwwMap<K, V> {
     }
 }
 
+/// A Last-Writer-Wins element set with **causal tombstones** (issue #389
+/// primitive #3): each element's membership is a [`LwwRegister`]`<bool>`, so an
+/// [`add`](Self::add) writes `true` and a [`remove`](Self::remove) writes a
+/// timestamped `false` (the tombstone). A concurrent add and remove of the same
+/// element resolve by stamp order — deterministically the same on every replica
+/// — so a delete converges against a concurrent edit instead of being
+/// non-deterministically resurrected or lost. This is the add/remove set for
+/// node/edge *existence*.
+///
+/// Tombstones are retained (they must propagate for a delete to converge), so
+/// the set does not shrink on its own; compaction of tombstones older than the
+/// causal frontier is a separate concern.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LwwSet<T: Ord> {
+    members: BTreeMap<T, LwwRegister<bool>>,
+}
+
+impl<T: Ord + Clone> Default for LwwSet<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Ord + Clone> LwwSet<T> {
+    /// An empty set.
+    pub fn new() -> Self {
+        Self {
+            members: BTreeMap::new(),
+        }
+    }
+
+    /// Add `elem` at `stamp` (write `true`). A newer stamp than the element's
+    /// current one wins. Returns whether the set changed.
+    pub fn add(&mut self, elem: T, stamp: Stamp) -> bool {
+        self.write(elem, true, stamp)
+    }
+
+    /// Remove `elem` at `stamp` by writing a tombstone (`false`). A newer stamp
+    /// than the element's current one wins; the tombstone is retained so the
+    /// delete converges against a concurrent add. Returns whether the set
+    /// changed.
+    pub fn remove(&mut self, elem: T, stamp: Stamp) -> bool {
+        self.write(elem, false, stamp)
+    }
+
+    fn write(&mut self, elem: T, present: bool, stamp: Stamp) -> bool {
+        match self.members.get_mut(&elem) {
+            Some(reg) => reg.set(present, stamp),
+            None => {
+                self.members.insert(elem, LwwRegister::new(present, stamp));
+                true
+            }
+        }
+    }
+
+    /// Whether `elem` is currently a live member (its latest write is an add,
+    /// not a tombstone).
+    pub fn contains(&self, elem: &T) -> bool {
+        self.members.get(elem).is_some_and(|reg| *reg.value())
+    }
+
+    /// Number of live members (tombstoned elements are not counted).
+    pub fn len(&self) -> usize {
+        self.members.values().filter(|reg| *reg.value()).count()
+    }
+
+    /// Whether there are no live members (tombstones may still be retained).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterate the live members in element order (tombstoned elements skipped).
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.members
+            .iter()
+            .filter(|(_, reg)| *reg.value())
+            .map(|(elem, _)| elem)
+    }
+
+    /// Merge `other` in: per-element LWW over membership (adds and tombstones
+    /// alike). Commutative, associative, idempotent — replicas converge
+    /// regardless of merge order. Returns whether `self` changed.
+    pub fn merge(&mut self, other: &Self) -> bool {
+        let mut changed = false;
+        for (elem, reg) in &other.members {
+            match self.members.get_mut(elem) {
+                Some(local) => changed |= local.merge(reg),
+                None => {
+                    self.members.insert(elem.clone(), reg.clone());
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +442,106 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: LwwMap<String, i32> = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn set_add_and_remove_by_stamp() {
+        let mut s: LwwSet<&str> = LwwSet::new();
+        assert!(!s.contains(&"x"));
+        assert!(s.add("x", stamp(1, 0, 1)));
+        assert!(s.contains(&"x"));
+        assert_eq!(s.len(), 1);
+        // A later tombstone removes it.
+        assert!(s.remove("x", stamp(2, 0, 1)));
+        assert!(!s.contains(&"x"));
+        assert_eq!(s.len(), 0);
+        // A stale add (older stamp) does NOT resurrect it.
+        assert!(!s.add("x", stamp(1, 5, 1)));
+        assert!(!s.contains(&"x"));
+        // A newer add does.
+        assert!(s.add("x", stamp(3, 0, 1)));
+        assert!(s.contains(&"x"));
+    }
+
+    #[test]
+    fn set_iter_and_len_skip_tombstones() {
+        let mut s: LwwSet<i32> = LwwSet::new();
+        s.add(1, stamp(1, 0, 1));
+        s.add(2, stamp(1, 0, 1));
+        s.add(3, stamp(1, 0, 1));
+        s.remove(2, stamp(2, 0, 1));
+        assert_eq!(s.len(), 2);
+        let live: Vec<i32> = s.iter().copied().collect();
+        assert_eq!(live, vec![1, 3], "tombstoned element must not be iterated");
+    }
+
+    #[test]
+    fn set_concurrent_add_and_remove_converge_by_stamp() {
+        // Peer A adds x at t=1; peer B (never saw the add) removes x at t=2.
+        // The later tombstone wins on both, in either merge order.
+        let mut a: LwwSet<&str> = LwwSet::new();
+        a.add("x", stamp(1, 0, 1));
+        let mut b: LwwSet<&str> = LwwSet::new();
+        b.remove("x", stamp(2, 0, 2));
+
+        let mut ab = a.clone();
+        ab.merge(&b);
+        let mut ba = b.clone();
+        ba.merge(&a);
+        assert_eq!(ab, ba, "add/remove must converge regardless of order");
+        assert!(!ab.contains(&"x"), "the later tombstone wins");
+
+        // The mirror case: add is the later write → element is live.
+        let mut c: LwwSet<&str> = LwwSet::new();
+        c.remove("y", stamp(1, 0, 1));
+        let mut d: LwwSet<&str> = LwwSet::new();
+        d.add("y", stamp(2, 0, 2));
+        let mut cd = c.clone();
+        cd.merge(&d);
+        let mut dc = d.clone();
+        dc.merge(&c);
+        assert_eq!(cd, dc);
+        assert!(cd.contains(&"y"), "the later add wins");
+    }
+
+    #[test]
+    fn set_merge_is_idempotent_and_associative() {
+        let mk = |present: bool, s: Stamp| {
+            let mut set: LwwSet<&str> = LwwSet::new();
+            if present {
+                set.add("k", s);
+            } else {
+                set.remove("k", s);
+            }
+            set
+        };
+        let a = mk(true, stamp(1, 0, 1)); // add@1
+        let b = mk(false, stamp(2, 0, 1)); // remove@2
+        let c = mk(true, stamp(3, 0, 1)); // add@3 (wins)
+
+        let mut left = a.clone();
+        left.merge(&b);
+        left.merge(&c);
+        let mut bc = b.clone();
+        bc.merge(&c);
+        let mut right = a.clone();
+        right.merge(&bc);
+        assert_eq!(left, right, "merge must be associative");
+        assert!(left.contains(&"k"));
+
+        // Idempotent: a repeated merge changes nothing.
+        assert!(!left.merge(&c));
+    }
+
+    #[test]
+    fn set_serde_round_trips() {
+        let mut s: LwwSet<String> = LwwSet::new();
+        s.add("live".into(), stamp(1, 0, 1));
+        s.remove("dead".into(), stamp(2, 0, 1));
+        let json = serde_json::to_string(&s).unwrap();
+        let back: LwwSet<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+        assert!(back.contains(&"live".to_string()));
+        assert!(!back.contains(&"dead".to_string()));
     }
 }
