@@ -65,6 +65,8 @@
     <div class="server-info" id="server-info">connecting…</div>
     <button type="button" id="storage-toggle" class="storage-toggle"
             title="Storage &amp; maintenance" aria-label="Open storage panel">⛁</button>
+    <button type="button" id="settings-toggle" class="settings-toggle"
+            title="Settings (embeddings)" aria-label="Open settings panel">⚙</button>
     <button type="button" id="theme-toggle" class="theme-toggle"
             title="Toggle light / dark theme" aria-label="Toggle theme">◐</button>
   </header>
@@ -96,6 +98,52 @@
         <button type="button" id="storage-shrink" class="storage-shrink"
                 title="Rebuild the database file in place to reclaim bloat (online, no restart)">Shrink</button>
         <button type="button" id="storage-refresh" class="storage-refresh">Refresh</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Settings panel (modal overlay). Opened from the ⚙ topbar button. Today it
+       configures the embeddings upstream/API key/model at runtime (GET/POST
+       /config/embeddings) — a write-only key field (blank keeps the stored
+       secret) so the token is set here without editing the env file and
+       restarting. The status endpoint never returns the key itself. -->
+  <div id="settings-modal" class="storage-modal" hidden aria-hidden="true"
+       role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="storage-dialog" role="document">
+      <header class="storage-head">
+        <h2 id="settings-title">Settings</h2>
+        <button type="button" id="settings-close" class="storage-close"
+                title="Close" aria-label="Close settings panel">✕</button>
+      </header>
+      <div class="storage-body" id="settings-body">
+        <h3 class="settings-section">Embeddings</h3>
+        <p id="settings-embeddings-status" class="settings-status">Loading…</p>
+        <form id="settings-embeddings-form" class="settings-form" autocomplete="off">
+          <label class="settings-field">
+            <span>Upstream URL</span>
+            <input type="url" id="settings-embeddings-upstream" name="upstream"
+                   placeholder="https://api.openai.com/v1/embeddings"
+                   autocomplete="off" />
+          </label>
+          <label class="settings-field">
+            <span>API key</span>
+            <input type="password" id="settings-embeddings-key" name="api_key"
+                   placeholder="leave blank to keep the stored key"
+                   autocomplete="off" />
+          </label>
+          <label class="settings-field">
+            <span>Default model</span>
+            <input type="text" id="settings-embeddings-model" name="model"
+                   placeholder="text-embedding-3-small (optional)"
+                   autocomplete="off" />
+          </label>
+          <p id="settings-embeddings-msg" class="settings-msg" hidden></p>
+        </form>
+      </div>
+      <footer class="storage-foot">
+        <button type="button" id="settings-embeddings-save" class="storage-shrink"
+                title="Save the embeddings configuration (applies immediately, no restart)">Save</button>
+        <button type="button" id="settings-refresh" class="storage-refresh">Refresh</button>
       </footer>
     </div>
   </div>

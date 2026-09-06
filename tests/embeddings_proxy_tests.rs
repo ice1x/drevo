@@ -96,7 +96,7 @@ async fn spawn(router: Router) -> SocketAddr {
 }
 
 fn proxy_at(addr: SocketAddr, api_key: Option<&str>, model: Option<&str>) -> ProxyBackend {
-    ProxyBackend::new(EmbeddingsConfig {
+    ProxyBackend::from_config(EmbeddingsConfig {
         upstream: format!("http://{addr}/v1/embeddings"),
         api_key: api_key.map(str::to_string),
         model: model.map(str::to_string),

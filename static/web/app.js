@@ -50,6 +50,17 @@
   const $storageBenchRun = document.getElementById("storage-bench-run");
   const $storageBench = document.getElementById("storage-bench");
   const $storageRefresh = document.getElementById("storage-refresh");
+  // Settings panel (embeddings config).
+  const $settingsToggle = document.getElementById("settings-toggle");
+  const $settingsModal = document.getElementById("settings-modal");
+  const $settingsClose = document.getElementById("settings-close");
+  const $settingsRefresh = document.getElementById("settings-refresh");
+  const $embStatus = document.getElementById("settings-embeddings-status");
+  const $embUpstream = document.getElementById("settings-embeddings-upstream");
+  const $embKey = document.getElementById("settings-embeddings-key");
+  const $embModel = document.getElementById("settings-embeddings-model");
+  const $embSave = document.getElementById("settings-embeddings-save");
+  const $embMsg = document.getElementById("settings-embeddings-msg");
 
   // ── Graph overview state ─────────────────────────────────────────────
   // The whole graph dump is fetched once from /export/json and cached;
@@ -323,6 +334,93 @@
     if (!$storageModal) return;
     $storageModal.hidden = true;
     $storageModal.setAttribute("aria-hidden", "true");
+  }
+
+  // ── Settings panel: embeddings config (GET/POST /config/embeddings) ──────
+  // The status endpoint returns { configured, upstream, model, api_key_set } —
+  // never the key. The key field is write-only: left blank on save, the stored
+  // secret is kept.
+  async function loadEmbeddingsConfig() {
+    if (!$embStatus) return;
+    setEmbMsg("");
+    $embStatus.textContent = "Loading…";
+    try {
+      const s = await apiGet("/config/embeddings");
+      if ($embUpstream) $embUpstream.value = s.upstream || "";
+      if ($embModel) $embModel.value = s.model || "";
+      if ($embKey) {
+        $embKey.value = "";
+        $embKey.placeholder = s.api_key_set
+          ? "•••••• stored — leave blank to keep"
+          : "not set — paste a key to enable";
+      }
+      $embStatus.textContent = s.configured
+        ? `Configured${s.api_key_set ? " · key set" : " · no key"}`
+        : "Not configured — set an upstream to enable embeddings.";
+    } catch (err) {
+      $embStatus.textContent = `Unavailable: ${err.message}`;
+    }
+  }
+
+  function setEmbMsg(text, isError) {
+    if (!$embMsg) return;
+    if (!text) {
+      $embMsg.hidden = true;
+      $embMsg.textContent = "";
+      return;
+    }
+    $embMsg.hidden = false;
+    $embMsg.textContent = text;
+    $embMsg.classList.toggle("settings-msg-error", !!isError);
+  }
+
+  async function saveEmbeddingsConfig() {
+    if (!$embSave) return;
+    const upstream = ($embUpstream && $embUpstream.value.trim()) || "";
+    if (!upstream) {
+      setEmbMsg("Upstream URL is required.", true);
+      return;
+    }
+    const body = { upstream, model: ($embModel && $embModel.value.trim()) || "" };
+    // Only send the key when the user typed one — blank keeps the stored secret.
+    const key = ($embKey && $embKey.value) || "";
+    if (key.trim()) body.api_key = key;
+
+    $embSave.disabled = true;
+    $embSave.textContent = "Saving…";
+    setEmbMsg("");
+    try {
+      const r = await fetch("/config/embeddings", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data.error || `${r.status} ${r.statusText}`);
+      }
+      // Reload first (it clears the message area), then show the confirmation
+      // so it isn't wiped by the refresh.
+      await loadEmbeddingsConfig();
+      setEmbMsg("Saved — applied immediately, no restart needed.", false);
+    } catch (err) {
+      setEmbMsg(`Save failed: ${err.message}`, true);
+    } finally {
+      $embSave.disabled = false;
+      $embSave.textContent = "Save";
+    }
+  }
+
+  function openSettings() {
+    if (!$settingsModal) return;
+    $settingsModal.hidden = false;
+    $settingsModal.setAttribute("aria-hidden", "false");
+    loadEmbeddingsConfig();
+  }
+  function closeSettings() {
+    if (!$settingsModal) return;
+    $settingsModal.hidden = true;
+    $settingsModal.setAttribute("aria-hidden", "true");
   }
 
   // ── Layout (task 00093) ────────────────────────────────────────────
@@ -1274,8 +1372,18 @@
       if (e.target === $storageModal) closeStorage();
     });
   }
+  if ($settingsToggle) $settingsToggle.addEventListener("click", openSettings);
+  if ($settingsClose) $settingsClose.addEventListener("click", closeSettings);
+  if ($settingsRefresh) $settingsRefresh.addEventListener("click", loadEmbeddingsConfig);
+  if ($embSave) $embSave.addEventListener("click", saveEmbeddingsConfig);
+  if ($settingsModal) {
+    $settingsModal.addEventListener("click", (e) => {
+      if (e.target === $settingsModal) closeSettings();
+    });
+  }
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && $storageModal && !$storageModal.hidden) closeStorage();
+    if (e.key === "Escape" && $settingsModal && !$settingsModal.hidden) closeSettings();
   });
 
   document.addEventListener("DOMContentLoaded", () => {

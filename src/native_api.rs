@@ -48,6 +48,11 @@ pub struct NativeApiState {
     /// Optional embeddings proxy backend — `POST /v1/embeddings` answers
     /// `503` ("not configured") without one, exactly like the KV router.
     embeddings: Option<Arc<EmbeddingBackend>>,
+    /// Shared runtime embeddings config store backing `/config/embeddings`
+    /// (Web-UI-settable API key/upstream/model); the same `Arc` the proxy
+    /// reads, so a write takes effect live. Mirrors
+    /// [`crate::api::ApiState::embeddings_config`].
+    embeddings_config: Option<Arc<crate::embeddings::EmbeddingsConfigStore>>,
 }
 
 impl NativeApiState {
@@ -58,6 +63,7 @@ impl NativeApiState {
             started_at: Instant::now(),
             shutting_down: Arc::new(AtomicBool::new(false)),
             embeddings: None,
+            embeddings_config: None,
         }
     }
 
@@ -66,6 +72,18 @@ impl NativeApiState {
     #[must_use]
     pub fn with_embeddings_backend(mut self, backend: EmbeddingBackend) -> Self {
         self.embeddings = Some(Arc::new(backend));
+        self
+    }
+
+    /// Attach the shared embeddings config store, enabling
+    /// `GET`/`POST /config/embeddings` — mirroring
+    /// [`crate::api::ApiState::with_embeddings_config_store`].
+    #[must_use]
+    pub fn with_embeddings_config_store(
+        mut self,
+        store: Arc<crate::embeddings::EmbeddingsConfigStore>,
+    ) -> Self {
+        self.embeddings_config = Some(store);
         self
     }
 
@@ -93,6 +111,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/cypher", post(cypher))
         .route("/export/graphml", get(export_graphml))
         .route("/v1/embeddings", post(embeddings))
+        .route(
+            "/config/embeddings",
+            get(get_embeddings_config).post(set_embeddings_config),
+        )
         .route("/search/fts", post(search_fts))
         .route("/export/json", get(export_json))
         .route("/databases", get(list_databases))
@@ -153,6 +175,24 @@ async fn embeddings(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let Json(req) = body?;
     embeddings_response(state.embeddings.as_deref(), req).await
+}
+
+/// `GET /config/embeddings` — secret-free view of the runtime embeddings
+/// config (shared body with the KV router).
+async fn get_embeddings_config(
+    State(state): State<NativeApiState>,
+) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
+    crate::api::embeddings_config_status(state.embeddings_config.as_deref())
+}
+
+/// `POST /config/embeddings` — validate + persist + hot-swap the runtime
+/// embeddings config (shared body); the API key is never echoed back.
+async fn set_embeddings_config(
+    State(state): State<NativeApiState>,
+    body: Result<Json<crate::embeddings::EmbeddingsConfigUpdate>, JsonRejection>,
+) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
+    let Json(update) = body?;
+    crate::api::embeddings_config_apply(state.embeddings_config.as_deref(), update)
 }
 
 /// `POST /search/fts` — BM25 full-text search over the native index, the

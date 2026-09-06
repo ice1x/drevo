@@ -439,8 +439,52 @@ body {
 }
 .storage-toggle:hover { border-color: var(--accent); }
 /* The theme toggle no longer needs to grab the free space — the storage
-   button does — so the pair sits together on the right. */
+   button does — so the trio sits together on the right. */
 .storage-toggle + .theme-toggle { margin-left: 0.4rem; }
+
+/* Settings (⚙) button — same box as the storage toggle, sitting between it
+   and the theme toggle. */
+.settings-toggle {
+  width: 34px;
+  height: 34px;
+  margin-left: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.settings-toggle:hover { border-color: var(--accent); }
+
+/* Settings panel form (reuses the .storage-modal / .storage-dialog overlay). */
+.settings-section {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+.settings-status {
+  margin: 0 0 0.75rem;
+  color: var(--text-muted, var(--text));
+  font-size: 0.85rem;
+}
+.settings-form { display: flex; flex-direction: column; gap: 0.6rem; }
+.settings-field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; }
+.settings-field input {
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+}
+.settings-field input:focus { outline: none; border-color: var(--accent); }
+.settings-msg { margin: 0.2rem 0 0; font-size: 0.85rem; color: var(--accent); }
+.settings-msg-error { color: var(--danger, #c0392b); }
 
 .storage-modal {
   position: fixed;
