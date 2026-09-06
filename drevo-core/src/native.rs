@@ -54,7 +54,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::delta::{ApplyStats, Delta, StampedChange, VersionVector};
+use crate::delta::{ApplyStats, Delta, StampedChange, StampedEdge, VersionVector};
 use crate::dump::{Dump, DumpError, ImportReport, FORMAT_V1};
 use crate::engine::GraphEngine;
 use crate::error::{CoreError, Result};
@@ -846,14 +846,38 @@ pub struct NativeGraph {
     ///
     /// [`tombstones`]: Self::tombstones
     stamps: RwLock<HashMap<StampTarget, Stamp>>,
-    /// The causal [`Stamp`] of each **deleted** node/edge — a tombstone
-    /// (issue #389, primitive #3 wired into the write path). Kept disjoint from
-    /// [`stamps`]: a target is either live (in `stamps`) or deleted (here), and
-    /// the greater stamp wins. Tombstones let a [`Delta`] carry deletes so a peer
-    /// converges on removals, not just upserts. In-memory only, like `stamps`.
+    /// The [`Tomb`] of each **deleted** node/edge — its causal [`Stamp`] plus the
+    /// entity's `uuid` (issue #389). Kept disjoint from [`stamps`]: a target is
+    /// either live (in `stamps`) or deleted (here), and the greater stamp wins.
+    /// Tombstones let a [`Delta`] carry deletes so a peer converges on removals,
+    /// not just upserts; the stored `uuid` lets the receiver remap the deletion
+    /// onto its own local id. In-memory only, like `stamps`.
     ///
     /// [`stamps`]: Self::stamps
-    tombstones: RwLock<HashMap<StampTarget, Stamp>>,
+    tombstones: RwLock<HashMap<StampTarget, Tomb>>,
+}
+
+/// A tombstone: the causal [`Stamp`] of a delete plus the deleted entity's
+/// `uuid`, so the deletion can be carried in a [`Delta`] and remapped by `uuid`
+/// on the receiver (issue #389).
+#[derive(Debug, Clone, Copy)]
+struct Tomb {
+    stamp: Stamp,
+    uuid: [u8; 16],
+}
+
+/// `uuid → receiver-local-id` resolution for a single [`NativeGraph::apply_delta`]
+/// batch (issue #389). Indexes the receiver's live nodes/edges and its
+/// tombstones once, then stays current as new ids are minted, so every change in
+/// the delta is remapped from the sender's id space into ours by `uuid`.
+struct Remap {
+    /// Live node `uuid → local id`.
+    node: HashMap<[u8; 16], u64>,
+    /// Live edge `uuid → local id`.
+    edge: HashMap<[u8; 16], u64>,
+    /// Deleted `uuid → its anchored [`StampTarget`]` (the local id the tombstone
+    /// is keyed by), for LWW against a re-delivered or superseding write.
+    tomb: HashMap<[u8; 16], StampTarget>,
 }
 
 /// A node or edge addressed by id, for the per-entity causal stamp table
@@ -1070,8 +1094,9 @@ impl NativeGraph {
     }
 
     /// Record `target`'s causal version after a delete: it moves from live into
-    /// the tombstone table, so a [`Delta`] can carry the deletion to a peer.
-    fn stamp_tombstone(&self, target: StampTarget) {
+    /// the tombstone table (tagged with the deleted entity's `uuid`), so a
+    /// [`Delta`] can carry the deletion to a peer and the peer can remap it.
+    fn stamp_tombstone(&self, target: StampTarget, uuid: [u8; 16]) {
         let stamp = self.next_stamp();
         self.stamps
             .write()
@@ -1080,7 +1105,42 @@ impl NativeGraph {
         self.tombstones
             .write()
             .unwrap_or_else(|e| e.into_inner())
+            .insert(target, Tomb { stamp, uuid });
+    }
+
+    /// Mark `target` live at `stamp` (an applied upsert): set its live stamp and
+    /// clear any tombstone, keeping the two tables disjoint.
+    fn mark_live(&self, target: StampTarget, stamp: Stamp) {
+        self.stamps
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(target, stamp);
+        self.tombstones
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&target);
+    }
+
+    /// Mark `target` deleted at `stamp` (an applied tombstone): set its tombstone
+    /// and clear any live stamp.
+    fn mark_tombstoned(&self, target: StampTarget, stamp: Stamp, uuid: [u8; 16]) {
+        self.tombstones
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(target, Tomb { stamp, uuid });
+        self.stamps
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&target);
+    }
+
+    /// Advance the local HLC past `stamp` so a subsequent local write is causally
+    /// after the merged change.
+    fn observe(&self, stamp: Stamp) {
+        self.clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .observe(stamp.hlc());
     }
 
     /// The stamp governing `target`'s current LWW state — its live stamp if the
@@ -1094,7 +1154,7 @@ impl NativeGraph {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&target)
-            .copied()
+            .map(|t| t.stamp)
     }
 
     /// This replica's [`VersionVector`] — the greatest causal
@@ -1119,13 +1179,13 @@ impl NativeGraph {
         }
         // Tombstones are writes too: folding them in tells a peer we have already
         // seen the delete, so it never resends the upsert we have since removed.
-        for stamp in self
+        for tomb in self
             .tombstones
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .values()
         {
-            vv.observe(*stamp);
+            vv.observe(tomb.stamp);
         }
         vv
     }
@@ -1153,12 +1213,13 @@ impl NativeGraph {
                 .map(|(target, stamp)| (*target, *stamp))
                 .collect()
         };
-        let missing_dead: Vec<(StampTarget, Stamp)> = {
+        // Tombstones carry the deleted entity's uuid so the receiver can remap.
+        let missing_dead: Vec<(StampTarget, Tomb)> = {
             let tombstones = self.tombstones.read().unwrap_or_else(|e| e.into_inner());
             tombstones
                 .iter()
-                .filter(|(_, stamp)| !remote.dominates(**stamp))
-                .map(|(target, stamp)| (*target, *stamp))
+                .filter(|(_, tomb)| !remote.dominates(tomb.stamp))
+                .map(|(target, tomb)| (*target, *tomb))
                 .collect()
         };
         let inner = read(&self.inner);
@@ -1171,43 +1232,94 @@ impl NativeGraph {
                     }
                 }
                 StampTarget::Edge(id) => {
+                    // Resolve the endpoints to uuids so the receiver can remap
+                    // them; skip an edge whose endpoints have gone missing.
                     if let Some(edge) = inner.get_edge_arc(id) {
-                        changes.push(StampedChange::Edge((*edge).clone(), stamp));
+                        let (from_uuid, to_uuid) = (
+                            inner.get_node_arc(edge.from_id).map(|n| n.uuid),
+                            inner.get_node_arc(edge.to_id).map(|n| n.uuid),
+                        );
+                        if let (Some(from_uuid), Some(to_uuid)) = (from_uuid, to_uuid) {
+                            changes.push(StampedChange::Edge(StampedEdge {
+                                edge: (*edge).clone(),
+                                from_uuid,
+                                to_uuid,
+                                stamp,
+                            }));
+                        }
                     }
                 }
             }
         }
-        for (target, stamp) in missing_dead {
+        for (target, tomb) in missing_dead {
             changes.push(match target {
-                StampTarget::Node(id) => StampedChange::DeleteNode(id, stamp),
-                StampTarget::Edge(id) => StampedChange::DeleteEdge(id, stamp),
+                StampTarget::Node(_) => StampedChange::DeleteNode(tomb.uuid, tomb.stamp),
+                StampTarget::Edge(_) => StampedChange::DeleteEdge(tomb.uuid, tomb.stamp),
             });
         }
         Delta { changes }
     }
 
     /// Fold a received [`Delta`] into this replica by Last-Writer-Wins on the
-    /// stamp (issue #389, primitive #4): each change is installed only if its
-    /// stamp beats the local one for that id, and the local HLC is advanced past
-    /// every stamp seen so a subsequent local write is causally after the merge.
-    /// Idempotent — re-applying a delta changes nothing.
+    /// stamp, remapping the sender's ids into our own id space by `uuid`
+    /// (issue #389, primitive #4). Each change is installed only if its stamp
+    /// beats the local one for the *same `uuid`*, and the local HLC is advanced
+    /// past every stamp seen. Idempotent — re-applying a delta changes nothing.
     ///
-    /// Nodes are applied before edges so an edge never lands before its
-    /// endpoints. Each winning change is persisted to the WAL exactly as a
-    /// normal upsert (durable stores only; in-memory graphs skip the durable
-    /// step), so a merge survives a restart. Correct when the receiver's id
-    /// space does not clash with the sender's (see the [module docs]).
+    /// Because node/edge ids are per-replica, identity is the `uuid` each record
+    /// carries: a `uuid` we already hold is merged at our local id, a new `uuid`
+    /// is minted a fresh one, and an edge's endpoints are resolved from their
+    /// carried uuids ([`StampedEdge`]). This makes the exchange symmetric —
+    /// independent concurrent writers converge — not just a fresh-replica
+    /// bootstrap.
+    ///
+    /// Changes apply in phase order (upsert nodes, upsert edges, delete edges,
+    /// delete nodes) so endpoints exist before an edge references them and a
+    /// cascading node delete runs last. Each winning change is persisted to the
+    /// WAL (durable stores only; in-memory graphs skip the durable step), so a
+    /// merge survives a restart. See the [module docs] for the remaining
+    /// limitations.
     ///
     /// [module docs]: crate::delta
     pub fn apply_delta(&self, delta: &Delta) -> Result<ApplyStats> {
         let mut stats = ApplyStats::default();
-        // Apply in phase order: upsert nodes, upsert edges, delete edges, delete
-        // nodes. Endpoints exist before an edge references them, and a node
-        // delete (which cascades to incident edges) runs last.
         let mut ordered: Vec<&StampedChange> = delta.changes.iter().collect();
         ordered.sort_by_key(|c| c.apply_phase());
+
+        // Index identity by uuid once: live records from the graph, deleted ones
+        // from the tombstone table. The maps stay current as ids are minted.
+        let mut remap = {
+            let node;
+            let edge;
+            {
+                let inner = read(&self.inner);
+                node = inner.nodes.values().map(|n| (n.uuid, n.id)).collect();
+                edge = inner.edges.values().map(|e| (e.uuid, e.id)).collect();
+            }
+            let tomb = self
+                .tombstones
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|(target, t)| (t.uuid, *target))
+                .collect();
+            Remap { node, edge, tomb }
+        };
+
         for change in ordered {
-            if self.apply_change(change)? {
+            let won = match change {
+                StampedChange::Node(node, stamp) => {
+                    self.apply_node_upsert(node, *stamp, &mut remap)?
+                }
+                StampedChange::Edge(se) => self.apply_edge_upsert(se, &mut remap)?,
+                StampedChange::DeleteNode(uuid, stamp) => {
+                    self.apply_delete(*uuid, *stamp, true, &mut remap)?
+                }
+                StampedChange::DeleteEdge(uuid, stamp) => {
+                    self.apply_delete(*uuid, *stamp, false, &mut remap)?
+                }
+            };
+            if won {
                 stats.applied += 1;
             } else {
                 stats.skipped += 1;
@@ -1216,62 +1328,180 @@ impl NativeGraph {
         Ok(stats)
     }
 
-    /// Apply one [`StampedChange`] under LWW; returns whether it won (was newer
-    /// than the local stamp and installed). An upsert and a tombstone share one
-    /// timeline per target: whichever stamp is greater wins, so a delete removes
-    /// a live record and a later upsert resurrects it.
-    fn apply_change(&self, change: &StampedChange) -> Result<bool> {
-        let (target, incoming) = match change {
-            StampedChange::Node(node, stamp) => (StampTarget::Node(node.id), *stamp),
-            StampedChange::Edge(edge, stamp) => (StampTarget::Edge(edge.id), *stamp),
-            StampedChange::DeleteNode(id, stamp) => (StampTarget::Node(*id), *stamp),
-            StampedChange::DeleteEdge(id, stamp) => (StampTarget::Edge(*id), *stamp),
+    /// Merge an incoming node upsert under LWW, remapping its `uuid` to a local
+    /// id (a fresh mint if unseen). Returns whether it won.
+    fn apply_node_upsert(&self, node: &Node, incoming: Stamp, remap: &mut Remap) -> Result<bool> {
+        let uuid = node.uuid;
+        let cur_target = remap
+            .node
+            .get(&uuid)
+            .copied()
+            .map(StampTarget::Node)
+            .or_else(|| {
+                remap
+                    .tomb
+                    .get(&uuid)
+                    .copied()
+                    .filter(|t| matches!(t, StampTarget::Node(_)))
+            });
+        if let Some(t) = cur_target {
+            if self.current_stamp(t).is_some_and(|local| local >= incoming) {
+                return Ok(false);
+            }
+        }
+        // Reuse the resolved local id, else mint a fresh one; rewrite the record
+        // to our id space before applying.
+        let mut record = node.clone();
+        let local_id = {
+            let mut guard = write(&self.inner);
+            let inner = Arc::make_mut(&mut guard);
+            let id = match cur_target {
+                Some(StampTarget::Node(id)) => id,
+                _ => {
+                    inner.next_node_id += 1;
+                    inner.next_node_id
+                }
+            };
+            record.id = id;
+            inner.apply_wal_op(WalOp::UpsertNode(record.clone()));
+            id
         };
-        // LWW: keep the local state when its stamp is greater-or-equal (equal ⇒
-        // the same write, so applying is a no-op either way). `current_stamp`
-        // spans both live records and tombstones.
-        if self
-            .current_stamp(target)
-            .is_some_and(|local| local >= incoming)
-        {
+        self.record(&[WalOp::UpsertNode(record)])?;
+        self.mark_live(StampTarget::Node(local_id), incoming);
+        remap.node.insert(uuid, local_id);
+        remap.tomb.remove(&uuid);
+        self.observe(incoming);
+        Ok(true)
+    }
+
+    /// Merge an incoming edge upsert under LWW, remapping the edge and both
+    /// endpoints by `uuid`. Skips (returns `false`) when an endpoint uuid is not
+    /// yet known locally — the edge cannot be placed until its nodes arrive.
+    fn apply_edge_upsert(&self, se: &StampedEdge, remap: &mut Remap) -> Result<bool> {
+        let (Some(&from_local), Some(&to_local)) =
+            (remap.node.get(&se.from_uuid), remap.node.get(&se.to_uuid))
+        else {
             return Ok(false);
-        }
-        let op = match change {
-            StampedChange::Node(node, _) => WalOp::UpsertNode(node.clone()),
-            StampedChange::Edge(edge, _) => WalOp::UpsertEdge(edge.clone()),
-            StampedChange::DeleteNode(id, _) => WalOp::DeleteNode(*id),
-            StampedChange::DeleteEdge(id, _) => WalOp::DeleteEdge(*id),
         };
-        Arc::make_mut(&mut write(&self.inner)).apply_wal_op(op.clone());
-        self.record(&[op])?;
-        // Route the winning stamp into the matching table, keeping the two
-        // disjoint: an upsert makes the target live, a delete tombstones it.
-        match change {
-            StampedChange::Node(..) | StampedChange::Edge(..) => {
-                self.stamps
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(target, incoming);
-                self.tombstones
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&target);
-            }
-            StampedChange::DeleteNode(..) | StampedChange::DeleteEdge(..) => {
-                self.tombstones
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(target, incoming);
-                self.stamps
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&target);
+        let uuid = se.edge.uuid;
+        let cur_target = remap
+            .edge
+            .get(&uuid)
+            .copied()
+            .map(StampTarget::Edge)
+            .or_else(|| {
+                remap
+                    .tomb
+                    .get(&uuid)
+                    .copied()
+                    .filter(|t| matches!(t, StampTarget::Edge(_)))
+            });
+        if let Some(t) = cur_target {
+            if self.current_stamp(t).is_some_and(|local| local >= se.stamp) {
+                return Ok(false);
             }
         }
-        self.clock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .observe(incoming.hlc());
+        let mut record = se.edge.clone();
+        record.from_id = from_local;
+        record.to_id = to_local;
+        let local_id = {
+            let mut guard = write(&self.inner);
+            let inner = Arc::make_mut(&mut guard);
+            let id = match cur_target {
+                Some(StampTarget::Edge(id)) => id,
+                _ => {
+                    inner.next_edge_id += 1;
+                    inner.next_edge_id
+                }
+            };
+            record.id = id;
+            inner.apply_wal_op(WalOp::UpsertEdge(record.clone()));
+            id
+        };
+        self.record(&[WalOp::UpsertEdge(record)])?;
+        self.mark_live(StampTarget::Edge(local_id), se.stamp);
+        remap.edge.insert(uuid, local_id);
+        remap.tomb.remove(&uuid);
+        self.observe(se.stamp);
+        Ok(true)
+    }
+
+    /// Merge an incoming tombstone under LWW, remapping by `uuid`. Removes the
+    /// live record if we hold it (a node delete cascades to its incident edges);
+    /// a delete of a `uuid` we have never seen still records a tombstone (anchored
+    /// on a minted id) so a later, lesser upsert loses. Returns whether it won.
+    fn apply_delete(
+        &self,
+        uuid: [u8; 16],
+        incoming: Stamp,
+        is_node: bool,
+        remap: &mut Remap,
+    ) -> Result<bool> {
+        let live = if is_node {
+            remap.node.get(&uuid).copied()
+        } else {
+            remap.edge.get(&uuid).copied()
+        };
+        let as_target = |id: u64| {
+            if is_node {
+                StampTarget::Node(id)
+            } else {
+                StampTarget::Edge(id)
+            }
+        };
+        let tomb_target = remap.tomb.get(&uuid).copied().filter(|t| {
+            if is_node {
+                matches!(t, StampTarget::Node(_))
+            } else {
+                matches!(t, StampTarget::Edge(_))
+            }
+        });
+        let cur_target = live.map(as_target).or(tomb_target);
+        if let Some(t) = cur_target {
+            if self.current_stamp(t).is_some_and(|local| local >= incoming) {
+                return Ok(false);
+            }
+        }
+        let target = match cur_target {
+            Some(t) => {
+                // A live entity is removed (nodes cascade to incident edges); a
+                // known-but-already-tombstoned target only bumps its stamp.
+                if let Some(id) = live {
+                    let op = if is_node {
+                        WalOp::DeleteNode(id)
+                    } else {
+                        WalOp::DeleteEdge(id)
+                    };
+                    Arc::make_mut(&mut write(&self.inner)).apply_wal_op(op.clone());
+                    self.record(&[op])?;
+                }
+                t
+            }
+            None => {
+                // Never seen: mint an anchor id so a later upsert of this uuid
+                // LWW-compares against the tombstone. Nothing to remove.
+                let id = {
+                    let mut guard = write(&self.inner);
+                    let inner = Arc::make_mut(&mut guard);
+                    if is_node {
+                        inner.next_node_id += 1;
+                        inner.next_node_id
+                    } else {
+                        inner.next_edge_id += 1;
+                        inner.next_edge_id
+                    }
+                };
+                as_target(id)
+            }
+        };
+        self.mark_tombstoned(target, incoming, uuid);
+        if is_node {
+            remap.node.remove(&uuid);
+        } else {
+            remap.edge.remove(&uuid);
+        }
+        remap.tomb.insert(uuid, target);
+        self.observe(incoming);
         Ok(true)
     }
 
@@ -1289,6 +1519,28 @@ impl NativeGraph {
     /// for edges.
     pub fn get_edge_arc(&self, id: u64) -> Option<Arc<Edge>> {
         read(&self.inner).get_edge_arc(id)
+    }
+
+    /// The local id of the node with this globally-unique `uuid`, or `None`.
+    /// A linear scan today (the `uuid → id` map is built per merge in
+    /// [`apply_delta`](Self::apply_delta), not kept persistently); use it to
+    /// address an entity across replicas by its stable `uuid` (issue #389).
+    pub fn node_id_of_uuid(&self, uuid: [u8; 16]) -> Option<u64> {
+        read(&self.inner)
+            .nodes
+            .values()
+            .find(|n| n.uuid == uuid)
+            .map(|n| n.id)
+    }
+
+    /// The local id of the edge with this globally-unique `uuid`, or `None` — the
+    /// edge counterpart to [`node_id_of_uuid`](Self::node_id_of_uuid).
+    pub fn edge_id_of_uuid(&self, uuid: [u8; 16]) -> Option<u64> {
+        read(&self.inner)
+            .edges
+            .values()
+            .find(|e| e.uuid == uuid)
+            .map(|e| e.id)
     }
 
     /// Distinct neighbours as zero-copy `Arc<Node>` handles — the fan-out
@@ -2184,9 +2436,14 @@ impl GraphEngine for NativeGraph {
     }
 
     fn delete_node(&self, id: u64) -> Result<()> {
+        // Capture the uuid before removal so the tombstone can be remapped by a
+        // peer (issue #389).
+        let uuid = read(&self.inner).get_node_arc(id).map(|n| n.uuid);
         Arc::make_mut(&mut write(&self.inner)).delete_node(id)?;
         self.record(&[WalOp::DeleteNode(id)])?;
-        self.stamp_tombstone(StampTarget::Node(id));
+        if let Some(uuid) = uuid {
+            self.stamp_tombstone(StampTarget::Node(id), uuid);
+        }
         Ok(())
     }
 
@@ -2209,9 +2466,12 @@ impl GraphEngine for NativeGraph {
     }
 
     fn delete_edge(&self, id: u64) -> Result<()> {
+        let uuid = read(&self.inner).get_edge_arc(id).map(|e| e.uuid);
         Arc::make_mut(&mut write(&self.inner)).delete_edge(id)?;
         self.record(&[WalOp::DeleteEdge(id)])?;
-        self.stamp_tombstone(StampTarget::Edge(id));
+        if let Some(uuid) = uuid {
+            self.stamp_tombstone(StampTarget::Edge(id), uuid);
+        }
         Ok(())
     }
 
@@ -2716,18 +2976,23 @@ mod adjacency_kind_sort_tests {
         assert_eq!(stats.applied, 3);
         assert_eq!(stats.skipped, 0);
 
-        // C now mirrors A's live records and stamps: the replicas have converged.
+        // C now mirrors A's live records and stamps. Identity is the uuid: C
+        // remaps A's ids into its own space, so compare by uuid, not by id.
+        let cn1 = c.node_id_of_uuid(n1.uuid).expect("n1 on c");
+        let cn2 = c.node_id_of_uuid(n2.uuid).expect("n2 on c");
+        assert_eq!(c.get_node(cn1).unwrap().unwrap().title, "a");
+        assert_eq!(c.get_node(cn2).unwrap().unwrap().title, "b");
+        assert_eq!(c.get_node(cn1).unwrap().unwrap().uuid, n1.uuid);
+
+        // The remapped edge connects the remapped endpoints.
+        let ce = c.edge_id_of_uuid(e.uuid).expect("edge on c");
+        let ce_rec = c.get_edge(ce).unwrap().unwrap();
+        assert_eq!(ce_rec.from_id, cn1);
+        assert_eq!(ce_rec.to_id, cn2);
+
+        // Stamps carry across (keyed by C's local id but the same value).
         assert_eq!(
-            *c.get_node(n1.id).unwrap().unwrap(),
-            *a.get_node(n1.id).unwrap().unwrap()
-        );
-        assert_eq!(
-            *c.get_node(n2.id).unwrap().unwrap(),
-            *a.get_node(n2.id).unwrap().unwrap()
-        );
-        assert_eq!(c.get_edge(e.id).unwrap(), a.get_edge(e.id).unwrap());
-        assert_eq!(
-            c.stamp_of(StampTarget::Node(n1.id)),
+            c.stamp_of(StampTarget::Node(cn1)),
             a.stamp_of(StampTarget::Node(n1.id))
         );
         assert_eq!(c.version_vector(), a.version_vector());
@@ -2776,15 +3041,16 @@ mod adjacency_kind_sort_tests {
         .unwrap();
         let d_v2 = a.delta_since(&c.version_vector());
 
-        // The newer write wins on C.
+        // The newer write wins on C (found by uuid — C remaps the id).
         assert_eq!(c.apply_delta(&d_v2).unwrap().applied, 1);
-        assert_eq!(c.get_node(n.id).unwrap().unwrap().title, "v2");
+        let cn = c.node_id_of_uuid(n.uuid).expect("n on c");
+        assert_eq!(c.get_node(cn).unwrap().unwrap().title, "v2");
 
         // Replaying the stale v1 delta loses on stamp order — no regression.
         let stats = c.apply_delta(&d_v1).unwrap();
         assert_eq!(stats.applied, 0);
         assert_eq!(stats.skipped, 1);
-        assert_eq!(c.get_node(n.id).unwrap().unwrap().title, "v2");
+        assert_eq!(c.get_node(cn).unwrap().unwrap().title, "v2");
     }
 
     #[test]
@@ -2795,7 +3061,7 @@ mod adjacency_kind_sort_tests {
         let n = a.create_node(nn("n", "gone")).unwrap();
         let c = NativeGraph::new();
         c.apply_delta(&a.delta_since(&c.version_vector())).unwrap();
-        assert!(c.get_node(n.id).unwrap().is_some(), "C has the node first");
+        let cn = c.node_id_of_uuid(n.uuid).expect("C has the node first");
 
         a.delete_node(n.id).unwrap();
         let delta = a.delta_since(&c.version_vector());
@@ -2803,7 +3069,8 @@ mod adjacency_kind_sort_tests {
         let stats = c.apply_delta(&delta).unwrap();
         assert_eq!(stats.applied, 1);
 
-        assert!(c.get_node(n.id).unwrap().is_none(), "C removed the node");
+        assert!(c.get_node(cn).unwrap().is_none(), "C removed the node");
+        assert!(c.node_id_of_uuid(n.uuid).is_none(), "no live node by uuid");
         // Both replicas agree, and the delete is idempotent.
         assert_eq!(a.version_vector(), c.version_vector());
         assert_eq!(c.apply_delta(&delta).unwrap().applied, 0);
@@ -2817,18 +3084,20 @@ mod adjacency_kind_sort_tests {
         let e = a.create_edge(stamp_edge(x.id, y.id)).unwrap();
         let c = NativeGraph::new();
         c.apply_delta(&a.delta_since(&c.version_vector())).unwrap();
-        assert!(c.get_edge(e.id).unwrap().is_some());
+        assert!(c.edge_id_of_uuid(e.uuid).is_some());
 
         // Deleting the endpoint on A drops its incident edge; the delta ships the
         // node tombstone (the edge delete rides A's own cascade) and applying it
         // on C — nodes-then-edges, node-delete last — removes both.
         a.delete_node(x.id).unwrap();
         c.apply_delta(&a.delta_since(&c.version_vector())).unwrap();
-        assert!(c.get_node(x.id).unwrap().is_none());
+        assert!(c.node_id_of_uuid(x.uuid).is_none());
         assert!(
-            c.get_edge(e.id).unwrap().is_none(),
+            c.edge_id_of_uuid(e.uuid).is_none(),
             "edge cascaded away on C"
         );
+        // The surviving endpoint y is untouched.
+        assert!(c.node_id_of_uuid(y.uuid).is_some(), "y survives");
         assert_eq!(a.version_vector(), c.version_vector());
     }
 
@@ -2880,11 +3149,126 @@ mod adjacency_kind_sort_tests {
 
         // A delete carrying the stale s1 loses to the live s2 — skipped, v2 kept.
         let stale_delete = Delta {
-            changes: vec![StampedChange::DeleteNode(n.id, s1)],
+            changes: vec![StampedChange::DeleteNode(n.uuid, s1)],
         };
         let stats = a.apply_delta(&stale_delete).unwrap();
         assert_eq!(stats.applied, 0);
         assert_eq!(stats.skipped, 1);
         assert_eq!(a.get_node(n.id).unwrap().unwrap().title, "v2");
+    }
+
+    #[test]
+    fn concurrent_writers_converge_without_id_collision() {
+        // A and B each mint local id 1 for *different* entities. A merge by id
+        // would clobber; a merge by uuid keeps both.
+        let a = NativeGraph::new();
+        let na = a.create_node(nn("n", "from_a")).unwrap();
+        let b = NativeGraph::new();
+        let nb = b.create_node(nn("n", "from_b")).unwrap();
+        assert_eq!(na.id, nb.id, "both replicas minted the same local id");
+
+        // Exchange deltas in both directions.
+        let a_to_b = a.delta_since(&b.version_vector());
+        let b_to_a = b.delta_since(&a.version_vector());
+        assert_eq!(b.apply_delta(&a_to_b).unwrap().applied, 1);
+        assert_eq!(a.apply_delta(&b_to_a).unwrap().applied, 1);
+
+        // Both hold both nodes; on each replica the incoming node got a fresh id
+        // rather than overwriting the local one.
+        for g in [&a, &b] {
+            let ida = g.node_id_of_uuid(na.uuid).expect("has A's node");
+            let idb = g.node_id_of_uuid(nb.uuid).expect("has B's node");
+            assert_ne!(ida, idb, "distinct local ids for distinct uuids");
+            assert_eq!(g.get_node(ida).unwrap().unwrap().title, "from_a");
+            assert_eq!(g.get_node(idb).unwrap().unwrap().title, "from_b");
+        }
+        // Fully converged: identical version vectors.
+        assert_eq!(a.version_vector(), b.version_vector());
+    }
+
+    #[test]
+    fn edge_endpoints_are_remapped_by_uuid_across_id_spaces() {
+        // A builds x-[e]->y. B holds a filler node occupying id 1, so A's ids do
+        // not line up with B's. Merging must wire the edge to the *remapped*
+        // endpoints, never to B's coincidentally-numbered filler.
+        let a = NativeGraph::new();
+        let x = a.create_node(nn("n", "x")).unwrap();
+        let y = a.create_node(nn("n", "y")).unwrap();
+        let e = a.create_edge(stamp_edge(x.id, y.id)).unwrap();
+
+        let b = NativeGraph::new();
+        let filler = b.create_node(nn("n", "filler")).unwrap();
+        assert_eq!(filler.id, x.id, "filler squats on A's x id");
+
+        assert_eq!(
+            b.apply_delta(&a.delta_since(&b.version_vector()))
+                .unwrap()
+                .applied,
+            3
+        );
+        let bx = b.node_id_of_uuid(x.uuid).unwrap();
+        let by = b.node_id_of_uuid(y.uuid).unwrap();
+        let bf = b.node_id_of_uuid(filler.uuid).unwrap();
+        let be_rec = b
+            .get_edge(b.edge_id_of_uuid(e.uuid).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(be_rec.from_id, bx);
+        assert_eq!(be_rec.to_id, by);
+        assert_ne!(be_rec.from_id, bf, "edge must not point at the filler");
+    }
+
+    #[test]
+    fn delete_converges_across_distinct_id_spaces() {
+        // The deleted node lives under different local ids on the two replicas;
+        // the tombstone is keyed by uuid, so it removes the right node on B.
+        let a = NativeGraph::new();
+        let n = a.create_node(nn("n", "doomed")).unwrap();
+        let b = NativeGraph::new();
+        let filler = b.create_node(nn("n", "filler")).unwrap();
+        b.apply_delta(&a.delta_since(&b.version_vector())).unwrap();
+        let bn = b.node_id_of_uuid(n.uuid).unwrap();
+        assert_ne!(bn, filler.id, "n has a different id on B than on A");
+
+        a.delete_node(n.id).unwrap();
+        let del = a.delta_since(&b.version_vector());
+        assert_eq!(del.len(), 1);
+        assert_eq!(b.apply_delta(&del).unwrap().applied, 1);
+
+        assert!(b.node_id_of_uuid(n.uuid).is_none(), "n removed on B");
+        assert!(
+            b.node_id_of_uuid(filler.uuid).is_some(),
+            "filler untouched by the remapped delete"
+        );
+    }
+
+    #[test]
+    fn edge_with_unknown_endpoints_is_skipped() {
+        // An edge whose endpoint uuids the receiver has never seen cannot be
+        // placed, so apply skips it rather than dropping it onto wrong ids.
+        let c = NativeGraph::new();
+        let stamp = NativeGraph::new().next_stamp();
+        let se = StampedEdge {
+            edge: Edge {
+                id: 1,
+                uuid: [7u8; 16],
+                from_id: 1,
+                to_id: 2,
+                kind: "links".into(),
+                weight: 1.0,
+                created_at: 0,
+                properties: Default::default(),
+            },
+            from_uuid: [1u8; 16],
+            to_uuid: [2u8; 16],
+            stamp,
+        };
+        let d = Delta {
+            changes: vec![StampedChange::Edge(se)],
+        };
+        let stats = c.apply_delta(&d).unwrap();
+        assert_eq!(stats.applied, 0);
+        assert_eq!(stats.skipped, 1);
+        assert!(c.edge_id_of_uuid([7u8; 16]).is_none());
     }
 }
