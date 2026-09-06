@@ -36,6 +36,10 @@ pub mod hlc;
 /// — the single source of truth for parsing a node's extra labels, shared by the
 /// Cypher executor and the native label index. Re-exported into the main crate.
 pub mod labels;
+/// Last-Writer-Wins register + map CRDTs ([`crate::lww::LwwRegister`] /
+/// [`crate::lww::LwwMap`]) built on the HLC — the convergence primitive for
+/// multi-writer records (issue #389). Re-exported as `drevo::lww`.
+pub mod lww;
 pub mod model;
 /// The native in-memory graph engine ([`native::NativeGraph`]) — index-free
 /// adjacency, the KV store's observable semantics without key encoding, and a
