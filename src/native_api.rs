@@ -284,6 +284,9 @@ async fn status(State(state): State<NativeApiState>) -> Json<serde_json::Value> 
         "version": crate::VERSION,
         "engine": "native-durable",
         "uptime_seconds": state.started_at.elapsed().as_secs(),
+        // Stable replica identity for the multi-writer/P2P substrate (issue
+        // #389). A string so a u64 survives JSON clients that use f64 numbers.
+        "origin": state.service.origin_id().0.to_string(),
     }))
 }
 

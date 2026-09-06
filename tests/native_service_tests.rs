@@ -349,3 +349,65 @@ fn runtime_compaction_trims_the_change_feed() {
     // Indexed reads stay correct over the trimmed feed.
     assert_eq!(int(&run(&service, "MATCH (n {v: 40}) RETURN count(*)")), 1);
 }
+
+// ── Replica identity + causal clock (issue #389, the multi-writer/P2P
+// substrate: a persisted OriginId + an HLC that stamps writes) ──────────────
+
+#[test]
+fn origin_id_persists_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native.wal");
+
+    let first = {
+        let service = NativeService::open(&path).expect("open");
+        service.origin_id()
+    };
+    // The sidecar is written next to the WAL.
+    assert!(
+        dir.path().join("origin.json").exists(),
+        "origin.json sidecar must be persisted next to the WAL"
+    );
+
+    // Reopening the same data dir reuses the same identity.
+    let reopened = NativeService::open(&path).expect("reopen").origin_id();
+    assert_eq!(first, reopened, "origin id must survive a restart");
+}
+
+#[test]
+fn distinct_data_dirs_get_distinct_origins() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let oa = NativeService::open(a.path().join("native.wal"))
+        .expect("open a")
+        .origin_id();
+    let ob = NativeService::open(b.path().join("native.wal"))
+        .expect("open b")
+        .origin_id();
+    assert_ne!(oa, ob, "two fresh replicas must not share an origin");
+}
+
+#[test]
+fn next_stamp_is_strictly_increasing_and_carries_the_origin() {
+    let service = NativeService::in_memory();
+    let origin = service.origin_id();
+    let mut prev = service.next_stamp();
+    assert_eq!(prev.origin(), origin, "stamp must carry the replica origin");
+    for _ in 0..1000 {
+        let next = service.next_stamp();
+        assert!(
+            next > prev,
+            "stamps must strictly increase: {prev:?} !< {next:?}"
+        );
+        assert_eq!(next.origin(), origin);
+        prev = next;
+    }
+}
+
+#[test]
+fn in_memory_service_has_an_origin() {
+    // An ephemeral store still has a (fresh, non-persisted) identity so the
+    // stamping API works uniformly.
+    let service = NativeService::in_memory();
+    let _ = service.origin_id();
+    assert_eq!(service.next_stamp().origin(), service.origin_id());
+}
