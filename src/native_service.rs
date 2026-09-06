@@ -32,6 +32,8 @@ use crate::cypher::executor::{
     execute_on_engine_with_context, ExecError, ExecResult, NativeQueryContext, Value,
 };
 use crate::error::DrevoError;
+use crate::hlc::HlcClock;
+use crate::lww::{OriginId, Stamp};
 use crate::native::NativeGraph;
 use crate::native_fts::NativeFtsIndex;
 use crate::native_label_index::NativeLabelIndex;
@@ -96,6 +98,56 @@ pub struct NativeService {
     last_compact_head: AtomicU64,
     /// Guards against overlapping compactions.
     compacting: AtomicBool,
+    /// This replica's stable identity (issue #389, the multi-writer/P2P
+    /// substrate). Persisted next to the WAL as `origin.json` and reused across
+    /// restarts; paired with the [`HlcClock`] it stamps writes with a total,
+    /// causally-ordered [`Stamp`] `(hlc, origin)` for convergent merge. An
+    /// in-memory store gets a fresh ephemeral origin.
+    origin: OriginId,
+    /// The Hybrid Logical Clock issuing causal timestamps for this replica.
+    clock: std::sync::Mutex<HlcClock>,
+}
+
+/// Mint a fresh random replica [`OriginId`] from the random bits of a UUIDv7
+/// (its last 8 bytes are host-random). Collision-safe enough to identify a
+/// replica without coordination.
+fn mint_origin() -> OriginId {
+    let uuid = crate::model::new_uuid_v7();
+    let mut tail = [0u8; 8];
+    tail.copy_from_slice(&uuid[8..16]);
+    OriginId(u64::from_be_bytes(tail))
+}
+
+/// The replica-identity sidecar path, next to the WAL file.
+#[cfg(not(target_arch = "wasm32"))]
+fn origin_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
+    wal_path.with_file_name("origin.json")
+}
+
+/// Load the persisted replica origin from `sidecar`, or mint and persist a new
+/// one. A missing or unparseable file mints a fresh id (best-effort persist: a
+/// write failure only means a new id on the next boot, never a hard error).
+#[cfg(not(target_arch = "wasm32"))]
+fn load_or_mint_origin(sidecar: &std::path::Path) -> OriginId {
+    if let Ok(text) = std::fs::read_to_string(sidecar) {
+        if let Ok(id) = serde_json::from_str::<OriginId>(text.trim()) {
+            return id;
+        }
+    }
+    let id = mint_origin();
+    let _ = persist_origin(sidecar, id);
+    id
+}
+
+/// Persist `origin` to `sidecar` atomically (temp file, then rename). The
+/// origin is not a secret, so no restrictive mode is applied.
+#[cfg(not(target_arch = "wasm32"))]
+fn persist_origin(sidecar: &std::path::Path, origin: OriginId) -> std::io::Result<()> {
+    // `OriginId` is a transparent newtype: it serializes as the bare u64.
+    let json = origin.0.to_string();
+    let tmp = sidecar.with_extension("json.tmp");
+    std::fs::write(&tmp, json.as_bytes())?;
+    std::fs::rename(&tmp, sidecar)
 }
 
 impl NativeService {
@@ -128,6 +180,11 @@ impl NativeService {
         path: impl AsRef<std::path::Path>,
         compact_every_ops: u64,
     ) -> Result<Self, DrevoError> {
+        let path = path.as_ref();
+        // Replica identity persists next to the WAL (issue #389): the same
+        // origin id is reused across restarts so a peer's writes keep a stable
+        // provenance. A fresh data dir mints one.
+        let origin = load_or_mint_origin(&origin_sidecar(path));
         let graph = NativeGraph::open_durable(path)?;
         graph.compact_wal()?;
         let indexes = RwLock::new(ServiceIndexes::synced_over(&graph));
@@ -140,6 +197,8 @@ impl NativeService {
             compact_every_ops,
             last_compact_head,
             compacting: AtomicBool::new(false),
+            origin,
+            clock: std::sync::Mutex::new(HlcClock::new()),
         })
     }
 
@@ -167,7 +226,24 @@ impl NativeService {
             compact_every_ops: Self::DEFAULT_COMPACT_EVERY_OPS,
             last_compact_head: AtomicU64::new(0),
             compacting: AtomicBool::new(false),
+            origin: mint_origin(),
+            clock: std::sync::Mutex::new(HlcClock::new()),
         }
+    }
+
+    /// This replica's stable [`OriginId`] (issue #389). Persisted next to the
+    /// WAL for a durable store, ephemeral for an in-memory one.
+    pub fn origin_id(&self) -> OriginId {
+        self.origin
+    }
+
+    /// Issue the next causal [`Stamp`] `(hlc, origin)` for a write on this
+    /// replica: advance the Hybrid Logical Clock and pair it with the replica
+    /// origin. Strictly increasing, so a sequence of local writes is totally
+    /// ordered; two replicas' stamps are ordered by HLC then origin.
+    pub fn next_stamp(&self) -> Stamp {
+        let hlc = self.clock.lock().unwrap_or_else(|e| e.into_inner()).now();
+        Stamp::new(hlc, self.origin)
     }
 
     /// Default runtime-compaction threshold (appended ops between
