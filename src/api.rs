@@ -139,6 +139,12 @@ pub struct ApiState {
     /// upstream is always an operator choice, never taken from a request
     /// (the SSRF boundary — OWASP A10).
     pub embeddings: Option<Arc<EmbeddingBackend>>,
+    /// Shared runtime embeddings config store backing `GET`/`POST
+    /// /config/embeddings` (the Web-UI-settable API key/upstream/model). The
+    /// same `Arc` the proxy backend reads, so a write takes effect live.
+    /// `None` only in states built without the server wiring (some tests),
+    /// where the config endpoint reports "unavailable".
+    pub embeddings_config: Option<Arc<crate::embeddings::EmbeddingsConfigStore>>,
     /// Per-database native read mirrors (engine flip, RFC #307 Phase 6).
     /// `None` — the default — means every query executes on the KV engine;
     /// `Some` (set by the server when `DREVO_ENGINE=native`) routes
@@ -161,6 +167,7 @@ impl ApiState {
             shutting_down: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(DrevoMetrics::new()),
             embeddings: None,
+            embeddings_config: None,
             mirrors: None,
         }
     }
@@ -181,6 +188,7 @@ impl ApiState {
             shutting_down: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(DrevoMetrics::new()),
             embeddings: None,
+            embeddings_config: None,
             mirrors: None,
         }
     }
@@ -193,6 +201,17 @@ impl ApiState {
     #[must_use]
     pub fn with_embeddings_backend(mut self, backend: EmbeddingBackend) -> Self {
         self.embeddings = Some(Arc::new(backend));
+        self
+    }
+
+    /// Attach the shared embeddings config store, enabling
+    /// `GET`/`POST /config/embeddings`. Consuming builder.
+    #[must_use]
+    pub fn with_embeddings_config_store(
+        mut self,
+        store: Arc<crate::embeddings::EmbeddingsConfigStore>,
+    ) -> Self {
+        self.embeddings_config = Some(store);
         self
     }
 
@@ -1733,6 +1752,50 @@ pub(crate) async fn embeddings_response(
     Ok(Json(resp))
 }
 
+/// `GET /config/embeddings` handler (KV router): a secret-free view of the
+/// runtime embeddings config.
+async fn get_embeddings_config(
+    State(state): State<ApiState>,
+) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
+    embeddings_config_status(state.embeddings_config.as_deref())
+}
+
+/// `POST /config/embeddings` handler (KV router): validate + persist + hot-swap
+/// the runtime embeddings config; returns the new secret-free status.
+async fn set_embeddings_config(
+    State(state): State<ApiState>,
+    body: Result<Json<crate::embeddings::EmbeddingsConfigUpdate>, JsonRejection>,
+) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
+    let Json(update) = body?;
+    embeddings_config_apply(state.embeddings_config.as_deref(), update)
+}
+
+/// The engine-independent body of `GET /config/embeddings`, shared by the KV
+/// router and the durable-native one: the store's secret-free status view. The
+/// API key is never included.
+pub(crate) fn embeddings_config_status(
+    store: Option<&crate::embeddings::EmbeddingsConfigStore>,
+) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
+    let store = store.ok_or(EmbeddingsError::NotConfigured)?;
+    Ok(Json(store.status()))
+}
+
+/// The engine-independent body of `POST /config/embeddings`: apply a partial
+/// update (validate upstream, keep the secret when the key field is blank),
+/// persist it (`0600`), and hot-swap it in. Returns the new secret-free status
+/// — the API key is never echoed back. A malformed upstream is a `400`.
+pub(crate) fn embeddings_config_apply(
+    store: Option<&crate::embeddings::EmbeddingsConfigStore>,
+    update: crate::embeddings::EmbeddingsConfigUpdate,
+) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
+    let store = store.ok_or(EmbeddingsError::NotConfigured)?;
+    let status = store.apply(update).map_err(|e| match e {
+        EmbeddingsError::InvalidUpstream(m) => ApiError::BadRequest(m),
+        other => ApiError::from(other),
+    })?;
+    Ok(Json(status))
+}
+
 /// Build the HTTP [`Router`] for a given [`ApiState`].
 ///
 /// Returned router can be served with `axum::serve` on a TCP listener
@@ -1764,6 +1827,11 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/cypher", with_405(axum::routing::post(cypher)))
         // ── Phase 19 task `00217` — OpenAI-compatible embeddings ────
         .route("/v1/embeddings", with_405(axum::routing::post(embeddings)))
+        // Runtime embeddings config (Web-UI-settable API key/upstream/model).
+        .route(
+            "/config/embeddings",
+            with_405(get(get_embeddings_config).post(set_embeddings_config)),
+        )
         // ── Phase 17 task `00133` — keyword faceting endpoint ───────
         .route("/facets", with_405(get(facets)))
         .route("/export/json", with_405(get(export_json)))

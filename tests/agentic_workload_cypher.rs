@@ -822,8 +822,8 @@ fn build_corpus_creates_connected_graph_with_unique_seqs() {
     assert_eq!(corpus.titles.len(), 50);
 
     // Every base node resolves by title (the uniqueness-constrained index).
-    for i in 0..50 {
-        assert!(db.get_node_by_title(&corpus.titles[i]).unwrap().is_some());
+    for title in &corpus.titles {
+        assert!(db.get_node_by_title(title).unwrap().is_some());
     }
 
     // seqs are 0..50 and unique.

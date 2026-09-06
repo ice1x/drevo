@@ -62,7 +62,7 @@
 //! upstream, which ignores it; the connection target is unaffected. This is a
 //! configuration-boundary guarantee, locked by tests.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// The `input` field of an embeddings request. OpenAI accepts either a single
@@ -144,7 +144,7 @@ pub enum EmbeddingsError {
 /// Constructed from the environment only ([`Self::from_env`]); there is no way
 /// to derive it from a request. This is the SSRF boundary: the upstream is an
 /// operator choice, never an attacker's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingsConfig {
     /// Full URL of the upstream OpenAI-compatible embeddings endpoint, e.g.
     /// `https://api.openai.com/v1/embeddings` or `http://localhost:11434/v1/embeddings`.
@@ -180,17 +180,7 @@ impl EmbeddingsConfig {
             None => return Ok(None),
             Some(u) => u,
         };
-        let upstream = upstream.trim().to_string();
-        if upstream.is_empty() {
-            return Err(EmbeddingsError::InvalidUpstream(
-                "DREVO_EMBEDDINGS_UPSTREAM must not be empty".to_string(),
-            ));
-        }
-        if !(upstream.starts_with("http://") || upstream.starts_with("https://")) {
-            return Err(EmbeddingsError::InvalidUpstream(format!(
-                "unsupported scheme in `{upstream}` (expected http:// or https://)"
-            )));
-        }
+        let upstream = validate_upstream(&upstream)?;
         let api_key = getter("DREVO_EMBEDDINGS_API_KEY")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
@@ -203,6 +193,213 @@ impl EmbeddingsConfig {
             model,
         }))
     }
+}
+
+/// Validate and normalise an upstream URL: trimmed, non-empty, `http`/`https`
+/// only (the SSRF boundary — an operator choice, never a request's).
+fn validate_upstream(raw: &str) -> Result<String, EmbeddingsError> {
+    let upstream = raw.trim().to_string();
+    if upstream.is_empty() {
+        return Err(EmbeddingsError::InvalidUpstream(
+            "embeddings upstream must not be empty".to_string(),
+        ));
+    }
+    if !(upstream.starts_with("http://") || upstream.starts_with("https://")) {
+        return Err(EmbeddingsError::InvalidUpstream(format!(
+            "unsupported scheme in `{upstream}` (expected http:// or https://)"
+        )));
+    }
+    Ok(upstream)
+}
+
+/// A partial update to the embeddings configuration, as accepted by the
+/// `POST /config/embeddings` endpoint and the Web UI settings form.
+///
+/// Merge semantics (a form always sends `upstream`, and leaves the key field
+/// blank to keep the existing secret):
+/// * `upstream` — required and validated (`http`/`https`).
+/// * `api_key` — `None` or empty **keeps** the current key (so the model can be
+///   changed without re-entering the secret); a non-empty value replaces it.
+/// * `model` — `None` or empty clears the default model; a value sets it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddingsConfigUpdate {
+    /// New upstream URL (required, validated).
+    pub upstream: String,
+    /// New bearer token, or `None`/empty to keep the existing one.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// New default model, or `None`/empty for no default.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// A **secret-free** view of the embeddings configuration, returned by
+/// `GET /config/embeddings`. The API key itself is never included — only
+/// whether one is set — so the endpoint (and the Web UI) can display the
+/// configuration without ever echoing the token back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EmbeddingsStatus {
+    /// Whether a usable upstream is configured.
+    pub configured: bool,
+    /// The configured upstream URL, if any.
+    pub upstream: Option<String>,
+    /// The configured default model, if any.
+    pub model: Option<String>,
+    /// Whether a bearer token is set (never the token itself).
+    pub api_key_set: bool,
+}
+
+/// A shared, hot-reloadable, optionally-persisted store for the runtime
+/// embeddings configuration (RFC #307 follow-up: the API key/upstream/model
+/// become Web-UI settings instead of start-only env vars).
+///
+/// Both the `/v1/embeddings` proxy and the semantic-query embedder read a
+/// [`Self::snapshot`] on every call, so a write through [`Self::apply`] takes
+/// effect immediately with no restart and no backend rebuild. When a `path` is
+/// set the config is persisted there as JSON
+/// with `0600` permissions (the API key lives at the same trust level as the
+/// env file it replaces) and reloaded on the next boot.
+#[derive(Debug)]
+pub struct EmbeddingsConfigStore {
+    /// Where to persist the config, if anywhere (`None` = in-memory only).
+    path: Option<std::path::PathBuf>,
+    /// The live config (`None` = not configured; the endpoint answers 503).
+    config: std::sync::RwLock<Option<EmbeddingsConfig>>,
+}
+
+impl EmbeddingsConfigStore {
+    /// An in-memory store (no persistence) seeded with `config`. Used by tests
+    /// and by builds that do not resolve a data directory.
+    pub fn in_memory(config: Option<EmbeddingsConfig>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            path: None,
+            config: std::sync::RwLock::new(config),
+        })
+    }
+
+    /// A persisted store rooted at `path`. If the file exists and parses, its
+    /// config wins (a value the operator set through the UI on a previous run);
+    /// otherwise `env_fallback` seeds it (the classic `DREVO_EMBEDDINGS_*`
+    /// path). A malformed file falls back to `env_fallback` rather than failing
+    /// the boot.
+    pub fn load(
+        path: std::path::PathBuf,
+        env_fallback: Option<EmbeddingsConfig>,
+    ) -> std::sync::Arc<Self> {
+        let config = match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str::<EmbeddingsConfig>(&text)
+                .ok()
+                .or(env_fallback),
+            Err(_) => env_fallback,
+        };
+        std::sync::Arc::new(Self {
+            path: Some(path),
+            config: std::sync::RwLock::new(config),
+        })
+    }
+
+    /// A clone of the current config, or `None` when unconfigured. Taken on
+    /// every proxy/embedder call so writes are picked up live.
+    pub fn snapshot(&self) -> Option<EmbeddingsConfig> {
+        self.config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// A secret-free status view for the config endpoint / Web UI.
+    pub fn status(&self) -> EmbeddingsStatus {
+        match &*self.config.read().unwrap_or_else(|e| e.into_inner()) {
+            Some(c) => EmbeddingsStatus {
+                configured: true,
+                upstream: Some(c.upstream.clone()),
+                model: c.model.clone(),
+                api_key_set: c.api_key.is_some(),
+            },
+            None => EmbeddingsStatus {
+                configured: false,
+                upstream: None,
+                model: None,
+                api_key_set: false,
+            },
+        }
+    }
+
+    /// Apply a partial update (validating the upstream), persist it if a path
+    /// is set, and swap it in live. Returns the new secret-free status.
+    ///
+    /// A blank `api_key` keeps the current secret; persistence is attempted
+    /// **before** the in-memory swap, so a disk failure leaves the running
+    /// config unchanged and is reported to the caller.
+    pub fn apply(
+        &self,
+        update: EmbeddingsConfigUpdate,
+    ) -> Result<EmbeddingsStatus, EmbeddingsError> {
+        let upstream = validate_upstream(&update.upstream)?;
+        let current = self.snapshot();
+        let api_key = match update.api_key.map(|s| s.trim().to_string()) {
+            Some(k) if !k.is_empty() => Some(k),
+            // Blank or absent: keep whatever key is already configured.
+            _ => current.and_then(|c| c.api_key),
+        };
+        let model = update
+            .model
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let next = EmbeddingsConfig {
+            upstream,
+            api_key,
+            model,
+        };
+
+        if let Some(path) = &self.path {
+            persist_config(path, &next)?;
+        }
+        *self.config.write().unwrap_or_else(|e| e.into_inner()) = Some(next);
+        Ok(self.status())
+    }
+}
+
+/// Write `config` to `path` as pretty JSON with `0600` permissions, atomically
+/// (temp file in the same directory, then rename). The API key is stored here
+/// at the same trust level as the env file it replaces.
+fn persist_config(
+    path: &std::path::Path,
+    config: &EmbeddingsConfig,
+) -> Result<(), EmbeddingsError> {
+    /// Write `bytes` to `tmp` (owner-only on unix) then rename onto `path`.
+    fn write_atomic(
+        tmp: &std::path::Path,
+        path: &std::path::Path,
+        bytes: &[u8],
+    ) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(tmp)?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(tmp, bytes)?;
+        }
+        std::fs::rename(tmp, path)
+    }
+
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| EmbeddingsError::InvalidUpstream(format!("cannot serialise config: {e}")))?;
+    let tmp = path.with_extension("json.tmp");
+    write_atomic(&tmp, path, json.as_bytes()).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        EmbeddingsError::InvalidUpstream(format!("cannot persist embeddings config: {e}"))
+    })
 }
 
 /// The effective model for a request: the request's own model, or the
@@ -274,35 +471,53 @@ impl EmbeddingBackend {
 #[cfg(feature = "embeddings-proxy")]
 pub struct ProxyBackend {
     client: reqwest::Client,
-    config: EmbeddingsConfig,
+    store: std::sync::Arc<EmbeddingsConfigStore>,
 }
 
 #[cfg(feature = "embeddings-proxy")]
 impl ProxyBackend {
-    /// Build a proxy backend for the given configuration.
+    /// Build a proxy backend that reads the shared runtime config store on
+    /// every request, so a config change through
+    /// [`EmbeddingsConfigStore::apply`] takes effect with no rebuild.
     ///
     /// # Errors
     ///
     /// Returns [`EmbeddingsError::InvalidUpstream`] when the HTTP client cannot
     /// be constructed.
-    pub fn new(config: EmbeddingsConfig) -> Result<Self, EmbeddingsError> {
+    pub fn new(store: std::sync::Arc<EmbeddingsConfigStore>) -> Result<Self, EmbeddingsError> {
         let client = reqwest::Client::builder()
             .build()
             .map_err(|e| EmbeddingsError::InvalidUpstream(e.to_string()))?;
-        Ok(Self { client, config })
+        Ok(Self { client, store })
     }
 
-    /// Forward `req` to the configured upstream and return its response body
-    /// verbatim as JSON.
+    /// Convenience: a proxy over a fixed config (wrapped in an in-memory store).
+    /// Handy for tests and callers with a static configuration.
     ///
     /// # Errors
     ///
-    /// Returns [`EmbeddingsError::Upstream`] when the upstream is unreachable,
-    /// returns a non-2xx status, or sends a body that is not valid JSON.
+    /// Returns [`EmbeddingsError::InvalidUpstream`] when the HTTP client cannot
+    /// be constructed.
+    pub fn from_config(config: EmbeddingsConfig) -> Result<Self, EmbeddingsError> {
+        Self::new(EmbeddingsConfigStore::in_memory(Some(config)))
+    }
+
+    /// Forward `req` to the currently-configured upstream and return its
+    /// response body verbatim as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingsError::NotConfigured`] when no upstream is set, or
+    /// [`EmbeddingsError::Upstream`] when the upstream is unreachable, returns a
+    /// non-2xx status, or sends a body that is not valid JSON.
     pub async fn embed(&self, req: &EmbeddingsRequest) -> Result<Value, EmbeddingsError> {
-        let body = build_upstream_body(req, &self.config);
-        let mut builder = self.client.post(&self.config.upstream).json(&body);
-        if let Some(key) = &self.config.api_key {
+        let config = self
+            .store
+            .snapshot()
+            .ok_or(EmbeddingsError::NotConfigured)?;
+        let body = build_upstream_body(req, &config);
+        let mut builder = self.client.post(&config.upstream).json(&body);
+        if let Some(key) = &config.api_key {
             builder = builder.bearer_auth(key);
         }
         let resp = builder
@@ -432,10 +647,10 @@ pub struct SyncEmbedder {
     // Not joined on drop (best-effort teardown); the handle is retained so the
     // thread is owned rather than detached.
     _worker: std::thread::JoinHandle<()>,
-    // #267 capability introspection: retained from the config (never the API
-    // key) so `drevo.semantic.info` can report what drevo embeds with.
-    model: Option<String>,
-    upstream: String,
+    // #267 capability introspection (never the API key): read live from the
+    // shared store so `drevo.semantic.info` reflects the current config after a
+    // Web-UI change, not just what was set at boot.
+    store: std::sync::Arc<EmbeddingsConfigStore>,
 }
 
 /// One embedding request handed to the [`SyncEmbedder`] worker thread, with a
@@ -448,17 +663,20 @@ struct EmbedJob {
 
 #[cfg(feature = "embeddings-proxy")]
 impl SyncEmbedder {
-    /// Spawn the worker thread and return a handle wired to `config`'s
-    /// upstream.
+    /// Spawn the worker thread and return a handle that reads the shared
+    /// runtime config store. Because the worker forwards through a
+    /// store-backed [`ProxyBackend`], a config change through
+    /// [`EmbeddingsConfigStore::apply`] is picked up on the next query with no
+    /// restart.
     ///
     /// # Errors
     ///
     /// Returns [`EmbeddingsError::InvalidUpstream`] when the HTTP client or the
     /// worker thread / runtime cannot be constructed.
-    pub fn from_config(config: EmbeddingsConfig) -> Result<Self, EmbeddingsError> {
-        let model = config.model.clone();
-        let upstream = config.upstream.clone();
-        let backend = ProxyBackend::new(config)?;
+    pub fn from_store(
+        store: std::sync::Arc<EmbeddingsConfigStore>,
+    ) -> Result<Self, EmbeddingsError> {
+        let backend = ProxyBackend::new(store.clone())?;
         let (sender, receiver) = std::sync::mpsc::channel::<EmbedJob>();
         let worker = std::thread::Builder::new()
             .name("drevo-embedder".to_string())
@@ -493,20 +711,30 @@ impl SyncEmbedder {
         Ok(Self {
             sender,
             _worker: worker,
-            model,
-            upstream,
+            store,
         })
+    }
+
+    /// Convenience: an embedder over a fixed config (wrapped in an in-memory
+    /// store). Handy for tests and callers with a static configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingsError::InvalidUpstream`] when the worker thread or
+    /// HTTP client cannot be constructed.
+    pub fn from_config(config: EmbeddingsConfig) -> Result<Self, EmbeddingsError> {
+        Self::from_store(EmbeddingsConfigStore::in_memory(Some(config)))
     }
 }
 
 #[cfg(feature = "embeddings-proxy")]
 impl TextEmbedder for SyncEmbedder {
     fn model(&self) -> Option<String> {
-        self.model.clone()
+        self.store.snapshot().and_then(|c| c.model)
     }
 
     fn upstream(&self) -> Option<String> {
-        Some(self.upstream.clone())
+        self.store.snapshot().map(|c| c.upstream)
     }
 
     fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingsError> {
@@ -640,6 +868,125 @@ mod tests {
         let cfg = EmbeddingsConfig::from_env(env).unwrap().unwrap();
         assert!(cfg.api_key.is_none());
         assert!(cfg.model.is_none());
+    }
+
+    fn update(
+        upstream: &str,
+        api_key: Option<&str>,
+        model: Option<&str>,
+    ) -> EmbeddingsConfigUpdate {
+        EmbeddingsConfigUpdate {
+            upstream: upstream.to_string(),
+            api_key: api_key.map(str::to_string),
+            model: model.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn store_snapshot_none_is_not_configured() {
+        let store = EmbeddingsConfigStore::in_memory(None);
+        assert!(store.snapshot().is_none());
+        let s = store.status();
+        assert!(!s.configured);
+        assert!(!s.api_key_set);
+        assert!(s.upstream.is_none());
+    }
+
+    #[test]
+    fn store_apply_sets_config_and_status_hides_key() {
+        let store = EmbeddingsConfigStore::in_memory(None);
+        let status = store
+            .apply(update(
+                "https://api.openai.com/v1/embeddings",
+                Some("sk-secret"),
+                Some("m"),
+            ))
+            .unwrap();
+        // Status reports configured + key-set, but NEVER the key itself.
+        assert!(status.configured);
+        assert!(status.api_key_set);
+        assert_eq!(
+            status.upstream.as_deref(),
+            Some("https://api.openai.com/v1/embeddings")
+        );
+        assert_eq!(status.model.as_deref(), Some("m"));
+        // The status type has no field that could carry the secret.
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(
+            !json.contains("sk-secret"),
+            "status leaked the api key: {json}"
+        );
+        // The live snapshot (used by the proxy) does carry the key.
+        assert_eq!(
+            store.snapshot().unwrap().api_key.as_deref(),
+            Some("sk-secret")
+        );
+    }
+
+    #[test]
+    fn store_apply_blank_key_keeps_existing_secret() {
+        let store = EmbeddingsConfigStore::in_memory(None);
+        store
+            .apply(update("https://u/v1/embeddings", Some("sk-keep"), None))
+            .unwrap();
+        // A later update with a blank key changes only the model, keeping the key.
+        store
+            .apply(update("https://u/v1/embeddings", Some("  "), Some("m2")))
+            .unwrap();
+        let snap = store.snapshot().unwrap();
+        assert_eq!(snap.api_key.as_deref(), Some("sk-keep"));
+        assert_eq!(snap.model.as_deref(), Some("m2"));
+        // An absent key field also keeps it.
+        store
+            .apply(update("https://u/v1/embeddings", None, None))
+            .unwrap();
+        assert_eq!(
+            store.snapshot().unwrap().api_key.as_deref(),
+            Some("sk-keep")
+        );
+    }
+
+    #[test]
+    fn store_apply_rejects_bad_upstream() {
+        let store = EmbeddingsConfigStore::in_memory(None);
+        let err = store
+            .apply(update("file:///etc/passwd", Some("k"), None))
+            .unwrap_err();
+        assert!(matches!(err, EmbeddingsError::InvalidUpstream(_)));
+        // A rejected update leaves the store unconfigured.
+        assert!(store.snapshot().is_none());
+    }
+
+    #[test]
+    fn store_load_persists_and_reloads_across_boots() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("embeddings_config.json");
+
+        let store = EmbeddingsConfigStore::load(path.clone(), None);
+        assert!(store.snapshot().is_none());
+        store
+            .apply(update(
+                "https://api.openai.com/v1/embeddings",
+                Some("sk-persist"),
+                Some("m"),
+            ))
+            .unwrap();
+
+        // A fresh store rooted at the same path reloads the persisted config
+        // (the file wins over the env fallback).
+        let reloaded = EmbeddingsConfigStore::load(path.clone(), None);
+        let snap = reloaded.snapshot().unwrap();
+        assert_eq!(snap.upstream, "https://api.openai.com/v1/embeddings");
+        assert_eq!(snap.api_key.as_deref(), Some("sk-persist"));
+        assert_eq!(snap.model.as_deref(), Some("m"));
+
+        // The persisted file is owner-only (0600) on unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "config file must be 0600, got {mode:o}");
+        }
     }
 
     #[test]

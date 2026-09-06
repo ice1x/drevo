@@ -72,6 +72,25 @@ configured. The proxy backend forwards each request to a configured upstream
    A set-but-invalid `DREVO_EMBEDDINGS_UPSTREAM` (empty or non-http scheme)
    fails startup fast rather than degrading silently.
 
+   **Runtime configuration (env *or* Web UI).** The same three settings can be
+   set at runtime — no restart, no env edit — through the Web UI **Settings**
+   panel (the ⚙ button) or the `/config/embeddings` endpoint:
+
+   ```
+   GET  /config/embeddings   -> { "configured": true, "upstream": "…",
+                                  "model": "…", "api_key_set": true }
+   POST /config/embeddings   { "upstream": "https://…/v1/embeddings",
+                               "api_key": "sk-…", "model": "…" }
+   ```
+
+   The `GET` status is **secret-free** — it reports only whether a key is set,
+   never the key. On `POST`, a **blank/omitted `api_key` keeps** the stored
+   secret (so the model can change without re-entering the token); a bad
+   `upstream` is a `400`. The value is persisted to
+   `<DREVO_DATA_DIR>/embeddings_config.json` (mode `0600`) and **wins over the
+   env vars** on the next boot, so a UI-set key survives restarts. A change
+   applies live to both `/v1/embeddings` and the semantic-query embedder.
+
 > **Security (OWASP A10 / SSRF).** The upstream is taken **only** from these
 > variables — **never** from the request body. The request type carries no URL
 > field, so a caller cannot redirect drevo's outbound call at an internal

@@ -305,30 +305,63 @@ pub enum RunError {
     Embeddings(String),
 }
 
-/// Attach an embeddings backend to `state` from the environment, when the
-/// `embeddings-proxy` feature is compiled in and `DREVO_EMBEDDINGS_UPSTREAM`
-/// is set. A no-op otherwise, so the default binary keeps `/v1/embeddings`
-/// answering `503` ("not configured").
+/// Build the shared, persisted embeddings config store from `cfg`: the
+/// `<data_dir>/embeddings_config.json` file (a value the operator set through
+/// the Web UI on a previous run) wins, falling back to the classic
+/// `DREVO_EMBEDDINGS_*` env vars. This single store backs the `/v1/embeddings`
+/// proxy, the semantic-query embedder, and the `/config/embeddings` endpoint,
+/// so a Web-UI change takes effect live and survives a restart.
 #[cfg(feature = "embeddings-proxy")]
-fn configure_embeddings(state: ApiState) -> Result<ApiState, RunError> {
-    use crate::embeddings::{EmbeddingBackend, EmbeddingsConfig, ProxyBackend};
-    match EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
-        .map_err(|e| RunError::Embeddings(e.to_string()))?
-    {
-        Some(cfg) => {
-            tracing::info!(upstream = %cfg.upstream, "embeddings proxy enabled");
-            let backend =
-                ProxyBackend::new(cfg).map_err(|e| RunError::Embeddings(e.to_string()))?;
-            Ok(state.with_embeddings_backend(EmbeddingBackend::Proxy(backend)))
-        }
-        None => Ok(state),
+fn build_embeddings_store(
+    cfg: &Config,
+) -> Result<std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>, RunError> {
+    use crate::embeddings::{EmbeddingsConfig, EmbeddingsConfigStore};
+    let env_cfg = EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
+        .map_err(|e| RunError::Embeddings(e.to_string()))?;
+    Ok(EmbeddingsConfigStore::load(
+        cfg.data_dir.join("embeddings_config.json"),
+        env_cfg,
+    ))
+}
+
+/// Without the proxy feature the store still backs the config endpoint; a
+/// malformed env is swallowed rather than failing the boot (nothing proxies).
+#[cfg(not(feature = "embeddings-proxy"))]
+fn build_embeddings_store(
+    cfg: &Config,
+) -> Result<std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>, RunError> {
+    use crate::embeddings::{EmbeddingsConfig, EmbeddingsConfigStore};
+    let env_cfg = EmbeddingsConfig::from_env(|key| std::env::var(key).ok()).unwrap_or(None);
+    Ok(EmbeddingsConfigStore::load(
+        cfg.data_dir.join("embeddings_config.json"),
+        env_cfg,
+    ))
+}
+
+/// Attach the store-backed embeddings proxy to `state`. Installed
+/// unconditionally (when the feature is built) so a later Web-UI configuration
+/// enables `/v1/embeddings` with no restart; until a config is set the proxy
+/// answers `503` ("not configured").
+#[cfg(feature = "embeddings-proxy")]
+fn configure_embeddings(
+    state: ApiState,
+    store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
+) -> Result<ApiState, RunError> {
+    use crate::embeddings::{EmbeddingBackend, ProxyBackend};
+    if let Some(snap) = store.snapshot() {
+        tracing::info!(upstream = %snap.upstream, "embeddings proxy enabled");
     }
+    let backend = ProxyBackend::new(store).map_err(|e| RunError::Embeddings(e.to_string()))?;
+    Ok(state.with_embeddings_backend(EmbeddingBackend::Proxy(backend)))
 }
 
 /// No-op when the proxy backend is not compiled in — `/v1/embeddings` then
 /// always answers `503`.
 #[cfg(not(feature = "embeddings-proxy"))]
-fn configure_embeddings(state: ApiState) -> Result<ApiState, RunError> {
+fn configure_embeddings(
+    state: ApiState,
+    _store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
+) -> Result<ApiState, RunError> {
     Ok(state)
 }
 
@@ -344,29 +377,28 @@ fn configure_embeddings(state: ApiState) -> Result<ApiState, RunError> {
 /// `drevo.semantic.query` to report "not configured") when the feature is off
 /// or the upstream is unset.
 #[cfg(feature = "embeddings-proxy")]
-fn configure_query_embedder(catalog: &crate::catalog::Catalog) -> Result<(), RunError> {
-    use crate::embeddings::{EmbeddingsConfig, SyncEmbedder};
-    match EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
-        .map_err(|e| RunError::Embeddings(e.to_string()))?
+fn configure_query_embedder(
+    catalog: &crate::catalog::Catalog,
+    store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
+) -> Result<(), RunError> {
+    use crate::embeddings::SyncEmbedder;
+    let embedder =
+        SyncEmbedder::from_store(store).map_err(|e| RunError::Embeddings(e.to_string()))?;
+    if catalog
+        .default_db()
+        .set_embedder(std::sync::Arc::new(embedder))
     {
-        Some(cfg) => {
-            let embedder =
-                SyncEmbedder::from_config(cfg).map_err(|e| RunError::Embeddings(e.to_string()))?;
-            if catalog
-                .default_db()
-                .set_embedder(std::sync::Arc::new(embedder))
-            {
-                tracing::info!("drevo.semantic.query embedder installed on default database");
-            }
-            Ok(())
-        }
-        None => Ok(()),
+        tracing::info!("drevo.semantic.query embedder installed on default database");
     }
+    Ok(())
 }
 
 /// No-op when the proxy backend is not compiled in.
 #[cfg(not(feature = "embeddings-proxy"))]
-fn configure_query_embedder(_catalog: &crate::catalog::Catalog) -> Result<(), RunError> {
+fn configure_query_embedder(
+    _catalog: &crate::catalog::Catalog,
+    _store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
+) -> Result<(), RunError> {
     Ok(())
 }
 
@@ -378,41 +410,32 @@ fn configure_query_embedder(_catalog: &crate::catalog::Catalog) -> Result<(), Ru
 #[cfg(feature = "embeddings-proxy")]
 fn configure_native_query_embedder(
     service: &crate::native_service::NativeService,
+    store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
 ) -> Result<(), RunError> {
-    use crate::embeddings::{EmbeddingsConfig, SyncEmbedder};
-    match EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
-        .map_err(|e| RunError::Embeddings(e.to_string()))?
-    {
-        Some(cfg) => {
-            let embedder =
-                SyncEmbedder::from_config(cfg).map_err(|e| RunError::Embeddings(e.to_string()))?;
-            if service.set_embedder(std::sync::Arc::new(embedder)) {
-                tracing::info!("semantic query embedder installed on the durable native store");
-            }
-            Ok(())
-        }
-        None => Ok(()),
+    use crate::embeddings::SyncEmbedder;
+    let embedder =
+        SyncEmbedder::from_store(store).map_err(|e| RunError::Embeddings(e.to_string()))?;
+    if service.set_embedder(std::sync::Arc::new(embedder)) {
+        tracing::info!("semantic query embedder installed on the durable native store");
     }
+    Ok(())
 }
 
-/// Attach the embeddings proxy backend to the durable-native HTTP state from
-/// the environment — the native counterpart of `configure_embeddings`.
+/// Attach the store-backed embeddings proxy to the durable-native HTTP state —
+/// the native counterpart of `configure_embeddings`. Installed unconditionally
+/// (when the feature is built) so a later Web-UI configuration enables
+/// `/v1/embeddings` with no restart.
 #[cfg(feature = "embeddings-proxy")]
 fn configure_native_embeddings(
     state: crate::native_api::NativeApiState,
+    store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
 ) -> Result<crate::native_api::NativeApiState, RunError> {
-    use crate::embeddings::{EmbeddingBackend, EmbeddingsConfig, ProxyBackend};
-    match EmbeddingsConfig::from_env(|key| std::env::var(key).ok())
-        .map_err(|e| RunError::Embeddings(e.to_string()))?
-    {
-        Some(cfg) => {
-            tracing::info!(upstream = %cfg.upstream, "embeddings proxy enabled");
-            let backend =
-                ProxyBackend::new(cfg).map_err(|e| RunError::Embeddings(e.to_string()))?;
-            Ok(state.with_embeddings_backend(EmbeddingBackend::Proxy(backend)))
-        }
-        None => Ok(state),
+    use crate::embeddings::{EmbeddingBackend, ProxyBackend};
+    if let Some(snap) = store.snapshot() {
+        tracing::info!(upstream = %snap.upstream, "embeddings proxy enabled");
     }
+    let backend = ProxyBackend::new(store).map_err(|e| RunError::Embeddings(e.to_string()))?;
+    Ok(state.with_embeddings_backend(EmbeddingBackend::Proxy(backend)))
 }
 
 /// No-op when the proxy backend is not compiled in — `/v1/embeddings` then
@@ -420,6 +443,7 @@ fn configure_native_embeddings(
 #[cfg(not(feature = "embeddings-proxy"))]
 fn configure_native_embeddings(
     state: crate::native_api::NativeApiState,
+    _store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
 ) -> Result<crate::native_api::NativeApiState, RunError> {
     Ok(state)
 }
@@ -428,6 +452,7 @@ fn configure_native_embeddings(
 #[cfg(not(feature = "embeddings-proxy"))]
 fn configure_native_query_embedder(
     _service: &crate::native_service::NativeService,
+    _store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
 ) -> Result<(), RunError> {
     Ok(())
 }
@@ -474,10 +499,15 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     tracing::info!(dir = %cfg.data_dir.display(), "opening database catalog");
     let catalog = Arc::new(Catalog::open(cfg.data_dir.clone())?);
     tracing::info!(databases = ?catalog.list(), "catalog ready");
+    // The shared, persisted embeddings config store (Web-UI-settable API
+    // key/upstream/model): the `<data_dir>/embeddings_config.json` file wins,
+    // falling back to `DREVO_EMBEDDINGS_*`. One store backs the proxy, the
+    // query embedder, and `/config/embeddings`.
+    let embeddings_store = build_embeddings_store(&cfg)?;
     // Install the server-side query embedder for `drevo.semantic.query` on the
     // shared default handle (#251 slice 3); no-op unless `embeddings-proxy` is
-    // built and `DREVO_EMBEDDINGS_UPSTREAM` is set.
-    configure_query_embedder(&catalog)?;
+    // built.
+    configure_query_embedder(&catalog, embeddings_store.clone())?;
     // Engine flip (RFC #307 Phase 6): in native mode, hand out per-database
     // read mirrors and warm the default database's one so the first reads
     // are already served natively. A failed initial build only degrades to
@@ -505,9 +535,11 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
         Some(registry) => state.with_native_mirrors(Arc::clone(registry)),
         None => state,
     };
-    // Opt-in embeddings proxy (Phase 19 task `00217`); no-op unless the
-    // `embeddings-proxy` feature is built and `DREVO_EMBEDDINGS_UPSTREAM` set.
-    let state = configure_embeddings(state)?;
+    // Opt-in embeddings proxy (Phase 19 task `00217`), now store-backed so the
+    // key/upstream/model are Web-UI-settable; no-op unless the
+    // `embeddings-proxy` feature is built.
+    let state = state.with_embeddings_config_store(embeddings_store.clone());
+    let state = configure_embeddings(state, embeddings_store)?;
     let db = Arc::clone(&state.db);
     let shutdown_state = state.clone();
     let router = build_router(state);
@@ -609,10 +641,13 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
         crate::native_service::NativeService::open(&wal).map_err(RunError::NativeOpen)?,
     );
     tracing::info!("durable native store ready");
+    // Shared, persisted embeddings config store (Web-UI-settable), same as the
+    // KV path: file wins over `DREVO_EMBEDDINGS_*`.
+    let embeddings_store = build_embeddings_store(&cfg)?;
     // Opt-in server-side query embedder — the durable-engine counterpart of
     // `configure_query_embedder`; no-op unless the `embeddings-proxy` feature
-    // is built and `DREVO_EMBEDDINGS_UPSTREAM` is set.
-    configure_native_query_embedder(&service)?;
+    // is built.
+    configure_native_query_embedder(&service, embeddings_store.clone())?;
 
     // Optional Bolt listener — same opt-in as the KV path, served by the
     // durable-native session (autocommit only; BEGIN is refused).
@@ -653,8 +688,10 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
 
     let state = crate::native_api::NativeApiState::new(service);
     // Opt-in embeddings proxy, exactly like the KV path — the restart
-    // tooling probes POST /v1/embeddings after boot.
-    let state = configure_native_embeddings(state)?;
+    // tooling probes POST /v1/embeddings after boot. Store-backed so the key is
+    // Web-UI-settable.
+    let state = state.with_embeddings_config_store(embeddings_store.clone());
+    let state = configure_native_embeddings(state, embeddings_store)?;
     let shutdown_state = state.clone();
     let router = crate::native_api::build_native_router(state);
 
