@@ -57,6 +57,8 @@ use serde::{Deserialize, Serialize};
 use crate::dump::{Dump, DumpError, ImportReport, FORMAT_V1};
 use crate::engine::GraphEngine;
 use crate::error::{CoreError, Result};
+use crate::hlc::HlcClock;
+use crate::lww::{OriginId, Stamp};
 use crate::model::{now_ms, Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 
 /// A denormalized adjacency entry: the incident edge, the node at its other
@@ -827,6 +829,72 @@ pub struct NativeGraph {
     /// in-memory engine (nothing to flush).
     #[cfg(not(target_arch = "wasm32"))]
     group: GroupCommit,
+    /// This replica's stable identity (issue #389, the multi-writer/P2P
+    /// substrate). Persisted next to the WAL as `origin.json` for a durable
+    /// store ([`open_durable`](Self::open_durable)); a fresh random ephemeral
+    /// id for an in-memory one. Paired with [`clock`] it stamps autocommit
+    /// writes with a total, causally-ordered [`Stamp`].
+    origin: OriginId,
+    /// The Hybrid Logical Clock issuing causal timestamps for this replica.
+    clock: std::sync::Mutex<HlcClock>,
+    /// The causal [`Stamp`] of each **live** node/edge's last autocommit write
+    /// (issue #389). A create/update sets it, a delete drops it; queried via
+    /// [`stamp_of`]. In-memory only for now (rebuilt as writes
+    /// happen after a restart) — persisting stamps into the WAL touches the
+    /// on-disk format and is a later, explicitly-gated slice.
+    stamps: RwLock<HashMap<StampTarget, Stamp>>,
+}
+
+/// A node or edge addressed by id, for the per-entity causal stamp table
+/// ([`NativeGraph::stamp_of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StampTarget {
+    /// The node with this id.
+    Node(u64),
+    /// The edge with this id.
+    Edge(u64),
+}
+
+/// Mint a fresh random replica [`OriginId`] from the random bits of a UUIDv7
+/// (its last 8 bytes are host-random). Collision-safe enough to identify a
+/// replica without coordination (issue #389).
+fn mint_origin() -> OriginId {
+    let uuid = crate::model::new_uuid_v7();
+    let mut tail = [0u8; 8];
+    tail.copy_from_slice(&uuid[8..16]);
+    OriginId(u64::from_be_bytes(tail))
+}
+
+/// The replica-identity sidecar path, next to the WAL file.
+#[cfg(not(target_arch = "wasm32"))]
+fn origin_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
+    wal_path.with_file_name("origin.json")
+}
+
+/// Load the persisted replica origin from `sidecar`, or mint and persist a new
+/// one. A missing or unparseable file mints a fresh id (best-effort persist: a
+/// write failure only means a new id on the next boot, never a hard error).
+#[cfg(not(target_arch = "wasm32"))]
+fn load_or_mint_origin(sidecar: &std::path::Path) -> OriginId {
+    if let Ok(text) = std::fs::read_to_string(sidecar) {
+        if let Ok(id) = serde_json::from_str::<OriginId>(text.trim()) {
+            return id;
+        }
+    }
+    let id = mint_origin();
+    let _ = persist_origin(sidecar, id);
+    id
+}
+
+/// Persist `origin` to `sidecar` atomically (temp file, then rename). The origin
+/// is not a secret, so no restrictive mode is applied.
+#[cfg(not(target_arch = "wasm32"))]
+fn persist_origin(sidecar: &std::path::Path, origin: OriginId) -> std::io::Result<()> {
+    // `OriginId` is a transparent newtype: it serializes as the bare u64.
+    let json = origin.0.to_string();
+    let tmp = sidecar.with_extension("json.tmp");
+    std::fs::write(&tmp, json.as_bytes())?;
+    std::fs::rename(&tmp, sidecar)
 }
 
 /// The in-memory tail of committed [`WalOp`]s backing [`NativeGraph`]'s
@@ -943,7 +1011,54 @@ fn wal_broken_err() -> CoreError {
 impl NativeGraph {
     /// Create an empty engine. Ids start at 1, matching `Drevo`.
     pub fn new() -> Self {
-        Self::default()
+        // `Default` leaves the origin at `0`; mint a fresh ephemeral identity so
+        // two in-memory graphs stamp with distinct origins (issue #389).
+        Self {
+            origin: mint_origin(),
+            ..Self::default()
+        }
+    }
+
+    /// This replica's stable [`OriginId`] (issue #389). Persisted next to the
+    /// WAL for a durable store, ephemeral for an in-memory one.
+    pub fn origin_id(&self) -> OriginId {
+        self.origin
+    }
+
+    /// Issue the next causal [`Stamp`] `(hlc, origin)`: advance the Hybrid
+    /// Logical Clock and pair it with this replica's origin. Strictly
+    /// increasing — a sequence of local writes is totally ordered.
+    pub fn next_stamp(&self) -> Stamp {
+        let hlc = self.clock.lock().unwrap_or_else(|e| e.into_inner()).now();
+        Stamp::new(hlc, self.origin)
+    }
+
+    /// The causal [`Stamp`] of `target`'s last autocommit write, or `None` if it
+    /// is absent (never written, or deleted). Rebuilt from empty after a restart
+    /// until stamps are persisted (a later slice).
+    pub fn stamp_of(&self, target: StampTarget) -> Option<Stamp> {
+        self.stamps
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&target)
+            .copied()
+    }
+
+    /// Record `target`'s causal version after a create/update.
+    fn stamp_write(&self, target: StampTarget) {
+        let stamp = self.next_stamp();
+        self.stamps
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(target, stamp);
+    }
+
+    /// Drop `target`'s causal version after a delete (it no longer exists).
+    fn drop_stamp(&self, target: StampTarget) {
+        self.stamps
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&target);
     }
 
     /// Zero-copy node fetch: returns an `Arc<Node>` handle (a refcount bump)
@@ -1362,6 +1477,9 @@ impl NativeGraph {
             }),
             #[cfg(not(target_arch = "wasm32"))]
             group: GroupCommit::default(),
+            origin: mint_origin(),
+            clock: std::sync::Mutex::new(HlcClock::new()),
+            stamps: RwLock::new(HashMap::new()),
         }
     }
 
@@ -1467,6 +1585,11 @@ impl NativeGraph {
             }),
             #[cfg(not(target_arch = "wasm32"))]
             group: GroupCommit::default(),
+            // Stable replica identity persisted next to the WAL (issue #389),
+            // reused across restarts so a peer's writes keep a stable provenance.
+            origin: load_or_mint_origin(&origin_sidecar(path)),
+            clock: std::sync::Mutex::new(HlcClock::new()),
+            stamps: RwLock::new(HashMap::new()),
         })
     }
 
@@ -1828,6 +1951,7 @@ impl GraphEngine for NativeGraph {
     fn create_node(&self, new_node: NewNode) -> Result<Node> {
         let node = Arc::make_mut(&mut write(&self.inner)).create_node(new_node)?;
         self.record(&[WalOp::UpsertNode(node.clone())])?;
+        self.stamp_write(StampTarget::Node(node.id));
         Ok(node)
     }
 
@@ -1839,18 +1963,21 @@ impl GraphEngine for NativeGraph {
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
         let node = Arc::make_mut(&mut write(&self.inner)).update_node(id, patch)?;
         self.record(&[WalOp::UpsertNode(node.clone())])?;
+        self.stamp_write(StampTarget::Node(node.id));
         Ok(node)
     }
 
     fn delete_node(&self, id: u64) -> Result<()> {
         Arc::make_mut(&mut write(&self.inner)).delete_node(id)?;
         self.record(&[WalOp::DeleteNode(id)])?;
+        self.drop_stamp(StampTarget::Node(id));
         Ok(())
     }
 
     fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
         let edge = Arc::make_mut(&mut write(&self.inner)).create_edge(new_edge)?;
         self.record(&[WalOp::UpsertEdge(edge.clone())])?;
+        self.stamp_write(StampTarget::Edge(edge.id));
         Ok(edge)
     }
 
@@ -1861,12 +1988,14 @@ impl GraphEngine for NativeGraph {
     fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
         let edge = Arc::make_mut(&mut write(&self.inner)).update_edge(id, patch)?;
         self.record(&[WalOp::UpsertEdge(edge.clone())])?;
+        self.stamp_write(StampTarget::Edge(edge.id));
         Ok(edge)
     }
 
     fn delete_edge(&self, id: u64) -> Result<()> {
         Arc::make_mut(&mut write(&self.inner)).delete_edge(id)?;
         self.record(&[WalOp::DeleteEdge(id)])?;
+        self.drop_stamp(StampTarget::Edge(id));
         Ok(())
     }
 
@@ -2277,5 +2406,73 @@ mod adjacency_kind_sort_tests {
             got.sort_unstable();
             assert_eq!(got, expect, "kind={kind}");
         }
+    }
+
+    // ── Causal write stamping (issue #389) ──────────────────────────────────
+
+    fn stamp_edge(from: u64, to: u64) -> NewEdge {
+        NewEdge {
+            from_id: from,
+            to_id: to,
+            kind: "links".into(),
+            weight: 1.0,
+            properties: Default::default(),
+        }
+    }
+
+    #[test]
+    fn writes_are_stamped_and_strictly_increasing() {
+        let g = NativeGraph::new();
+        let a = g.create_node(nn("n", "a")).unwrap();
+        let b = g.create_node(nn("n", "b")).unwrap();
+        let sa = g.stamp_of(StampTarget::Node(a.id)).expect("a stamped");
+        let sb = g.stamp_of(StampTarget::Node(b.id)).expect("b stamped");
+        assert!(sb > sa, "later write must have a greater stamp");
+        // Every stamp carries this replica's origin.
+        assert_eq!(sa.origin(), g.origin_id());
+
+        // An update bumps the node's stamp past its previous one.
+        g.update_node(
+            a.id,
+            NodePatch {
+                title: Some("a2".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sa2 = g.stamp_of(StampTarget::Node(a.id)).unwrap();
+        assert!(sa2 > sb, "update must advance past all prior stamps");
+
+        // Edges are stamped too.
+        let e = g.create_edge(stamp_edge(a.id, b.id)).unwrap();
+        let se = g.stamp_of(StampTarget::Edge(e.id)).expect("edge stamped");
+        assert!(se > sa2);
+    }
+
+    #[test]
+    fn delete_drops_the_stamp() {
+        let g = NativeGraph::new();
+        let a = g.create_node(nn("n", "a")).unwrap();
+        assert!(g.stamp_of(StampTarget::Node(a.id)).is_some());
+        g.delete_node(a.id).unwrap();
+        assert!(
+            g.stamp_of(StampTarget::Node(a.id)).is_none(),
+            "a deleted entity has no live stamp"
+        );
+    }
+
+    #[test]
+    fn absent_entity_has_no_stamp() {
+        let g = NativeGraph::new();
+        assert!(g.stamp_of(StampTarget::Node(999)).is_none());
+        assert!(g.stamp_of(StampTarget::Edge(999)).is_none());
+    }
+
+    #[test]
+    fn distinct_in_memory_graphs_get_distinct_origins() {
+        assert_ne!(
+            NativeGraph::new().origin_id(),
+            NativeGraph::new().origin_id()
+        );
     }
 }
