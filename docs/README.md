@@ -31,7 +31,11 @@ a `kind` and JSON `properties`). On top of that model it layers:
 - **Full-text search** — trigram index with Okapi BM25 ranking, faceting, keyword extraction.
 - **Vector search** — per-node embeddings with cosine / Euclidean / dot-product distance and
   an HNSW index for approximate nearest-neighbour queries.
-- **Graph analytics** — PageRank and Louvain community detection over the whole graph.
+- **Graph analytics** — seven whole-graph algorithms, each a Cypher procedure (`CALL drevo.<algo>() YIELD …`)
+  runnable over HTTP, Bolt, and MCP: **centrality** (`pagerank`, `betweenness`, `closeness`),
+  **community** (`louvain`), **connectivity** (`wcc` weakly- / `scc` strongly-connected components),
+  and **density** (`triangles` count + local clustering coefficient). See the
+  [Cypher Reference](cypher-reference.md).
 
 ## Target scenarios
 
