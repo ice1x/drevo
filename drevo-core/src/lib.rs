@@ -27,6 +27,10 @@ pub mod dump;
 /// engine. Re-exported from `drevo::engine`.
 pub mod engine;
 pub mod error;
+/// Hybrid Logical Clock ([`crate::hlc::Hlc`] / [`crate::hlc::HlcClock`]) — the
+/// causal versioning primitive for multi-writer convergence (issue #389).
+/// Re-exported into the main crate as `drevo::hlc`.
+pub mod hlc;
 /// The `_labels` secondary-label convention
 /// ([`crate::labels::secondary_labels`] / [`crate::labels::SECONDARY_LABELS_KEY`])
 /// — the single source of truth for parsing a node's extra labels, shared by the
