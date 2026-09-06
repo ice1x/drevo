@@ -152,6 +152,10 @@ pub mod migrate;
 /// versioning primitive for multi-writer / P2P convergence (issue #389,
 /// primitive #1). Re-exported from [`drevo-core`](drevo_core).
 pub use drevo_core::hlc;
+/// Last-Writer-Wins register + map CRDTs ([`lww::LwwRegister`] /
+/// [`lww::LwwMap`]) — the convergence primitive built on the HLC (issue #389,
+/// primitive #2). Re-exported from [`drevo-core`](drevo_core).
+pub use drevo_core::lww;
 /// Core domain types ([`model::Node`], [`model::Edge`], …) — re-exported from
 /// the extracted [`drevo-core`](drevo_core) crate so `drevo::model::…` and
 /// in-crate `crate::model::…` paths keep resolving unchanged.
