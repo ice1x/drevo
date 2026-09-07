@@ -210,6 +210,47 @@ impl CsrAdjacency {
             .max()
             .map_or(0, |m| m as usize + 1)
     }
+
+    /// Morsel-driven parallel scan (issue #382, Phase 8): evaluate `f(index)` for
+    /// every dense vertex index across up to `threads` worker threads, returning
+    /// the results in vertex order (`out[i] == f(i)`).
+    ///
+    /// The vertices are split into contiguous morsels, one per worker; each
+    /// worker writes only its own disjoint output slice, so there is **no
+    /// locking and no contention**. Because a [`CsrAdjacency`] is immutable and
+    /// built off a frozen [MVCC snapshot](crate::native::NativeGraph::snapshot),
+    /// `f` can read the whole structure freely — this is the parallel-execution
+    /// substrate for whole-graph algorithms. `threads` is clamped to
+    /// `1..=vertex_count`; an empty graph returns an empty vector. Sequential and
+    /// parallel runs produce identical results.
+    #[must_use]
+    pub fn par_map<T, F>(&self, threads: usize, f: F) -> Vec<T>
+    where
+        T: Send + Default + Clone,
+        F: Fn(usize) -> T + Sync,
+    {
+        let n = self.vertex_count();
+        if n == 0 {
+            return Vec::new();
+        }
+        let threads = threads.clamp(1, n);
+        let chunk = n.div_ceil(threads);
+        let mut out: Vec<T> = vec![T::default(); n];
+        let f = &f;
+        std::thread::scope(|s| {
+            let mut base = 0usize;
+            for slice in out.chunks_mut(chunk) {
+                let start = base;
+                base += slice.len();
+                s.spawn(move || {
+                    for (off, slot) in slice.iter_mut().enumerate() {
+                        *slot = f(start + off);
+                    }
+                });
+            }
+        });
+        out
+    }
 }
 
 /// Union-find `find` with path compression: returns the root of `x` and flattens
@@ -426,6 +467,36 @@ mod tests {
         let comp = csr.weakly_connected_components();
         assert_eq!(csr.component_count(), 1);
         assert!(comp.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn par_map_matches_sequential_across_thread_counts() {
+        let csr = sample();
+        let seq: Vec<usize> = (0..csr.vertex_count()).map(|i| csr.out_degree(i)).collect();
+        // Any thread count (including 1 and more than there are vertices) yields
+        // the exact sequential result, in vertex order.
+        for t in [1usize, 2, 3, 8, 100] {
+            let got = csr.par_map(t, |i| csr.out_degree(i));
+            assert_eq!(got, seq, "threads={t}");
+        }
+    }
+
+    #[test]
+    fn par_map_preserves_index_alignment() {
+        let csr = sample();
+        // out[i] must be f(i): map each dense index back to its node id.
+        let got = csr.par_map(4, |i| csr.node_id(i).unwrap());
+        let want: Vec<u64> = (0..csr.vertex_count())
+            .map(|i| csr.node_id(i).unwrap())
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn par_map_of_empty_graph_is_empty() {
+        let csr = CsrAdjacency::from_out_neighbors(Vec::new(), |_| Vec::new());
+        let got: Vec<usize> = csr.par_map(4, |i| i);
+        assert!(got.is_empty());
     }
 
     #[test]
