@@ -2790,6 +2790,21 @@ impl GraphSnapshot {
             self.inner.neighbor_ids(id, Direction::Outgoing, None)
         })
     }
+
+    /// A Compressed-Sparse-Row view of this snapshot's **in**-adjacency — the
+    /// reverse of [`csr_out`](Self::csr_out): each vertex's "neighbours" are its
+    /// distinct **predecessors** (nodes with an edge *into* it). Same
+    /// [`CsrAdjacency`] type and dense-index layout, so reverse traversal and
+    /// pull-style algorithms (reverse reachability, in-degree, reverse PageRank)
+    /// run over it exactly as forward ones run over `csr_out`.
+    #[must_use]
+    pub fn csr_in(&self) -> CsrAdjacency {
+        let mut vertices: Vec<u64> = self.inner.nodes.keys().copied().collect();
+        vertices.sort_unstable();
+        CsrAdjacency::from_out_neighbors(vertices, |id| {
+            self.inner.neighbor_ids(id, Direction::Incoming, None)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -3389,6 +3404,44 @@ mod adjacency_kind_sort_tests {
         // 3 distinct fan-out edges (a->b once, a->c, b->c, c->a) = 4 total.
         assert_eq!(csr.edge_count(), 4);
         assert_eq!(csr.out_degree(csr.index_of(a.id).unwrap()), 2);
+    }
+
+    #[test]
+    fn csr_in_matches_incoming_neighbor_ids_oracle() {
+        // Same graph as the out-adjacency oracle; check csr_in's predecessors
+        // against neighbor_ids(.., Incoming, None) on every vertex.
+        let g = NativeGraph::new();
+        let a = g.create_node(nn("n", "a")).unwrap();
+        let b = g.create_node(nn("n", "b")).unwrap();
+        let c = g.create_node(nn("n", "c")).unwrap();
+        let _iso = g.create_node(nn("n", "iso")).unwrap();
+        g.create_edge(stamp_edge(a.id, b.id)).unwrap();
+        g.create_edge(stamp_edge(a.id, c.id)).unwrap();
+        g.create_edge(stamp_edge(b.id, c.id)).unwrap();
+        g.create_edge(stamp_edge(c.id, a.id)).unwrap();
+        g.create_edge(stamp_edge(a.id, b.id)).unwrap(); // parallel a->b collapses
+
+        let snap = g.snapshot();
+        let csr = snap.csr_in();
+        assert_eq!(csr.vertex_count(), 4);
+        for i in 0..csr.vertex_count() {
+            let node_id = csr.node_id(i).unwrap();
+            let mut got: Vec<u64> = csr
+                .neighbors_of(i)
+                .iter()
+                .map(|&j| csr.node_id(j as usize).unwrap())
+                .collect();
+            got.sort_unstable();
+            let mut want = snap.neighbor_ids(node_id, Direction::Incoming, None);
+            want.sort_unstable();
+            assert_eq!(
+                got, want,
+                "csr_in predecessors of node {node_id} match oracle"
+            );
+        }
+        // c has two predecessors (a, b); a has one (c); b has one (a); iso none.
+        assert_eq!(csr.out_degree(csr.index_of(c.id).unwrap()), 2);
+        assert_eq!(csr.edge_count(), 4);
     }
 
     #[test]
