@@ -13,6 +13,11 @@
 /// Okapi BM25 scoring primitives ([`bm25::bm25_idf`]) shared by the KV and
 /// native full-text indexes. Re-exported into the main crate.
 pub mod bm25;
+/// Compressed-Sparse-Row adjacency snapshot ([`crate::csr::CsrAdjacency`]) — the
+/// cache-friendly, lock-free substrate for whole-graph parallel scans and
+/// algorithms (issue #382, Phase 8). Built by flattening a
+/// [`native::GraphSnapshot`]. Re-exported as `drevo::csr`.
+pub mod csr;
 /// Version-vector delta exchange ([`crate::delta::VersionVector`] /
 /// [`crate::delta::Delta`]) — the minimal-diff state-transfer built on the
 /// per-write causal stamp (issue #389, primitive #4). Re-exported as
