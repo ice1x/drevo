@@ -148,6 +148,10 @@ pub mod fts;
 /// (KV-backed [`db::Drevo`] ⇄ native [`native::NativeGraph`]) over the shared
 /// `drevo-json-v1` dump interchange, preserving every node/edge id.
 pub mod migrate;
+/// Compressed-Sparse-Row adjacency snapshot ([`csr::CsrAdjacency`]) — the
+/// cache-friendly, lock-free substrate for whole-graph parallel scans and
+/// algorithms (issue #382, Phase 8). Re-exported from [`drevo-core`](drevo_core).
+pub use drevo_core::csr;
 /// Version-vector delta exchange ([`delta::VersionVector`] / [`delta::Delta`])
 /// — minimal-diff state transfer between replicas (issue #389, primitive #4).
 /// Re-exported from [`drevo-core`](drevo_core).

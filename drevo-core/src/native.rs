@@ -54,6 +54,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
+use crate::csr::CsrAdjacency;
 use crate::delta::{ApplyStats, Delta, StampedChange, StampedEdge, VersionVector};
 use crate::dump::{Dump, DumpError, ImportReport, FORMAT_V1};
 use crate::engine::GraphEngine;
@@ -2773,6 +2774,22 @@ impl GraphSnapshot {
     pub fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Node> {
         self.inner.nodes_by_kind(kind, limit, offset)
     }
+
+    /// A Compressed-Sparse-Row view of this snapshot's **out**-adjacency
+    /// ([`CsrAdjacency`]) — the cache-friendly, lock-free substrate for
+    /// whole-graph parallel scans and algorithms (issue #382). Vertices are the
+    /// snapshot's node ids in ascending order; each vertex's neighbours are its
+    /// distinct out-neighbours (as in [`neighbor_ids`](Self::neighbor_ids) with
+    /// no kind filter). Built by flattening the frozen snapshot, so it is a
+    /// consistent one-version view with no locking.
+    #[must_use]
+    pub fn csr_out(&self) -> CsrAdjacency {
+        let mut vertices: Vec<u64> = self.inner.nodes.keys().copied().collect();
+        vertices.sort_unstable();
+        CsrAdjacency::from_out_neighbors(vertices, |id| {
+            self.inner.neighbor_ids(id, Direction::Outgoing, None)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -3330,6 +3347,48 @@ mod adjacency_kind_sort_tests {
             b.node_id_of_uuid(filler.uuid).is_some(),
             "filler untouched by the remapped delete"
         );
+    }
+
+    #[test]
+    fn csr_out_matches_neighbor_ids_oracle() {
+        // Build a small multi-kind graph with a fan-out, a back-edge and an
+        // isolated node, then check the CSR out-adjacency against the existing
+        // neighbor_ids() on every vertex (the oracle).
+        let g = NativeGraph::new();
+        let a = g.create_node(nn("n", "a")).unwrap();
+        let b = g.create_node(nn("n", "b")).unwrap();
+        let c = g.create_node(nn("n", "c")).unwrap();
+        let _iso = g.create_node(nn("n", "iso")).unwrap();
+        g.create_edge(stamp_edge(a.id, b.id)).unwrap();
+        g.create_edge(stamp_edge(a.id, c.id)).unwrap();
+        g.create_edge(stamp_edge(b.id, c.id)).unwrap();
+        g.create_edge(stamp_edge(c.id, a.id)).unwrap();
+        // A parallel edge a->b must collapse to one distinct neighbour.
+        g.create_edge(stamp_edge(a.id, b.id)).unwrap();
+
+        let snap = g.snapshot();
+        let csr = snap.csr_out();
+        assert_eq!(csr.vertex_count(), 4);
+
+        for i in 0..csr.vertex_count() {
+            let node_id = csr.node_id(i).unwrap();
+            // Map the CSR dense neighbour indices back to node ids.
+            let mut got: Vec<u64> = csr
+                .neighbors_of(i)
+                .iter()
+                .map(|&j| csr.node_id(j as usize).unwrap())
+                .collect();
+            got.sort_unstable();
+            let mut want = snap.neighbor_ids(node_id, Direction::Outgoing, None);
+            want.sort_unstable();
+            assert_eq!(
+                got, want,
+                "csr neighbours of node {node_id} match the oracle"
+            );
+        }
+        // 3 distinct fan-out edges (a->b once, a->c, b->c, c->a) = 4 total.
+        assert_eq!(csr.edge_count(), 4);
+        assert_eq!(csr.out_degree(csr.index_of(a.id).unwrap()), 2);
     }
 
     #[test]
