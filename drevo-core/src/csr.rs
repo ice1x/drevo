@@ -123,6 +123,49 @@ impl CsrAdjacency {
     pub fn neighbors_flat(&self) -> &[u32] {
         &self.neighbors
     }
+
+    /// PageRank over this out-adjacency (issue #382), returned by dense index —
+    /// `rank[i]` is the score of the vertex at index `i`, and the vector sums to
+    /// 1.0 (a probability distribution).
+    ///
+    /// Push-style power iteration: each vertex pushes `damping * rank / out_degree`
+    /// along its out-edges, plus a uniform teleport `(1 - damping) / N`.
+    /// Dangling vertices (no out-edges) redistribute their mass uniformly, so no
+    /// rank leaks and the total stays 1.0 every iteration. `damping` is the usual
+    /// 0.85; `iterations` fixed power-iteration steps (≈20 converges on typical
+    /// graphs). An empty graph returns an empty vector.
+    #[must_use]
+    pub fn pagerank(&self, damping: f64, iterations: usize) -> Vec<f64> {
+        let n = self.vertex_count();
+        if n == 0 {
+            return Vec::new();
+        }
+        let inv_n = 1.0 / n as f64;
+        let teleport = (1.0 - damping) * inv_n;
+        let mut rank = vec![inv_n; n];
+        for _ in 0..iterations {
+            let mut next = vec![teleport; n];
+            let mut dangling = 0.0;
+            for (i, &ri) in rank.iter().enumerate() {
+                let out = self.neighbors_of(i);
+                if out.is_empty() {
+                    dangling += ri;
+                    continue;
+                }
+                let share = damping * ri / out.len() as f64;
+                for &k in out {
+                    next[k as usize] += share;
+                }
+            }
+            // A dangling vertex's mass would otherwise vanish; spread it evenly.
+            let dangling_share = damping * dangling * inv_n;
+            for r in &mut next {
+                *r += dangling_share;
+            }
+            rank = next;
+        }
+        rank
+    }
 }
 
 #[cfg(test)]
@@ -198,5 +241,70 @@ mod tests {
         assert_eq!(csr.vertex_count(), 0);
         assert_eq!(csr.edge_count(), 0);
         assert_eq!(csr.neighbors_of(0), &[] as &[u32]);
+    }
+
+    fn ring(n: u64) -> CsrAdjacency {
+        // A directed cycle 0→1→…→(n-1)→0 over node ids [0, n).
+        let vertices: Vec<u64> = (0..n).collect();
+        CsrAdjacency::from_out_neighbors(vertices, move |id| vec![(id + 1) % n])
+    }
+
+    fn approx_sum(rank: &[f64]) -> f64 {
+        rank.iter().sum()
+    }
+
+    #[test]
+    fn pagerank_is_a_distribution_summing_to_one() {
+        let csr = sample(); // has a dangling vertex (40) — mass must not leak
+        let rank = csr.pagerank(0.85, 40);
+        assert_eq!(rank.len(), csr.vertex_count());
+        assert!(
+            (approx_sum(&rank) - 1.0).abs() < 1e-9,
+            "sum={}",
+            approx_sum(&rank)
+        );
+        assert!(rank.iter().all(|&r| r > 0.0));
+    }
+
+    #[test]
+    fn pagerank_of_a_symmetric_ring_is_uniform() {
+        let csr = ring(5);
+        let rank = csr.pagerank(0.85, 100);
+        for r in &rank {
+            assert!((r - 0.2).abs() < 1e-9, "every ring vertex is 1/5, got {r}");
+        }
+    }
+
+    #[test]
+    fn pagerank_ranks_a_hub_highest() {
+        // Three vertices all point at the hub (id 0); the hub is dangling.
+        let csr = CsrAdjacency::from_out_neighbors(vec![0u64, 1, 2, 3], |id| match id {
+            0 => vec![],  // hub, no out-edges
+            _ => vec![0], // everyone points at the hub
+        });
+        let rank = csr.pagerank(0.85, 60);
+        let hub = rank[csr.index_of(0).unwrap()];
+        for other in [1u64, 2, 3] {
+            assert!(
+                hub > rank[csr.index_of(other).unwrap()],
+                "hub {hub} must outrank leaf"
+            );
+        }
+        // The three leaves are symmetric → equal.
+        assert!((rank[1] - rank[2]).abs() < 1e-12);
+        assert!((rank[2] - rank[3]).abs() < 1e-12);
+        assert!((approx_sum(&rank) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pagerank_is_deterministic() {
+        let csr = sample();
+        assert_eq!(csr.pagerank(0.85, 30), csr.pagerank(0.85, 30));
+    }
+
+    #[test]
+    fn pagerank_of_empty_graph_is_empty() {
+        let csr = CsrAdjacency::from_out_neighbors(Vec::new(), |_| Vec::new());
+        assert!(csr.pagerank(0.85, 10).is_empty());
     }
 }
