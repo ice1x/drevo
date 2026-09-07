@@ -166,6 +166,79 @@ impl CsrAdjacency {
         }
         rank
     }
+
+    /// Weakly-connected components (issue #382): the connectivity-based grouping
+    /// of the graph, treating every edge as **undirected**. Returns a component
+    /// label per dense vertex index; two vertices share a label iff one reaches
+    /// the other ignoring edge direction. Labels are `0..component_count` in
+    /// ascending order of each component's smallest dense index (deterministic).
+    ///
+    /// This is the simplest cluster/community primitive — union-find over the
+    /// out-edges (every edge is some vertex's out-edge, so out-adjacency alone
+    /// covers undirected connectivity). Modularity-based community detection is a
+    /// later, heavier algorithm.
+    #[must_use]
+    pub fn weakly_connected_components(&self) -> Vec<u32> {
+        let n = self.vertex_count();
+        let mut parent: Vec<u32> = (0..n as u32).collect();
+        for (i, _) in self.vertices.iter().enumerate() {
+            for &k in self.neighbors_of(i) {
+                uf_union(&mut parent, i as u32, k);
+            }
+        }
+        // Relabel roots to dense component ids in first-seen (ascending) order.
+        let mut label = vec![u32::MAX; n];
+        let mut next_label = 0u32;
+        let mut out = vec![0u32; n];
+        for (i, slot) in out.iter_mut().enumerate() {
+            let root = uf_find(&mut parent, i as u32) as usize;
+            if label[root] == u32::MAX {
+                label[root] = next_label;
+                next_label += 1;
+            }
+            *slot = label[root];
+        }
+        out
+    }
+
+    /// The number of weakly-connected components (`0` for an empty graph).
+    #[must_use]
+    pub fn component_count(&self) -> usize {
+        self.weakly_connected_components()
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |m| m as usize + 1)
+    }
+}
+
+/// Union-find `find` with path compression: returns the root of `x` and flattens
+/// the path to it. Roots are the smallest dense index in a component
+/// ([`uf_union`] attaches the larger root under the smaller).
+fn uf_find(parent: &mut [u32], x: u32) -> u32 {
+    let mut root = x;
+    while parent[root as usize] != root {
+        root = parent[root as usize];
+    }
+    // Path-compress: point every node on the walk straight at the root.
+    let mut cur = x;
+    while parent[cur as usize] != root {
+        let nextp = parent[cur as usize];
+        parent[cur as usize] = root;
+        cur = nextp;
+    }
+    root
+}
+
+/// Union-find `union` by smaller root index, so a component's root is its minimum
+/// dense index (deterministic).
+fn uf_union(parent: &mut [u32], a: u32, b: u32) {
+    let ra = uf_find(parent, a);
+    let rb = uf_find(parent, b);
+    if ra != rb {
+        let (lo, hi) = if ra < rb { (ra, rb) } else { (rb, ra) };
+        parent[hi as usize] = lo;
+    }
 }
 
 #[cfg(test)]
@@ -306,5 +379,71 @@ mod tests {
     fn pagerank_of_empty_graph_is_empty() {
         let csr = CsrAdjacency::from_out_neighbors(Vec::new(), |_| Vec::new());
         assert!(csr.pagerank(0.85, 10).is_empty());
+    }
+
+    #[test]
+    fn wcc_of_empty_graph_is_empty() {
+        let csr = CsrAdjacency::from_out_neighbors(Vec::new(), |_| Vec::new());
+        assert!(csr.weakly_connected_components().is_empty());
+        assert_eq!(csr.component_count(), 0);
+    }
+
+    #[test]
+    fn wcc_of_a_ring_is_one_component() {
+        let csr = ring(6);
+        let comp = csr.weakly_connected_components();
+        assert!(comp.iter().all(|&c| c == 0));
+        assert_eq!(csr.component_count(), 1);
+    }
+
+    #[test]
+    fn wcc_separates_disjoint_subgraphs() {
+        // Two disjoint edges: {0→1} and {2→3}. Node ids sparse via 0..4.
+        let csr = CsrAdjacency::from_out_neighbors(vec![0u64, 1, 2, 3], |id| match id {
+            0 => vec![1],
+            2 => vec![3],
+            _ => vec![],
+        });
+        let comp = csr.weakly_connected_components();
+        assert_eq!(csr.component_count(), 2);
+        assert_eq!(comp[0], comp[1], "0 and 1 together");
+        assert_eq!(comp[2], comp[3], "2 and 3 together");
+        assert_ne!(comp[0], comp[2], "the two pairs are separate");
+        // Labels are dense 0..k in ascending first-seen order.
+        assert_eq!(comp[0], 0);
+        assert_eq!(comp[2], 1);
+    }
+
+    #[test]
+    fn wcc_is_direction_agnostic() {
+        // a→b and c→b: following direction, a and c never reach each other, but
+        // weakly (undirected) all three are one component.
+        let csr = CsrAdjacency::from_out_neighbors(vec![0u64, 1, 2], |id| match id {
+            0 => vec![1], // a→b
+            2 => vec![1], // c→b
+            _ => vec![],
+        });
+        let comp = csr.weakly_connected_components();
+        assert_eq!(csr.component_count(), 1);
+        assert!(comp.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn wcc_counts_isolated_vertices() {
+        // One edge 10→20 plus two isolated nodes 30, 40 → 3 components.
+        let csr = CsrAdjacency::from_out_neighbors(vec![10u64, 20, 30, 40], |id| match id {
+            10 => vec![20],
+            _ => vec![],
+        });
+        assert_eq!(csr.component_count(), 3);
+        let comp = csr.weakly_connected_components();
+        assert_eq!(
+            comp[csr.index_of(10).unwrap()],
+            comp[csr.index_of(20).unwrap()]
+        );
+        assert_ne!(
+            comp[csr.index_of(30).unwrap()],
+            comp[csr.index_of(40).unwrap()]
+        );
     }
 }
