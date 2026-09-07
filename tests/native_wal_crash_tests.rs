@@ -188,3 +188,54 @@ fn bare_single_op_lines_from_older_logs_still_replay() {
     let g = NativeGraph::open_durable(&path).unwrap();
     assert_eq!(titles(&g), ["ada", "bob"]);
 }
+
+// ── tombstone durability (issue #389) ──────────────────────────────────
+
+/// A delete must survive a restart: the tombstone is checkpointed to a
+/// sidecar and reloaded on open, so a peer that still holds the deleted
+/// entity cannot resurrect it on the next sync. Live stamps are not
+/// persisted (upserts re-sync in full), so only the delete side is checked.
+#[test]
+fn tombstones_survive_a_restart_and_block_resurrection() {
+    use drevo::delta::{Delta, StampedChange};
+    use drevo::hlc::Hlc;
+    use drevo::lww::{OriginId, Stamp};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = wal_path(&dir);
+
+    let pre_vv;
+    let doomed;
+    {
+        let g = NativeGraph::open_durable(&path).unwrap();
+        let a = GraphEngine::create_node(&g, node("doomed")).unwrap();
+        GraphEngine::create_node(&g, node("keeper")).unwrap();
+        doomed = a.clone();
+        GraphEngine::delete_node(&g, a.id).unwrap();
+        pre_vv = g.version_vector();
+        assert!(!pre_vv.is_empty(), "the delete stamps the version vector");
+    } // drop = restart
+
+    let g = NativeGraph::open_durable(&path).unwrap();
+    // The tombstone was restored from the sidecar: the version vector still
+    // carries the delete's stamp (live stamps are gone, so this is all of it).
+    assert_eq!(g.version_vector(), pre_vv, "tombstone survived the restart");
+    assert!(g.node_id_of_uuid(doomed.uuid).is_none(), "still deleted");
+
+    // A peer resending the doomed node at a *stale* stamp loses to the
+    // surviving tombstone — no resurrection.
+    let stale = Stamp::new(Hlc::new(1, 0), OriginId(999));
+    let delta = Delta {
+        changes: vec![StampedChange::Node(doomed.clone(), stale)],
+    };
+    let stats = g.apply_delta(&delta).unwrap();
+    assert_eq!(stats.applied, 0);
+    assert_eq!(stats.skipped, 1);
+    assert!(
+        g.node_id_of_uuid(doomed.uuid).is_none(),
+        "the tombstone blocked the stale upsert"
+    );
+
+    // The keeper is unaffected by any of this.
+    assert_eq!(titles(&g), ["keeper"]);
+}

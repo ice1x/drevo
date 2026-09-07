@@ -859,8 +859,9 @@ pub struct NativeGraph {
 
 /// A tombstone: the causal [`Stamp`] of a delete plus the deleted entity's
 /// `uuid`, so the deletion can be carried in a [`Delta`] and remapped by `uuid`
-/// on the receiver (issue #389).
-#[derive(Debug, Clone, Copy)]
+/// on the receiver (issue #389). Serializable so the tombstone table can be
+/// checkpointed to a sidecar and survive a restart.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Tomb {
     stamp: Stamp,
     uuid: [u8; 16],
@@ -881,8 +882,9 @@ struct Remap {
 }
 
 /// A node or edge addressed by id, for the per-entity causal stamp table
-/// ([`NativeGraph::stamp_of`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// ([`NativeGraph::stamp_of`]). Serializable so the tombstone table can be
+/// checkpointed to disk (issue #389).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StampTarget {
     /// The node with this id.
     Node(u64),
@@ -929,6 +931,42 @@ fn persist_origin(sidecar: &std::path::Path, origin: OriginId) -> std::io::Resul
     let json = origin.0.to_string();
     let tmp = sidecar.with_extension("json.tmp");
     std::fs::write(&tmp, json.as_bytes())?;
+    std::fs::rename(&tmp, sidecar)
+}
+
+/// The tombstone-checkpoint sidecar path, next to the WAL file (issue #389).
+#[cfg(not(target_arch = "wasm32"))]
+fn tombstone_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
+    wal_path.with_file_name("tombstones.json")
+}
+
+/// Load the checkpointed tombstone table from `sidecar`, or an empty map if it
+/// is missing or unparseable (best-effort: a lost checkpoint only risks a
+/// resurrection on the next sync, which a full re-sync heals). Stored as a flat
+/// list of pairs because a JSON object cannot key on the [`StampTarget`] enum.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_tombstones(sidecar: &std::path::Path) -> HashMap<StampTarget, Tomb> {
+    let mut map = HashMap::new();
+    if let Ok(bytes) = std::fs::read(sidecar) {
+        if let Ok(entries) = serde_json::from_slice::<Vec<(StampTarget, Tomb)>>(&bytes) {
+            for (target, tomb) in entries {
+                map.insert(target, tomb);
+            }
+        }
+    }
+    map
+}
+
+/// Persist the tombstone table to `sidecar` atomically (temp file, then rename),
+/// **without** `fsync` — a best-effort checkpoint, not an acknowledged write.
+#[cfg(not(target_arch = "wasm32"))]
+fn persist_tombstones(
+    sidecar: &std::path::Path,
+    entries: &[(StampTarget, Tomb)],
+) -> std::io::Result<()> {
+    let json = serde_json::to_vec(entries).map_err(std::io::Error::other)?;
+    let tmp = sidecar.with_extension("json.tmp");
+    std::fs::write(&tmp, &json)?;
     std::fs::rename(&tmp, sidecar)
 }
 
@@ -1143,6 +1181,40 @@ impl NativeGraph {
             .observe(stamp.hlc());
     }
 
+    /// Best-effort checkpoint of the tombstone table to a sidecar next to the WAL
+    /// (issue #389), so deletes converge across a restart: without it, a
+    /// restarted replica has neither a deleted entity nor its tombstone, and a
+    /// peer still holding the entity would **resurrect** it on the next sync.
+    ///
+    /// Durable stores only (an in-memory graph has nowhere to write). No
+    /// `fsync` and every I/O error is swallowed — a lost checkpoint only widens
+    /// the resurrection window, which a full re-sync heals, so it is not worth a
+    /// flush on the write path. Live stamps and the version vector are **not**
+    /// persisted (an accepted tradeoff: a restarted replica re-syncs upserts in
+    /// full).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn checkpoint_tombstones(&self) {
+        let Some(path) = self
+            .wal
+            .as_ref()
+            .map(|w| w.lock().unwrap_or_else(|e| e.into_inner()).path.clone())
+        else {
+            return;
+        };
+        let entries: Vec<(StampTarget, Tomb)> = self
+            .tombstones
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(target, tomb)| (*target, *tomb))
+            .collect();
+        let _ = persist_tombstones(&tombstone_sidecar(&path), &entries);
+    }
+
+    /// No durable sidecar on wasm (no WAL); tombstones are in-memory only.
+    #[cfg(target_arch = "wasm32")]
+    fn checkpoint_tombstones(&self) {}
+
     /// The stamp governing `target`'s current LWW state — its live stamp if the
     /// entity exists, otherwise its tombstone stamp if it was deleted, else
     /// `None`. The two tables are disjoint, so at most one is present.
@@ -1306,7 +1378,15 @@ impl NativeGraph {
             Remap { node, edge, tomb }
         };
 
+        // Whether any applied change mutated the tombstone table (a delete, or an
+        // upsert that resurrected a tombstoned uuid) — gates the checkpoint below.
+        let mut tombstones_touched = false;
         for change in ordered {
+            let touches_tombstone = match change {
+                StampedChange::DeleteNode(..) | StampedChange::DeleteEdge(..) => true,
+                StampedChange::Node(node, _) => remap.tomb.contains_key(&node.uuid),
+                StampedChange::Edge(se) => remap.tomb.contains_key(&se.edge.uuid),
+            };
             let won = match change {
                 StampedChange::Node(node, stamp) => {
                     self.apply_node_upsert(node, *stamp, &mut remap)?
@@ -1321,9 +1401,14 @@ impl NativeGraph {
             };
             if won {
                 stats.applied += 1;
+                tombstones_touched |= touches_tombstone;
             } else {
                 stats.skipped += 1;
             }
+        }
+        // One best-effort checkpoint per merge, only when a tombstone changed.
+        if tombstones_touched {
+            self.checkpoint_tombstones();
         }
         Ok(stats)
     }
@@ -2057,7 +2142,10 @@ impl NativeGraph {
             origin: load_or_mint_origin(&origin_sidecar(path)),
             clock: std::sync::Mutex::new(HlcClock::new()),
             stamps: RwLock::new(HashMap::new()),
-            tombstones: RwLock::new(HashMap::new()),
+            // Restore the tombstone checkpoint so deletes survive a restart and a
+            // peer cannot resurrect a deleted entity on the next sync (issue #389).
+            // Live stamps are not persisted (upserts re-sync in full).
+            tombstones: RwLock::new(load_tombstones(&tombstone_sidecar(path))),
         })
     }
 
@@ -2443,6 +2531,7 @@ impl GraphEngine for NativeGraph {
         self.record(&[WalOp::DeleteNode(id)])?;
         if let Some(uuid) = uuid {
             self.stamp_tombstone(StampTarget::Node(id), uuid);
+            self.checkpoint_tombstones();
         }
         Ok(())
     }
@@ -2471,6 +2560,7 @@ impl GraphEngine for NativeGraph {
         self.record(&[WalOp::DeleteEdge(id)])?;
         if let Some(uuid) = uuid {
             self.stamp_tombstone(StampTarget::Edge(id), uuid);
+            self.checkpoint_tombstones();
         }
         Ok(())
     }
