@@ -2179,7 +2179,7 @@ impl NativeGraph {
     /// line parses as zero ops. `None` means the bytes are not a complete
     /// valid record.
     #[cfg(not(target_arch = "wasm32"))]
-    fn parse_wal_record(line: &[u8]) -> Option<Vec<WalOp>> {
+    pub(crate) fn parse_wal_record(line: &[u8]) -> Option<Vec<WalOp>> {
         let text = std::str::from_utf8(line).ok()?.trim();
         if text.is_empty() {
             return Some(Vec::new());
