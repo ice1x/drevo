@@ -168,10 +168,17 @@ pub enum AlgorithmError {
 pub struct AdjacencyList {
     /// Node IDs in stable order. Result vectors are keyed by these IDs.
     nodes: Vec<u64>,
-    /// Directed out-adjacency: `out[i]` is `(dst_index, weight)` for every
-    /// edge leaving node `i`. Parallel edges are kept as separate entries
-    /// (their weights add up naturally everywhere they are summed).
-    out: Vec<Vec<(usize, f64)>>,
+    /// Directed out-adjacency in **Compressed-Sparse-Row** layout (RFC #307
+    /// Phase 8, #382): node `i`'s out-edges are the contiguous slice
+    /// `edges[offsets[i]..offsets[i + 1]]`, each `(dst_index, weight)`. Parallel
+    /// edges are kept as separate entries (their weights add up naturally
+    /// everywhere they are summed). Flattening the old `Vec<Vec<…>>` into two
+    /// arrays gives the cache-friendly sweep every global algorithm here wants,
+    /// with no change to their `out_edges`/`undirected` view.
+    offsets: Vec<usize>,
+    /// The flat `(dst_index, weight)` edge array; sliced per node by
+    /// [`offsets`](Self::offsets).
+    edges: Vec<(usize, f64)>,
 }
 
 impl AdjacencyList {
@@ -194,16 +201,32 @@ impl AdjacencyList {
             }
         }
 
-        let mut out: Vec<Vec<(usize, f64)>> = vec![Vec::new(); nodes.len()];
+        // Bucket by source (preserving edge order within a node), then flatten
+        // into CSR: offsets[i]..offsets[i+1] delimits node i's edge slice. The
+        // per-node order is identical to the old `Vec<Vec<…>>`, so every
+        // algorithm's output is unchanged.
+        let mut buckets: Vec<Vec<(usize, f64)>> = vec![Vec::new(); nodes.len()];
         for (from, to, weight) in edges {
             let (Some(&i), Some(&j)) = (index.get(&from), index.get(&to)) else {
                 continue;
             };
             let w = (weight as f64).max(0.0);
-            out[i].push((j, w));
+            buckets[i].push((j, w));
         }
 
-        Self { nodes, out }
+        let mut offsets = Vec::with_capacity(nodes.len() + 1);
+        let mut flat = Vec::new();
+        offsets.push(0);
+        for bucket in &buckets {
+            flat.extend_from_slice(bucket);
+            offsets.push(flat.len());
+        }
+
+        Self {
+            nodes,
+            offsets,
+            edges: flat,
+        }
     }
 
     /// The node IDs, in the stable order results are keyed by.
@@ -218,7 +241,7 @@ impl AdjacencyList {
 
     /// Total number of directed edges retained in the snapshot.
     pub fn edge_count(&self) -> usize {
-        self.out.iter().map(Vec::len).sum()
+        self.edges.len()
     }
 
     /// `true` when there are no nodes.
@@ -231,9 +254,10 @@ impl AdjacencyList {
         self.nodes[idx]
     }
 
-    /// Directed out-edges of node at dense index `i` as `(dst_index, weight)`.
+    /// Directed out-edges of node at dense index `i` as `(dst_index, weight)` —
+    /// a slice into the flat CSR edge array.
     pub(crate) fn out_edges(&self, i: usize) -> &[(usize, f64)] {
-        &self.out[i]
+        &self.edges[self.offsets[i]..self.offsets[i + 1]]
     }
 
     /// Build the **undirected** weighted projection used by community
@@ -250,8 +274,8 @@ impl AdjacencyList {
         let n = self.nodes.len();
         let mut maps: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n];
         let mut loops = vec![0.0; n];
-        for (i, edges) in self.out.iter().enumerate() {
-            for &(j, w) in edges {
+        for i in 0..n {
+            for &(j, w) in self.out_edges(i) {
                 if i == j {
                     loops[i] += w;
                 } else {
