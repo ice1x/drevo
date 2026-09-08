@@ -168,6 +168,10 @@ pub use drevo_core::lww;
 /// the extracted [`drevo-core`](drevo_core) crate so `drevo::model::…` and
 /// in-crate `crate::model::…` paths keep resolving unchanged.
 pub use drevo_core::model;
+/// WAL-shipping read replica ([`replica::NativeReplica`]) — an in-memory mirror
+/// of a source native engine kept converged by tailing its change-feed
+/// (issue #383, Phase 9). Re-exported from [`drevo-core`](drevo_core).
+pub use drevo_core::replica;
 /// Multi-version concurrency control — Phase 13 task `00081`. The
 /// transaction-id allocator + commit log ([`mvcc::TransactionManager`]),
 /// snapshot capture ([`mvcc::Snapshot`]), `xmin`/`xmax` tuple versioning
