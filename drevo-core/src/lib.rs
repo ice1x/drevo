@@ -68,6 +68,10 @@ pub mod native_label_index;
 /// [`native::NativeGraph`] change-feed. Re-exported from
 /// `drevo::native_property_index`.
 pub mod native_property_index;
+/// WAL-shipping read replica ([`crate::replica::NativeReplica`]) — an in-memory
+/// mirror of a source [`native::NativeGraph`] kept converged by tailing its
+/// change-feed (issue #383, Phase 9). Re-exported as `drevo::replica`.
+pub mod replica;
 /// Pure text tokenization — normalization plus trigram/word extraction, with no
 /// storage or error dependencies. Shared by the KV full-text index and the
 /// native `NativeFtsIndex`; re-exported from `drevo::fts::tokenizer`.

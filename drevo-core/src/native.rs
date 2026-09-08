@@ -2001,6 +2001,29 @@ impl NativeGraph {
         read(&self.inner).to_wal_ops()
     }
 
+    /// Apply a batch of committed [`WalOp`]s to this engine **verbatim** —
+    /// ids/uuids/timestamps preserved, in order — and thread them through this
+    /// engine's own durability and change-feed (RFC #307; the read-replica apply
+    /// path, issue #383). Unlike [`apply_delta`](Self::apply_delta), which
+    /// remaps ids for a peer-to-peer CRDT merge, this is faithful single-master
+    /// replication: a follower applies its leader's log and becomes an exact
+    /// mirror. Each op extends the change-feed (so the follower's own indexes can
+    /// tail it) and, for a durable follower, is logged to its WAL.
+    pub fn apply_wal_ops(&self, ops: &[WalOp]) -> Result<()> {
+        if ops.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut guard = write(&self.inner);
+            let inner = Arc::make_mut(&mut guard);
+            for op in ops {
+                inner.apply_wal_op(op.clone());
+            }
+        }
+        self.record(ops)?;
+        Ok(())
+    }
+
     /// Rebuild an engine by replaying a [`WalOp`] sequence in order (RFC ACID
     /// "D", Phase 3) — the recovery path: load a snapshot then replay the WAL
     /// tail, or replay a full WAL from empty. Ids/uuids/timestamps come from the
