@@ -19,13 +19,15 @@
 //! the replica had not yet seen), the batch comes back `lagged` and the replica
 //! **re-snapshots** from the source's current state rather than applying a gap.
 //!
-//! # This slice
+//! # Transports
 //!
-//! In-process tailing of a source `NativeGraph` handle — the core apply / lag /
-//! resume-from-cursor mechanism. Shipping the feed across a process or network
-//! boundary (a WAL-file tail or a streamed feed) and Raft-based failover are
-//! later slices of #383; they feed the same
-//! [`sync_from`](crate::replica::NativeReplica::sync_from) loop.
+//! [`NativeReplica`](crate::replica::NativeReplica) tails an in-process source
+//! `NativeGraph` handle. [`WalTailer`](crate::replica::WalTailer) tails a
+//! primary's **on-disk WAL file** across a process or machine boundary — the
+//! real cross-process feed transport — yielding the same
+//! [`WalOp`](crate::native::WalOp)s to apply. A streamed network feed and
+//! Raft-based failover are later slices of #383; all feed the same verbatim
+//! apply path.
 
 use crate::error::Result;
 use crate::native::NativeGraph;
@@ -118,6 +120,85 @@ impl NativeReplica {
             resynced: false,
             lag: self.lag(source),
         })
+    }
+}
+
+/// Tails a primary's on-disk WAL file — the append-only JSON-Lines op log the
+/// durable engine writes (`native.wal`) — across a process or machine boundary
+/// (issue #383). This is the cross-process feed transport: a replica process
+/// opens the leader's WAL path and polls for newly-appended records.
+///
+/// [`poll`](Self::poll) returns the [`WalOp`](crate::native::WalOp)s appended
+/// since the last call and advances a byte cursor past every **complete**
+/// (newline-terminated) record; a trailing partial line — a write still in
+/// flight — is left for the next poll, so a reader never applies half a record.
+/// Feed the returned ops to
+/// [`NativeGraph::apply_wal_ops`](crate::native::NativeGraph::apply_wal_ops) (or
+/// let a [`NativeReplica`] own the graph). The byte cursor is the resume point:
+/// persist it to survive a replica restart.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct WalTailer {
+    path: std::path::PathBuf,
+    offset: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl WalTailer {
+    /// A tailer for the WAL at `path`, starting from the beginning.
+    #[must_use]
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            offset: 0,
+        }
+    }
+
+    /// A tailer resuming at a previously-persisted byte `offset`.
+    #[must_use]
+    pub fn resume_at(path: impl Into<std::path::PathBuf>, offset: u64) -> Self {
+        Self {
+            path: path.into(),
+            offset,
+        }
+    }
+
+    /// The byte cursor — how far into the WAL this tailer has consumed. Persist
+    /// it to resume after a restart via [`resume_at`](Self::resume_at).
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Read WAL records appended since the last poll, parse them into ops, and
+    /// advance the byte cursor past every complete line. A trailing partial line
+    /// is left unconsumed. A not-yet-created WAL file yields no ops.
+    pub fn poll(&mut self) -> Result<Vec<crate::native::WalOp>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = match std::fs::File::open(&self.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        file.seek(SeekFrom::Start(self.offset))?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        // Consume only up to the last newline; a trailing partial line is an
+        // in-flight append and waits for the next poll.
+        let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {
+            return Ok(Vec::new());
+        };
+        let complete = &buf[..=last_nl];
+        let mut ops = Vec::new();
+        for line in complete.split(|&b| b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(mut recs) = NativeGraph::parse_wal_record(line) {
+                ops.append(&mut recs);
+            }
+        }
+        self.offset += complete.len() as u64;
+        Ok(ops)
     }
 }
 
