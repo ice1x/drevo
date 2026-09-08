@@ -167,14 +167,17 @@ pub fn pagerank(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResul
 /// Parallel PageRank over an immutable adjacency snapshot (RFC #307 Phase 8 —
 /// parallel runtime).
 ///
-/// **Measured slower than [`pagerank`], not faster** (benches/pagerank_bench.rs:
-/// ~8–9× at 10k–500k nodes). PageRank is memory-bandwidth-bound, so the
-/// per-iteration rayon fork/join and this pull-based `Vec<Vec>` layout cost more
-/// than the extra cores save. Kept as the correct baseline the bench compares
-/// against; a real parallel speedup needs a flat CSR layout and coarser
-/// parallelism (tracked on #382). The user-facing paths therefore call the
-/// serial [`pagerank`]. Correctness is identical (pinned by
-/// `tests/native_pagerank_tests.rs`).
+/// **Measured slower than [`pagerank`], not faster**, and the CSR layout did
+/// not change that: [`AdjacencyList`] is now Compressed-Sparse-Row internally
+/// (#382), yet `benches/pagerank_bench.rs` re-measured this at ~17× slower at
+/// 10k nodes, ~8× at 100k, and ~4.4× even at 500k / 3M edges. PageRank is
+/// memory-bandwidth-bound, so the per-iteration rayon fork/join and the
+/// pull-based reverse index cost more than the extra cores save — more threads
+/// do not help. Kept as the correct baseline the bench compares against; a real
+/// parallel win would need a fundamentally different scheme (NUMA-aware block
+/// partitioning), not just the CSR layout (see `docs/native-load.md`, #382). The
+/// user-facing paths therefore call the serial [`pagerank`]. Correctness is
+/// identical (pinned by `tests/native_pagerank_tests.rs`).
 ///
 /// Same math as [`pagerank`], but **pull-based**: each step recomputes every
 /// node's rank from its *incoming* edges, which makes the per-node update of a
