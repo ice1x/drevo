@@ -75,10 +75,16 @@ fn native_adjacency(engine: &crate::native::NativeGraph) -> AdjacencyList {
 
 /// PageRank over the **native engine**, over a consistent MVCC snapshot.
 ///
-/// Uses the serial [`pagerank`]: benches/pagerank_bench.rs measured the naive
-/// rayon [`pagerank_parallel`] ~8–9× SLOWER (PageRank is memory-bandwidth-bound;
-/// the per-iteration fork/join and pull-based layout cost more than the cores
-/// save). A real parallel speedup needs a CSR layout — future work on #382.
+/// Uses the serial [`pagerank`]. The CSR layout landed (#382:
+/// [`AdjacencyList`] is now Compressed-Sparse-Row internally), and
+/// `benches/pagerank_bench.rs` was re-measured over it: the naive rayon
+/// [`pagerank_parallel`] is still **~4–17× SLOWER** than serial (~17× at 10k
+/// nodes, ~8× at 100k, ~4.4× even at 500k / 3M edges). PageRank is
+/// memory-bandwidth-bound, so the per-iteration fork/join and the pull-based
+/// reverse index cost more than the cores save — the CSR layout did not change
+/// that verdict. Serial-over-CSR is therefore the default; a real parallel win
+/// would need a fundamentally different scheme (NUMA-aware block partitioning),
+/// not just more threads. See `docs/native-load.md`.
 pub fn pagerank_native(
     engine: &crate::native::NativeGraph,
     config: &PageRankConfig,

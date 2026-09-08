@@ -96,6 +96,36 @@ all recover); an uncontended write still fsyncs once
 Lifting the inner-write-lock serialization is the remaining follow-up if
 autocommit write throughput must rise further; bulk writers should batch.
 
+### PageRank: serial-over-CSR wins; data-parallel loses (measured)
+
+The global analytics (PageRank, Louvain, WCC, SCC, triangles, centralities)
+now run over a **Compressed-Sparse-Row** adjacency: `AdjacencyList` stores a
+flat `edges` array sliced by an `offsets` table instead of a
+`Vec<Vec<(usize, f64)>>` (#382), so a whole-graph sweep walks contiguous memory.
+
+The obvious next step — parallelise PageRank across cores — was **measured, not
+assumed**, and it does not pay off. `benches/pagerank_bench.rs` (serial
+`pagerank` vs the rayon `pagerank_parallel`, identical ranks, over CSR) on
+synthetic scale-free-ish graphs:
+
+| nodes | edges | serial | parallel (rayon) | parallel vs serial |
+|------:|------:|-------:|-----------------:|:------------------:|
+| 10 000 | 60 000 | ~1.4 ms | ~24.7 ms | **~17× slower** |
+| 100 000 | 600 000 | ~21 ms | ~176 ms | **~8× slower** |
+| 500 000 | 3 000 000 | ~204 ms | ~891 ms | **~4.4× slower** |
+
+PageRank is **memory-bandwidth-bound**: the per-iteration rayon fork/join and
+the pull-based reverse index cost more than extra cores save, and the CSR
+layout — while the right storage for locality — does not change that verdict
+even at 500k nodes / 3M edges. So the shipped path (`pagerank_native` and
+friends) stays **serial over CSR**; `pagerank_parallel` is kept only as the
+bench baseline. A real parallel win would need a fundamentally different scheme
+(NUMA-aware block partitioning of the iteration), not just more threads — a
+deliberately deferred follow-up on #382. (Numbers are synthetic-graph scaling
+measurements; the point is the cross-core *ratio*, which real-graph shape does
+not rescue — and the live graph, ~2.7k nodes, is far too small to ever amortise
+fork/join.)
+
 The pieces this harness depends on — the BFS reach, KV/native traversal
 parity, error-free concurrent reads, durable writes surviving a WAL reopen,
 group-commit fsync coalescing, and single-fsync transactions — are guarded on
