@@ -126,6 +126,33 @@ measurements; the point is the cross-core *ratio*, which real-graph shape does
 not rescue — and the live graph, ~2.7k nodes, is far too small to ever amortise
 fork/join.)
 
+### Storage access is not the bottleneck — arena/slot deferred (measured)
+
+The remaining #382 idea was an **arena/slot** vertex/edge store, replacing the
+native engine's `HashMap<u64, Arc<Node>>` with a densely-indexed slab. Before
+rewriting the live engine's core, `native_vs_kv_bench` was used to measure what
+storage access actually costs (20 000 nodes, 5 out-edges each):
+
+| op | native | per-op |
+|----|-------:|-------:|
+| `get_node` × all ids | ~702 µs | **~35 ns / lookup** (hash probe + `Arc` bump) |
+| `neighbor_ids` × all nodes | ~7.1 ms | **~355 ns / fan-out** (5 neighbours + dedup) |
+
+An arena/slot store would turn the ~35 ns hashed lookup into a direct index —
+saving perhaps 15–20 ns on an operation that is already cold — while
+`neighbor_ids` is dominated by its per-call dedup allocation, not the single
+map lookup (adjacency is already a `Vec`). Against that marginal, cold-path gain
+sits real cost and risk: rewriting the **live** engine's core storage and its
+interaction with the **never-reuse-ids** invariant that the WAL and the CRDT
+delta layer depend on (a slot free-list would recycle ids). And the live graph
+(~2.7 k nodes) is orders of magnitude below where any of this would register.
+
+So arena/slot is **deliberately deferred** — not on evidence of no value ever,
+but on evidence that storage access is not today's bottleneck and the rewrite's
+blast radius is not justified until a workload shows map access dominating. The
+CSR layout that *did* pay for the analytics (above) is the part of #382 worth
+having now.
+
 The pieces this harness depends on — the BFS reach, KV/native traversal
 parity, error-free concurrent reads, durable writes surviving a WAL reopen,
 group-commit fsync coalescing, and single-fsync transactions — are guarded on
