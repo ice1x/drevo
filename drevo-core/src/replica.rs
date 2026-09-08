@@ -25,9 +25,18 @@
 //! `NativeGraph` handle. [`WalTailer`](crate::replica::WalTailer) tails a
 //! primary's **on-disk WAL file** across a process or machine boundary — the
 //! real cross-process feed transport — yielding the same
-//! [`WalOp`](crate::native::WalOp)s to apply. A streamed network feed and
-//! Raft-based failover are later slices of #383; all feed the same verbatim
-//! apply path.
+//! [`WalOp`](crate::native::WalOp)s to apply. A streamed network feed is a
+//! later slice of #383; all feed the same verbatim apply path.
+//!
+//! # Failover
+//!
+//! [`into_primary`](crate::replica::NativeReplica::into_primary) /
+//! [`promote_durable`](crate::replica::NativeReplica::promote_durable) turn a
+//! replica into a writable primary once the old primary is gone — **coordinated
+//! (manual) failover**, since a warm mirror already holds the full state.
+//! *Automatic*, consensus-based failover (leader election, split-brain
+//! arbitration via Raft/`openraft`) is a separate, heavier track tracked in its
+//! own issue.
 
 use crate::error::Result;
 use crate::native::NativeGraph;
@@ -120,6 +129,35 @@ impl NativeReplica {
             resynced: false,
             lag: self.lag(source),
         })
+    }
+
+    /// Promote this replica to a **writable primary**, handing back its mirrored
+    /// graph. The replica role ends (`self` is consumed) and the returned
+    /// [`NativeGraph`] now accepts writes — the failover path when the old
+    /// primary is gone.
+    ///
+    /// This is **coordinated / manual** failover: the caller is responsible for
+    /// ensuring the old primary is truly down (stop tailing it, fence it off).
+    /// There is no consensus or split-brain arbitration here — that is automatic
+    /// Raft-based failover, tracked separately (issue #383's follow-up). The
+    /// returned graph is in-memory, as the replica was; use
+    /// [`promote_durable`](Self::promote_durable) to take over durably.
+    #[must_use]
+    pub fn into_primary(self) -> NativeGraph {
+        self.graph
+    }
+
+    /// Promote to a **durable** primary: seed a fresh durable engine at `path`
+    /// with this replica's current mirrored state (replayed and logged to the
+    /// new WAL) and return it, so writes accepted after failover are crash-safe.
+    /// `self` is consumed. `path` should be a fresh WAL location for the new
+    /// primary; seeding an existing non-empty WAL re-logs the overlapping ops
+    /// (harmless — upserts are idempotent by id — but it grows the log).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn promote_durable(self, path: impl AsRef<std::path::Path>) -> Result<NativeGraph> {
+        let primary = NativeGraph::open_durable(path)?;
+        primary.apply_wal_ops(&self.graph.dump_wal())?;
+        Ok(primary)
     }
 }
 
@@ -296,6 +334,24 @@ mod tests {
             "delete propagated"
         );
         assert!(replica.graph().get_node(b.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn promoted_replica_keeps_its_data_and_accepts_writes() {
+        // A replica mirrors a source, then the source "dies" and the replica is
+        // promoted to a writable primary — it keeps the mirrored data and now
+        // takes new writes.
+        let src = NativeGraph::new();
+        let a = src.create_node(nn("n", "a")).unwrap();
+        let mut replica = NativeReplica::new();
+        replica.sync_from(&src).unwrap();
+
+        let primary = replica.into_primary();
+        // Mirrored data is intact...
+        assert!(primary.get_node(a.id).unwrap().is_some());
+        // ...and the promoted graph accepts new writes.
+        let b = primary.create_node(nn("n", "b")).unwrap();
+        assert!(primary.get_node(b.id).unwrap().is_some());
     }
 
     #[test]
