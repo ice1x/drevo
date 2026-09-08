@@ -73,6 +73,49 @@ fn wal_tailer_replicates_a_durable_primary_across_handles() {
     assert_eq!(tailer.offset(), off);
 }
 
+/// Failover: a warm replica is promoted to a durable primary — it keeps the
+/// mirrored data, accepts new writes, and those writes survive a reopen.
+#[test]
+fn promote_durable_takes_over_as_a_crash_safe_primary() {
+    use drevo::replica::NativeReplica;
+
+    let dir = tempfile::tempdir().unwrap();
+    let primary_wal = dir.path().join("primary.wal");
+    let new_wal = dir.path().join("promoted.wal");
+
+    let primary = NativeGraph::open_durable(&primary_wal).unwrap();
+    let a = primary.create_node(nn("n", "a")).unwrap();
+    primary.create_node(nn("n", "b")).unwrap();
+
+    // Replica catches up by tailing the primary's WAL.
+    let replica_graph = NativeGraph::new();
+    let mut tailer = WalTailer::new(&primary_wal);
+    replica_graph
+        .apply_wal_ops(&tailer.poll().unwrap())
+        .unwrap();
+    let mut replica = NativeReplica::new();
+    // (Use the in-process replica for promotion; feed it the same source.)
+    replica.sync_from(&primary).unwrap();
+    drop(replica_graph);
+
+    // Primary "dies"; promote the replica to a durable primary at a fresh WAL.
+    let promoted = replica.promote_durable(&new_wal).unwrap();
+    assert!(
+        promoted.get_node(a.id).unwrap().is_some(),
+        "kept mirrored data"
+    );
+    let c = promoted.create_node(nn("n", "c")).unwrap();
+    drop(promoted);
+
+    // The promoted primary is crash-safe: reopening its WAL recovers everything.
+    let recovered = NativeGraph::open_durable(&new_wal).unwrap();
+    assert!(recovered.get_node(a.id).unwrap().is_some());
+    assert!(
+        recovered.get_node(c.id).unwrap().is_some(),
+        "post-failover write survived"
+    );
+}
+
 /// A record still being written (no trailing newline yet) must not be consumed
 /// until it is complete — a reader never applies half a line.
 #[test]
