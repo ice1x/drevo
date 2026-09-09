@@ -198,6 +198,56 @@ impl NativeService {
         &self.graph
     }
 
+    /// The storage-panel bloat report for the WAL store — the engine-agnostic
+    /// counterpart of [`crate::db::Drevo::bloat_report`]. `file_bytes` is the
+    /// physical WAL size, `logical_bytes`/`stored_bytes` the size a compacted
+    /// log would occupy (the append-only WAL accumulates superseded upserts,
+    /// tombstones and old versions); `bloat_ratio = file / logical` is the
+    /// reclaimable fraction. Secondary indexes are in-memory (rebuilt from the
+    /// WAL) so they add no on-disk footprint (`index_bytes = 0`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn storage_bloat(&self) -> crate::db::BloatReport {
+        let g = &self.graph;
+        let file_bytes = g.wal_bytes();
+        let logical = g.wal_compacted_bytes();
+        let bloat_ratio = match file_bytes {
+            Some(f) if logical > 0 => Some(f as f64 / logical as f64),
+            _ => None,
+        };
+        crate::db::BloatReport {
+            file_bytes,
+            stored_bytes: logical,
+            logical_bytes: logical,
+            index_bytes: 0,
+            node_count: g.node_count(),
+            edge_count: g.edge_count(),
+            bloat_ratio,
+        }
+    }
+
+    /// Compact the WAL — rewrite it as the current state (atomic temp + fsync +
+    /// rename) — and report the reclaimed bytes: the engine-agnostic counterpart
+    /// of [`crate::db::Drevo::shrink_online`] (the storage panel's `shrink`).
+    /// Writes are quiesced for the rewrite's duration.
+    ///
+    /// # Errors
+    /// Propagates [`DrevoError`] on a filesystem or encode failure.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn compact(&self) -> Result<crate::db::CompactReport, DrevoError> {
+        let stats = self.graph.compact_wal()?;
+        // The log now equals the current state, so restart the runtime
+        // auto-compaction threshold from here.
+        self.last_compact_head
+            .store(self.graph.change_head(), Ordering::SeqCst);
+        Ok(crate::db::CompactReport {
+            bytes_before: stats.bytes_before,
+            bytes_after: stats.bytes_after,
+            bytes_reclaimed: stats.reclaimed(),
+            next_node_id: self.graph.next_node_id(),
+            next_edge_id: self.graph.next_edge_id(),
+        })
+    }
+
     /// Execute one Cypher statement with the index stack attached. Reads run
     /// concurrently; the first statement after a write re-syncs the indexes
     /// first.

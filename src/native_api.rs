@@ -119,13 +119,15 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/export/json", get(export_json))
         .route("/databases", get(list_databases))
         .route("/nodes/{id}", get(get_node))
-        // The storage panel is redb-specific (bloat / keyspaces / shrink /
-        // benchmark measure the KV file); on the WAL-backed engine these
-        // answer 501 so the Web UI degrades loudly instead of lying.
-        .route("/storage/bloat", get(storage_unsupported))
-        .route("/storage/keyspaces", get(storage_unsupported))
-        .route("/storage/shrink", post(storage_unsupported))
-        .route("/storage/benchmark", post(storage_unsupported))
+        // The storage panel is engine-agnostic: the same endpoints/contracts as
+        // the KV router, implemented over the WAL store — bloat = physical WAL
+        // vs compacted size, shrink = WAL compaction, benchmark = the same
+        // throwaway probe with native FTS. Keyspaces are a redb-file concept
+        // with no WAL analogue, so that one returns an empty breakdown.
+        .route("/storage/bloat", get(storage_bloat))
+        .route("/storage/keyspaces", get(storage_keyspaces))
+        .route("/storage/shrink", post(storage_shrink))
+        .route("/storage/benchmark", post(storage_benchmark))
         // The Web UI — the same embedded, same-origin assets as the KV
         // server (`crate::web_ui`), pointed at the same-shape endpoints.
         .route("/ui", get(crate::web_ui::serve_index))
@@ -233,16 +235,91 @@ async fn get_node(
     Ok(Json(state.service.get_node(id)?))
 }
 
-/// The redb storage panel has no meaning on the WAL store — a clear 501.
-async fn storage_unsupported() -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "error": "storage maintenance endpoints are redb-specific and not available on the native-durable engine",
-            "status": 501,
-        })),
-    )
-        .into_response()
+/// `GET /storage/bloat` — physical WAL size vs compacted (logical) size, in the
+/// same [`BloatReport`](crate::db::BloatReport) contract as the KV router, so the
+/// Web UI's storage panel is engine-agnostic.
+async fn storage_bloat(State(state): State<NativeApiState>) -> Json<crate::db::BloatReport> {
+    Json(state.service.storage_bloat())
+}
+
+/// `POST /storage/shrink` — compact the append-only WAL to its current state and
+/// report reclaimed bytes (same [`CompactReport`](crate::db::CompactReport)
+/// contract as the KV router).
+async fn storage_shrink(
+    State(state): State<NativeApiState>,
+) -> Result<Json<crate::db::CompactReport>, ApiError> {
+    Ok(Json(state.service.compact()?))
+}
+
+/// `GET /storage/keyspaces` — the KV router breaks its redb file into per-prefix
+/// keyspaces; the WAL store has no such concept (indexes are in-memory), so this
+/// returns an empty breakdown rather than 501, keeping the panel agnostic.
+async fn storage_keyspaces() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "keyspaces": [] }))
+}
+
+/// `POST /storage/benchmark` — the same self-contained probe as the KV router:
+/// write throughput on a throwaway in-memory database (never touches the live
+/// graph) plus median FTS latency read-only against this engine's live data.
+async fn storage_benchmark(
+    State(state): State<NativeApiState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use crate::model::{NewNode, Properties};
+    use std::time::Instant;
+
+    const SHARED: &str =
+        "anxious deadlines mentoring graph vectors embeddings semantic search relationships";
+    let incr_n: usize = 500;
+    let batch_n: usize = 500;
+    let mk = |prefix: &str, i: usize| NewNode {
+        kind: "bench".to_string(),
+        title: format!("{prefix}-{i}"),
+        body: format!("note {i} {SHARED}"),
+        body_html: String::new(),
+        properties: Properties::default(),
+    };
+
+    // Write throughput on throwaway in-memory databases — never the live graph.
+    let scratch = crate::db::Drevo::open_in_memory()?;
+    let t0 = Instant::now();
+    for i in 0..incr_n {
+        scratch.create_node(mk("bench-incr", i))?;
+    }
+    let incr_secs = t0.elapsed().as_secs_f64();
+
+    let scratch2 = crate::db::Drevo::open_in_memory()?;
+    let batch: Vec<NewNode> = (0..batch_n).map(|i| mk("bench-batch", i)).collect();
+    let t1 = Instant::now();
+    scratch2.create_nodes(batch)?;
+    let batch_secs = t1.elapsed().as_secs_f64();
+
+    // FTS latency read-only against this engine's live data (native index).
+    let queries = ["graph", "error", "test", "the"];
+    let reps: usize = 20;
+    let mut samples: Vec<f64> = Vec::with_capacity(queries.len() * reps);
+    for _ in 0..reps {
+        for q in &queries {
+            let t = Instant::now();
+            let _ = state.service.search_fts(q, 10);
+            samples.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let search_median_ms = samples.get(samples.len() / 2).copied().unwrap_or(0.0);
+
+    let per_sec = |n: usize, secs: f64| if secs > 0.0 { n as f64 / secs } else { 0.0 };
+    let round1 = |x: f64| (x * 10.0).round() / 10.0;
+    let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
+
+    // Same field names/shape as the KV router's BenchmarkReport (agnostic UI).
+    Ok(Json(serde_json::json!({
+        "incr_write_nodes_per_sec": round1(per_sec(incr_n, incr_secs)),
+        "batch_write_nodes_per_sec": round1(per_sec(batch_n, batch_secs)),
+        "search_median_ms": round3(search_median_ms),
+        "incr_n": incr_n,
+        "batch_n": batch_n,
+        "search_samples": samples.len(),
+    })))
 }
 
 /// `GET /export/graphml` — the full graph as a GraphML 1.0 document, byte-

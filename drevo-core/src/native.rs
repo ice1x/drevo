@@ -2204,19 +2204,24 @@ impl NativeGraph {
     /// one. Writes are quiesced for the duration (the inner write lock is held).
     /// A no-op for an in-memory-only engine.
     ///
+    /// Returns the on-disk [`CompactWalStats`] (bytes before/after) so a caller
+    /// — e.g. the storage-panel `shrink` endpoint — can report reclaimed bytes;
+    /// an in-memory engine reports all-`None`.
+    ///
     /// # Errors
     /// [`CoreError::Io`] / [`CoreError::Json`] on a filesystem or encode
     /// failure.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn compact_wal(&self) -> Result<()> {
+    pub fn compact_wal(&self) -> Result<CompactWalStats> {
         use std::io::Write;
         let Some(wal) = &self.wal else {
-            return Ok(());
+            return Ok(CompactWalStats::default());
         };
         // Hold the write lock so no mutation appends to the log mid-compaction.
         let inner = write(&self.inner);
         let ops = inner.to_wal_ops();
         let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
+        let bytes_before = std::fs::metadata(&sink.path).ok().map(|m| m.len());
 
         let tmp = sink.path.with_extension("wal.tmp");
         {
@@ -2230,7 +2235,86 @@ impl NativeGraph {
         }
         std::fs::rename(&tmp, &sink.path)?;
         sink.file = std::fs::OpenOptions::new().append(true).open(&sink.path)?;
-        Ok(())
+        let bytes_after = std::fs::metadata(&sink.path).ok().map(|m| m.len());
+        Ok(CompactWalStats {
+            bytes_before,
+            bytes_after,
+        })
+    }
+
+    /// Physical on-disk size of the write-ahead log in bytes, or `None` for an
+    /// in-memory engine (nothing on disk). The storage panel's "file bytes".
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn wal_bytes(&self) -> Option<u64> {
+        let wal = self.wal.as_ref()?;
+        let path = wal.lock().unwrap_or_else(|e| e.into_inner()).path.clone();
+        std::fs::metadata(path).ok().map(|m| m.len())
+    }
+
+    /// The byte size a freshly-compacted WAL would occupy — the serialized
+    /// current state, one upsert per live node/edge (newline-terminated). The
+    /// irreducible logical footprint; `wal_bytes / this` is the reclaimable-bloat
+    /// ratio the append-only log accumulates from superseded upserts, tombstones
+    /// and old versions.
+    #[must_use]
+    pub fn wal_compacted_bytes(&self) -> u64 {
+        read(&self.inner)
+            .to_wal_ops()
+            .iter()
+            .map(|op| {
+                serde_json::to_string(op)
+                    .map(|s| s.len() as u64 + 1)
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+
+    /// Number of node records currently stored.
+    #[must_use]
+    pub fn node_count(&self) -> u64 {
+        read(&self.inner).nodes.len() as u64
+    }
+
+    /// Number of edge records currently stored.
+    #[must_use]
+    pub fn edge_count(&self) -> u64 {
+        read(&self.inner).edges.len() as u64
+    }
+
+    /// The next node id the allocator will hand out (monotonic; never reused).
+    #[must_use]
+    pub fn next_node_id(&self) -> u64 {
+        read(&self.inner).next_node_id + 1
+    }
+
+    /// The next edge id the allocator will hand out (monotonic; never reused).
+    #[must_use]
+    pub fn next_edge_id(&self) -> u64 {
+        read(&self.inner).next_edge_id + 1
+    }
+}
+
+/// On-disk bytes before and after a [`NativeGraph::compact_wal`] — the storage
+/// panel's reclaimed-bytes report. `None` fields for an in-memory engine.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompactWalStats {
+    /// WAL size before compaction, or `None` for an in-memory engine.
+    pub bytes_before: Option<u64>,
+    /// WAL size after compaction, or `None` for an in-memory engine.
+    pub bytes_after: Option<u64>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl CompactWalStats {
+    /// Bytes reclaimed (`before - after`, saturating), or `0` when unmeasurable.
+    #[must_use]
+    pub fn reclaimed(&self) -> u64 {
+        match (self.bytes_before, self.bytes_after) {
+            (Some(b), Some(a)) => b.saturating_sub(a),
+            _ => 0,
+        }
     }
 }
 

@@ -118,6 +118,68 @@ async fn parse_and_execution_errors_are_bad_requests() {
 }
 
 #[tokio::test]
+async fn storage_panel_is_engine_agnostic_on_the_wal_store() {
+    // The storage panel (bloat / shrink / benchmark / keyspaces) used to 501 on
+    // the WAL engine; it now serves the same contracts as the KV router.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native.wal");
+    let app = build_native_router(NativeApiState::new(Arc::new(
+        NativeService::open(&path).expect("open"),
+    )));
+
+    // Create + churn so the append-only WAL accumulates superseded records.
+    for i in 0..20 {
+        let (st, _) = cypher(&app, &format!("CREATE (:Bench {{i: {i}}})")).await;
+        assert_eq!(st, StatusCode::OK);
+    }
+    for r in 0..6 {
+        let (st, _) = cypher(&app, &format!("MATCH (n:Bench) SET n.r = {r}")).await;
+        assert_eq!(st, StatusCode::OK);
+    }
+
+    // bloat: physical WAL > compacted logical size → a ratio above 1.
+    let (st, bloat) = send(&app, "GET", "/storage/bloat", None).await;
+    assert_eq!(st, StatusCode::OK, "bloat must not 501");
+    let file = bloat["file_bytes"].as_u64().expect("file_bytes");
+    let logical = bloat["logical_bytes"].as_u64().expect("logical_bytes");
+    assert!(
+        file > logical,
+        "WAL bloated: file {file} > logical {logical}"
+    );
+    assert!(bloat["bloat_ratio"].as_f64().unwrap() > 1.0);
+    assert_eq!(bloat["node_count"].as_u64().unwrap(), 20);
+
+    // shrink: compaction reclaims the bloat, same CompactReport contract.
+    let (st, rep) = send(&app, "POST", "/storage/shrink", None).await;
+    assert_eq!(st, StatusCode::OK, "shrink must not 501");
+    let before = rep["bytes_before"].as_u64().unwrap();
+    let after = rep["bytes_after"].as_u64().unwrap();
+    assert!(after <= before, "after {after} <= before {before}");
+    assert_eq!(rep["bytes_reclaimed"].as_u64().unwrap(), before - after);
+    assert!(after < file, "shrink actually reduced the file");
+
+    // After compaction the file is ~ the logical size.
+    let (_, bloat2) = send(&app, "GET", "/storage/bloat", None).await;
+    assert!(bloat2["bloat_ratio"].as_f64().unwrap() < 1.5);
+    assert_eq!(
+        bloat2["node_count"].as_u64().unwrap(),
+        20,
+        "data intact after shrink"
+    );
+
+    // benchmark: a report, not a 501.
+    let (st, bench) = send(&app, "POST", "/storage/benchmark", None).await;
+    assert_eq!(st, StatusCode::OK, "benchmark must not 501");
+    assert!(bench["incr_write_nodes_per_sec"].as_f64().unwrap() > 0.0);
+    assert_eq!(bench["incr_n"].as_u64().unwrap(), 500);
+
+    // keyspaces: an empty breakdown (no WAL analogue), not a 501.
+    let (st, ks) = send(&app, "GET", "/storage/keyspaces", None).await;
+    assert_eq!(st, StatusCode::OK, "keyspaces must not 501");
+    assert_eq!(ks["keyspaces"], json!([]));
+}
+
+#[tokio::test]
 async fn durable_router_state_survives_a_service_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("native.wal");
@@ -644,9 +706,12 @@ async fn web_ui_surface_is_served_on_the_native_router() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(dbs["databases"], json!(["drevo"]));
 
-    // The redb storage panel answers a clear 501, not a lie.
+    // The storage panel is engine-agnostic on the WAL store (its bloat/shrink/
+    // benchmark/keyspaces semantics are covered by
+    // `storage_panel_is_engine_agnostic_on_the_wal_store`); here just confirm the
+    // endpoints are served, not 501.
     let (status, _) = send(&app, "GET", "/storage/bloat", None).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(status, StatusCode::OK);
     let (status, _) = send(&app, "POST", "/storage/shrink", None).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(status, StatusCode::OK);
 }
