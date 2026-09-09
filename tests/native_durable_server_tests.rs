@@ -706,9 +706,12 @@ async fn web_ui_surface_is_served_on_the_native_router() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(dbs["databases"], json!(["drevo"]));
 
-    // The redb storage panel answers a clear 501, not a lie.
+    // The storage panel is engine-agnostic on the WAL store (its bloat/shrink/
+    // benchmark/keyspaces semantics are covered by
+    // `storage_panel_is_engine_agnostic_on_the_wal_store`); here just confirm the
+    // endpoints are served, not 501.
     let (status, _) = send(&app, "GET", "/storage/bloat", None).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(status, StatusCode::OK);
     let (status, _) = send(&app, "POST", "/storage/shrink", None).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(status, StatusCode::OK);
 }
