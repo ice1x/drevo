@@ -2270,6 +2270,55 @@ impl NativeGraph {
             .sum()
     }
 
+    /// Per-structure breakdown of the live index stack for the storage panel's
+    /// "Keyspaces" table — the WAL engine's counterpart of the KV engine's
+    /// per-redb-prefix stats. The durable WAL holds only records on disk
+    /// (indexes are rebuilt on load), so this reports the in-memory structures:
+    /// node/edge records plus the adjacency (`out`/`in`), `title` and `kind`
+    /// indexes. Each tuple is `(label, rows, content_bytes)`, where
+    /// `content_bytes` is the structural in-memory footprint, not an on-disk
+    /// size. FTS/vector keyspaces are KV-secondary-only and absent here by
+    /// design.
+    #[must_use]
+    pub fn keyspace_stats(&self) -> Vec<(&'static str, u64, u64)> {
+        let inner = read(&self.inner);
+        let adj_entry = std::mem::size_of::<AdjEntry>() as u64;
+
+        // Record footprint: the serialized upsert bytes, split node vs edge
+        // (same accounting as `wal_compacted_bytes`, the logical denominator).
+        let mut node_bytes = 0u64;
+        let mut edge_bytes = 0u64;
+        for op in inner.to_wal_ops() {
+            let bytes = serde_json::to_string(&op)
+                .map(|s| s.len() as u64 + 1)
+                .unwrap_or(0);
+            match op {
+                WalOp::UpsertNode(_) => node_bytes += bytes,
+                WalOp::UpsertEdge(_) => edge_bytes += bytes,
+                WalOp::DeleteNode(_) | WalOp::DeleteEdge(_) => {}
+            }
+        }
+
+        let out_rows: u64 = inner.out_adj.values().map(|v| v.len() as u64).sum();
+        let in_rows: u64 = inner.in_adj.values().map(|v| v.len() as u64).sum();
+        let title_bytes: u64 = inner.titles.keys().map(|k| k.len() as u64 + 8).sum();
+        let kind_rows: u64 = inner.kind_index.values().map(|s| s.len() as u64).sum();
+        let kind_bytes: u64 = inner
+            .kind_index
+            .iter()
+            .map(|(k, s)| k.len() as u64 + s.len() as u64 * 8)
+            .sum();
+
+        vec![
+            ("node", inner.nodes.len() as u64, node_bytes),
+            ("edge", inner.edges.len() as u64, edge_bytes),
+            ("out", out_rows, out_rows * adj_entry),
+            ("in", in_rows, in_rows * adj_entry),
+            ("title", inner.titles.len() as u64, title_bytes),
+            ("kind", kind_rows, kind_bytes),
+        ]
+    }
+
     /// Number of node records currently stored.
     #[must_use]
     pub fn node_count(&self) -> u64 {

@@ -252,10 +252,12 @@ async fn storage_shrink(
 }
 
 /// `GET /storage/keyspaces` — the KV router breaks its redb file into per-prefix
-/// keyspaces; the WAL store has no such concept (indexes are in-memory), so this
-/// returns an empty breakdown rather than 501, keeping the panel agnostic.
-async fn storage_keyspaces() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "keyspaces": [] }))
+/// keyspaces; the WAL store keeps its indexes in memory (rebuilt from the log on
+/// open), so this reports the live in-memory index structures — records plus the
+/// adjacency, title and kind indexes — in the same `{ "keyspaces": [...] }`
+/// shape, keeping the panel's Keyspaces table populated and engine-agnostic.
+async fn storage_keyspaces(State(state): State<NativeApiState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "keyspaces": state.service.keyspace_stats() }))
 }
 
 /// `POST /storage/benchmark` — the same self-contained probe as the KV router:

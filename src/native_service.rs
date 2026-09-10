@@ -225,6 +225,25 @@ impl NativeService {
         }
     }
 
+    /// Per-keyspace storage breakdown for the panel — the WAL engine's
+    /// counterpart of [`crate::db::Drevo::keyspace_stats`]. The durable WAL
+    /// stores only records on disk; these rows are the live in-memory index
+    /// structures (records, adjacency, title, kind), so the panel's Keyspaces
+    /// table is populated on both engines. FTS/vector keyspaces are
+    /// KV-secondary-only and absent here.
+    #[must_use]
+    pub fn keyspace_stats(&self) -> Vec<crate::db::KeyspaceStat> {
+        self.graph
+            .keyspace_stats()
+            .into_iter()
+            .map(|(prefix, entries, content_bytes)| crate::db::KeyspaceStat {
+                prefix,
+                entries,
+                content_bytes,
+            })
+            .collect()
+    }
+
     /// Compact the WAL — rewrite it as the current state (atomic temp + fsync +
     /// rename) — and report the reclaimed bytes: the engine-agnostic counterpart
     /// of [`crate::db::Drevo::shrink_online`] (the storage panel's `shrink`).

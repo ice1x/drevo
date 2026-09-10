@@ -173,10 +173,26 @@ async fn storage_panel_is_engine_agnostic_on_the_wal_store() {
     assert!(bench["incr_write_nodes_per_sec"].as_f64().unwrap() > 0.0);
     assert_eq!(bench["incr_n"].as_u64().unwrap(), 500);
 
-    // keyspaces: an empty breakdown (no WAL analogue), not a 501.
+    // keyspaces: a real per-structure breakdown of the in-memory index stack
+    // (records + adjacency + title + kind), not an empty list. The WAL stores
+    // only records on disk, but the panel's Keyspaces table is populated from
+    // the live indexes so it matches the KV router's richness.
     let (st, ks) = send(&app, "GET", "/storage/keyspaces", None).await;
     assert_eq!(st, StatusCode::OK, "keyspaces must not 501");
-    assert_eq!(ks["keyspaces"], json!([]));
+    let rows = ks["keyspaces"].as_array().expect("keyspaces array");
+    assert!(!rows.is_empty(), "keyspaces breakdown must not be empty");
+    let by = |name: &str| {
+        rows.iter()
+            .find(|r| r["prefix"] == name)
+            .unwrap_or_else(|| panic!("keyspace `{name}` present"))
+    };
+    // 20 live nodes → the `node` keyspace reports 20 rows with a real footprint.
+    assert_eq!(by("node")["entries"].as_u64().unwrap(), 20);
+    assert!(by("node")["content_bytes"].as_u64().unwrap() > 0);
+    // The index keyspaces are present (no on-disk redb tables, but live in RAM).
+    for name in ["edge", "out", "in", "title", "kind"] {
+        by(name); // panics if the row is missing
+    }
 }
 
 #[tokio::test]
