@@ -592,16 +592,17 @@ fn recover_after_simulated_crash_reports_counter_drift_repaired() {
 // ---------------------------------------------------------------
 
 #[test]
-fn readme_marks_wal_crash_recovery_task_done() {
-    let readme = std::fs::read_to_string("README.md").unwrap();
+fn phase_history_marks_wal_crash_recovery_task_done() {
+    // The per-phase build log moved from the slimmed README to PHASE-HISTORY.md.
+    let doc = std::fs::read_to_string("PHASE-HISTORY.md").unwrap();
     assert!(
-        readme.contains("[x] `00053`"),
-        "README does not mark 00053 done"
+        doc.contains("[x] `00053`"),
+        "PHASE-HISTORY.md does not mark 00053 done"
     );
-    // The README should also describe the recovery model (counter rescan).
+    // The log should also describe the recovery model (counter rescan).
     assert!(
-        readme.contains("crash recovery") || readme.contains("crash-recovery"),
-        "README does not mention crash recovery"
+        doc.contains("crash recovery") || doc.contains("crash-recovery"),
+        "PHASE-HISTORY.md does not mention crash recovery"
     );
 }
 

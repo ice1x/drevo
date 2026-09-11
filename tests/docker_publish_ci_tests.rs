@@ -94,9 +94,11 @@ fn read_workflow_code_only() -> String {
         .join("\n")
 }
 
-fn read_readme() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md");
-    fs::read_to_string(path).expect("failed to read README.md")
+// The per-phase build log (00051 entry + the ghcr publish narrative these
+// tests assert on) moved out of the slimmed README into PHASE-HISTORY.md.
+fn read_phase_history() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("PHASE-HISTORY.md");
+    fs::read_to_string(path).expect("failed to read PHASE-HISTORY.md")
 }
 
 fn read_k8s_deployment() -> String {
@@ -461,24 +463,24 @@ fn docker_publish_emits_latest_on_release_tags() {
 // ------------------------------------------------------------------
 
 #[test]
-fn readme_documents_ghcr_publish_workflow() {
-    let r = read_readme();
+fn phase_history_documents_ghcr_publish_workflow() {
+    let r = read_phase_history();
     assert!(
         r.contains("ghcr.io/ice1x/drevo"),
-        "README must reference the published image `ghcr.io/ice1x/drevo` so a new operator \
-         knows which image to pull (task 00051)"
+        "PHASE-HISTORY.md must reference the published image `ghcr.io/ice1x/drevo` so a new \
+         operator knows which image to pull (task 00051)"
     );
 }
 
 #[test]
-fn readme_marks_00051_done() {
-    let r = read_readme();
+fn phase_history_marks_00051_done() {
+    let r = read_phase_history();
     let has_done_line = r
         .lines()
         .any(|l| l.contains("`00051`") && l.contains("- [x]"));
     assert!(
         has_done_line,
-        "README must tick `- [x] `00051`` once the workflow lands"
+        "PHASE-HISTORY.md must tick `- [x] `00051`` once the workflow lands"
     );
 }
 
