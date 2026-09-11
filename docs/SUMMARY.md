@@ -9,8 +9,11 @@
 - [SDK Reference](sdk-reference.md)
 - [Admin Guide](admin-guide.md)
 - [Migration Guide](migration-guide.md)
+- [Contributing](contributing.md)
 
 # Internals
+
+- [Architecture & Design](architecture.md)
 
 - [Benchmarks](benchmarks.md)
 - [Load Harness](load-harness.md)

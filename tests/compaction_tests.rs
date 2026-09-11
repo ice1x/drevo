@@ -652,14 +652,16 @@ fn compact_works_via_storage_backend_trait_object() {
 // Cross-file structural guards
 // ---------------------------------------------------------------
 
-const README: &str = include_str!("../README.md");
+// The per-phase completion log moved out of the README into PHASE-HISTORY.md
+// (the README was slimmed); the 00054 checkbox lives there now.
+const PHASE_HISTORY: &str = include_str!("../PHASE-HISTORY.md");
 const DB_RS: &str = include_str!("../src/db.rs");
 
 #[test]
-fn readme_marks_task_00054_done() {
+fn phase_history_marks_task_00054_done() {
     assert!(
-        README.contains("- [x] `00054` Compaction"),
-        "README must mark Phase 9 task 00054 as done after this work lands"
+        PHASE_HISTORY.contains("- [x] `00054` Compaction"),
+        "PHASE-HISTORY.md must mark Phase 9 task 00054 as done after this work lands"
     );
 }
 

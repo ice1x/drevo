@@ -58,8 +58,10 @@ fn read_test_file() -> String {
     fs::read_to_string(test_file_path()).expect("read tests/container_integration_tests.rs")
 }
 
-fn read_readme() -> String {
-    fs::read_to_string(workspace_root().join("README.md")).expect("read README.md")
+// The per-phase build log (including the 00052 entry these tests assert on)
+// moved out of the slimmed README into PHASE-HISTORY.md at the repo root.
+fn read_phase_history() -> String {
+    fs::read_to_string(workspace_root().join("PHASE-HISTORY.md")).expect("read PHASE-HISTORY.md")
 }
 
 // =====================================================================
@@ -195,38 +197,37 @@ fn live_tests_verify_persistence_with_a_restart() {
 }
 
 #[test]
-fn readme_marks_task_00052_complete() {
-    // The README's Phase 8 checkbox for 00052 must flip to `[x]` once
-    // this task lands.
-    let readme = read_readme();
+fn phase_history_marks_task_00052_complete() {
+    // The Phase 8 checkbox for 00052 must flip to `[x]` once this task lands.
+    let doc = read_phase_history();
     assert!(
-        readme.contains("- [x] `00052`"),
-        "README must mark `00052` as done with `- [x] `00052``"
+        doc.contains("- [x] `00052`"),
+        "PHASE-HISTORY.md must mark `00052` as done with `- [x] `00052``"
     );
 }
 
 #[test]
-fn readme_documents_opt_in_command_for_live_container_tests() {
-    // Live tests are `#[ignore]`-by-default; the README must explain
+fn phase_history_documents_opt_in_command_for_live_container_tests() {
+    // Live tests are `#[ignore]`-by-default; the docs must explain
     // how a developer or release manager runs them on demand.
-    let readme = read_readme();
+    let doc = read_phase_history();
     assert!(
-        readme.contains("--include-ignored"),
-        "README must document `cargo test ... -- --include-ignored` for the live container tests"
+        doc.contains("--include-ignored"),
+        "PHASE-HISTORY.md must document `cargo test ... -- --include-ignored` for the live container tests"
     );
     assert!(
-        readme.contains("container_integration_tests"),
-        "README must reference the test file by name so the opt-in command is greppable"
+        doc.contains("container_integration_tests"),
+        "PHASE-HISTORY.md must reference the test file by name so the opt-in command is greppable"
     );
 }
 
 #[test]
-fn readme_documents_named_volume_and_restart_semantics() {
-    let readme = read_readme();
-    let lower = readme.to_lowercase();
+fn phase_history_documents_named_volume_and_restart_semantics() {
+    let doc = read_phase_history();
+    let lower = doc.to_lowercase();
     assert!(
         lower.contains("named volume") && lower.contains("restart"),
-        "README must explain the named-volume + restart semantics of task 00052"
+        "PHASE-HISTORY.md must explain the named-volume + restart semantics of task 00052"
     );
 }
 

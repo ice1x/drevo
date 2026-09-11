@@ -326,21 +326,22 @@ fn python_ci_matrix_does_not_publish_to_pypi() {
 // ── 6. README + CHANGELOG bookkeeping ──────────────────────────────────
 
 #[test]
-fn readme_ticks_task_00122() {
-    let readme = read(&repo_root().join("README.md"));
+fn phase_history_ticks_task_00122() {
+    // The per-phase build log moved from the slimmed README to PHASE-HISTORY.md.
+    let doc = read(&repo_root().join("PHASE-HISTORY.md"));
     assert!(
-        readme.contains("[x] `00122`"),
-        "README.md must tick `[x] 00122` after the cibuildwheel-\
+        doc.contains("[x] `00122`"),
+        "PHASE-HISTORY.md must tick `[x] 00122` after the cibuildwheel-\
          driven matrix lands",
     );
 }
 
 #[test]
-fn readme_progress_note_for_00122_landed() {
-    let readme = read(&repo_root().join("README.md"));
+fn phase_history_progress_note_for_00122_landed() {
+    let doc = read(&repo_root().join("PHASE-HISTORY.md"));
     assert!(
-        readme.contains("after task 00122"),
-        "README.md must include a `Progress (YYYY-MM-DD, after task \
+        doc.contains("after task 00122"),
+        "PHASE-HISTORY.md must include a `Progress (YYYY-MM-DD, after task \
          00122)` note",
     );
 }
