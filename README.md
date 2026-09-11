@@ -5,9 +5,10 @@
 [![Release](https://img.shields.io/github/v/tag/ice1x/drevo?sort=semver&label=release)](https://github.com/ice1x/drevo/tags)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.85-orange?logo=rust&logoColor=white)](Cargo.toml)
+[![ACID](https://img.shields.io/badge/ACID-A·C·I·D%20verified-2e7d32)](#acid-transactions)
 [![Agent memory](https://img.shields.io/badge/agent_memory-HTTP_%7C_Bolt_%7C_MCP-8A2BE2)](#agent-memory-graph)
 
-A lightweight, embeddable graph database written in Rust. Designed as the storage engine for cross-platform knowledge-base applications (similar to Obsidian), drevo runs natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings), and in the browser (via WebAssembly). It also ships as a standalone HTTP server for containerised deployments.
+A lightweight, embeddable graph database written in Rust, with **full ACID transactions** (MVCC snapshot isolation + a write-ahead log). Designed as the storage engine for cross-platform knowledge-base applications (similar to Obsidian), drevo runs natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings), and in the browser (via WebAssembly). It also ships as a standalone HTTP server for containerised deployments.
 
 **Drop-in memory backend for AI agents** (LangGraph, Claude Code, CrewAI, Cursor, multi-agent swarms) over HTTP / Bolt / MCP — persistent recall that survives sessions, agents, and machines. See the [Agent Memory Graph](#agent-memory-graph) use case.
 
@@ -117,6 +118,19 @@ drevo is in active use. The default deployment engine is **`native-durable`** �
 - **Releases:** see [tags](https://github.com/ice1x/drevo/tags) and the [Docker Hub image](https://hub.docker.com/r/ice1x/drevo) (`ice1x/drevo`).
 - **What's built:** the full history — engine, Cypher, Bolt, vectors, MVCC, Python SDK, semantic index, native core — is recorded in [`PHASE-HISTORY.md`](PHASE-HISTORY.md).
 - **What's next / open work:** tracked in [GitHub issues](https://github.com/ice1x/drevo/issues), not in this file.
+
+### ACID transactions
+
+The default engine is fully **ACID**, and each property is proven by a dedicated Rust conformance suite that drives the engine directly (no HTTP layer):
+
+| Property | Guarantee | Conformance suite |
+|---|---|---|
+| **A** — Atomicity | commit/rollback are all-or-nothing; a torn commit batch replays whole or not at all | [`drevo-core/tests/acid_atomicity.rs`](drevo-core/tests/acid_atomicity.rs) |
+| **C** — Consistency | UNIQUE / property-EXISTS / NODE-KEY constraints + structural invariants enforced at commit; a violating tx aborts atomically | [`drevo-core/tests/acid_consistency.rs`](drevo-core/tests/acid_consistency.rs) |
+| **I** — Isolation | MVCC snapshot isolation — no dirty read, repeatable read, write–write conflict detection | [`drevo-core/tests/acid_isolation.rs`](drevo-core/tests/acid_isolation.rs) |
+| **D** — Durability | acknowledged writes are fsync'd before return and survive a crash; replay is idempotent; ids stay monotonic | [`drevo-core/tests/acid_durability.rs`](drevo-core/tests/acid_durability.rs) |
+
+The model is described in [`docs/architecture.md`](docs/architecture.md) and [`docs/rfc-native-core.md`](docs/rfc-native-core.md).
 
 ---
 
