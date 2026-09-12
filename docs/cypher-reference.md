@@ -789,6 +789,45 @@ CALL drevo.vector.query('Chunk', 'embedding', [0.1, 0.2, 0.3], 5) YIELD node, sc
 RETURN node, score ORDER BY score DESC
 ```
 
+### Declarative vector search — the `SEARCH` clause
+
+The same cosine scan is also available as a declarative clause (issue #430),
+mirroring Neo4j's `SEARCH … IN (VECTOR INDEX …)` form:
+
+```
+[OPTIONAL] MATCH pattern
+  SEARCH binding_variable IN (
+    VECTOR INDEX Label.property
+    FOR query_vector
+    [WHERE predicate]
+    LIMIT top_k
+  ) [SCORE AS score_alias]
+```
+
+`SEARCH` constrains `binding_variable` to the top-`top_k` nodes of `Label`
+whose `property` embedding is closest to `query_vector`, and — with
+`SCORE AS score_alias` — binds the cosine similarity (`0.0`–`1.0`, `1.0` most
+similar) to `score_alias`. The optional inner `WHERE` post-filters the results
+(`k`-then-filter, exactly like `drevo.vector.query`). Because the search
+variable is overwritten by the results, `MATCH (m:Movie) SEARCH m IN (… LIMIT k)`
+returns `k` rows, not `k × |Movie|`.
+
+In this first slice the index is addressed as a dotted `Label.property`; a named
+`CREATE VECTOR INDEX` registry (so `VECTOR INDEX moviePlots` resolves to a
+declared `(:Movie).plotEmbedding`) is a planned follow-up. `SEARCH`, `VECTOR`,
+`INDEX`, `FOR`, and `SCORE` are soft keywords — a property or variable named,
+say, `score` keeps working.
+
+```cypher
+MATCH (m:Movie)
+SEARCH m IN (
+  VECTOR INDEX Movie.plotEmbedding
+  FOR [0.1, 0.2, 0.3]
+  LIMIT 6
+) SCORE AS score
+RETURN m.title, score
+```
+
 `CALL fts.search(query, k) YIELD node, score` returns the top-`k` nodes
 matching `query` in the BM25 full-text index (task `00131`), ranked by
 relevance — the full-text counterpart of `drevo.vector.query`. The `score` is

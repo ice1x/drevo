@@ -450,6 +450,7 @@ impl PlanBuilder<'_> {
                 | Clause::Remove(_)
                 | Clause::Delete(_)
                 | Clause::Foreach(_)
+                | Clause::Search(_)
                 | Clause::Call(_) => {}
             }
         }
