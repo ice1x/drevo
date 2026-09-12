@@ -303,6 +303,11 @@ pub enum RunError {
     #[cfg(feature = "embeddings-proxy")]
     #[error("invalid embeddings configuration: {0}")]
     Embeddings(String),
+    /// The text-to-Cypher proxy was requested via `DREVO_TEXT2CYPHER_UPSTREAM`
+    /// but its configuration is invalid (issue #429).
+    #[cfg(feature = "embeddings-proxy")]
+    #[error("invalid text-to-Cypher configuration: {0}")]
+    Text2Cypher(String),
 }
 
 /// Build the shared, persisted embeddings config store from `cfg`: the
@@ -402,6 +407,32 @@ fn configure_query_embedder(
     Ok(())
 }
 
+/// Install the process-global text-to-Cypher generator (`drevo.cypher.fromText`,
+/// issue #429) when the `embeddings-proxy` feature is built and
+/// `DREVO_TEXT2CYPHER_UPSTREAM` is set. Engine-agnostic (a process global), so
+/// it runs once for both the KV and durable-native serving paths. A no-op when
+/// unconfigured — the procedure then reports "not configured".
+#[cfg(feature = "embeddings-proxy")]
+fn configure_text2cypher() -> Result<(), RunError> {
+    use crate::text2cypher::{SyncCypherGenerator, Text2CypherConfig};
+    let Some(config) = Text2CypherConfig::from_env(|key| std::env::var(key).ok())
+        .map_err(|e| RunError::Text2Cypher(e.to_string()))?
+    else {
+        return Ok(());
+    };
+    let generator = SyncCypherGenerator::from_config(config)
+        .map_err(|e| RunError::Text2Cypher(e.to_string()))?;
+    crate::text2cypher::install(std::sync::Arc::new(generator));
+    tracing::info!("drevo.cypher.fromText generator installed");
+    Ok(())
+}
+
+/// No-op when the proxy backend is not compiled in.
+#[cfg(not(feature = "embeddings-proxy"))]
+fn configure_text2cypher() -> Result<(), RunError> {
+    Ok(())
+}
+
 /// Install the server-side query embedder on the durable native service
 /// (`DREVO_ENGINE=native-durable`), when the `embeddings-proxy` feature is
 /// built and `DREVO_EMBEDDINGS_UPSTREAM` is set — so `drevo.semantic.embed`
@@ -476,6 +507,10 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     // the `tests/server_binary_tests.rs` wiring test can observe it immediately.
     tracing::info!(version = crate::VERSION, "starting drevo");
     let addr = cfg.socket_addr()?;
+
+    // Install the text-to-Cypher generator (issue #429) once, before the engine
+    // branch: it is a process-global proxy, shared by both serving paths.
+    configure_text2cypher()?;
 
     if cfg.is_privileged_port() {
         tracing::warn!(
