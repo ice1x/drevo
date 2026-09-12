@@ -50,5 +50,9 @@ fn clause_is_mirror_read(clause: &Clause) -> bool {
         | Clause::Remove(_)
         | Clause::Foreach(_) => false,
         Clause::Call(call) => MIRROR_PROCEDURES.contains(&call.name.join(".").as_str()),
+        // SEARCH (issue #430) is a read, but it lowers to a vector scan the
+        // mirror does not yet specialise; route it to the KV engine
+        // conservatively (a false negative costs only speed, never answers).
+        Clause::Search(_) => false,
     }
 }

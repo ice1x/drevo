@@ -79,6 +79,10 @@ pub enum Clause {
     Foreach(ForeachClause),
     /// `CALL proc.name(args) [YIELD col [AS alias] … [WHERE pred]]`.
     Call(CallClause),
+    /// `SEARCH var IN (VECTOR INDEX Label.property FOR expr [WHERE pred]
+    /// LIMIT k) [SCORE AS alias]` — declarative vector search (issue #430),
+    /// lowered to the cosine `vector_scan`.
+    Search(SearchClause),
 }
 
 /// `MATCH` / `OPTIONAL MATCH` clause.
@@ -317,6 +321,39 @@ pub struct CallClause {
     /// `yields = Some(_)`; the parser enforces this).
     pub where_clause: Option<Expression>,
     /// Source span of the `CALL` keyword.
+    pub span: Span,
+}
+
+/// `SEARCH` clause — declarative vector search (issue #430).
+///
+/// `SEARCH var IN (VECTOR INDEX Label.property FOR query_vector [WHERE pred]
+/// LIMIT k) [SCORE AS alias]` constrains the search `var` to the top-`k` nodes
+/// of `Label` whose `property` embedding is closest (cosine) to `query_vector`,
+/// binding the similarity to `alias` (or the implicit `score`). It lowers to the
+/// same [`vector_scan`](crate::cypher::executor) the `drevo.vector.query`
+/// procedure uses. In this first slice the index is addressed as a dotted
+/// `Label.property` (a named-index registry via `CREATE VECTOR INDEX` is a
+/// follow-up).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchClause {
+    /// The node variable the search binds (overwriting any prior binding).
+    pub variable: String,
+    /// Node label the vector index covers.
+    pub index_label: String,
+    /// Node property holding the embedding.
+    pub index_property: String,
+    /// The query vector expression (`FOR query_vector`); evaluated per input
+    /// group and coerced to a numeric vector.
+    pub query_vector: Expression,
+    /// Optional `WHERE` predicate applied to each result (post-scan, matching
+    /// the `k`-then-filter semantics of `drevo.vector.query`).
+    pub where_clause: Option<Expression>,
+    /// The `LIMIT k` top-k count expression (evaluated to a `usize`).
+    pub limit: Expression,
+    /// Optional `SCORE AS alias`; when present the similarity is bound to
+    /// `alias`, otherwise it is discarded (the caller can still `SCORE AS score`).
+    pub score_alias: Option<String>,
+    /// Source span of the `SEARCH` keyword.
     pub span: Span,
 }
 

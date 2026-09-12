@@ -156,7 +156,8 @@ use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, Direction as AstDirection, Expression,
     ForeachClause, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause, NamedPattern,
     NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query, RelLength,
-    RelationshipPattern, ReturnClause, ShortestKind, SingleQuery, UnaryOp, UnionKind, UnwindClause,
+    RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery, UnaryOp, UnionKind,
+    UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::db::Drevo;
@@ -1295,6 +1296,13 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                 validate_expr_supported(pred)?;
             }
         }
+        Clause::Search(s) => {
+            validate_expr_supported(&s.query_vector)?;
+            if let Some(pred) = &s.where_clause {
+                validate_expr_supported(pred)?;
+            }
+            validate_expr_supported(&s.limit)?;
+        }
     }
     Ok(())
 }
@@ -2126,6 +2134,7 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
             Clause::Unwind(u) => u.span,
             Clause::Foreach(f) => f.span,
             Clause::Call(c) => c.span,
+            Clause::Search(s) => s.span,
         }
     } else {
         Span {
@@ -2273,6 +2282,7 @@ impl<'a> Executor<'a> {
             Clause::Unwind(u) => self.run_unwind(u),
             Clause::Foreach(f) => self.run_foreach(f),
             Clause::Call(c) => self.run_call(c),
+            Clause::Search(s) => self.run_search(s),
         }
     }
 
@@ -4414,6 +4424,65 @@ impl<'a> Executor<'a> {
                 self.result_rows = output;
             }
         }
+        Ok(())
+    }
+
+    /// `SEARCH var IN (VECTOR INDEX Label.property FOR expr [WHERE pred]
+    /// LIMIT k) [SCORE AS alias]` — declarative vector search (issue #430),
+    /// lowered to the same cosine [`vector_scan`](Self::vector_scan) the
+    /// `drevo.vector.query` procedure uses.
+    ///
+    /// The search variable is overwritten by the scan results, so input rows
+    /// that differ *only* in that variable collapse into one search group (one
+    /// scan). This yields the correct cardinality — `MATCH (n:Movie) SEARCH n IN
+    /// (… LIMIT k)` returns `k` rows, not `k × |Movie|` — while still running a
+    /// separate scan for each distinct combination of the *other* bound
+    /// variables (whose `query_vector` may differ).
+    fn run_search(&mut self, s: &SearchClause) -> ExecResultT<()> {
+        let prior = std::mem::take(&mut self.bindings);
+        let groups: Vec<Bindings> = if prior.is_empty() {
+            vec![Bindings::new()]
+        } else {
+            let mut groups: Vec<Bindings> = Vec::new();
+            for mut row in prior {
+                row.remove(&s.variable);
+                if !groups.contains(&row) {
+                    groups.push(row);
+                }
+            }
+            groups
+        };
+
+        let mut out: Vec<Bindings> = Vec::new();
+        for group in &groups {
+            let query_value = self.eval(&s.query_vector, group)?;
+            let query = similar_operand(&query_value, "SEARCH", "query_vector", s.span)?;
+            let k = self.eval_usize(&s.limit, group)?;
+            for scan_row in
+                self.vector_scan(&s.index_label, &s.index_property, &query, k, s.span)?
+            {
+                let mut next = group.clone();
+                next.insert(s.variable.clone(), scan_row[0].clone());
+                if let Some(alias) = &s.score_alias {
+                    next.insert(alias.clone(), scan_row[1].clone());
+                }
+                match &s.where_clause {
+                    None => out.push(next),
+                    Some(pred) => match self.eval(pred, &next)? {
+                        Value::Bool(true) => out.push(next),
+                        Value::Bool(false) | Value::Null => {}
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Boolean".into(),
+                                got: other.type_name().into(),
+                                span: pred.span(),
+                            });
+                        }
+                    },
+                }
+            }
+        }
+        self.bindings = out;
         Ok(())
     }
 

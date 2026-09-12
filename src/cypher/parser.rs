@@ -179,6 +179,7 @@ fn clause_keyword(clause: &Clause) -> &'static str {
         Clause::With(_) => "WITH",
         Clause::Return(_) => "RETURN",
         Clause::Unwind(_) => "UNWIND",
+        Clause::Search(_) => "SEARCH",
         Clause::Foreach(_) => "FOREACH",
         Clause::Call(_) => "CALL",
     }
@@ -439,12 +440,87 @@ impl Parser {
             TokenKind::Unwind => self.parse_unwind(),
             TokenKind::Foreach => self.parse_foreach(),
             TokenKind::Call => self.parse_call(),
+            // `SEARCH` is a soft keyword (issue #430): recognised only in clause
+            // position, so an existing property/variable named `search` still
+            // lexes as an identifier and keeps working.
+            _ if self.is_soft_keyword("SEARCH") => self.parse_search(),
             _ => Err(ParseError::Expected {
-                expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, FOREACH, CALL, OPTIONAL, DETACH)".to_string(),
+                expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, FOREACH, CALL, SEARCH, OPTIONAL, DETACH)".to_string(),
                 found: format!("{}", self.peek_kind()),
                 span: self.peek_span(),
             }),
         }
+    }
+
+    /// Is the next token an identifier equal (case-insensitively) to `word`?
+    /// Used for the SEARCH clause's soft keywords (`SEARCH`, `VECTOR`, `INDEX`,
+    /// `FOR`, `SCORE`) so none of them becomes a reserved word.
+    fn is_soft_keyword(&self, word: &str) -> bool {
+        matches!(self.peek_kind(), TokenKind::Identifier(s) if s.eq_ignore_ascii_case(word))
+    }
+
+    /// Consume a soft keyword, erroring if the next token is not that word.
+    fn expect_soft_keyword(&mut self, word: &str) -> ParseResult<()> {
+        if self.is_soft_keyword(word) {
+            self.consume();
+            Ok(())
+        } else {
+            Err(ParseError::Expected {
+                expected: word.to_string(),
+                found: format!("{}", self.peek_kind()),
+                span: self.peek_span(),
+            })
+        }
+    }
+
+    /// Parse a `SEARCH` clause (issue #430):
+    /// `SEARCH var IN ( VECTOR INDEX Label.property FOR expr [WHERE pred]
+    /// LIMIT k ) [SCORE AS alias]`.
+    fn parse_search(&mut self) -> ParseResult<Clause> {
+        let span = self.peek_span();
+        self.consume(); // SEARCH (soft keyword)
+        let (variable, _) = self.consume_strict_identifier()?;
+        self.eat(&TokenKind::In, "IN after the SEARCH variable")?;
+        self.eat(&TokenKind::LParen, "`(` after IN")?;
+        self.expect_soft_keyword("VECTOR")?;
+        self.expect_soft_keyword("INDEX")?;
+        // Index addressed as a dotted `Label.property` (first slice; a named
+        // `CREATE VECTOR INDEX` registry is a follow-up).
+        let (index_label, _) = self.consume_name()?;
+        self.eat(
+            &TokenKind::Dot,
+            "`.` in the vector index name (Label.property)",
+        )?;
+        let (index_property, _) = self.consume_name()?;
+        self.expect_soft_keyword("FOR")?;
+        let query_vector = self.parse_expression()?;
+        let where_clause = if matches!(self.peek_kind(), TokenKind::Where) {
+            self.consume();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        self.eat(&TokenKind::Limit, "LIMIT in the SEARCH clause")?;
+        let limit = self.parse_expression()?;
+        self.eat(&TokenKind::RParen, "`)` to close the SEARCH clause")?;
+        let score_alias = if self.is_soft_keyword("SCORE") {
+            self.consume(); // SCORE
+            self.eat(&TokenKind::As, "AS after SCORE")?;
+            let (alias, _) = self.consume_strict_identifier()?;
+            Some(alias)
+        } else {
+            None
+        };
+        Ok(Clause::Search(SearchClause {
+            variable,
+            index_label,
+            index_property,
+            query_vector,
+            where_clause,
+            limit,
+            score_alias,
+            span,
+        }))
     }
 
     fn parse_match(&mut self, optional: bool) -> ParseResult<Clause> {
