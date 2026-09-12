@@ -148,6 +148,11 @@ pub mod fts;
 /// (KV-backed [`db::Drevo`] ⇄ native [`native::NativeGraph`]) over the shared
 /// `drevo-json-v1` dump interchange, preserving every node/edge id.
 pub mod migrate;
+/// Text-to-Cypher LLM proxy (`drevo.cypher.fromText`, issue #429). Gated on
+/// `http` like [`embeddings`]; the `reqwest`-backed proxy is further gated on
+/// `embeddings-proxy`.
+#[cfg(feature = "http")]
+pub mod text2cypher;
 /// Compressed-Sparse-Row adjacency snapshot ([`csr::CsrAdjacency`]) — the
 /// cache-friendly, lock-free substrate for whole-graph parallel scans and
 /// algorithms (issue #382, Phase 8). Re-exported from [`drevo-core`](drevo_core).

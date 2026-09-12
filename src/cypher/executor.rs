@@ -1262,8 +1262,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.semantic.status, drevo.semantic.info, \
                           drevo.info, \
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
-                          drevo.semantic.reindexRel, fts.search, \
-                          fts.searchRelationships"
+                          drevo.semantic.reindexRel, drevo.cypher.fromText, \
+                          fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
                 })?;
@@ -4439,6 +4439,81 @@ impl<'a> Executor<'a> {
     /// `… query(…, $k) YIELD node, score WHERE node.book_id = $b` returns the
     /// global top-`k` then filters. For pre-filtered per-book retrieval use
     /// the `cosine_similarity` scalar over a `MATCH (c:Chunk {book_id:$b})`.
+    /// `CALL drevo.cypher.fromText(prompt) YIELD cypher` (issue #429).
+    ///
+    /// Translates a natural-language `prompt` into a Cypher query by forwarding
+    /// it — with the live graph schema (labels / relationship types / property
+    /// keys) — to the process-global text-to-Cypher generator
+    /// ([`crate::text2cypher`]), installed at server startup from
+    /// `DREVO_TEXT2CYPHER_*`. Returns the generated query text as one `cypher`
+    /// row; it is **not** executed here (the client decides). When no generator
+    /// is installed, or the upstream call fails, a clear
+    /// [`ExecError::InvalidProcedureCall`] carries the reason.
+    #[cfg(feature = "http")]
+    fn proc_cypher_from_text(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (1) is already enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let prompt = self.eval(&args[0], &empty)?;
+        let prompt = prompt.as_string(span)?.to_string();
+
+        let generator =
+            crate::text2cypher::installed().ok_or_else(|| ExecError::InvalidProcedureCall {
+                name: "drevo.cypher.fromText".to_string(),
+                message: crate::text2cypher::Text2CypherError::NotConfigured.to_string(),
+                span,
+            })?;
+
+        // Live schema, enumerated exactly as `db.labels` / `db.relationshipTypes`
+        // / `db.propertyKeys` do, so the model sees the graph it will query.
+        let mut labels: Vec<String> = Vec::new();
+        for node in self.engine().all_nodes()? {
+            for label in node_labels_from_storage(&node) {
+                if !labels.contains(&label) {
+                    labels.push(label);
+                }
+            }
+        }
+        labels.sort();
+        let mut rel_types: Vec<String> = Vec::new();
+        for edge in self.engine().all_edges()? {
+            if !rel_types.contains(&edge.kind) {
+                rel_types.push(edge.kind.clone());
+            }
+        }
+        rel_types.sort();
+        let mut prop_keys: Vec<String> = Vec::new();
+        for node in self.engine().all_nodes()? {
+            for key in node_to_value(&node).properties.keys() {
+                if !prop_keys.contains(key) {
+                    prop_keys.push(key.clone());
+                }
+            }
+        }
+        for edge in self.engine().all_edges()? {
+            for key in edge_to_value(&edge).properties.keys() {
+                if !prop_keys.contains(key) {
+                    prop_keys.push(key.clone());
+                }
+            }
+        }
+        prop_keys.sort();
+
+        let system = crate::text2cypher::build_system_prompt(&labels, &rel_types, &prop_keys);
+        let cypher =
+            generator
+                .generate(&system, &prompt)
+                .map_err(|e| ExecError::InvalidProcedureCall {
+                    name: "drevo.cypher.fromText".to_string(),
+                    message: e.to_string(),
+                    span,
+                })?;
+        Ok(vec![vec![Value::String(cypher)]])
+    }
+
     fn proc_vector_query(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
         // Arity (4) is already enforced by the upfront validation sweep.
         let empty = Bindings::new();
@@ -5281,6 +5356,8 @@ impl<'a> Executor<'a> {
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
+            #[cfg(feature = "http")]
+            "drevo.cypher.fromText" => self.proc_cypher_from_text(args, span),
             "db.labels" => {
                 let mut labels: Vec<String> = Vec::new();
                 for node in self.engine().all_nodes()? {
@@ -6890,6 +6967,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "fts.search" => Some(&["node", "score"]),
         // Relationship full-text search (issue #227-B): BM25-ranked edges.
         "fts.searchRelationships" => Some(&["rel", "score"]),
+        // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
+        #[cfg(feature = "http")]
+        "drevo.cypher.fromText" => Some(&["cypher"]),
         _ => None,
     }
 }
@@ -6945,6 +7025,9 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
         "fts.search" | "fts.searchRelationships" => 2,
+        // drevo.cypher.fromText(prompt) — one NL prompt.
+        #[cfg(feature = "http")]
+        "drevo.cypher.fromText" => 1,
         // The db.* introspection procedures take no arguments.
         _ => 0,
     }
