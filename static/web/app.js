@@ -37,6 +37,7 @@
   const $statusText = document.getElementById("status-text");
   const $tooltip = document.getElementById("cy-tooltip");
   const $nodeLimit = document.getElementById("node-limit");
+  const $graphRefresh = document.getElementById("graph-refresh");
   const $kindChips = document.getElementById("kind-chips");
   const $themeToggle = document.getElementById("theme-toggle");
   const $dbSelect = document.getElementById("db-select");
@@ -66,7 +67,10 @@
   // The whole graph dump is fetched once from /export/json and cached;
   // the on-load overview and the kind-chip filters all render bounded
   // samples from this cache, so changing the node limit or switching
-  // kinds never re-hits the network.
+  // kinds never re-hits the network. The cache is re-fetched (via
+  // `loadOverview`) after a graph write from this UI, on database switch,
+  // and on demand via the Refresh control — so a mutation on the server
+  // never leaves the view showing deleted/stale nodes and edges (#433).
   /** @type {{nodes: any[], edges: any[]} | null} */
   let graphCache = null;
   const degreeById = new Map(); // node id → degree (for top-N sampling)
@@ -789,6 +793,14 @@
   // Admin commands whose success changes the catalog / selection — after
   // running one we refresh the database picker.
   const DB_ADMIN_RE = /^\s*(SHOW\s+DATABASES|CREATE\s+DATABASE|USE)\b/i;
+  // Clauses that mutate the graph. After a successful write from this UI we
+  // re-fetch the overview so the client-side sample cache cannot keep showing
+  // nodes/edges the write just changed or deleted (issue #433). `CREATE
+  // DATABASE` is a catalog op, not a graph write, so it is excluded here.
+  const GRAPH_WRITE_RE = /\b(CREATE|MERGE|DELETE|SET|REMOVE)\b/i;
+  function isGraphWrite(text) {
+    return GRAPH_WRITE_RE.test(text) && !DB_ADMIN_RE.test(text);
+  }
   function looksLikeCypher(text) {
     return CYPHER_RE.test(text);
   }
@@ -810,11 +822,13 @@
       const text = await r.text();
       if (!r.ok) {
         status(`Cypher error: ${text}`, "error");
-        return;
+        return false;
       }
       renderCypherResult(JSON.parse(text));
+      return true;
     } catch (e) {
       status(`Cypher failed: ${e.message}`, "error");
+      return false;
     }
   }
 
@@ -1340,10 +1354,14 @@
     // Dual-mode: a Cypher clause keyword routes to the executor; plain
     // text is a full-text search.
     if (looksLikeCypher(q)) {
-      runCypher(q).then(() => {
+      runCypher(q).then((ok) => {
         // `CREATE DATABASE` / `USE` may have changed the catalog — refresh
         // the picker so a newly created database appears.
         if (DB_ADMIN_RE.test(q)) loadDatabases();
+        // A successful graph write invalidates the client-side sample cache;
+        // re-fetch the overview so deleted/changed nodes and edges disappear
+        // instead of lingering until a hard reload (issue #433).
+        if (ok && isGraphWrite(q)) loadOverview();
       });
     } else runSearch(q);
   });
@@ -1351,6 +1369,16 @@
   // Re-render (from cache, no re-fetch) when the node limit changes.
   if ($nodeLimit) {
     $nodeLimit.addEventListener("change", () => renderSample());
+  }
+
+  // Explicit "refresh from server": re-fetch /export/json and rebuild the
+  // cache, so a graph mutated by another client (e.g. over Bolt) shows its
+  // current state without a full page reload (issue #433).
+  if ($graphRefresh) {
+    $graphRefresh.addEventListener("click", () => {
+      activeKind = null;
+      loadOverview();
+    });
   }
 
   // Light / dark theme toggle.

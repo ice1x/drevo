@@ -224,6 +224,21 @@ body {
   color: var(--text);
   font: inherit;
 }
+.graph-refresh {
+  margin-left: auto;
+  padding: 0.28rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+.graph-refresh:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .limit-control input:focus {
   outline: none;
   border-color: var(--accent);
