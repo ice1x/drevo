@@ -97,6 +97,45 @@ async fn ui_app_js_returns_javascript_200() {
     );
 }
 
+// ── Stale-cache invalidation (issue #433) ──────────────────────────────
+// The client-side sample cache must be re-fetchable so a graph mutated on
+// the server (over Bolt or another client) does not keep showing deleted or
+// stale nodes/edges until a hard reload.
+
+#[tokio::test]
+async fn ui_offers_a_graph_refresh_control() {
+    let app = make_app();
+    let (_, _, bytes) = get(&app, "/ui").await;
+    let html = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        html.contains("id=\"graph-refresh\""),
+        "index.html must expose a Refresh control to re-fetch the graph (#433)"
+    );
+}
+
+#[tokio::test]
+async fn ui_app_js_reloads_the_overview_after_writes_and_on_refresh() {
+    let app = make_app();
+    let (_, _, bytes) = get(&app, "/ui/app.js").await;
+    let js = String::from_utf8(bytes).expect("utf-8");
+    // The Refresh control re-fetches the pool.
+    assert!(
+        js.contains("graph-refresh"),
+        "app.js must wire the #graph-refresh control (#433)"
+    );
+    // A successful UI graph write invalidates the cache by re-fetching.
+    assert!(
+        js.contains("isGraphWrite"),
+        "app.js must detect graph writes to invalidate the sample cache (#433)"
+    );
+    // Both paths re-run the pool fetch.
+    assert!(
+        js.matches("loadOverview()").count() >= 3,
+        "loadOverview() must be reachable from the write path and the Refresh \
+         control, not only on first load (#433)"
+    );
+}
+
 #[tokio::test]
 async fn ui_styles_css_returns_css_200() {
     let app = make_app();
