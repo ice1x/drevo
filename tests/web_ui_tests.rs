@@ -159,6 +159,19 @@ async fn ui_live_physics_arms_on_drag_not_on_grab() {
         js.contains("breadthfirst"),
         "a forest/tree must use the hierarchical breadthfirst layout"
     );
+    // The live cola sim's spring rest-length must be derived from the CURRENT
+    // on-screen geometry, not a hardcoded constant. A constant desyncs from the
+    // static (fcose) layout's edge length — as it did when fcose was retuned to
+    // 90 while cola stayed at 150 — so the first drag tick sprang every edge
+    // outward and the whole graph "rebuilt" instead of trailing the drag.
+    assert!(
+        js.contains("currentMeanEdgeLength") && js.contains("edgeLength: currentMeanEdgeLength()"),
+        "the live layout must measure the current mean edge length for its spring rest-length"
+    );
+    assert!(
+        !js.contains("edgeLength: 150"),
+        "the live layout must NOT hardcode a spring length that can desync from the static layout"
+    );
 }
 
 #[tokio::test]

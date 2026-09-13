@@ -511,6 +511,29 @@
   // connected neighbours along, exactly like the Neo4j Browser. We stop it on
   // release. `liveLayout` holds the running handle so we can stop/replace it.
   let liveLayout = null;
+  // Mean on-screen edge length RIGHT NOW. cola's spring rest-length must equal
+  // the geometry the graph is already sitting in; otherwise the instant a drag
+  // starts, cola yanks every edge toward a different rest length and the whole
+  // graph visibly "rebuilds" instead of the dragged node's neighbours smoothly
+  // trailing it. (Regressed in #437: fcose's idealEdgeLength was retuned to 90
+  // while cola stayed pinned at a hardcoded 150, so every edge sprang outward on
+  // the first drag tick.) Measuring keeps the live sim in sync with whatever the
+  // static layout produced and survives future fcose retuning.
+  function currentMeanEdgeLength() {
+    if (!cy) return 90;
+    let sum = 0;
+    let n = 0;
+    cy.edges().forEach((e) => {
+      const s = e.source().position();
+      const t = e.target().position();
+      const d = Math.hypot(s.x - t.x, s.y - t.y);
+      if (Number.isFinite(d) && d > 0) {
+        sum += d;
+        n += 1;
+      }
+    });
+    return n > 0 ? sum / n : 90;
+  }
   function colaLiveOptions() {
     return {
       name: "cola",
@@ -518,7 +541,9 @@
       fit: false, // re-fitting every tick while dragging is nauseating
       animate: true,
       randomize: false, // start from the current (fcose) positions
-      edgeLength: 150, // ideal spring length (matches fcose idealEdgeLength)
+      // Rest length = the current mean edge length, so the sim begins already
+      // at equilibrium and only the dragged neighbourhood moves (no start jolt).
+      edgeLength: currentMeanEdgeLength(),
       nodeSpacing: 28,
       handleDisconnected: true,
       // Let the user keep grabbing nodes while the sim runs.

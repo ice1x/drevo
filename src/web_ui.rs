@@ -354,14 +354,14 @@ mod tests {
             APP_JS.contains("startLiveLayout") && APP_JS.contains("stopLiveLayout"),
             "app.js must start/stop the live simulation"
         );
-        // The sim must be armed on `grab` (BEFORE the node moves) and stopped
-        // on `free`. cytoscape-cola pins the dragged node to the cursor only
-        // via its own `grab` handler, which is installed inside run(); starting
-        // on `drag` (post-grab) misses that pin, so neighbours jump once then
-        // stop trailing the node.
+        // The sim is armed on the first real `drag` (not on `grab`, which fires
+        // on a bare click and would reshuffle the graph on mere selection — see
+        // #437) and stopped on `free`. Because cytoscape-cola pins the dragged
+        // node to the cursor via its own `grab` handler, app.js re-emits `grab`
+        // when it starts the sim so the pin still takes and neighbours trail.
         assert!(
             APP_JS.contains("\"grab\"") && APP_JS.contains("\"free\""),
-            "app.js must arm the live simulation on node grab and stop it on free"
+            "app.js must re-emit grab when the drag sim starts and stop it on free"
         );
         // Because cola registers its grab handler only when run() is called —
         // after this grab was already dispatched — app.js must re-emit grab so
