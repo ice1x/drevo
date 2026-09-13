@@ -4,9 +4,11 @@
 //! `Dockerfile` and push it to GitHub Container Registry
 //! (`ghcr.io/ice1x/drevo`) on every semver tag (`v*`) — the image is a
 //! release artifact (changed 2026-07-30 from per-push-to-`main`, which
-//! blocked the single self-hosted runner with a ~40-min QEMU build every
-//! merge). Pull requests build the image but never push, so a forked-PR
-//! clone cannot publish under the project's namespace.
+//! back then blocked the single self-hosted runner with a ~40-min QEMU
+//! build every merge; the workflow now runs GitHub-hosted on
+//! `ubuntu-latest`, amd64 native + arm64 under QEMU). Pull requests build
+//! the image but never push, so a forked-PR clone cannot publish under
+//! the project's namespace.
 //!
 //! These tests parse `.github/workflows/docker-publish.yml` as text —
 //! no Docker daemon, no GHCR credentials, no `act` runner needed.
@@ -36,10 +38,12 @@
 //!     `push: ${{ github.event_name != 'pull_request' }}` so PRs build
 //!     and exercise the Dockerfile but never push under the project's
 //!     namespace.
-//! 7.  Multi-arch — `linux/amd64,linux/arm64`. amd64 is the CI runner
-//!     default; arm64 matters because the project's developer baseline
-//!     is Apple Silicon (the README "Performance Targets" section
-//!     calibrates against Apple Silicon).
+//! 7.  Multi-arch — `linux/amd64,linux/arm64`. amd64 is native on the
+//!     GitHub-hosted `ubuntu-latest` runner; arm64 is emulated under QEMU
+//!     and matters because the project's developer baseline is Apple
+//!     Silicon (the README "Performance Targets" section calibrates
+//!     against Apple Silicon) and arm64 K8s nodes (Graviton, Ampere) are
+//!     common.
 //! 8.  Metadata / tagging — `docker/metadata-action` emits, at minimum:
 //!     a SHA tag (`sha-<short>`), `latest` only on the default branch,
 //!     and semver tags `vMAJOR.MINOR.PATCH` / `vMAJOR.MINOR` from git
@@ -137,17 +141,17 @@ fn docker_publish_workflow_has_name() {
 #[test]
 fn docker_publish_does_not_trigger_on_push_to_main() {
     // Changed 2026-07-30: the image is a RELEASE artifact, published on
-    // `v*` tags only — NOT on every push to `main`. On the single
-    // self-hosted runner the ~40-min QEMU multi-arch build serialised
-    // behind and blocked every merge, so the per-merge trigger was
-    // removed. `:latest` tracks the newest release tag; `make release`
+    // `v*` tags only — NOT on every push to `main`. Back then, on the
+    // single self-hosted runner, the ~40-min QEMU multi-arch build
+    // serialised behind and blocked every merge, so the per-merge trigger
+    // was removed. `:latest` tracks the newest release tag; `make release`
     // (which pushes a `vX.Y.Z` tag) is what publishes the image.
     let w = read_workflow();
     // The push trigger must NOT filter by branch (no branch push at all).
     assert!(
         !w.contains("branches:"),
         "workflow must NOT trigger on a branch push (e.g. `main`) — the image publishes on \
-         `v*` tags only; a per-merge multi-arch build blocks the single self-hosted runner"
+         `v*` tags only; a per-merge multi-arch build is redundant release work"
     );
 }
 
@@ -163,14 +167,14 @@ fn docker_publish_triggers_on_version_tags() {
 #[test]
 fn docker_publish_does_not_trigger_on_pull_request() {
     // Inverted from the original "must trigger on pull_request" rule.
-    // Reason: on the self-hosted Apple Silicon runner, the `linux/amd64`
-    // half of the multi-arch matrix runs under QEMU emulation and the
-    // end-to-end build cumulated to ~19 min per PR. That duplicates
+    // Reason: the PR-time multi-arch build cumulated to ~19 min per PR
+    // (back on the self-hosted Apple Silicon runner the `linux/amd64` half
+    // ran under QEMU; on today's GitHub-hosted `ubuntu-latest` amd64 is
+    // native and only `linux/arm64` is emulated). Either way it duplicates
     // ci.yml's compilation + test surface and only adds value when the
-    // change touches `Dockerfile` itself (rare). The next push-to-main
-    // build catches any Dockerfile regression before the image actually
-    // ships. Contributors who genuinely need a PR-time multi-arch build
-    // can use `workflow_dispatch` from the Actions UI on the PR branch.
+    // change touches `Dockerfile` itself (rare). Contributors who
+    // genuinely need a PR-time multi-arch build can use
+    // `workflow_dispatch` from the Actions UI on the PR branch.
     let w = read_workflow();
     let trimmed: String = w
         .lines()
