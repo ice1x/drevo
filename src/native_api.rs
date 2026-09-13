@@ -133,6 +133,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/ui", get(crate::web_ui::serve_index))
         .route("/ui/", get(crate::web_ui::redirect_ui_slash))
         .route("/ui/app.js", get(crate::web_ui::serve_app_js))
+        .route("/ui/graph_math.js", get(crate::web_ui::serve_graph_math_js))
         .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
         .route(
             "/ui/vendor/cytoscape.min.js",

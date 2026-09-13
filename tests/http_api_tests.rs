@@ -2975,6 +2975,18 @@ async fn ui_styles_css_styles_tooltip_for_client() {
     assert!(body.contains("#cy-tooltip"));
 }
 
+#[tokio::test]
+async fn ui_graph_math_module_serves_to_client() {
+    // The pure geometry helpers app.js relies on for the live drag spring are
+    // served same-origin and are unit-tested by graph_math.test.js (node).
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/graph_math.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("meanEdgeLength"));
+    assert!(body.contains("DrevoGraphMath"));
+}
+
 // ── #253 slice 1 — storage-bloat observability ──────────────────────────
 
 #[tokio::test]

@@ -198,6 +198,9 @@
     <span class="hint">Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours.</span>
   </footer>
 
+  <!-- Pure graph-geometry helpers (unit-tested in graph_math.test.js); must
+       load before app.js, which reads window.DrevoGraphMath. -->
+  <script src="/ui/graph_math.js"></script>
   <script src="/ui/app.js"></script>
 </body>
 </html>

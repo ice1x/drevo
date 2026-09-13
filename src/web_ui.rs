@@ -11,6 +11,7 @@
 //!
 //! - `GET /ui` → `index.html` (`text/html; charset=utf-8`)
 //! - `GET /ui/app.js` → `app.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/styles.css` → `styles.css` (`text/css; charset=utf-8`)
 //! - `GET /ui/vendor/cytoscape.min.js` → Cytoscape.js core
 //! - `GET /ui/vendor/layout-base.js` → fcose dep
@@ -55,6 +56,11 @@ const INDEX_HTML: &str = include_str!("../static/web/index.html");
 /// `app.js` body — embedded at compile time.
 const APP_JS: &str = include_str!("../static/web/app.js");
 
+/// `graph_math.js` body — pure, DOM-free geometry helpers used by `app.js`,
+/// embedded at compile time. Unit-tested separately by `graph_math.test.js`
+/// (`node --test`, the `web-assets` CI job).
+const GRAPH_MATH_JS: &str = include_str!("../static/web/graph_math.js");
+
 /// `styles.css` body — embedded at compile time.
 const STYLES_CSS: &str = include_str!("../static/web/styles.css");
 
@@ -87,6 +93,11 @@ pub async fn serve_index() -> Response {
 /// `GET /ui/app.js` → serve the client JS.
 pub async fn serve_app_js() -> Response {
     asset_response(APP_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/graph_math.js` → serve the pure geometry helpers `app.js` depends on.
+pub async fn serve_graph_math_js() -> Response {
+    asset_response(GRAPH_MATH_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/styles.css` → serve the stylesheet.
@@ -354,14 +365,14 @@ mod tests {
             APP_JS.contains("startLiveLayout") && APP_JS.contains("stopLiveLayout"),
             "app.js must start/stop the live simulation"
         );
-        // The sim must be armed on `grab` (BEFORE the node moves) and stopped
-        // on `free`. cytoscape-cola pins the dragged node to the cursor only
-        // via its own `grab` handler, which is installed inside run(); starting
-        // on `drag` (post-grab) misses that pin, so neighbours jump once then
-        // stop trailing the node.
+        // The sim is armed on the first real `drag` (not on `grab`, which fires
+        // on a bare click and would reshuffle the graph on mere selection — see
+        // #437) and stopped on `free`. Because cytoscape-cola pins the dragged
+        // node to the cursor via its own `grab` handler, app.js re-emits `grab`
+        // when it starts the sim so the pin still takes and neighbours trail.
         assert!(
             APP_JS.contains("\"grab\"") && APP_JS.contains("\"free\""),
-            "app.js must arm the live simulation on node grab and stop it on free"
+            "app.js must re-emit grab when the drag sim starts and stop it on free"
         );
         // Because cola registers its grab handler only when run() is called —
         // after this grab was already dispatched — app.js must re-emit grab so
@@ -374,6 +385,37 @@ mod tests {
             APP_JS.contains("infinite: true"),
             "the live cola layout must run continuously (infinite) during drag"
         );
+    }
+
+    #[test]
+    fn embedded_graph_math_module_backs_live_drag_spring() {
+        // The live drag spring length is computed by the pure, unit-tested
+        // graph_math.js module — not hardcoded in app.js (which regressed once
+        // as `edgeLength: 150`, desynced from fcose's retuned 90, see #440).
+        assert!(
+            GRAPH_MATH_JS.contains("meanEdgeLength") && GRAPH_MATH_JS.contains("DrevoGraphMath"),
+            "graph_math.js must export meanEdgeLength on DrevoGraphMath"
+        );
+        assert!(
+            !GRAPH_MATH_JS.contains("document") && !GRAPH_MATH_JS.contains("window."),
+            "graph_math.js must stay DOM-free so it is unit-testable under node"
+        );
+        assert!(
+            APP_JS.contains("DrevoGraphMath.meanEdgeLength"),
+            "app.js must derive the live spring length from graph_math.js"
+        );
+        assert!(
+            !APP_JS.contains("edgeLength: 150"),
+            "app.js must not hardcode the live spring length (it desyncs from the static layout)"
+        );
+        // index.html must load graph_math.js BEFORE app.js so DrevoGraphMath exists.
+        let gm = INDEX_HTML
+            .find("/ui/graph_math.js")
+            .expect("index.html must load graph_math.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(gm < appjs, "graph_math.js must load before app.js");
     }
 
     #[test]
