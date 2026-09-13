@@ -136,6 +136,31 @@ async fn ui_app_js_reloads_the_overview_after_writes_and_on_refresh() {
     );
 }
 
+// ── Layout stability: a click must not re-run the physics ──────────────
+// The live cola simulation must arm on an actual drag, not on `grab`
+// (mouse-down), so that merely clicking/selecting a node does not kick off a
+// whole-graph re-simulation that visibly reshuffles the layout.
+
+#[tokio::test]
+async fn ui_live_physics_arms_on_drag_not_on_grab() {
+    let app = make_app();
+    let (_, _, bytes) = get(&app, "/ui/app.js").await;
+    let js = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        js.contains(r#"cy.on("drag", "node""#),
+        "the live layout must start on a real drag"
+    );
+    assert!(
+        !js.contains(r#"cy.on("grab", "node""#),
+        "the live layout must NOT arm on grab (a bare click would reshuffle the graph)"
+    );
+    // Hierarchies lay out crossing-free rather than tangling under a force layout.
+    assert!(
+        js.contains("breadthfirst"),
+        "a forest/tree must use the hierarchical breadthfirst layout"
+    );
+}
+
 #[tokio::test]
 async fn ui_styles_css_returns_css_200() {
     let app = make_app();
