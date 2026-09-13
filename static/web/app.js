@@ -449,21 +449,59 @@
       randomize: randomize === true,
       fit: true,
       padding: 36,
-      // Generous spacing so nodes don't sit on top of their edges and the
-      // labels have room to breathe (the cramped "душно" look).
-      nodeRepulsion: 16000,
-      idealEdgeLength: 150,
+      // Keep connected nodes close so edges don't stretch across the canvas and
+      // cross each other into a hairball: shorter springs + less repulsion +
+      // stronger gravity pull neighbours together (a force layout of a spread-
+      // out graph is what read as "tangled edges").
+      nodeRepulsion: 6000,
+      idealEdgeLength: 90,
       nestingFactor: 0.1,
-      gravity: 0.22,
-      gravityRange: 4.2,
-      packComponents: false,
-      nodeSeparation: 175,
+      gravity: 0.35,
+      gravityRange: 3.2,
+      packComponents: true,
+      nodeSeparation: 90,
       nodeDimensionsIncludeLabels: true,
     };
   }
+
+  // A forest (tree / hierarchy) has exactly `nodes − 1` edges per connected
+  // component and no cycles. Most drevo exploration is hierarchical (search
+  // trees, folder/subtree views), and a force layout tangles a tree's edges
+  // needlessly — a hierarchical `breadthfirst` gives it a clean, crossing-free
+  // radial layout instead. Cyclic graphs fall back to fcose.
+  function isForest() {
+    if (!cy) return false;
+    const comps = cy.elements().components();
+    if (comps.length === 0) return false;
+    return comps.every((c) => c.edges().length === c.nodes().length - 1);
+  }
+
+  // `breadthfirst` (Cytoscape core — no extra vendor bundle) lays a tree out in
+  // rings by hop-distance from the root: zero edge crossings, the hierarchy is
+  // legible, and it still reads as the familiar radial shape.
+  function breadthfirstOptions(animate) {
+    return {
+      name: "breadthfirst",
+      animate: animate !== false,
+      animationDuration: 500,
+      fit: true,
+      padding: 36,
+      circle: true, // radial rings rather than a very wide top-down tree
+      directed: false, // ring by undirected distance, robust to edge direction
+      avoidOverlap: true,
+      spacingFactor: 1.15,
+      nodeDimensionsIncludeLabels: true,
+    };
+  }
+
   function runLayout(animate, randomize) {
     if (!cy) return;
-    cy.layout(fcoseOptions(animate, randomize)).run();
+    // A hierarchy lays out crossing-free with breadthfirst; anything with a
+    // cycle uses the (tightened) fcose force layout.
+    const opts = isForest()
+      ? breadthfirstOptions(animate)
+      : fcoseOptions(animate, randomize);
+    cy.layout(opts).run();
   }
 
   // ── Live force simulation for drag (cola) ──────────────────────────────
@@ -677,25 +715,24 @@
     cy.on("mouseover", "edge", (evt) => evt.target.addClass("hl"));
     cy.on("mouseout", "edge", (evt) => evt.target.removeClass("hl"));
 
-    // Live drag physics (Neo4j-Browser-style): the moment a node is grabbed we
-    // start an infinite cola force simulation so its connected neighbours tug
-    // along while it is dragged, then stop it on release so the graph is calm
-    // when idle.
+    // Live drag physics (Neo4j-Browser-style): while a node is DRAGGED its
+    // connected neighbours tug along via an infinite cola force simulation,
+    // stopped on release so the graph is calm when idle.
     //
-    // The sim MUST be armed on `grab`, before the node moves. cytoscape-cola
-    // pins the dragged node to the cursor only through its own `grab` handler,
-    // which it installs inside run(). If we waited for the first `drag` event
-    // (post-grab) the pin would be missed: cola would relax once (an ugly
-    // one-off "jump") and then, with the node not fixed, fight the cursor so
-    // the neighbours stop trailing it. So we start on grab and immediately
-    // re-emit grab — cola's freshly-registered handler then catches it and
-    // pins the node, while our own handler bails out (liveLayout already set).
-    cy.on("grab", "node", (evt) => {
+    // The simulation is armed on the first `drag` event, NOT on `grab`. `grab`
+    // (mouse-down) fires on every plain click too, so arming there kicked off a
+    // whole-graph re-simulation on any click — the layout visibly "rebuilt"
+    // itself just from selecting a node. `drag` fires only once the pointer
+    // actually moves the node, so a click now only selects/inspects and the
+    // physics runs solely during a real drag. We re-emit `grab` when starting so
+    // cytoscape-cola (whose own `grab` handler pins the dragged node to the
+    // cursor) still pins it and the neighbours trail correctly.
+    cy.on("drag", "node", (evt) => {
       const node = evt.target;
-      if (liveLayout) return; // already simulating
+      if (liveLayout) return; // already simulating this drag
       if (node.degree(false) === 0) return; // lone node: nothing to tug
       startLiveLayout();
-      if (liveLayout) node.emit("grab"); // let cola pin the grabbed node
+      if (liveLayout) node.emit("grab"); // let cola pin the dragged node
     });
     cy.on("free", "node", () => stopLiveLayout());
   }
