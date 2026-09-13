@@ -384,6 +384,26 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Executable unit tests for the browser's pure JS helpers (static/web/*.js).
+  # The Web UI ships baked assets (include_str!) whose *logic* the Rust suite can
+  # only string-match; the geometry that drives the interactive layout is split
+  # into DOM-free modules and genuinely executed here via node's built-in test
+  # runner (no npm deps). Cheap (~a few seconds) and catches value-level
+  # regressions like #440 (live-drag spring length) that a grep guard cannot.
+  web-assets:
+    name: Web assets (node --test)
+    needs: changes
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Unit-test the browser geometry helpers
+        run: node --test static/web/*.test.js
+
   # Phase 8 task 00049 — Kubernetes manifests under `k8s/`.
   # Phase 8 task 00050 — Kustomize overlays under `k8s/overlays/<env>/`.
   #

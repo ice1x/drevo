@@ -169,8 +169,41 @@ async fn ui_live_physics_arms_on_drag_not_on_grab() {
         "the live layout must measure the current mean edge length for its spring rest-length"
     );
     assert!(
+        js.contains("DrevoGraphMath.meanEdgeLength"),
+        "the mean-edge-length math must come from the unit-tested graph_math.js module"
+    );
+    assert!(
         !js.contains("edgeLength: 150"),
         "the live layout must NOT hardcode a spring length that can desync from the static layout"
+    );
+}
+
+// The pure geometry module app.js depends on must be served same-origin and
+// must load before app.js (which reads `window.DrevoGraphMath` at drag time).
+#[tokio::test]
+async fn ui_serves_graph_math_module_before_app_js() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/graph_math.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        ct.starts_with("text/javascript"),
+        "GET /ui/graph_math.js must return javascript, got {ct:?}"
+    );
+    let js = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        js.contains("meanEdgeLength") && js.contains("DrevoGraphMath"),
+        "graph_math.js must export meanEdgeLength on DrevoGraphMath"
+    );
+
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let gm = idx
+        .find("/ui/graph_math.js")
+        .expect("index.html must load graph_math.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(
+        gm < appjs,
+        "graph_math.js must be loaded before app.js so DrevoGraphMath exists"
     );
 }
 

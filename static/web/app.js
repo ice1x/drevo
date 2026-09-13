@@ -511,28 +511,23 @@
   // connected neighbours along, exactly like the Neo4j Browser. We stop it on
   // release. `liveLayout` holds the running handle so we can stop/replace it.
   let liveLayout = null;
-  // Mean on-screen edge length RIGHT NOW. cola's spring rest-length must equal
-  // the geometry the graph is already sitting in; otherwise the instant a drag
-  // starts, cola yanks every edge toward a different rest length and the whole
-  // graph visibly "rebuilds" instead of the dragged node's neighbours smoothly
-  // trailing it. (Regressed in #437: fcose's idealEdgeLength was retuned to 90
-  // while cola stayed pinned at a hardcoded 150, so every edge sprang outward on
-  // the first drag tick.) Measuring keeps the live sim in sync with whatever the
-  // static layout produced and survives future fcose retuning.
+  // cola's spring rest-length must equal the geometry the graph is already
+  // sitting in; otherwise the instant a drag starts, cola yanks every edge
+  // toward a different rest length and the whole graph visibly "rebuilds"
+  // instead of the dragged node's neighbours smoothly trailing it. (Regressed
+  // in #437: fcose's idealEdgeLength was retuned to 90 while cola stayed pinned
+  // at a hardcoded 150, so every edge sprang outward on the first drag tick.)
+  // Measuring the CURRENT mean edge length keeps the live sim in sync with
+  // whatever the static layout produced and survives future fcose retuning. The
+  // pure averaging lives in graph_math.js so it is unit-tested (graph_math.test.js).
   function currentMeanEdgeLength() {
     if (!cy) return 90;
-    let sum = 0;
-    let n = 0;
-    cy.edges().forEach((e) => {
+    const segments = cy.edges().map((e) => {
       const s = e.source().position();
       const t = e.target().position();
-      const d = Math.hypot(s.x - t.x, s.y - t.y);
-      if (Number.isFinite(d) && d > 0) {
-        sum += d;
-        n += 1;
-      }
+      return { x1: s.x, y1: s.y, x2: t.x, y2: t.y };
     });
-    return n > 0 ? sum / n : 90;
+    return DrevoGraphMath.meanEdgeLength(segments);
   }
   function colaLiveOptions() {
     return {
