@@ -78,6 +78,10 @@ fi
 # cuts a `vX.Y.Z` tag, which Docker Publish CI mirrors to ghcr.io — a registry
 # the compose/run-drevo deploy does not use. Unless `--no-tag`, this also cuts
 # and pushes the git tag so ghcr + history stay in sync.
+#
+# Refuses to run when HEAD is already the latest release tag's commit (no source
+# change since the last release → an identical image); pass `--force` to build
+# anyway.
 if [ "${1:-}" = "image" ]; then
   shift
   assume_yes=0
@@ -85,10 +89,12 @@ if [ "${1:-}" = "image" ]; then
   # (0.0.1 -> 0.0.2 -> …). Pass `minor`/`major` explicitly to jump.
   part="patch"
   do_tag=1
+  force=0
   while [ $# -gt 0 ]; do
     case "$1" in
       -y|--yes) assume_yes=1; shift ;;
       --no-tag) do_tag=0; shift ;;
+      --force) force=1; shift ;;
       minor|patch|major) part="$1"; shift ;;
       *) echo "release.sh image: unexpected arg '$1'" >&2; exit 2 ;;
     esac
@@ -117,6 +123,22 @@ if [ "${1:-}" = "image" ]; then
       echo "    cargo check && git add drevo.h Cargo.lock && git commit" >&2
     fi
     exit 1
+  fi
+
+  # Refuse a no-op rebuild: if HEAD is already the commit the latest release
+  # tag points at, the source is byte-for-byte what already shipped — a new
+  # image would differ only in its embedded version string and build date.
+  # Building + pushing that just burns a version number without a code change
+  # (the "built 0.0.27 for nothing" case). `--force` overrides.
+  if [ "$force" -ne 1 ]; then
+    last_tag=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)
+    if [ -n "$last_tag" ] \
+       && [ "$(git rev-list -n1 "$last_tag")" = "$(git rev-parse HEAD)" ]; then
+      echo "release.sh: HEAD is already released as $last_tag — no source change since." >&2
+      echo "  A new image would be identical bar its version/build-date. Refusing." >&2
+      echo "  Merge new commits first, or pass --force to build anyway." >&2
+      exit 1
+    fi
   fi
 
   cur=$(current_version)

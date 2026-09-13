@@ -189,3 +189,25 @@ fn release_image_passes_the_version_build_arg() {
         "release.sh image must pass --build-arg DREVO_VERSION=$next so the image reports the real version"
     );
 }
+
+#[test]
+fn release_image_refuses_a_noop_rebuild() {
+    // Guard against re-shipping an image with no source change (the "built
+    // 0.0.27 with the same code as 0.0.26" case): if HEAD is already the commit
+    // the latest release tag points at, the new image would be identical bar its
+    // version/build-date, so `image` mode must refuse — with a `--force` escape.
+    let script = read("scripts/release.sh");
+    assert!(
+        script.contains("--force") && script.contains("force=1"),
+        "release.sh image must accept a --force override flag"
+    );
+    // The no-op check compares HEAD to the latest release tag's commit.
+    assert!(
+        script.contains("git rev-list -n1 \"$last_tag\"") && script.contains("git rev-parse HEAD"),
+        "release.sh image must refuse when HEAD == the latest release tag's commit (no source change)"
+    );
+    assert!(
+        script.contains("no source change since"),
+        "release.sh must explain the refusal (no source change since the last release)"
+    );
+}
