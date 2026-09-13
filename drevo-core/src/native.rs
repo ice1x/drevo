@@ -2693,6 +2693,44 @@ impl GraphEngine for NativeGraph {
         Ok(())
     }
 
+    fn delete_nodes(&self, ids: &[u64]) -> Result<usize> {
+        // Batched delete under a single durability boundary (issue #435):
+        // deleting a subtree of `N` nodes costs one fsync, not `N`. Mirrors the
+        // per-node effects of `delete_node` — incident edges + index entries
+        // dropped (the `DeleteNode` op cascades on replay), a durable tombstone
+        // stamped per node (issue #389) — and skips ids that are already absent.
+        //
+        // Built on a private working copy that is swapped in only *after* the
+        // WAL append is durable, so an I/O failure leaves the live graph, the
+        // log and the feed untouched (all-or-nothing), exactly like a committed
+        // transaction. One `record` call flushes the whole batch via group
+        // commit (one fsync).
+        let mut live = write(&self.inner);
+        let mut working = Arc::clone(&live);
+        let w = Arc::make_mut(&mut working);
+        let mut ops: Vec<WalOp> = Vec::with_capacity(ids.len());
+        let mut tombs: Vec<(StampTarget, [u8; 16])> = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let Some(uuid) = w.get_node_arc(id).map(|n| n.uuid) else {
+                continue; // already absent — skip, not an error
+            };
+            w.delete_node(id)?;
+            ops.push(WalOp::DeleteNode(id));
+            tombs.push((StampTarget::Node(id), uuid));
+        }
+        if ops.is_empty() {
+            return Ok(0);
+        }
+        self.record(&ops)?;
+        *live = working;
+        drop(live);
+        for (target, uuid) in &tombs {
+            self.stamp_tombstone(*target, *uuid);
+        }
+        self.checkpoint_tombstones();
+        Ok(ops.len())
+    }
+
     fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
         let edge = Arc::make_mut(&mut write(&self.inner)).create_edge(new_edge)?;
         self.record(&[WalOp::UpsertEdge(edge.clone())])?;

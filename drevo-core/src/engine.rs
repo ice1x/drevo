@@ -58,6 +58,32 @@ pub trait GraphEngine {
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
     fn delete_node(&self, id: u64) -> Result<()>;
 
+    /// Delete many nodes in one batch, returning how many were actually removed
+    /// (issue #435). Each node is dropped with its incident edges and index
+    /// entries exactly as [`delete_node`](Self::delete_node); ids that are
+    /// already absent are skipped rather than erroring.
+    ///
+    /// The default implementation deletes one at a time (one durable write per
+    /// node). An engine that can batch — the native WAL engine — overrides this
+    /// to flush the whole batch under a **single fsync**, so deleting a subtree
+    /// costs one flush, not `N`.
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::CoreError`] other than a
+    /// [`NodeNotFound`](crate::error::CoreError::NodeNotFound) for an
+    /// already-absent id.
+    fn delete_nodes(&self, ids: &[u64]) -> Result<usize> {
+        let mut deleted = 0;
+        for &id in ids {
+            match self.delete_node(id) {
+                Ok(()) => deleted += 1,
+                Err(crate::error::CoreError::NodeNotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(deleted)
+    }
+
     /// Create an edge between two existing nodes.
     ///
     /// # Errors
