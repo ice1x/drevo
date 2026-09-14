@@ -411,6 +411,61 @@ fn docker_publish_builds_arm64() {
 }
 
 // ------------------------------------------------------------------
+// 7b. Docker Hub mirror (the registry the deploy pulls from) + no-op guard
+// ------------------------------------------------------------------
+
+#[test]
+fn docker_publish_also_publishes_to_docker_hub() {
+    // The compose/run deploy pulls Docker Hub `ice1x/drevo`, not ghcr. Docker
+    // Hub previously got only a local `docker build` from the Apple Silicon Mac
+    // (arm64-only) → "no images found for arch amd64". CI must publish the SAME
+    // multi-arch image to Docker Hub so amd64 lands where it is used.
+    let w = read_workflow();
+    assert!(
+        w.contains("docker.io/ice1x/drevo") || w.contains("DOCKERHUB_IMAGE"),
+        "workflow must also target Docker Hub `docker.io/ice1x/drevo` (via DOCKERHUB_IMAGE)"
+    );
+    // metadata-action must fan the tags across BOTH images.
+    assert!(
+        w.contains("${{ env.IMAGE_NAME }}") && w.contains("${{ env.DOCKERHUB_IMAGE }}"),
+        "docker/metadata-action `images:` must list both ghcr.io and Docker Hub images"
+    );
+    // Docker Hub auth must be pre-baked (no docker/login-action) under the
+    // canonical registry key, using the repo's Docker Hub secrets.
+    assert!(
+        w.contains("https://index.docker.io/v1/"),
+        "workflow must bake a Docker Hub `auths` entry keyed by the canonical registry"
+    );
+    assert!(
+        w.contains("secrets.DOCKERHUB_TOKEN") && w.contains("secrets.DOCKERHUB_USERNAME"),
+        "workflow must authenticate to Docker Hub with the DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets"
+    );
+}
+
+#[test]
+fn docker_publish_refuses_a_duplicate_no_change_tag() {
+    // A release is now just a `v*` tag. Guard the CI-cut path the same way
+    // scripts/release.sh guards the local path: if the tag being built points at
+    // the same commit as the previous release tag, the image would be identical
+    // bar its version/build-date — refuse instead of publishing a duplicate.
+    let w = read_workflow();
+    // Needs full history/tags to resolve the previous tag.
+    assert!(
+        w.contains("fetch-depth: 0"),
+        "workflow must checkout full history (fetch-depth: 0) so the no-op guard can \
+         resolve the previous release tag"
+    );
+    assert!(
+        w.contains("git rev-list -n1") && w.contains("git tag --list"),
+        "workflow must compare the current tag's commit against the previous release tag's"
+    );
+    assert!(
+        w.contains("no source change") || w.contains("duplicate image"),
+        "the no-op guard must explain why it refused (no source change / duplicate image)"
+    );
+}
+
+// ------------------------------------------------------------------
 // 8. Metadata / tagging
 // ------------------------------------------------------------------
 

@@ -83,6 +83,11 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ghcr.io/ice1x/drevo
+  # The registry the deploy (compose / run-drevo) actually pulls from. CI
+  # publishes the SAME multi-arch image here so `linux/amd64` lands where it is
+  # used — previously Docker Hub got only a local `docker build` from the Apple
+  # Silicon Mac (arm64-only), hence "no images found for arch amd64".
+  DOCKERHUB_IMAGE: docker.io/ice1x/drevo
 
 permissions:
   contents: read
@@ -90,7 +95,7 @@ permissions:
 
 jobs:
   build-and-publish:
-    name: Build & publish (ghcr.io)
+    name: Build & publish (ghcr.io + Docker Hub)
     # GitHub-hosted, NOT self-hosted. This is a tag-only release artifact that
     # nobody waits on synchronously; running it on the single self-hosted runner
     # monopolised it for the whole multi-arch build (~40-60 min on a cold run),
@@ -106,49 +111,68 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so the no-op guard below can resolve the
+          # previous release tag and compare commits.
+          fetch-depth: 0
 
-      # Use an ephemeral DOCKER_CONFIG so `docker login` does NOT write
-      # through the macOS osxkeychain credsStore.
+      # Refuse to publish a duplicate: if the release tag being built points at
+      # the SAME commit as the previous release tag, there is no source change
+      # and the resulting image would be identical bar its version/build-date
+      # (the "cut v0.0.28 on the same commit as v0.0.27" case). This mirrors the
+      # local guard in scripts/release.sh so the CI-cut path is protected too.
+      # Skipped for workflow_dispatch (a deliberate manual re-publish).
+      - name: Refuse a no-op release (tag with no source change)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          cur="${GITHUB_REF_NAME}"
+          prev=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+                 | grep -vFx "$cur" | head -n1 || true)
+          if [ -n "$prev" ] && \
+             [ "$(git rev-list -n1 "$cur")" = "$(git rev-list -n1 "$prev")" ]; then
+            echo "::error::$cur points at the same commit as $prev — no source change since the last release; refusing to publish a duplicate image. Use workflow_dispatch to force a rebuild."
+            exit 1
+          fi
+          echo "no-op guard: $cur is ahead of ${prev:-<no previous tag>} — publishing."
+
+      # Authenticate to BOTH registries by pre-baking a base64 `auths` blob into
+      # a per-run DOCKER_CONFIG, rather than using `docker/login-action`.
       #
-      # Why this step exists
-      # --------------------
-      # The project's self-hosted runner is an Apple Silicon Mac. Docker
-      # Desktop on macOS ships `~/.docker/config.json` with
-      # `"credsStore": "desktop"` (which delegates to `osxkeychain`).
-      # `docker/login-action` shells out to `docker login`, which then
-      # tries to write the GHCR credential through that credsStore.
-      # Writing to the Keychain requires an unlocked GUI session, so on
-      # a headless runner the call fails with:
+      # Why pre-baked auths (not `docker login`)
+      # ----------------------------------------
+      # Reading auths straight from the config file invokes no credential helper,
+      # so the push works on any runner without a credsStore. (This originally
+      # mattered on the retired self-hosted Apple Silicon Mac, where Docker
+      # Desktop re-injected `credsStore: osxkeychain` even into a `{}` config and
+      # `docker login` failed headless with `-25308`; on today's GitHub-hosted
+      # ubuntu-latest there is no keychain, but the pre-baked approach stays —
+      # it is simpler, needs no extra action, and keeps buildx's config
+      # co-located so the post-job `docker buildx rm` finds it.)
       #
-      #   Error saving credentials: error storing credentials - err: exit
-      #   status 1, out: `User interaction is not allowed. (-25308)`
-      #
-      # Docker Publish was red on every push to main from before #90
-      # through bce8ade because of this exact error.
-      #
-      # NOTE: a `{}` (or `{"credsStore":""}`) config does NOT help — Docker
-      # Desktop RE-INJECTS `credsStore: osxkeychain` on `docker login`. Fix:
-      # skip `docker login` entirely and pre-bake the base64 `auths` blob into
-      # the per-run DOCKER_CONFIG below; reading auths from the file invokes no
-      # credential helper, so the Keychain is never touched.
-      # Placed BEFORE buildx setup so the buildx instance also lives
-      # inside DOCKER_CONFIG and the post-job `docker buildx rm` step
-      # finds it without falling back to the user config.
+      # Two auths are baked: ghcr.io (GITHUB_TOKEN) and Docker Hub
+      # (DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets, keyed under the canonical
+      # `https://index.docker.io/v1/` registry). On pull_request nothing is
+      # pushed, so an empty config is fine; the build step still validates.
       #
       # Pinned by
       # `tests/ci_self_hosted_runner_tests.rs::docker_publish_overrides_docker_config_to_avoid_macos_keychain`.
-      - name: Set up ephemeral DOCKER_CONFIG with GHCR auth (no keychain)
+      - name: Set up ephemeral DOCKER_CONFIG with registry auth (no keychain)
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           DC="${RUNNER_TEMP:-/tmp}/docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$DC"
           if [ "$EVENT_NAME" != "pull_request" ]; then
-            auth=$(printf '%s' "${GHCR_USER}:${GHCR_TOKEN}" | base64 | tr -d '\n')
-            printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$auth" > "$DC/config.json"
+            ghcr_auth=$(printf '%s' "${GHCR_USER}:${GHCR_TOKEN}" | base64 | tr -d '\n')
+            dh_auth=$(printf '%s' "${DOCKERHUB_USER}:${DOCKERHUB_TOKEN}" | base64 | tr -d '\n')
+            printf '{"auths":{"%s":{"auth":"%s"},"https://index.docker.io/v1/":{"auth":"%s"}}}' \
+              "$REGISTRY" "$ghcr_auth" "$dh_auth" > "$DC/config.json"
           else
             printf '{}' > "$DC/config.json"
           fi
@@ -173,7 +197,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          # Same tag set for both registries: ghcr.io (canonical, K8s pins it)
+          # and Docker Hub (what the compose/run deploy pulls). build-push below
+          # pushes the one multi-arch build to every resulting tag.
+          images: |
+            ${{ env.IMAGE_NAME }}
+            ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=ref,event=branch
             type=sha
