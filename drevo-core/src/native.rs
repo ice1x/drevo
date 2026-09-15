@@ -122,6 +122,11 @@ struct Inner {
     kind_index: HashMap<String, BTreeSet<u64>>,
     /// Edge-kind string → interned `u32` id (adjacency stores the id).
     kind_ids: HashMap<String, u32>,
+    /// `node id → embedding vector` — the durable, typed embedding store
+    /// (issue #446), the native counterpart of the KV `vec:` keyspace. Kept
+    /// separate from node `properties`: distinct lifecycle, and the HNSW index
+    /// is rebuilt from it. Independent of node deletion, matching KV.
+    embeddings: HashMap<u64, Vec<f32>>,
     /// Declared schema constraints, validated at transaction commit.
     constraints: Vec<Constraint>,
     next_node_id: u64,
@@ -582,6 +587,13 @@ impl Inner {
         for e in edges {
             ops.push(WalOp::UpsertEdge((**e).clone()));
         }
+        // Embeddings last, id-ascending, so compaction/dump preserves the
+        // durable embedding store (issue #446).
+        let mut embs: Vec<(&u64, &Vec<f32>)> = self.embeddings.iter().collect();
+        embs.sort_by_key(|(id, _)| **id);
+        for (id, vec) in embs {
+            ops.push(WalOp::SetEmbedding(*id, vec.clone()));
+        }
         ops
     }
 
@@ -649,6 +661,12 @@ impl Inner {
                 self.edges.insert(edge.id, Arc::new(edge));
             }
             WalOp::DeleteEdge(id) => self.remove_edge(id),
+            WalOp::SetEmbedding(id, vector) => {
+                self.embeddings.insert(id, vector);
+            }
+            WalOp::DeleteEmbedding(id) => {
+                self.embeddings.remove(&id);
+            }
         }
     }
 
@@ -840,6 +858,12 @@ pub enum WalOp {
     UpsertEdge(Edge),
     /// Delete an edge.
     DeleteEdge(u64),
+    /// Insert or replace a node's embedding vector (issue #446). The durable,
+    /// typed embedding store — independent of node `properties`, keyed by node
+    /// id, mirroring the KV engine's `vec:` keyspace.
+    SetEmbedding(u64, Vec<f32>),
+    /// Delete a node's embedding (idempotent).
+    DeleteEmbedding(u64),
 }
 
 /// An in-memory, native [`GraphEngine`] (RFC Phase 2/3). See the module docs.
@@ -1700,6 +1724,99 @@ impl NativeGraph {
         read(&self.inner).list_edges_by_kind(kind, limit, offset)
     }
 
+    // ----- durable embedding store (issue #446, epic #444) -------------------
+    //
+    // The native counterpart of the KV `vec:` keyspace: a typed, durable
+    // per-node embedding store, independent of node `properties`. Writes append
+    // a `WalOp::SetEmbedding`/`DeleteEmbedding` (durable, replicated, compacted
+    // like node/edge records); reads are lock-free clones.
+
+    /// Store (or replace) `node_id`'s embedding, durably. Errors with
+    /// [`CoreError::NodeNotFound`] if the node does not exist — matching
+    /// `Drevo::set_embedding`.
+    ///
+    /// # Errors
+    /// [`CoreError::NodeNotFound`] if `node_id` is absent; propagates a WAL
+    /// append/fsync failure.
+    pub fn set_embedding(&self, node_id: u64, vector: Vec<f32>) -> Result<()> {
+        {
+            let mut guard = write(&self.inner);
+            let inner = Arc::make_mut(&mut guard);
+            if !inner.nodes.contains_key(&node_id) {
+                return Err(CoreError::NodeNotFound(node_id));
+            }
+            inner.apply_wal_op(WalOp::SetEmbedding(node_id, vector.clone()));
+        }
+        self.record(&[WalOp::SetEmbedding(node_id, vector)])
+    }
+
+    /// Store many embeddings in one durable batch (one fsync). Validates every
+    /// node exists **before** applying any, so it is all-or-nothing — matching
+    /// `Drevo::set_embeddings_batch`.
+    ///
+    /// # Errors
+    /// [`CoreError::NodeNotFound`] for the first absent node (nothing is
+    /// written); propagates a WAL append/fsync failure.
+    pub fn set_embeddings_batch(&self, embeddings: &[(u64, Vec<f32>)]) -> Result<()> {
+        if embeddings.is_empty() {
+            return Ok(());
+        }
+        let ops: Vec<WalOp> = {
+            let mut guard = write(&self.inner);
+            let inner = Arc::make_mut(&mut guard);
+            for (id, _) in embeddings {
+                if !inner.nodes.contains_key(id) {
+                    return Err(CoreError::NodeNotFound(*id));
+                }
+            }
+            let mut ops = Vec::with_capacity(embeddings.len());
+            for (id, vector) in embeddings {
+                inner.apply_wal_op(WalOp::SetEmbedding(*id, vector.clone()));
+                ops.push(WalOp::SetEmbedding(*id, vector.clone()));
+            }
+            ops
+        };
+        self.record(&ops)
+    }
+
+    /// Fetch `node_id`'s embedding, or `None` — parity with
+    /// `Drevo::get_embedding`.
+    pub fn get_embedding(&self, node_id: u64) -> Option<Vec<f32>> {
+        read(&self.inner).embeddings.get(&node_id).cloned()
+    }
+
+    /// Delete `node_id`'s embedding, durably. Idempotent (a missing embedding
+    /// is not an error) — parity with `Drevo::delete_embedding`.
+    ///
+    /// # Errors
+    /// Propagates a WAL append/fsync failure.
+    pub fn delete_embedding(&self, node_id: u64) -> Result<()> {
+        {
+            let mut guard = write(&self.inner);
+            Arc::make_mut(&mut guard).apply_wal_op(WalOp::DeleteEmbedding(node_id));
+        }
+        self.record(&[WalOp::DeleteEmbedding(node_id)])
+    }
+
+    /// The number of stored embeddings — parity with `Drevo::embedding_count`.
+    pub fn embedding_count(&self) -> usize {
+        read(&self.inner).embeddings.len()
+    }
+
+    /// Snapshot of all `(node_id, embedding)` pairs, id-ascending — the native
+    /// engine's feed into the shared HNSW builder (`vector_store::build_hnsw_from`,
+    /// issue #446 S2). Deterministic order for a fixed HNSW seed.
+    pub fn all_embeddings(&self) -> Vec<(u64, Vec<f32>)> {
+        let inner = read(&self.inner);
+        let mut out: Vec<(u64, Vec<f32>)> = inner
+            .embeddings
+            .iter()
+            .map(|(id, v)| (*id, v.clone()))
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
     /// Distinct neighbours as zero-copy `Arc<Node>` handles — the fan-out
     /// counterpart to [`get_node_arc`](Self::get_node_arc), so expanding a
     /// high-degree node never deep-clones every neighbour's record.
@@ -2359,6 +2476,7 @@ impl NativeGraph {
         // (same accounting as `wal_compacted_bytes`, the logical denominator).
         let mut node_bytes = 0u64;
         let mut edge_bytes = 0u64;
+        let mut embedding_bytes = 0u64;
         for op in inner.to_wal_ops() {
             let bytes = serde_json::to_string(&op)
                 .map(|s| s.len() as u64 + 1)
@@ -2366,7 +2484,9 @@ impl NativeGraph {
             match op {
                 WalOp::UpsertNode(_) => node_bytes += bytes,
                 WalOp::UpsertEdge(_) => edge_bytes += bytes,
-                WalOp::DeleteNode(_) | WalOp::DeleteEdge(_) => {}
+                WalOp::SetEmbedding(..) => embedding_bytes += bytes,
+                // `to_wal_ops` snapshots only upserts, never deletes.
+                WalOp::DeleteNode(_) | WalOp::DeleteEdge(_) | WalOp::DeleteEmbedding(_) => {}
             }
         }
 
@@ -2387,6 +2507,7 @@ impl NativeGraph {
             ("in", in_rows, in_rows * adj_entry),
             ("title", inner.titles.len() as u64, title_bytes),
             ("kind", kind_rows, kind_bytes),
+            ("embedding", inner.embeddings.len() as u64, embedding_bytes),
         ]
     }
 

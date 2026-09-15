@@ -485,6 +485,87 @@ impl NativeService {
         self.graph.list_edges_by_kind(kind, limit, offset)
     }
 
+    // ----- durable embedding store + HNSW (embedded parity, #446) ------------
+    //
+    // The native counterpart of the KV `vec:` store + `build_vector_index`.
+    // Reads/writes delegate to the durable `NativeGraph` store; the HNSW index
+    // is rebuilt on demand from that store via the shared, engine-agnostic
+    // `vector_store::build_hnsw_from` (issue #446 S0).
+
+    /// Store (or replace) a node's embedding, durably — parity with
+    /// `Drevo::set_embedding`.
+    ///
+    /// # Errors
+    /// [`DrevoError::NodeNotFound`] if the node is absent; propagates a WAL
+    /// failure.
+    pub fn set_embedding(&self, node_id: u64, embedding: Vec<f32>) -> Result<(), DrevoError> {
+        Ok(self.graph.set_embedding(node_id, embedding)?)
+    }
+
+    /// Store many embeddings in one durable batch (one fsync), all-or-nothing —
+    /// parity with `Drevo::set_embeddings_batch`.
+    ///
+    /// # Errors
+    /// [`DrevoError::NodeNotFound`] for the first absent node (nothing written);
+    /// propagates a WAL failure.
+    pub fn set_embeddings_batch(&self, embeddings: &[(u64, Vec<f32>)]) -> Result<(), DrevoError> {
+        Ok(self.graph.set_embeddings_batch(embeddings)?)
+    }
+
+    /// Fetch a node's embedding, or `None` — parity with `Drevo::get_embedding`.
+    pub fn get_embedding(&self, node_id: u64) -> Option<Vec<f32>> {
+        self.graph.get_embedding(node_id)
+    }
+
+    /// Delete a node's embedding (idempotent), durably — parity with
+    /// `Drevo::delete_embedding`.
+    ///
+    /// # Errors
+    /// Propagates a WAL failure.
+    pub fn delete_embedding(&self, node_id: u64) -> Result<(), DrevoError> {
+        Ok(self.graph.delete_embedding(node_id)?)
+    }
+
+    /// The number of stored embeddings — parity with `Drevo::embedding_count`.
+    pub fn embedding_count(&self) -> usize {
+        self.graph.embedding_count()
+    }
+
+    /// Rebuild an in-memory HNSW index over every stored embedding — parity
+    /// with `Drevo::build_vector_index`. The index is not persisted (the
+    /// embeddings are); rebuild after reopen.
+    ///
+    /// # Errors
+    /// [`DrevoError::Vector`] if a stored embedding cannot be inserted (e.g. a
+    /// dimension mismatch against the first).
+    pub fn build_vector_index(
+        &self,
+        config: crate::vector::HnswConfig,
+    ) -> Result<crate::vector::HnswIndex, DrevoError> {
+        crate::vector::store::build_hnsw_from(
+            self.graph
+                .all_embeddings()
+                .into_iter()
+                .map(|(id, v)| (id, crate::vector::Vector::from(v))),
+            config,
+        )
+    }
+
+    /// k-nearest embeddings to `query` by the default (cosine) metric —
+    /// `(node_id, distance)`, nearest first. Parity with the Python handle's
+    /// `vector_search`: rebuilds the HNSW index, then searches.
+    ///
+    /// # Errors
+    /// [`DrevoError::Vector`] on a dimension mismatch (query vs stored vectors).
+    pub fn vector_search(&self, query: &[f32], k: usize) -> Result<Vec<(u64, f32)>, DrevoError> {
+        let index = self.build_vector_index(crate::vector::HnswConfig::default())?;
+        Ok(index
+            .search(query, k)?
+            .into_iter()
+            .map(|n| (n.key, n.distance))
+            .collect())
+    }
+
     // ----- traversal (embedded parity with the KV `Drevo` handle, #445) ------
     //
     // These reuse the same engine-agnostic `crate::traversal` algorithms the KV
@@ -777,5 +858,58 @@ mod traversal_parity_tests {
         // subgraph within 2 hops over "link": a, b, c
         let sg = svc.subgraph_filtered(a, 2, Some("link")).unwrap();
         assert_eq!(titles(&sg.nodes), vec!["a", "b", "c"]);
+    }
+}
+
+#[cfg(test)]
+mod embedding_store_tests {
+    //! Native embedding store + HNSW on the service layer (#446): set/get/
+    //! delete/count/batch and `build_vector_index`/`vector_search`.
+    use super::NativeService;
+    use crate::engine::GraphEngine;
+    use crate::model::{NewNode, Properties};
+
+    fn nn(title: &str) -> NewNode {
+        NewNode {
+            kind: "doc".into(),
+            title: title.into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties(Default::default()),
+        }
+    }
+
+    #[test]
+    fn store_roundtrip_and_node_validation() {
+        let svc = NativeService::in_memory();
+        let a = svc.graph().create_node(nn("a")).unwrap().id;
+
+        svc.set_embedding(a, vec![1.0, 0.0, 0.0]).unwrap();
+        assert_eq!(svc.embedding_count(), 1);
+        assert_eq!(svc.get_embedding(a), Some(vec![1.0, 0.0, 0.0]));
+        svc.delete_embedding(a).unwrap();
+        assert_eq!(svc.get_embedding(a), None);
+
+        // set on a missing node is an error surfaced as DrevoError.
+        assert!(svc.set_embedding(999, vec![1.0]).is_err());
+    }
+
+    #[test]
+    fn vector_search_finds_nearest() {
+        let svc = NativeService::in_memory();
+        let a = svc.graph().create_node(nn("a")).unwrap().id;
+        let b = svc.graph().create_node(nn("b")).unwrap().id;
+        let c = svc.graph().create_node(nn("c")).unwrap().id;
+        svc.set_embeddings_batch(&[
+            (a, vec![1.0, 0.0, 0.0]),
+            (b, vec![0.0, 1.0, 0.0]),
+            (c, vec![0.0, 0.0, 1.0]),
+        ])
+        .unwrap();
+        assert_eq!(svc.embedding_count(), 3);
+
+        let hits = svc.vector_search(&[0.9, 0.1, 0.0], 2).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, a, "nearest to [0.9,0.1,0] is a=[1,0,0]");
     }
 }

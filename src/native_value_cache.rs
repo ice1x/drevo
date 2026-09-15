@@ -96,7 +96,11 @@ impl NativeValueCache {
                 WalOp::DeleteNode(id) => {
                     self.entries.remove(&id);
                 }
-                WalOp::UpsertEdge(_) | WalOp::DeleteEdge(_) => {}
+                // Edges hold no node values; embeddings are a separate store.
+                WalOp::UpsertEdge(_)
+                | WalOp::DeleteEdge(_)
+                | WalOp::SetEmbedding(..)
+                | WalOp::DeleteEmbedding(_) => {}
             }
         }
         self.cursor = batch.cursor;

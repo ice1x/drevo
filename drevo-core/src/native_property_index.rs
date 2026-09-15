@@ -282,8 +282,11 @@ impl NativePropertyIndex {
             match op {
                 WalOp::UpsertNode(node) => self.index_node(&node),
                 WalOp::DeleteNode(id) => self.remove_node(id),
-                // Edge properties are not indexed here.
-                WalOp::UpsertEdge(_) | WalOp::DeleteEdge(_) => {}
+                // Edge properties are not indexed here; embeddings are a separate store.
+                WalOp::UpsertEdge(_)
+                | WalOp::DeleteEdge(_)
+                | WalOp::SetEmbedding(..)
+                | WalOp::DeleteEmbedding(_) => {}
             }
         }
         self.cursor = batch.cursor;
