@@ -29,6 +29,7 @@
 
 mod errors;
 mod handle;
+mod native_backend;
 mod types;
 
 use pyo3::prelude::*;
