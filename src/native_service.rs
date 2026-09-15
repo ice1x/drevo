@@ -531,6 +531,19 @@ impl NativeService {
         self.graph.embedding_count()
     }
 
+    /// Liveness probe — parity with `Drevo::health_check`. Touches the store
+    /// (node/edge counts) to prove the engine is readable; the durable engine
+    /// recovers on open, so there is no separate integrity/recover step.
+    ///
+    /// # Errors
+    /// Infallible today (reads cannot fail); returns `Result` to match the KV
+    /// handle's signature so the embedded/Python surface is identical.
+    pub fn health_check(&self) -> Result<(), DrevoError> {
+        let _ = self.graph.node_count();
+        let _ = self.graph.edge_count();
+        Ok(())
+    }
+
     /// Rebuild an in-memory HNSW index over every stored embedding — parity
     /// with `Drevo::build_vector_index`. The index is not persisted (the
     /// embeddings are); rebuild after reopen.
@@ -911,5 +924,30 @@ mod embedding_store_tests {
         let hits = svc.vector_search(&[0.9, 0.1, 0.0], 2).unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0, a, "nearest to [0.9,0.1,0] is a=[1,0,0]");
+    }
+}
+
+#[cfg(test)]
+mod health_and_batch_tests {
+    //! Service-level `health_check` + batch create (#446 S3 prerequisite).
+    use super::NativeService;
+    use crate::model::{NewNode, Properties};
+
+    fn nn(title: &str) -> NewNode {
+        NewNode {
+            kind: "doc".into(),
+            title: title.into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties(Default::default()),
+        }
+    }
+
+    #[test]
+    fn health_check_ok_on_a_live_service() {
+        let svc = NativeService::in_memory();
+        svc.health_check().unwrap();
+        svc.graph().create_nodes(vec![nn("a"), nn("b")]).unwrap();
+        svc.health_check().unwrap();
     }
 }
