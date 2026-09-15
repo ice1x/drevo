@@ -123,8 +123,11 @@ impl NativeLabelIndex {
             match op {
                 WalOp::UpsertNode(node) => self.index_node(&node),
                 WalOp::DeleteNode(id) => self.remove_node(id),
-                // Edges carry no labels in this index.
-                WalOp::UpsertEdge(_) | WalOp::DeleteEdge(_) => {}
+                // Edges carry no labels; embeddings are a separate store.
+                WalOp::UpsertEdge(_)
+                | WalOp::DeleteEdge(_)
+                | WalOp::SetEmbedding(..)
+                | WalOp::DeleteEmbedding(_) => {}
             }
         }
         self.cursor = batch.cursor;

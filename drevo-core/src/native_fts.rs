@@ -106,8 +106,11 @@ impl NativeFtsIndex {
             match op {
                 WalOp::UpsertNode(node) => self.index_node(&node),
                 WalOp::DeleteNode(id) => self.remove_node(id),
-                // Edges carry no full-text content in this index.
-                WalOp::UpsertEdge(_) | WalOp::DeleteEdge(_) => {}
+                // Edges carry no full-text content; embeddings are a separate store.
+                WalOp::UpsertEdge(_)
+                | WalOp::DeleteEdge(_)
+                | WalOp::SetEmbedding(..)
+                | WalOp::DeleteEmbedding(_) => {}
             }
         }
         self.cursor = batch.cursor;

@@ -58,7 +58,10 @@ impl TitleIndex {
                 WalOp::DeleteNode(id) => {
                     self.titles.remove(&id);
                 }
-                WalOp::UpsertEdge(_) | WalOp::DeleteEdge(_) => {}
+                WalOp::UpsertEdge(_)
+                | WalOp::DeleteEdge(_)
+                | WalOp::SetEmbedding(..)
+                | WalOp::DeleteEmbedding(_) => {}
             }
         }
         self.cursor = batch.cursor;
