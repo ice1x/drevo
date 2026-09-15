@@ -353,6 +353,48 @@ impl Inner {
             .collect()
     }
 
+    /// Look up a node by its unique title via the `titles` index — the native
+    /// counterpart of `Drevo::get_node_by_title` (title uniqueness is enforced
+    /// on write, so at most one match).
+    fn get_node_by_title(&self, title: &str) -> Option<Node> {
+        self.titles
+            .get(title)
+            .and_then(|id| self.nodes.get(id))
+            .map(|a| (**a).clone())
+    }
+
+    /// Most-recently-updated nodes first, capped at `limit`. Ordering matches
+    /// `Drevo::list_recent`: `updated_at` descending, ties broken by node id
+    /// descending (a higher id was allocated later, so it is the newer insert).
+    fn list_recent(&self, limit: usize) -> Vec<Node> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut nodes: Vec<Node> = self.nodes.values().map(|a| (**a).clone()).collect();
+        nodes.sort_unstable_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        nodes.truncate(limit);
+        nodes
+    }
+
+    /// Edges of a given `kind`, id-ascending, paginated — the edge counterpart
+    /// of [`Inner::nodes_by_kind`] and the native form of
+    /// `Drevo::list_edges_by_kind`. No edge-kind index exists yet, so this
+    /// scans; `all_edges` is already id-sorted for the pagination contract.
+    fn list_edges_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Edge> {
+        let mut edges: Vec<Edge> = self
+            .edges
+            .values()
+            .filter(|e| e.kind == kind)
+            .map(|a| (**a).clone())
+            .collect();
+        edges.sort_unstable_by_key(|e| e.id);
+        edges.into_iter().skip(offset).take(limit).collect()
+    }
+
     /// Zero-copy label scan (see [`Inner::all_nodes_arc`]): the page's nodes
     /// come back as `Arc<Node>` handles instead of deep clones.
     fn nodes_by_kind_arc(&self, kind: &str, limit: usize, offset: usize) -> Vec<Arc<Node>> {
@@ -1627,6 +1669,35 @@ impl NativeGraph {
             .values()
             .find(|e| e.uuid == uuid)
             .map(|e| e.id)
+    }
+
+    /// Fetch a node by its globally-unique `uuid` — the native counterpart of
+    /// `Drevo::get_node_by_uuid` (embedded-handle parity, issue #445).
+    pub fn get_node_by_uuid(&self, uuid: [u8; 16]) -> Option<Node> {
+        let inner = read(&self.inner);
+        inner
+            .nodes
+            .values()
+            .find(|n| n.uuid == uuid)
+            .map(|a| (**a).clone())
+    }
+
+    /// Fetch a node by its unique `title` via the title index — the native
+    /// counterpart of `Drevo::get_node_by_title`.
+    pub fn get_node_by_title(&self, title: &str) -> Option<Node> {
+        read(&self.inner).get_node_by_title(title)
+    }
+
+    /// Most-recently-updated nodes first, capped at `limit` — the native
+    /// counterpart of `Drevo::list_recent` (`updated_at` desc, id desc).
+    pub fn list_recent(&self, limit: usize) -> Vec<Node> {
+        read(&self.inner).list_recent(limit)
+    }
+
+    /// Edges of `kind`, id-ascending, paginated by `limit`/`offset` — the native
+    /// counterpart of `Drevo::list_edges_by_kind`.
+    pub fn list_edges_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Edge> {
+        read(&self.inner).list_edges_by_kind(kind, limit, offset)
     }
 
     /// Distinct neighbours as zero-copy `Arc<Node>` handles — the fan-out

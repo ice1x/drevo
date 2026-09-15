@@ -456,6 +456,35 @@ impl NativeService {
             .ok_or(crate::error::DrevoError::NodeNotFound(id))
     }
 
+    /// Look up a node by its globally-unique UUID — embedded-handle parity with
+    /// `Drevo::get_node_by_uuid` (issue #445). `None` if no node carries it.
+    pub fn get_node_by_uuid(&self, uuid: [u8; 16]) -> Option<crate::model::Node> {
+        self.graph.get_node_by_uuid(uuid)
+    }
+
+    /// Look up a node by its unique title — parity with
+    /// `Drevo::get_node_by_title`. `None` if no node has that title.
+    pub fn get_node_by_title(&self, title: &str) -> Option<crate::model::Node> {
+        self.graph.get_node_by_title(title)
+    }
+
+    /// Most-recently-updated nodes first, capped at `limit` — parity with
+    /// `Drevo::list_recent` (`updated_at` desc, id desc).
+    pub fn list_recent(&self, limit: usize) -> Vec<crate::model::Node> {
+        self.graph.list_recent(limit)
+    }
+
+    /// Edges of `kind`, id-ascending, paginated — parity with
+    /// `Drevo::list_edges_by_kind`.
+    pub fn list_edges_by_kind(
+        &self,
+        kind: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Vec<crate::model::Edge> {
+        self.graph.list_edges_by_kind(kind, limit, offset)
+    }
+
     fn execute_with(
         &self,
         idx: &ServiceIndexes,
