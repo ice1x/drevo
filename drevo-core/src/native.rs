@@ -1817,6 +1817,72 @@ impl NativeGraph {
         out
     }
 
+    // ----- batch create (embedded parity, #446 S3 prerequisite) --------------
+    //
+    // One durable boundary (one fsync) for the whole batch, all-or-nothing:
+    // built on a private working copy swapped in only after the WAL append is
+    // durable — so an I/O failure or a mid-batch validation error leaves the
+    // live graph, log and feed untouched, exactly like `delete_nodes` (#435).
+
+    /// Create many nodes in one durable batch — the native counterpart of
+    /// `Drevo::create_nodes`.
+    ///
+    /// # Errors
+    /// [`CoreError::DuplicateTitle`] if any title collides (within the batch or
+    /// against an existing node) — the whole batch fails and nothing is written;
+    /// propagates a WAL append/fsync failure.
+    pub fn create_nodes(&self, new_nodes: Vec<NewNode>) -> Result<Vec<Node>> {
+        if new_nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut live = write(&self.inner);
+        let mut working = Arc::clone(&live);
+        let w = Arc::make_mut(&mut working);
+        let mut nodes = Vec::with_capacity(new_nodes.len());
+        let mut ops = Vec::with_capacity(new_nodes.len());
+        for nn in new_nodes {
+            let node = w.create_node(nn)?; // validates DuplicateTitle in the working copy
+            ops.push(WalOp::UpsertNode(node.clone()));
+            nodes.push(node);
+        }
+        self.record(&ops)?;
+        *live = working;
+        drop(live);
+        for n in &nodes {
+            self.stamp_write(StampTarget::Node(n.id));
+        }
+        Ok(nodes)
+    }
+
+    /// Create many edges in one durable batch — the native counterpart of
+    /// `Drevo::create_edges`. Every edge's endpoints must already exist.
+    ///
+    /// # Errors
+    /// [`CoreError::NodeNotFound`] if an endpoint is missing (the whole batch
+    /// fails, nothing written); propagates a WAL append/fsync failure.
+    pub fn create_edges(&self, new_edges: Vec<NewEdge>) -> Result<Vec<Edge>> {
+        if new_edges.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut live = write(&self.inner);
+        let mut working = Arc::clone(&live);
+        let w = Arc::make_mut(&mut working);
+        let mut edges = Vec::with_capacity(new_edges.len());
+        let mut ops = Vec::with_capacity(new_edges.len());
+        for ne in new_edges {
+            let edge = w.create_edge(ne)?;
+            ops.push(WalOp::UpsertEdge(edge.clone()));
+            edges.push(edge);
+        }
+        self.record(&ops)?;
+        *live = working;
+        drop(live);
+        for e in &edges {
+            self.stamp_write(StampTarget::Edge(e.id));
+        }
+        Ok(edges)
+    }
+
     /// Distinct neighbours as zero-copy `Arc<Node>` handles — the fan-out
     /// counterpart to [`get_node_arc`](Self::get_node_arc), so expanding a
     /// high-degree node never deep-clones every neighbour's record.
