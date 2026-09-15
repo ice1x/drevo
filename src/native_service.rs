@@ -485,6 +485,107 @@ impl NativeService {
         self.graph.list_edges_by_kind(kind, limit, offset)
     }
 
+    // ----- traversal (embedded parity with the KV `Drevo` handle, #445) ------
+    //
+    // These reuse the same engine-agnostic `crate::traversal` algorithms the KV
+    // handle does, driven by closures over the native graph — so BFS/DFS visit
+    // order, depth semantics (start node excluded), and Dijkstra weighting are
+    // identical on both engines. Native reads are infallible, hence the `Ok(..)`
+    // wrap into the traversal closures' `Result` contract.
+
+    /// Breadth-first search from `start_id` (start excluded), depth-capped —
+    /// parity with `Drevo::bfs`.
+    pub fn bfs(
+        &self,
+        start_id: u64,
+        max_depth: u8,
+        direction: crate::model::Direction,
+        edge_kind: Option<&str>,
+    ) -> Result<Vec<crate::model::Node>, DrevoError> {
+        let snap = self.graph.snapshot();
+        crate::traversal::bfs(
+            start_id,
+            max_depth,
+            direction,
+            edge_kind,
+            &|id| Ok(snap.get_node(id)),
+            &|id, dir| Ok(snap.edges_of(id, dir)),
+        )
+    }
+
+    /// Depth-first search from `start_id` (start excluded), depth-capped —
+    /// parity with `Drevo::dfs`.
+    pub fn dfs(
+        &self,
+        start_id: u64,
+        max_depth: u8,
+        direction: crate::model::Direction,
+        edge_kind: Option<&str>,
+    ) -> Result<Vec<crate::model::Node>, DrevoError> {
+        let snap = self.graph.snapshot();
+        crate::traversal::dfs(
+            start_id,
+            max_depth,
+            direction,
+            edge_kind,
+            &|id| Ok(snap.get_node(id)),
+            &|id, dir| Ok(snap.edges_of(id, dir)),
+        )
+    }
+
+    /// Lowest-total-weight path `from → to` over outgoing edges (Dijkstra) —
+    /// parity with `Drevo::shortest_path`. `None` if unreachable.
+    pub fn shortest_path(&self, from: u64, to: u64) -> Result<Option<Vec<u64>>, DrevoError> {
+        self.shortest_path_filtered(from, to, None)
+    }
+
+    /// [`Self::shortest_path`] restricted to edges of `edge_kind` when `Some` —
+    /// parity with `Drevo::shortest_path_filtered`.
+    pub fn shortest_path_filtered(
+        &self,
+        from: u64,
+        to: u64,
+        edge_kind: Option<&str>,
+    ) -> Result<Option<Vec<u64>>, DrevoError> {
+        let snap = self.graph.snapshot();
+        crate::traversal::shortest_path(
+            from,
+            to,
+            edge_kind,
+            &|id| Ok(snap.get_node(id)),
+            &|id, dir| Ok(snap.edges_of(id, dir)),
+        )
+    }
+
+    /// The connected subgraph within `depth` hops of `root` — parity with
+    /// `Drevo::subgraph_filtered`.
+    pub fn subgraph_filtered(
+        &self,
+        root: u64,
+        depth: u8,
+        edge_kind: Option<&str>,
+    ) -> Result<crate::model::SubGraph, DrevoError> {
+        let snap = self.graph.snapshot();
+        crate::traversal::subgraph(
+            root,
+            depth,
+            edge_kind,
+            &|id| Ok(snap.get_node(id)),
+            &|id, dir| Ok(snap.edges_of(id, dir)),
+        )
+    }
+
+    /// Immediate neighbours of `node_id` (BFS depth 1) — parity with
+    /// `Drevo::neighbors`; served straight from the native adjacency index.
+    pub fn neighbors(
+        &self,
+        node_id: u64,
+        direction: crate::model::Direction,
+        kind: Option<&str>,
+    ) -> Vec<crate::model::Node> {
+        self.graph.snapshot().neighbors(node_id, direction, kind)
+    }
+
     fn execute_with(
         &self,
         idx: &ServiceIndexes,
@@ -584,4 +685,97 @@ pub fn migrate_kv_into_wal_if_first_boot(
     let native = crate::native::NativeGraph::open_durable(wal)?;
     let report = crate::migrate::migrate(&kv, &native)?;
     Ok(Some(report))
+}
+
+#[cfg(test)]
+mod traversal_parity_tests {
+    //! Embedded-parity traversal on native (#445): the BFS/DFS/shortest-path/
+    //! subgraph/neighbours wrappers drive the same `crate::traversal` algorithms
+    //! the KV `Drevo` handle uses, over a native snapshot.
+    use super::NativeService;
+    use crate::engine::GraphEngine;
+    use crate::model::{Direction, NewEdge, NewNode, Properties};
+
+    fn nn(title: &str) -> NewNode {
+        NewNode {
+            kind: "n".into(),
+            title: title.into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties(Default::default()),
+        }
+    }
+    fn ne(from_id: u64, to_id: u64, kind: &str) -> NewEdge {
+        NewEdge {
+            from_id,
+            to_id,
+            kind: kind.into(),
+            weight: 1.0,
+            properties: Properties(Default::default()),
+        }
+    }
+    fn titles(nodes: &[crate::model::Node]) -> Vec<String> {
+        let mut t: Vec<String> = nodes.iter().map(|n| n.title.clone()).collect();
+        t.sort();
+        t
+    }
+
+    /// a -link-> b -link-> c ; a -other-> d
+    fn fixture() -> (NativeService, u64, u64, u64, u64) {
+        let svc = NativeService::in_memory();
+        let g = svc.graph();
+        let a = g.create_node(nn("a")).unwrap().id;
+        let b = g.create_node(nn("b")).unwrap().id;
+        let c = g.create_node(nn("c")).unwrap().id;
+        let d = g.create_node(nn("d")).unwrap().id;
+        g.create_edge(ne(a, b, "link")).unwrap();
+        g.create_edge(ne(b, c, "link")).unwrap();
+        g.create_edge(ne(a, d, "other")).unwrap();
+        (svc, a, b, c, d)
+    }
+
+    #[test]
+    fn bfs_depth_and_kind_filter() {
+        let (svc, a, _b, _c, _d) = fixture();
+        // depth 2, all kinds → b, c, d (start excluded)
+        let all = svc.bfs(a, 2, Direction::Outgoing, None).unwrap();
+        assert_eq!(titles(&all), vec!["b", "c", "d"]);
+        // kind-filtered to "link" → only the b, c chain
+        let links = svc.bfs(a, 2, Direction::Outgoing, Some("link")).unwrap();
+        assert_eq!(titles(&links), vec!["b", "c"]);
+        // depth 1 stops at direct neighbours
+        let d1 = svc.bfs(a, 1, Direction::Outgoing, Some("link")).unwrap();
+        assert_eq!(titles(&d1), vec!["b"]);
+    }
+
+    #[test]
+    fn dfs_reaches_the_same_set() {
+        let (svc, a, _b, _c, _d) = fixture();
+        let out = svc.dfs(a, 2, Direction::Outgoing, Some("link")).unwrap();
+        assert_eq!(titles(&out), vec!["b", "c"]);
+    }
+
+    #[test]
+    fn shortest_path_follows_edges() {
+        let (svc, a, b, c, d) = fixture();
+        // a -link-> b -link-> c  → path [a, b, c]
+        assert_eq!(svc.shortest_path(a, c).unwrap(), Some(vec![a, b, c]));
+        // within the "link" subgraph, d (only reachable via "other") is unreachable
+        assert_eq!(
+            svc.shortest_path_filtered(a, d, Some("link")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn neighbors_and_subgraph() {
+        let (svc, a, _b, _c, _d) = fixture();
+        let neigh = svc.neighbors(a, Direction::Outgoing, None);
+        assert_eq!(titles(&neigh), vec!["b", "d"]);
+        let only_link = svc.neighbors(a, Direction::Outgoing, Some("link"));
+        assert_eq!(titles(&only_link), vec!["b"]);
+        // subgraph within 2 hops over "link": a, b, c
+        let sg = svc.subgraph_filtered(a, 2, Some("link")).unwrap();
+        assert_eq!(titles(&sg.nodes), vec!["a", "b", "c"]);
+    }
 }
