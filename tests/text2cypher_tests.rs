@@ -10,9 +10,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 use drevo::text2cypher::{install, CypherGenerator, Text2CypherError};
 
 /// A network-free generator: echoes what it was handed so the test can assert
@@ -28,7 +28,7 @@ impl CypherGenerator for FakeGenerator {
     }
 }
 
-fn seed_schema(d: &Drevo) {
+fn seed_schema(d: &NativeGraph) {
     let q = parse("CREATE (:Person {name: 'ada'})-[:LIVES_IN]->(:City {name: 'nyc'})")
         .expect("parse seed");
     execute(&q, d, HashMap::new()).expect("seed");
@@ -41,7 +41,7 @@ fn from_text_is_a_known_procedure_but_reports_not_configured_until_installed() {
     // NOTE: the generator is a process-global. This is the only test in this
     // binary that touches it, and it asserts the not-configured path *before*
     // installing, so there is no intra-binary ordering hazard.
-    let d = Drevo::open_in_memory().expect("open");
+    let d = NativeGraph::new();
     seed_schema(&d);
 
     let q = parse(CALL).expect("parse call");

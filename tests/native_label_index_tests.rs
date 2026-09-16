@@ -9,10 +9,9 @@
 //! store**, so it is a faithful, scan-free native label lookup.
 
 use drevo::cypher::executor::{
-    execute, execute_on_engine, execute_on_engine_with_indexes, ExecResult, Value,
+    execute_on_engine, execute_on_engine_with_indexes, ExecResult, Value,
 };
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewNode, NodePatch, Properties};
 use drevo::native::NativeGraph;
@@ -153,26 +152,22 @@ fn indexed_label_scan_equals_full_scan_and_kv() {
             .unwrap(); // both
     };
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     build(&native);
-    build(&kv);
 
     let mut idx = NativeLabelIndex::new();
     idx.sync(&native);
 
     let query = parse("MATCH (n:employee) RETURN n").unwrap();
 
-    // Native full scan (no index), native indexed union, and KV — all three
-    // must agree on exactly which nodes carry the label `employee`.
+    // Native full scan (no index) and native indexed union must agree on
+    // exactly which nodes carry the label `employee`.
     let full_scan = matched_ids(execute_on_engine(&query, &native, HashMap::new()).unwrap());
     let indexed = matched_ids(
         execute_on_engine_with_indexes(&query, &native, None, Some(&idx), None, HashMap::new())
             .unwrap(),
     );
-    let kv_rows = matched_ids(execute(&query, &kv, HashMap::new()).unwrap());
 
     assert_eq!(full_scan, indexed, "indexed union diverged from full scan");
-    assert_eq!(indexed, kv_rows, "native indexed diverged from KV");
     // Sanity: it really found the three `employee`-labelled nodes (a, b, d),
     // not the contractor c.
     assert_eq!(indexed.len(), 3);
