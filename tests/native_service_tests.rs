@@ -324,6 +324,21 @@ fn semantic_reindex_rel_backfills_edge_embeddings_on_native() {
 }
 
 #[test]
+fn semantic_info_reports_the_native_embedder() {
+    // Was `EngineCapability` on native before #447 (info lived on the KV
+    // secondary); it now reports the installed native embedder directly.
+    let service = NativeService::in_memory();
+    assert!(service.set_embedder(Arc::new(MockEmbedder)));
+    let info = run(
+        &service,
+        "CALL drevo.semantic.info() YIELD embedder_present, dimension \
+         RETURN embedder_present, dimension",
+    );
+    // MockEmbedder returns a 2-element vector, so the probed dimension is 2.
+    assert_eq!(info.rows, vec![vec![Value::Bool(true), Value::Integer(2)]]);
+}
+
+#[test]
 fn semantic_embed_and_query_use_the_installed_native_embedder() {
     let service = NativeService::in_memory();
     assert!(service.set_embedder(Arc::new(MockEmbedder)));

@@ -4830,6 +4830,22 @@ impl<'a> Executor<'a> {
         _args: &[Expression],
         _span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Native-first (issue #447): report the native serving layer's embedder
+        // capability directly; only the KV path falls back to `secondary`.
+        #[cfg(feature = "http")]
+        if let Some(embedder) = self.native_embedder {
+            let dimension = embedder
+                .embed_query("dimension probe")
+                .ok()
+                .map(|v| Value::Integer(i64::try_from(v.len()).unwrap_or(i64::MAX)))
+                .unwrap_or(Value::Null);
+            return Ok(vec![vec![
+                Value::Bool(true),
+                embedder.model().map_or(Value::Null, Value::String),
+                dimension,
+                embedder.upstream().map_or(Value::Null, Value::String),
+            ]]);
+        }
         let cap = self.secondary("semantic embedding")?.embedder_info();
         let dimension = cap.dimension.map_or(Value::Null, |d| {
             Value::Integer(i64::try_from(d).unwrap_or(i64::MAX))
