@@ -1,35 +1,36 @@
-//! Differential Cypher corpus: KV vs native, three ways (RFC
-//! `docs/rfc-native-core.md`, #307, Phase 6).
+//! Native Cypher execution-parity corpus: full-scan vs index-accelerated
+//! (RFC `docs/rfc-native-core.md`, #307; epic #444).
 //!
-//! The Phase-6 promise is that the executor produces **identical** results no
-//! matter which [`GraphEngine`](drevo::engine::GraphEngine) sits underneath.
-//! This suite is the guard for that promise ahead of any engine flip: every
-//! scenario builds the same graph on the KV [`Drevo`](drevo::db::Drevo) and the
-//! native [`NativeGraph`](drevo::native::NativeGraph), then runs each check
-//! query three ways —
+//! The native engine executes a read two ways — a plain full scan, and an
+//! index-narrowed / cache-served path when the label + property indexes and the
+//! `NodeValue` cache are attached — and both **must** produce identical results.
+//! This suite is the guard for that invariant: it catches an index or cache bug
+//! that would otherwise silently return a different (wrong) answer than the
+//! full scan. Every scenario builds a graph on a native
+//! [`NativeGraph`](drevo::native::NativeGraph), then runs each check query two
+//! ways —
 //!
-//! 1. KV via [`execute`](drevo::cypher::executor::execute),
-//! 2. native via [`execute_on_engine`](drevo::cypher::executor::execute_on_engine)
+//! 1. [`execute_on_engine`](drevo::cypher::executor::execute_on_engine)
 //!    (full-scan paths),
-//! 3. native via
-//!    [`execute_on_engine_with_indexes_and_values`](drevo::cypher::executor::execute_on_engine_with_indexes_and_values)
+//! 2. [`execute_on_engine_with_indexes_and_values`](drevo::cypher::executor::execute_on_engine_with_indexes_and_values)
 //!    with the label + property indexes and the `NodeValue` cache synced
 //!    (index-narrowed, cache-served paths),
 //!
-//! and asserts the columns, rows, and mutation stats are equal across all
-//! three. Write statements are compared two-ways as they are applied (each
-//! write runs once per engine). Error paths must agree too: if one engine
-//! rejects a statement, the other must reject it with the same rendered error.
+//! and asserts the columns, rows, and mutation stats are equal across both.
+//! Error paths must agree too: if the full-scan path rejects a statement, the
+//! indexed path must reject it with the same rendered error.
+//!
+//! (This was formerly a KV-vs-native differential suite; the KV oracle was
+//! dropped with the KV engine — epic #444 — leaving the native full-scan as the
+//! reference the indexed path is checked against.)
 //!
 //! Non-deterministic values are normalised before comparison: node/relationship
-//! `uuid`s (each engine generates its own v7) are zeroed, and the executor's
-//! `__cypher__:{label}:{uuid}` placeholder titles for unnamed nodes are
-//! collapsed to a fixed marker. Ids are **not** scrubbed — both engines
-//! allocate monotonically from 1, and id parity is part of the contract.
+//! `uuid`s (v7) are zeroed, and the executor's `__cypher__:{label}:{uuid}`
+//! placeholder titles for unnamed nodes are collapsed to a fixed marker. Ids are
+//! **not** scrubbed — the native engine allocates monotonically from 1.
 //!
-//! Queries that reach KV-only subsystems (FTS, vector, keywords) are covered by
-//! `tests/cypher_native_engine_tests.rs` (they must raise `EngineCapability` on
-//! native) and are deliberately out of scope here, as are non-deterministic
+//! Queries that reach index-backed subsystems (FTS, vector, keywords) are
+//! covered by `tests/cypher_native_engine_tests.rs`, as are non-deterministic
 //! functions (`rand()`, `randomUUID()`, `timestamp()`, `datetime()`).
 //!
 //! # Unordered scan order is converged (id-ascending on both engines)
@@ -48,11 +49,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use drevo::cypher::executor::{
-    execute, execute_on_engine, execute_on_engine_with_indexes_and_values, ExecResult, NodeValue,
-    PathValue, RelationshipValue, Value,
+    execute_on_engine, execute_on_engine_with_indexes_and_values, ExecResult, NodeValue, PathValue,
+    RelationshipValue, Value,
 };
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::native::NativeGraph;
 use drevo::native_label_index::NativeLabelIndex;
 use drevo::native_property_index::NativePropertyIndex;
@@ -126,47 +126,30 @@ fn comparable(res: &ExecResult) -> (Vec<String>, Vec<Vec<Value>>, String) {
 // ---------------------------------------------------------------------------
 
 struct Pair {
-    kv: Drevo,
     native: NativeGraph,
 }
 
 impl Pair {
     fn new() -> Self {
         Pair {
-            kv: Drevo::open_in_memory().expect("open in-memory KV store"),
             native: NativeGraph::new(),
         }
     }
 
-    /// Run one statement on both engines and assert the outcome matches:
-    /// both `Ok` with equal comparable results, or both `Err` with the same
-    /// rendered error.
+    /// Apply one setup/write statement to the native graph. A statement that
+    /// errors is tolerated (some scenarios deliberately include a write that
+    /// must fail — e.g. a plain `DELETE` of a connected node — leaving the
+    /// graph unchanged); the read `check`s that follow validate the resulting
+    /// state two ways and are the real assertions. A *parse* error, by
+    /// contrast, is a bug in the test corpus and panics.
     fn apply(&self, scenario: &str, source: &str) {
         let q = parse(source).unwrap_or_else(|e| panic!("[{scenario}] parse `{source}`: {e:?}"));
-        let kv = execute(&q, &self.kv, HashMap::new());
-        let native = execute_on_engine(&q, &self.native, HashMap::new());
-        match (kv, native) {
-            (Ok(k), Ok(n)) => assert_eq!(
-                comparable(&k),
-                comparable(&n),
-                "[{scenario}] write diverged on `{source}`"
-            ),
-            (Err(k), Err(n)) => assert_eq!(
-                k.to_string(),
-                n.to_string(),
-                "[{scenario}] error diverged on `{source}`"
-            ),
-            (k, n) => panic!(
-                "[{scenario}] ok/err diverged on `{source}`: kv={:?} native={:?}",
-                k.map(|r| r.rows.len()).map_err(|e| e.to_string()),
-                n.map(|r| r.rows.len()).map_err(|e| e.to_string()),
-            ),
-        }
+        let _ = execute_on_engine(&q, &self.native, HashMap::new());
     }
 
-    /// Run one read query three ways (KV, native full-scan, native indexed)
-    /// and assert all three comparable results are equal — or that all three
-    /// fail with the same rendered error.
+    /// Run one read query two ways (native full-scan, native indexed) and
+    /// assert both comparable results are equal — or that both fail with the
+    /// same rendered error.
     fn check(&self, scenario: &str, source: &str) {
         let q = parse(source).unwrap_or_else(|e| panic!("[{scenario}] parse `{source}`: {e:?}"));
 
@@ -177,7 +160,6 @@ impl Pair {
         props.sync(&self.native);
         values.sync(&self.native);
 
-        let kv = execute(&q, &self.kv, HashMap::new());
         let plain = execute_on_engine(&q, &self.native, HashMap::new());
         let indexed = execute_on_engine_with_indexes_and_values(
             &q,
@@ -189,30 +171,23 @@ impl Pair {
             HashMap::new(),
         );
 
-        match (kv, plain, indexed) {
-            (Ok(k), Ok(p), Ok(i)) => {
-                let (k, p, i) = (comparable(&k), comparable(&p), comparable(&i));
-                assert_eq!(k, p, "[{scenario}] kv vs native diverged on `{source}`");
+        match (plain, indexed) {
+            (Ok(p), Ok(i)) => {
+                let (p, i) = (comparable(&p), comparable(&i));
                 assert_eq!(
                     p, i,
                     "[{scenario}] native full-scan vs indexed diverged on `{source}`"
                 );
             }
-            (Err(k), Err(p), Err(i)) => {
-                assert_eq!(
-                    k.to_string(),
-                    p.to_string(),
-                    "[{scenario}] kv vs native error diverged on `{source}`"
-                );
+            (Err(p), Err(i)) => {
                 assert_eq!(
                     p.to_string(),
                     i.to_string(),
                     "[{scenario}] native full-scan vs indexed error diverged on `{source}`"
                 );
             }
-            (k, p, i) => panic!(
-                "[{scenario}] ok/err diverged on `{source}`: kv={:?} native={:?} indexed={:?}",
-                k.map(|r| r.rows.len()).map_err(|e| e.to_string()),
+            (p, i) => panic!(
+                "[{scenario}] ok/err diverged on `{source}`: full-scan={:?} indexed={:?}",
                 p.map(|r| r.rows.len()).map_err(|e| e.to_string()),
                 i.map(|r| r.rows.len()).map_err(|e| e.to_string()),
             ),
@@ -826,7 +801,6 @@ fn parameter_parity() {
     props.sync(&pair.native);
     values.sync(&pair.native);
 
-    let kv = execute(&q, &pair.kv, params.clone()).expect("kv");
     let plain = execute_on_engine(&q, &pair.native, params.clone()).expect("native");
     let indexed = execute_on_engine_with_indexes_and_values(
         &q,
@@ -839,7 +813,6 @@ fn parameter_parity() {
     )
     .expect("native indexed");
 
-    assert_eq!(comparable(&kv), comparable(&plain));
     assert_eq!(comparable(&plain), comparable(&indexed));
-    assert_eq!(kv.rows.len(), 2);
+    assert_eq!(plain.rows.len(), 2);
 }
