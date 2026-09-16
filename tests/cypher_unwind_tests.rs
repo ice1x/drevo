@@ -14,25 +14,29 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeGraph {
+    NativeGraph::new()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeGraph) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").rows
 }
 
-fn run_with_params(source: &str, drevo: &Drevo, params: HashMap<String, Value>) -> Vec<Vec<Value>> {
+fn run_with_params(
+    source: &str,
+    drevo: &NativeGraph,
+    params: HashMap<String, Value>,
+) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, params).expect("execute").rows
 }
 
-fn run_err(source: &str, drevo: &Drevo) -> ExecError {
+fn run_err(source: &str, drevo: &NativeGraph) -> ExecError {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect_err("expected execution error")
 }
@@ -111,7 +115,7 @@ fn cbt_unwind_tags_creates_one_entry_per_tag() {
          CREATE (:JournalEntry {title: mood, mood: mood})",
         &db,
     );
-    let entries = db.list_nodes_by_kind("JournalEntry", 100, 0).unwrap();
+    let entries = run("MATCH (n:JournalEntry) RETURN n", &db);
     assert_eq!(entries.len(), 3);
 }
 
@@ -128,7 +132,7 @@ fn story_unwind_chapters_links_each_to_the_book() {
          CREATE (b)-[:HAS_CHAPTER]->(:Chapter {title: ch})",
         &db,
     );
-    let chapters = db.list_nodes_by_kind("Chapter", 100, 0).unwrap();
+    let chapters = run("MATCH (c:Chapter) RETURN c", &db);
     assert_eq!(chapters.len(), 3);
     let rows = run(
         "MATCH (b:Book)-[:HAS_CHAPTER]->(c:Chapter) RETURN count(*) AS n",
@@ -236,7 +240,7 @@ fn double_unwind_produces_cartesian_product() {
 // exact shape (graphiti's `get_entity_edge_save_bulk_query` on an empty batch)
 // previously failed with `unbound variable v`.
 
-fn count_label(db: &Drevo, label: &str) -> i64 {
+fn count_label(db: &NativeGraph, label: &str) -> i64 {
     let rows = run(&format!("MATCH (n:{label}) RETURN count(n) AS c"), db);
     int(&rows, 0, 0)
 }

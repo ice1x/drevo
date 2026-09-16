@@ -9,25 +9,25 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeGraph {
+    NativeGraph::new()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeGraph) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").rows
 }
 
-fn run_with(source: &str, drevo: &Drevo, params: HashMap<String, Value>) -> Vec<Vec<Value>> {
+fn run_with(source: &str, drevo: &NativeGraph, params: HashMap<String, Value>) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, params).expect("execute").rows
 }
 
-fn err(source: &str, drevo: &Drevo) -> ExecError {
+fn err(source: &str, drevo: &NativeGraph) -> ExecError {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect_err("expected error")
 }
