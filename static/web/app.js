@@ -512,14 +512,21 @@
   // release. `liveLayout` holds the running handle so we can stop/replace it.
   let liveLayout = null;
   // cola's spring rest-length must equal the geometry the graph is already
-  // sitting in; otherwise the instant a drag starts, cola yanks every edge
-  // toward a different rest length and the whole graph visibly "rebuilds"
-  // instead of the dragged node's neighbours smoothly trailing it. (Regressed
-  // in #437: fcose's idealEdgeLength was retuned to 90 while cola stayed pinned
-  // at a hardcoded 150, so every edge sprang outward on the first drag tick.)
-  // Measuring the CURRENT mean edge length keeps the live sim in sync with
-  // whatever the static layout produced and survives future fcose retuning. The
-  // pure averaging lives in graph_math.js so it is unit-tested (graph_math.test.js).
+  // sitting in; otherwise the instant a drag starts, cola yanks edges toward a
+  // different rest length and the whole graph visibly "rebuilds" instead of the
+  // dragged node's neighbours smoothly trailing it.
+  //
+  // A single mean rest-length is NOT enough: fcose lays the graph out with
+  // *variable* edge lengths (a hub like `antigram` has both long and short
+  // edges), so a shared mean springs every off-mean edge toward that one value
+  // and the whole graph jitters on the first drag tick even though nothing was
+  // touched. The fix is a PER-EDGE rest length equal to each edge's own current
+  // length: then every spring starts exactly at rest and only the dragged
+  // (cursor-pinned) node perturbs its neighbourhood — the rest of the graph
+  // stays put. The pure length math lives in graph_math.js so it is unit-tested
+  // (graph_math.test.js). #437/#440 history: fcose's idealEdgeLength was retuned
+  // to 90 while cola stayed pinned at a hardcoded 150; measuring live keeps the
+  // sim in sync with whatever the static layout produced.
   function currentMeanEdgeLength() {
     if (!cy) return 90;
     const segments = cy.edges().map((e) => {
@@ -530,17 +537,30 @@
     return DrevoGraphMath.meanEdgeLength(segments);
   }
   function colaLiveOptions() {
+    // Fallback rest-length for a degenerate edge (endpoints coincident).
+    const meanLen = currentMeanEdgeLength();
     return {
       name: "cola",
       infinite: true, // keep solving so the drag is live, not a one-shot
       fit: false, // re-fitting every tick while dragging is nauseating
       animate: true,
       randomize: false, // start from the current (fcose) positions
-      // Rest length = the current mean edge length, so the sim begins already
-      // at equilibrium and only the dragged neighbourhood moves (no start jolt).
-      edgeLength: currentMeanEdgeLength(),
+      // Per-edge rest length = that edge's CURRENT length, so every spring
+      // begins exactly at rest and only the dragged neighbourhood moves — no
+      // whole-graph jolt from a shared mean pulling off-mean edges.
+      edgeLength: (edge) => {
+        const s = edge.source().position();
+        const t = edge.target().position();
+        return DrevoGraphMath.segmentLength(
+          { x1: s.x, y1: s.y, x2: t.x, y2: t.y },
+          meanLen,
+        );
+      },
       nodeSpacing: 28,
-      handleDisconnected: true,
+      // Repacking disconnected components on start yanks every peripheral /
+      // weakly-connected node across the canvas — a jolt on any graph that
+      // isn't one fully-connected blob. Leave components where fcose put them.
+      handleDisconnected: false,
       // Let the user keep grabbing nodes while the sim runs.
       ungrabifyWhileSimulating: false,
     };

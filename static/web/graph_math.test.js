@@ -4,7 +4,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { meanEdgeLength } = require("./graph_math.js");
+const { meanEdgeLength, segmentLength } = require("./graph_math.js");
 
 test("meanEdgeLength averages the segment lengths", () => {
   // A 3-long and a 4-long segment → mean 3.5.
@@ -48,4 +48,31 @@ test("meanEdgeLength falls back when every segment is degenerate", () => {
     { x1: 2, y1: 2, x2: 2, y2: 2 },
   ];
   assert.equal(meanEdgeLength(segments), 90);
+});
+
+// segmentLength — the per-edge rest length backing the jolt-free live drag.
+
+test("segmentLength returns the Euclidean length of one segment", () => {
+  // 3-4-5 triangle.
+  assert.equal(segmentLength({ x1: 0, y1: 0, x2: 3, y2: 4 }), 5);
+  assert.equal(segmentLength({ x1: 0, y1: 0, x2: 10, y2: 0 }), 10);
+});
+
+test("segmentLength preserves per-edge variation (no averaging)", () => {
+  // The whole point of the fix: a short and a long edge keep their OWN lengths,
+  // so cola starts every spring at rest instead of at a shared mean.
+  assert.equal(segmentLength({ x1: 0, y1: 0, x2: 20, y2: 0 }), 20);
+  assert.equal(segmentLength({ x1: 0, y1: 0, x2: 200, y2: 0 }), 200);
+});
+
+test("segmentLength falls back to 90 on a degenerate segment", () => {
+  assert.equal(segmentLength({ x1: 5, y1: 5, x2: 5, y2: 5 }), 90); // zero length
+  assert.equal(segmentLength({ x1: 0, y1: 0, x2: NaN, y2: 0 }), 90); // non-finite
+  assert.equal(segmentLength(null), 90);
+  assert.equal(segmentLength(undefined), 90);
+});
+
+test("segmentLength honours a finite custom fallback, ignores a bad one", () => {
+  assert.equal(segmentLength({ x1: 0, y1: 0, x2: 0, y2: 0 }, 42), 42);
+  assert.equal(segmentLength(null, Infinity), 90);
 });
