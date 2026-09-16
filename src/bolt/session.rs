@@ -437,16 +437,6 @@ pub struct Session<'a> {
     /// a pooled driver's `RESET` on one connection can never disturb a
     /// managed transaction in flight on another (issue #236).
     tx: Option<crate::db::TxId>,
-    /// Engine-flip routing (RFC #307 Phase 6): when set, autocommit
-    /// statements go through the database's
-    /// [`crate::native_mirror::NativeMirror`] (read-only queries served
-    /// natively, writes on KV). Statements inside an explicit transaction
-    /// always bypass the mirror — they must observe the transaction's own
-    /// uncommitted writes on the KV engine.
-    native: Option<(
-        std::sync::Arc<crate::db::Drevo>,
-        std::sync::Arc<crate::native_mirror::NativeMirror>,
-    )>,
     /// The open registered transaction on the durable engine, if any —
     /// the [`SessionEngine::Durable`] counterpart of [`Self::tx`]. Set on
     /// `BEGIN`, cleared on `COMMIT` / `ROLLBACK` and the teardown paths.
@@ -459,8 +449,7 @@ struct PendingResult {
 
 /// Which engine this session executes against (engine flip, RFC #307).
 enum SessionEngine<'a> {
-    /// The KV store — today's default, optionally read-mirrored (see
-    /// [`Session::with_native_mirror`]).
+    /// The KV store (legacy engine).
     Kv(&'a Drevo),
     /// The durable native store of record (`DREVO_ENGINE=native-durable`).
     /// Autocommit statements only; explicit transactions are refused until
@@ -486,21 +475,6 @@ impl<'a> Session<'a> {
     /// `00074`.
     pub fn with_auth(drevo: &'a Drevo, authenticator: &'a dyn Authenticator) -> Self {
         Self::build(drevo, Some(authenticator))
-    }
-
-    /// Route this session's autocommit statements through the database's
-    /// native read mirror (engine flip, RFC #307 Phase 6). `db` must be the
-    /// same handle this session was built on; the owned `Arc` is what the
-    /// mirror's background rebuild thread clones. Explicit-transaction
-    /// statements keep executing directly on the KV engine.
-    #[must_use]
-    pub fn with_native_mirror(
-        mut self,
-        db: std::sync::Arc<crate::db::Drevo>,
-        mirror: std::sync::Arc<crate::native_mirror::NativeMirror>,
-    ) -> Self {
-        self.native = Some((db, mirror));
-        self
     }
 
     /// Create a session over the durable native store of record
@@ -544,7 +518,6 @@ impl<'a> Session<'a> {
             pending: None,
             authenticator,
             tx: None,
-            native: None,
             native_tx: None,
         }
     }
@@ -926,20 +899,14 @@ impl<'a> Session<'a> {
                 }
                 (false, _) => service.execute(&ast, cypher_params),
             },
-            SessionEngine::Kv(db) => match (&self.native, in_tx) {
-                // Autocommit + engine flip active: the mirror serves
-                // read-only queries natively and routes everything else to
-                // KV.
-                (Some((db_arc, mirror)), false) => mirror.execute(db_arc, &ast, cypher_params),
-                _ => {
-                    let _tx_scope = if in_tx {
-                        self.tx.map(crate::db::enter_tx_scope)
-                    } else {
-                        None
-                    };
-                    executor::execute(&ast, db, cypher_params)
-                }
-            },
+            SessionEngine::Kv(db) => {
+                let _tx_scope = if in_tx {
+                    self.tx.map(crate::db::enter_tx_scope)
+                } else {
+                    None
+                };
+                executor::execute(&ast, db, cypher_params)
+            }
         };
         let result = match exec {
             Ok(r) => r,

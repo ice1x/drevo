@@ -1,10 +1,10 @@
 //! Mutation-epoch wrapper around a storage backend (engine flip, RFC
 //! `docs/rfc-native-core.md` #307, Phase 6 slice A).
 //!
-//! The KV store has no change feed, so a native read mirror
-//! ([`crate::native_mirror::NativeMirror`]) cannot tail incremental updates
-//! the way the native indexes tail [`crate::native::NativeGraph`]'s WAL. What
-//! it *can* do cheaply is detect staleness: [`crate::storage::EpochBackend`] wraps the real
+//! The KV store has no change feed, so a cache built beside it cannot tail
+//! incremental updates the way the native indexes tail
+//! [`crate::native::NativeGraph`]'s WAL. What it *can* do cheaply is detect
+//! staleness: [`crate::storage::EpochBackend`] wraps the real
 //! backend and bumps an atomic **mutation epoch** on every mutating call
 //! (`put` / `put_batch` / `delete` / `delete_batch`). A mirror stamps the
 //! epoch it was built at; when the stamps differ, the mirror is stale and

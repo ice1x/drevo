@@ -32,7 +32,6 @@ pub mod lexer;
 pub mod parser;
 /// Read-only classification for the engine flip — decides whether the
 /// native read mirror may serve a parsed query (#307 Phase 6).
-pub mod read_only;
 /// A small dependency-free regular-expression engine backing the Cypher
 /// `=~` operator. Task `00140`.
 pub mod regex;

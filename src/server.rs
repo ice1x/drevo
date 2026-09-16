@@ -55,7 +55,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::api::{build_router, ApiState};
-use crate::bolt::listener::{accept_and_run_session, accept_and_run_session_with_mirror};
+use crate::bolt::listener::accept_and_run_session;
 use crate::catalog::Catalog;
 
 /// Default bind address — every interface (container convention).
@@ -91,19 +91,13 @@ pub struct Config {
     pub engine: EngineMode,
 }
 
-/// Cypher execution engine selection, parsed from `DREVO_ENGINE`.
-///
-/// `Native` routes read-only queries through the per-database
-/// [`crate::native_mirror::NativeMirror`]; writes (and reads while the
-/// mirror is stale) execute on the KV engine either way, so the choice
-/// never affects durability or answers — only read latency.
+/// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
+/// KV store, or the durable native engine (the store of record).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EngineMode {
     /// Every query executes on the KV storage engine (today's default).
     #[default]
     Kv,
-    /// Read-only queries are served from the native read mirror.
-    Native,
     /// The durable native engine IS the store of record — no KV store at
     /// all. Serves the minimal native HTTP surface
     /// ([`crate::native_api::build_native_router`]) and, when
@@ -191,7 +185,6 @@ impl Config {
             None => EngineMode::default(),
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
                 "kv" => EngineMode::Kv,
-                "native" => EngineMode::Native,
                 "native-durable" => EngineMode::NativeDurable,
                 _ => return Err(ConfigError::InvalidEngine { value: raw }),
             },
@@ -543,33 +536,7 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     // shared default handle (#251 slice 3); no-op unless `embeddings-proxy` is
     // built.
     configure_query_embedder(&catalog, embeddings_store.clone())?;
-    // Engine flip (RFC #307 Phase 6): in native mode, hand out per-database
-    // read mirrors and warm the default database's one so the first reads
-    // are already served natively. A failed initial build only degrades to
-    // KV-served reads (never wrong answers), so it warns instead of failing
-    // startup.
-    let mirrors = match cfg.engine {
-        // NativeDurable branched off above; it never reaches the KV path.
-        EngineMode::Kv | EngineMode::NativeDurable => None,
-        EngineMode::Native => {
-            let registry = Arc::new(crate::native_mirror::MirrorRegistry::new());
-            let default_db = catalog.default_db();
-            let default_mirror = registry.for_db(&default_db);
-            match default_mirror.rebuild_blocking(&default_db) {
-                Ok(()) => tracing::info!("engine=native — read mirror warm on default database"),
-                Err(err) => tracing::warn!(
-                    error = %err,
-                    "engine=native — initial mirror build failed; reads fall back to KV until a rebuild succeeds"
-                ),
-            }
-            Some(registry)
-        }
-    };
     let state = ApiState::with_catalog(Arc::clone(&catalog));
-    let state = match &mirrors {
-        Some(registry) => state.with_native_mirrors(Arc::clone(registry)),
-        None => state,
-    };
     // Opt-in embeddings proxy (Phase 19 task `00217`), now store-backed so the
     // key/upstream/model are Web-UI-settable; no-op unless the
     // `embeddings-proxy` feature is built.
@@ -601,21 +568,13 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
         // In native mode Bolt shares the default database's read mirror —
         // Bolt has no database selection wired, so the default handle's
         // mirror covers every session.
-        let bolt_mirror = mirrors.as_ref().map(|registry| registry.for_db(&db));
         tokio::spawn(async move {
             loop {
                 match bolt_listener.accept().await {
                     Ok((socket, _peer)) => {
                         let conn_db = Arc::clone(&bolt_db);
-                        let conn_mirror = bolt_mirror.clone();
                         tokio::spawn(async move {
-                            let ended = match conn_mirror {
-                                Some(mirror) => {
-                                    accept_and_run_session_with_mirror(socket, &conn_db, &mirror)
-                                        .await
-                                }
-                                None => accept_and_run_session(socket, &conn_db).await,
-                            };
+                            let ended = accept_and_run_session(socket, &conn_db).await;
                             if let Err(err) = ended {
                                 tracing::warn!(error = %err, "bolt session ended with error");
                             }

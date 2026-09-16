@@ -215,7 +215,6 @@ pub mod native_api;
 /// value cache synced; routes every write (and any stale or non-mirrorable
 /// read) to the durable KV engine, detecting staleness via
 /// [`db::Drevo::mutation_epoch`].
-pub mod native_mirror;
 /// Durable-native serving layer (RFC `docs/rfc-native-core.md`, #307,
 /// Phase 4/7) — a WAL-backed [`native::NativeGraph`] as the store of
 /// record, serving Cypher with the full native index stack (label,
