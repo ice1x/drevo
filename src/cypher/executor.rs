@@ -5134,9 +5134,11 @@ impl<'a> Executor<'a> {
 
         // Resolve and validate the registered target (keeps db.rs registry-free
         // and maps a missing target to a clean procedure error).
-        let target = self
-            .secondary("drevo.semantic.status")?
-            .semantic_status()
+        let registered = match self.native_semantic {
+            Some(svc) => svc.semantic_status(),
+            None => self.secondary("drevo.semantic.status")?.semantic_status(),
+        };
+        let target = registered
             .into_iter()
             .find(|t| t.label == label && t.embedding_property == embedding_property);
         let Some(target) = target else {
@@ -5151,18 +5153,25 @@ impl<'a> Executor<'a> {
         };
 
         let report = if matches!(target.mode, IndexMode::Auto) {
-            self.secondary("drevo.semantic.reindex")?
-                .semantic_reindex(
+            match self.native_semantic {
+                Some(svc) => svc.semantic_reindex(
                     &target.label,
                     &target.text_property,
                     &target.embedding_property,
                     batch_size,
-                )
-                .map_err(|e| ExecError::InvalidProcedureCall {
-                    name: "drevo.semantic.reindex".to_string(),
-                    message: e.to_string(),
-                    span,
-                })?
+                ),
+                None => self.secondary("drevo.semantic.reindex")?.semantic_reindex(
+                    &target.label,
+                    &target.text_property,
+                    &target.embedding_property,
+                    batch_size,
+                ),
+            }
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.reindex".to_string(),
+                message: e.to_string(),
+                span,
+            })?
         } else {
             // Manual target — never server-embedded; report zeros.
             crate::db::SemanticReindexReport::default()

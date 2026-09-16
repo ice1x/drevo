@@ -689,6 +689,86 @@ impl NativeService {
         out
     }
 
+    /// Backfill embeddings for existing nodes of `label` — parity with
+    /// `Drevo::semantic_reindex` (#262). Scans the label's nodes, embeds
+    /// `text_property` into `embedding_property` (a node property) for up to
+    /// `batch_size` that still lack it, and returns resumable counts. Idempotent
+    /// (already-embedded nodes are skipped); fail-open (an embed failure leaves
+    /// the node for a later pass). Needs the server-side embedder, so it is
+    /// gated on `http`.
+    ///
+    /// # Errors
+    /// Propagates a node-update failure from the graph.
+    #[cfg(feature = "http")]
+    pub fn semantic_reindex(
+        &self,
+        label: &str,
+        text_property: &str,
+        embedding_property: &str,
+        batch_size: usize,
+    ) -> Result<crate::db::SemanticReindexReport, DrevoError> {
+        use crate::engine::GraphEngine;
+        let mut report = crate::db::SemanticReindexReport::default();
+        let mut budget = batch_size;
+        // One consistent snapshot to scan; writes below mutate the live graph.
+        for node in self.graph.snapshot().all_nodes() {
+            // Match the primary kind plus any secondary `_labels` (same as KV).
+            let matches_label = node.kind == label
+                || matches!(
+                    node.properties.0.get("_labels"),
+                    Some(serde_json::Value::Array(arr))
+                        if arr.iter().any(|v| v.as_str() == Some(label))
+                );
+            if !matches_label {
+                continue;
+            }
+            report.scanned += 1;
+            let text = node
+                .properties
+                .0
+                .get(text_property)
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let already_embedded = node.properties.0.contains_key(embedding_property);
+            let Some(text) = text.filter(|_| !already_embedded) else {
+                report.skipped += 1;
+                continue;
+            };
+            if budget == 0 {
+                report.remaining += 1;
+                continue;
+            }
+            let Some(embedder) = self.embedder.get() else {
+                report.remaining += 1;
+                continue;
+            };
+            match embedder.embed_query(&text) {
+                Ok(vector) => {
+                    let mut props = node.properties.clone();
+                    props.0.insert(
+                        embedding_property.to_string(),
+                        serde_json::Value::Array(
+                            vector.into_iter().map(|f| serde_json::json!(f)).collect(),
+                        ),
+                    );
+                    let patch = crate::model::NodePatch {
+                        properties: Some(props),
+                        ..Default::default()
+                    };
+                    self.graph.update_node(node.id, patch)?;
+                    report.embedded += 1;
+                    budget -= 1;
+                }
+                Err(error) => {
+                    tracing::warn!(label, error = %error, "native reindex embed failed (ignored)");
+                    report.remaining += 1;
+                }
+            }
+        }
+        Ok(report)
+    }
+
     /// Atomically rewrite the `semantic.json` sidecar with both registries.
     /// Best-effort (a storage hiccup must not fail a control-plane call); a
     /// no-op for an in-memory service. Mirrors the KV `persist_semantic_registry`.
