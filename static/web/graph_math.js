@@ -38,5 +38,21 @@
     return n > 0 ? sum / n : fb;
   }
 
-  return { meanEdgeLength };
+  // Length of a single line segment `{x1, y1, x2, y2}`, falling back to
+  // `fallback` (default 90) for a degenerate (zero-length or non-finite) one.
+  //
+  // This backs the live drag simulation's PER-EDGE spring rest-length: giving
+  // cola each edge's *own* current length as its rest length means every spring
+  // starts exactly at rest, so a drag perturbs only the dragged node's
+  // neighbourhood and the rest of the graph stays put — instead of a single
+  // mean rest-length springing every off-mean edge (the hub's long and short
+  // edges) toward one value and jolting the whole graph on the first tick.
+  function segmentLength(segment, fallback) {
+    const fb = typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 90;
+    if (!segment) return fb;
+    const d = Math.hypot(segment.x1 - segment.x2, segment.y1 - segment.y2);
+    return Number.isFinite(d) && d > 0 ? d : fb;
+  }
+
+  return { meanEdgeLength, segmentLength };
 });

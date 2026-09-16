@@ -160,21 +160,32 @@ async fn ui_live_physics_arms_on_drag_not_on_grab() {
         "a forest/tree must use the hierarchical breadthfirst layout"
     );
     // The live cola sim's spring rest-length must be derived from the CURRENT
-    // on-screen geometry, not a hardcoded constant. A constant desyncs from the
-    // static (fcose) layout's edge length — as it did when fcose was retuned to
-    // 90 while cola stayed at 150 — so the first drag tick sprang every edge
-    // outward and the whole graph "rebuilt" instead of trailing the drag.
+    // on-screen geometry, not a hardcoded constant, and PER EDGE — a shared mean
+    // springs every off-mean edge (a hub's long and short edges) toward one
+    // value, jolting the whole graph on the first drag tick. Each edge gets its
+    // own current length as its rest length so every spring starts at rest and
+    // only the dragged neighbourhood moves.
     assert!(
-        js.contains("currentMeanEdgeLength") && js.contains("edgeLength: currentMeanEdgeLength()"),
-        "the live layout must measure the current mean edge length for its spring rest-length"
+        js.contains("edgeLength: (edge)"),
+        "the live layout must set a PER-EDGE spring rest-length, not a shared constant/mean"
+    );
+    assert!(
+        js.contains("DrevoGraphMath.segmentLength"),
+        "the per-edge length math must come from the unit-tested graph_math.js module"
     );
     assert!(
         js.contains("DrevoGraphMath.meanEdgeLength"),
-        "the mean-edge-length math must come from the unit-tested graph_math.js module"
+        "the mean edge length (the per-edge fallback) still comes from graph_math.js"
     );
     assert!(
         !js.contains("edgeLength: 150"),
         "the live layout must NOT hardcode a spring length that can desync from the static layout"
+    );
+    // Repacking disconnected components on sim start hurls peripheral nodes
+    // across the canvas — the other half of the drag jolt.
+    assert!(
+        js.contains("handleDisconnected: false"),
+        "the live layout must NOT repack disconnected components (that jolts peripheral nodes)"
     );
 }
 
