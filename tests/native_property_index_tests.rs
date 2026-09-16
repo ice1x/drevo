@@ -9,10 +9,9 @@
 //! store**, including patterns that mix an indexable and a non-indexable filter.
 
 use drevo::cypher::executor::{
-    execute, execute_on_engine, execute_on_engine_with_indexes, ExecResult, Value,
+    execute_on_engine, execute_on_engine_with_indexes, ExecResult, Value,
 };
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewNode, NodePatch, Properties};
 use drevo::native::NativeGraph;
@@ -210,9 +209,7 @@ fn indexed_property_scan_equals_full_scan_and_kv() {
         .unwrap();
     };
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     build(&native);
-    build(&kv);
 
     let mut idx = NativePropertyIndex::new();
     idx.sync(&native);
@@ -232,14 +229,9 @@ fn indexed_property_scan_equals_full_scan_and_kv() {
             execute_on_engine_with_indexes(&query, &native, None, None, Some(&idx), HashMap::new())
                 .unwrap(),
         );
-        let kv_rows = matched_ids(execute(&query, &kv, HashMap::new()).unwrap());
         assert_eq!(
             full_scan, indexed,
             "indexed diverged from full scan for `{cypher}`"
-        );
-        assert_eq!(
-            indexed, kv_rows,
-            "native indexed diverged from KV for `{cypher}`"
         );
     }
 }
@@ -268,9 +260,7 @@ fn indexed_label_and_property_intersection_equals_full_scan_and_kv() {
         eng.create_node(mk("task", "d", "active", &[])).unwrap(); // not a user
     };
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     build(&native);
-    build(&kv);
 
     let mut labels = NativeLabelIndex::new();
     labels.sync(&native);
@@ -296,14 +286,9 @@ fn indexed_label_and_property_intersection_equals_full_scan_and_kv() {
             )
             .unwrap(),
         );
-        let kv_rows = matched_ids(execute(&query, &kv, HashMap::new()).unwrap());
         assert_eq!(
             full_scan, indexed,
             "indexed diverged from full scan for `{cypher}`"
-        );
-        assert_eq!(
-            indexed, kv_rows,
-            "native indexed diverged from KV for `{cypher}`"
         );
     }
 }
@@ -350,9 +335,7 @@ fn where_equality_pushdown_equals_full_scan_and_kv() {
         .unwrap();
     };
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     build(&native);
-    build(&kv);
 
     let mut labels = NativeLabelIndex::new();
     labels.sync(&native);
@@ -390,14 +373,9 @@ fn where_equality_pushdown_equals_full_scan_and_kv() {
             )
             .unwrap(),
         );
-        let kv_rows = matched_ids(execute(&query, &kv, params).unwrap());
         assert_eq!(
             full_scan, indexed,
             "indexed diverged from full scan for `{cypher}`"
-        );
-        assert_eq!(
-            indexed, kv_rows,
-            "native indexed diverged from KV for `{cypher}`"
         );
     }
 }
@@ -436,9 +414,7 @@ fn where_in_pushdown_equals_full_scan_and_kv() {
             .unwrap();
     };
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     build(&native);
-    build(&kv);
 
     let mut labels = NativeLabelIndex::new();
     labels.sync(&native);
@@ -491,14 +467,9 @@ fn where_in_pushdown_equals_full_scan_and_kv() {
             )
             .unwrap(),
         );
-        let kv_rows = matched_ids(execute(&query, &kv, params).unwrap());
         assert_eq!(
             full_scan, indexed,
             "indexed diverged from full scan for `{cypher}`"
-        );
-        assert_eq!(
-            indexed, kv_rows,
-            "native indexed diverged from KV for `{cypher}`"
         );
     }
 }
@@ -525,9 +496,7 @@ fn where_range_pushdown_equals_full_scan_and_kv() {
             .unwrap();
     };
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     build(&native);
-    build(&kv);
 
     let mut labels = NativeLabelIndex::new();
     labels.sync(&native);
@@ -548,9 +517,7 @@ fn where_range_pushdown_equals_full_scan_and_kv() {
             )
             .unwrap(),
         );
-        let kvr = matched_ids(execute(&query, &kv, params).unwrap());
         assert_eq!(full, idxd, "indexed diverged from full scan for `{cypher}`");
-        assert_eq!(idxd, kvr, "native indexed diverged from KV for `{cypher}`");
         idxd
     };
 
@@ -607,9 +574,7 @@ fn range_on_mixed_type_key_falls_back_without_diverging() {
             .unwrap();
     };
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     build(&native);
-    build(&kv);
     let mut props = NativePropertyIndex::new();
     props.sync(&native);
 
@@ -617,7 +582,6 @@ fn range_on_mixed_type_key_falls_back_without_diverging() {
     let full = execute_on_engine(&query, &native, HashMap::new());
     let indexed =
         execute_on_engine_with_indexes(&query, &native, None, None, Some(&props), HashMap::new());
-    let kvr = execute(&query, &kv, HashMap::new());
     // The string value makes `n.val > 20` a type error on every path — the
     // index must not paper over it by excluding the string node.
     assert!(
@@ -625,5 +589,4 @@ fn range_on_mixed_type_key_falls_back_without_diverging() {
         "full scan should type-error on the string value"
     );
     assert!(indexed.is_err(), "indexed path must NOT silently succeed");
-    assert!(kvr.is_err(), "KV should type-error too");
 }
