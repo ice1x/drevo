@@ -6936,12 +6936,24 @@ impl<'a> Executor<'a> {
             },
         };
 
-        let terms = crate::fts::keywords::extract_keywords(
-            self.secondary("keywords()")?.backend(),
-            &text,
-            k,
-            stem,
-        )?;
+        // Native-first (issue #447): compute the corpus statistics from the
+        // native FTS index; only the KV path reaches into `secondary`.
+        let terms = if let Some(fts) = self.native_fts {
+            crate::fts::keywords::extract_keywords_scored(
+                &text,
+                k,
+                stem,
+                fts.doc_count(),
+                &|term_trigrams| Ok(fts.trigram_df(term_trigrams)),
+            )?
+        } else {
+            crate::fts::keywords::extract_keywords(
+                self.secondary("keywords()")?.backend(),
+                &text,
+                k,
+                stem,
+            )?
+        };
         Ok(Value::List(terms.into_iter().map(Value::String).collect()))
     }
 
