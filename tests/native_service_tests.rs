@@ -251,6 +251,50 @@ impl drevo::embeddings::TextEmbedder for MockEmbedder {
 }
 
 #[test]
+fn semantic_reindex_backfills_embeddings_on_native() {
+    let service = NativeService::in_memory();
+    assert!(service.set_embedder(Arc::new(MockEmbedder)));
+    // Two Doc nodes with text but no embedding yet.
+    run(
+        &service,
+        "CREATE (:Doc {title: 'a', text: 'rust ownership'}), \
+                (:Doc {title: 'b', text: 'sourdough bread'})",
+    );
+    run(
+        &service,
+        "CALL drevo.semantic.register('Doc', 'text', 'emb', 'auto')",
+    );
+    // Reindex backfills both nodes' `emb` property via the installed embedder.
+    let report = run(
+        &service,
+        "CALL drevo.semantic.reindex('Doc', 'emb', 100) \
+         YIELD scanned, embedded, skipped, remaining \
+         RETURN scanned, embedded, skipped, remaining",
+    );
+    assert_eq!(
+        report.rows,
+        vec![vec![
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(0),
+            Value::Integer(0),
+        ]]
+    );
+    // A second pass is a no-op — everything is already embedded (idempotent).
+    let again = run(
+        &service,
+        "CALL drevo.semantic.reindex('Doc', 'emb', 100) YIELD embedded RETURN embedded",
+    );
+    assert_eq!(again.rows, vec![vec![Value::Integer(0)]]);
+    // The backfilled embedding is now queryable.
+    let hits = run(
+        &service,
+        "CALL drevo.semantic.query('Doc', 'emb', 'rust ownership', 1) YIELD node RETURN node.title",
+    );
+    assert_eq!(hits.rows, vec![vec![Value::String("a".to_string())]]);
+}
+
+#[test]
 fn semantic_embed_and_query_use_the_installed_native_embedder() {
     let service = NativeService::in_memory();
     assert!(service.set_embedder(Arc::new(MockEmbedder)));
