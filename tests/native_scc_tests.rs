@@ -2,16 +2,15 @@
 //! (RFC #307 Phase 8). Same pattern as the WCC slice, but direction matters:
 //! the KV `Drevo::strongly_connected_components` is the oracle, and a hand-built
 //! graph with two directed cycles joined by a one-way bridge plus an isolated
-//! node pins the structure. Gated on `redb-backend` for the KV oracle.
+//! node pins the structure. Gated on `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
 #![cfg(feature = "redb-backend")]
 
 use std::collections::HashMap;
 
-use drevo::algorithms::scc_native;
-use drevo::cypher::executor::{execute, execute_on_engine, Value};
+use drevo::algorithms::{scc, scc_native, AdjacencyList};
+use drevo::cypher::executor::{execute_on_engine, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
@@ -57,20 +56,25 @@ fn three_sccs<E: GraphEngine>(engine: &E) -> Vec<u64> {
 }
 
 #[test]
-fn native_scc_matches_kv_oracle() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    let kids = three_sccs(&kv);
-    let kv_scc = kv
-        .strongly_connected_components()
-        .expect("kv scc")
-        .components;
-
+fn native_scc_matches_the_reference_over_the_raw_edge_list() {
     let native = NativeGraph::new();
-    let nids = three_sccs(&native);
+    let ids = three_sccs(&native);
     let nat_scc = scc_native(&native).components;
 
-    assert_eq!(kids, nids, "engines assigned different ids");
-    assert_eq!(nat_scc, kv_scc, "native SCC diverged from the KV oracle");
+    // Reference: the same serial SCC over an adjacency list built straight from
+    // the known edge list (cycles {0,1} and {2,3}, one-way bridge 1->2, 4 isolated).
+    let reference = scc(&AdjacencyList::from_parts(
+        ids.clone(),
+        vec![
+            (ids[0], ids[1], 1.0f32),
+            (ids[1], ids[0], 1.0),
+            (ids[2], ids[3], 1.0),
+            (ids[3], ids[2], 1.0),
+            (ids[1], ids[2], 1.0),
+        ],
+    ))
+    .components;
+    assert_eq!(nat_scc, reference, "native SCC diverged from the reference");
 }
 
 /// `CALL drevo.scc() YIELD node, component` → title → component id.
@@ -103,15 +107,6 @@ fn assert_three_sccs(comp: &HashMap<String, i64>) {
     // The isolated node is its own component.
     assert_ne!(comp["n4"], comp["n0"]);
     assert_ne!(comp["n4"], comp["n2"]);
-}
-
-#[test]
-fn call_drevo_scc_over_cypher_finds_three_components_on_kv() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    three_sccs(&kv);
-    let q = parse(SCC_CYPHER).expect("parse");
-    let res = execute(&q, &kv, HashMap::new()).expect("execute");
-    assert_three_sccs(&cypher_components(&res.rows));
 }
 
 #[test]

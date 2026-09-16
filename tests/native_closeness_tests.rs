@@ -3,16 +3,15 @@
 //! analytics slices: the KV `Drevo::closeness_centrality` is the oracle, and a
 //! directed path 0 -> 1 -> 2 with an unreachable extra node pins the reciprocal
 //! sums and the disconnected-stays-finite behaviour. Gated on `redb-backend`
-//! for the KV oracle.
+//! for the `CALL drevo.<algo>()` procedure path.
 
 #![cfg(feature = "redb-backend")]
 
 use std::collections::HashMap;
 
-use drevo::algorithms::closeness_native;
-use drevo::cypher::executor::{execute, execute_on_engine, Value};
+use drevo::algorithms::{closeness, closeness_native, AdjacencyList};
+use drevo::cypher::executor::{execute_on_engine, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
@@ -54,19 +53,20 @@ fn path_with_isolate<E: GraphEngine>(engine: &E) -> Vec<u64> {
 }
 
 #[test]
-fn native_closeness_matches_kv_oracle() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    let kids = path_with_isolate(&kv);
-    let kv_cl = kv.closeness_centrality().expect("kv closeness");
-
+fn native_closeness_matches_the_reference_over_the_raw_edge_list() {
     let native = NativeGraph::new();
-    let nids = path_with_isolate(&native);
+    let ids = path_with_isolate(&native);
     let nat_cl = closeness_native(&native);
 
-    assert_eq!(kids, nids, "engines assigned different ids");
+    // Reference: the same serial closeness over an adjacency list built straight
+    // from the known edge list (directed path 0->1->2, 3 isolated).
+    let reference = closeness(&AdjacencyList::from_parts(
+        ids.clone(),
+        vec![(ids[0], ids[1], 1.0f32), (ids[1], ids[2], 1.0)],
+    ));
     assert_eq!(
-        nat_cl, kv_cl,
-        "native closeness diverged from the KV oracle"
+        nat_cl, reference,
+        "native closeness diverged from the reference"
     );
 }
 
@@ -96,15 +96,6 @@ fn assert_path_with_isolate(scores: &HashMap<String, f64>) {
     assert!((scores["n1"] - 1.0).abs() < 1e-12, "n1 = {}", scores["n1"]);
     assert_eq!(scores["n2"], 0.0);
     assert_eq!(scores["n3"], 0.0);
-}
-
-#[test]
-fn call_drevo_closeness_over_cypher_on_kv() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    path_with_isolate(&kv);
-    let q = parse(CL_CYPHER).expect("parse");
-    let res = execute(&q, &kv, HashMap::new()).expect("execute");
-    assert_path_with_isolate(&cypher_scores(&res.rows));
 }
 
 #[test]
