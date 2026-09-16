@@ -719,6 +719,7 @@ pub fn execute(
         None,
         None,
         None,
+        None,
         params,
     )
 }
@@ -740,7 +741,9 @@ pub fn execute_on_engine(
     engine: &dyn GraphEngine,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, None, None, None, None, None, params)
+    execute_inner(
+        query, engine, None, None, None, None, None, None, None, params,
+    )
 }
 
 /// Like [`execute_on_engine`], but with a native full-text index so
@@ -766,6 +769,7 @@ pub fn execute_on_engine_with_fts(
         engine,
         None,
         Some(fts),
+        None,
         None,
         None,
         None,
@@ -798,7 +802,9 @@ pub fn execute_on_engine_with_indexes(
     props: Option<&crate::native_property_index::NativePropertyIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(query, engine, None, fts, labels, props, None, None, params)
+    execute_inner(
+        query, engine, None, fts, labels, props, None, None, None, params,
+    )
 }
 
 /// Like [`execute_on_engine_with_indexes`], additionally supplying a
@@ -821,7 +827,7 @@ pub fn execute_on_engine_with_indexes_and_values(
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     execute_inner(
-        query, engine, None, fts, labels, props, values, None, params,
+        query, engine, None, fts, labels, props, values, None, None, params,
     )
 }
 
@@ -854,6 +860,10 @@ pub struct NativeQueryContext<'a> {
     /// `drevo.semantic.query` / `drevo.semantic.queryRel` run without a KV
     /// secondary store.
     pub embedder: Option<QueryEmbedder<'a>>,
+    /// The native semantic control plane — lets `drevo.semantic.register` /
+    /// `.registerRel` / `.status` manage the native registry without a KV
+    /// secondary (issue #447).
+    pub semantic: Option<&'a crate::native_service::NativeService>,
 }
 
 /// Execute over any engine with a [`NativeQueryContext`] attached — the
@@ -876,6 +886,7 @@ pub fn execute_on_engine_with_context(
         ctx.properties,
         ctx.values,
         ctx.embedder,
+        ctx.semantic,
         params,
     )
 }
@@ -890,6 +901,7 @@ fn execute_inner(
     native_props: Option<&crate::native_property_index::NativePropertyIndex>,
     native_values: Option<&crate::native_value_cache::NativeValueCache>,
     native_embedder: Option<QueryEmbedder<'_>>,
+    native_semantic: Option<&crate::native_service::NativeService>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Fast path — a query with no `UNION` is a single arm, executed
@@ -904,6 +916,7 @@ fn execute_inner(
             native_props,
             native_values,
             native_embedder,
+            native_semantic,
             params,
         );
     }
@@ -949,6 +962,7 @@ fn execute_inner(
             native_props,
             native_values,
             native_embedder,
+            native_semantic,
             params.clone(),
         )?;
         match &columns {
@@ -1083,6 +1097,7 @@ fn execute_single(
     native_props: Option<&crate::native_property_index::NativePropertyIndex>,
     native_values: Option<&crate::native_value_cache::NativeValueCache>,
     native_embedder: Option<QueryEmbedder<'_>>,
+    native_semantic: Option<&crate::native_service::NativeService>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
@@ -1108,6 +1123,7 @@ fn execute_single(
         native_props,
         native_values,
         native_embedder,
+        native_semantic,
         pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
@@ -2198,6 +2214,12 @@ struct Executor<'a> {
     /// without a KV secondary store. `None` on the KV path (which uses the
     /// secondary's installed embedder) or when the serving layer has none.
     native_embedder: Option<QueryEmbedder<'a>>,
+    /// The native semantic control plane (register/status/reindex), when running
+    /// over the durable-native serving layer (issue #447). Lets the
+    /// `drevo.semantic.register` / `.registerRel` / `.status` procedures manage
+    /// the native registry instead of the KV `secondary`. `None` on the KV path
+    /// (which uses `secondary`) or when the serving layer did not supply one.
+    native_semantic: Option<&'a crate::native_service::NativeService>,
     /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
     /// `WHERE` clause (`variable → [constraint]`), so a term like
     /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
@@ -4743,14 +4765,21 @@ impl<'a> Executor<'a> {
             message: e.to_string(),
             span,
         })?;
-        let target = self
-            .secondary("drevo.semantic.register")?
-            .semantic_register(&label, &text_property, &embedding_property, mode, None)
-            .map_err(|e| ExecError::InvalidProcedureCall {
-                name: "drevo.semantic.register".to_string(),
-                message: e.to_string(),
-                span,
-            })?;
+        // Native-first (issue #447): the durable-native serving layer manages
+        // its own registry; only the KV path falls back to `secondary`.
+        let target = match self.native_semantic {
+            Some(svc) => {
+                svc.semantic_register(&label, &text_property, &embedding_property, mode, None)
+            }
+            None => self
+                .secondary("drevo.semantic.register")?
+                .semantic_register(&label, &text_property, &embedding_property, mode, None),
+        }
+        .map_err(|e| ExecError::InvalidProcedureCall {
+            name: "drevo.semantic.register".to_string(),
+            message: e.to_string(),
+            span,
+        })?;
         Ok(vec![semantic_index_row(&target)])
     }
 
@@ -4777,12 +4806,13 @@ impl<'a> Executor<'a> {
         _args: &[Expression],
         _span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
-        Ok(self
-            .secondary("drevo.semantic.status")?
-            .semantic_status_detailed()?
-            .iter()
-            .map(semantic_status_row)
-            .collect())
+        let statuses = match self.native_semantic {
+            Some(svc) => svc.semantic_status_detailed(),
+            None => self
+                .secondary("drevo.semantic.status")?
+                .semantic_status_detailed()?,
+        };
+        Ok(statuses.iter().map(semantic_status_row).collect())
     }
 
     /// `CALL drevo.semantic.info() YIELD embedder_present, model, dimension,
@@ -5166,14 +5196,23 @@ impl<'a> Executor<'a> {
             message: e.to_string(),
             span,
         })?;
-        let target = self
-            .secondary("drevo.semantic.registerRel")?
-            .semantic_register_rel(&rel_type, &text_property, &embedding_property, mode, None)
-            .map_err(|e| ExecError::InvalidProcedureCall {
-                name: "drevo.semantic.registerRel".to_string(),
-                message: e.to_string(),
-                span,
-            })?;
+        let target = match self.native_semantic {
+            Some(svc) => svc.semantic_register_rel(
+                &rel_type,
+                &text_property,
+                &embedding_property,
+                mode,
+                None,
+            ),
+            None => self
+                .secondary("drevo.semantic.registerRel")?
+                .semantic_register_rel(&rel_type, &text_property, &embedding_property, mode, None),
+        }
+        .map_err(|e| ExecError::InvalidProcedureCall {
+            name: "drevo.semantic.registerRel".to_string(),
+            message: e.to_string(),
+            span,
+        })?;
         Ok(vec![semantic_index_row(&target)])
     }
 

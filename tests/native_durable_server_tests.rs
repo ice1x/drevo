@@ -109,7 +109,9 @@ async fn parse_and_execution_errors_are_bad_requests() {
     let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
     let (status, _) = cypher(&app, "MATCH (((").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) = cypher(&app, "CALL drevo.semantic.status()").await;
+    // A still-KV-only procedure (engine.status) surfaces as 400 on native.
+    // (semantic.status now runs on native — see native_service_tests, #447.)
+    let (status, _) = cypher(&app, "CALL drevo.engine.status()").await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,

@@ -659,6 +659,36 @@ impl NativeService {
             .to_vec()
     }
 
+    /// Detailed status for `drevo.semantic.status` — parity with
+    /// `Drevo::semantic_status_detailed`. The Auto-mode backlog (`pending` /
+    /// `failed` / `degraded`) is populated by the native auto-embed worker
+    /// (a later slice); until then it reports zero, so Manual targets are fully
+    /// accurate and Auto targets show no backlog yet.
+    pub fn semantic_status_detailed(&self) -> Vec<crate::db::SemanticTargetStatus> {
+        let mut out = Vec::new();
+        for index in self.semantic_status() {
+            out.push(crate::db::SemanticTargetStatus {
+                target_kind: "node",
+                index,
+                pending: 0,
+                failed: 0,
+                last_error: None,
+                degraded: false,
+            });
+        }
+        for index in self.semantic_status_rel() {
+            out.push(crate::db::SemanticTargetStatus {
+                target_kind: "relationship",
+                index,
+                pending: 0,
+                failed: 0,
+                last_error: None,
+                degraded: false,
+            });
+        }
+        out
+    }
+
     /// Atomically rewrite the `semantic.json` sidecar with both registries.
     /// Best-effort (a storage hiccup must not fail a control-plane call); a
     /// no-op for an in-memory service. Mirrors the KV `persist_semantic_registry`.
@@ -839,6 +869,9 @@ impl NativeService {
             embedder: self.embedder.get(),
             #[cfg(not(feature = "http"))]
             embedder: None,
+            // The native semantic control plane — `semantic.register/status`
+            // manage this service's registry instead of a KV secondary (#447).
+            semantic: Some(self),
         };
         execute_on_engine_with_context(query, &self.graph, &ctx, params)
     }
