@@ -252,6 +252,107 @@ async fn rest_crud_surface_has_parity_with_the_kv_router() {
     );
 }
 
+/// Per-node traversal (`/nodes/{id}/edges|neighbors|subgraph`) and JSON import
+/// (`POST /import/json`) round out the raw-REST parity on the native engine.
+#[tokio::test]
+async fn traversal_and_import_have_parity_with_the_kv_router() {
+    let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+
+    // a -link-> b
+    let (_, a) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(json!({ "kind": "note", "title": "A", "body": "",
+                     "body_html": "", "properties": {} })),
+    )
+    .await;
+    let a_id = a["id"].as_u64().unwrap();
+    let (_, b) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(json!({ "kind": "note", "title": "B", "body": "",
+                     "body_html": "", "properties": {} })),
+    )
+    .await;
+    let b_id = b["id"].as_u64().unwrap();
+    let (st, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(json!({ "from_id": a_id, "to_id": b_id, "kind": "link",
+                     "weight": 1.0, "properties": {} })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    // GET /nodes/{id}/edges — the one incident edge (default direction=both).
+    let (st, edges) = send(&app, "GET", &format!("/nodes/{a_id}/edges"), None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(edges["edges"].as_array().unwrap().len(), 1);
+    // An invalid direction is a 400.
+    let (st, _) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a_id}/edges?direction=sideways"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    // GET /nodes/{id}/neighbors — b; a missing node is 404.
+    let (st, neigh) = send(&app, "GET", &format!("/nodes/{a_id}/neighbors"), None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(neigh["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(neigh["nodes"][0]["id"].as_u64().unwrap(), b_id);
+    let (st, _) = send(&app, "GET", "/nodes/999999/neighbors", None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // GET /nodes/{id}/subgraph — a + b within 1 hop; missing root is 404.
+    let (st, sub) = send(
+        &app,
+        "GET",
+        &format!("/nodes/{a_id}/subgraph?depth=1"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(sub["nodes"].as_array().unwrap().len(), 2);
+    let (st, _) = send(&app, "GET", "/nodes/999999/subgraph", None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // POST /import/json — export this graph, replay it into a fresh engine.
+    let (st, dump) = send(&app, "GET", "/export/json", None).await;
+    assert_eq!(st, StatusCode::OK);
+    // /export/json returns the raw dump document; feed it back verbatim.
+    let dump_str = serde_json::to_string(&dump).unwrap();
+    let fresh = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+    let (st, report) = send(
+        &fresh,
+        "POST",
+        "/import/json",
+        Some(json!({ "dump": dump_str })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "import report: {report}");
+    assert_eq!(report["nodes_imported"].as_u64().unwrap(), 2);
+    assert_eq!(report["edges_imported"].as_u64().unwrap(), 1);
+    // The imported graph is queryable on the fresh engine.
+    let (st, list) = send(&fresh, "GET", "/nodes?kind=note", None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(list["nodes"].as_array().unwrap().len(), 2);
+    // A malformed / unknown-format dump is rejected.
+    let (st, _) = send(
+        &fresh,
+        "POST",
+        "/import/json",
+        Some(json!({ "dump": "{\"format\":\"nope\"}" })),
+    )
+    .await;
+    assert_ne!(st, StatusCode::OK, "unknown dump format must not import");
+}
+
 #[tokio::test]
 async fn storage_panel_is_engine_agnostic_on_the_wal_store() {
     // The storage panel (bloat / shrink / benchmark / keyspaces) used to 501 on

@@ -1086,6 +1086,40 @@ impl NativeService {
         self.graph.snapshot().neighbors(node_id, direction, kind)
     }
 
+    /// Edges incident to `node_id` in `direction` — the engine of
+    /// `GET /nodes/{id}/edges`, parity with `Drevo::edges_of`. A missing node
+    /// yields an empty list (the KV route does the same — it does not 404).
+    pub fn edges_of(
+        &self,
+        node_id: u64,
+        direction: crate::model::Direction,
+    ) -> Vec<crate::model::Edge> {
+        self.graph.snapshot().edges_of(node_id, direction)
+    }
+
+    /// Import a `drevo-json-v1` dump into the durable store — the engine of
+    /// `POST /import/json`, parity with `Drevo::import_json`. Parses and
+    /// validates the format header, then replays the records through the WAL
+    /// (durable, idempotent for drevo's own exports).
+    ///
+    /// # Errors
+    /// [`DrevoError::Io`] on malformed JSON or an unknown format; propagates a
+    /// title collision / WAL failure.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn import_json(&self, raw: &str) -> Result<crate::dump::ImportReport, DrevoError> {
+        use crate::engine::GraphEngine;
+        let dump: crate::dump::Dump = serde_json::from_str(raw)
+            .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))?;
+        if dump.format != crate::dump::FORMAT_V1 {
+            return Err(DrevoError::Io(std::io::Error::other(format!(
+                "unsupported dump format: {:?} — expected {}",
+                dump.format,
+                crate::dump::FORMAT_V1
+            ))));
+        }
+        Ok(self.graph.apply_dump(dump)?)
+    }
+
     fn execute_with(
         &self,
         idx: &ServiceIndexes,
