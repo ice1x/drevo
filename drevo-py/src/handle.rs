@@ -57,24 +57,26 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+#[cfg(test)]
 use drevo::db as ddb;
 use drevo::model as dmodel;
 use drevo::vector::{HnswConfig, Vector};
 
 use crate::errors::{map_err, panic_to_pyerr};
+use crate::native_backend::NativeBackend;
 use crate::types;
 
 /// Python-side `Drevo` handle. See module-level docs for the
 /// concurrency model and GIL-release contract.
 #[pyclass(name = "Drevo")]
 pub struct Drevo {
-    inner: Mutex<Option<Arc<ddb::Drevo>>>,
+    inner: Mutex<Option<Arc<NativeBackend>>>,
 }
 
 impl Drevo {
     /// Open an in-memory backend — used by both `open_in_memory` and as
     /// the fallback path for unit tests.
-    fn from_inner(inner: ddb::Drevo) -> Self {
+    fn from_inner(inner: NativeBackend) -> Self {
         Self {
             inner: Mutex::new(Some(Arc::new(inner))),
         }
@@ -105,7 +107,7 @@ where
 /// another thread waiting on the mutex (the bug this layout fixes).
 ///
 /// Returns `RuntimeError` if `close()` has already been called.
-fn borrow_db(slot: &Mutex<Option<Arc<ddb::Drevo>>>) -> PyResult<Arc<ddb::Drevo>> {
+fn borrow_db(slot: &Mutex<Option<Arc<NativeBackend>>>) -> PyResult<Arc<NativeBackend>> {
     let guard = slot
         .lock()
         .map_err(|_| PyRuntimeError::new_err("drevo handle mutex poisoned"))?;
@@ -127,7 +129,7 @@ fn borrow_db(slot: &Mutex<Option<Arc<ddb::Drevo>>>) -> PyResult<Arc<ddb::Drevo>>
 /// methods complete in microseconds (the redb backend's serialisation
 /// of writes dominates). 1 ms is short enough to be invisible on the
 /// fast path but long enough to avoid pegging a CPU.
-fn into_owned(mut arc: Arc<ddb::Drevo>) -> ddb::Drevo {
+fn into_owned(mut arc: Arc<NativeBackend>) -> NativeBackend {
     loop {
         arc = match Arc::try_unwrap(arc) {
             Ok(inner) => return inner,
@@ -148,9 +150,9 @@ fn into_owned(mut arc: Arc<ddb::Drevo>) -> ddb::Drevo {
 /// GIL+Mutex deadlock pattern. The closure receives `&ddb::Drevo`
 /// (deref of the local `Arc`), so the storage-method bodies do not
 /// need to change.
-fn with_db<R, F>(slot: &Mutex<Option<Arc<ddb::Drevo>>>, f: F) -> PyResult<R>
+fn with_db<R, F>(slot: &Mutex<Option<Arc<NativeBackend>>>, f: F) -> PyResult<R>
 where
-    F: FnOnce(&ddb::Drevo) -> PyResult<R>,
+    F: FnOnce(&NativeBackend) -> PyResult<R>,
 {
     let arc = borrow_db(slot)?;
     f(&arc)
@@ -175,7 +177,7 @@ impl Drevo {
         let path: PathBuf = extract_path(py, path)?;
         guarded(|| {
             let db = py
-                .allow_threads(|| ddb::Drevo::open(&path))
+                .allow_threads(|| NativeBackend::open(&path))
                 .map_err(map_err)?;
             Ok(Self::from_inner(db))
         })
@@ -187,9 +189,8 @@ impl Drevo {
     #[classmethod]
     fn open_in_memory(_cls: &Bound<'_, pyo3::types::PyType>, py: Python<'_>) -> PyResult<Self> {
         guarded(|| {
-            let db = py
-                .allow_threads(ddb::Drevo::open_in_memory)
-                .map_err(map_err)?;
+            // The native in-memory service is infallible to construct.
+            let db = py.allow_threads(NativeBackend::in_memory);
             Ok(Self::from_inner(db))
         })
     }
@@ -246,42 +247,15 @@ impl Drevo {
     /// Returns a `CompactReport` with byte counts and the new
     /// allocator next-id values.
     ///
-    /// Concurrency: needs `&mut ddb::Drevo` (redb's compactor requires
-    /// an exclusive write transaction). Takes the `Arc<Drevo>` out of
-    /// the slot, waits under `py.allow_threads` for the last in-flight
-    /// clone to drop (`Arc::try_unwrap` succeeds), runs the compaction,
-    /// then re-wraps the inner in a fresh `Arc` and puts it back in
-    /// the slot — so subsequent storage calls see a live handle again.
-    /// On error the inner is still restored so the handle stays usable.
+    /// Concurrency: the native WAL compactor quiesces writes internally and
+    /// needs only `&self`, so — unlike the old redb backend — this does not
+    /// reclaim exclusive ownership of the handle; it runs like any other read.
     fn compact(&self, py: Python<'_>) -> PyResult<types::CompactReport> {
         guarded(|| {
-            let arc = {
-                let mut guard = self
-                    .inner
-                    .lock()
-                    .map_err(|_| PyRuntimeError::new_err("drevo handle mutex poisoned"))?;
-                guard.take().ok_or_else(|| {
-                    PyRuntimeError::new_err(
-                        "Drevo handle is closed; create a fresh instance with Drevo.open(...)",
-                    )
-                })?
-            };
-            let (inner, result) = py.allow_threads(move || {
-                let mut inner = into_owned(arc);
-                let report = inner.compact();
-                (inner, report)
-            });
-            // Always put the inner back so the handle remains usable
-            // even if compaction returned an error.
-            {
-                let mut guard = self
-                    .inner
-                    .lock()
-                    .map_err(|_| PyRuntimeError::new_err("drevo handle mutex poisoned"))?;
-                *guard = Some(Arc::new(inner));
-            }
-            let report = result.map_err(map_err)?;
-            Ok(types::CompactReport::new(report))
+            with_db(&self.inner, |db| {
+                let report = py.allow_threads(|| db.compact()).map_err(map_err)?;
+                Ok(types::CompactReport::new(report))
+            })
         })
     }
 
@@ -370,36 +344,9 @@ impl Drevo {
         })
     }
 
-    /// Migrate the adjacency index of the database at `path` (#243 slice 2).
-    ///
-    /// `direction` is `"up"` to upgrade a legacy database to the current
-    /// kind-in-key layout (after which `Drevo.open(path)` works again) or
-    /// `"down"` to revert to the previous layout so an older drevo build can
-    /// read it. Returns the number of edges re-indexed.
-    ///
-    /// Safe by construction: the migration rebuilds only the derived
-    /// adjacency index from the intact node/edge records, so an interrupted
-    /// run loses no graph data and simply resumes when re-run. Take a GraphML
-    /// backup first anyway — the `drevo migrate` CLI does so automatically.
-    ///
-    /// Raises `ValueError` for an unrecognised `direction`.
-    #[staticmethod]
-    fn migrate(py: Python<'_>, path: PyObject, direction: &str) -> PyResult<u64> {
-        let path: PathBuf = extract_path(py, path)?;
-        let dir = match direction.to_ascii_lowercase().as_str() {
-            "up" => ddb::MigrationDirection::Up,
-            "down" => ddb::MigrationDirection::Down,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "migrate direction must be 'up' or 'down', got {other:?}"
-                )))
-            }
-        };
-        guarded(|| {
-            py.allow_threads(|| ddb::Drevo::migrate(&path, dir))
-                .map_err(map_err)
-        })
-    }
+    // Note: the redb `migrate` (adjacency-format up/down, #243) is gone — the
+    // native engine has no such on-disk format, so there is nothing to migrate.
+    // Legacy redb data moves to native via GraphML export/import. (#446)
 
     // ── Node CRUD ──────────────────────────────────────────────────
 

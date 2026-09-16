@@ -336,7 +336,6 @@ fn type_stubs_declare_public_surface() {
         "def subgraph(",
         "def neighbors(",
         "def search_fts(",
-        "def migrate(",
         "def export_graphml(",
         "def export_graphml_to_path(",
         "def import_graphml(",

@@ -124,8 +124,9 @@ struct Inner {
     kind_ids: HashMap<String, u32>,
     /// `node id → embedding vector` — the durable, typed embedding store
     /// (issue #446), the native counterpart of the KV `vec:` keyspace. Kept
-    /// separate from node `properties`: distinct lifecycle, and the HNSW index
-    /// is rebuilt from it. Independent of node deletion, matching KV.
+    /// separate from node `properties` (distinct lifecycle; the HNSW index is
+    /// rebuilt from it), but keyed by node id and **cascaded on node deletion**,
+    /// matching the KV handle.
     embeddings: HashMap<u64, Vec<f32>>,
     /// Declared schema constraints, validated at transaction commit.
     constraints: Vec<Constraint>,
@@ -484,6 +485,10 @@ impl Inner {
         self.titles.remove(&node.title);
         self.unindex_node_kind(id, &node.kind);
         self.nodes.remove(&id);
+        // Deleting a node cascades to its embedding (parity with the KV handle,
+        // issue #446): the durable `vec:` entry is keyed by node id and dropped
+        // with the node, so no orphan survives.
+        self.embeddings.remove(&id);
         Ok(())
     }
 
@@ -633,6 +638,8 @@ impl Inner {
                     self.titles.remove(&node.title);
                     self.unindex_node_kind(id, &node.kind);
                     self.nodes.remove(&id);
+                    // Cascade the embedding, same as the live delete path.
+                    self.embeddings.remove(&id);
                 }
             }
             WalOp::UpsertEdge(edge) => {

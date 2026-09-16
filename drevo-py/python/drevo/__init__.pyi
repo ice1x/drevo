@@ -231,11 +231,12 @@ class LockedError(DrevoError):
     """Another process holds the exclusive file lock on the database."""
 
 class NeedsMigrationError(DrevoError):
-    """The on-disk adjacency format predates this build and must be migrated.
+    """The on-disk format predates this build and must be migrated.
 
-    Raised by `Drevo.open` when the database uses the pre-#243-slice-2
-    adjacency layout. `.args == (found_major, required_major)`. Fix with
-    `Drevo.migrate(path, "up")` or the `drevo migrate up` CLI.
+    `.args == (found_major, required_major)`. Move legacy data to the native
+    engine by exporting it to GraphML from the old build and importing it into
+    a fresh database (`export_graphml` / `import_graphml`); the redb-era
+    adjacency `migrate` command has been removed.
     """
 
 class PanicError(DrevoError):
@@ -277,8 +278,6 @@ class Drevo:
         exc_value: Optional[BaseException],
         traceback: Optional[_types.TracebackType],
     ) -> bool: ...
-    @staticmethod
-    def migrate(path: _PathLike, direction: str) -> int: ...
     def compact(self) -> CompactReport: ...
     def bloat_report(self) -> BloatReport: ...
     def health_check(self) -> None: ...
