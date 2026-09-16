@@ -15,25 +15,25 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecStats, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, ExecStats, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeGraph {
+    NativeGraph::new()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeGraph) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").rows
 }
 
-fn run_with(source: &str, drevo: &Drevo, params: HashMap<String, Value>) -> Vec<Vec<Value>> {
+fn run_with(source: &str, drevo: &NativeGraph, params: HashMap<String, Value>) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, params).expect("execute").rows
 }
 
-fn stats(source: &str, drevo: &Drevo) -> ExecStats {
+fn stats(source: &str, drevo: &NativeGraph) -> ExecStats {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").stats
 }
@@ -50,8 +50,8 @@ fn cbt_capture_thought_with_inline_mood_relationship() {
     );
     assert_eq!(s.nodes_created, 2);
     assert_eq!(s.relationships_created, 1);
-    assert_eq!(db.list_nodes_by_kind("Thought", 10, 0).unwrap().len(), 1);
-    assert_eq!(db.list_nodes_by_kind("Mood", 10, 0).unwrap().len(), 1);
+    assert_eq!(run("MATCH (n:Thought) RETURN n", &db).len(), 1);
+    assert_eq!(run("MATCH (n:Mood) RETURN n", &db).len(), 1);
 }
 
 #[test]

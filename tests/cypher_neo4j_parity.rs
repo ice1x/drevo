@@ -52,9 +52,9 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 
 use serde_json::json;
 use serde_json::Value as Json;
@@ -370,7 +370,7 @@ fn normalize(columns: Vec<String>, rows: Vec<Vec<Json>>, ordered: bool) -> Norma
 /// Load the dataset into a fresh in-memory drevo, run `q`, and return the
 /// normalised result.
 fn run_drevo(q: &ParityQuery) -> Result<Normalized, String> {
-    let db = Drevo::open_in_memory().map_err(|e| format!("open: {e}"))?;
+    let db = NativeGraph::new();
     let setup = parse(DATASET).map_err(|e| format!("parse dataset: {e:?}"))?;
     execute(&setup, &db, HashMap::new()).map_err(|e| format!("load dataset: {e:?}"))?;
 

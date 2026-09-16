@@ -37,29 +37,29 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, ExecResult, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, ExecError, ExecResult, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeGraph {
+    NativeGraph::new()
 }
 
 /// Parse + execute, panicking on either failure. Returns the result rows.
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeGraph) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").rows
 }
 
 /// Parse + execute, returning the full [`ExecResult`] (rows + stats).
-fn run_full(source: &str, drevo: &Drevo) -> ExecResult {
+fn run_full(source: &str, drevo: &NativeGraph) -> ExecResult {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute")
 }
 
 /// Parse (panicking on parse error) then execute, returning the raw
 /// `Result` so a test can assert on the executor error variant.
-fn try_exec(source: &str, drevo: &Drevo) -> Result<ExecResult, ExecError> {
+fn try_exec(source: &str, drevo: &NativeGraph) -> Result<ExecResult, ExecError> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new())
 }
