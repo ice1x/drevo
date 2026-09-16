@@ -117,17 +117,30 @@ fn count_pushdown_and_engine_reads_work_through_the_service() {
 }
 
 #[test]
-fn kv_only_procedures_surface_the_capability_error() {
+fn semantic_status_runs_on_native() {
+    // Before #447 this surfaced `EngineCapability` (the control plane lived only
+    // on the KV secondary). It now resolves against the native registry.
     let service = NativeService::in_memory();
     let q = parse("CALL drevo.semantic.status()").expect("parse");
-    let err = service
+    service
         .execute(&q, HashMap::new())
-        .expect_err("semantic procedures need the KV secondary store");
-    assert!(
-        err.to_string()
-            .contains("not available on the active graph engine"),
-        "unexpected error: {err}"
+        .expect("semantic.status runs on the native engine now (#447)");
+}
+
+#[test]
+fn semantic_register_then_status_roundtrips_on_native() {
+    let service = NativeService::in_memory();
+    // `register` resolves against the native registry (not a KV secondary).
+    run(
+        &service,
+        "CALL drevo.semantic.register('Doc', 'text', 'embedding', 'auto')",
     );
+    // `status` reflects the freshly registered target.
+    let status = run(
+        &service,
+        "CALL drevo.semantic.status() YIELD label RETURN count(*)",
+    );
+    assert_eq!(int(&status), 1);
 }
 
 #[test]
