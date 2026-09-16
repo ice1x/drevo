@@ -3,18 +3,17 @@
 //!
 //! A router over a [`crate::native_service::NativeService`]: liveness
 //! (`/health`, `/ready`), identity (`/status`), Cypher (`POST /cypher`,
-//! full-text included), the storage panel, the Web UI, and the raw-REST graph
-//! surface — node/edge CRUD (`/nodes`, `/edges`), traversal (`/paths/shortest`),
-//! keyword faceting (`/facets`), and Prometheus metrics (`/metrics`) — all on
-//! the **same routes and contracts as the KV router** ([`crate::api`]), so a
+//! full-text included), the storage panel, the Web UI, and the full raw-REST
+//! graph surface — node/edge CRUD (`/nodes`, `/edges`), per-node traversal
+//! (`/nodes/{id}/edges` / `/neighbors` / `/subgraph`), shortest path
+//! (`/paths/shortest`), keyword faceting (`/facets`), JSON import
+//! (`POST /import/json`), and Prometheus metrics (`/metrics`) — all on the
+//! **same routes and contracts as the KV router** ([`crate::api`]), so a
 //! non-Cypher client migrates from KV to native-durable unchanged.
 //!
-//! A handful of endpoints remain KV-only for now and 404 here until ported:
-//! the per-node traversal routes (`/nodes/{id}/edges`, `/neighbors`,
-//! `/subgraph`) and `POST /import/json`.
-//!
-//! Multi-database catalogs are also out of scope for this slice — the mode
-//! serves the single durable graph the process was pointed at.
+//! Multi-database catalogs are the one remaining KV-router feature out of scope
+//! for this mode — it serves the single durable graph the process was pointed
+//! at.
 
 #![cfg(feature = "http")]
 
@@ -32,14 +31,16 @@ use axum::Router;
 use crate::api::{
     embeddings_response, exec_result_to_response, json_to_cypher_value, ApiError, CypherRequest,
     CypherResponse, DatabaseListResponse, EdgeListResponse, FacetsQuery, FacetsResponse,
-    ImportGraphmlRequest, ListEdgesQuery, ListNodesQuery, NodeListResponse, SearchFtsRequest,
-    SearchFtsResponse, ShortestPathQuery, ShortestPathResponse, DEFAULT_FACET_KEYWORDS,
-    DEFAULT_LIST_LIMIT, MAX_FACET_KEYWORDS, MAX_LIST_LIMIT,
+    ImportGraphmlRequest, ImportJsonRequest, ListEdgesQuery, ListNodesQuery, NeighborsQuery,
+    NodeEdgesQuery, NodeListResponse, SearchFtsRequest, SearchFtsResponse, ShortestPathQuery,
+    ShortestPathResponse, SubgraphQuery, DEFAULT_FACET_KEYWORDS, DEFAULT_LIST_LIMIT,
+    DEFAULT_NEIGHBORS_DEPTH, DEFAULT_SUBGRAPH_DEPTH, MAX_FACET_KEYWORDS, MAX_LIST_LIMIT,
 };
 use crate::catalog::DEFAULT_DB;
 use crate::cypher::parser;
 use crate::embeddings::{EmbeddingBackend, EmbeddingsRequest};
 use crate::fts::facet::{FacetCollapse, DEFAULT_TRIGRAM_THRESHOLD};
+use crate::model::Direction;
 use crate::native_service::NativeService;
 use crate::observability::DrevoMetrics;
 
@@ -137,9 +138,13 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         // non-Cypher client migrates unchanged. Cypher/Bolt clients never needed
         // these; a raw-REST client did (issue: native-router REST-CRUD parity).
         .route("/nodes", get(list_nodes).post(create_node))
+        .route("/nodes/{id}/edges", get(get_node_edges))
+        .route("/nodes/{id}/neighbors", get(get_node_neighbors))
+        .route("/nodes/{id}/subgraph", get(get_node_subgraph))
         .route("/edges", get(list_edges).post(create_edge))
         .route("/facets", get(facets))
         .route("/paths/shortest", get(get_shortest_path))
+        .route("/import/json", post(import_json))
         // Prometheus scrape — same exposition format and gauges as the KV
         // router, refreshed from the WAL store's physical size + uptime.
         .route("/metrics", get(metrics))
@@ -394,6 +399,79 @@ async fn get_shortest_path(
 
     let path = state.service.shortest_path(from, to)?;
     Ok(Json(ShortestPathResponse { path }))
+}
+
+/// Parse the `direction` query parameter into a [`Direction`] — `outgoing` /
+/// `incoming` / `both` (case-insensitive), defaulting to `Both`. Local copy of
+/// the KV router's helper so the native surface owns it once KV is removed.
+fn parse_direction(value: Option<&str>) -> Result<Direction, ApiError> {
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("both") => Ok(Direction::Both),
+        Some("outgoing") => Ok(Direction::Outgoing),
+        Some("incoming") => Ok(Direction::Incoming),
+        Some(other) => Err(ApiError::BadRequest(format!(
+            "invalid direction '{other}', expected one of: outgoing, incoming, both"
+        ))),
+    }
+}
+
+/// `GET /nodes/{id}/edges?direction=` — edges incident to the node. Like the KV
+/// router, a missing node yields an empty list, not a 404.
+async fn get_node_edges(
+    State(state): State<NativeApiState>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+    query: Result<axum::extract::Query<NodeEdgesQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<EdgeListResponse>, ApiError> {
+    let axum::extract::Query(NodeEdgesQuery { direction }) = query?;
+    let direction = parse_direction(direction.as_deref())?;
+    let edges = state.service.edges_of(id, direction);
+    Ok(Json(EdgeListResponse { edges }))
+}
+
+/// `GET /nodes/{id}/neighbors?direction=&depth=&kind=` — BFS reachable nodes.
+/// A missing start node is a 404 (distinguishing "no neighbours" from "no
+/// node"), exactly as the KV router.
+async fn get_node_neighbors(
+    State(state): State<NativeApiState>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+    query: Result<axum::extract::Query<NeighborsQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<NodeListResponse>, ApiError> {
+    let axum::extract::Query(NeighborsQuery {
+        direction,
+        kind,
+        depth,
+    }) = query?;
+    let direction = parse_direction(direction.as_deref())?;
+    let depth = depth.unwrap_or(DEFAULT_NEIGHBORS_DEPTH);
+    // Surface a missing node as 404 — `bfs` would otherwise return empty.
+    state.service.get_node(id)?;
+    let nodes = state.service.bfs(id, depth, direction, kind.as_deref())?;
+    Ok(Json(NodeListResponse { nodes }))
+}
+
+/// `GET /nodes/{id}/subgraph?depth=` — the subgraph within `depth` hops of the
+/// root. 404 if the root does not exist (the shared traversal maps that to
+/// `NodeNotFound`), matching the KV router.
+async fn get_node_subgraph(
+    State(state): State<NativeApiState>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+    query: Result<axum::extract::Query<SubgraphQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<crate::model::SubGraph>, ApiError> {
+    let axum::extract::Query(SubgraphQuery { depth }) = query?;
+    let depth = depth.unwrap_or(DEFAULT_SUBGRAPH_DEPTH);
+    let sub = state.service.subgraph_filtered(id, depth, None)?;
+    Ok(Json(sub))
+}
+
+/// `POST /import/json` — replay a `drevo-json-v1` dump (a `GET /export/json`
+/// body) into the durable store; returns an
+/// [`ImportReport`](crate::dump::ImportReport). Same contract as the KV router.
+async fn import_json(
+    State(state): State<NativeApiState>,
+    body: Result<Json<ImportJsonRequest>, JsonRejection>,
+) -> Result<Json<crate::dump::ImportReport>, ApiError> {
+    let Json(req) = body?;
+    Ok(Json(state.service.import_json(&req.dump)?))
 }
 
 /// Prometheus content type — must be exact; scrapers key off it.
