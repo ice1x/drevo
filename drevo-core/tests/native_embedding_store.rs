@@ -139,3 +139,32 @@ fn embeddings_survive_a_compaction() {
     assert_eq!(g.get_embedding(a), Some(vec![4.0, 0.0]));
     assert_eq!(g.embedding_count(), 1);
 }
+
+#[test]
+fn deleting_a_node_cascades_its_embedding_in_memory() {
+    let g = NativeGraph::new();
+    let a = g.create_node(node("a")).unwrap().id;
+    g.set_embedding(a, vec![1.0, 2.0]).unwrap();
+    assert_eq!(g.embedding_count(), 1);
+    g.delete_node(a).unwrap();
+    assert_eq!(g.get_embedding(a), None);
+    assert_eq!(g.embedding_count(), 0);
+}
+
+#[test]
+fn node_delete_cascade_survives_reopen() {
+    // The cascade must hold on the WAL replay path too: delete the node
+    // durably, reopen, and the embedding must still be gone.
+    let tmp = TmpDir::new();
+    let path = tmp.wal();
+    let a;
+    {
+        let g = NativeGraph::open_durable(&path).unwrap();
+        a = g.create_node(node("a")).unwrap().id;
+        g.set_embedding(a, vec![1.0, 2.0]).unwrap();
+        g.delete_node(a).unwrap();
+    }
+    let g = NativeGraph::open_durable(&path).unwrap();
+    assert_eq!(g.get_embedding(a), None);
+    assert_eq!(g.embedding_count(), 0);
+}

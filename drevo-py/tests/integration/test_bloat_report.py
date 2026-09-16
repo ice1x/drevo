@@ -31,12 +31,13 @@ def test_bloat_report_on_disk_measures_file_logical_and_ratio(
     assert report.node_count == 15
     assert report.edge_count == 14
     assert report.logical_bytes > 0
-    # stored = records + every index, so it strictly exceeds records-only
-    # logical, and the split is exact.
-    assert report.stored_bytes > report.logical_bytes
+    # stored = records + every index, so it is at least records-only logical
+    # (the native WAL has no index-overhead separate from the records, so the
+    # two are equal; the split stays exact either way).
+    assert report.stored_bytes >= report.logical_bytes
     assert report.index_bytes == report.stored_bytes - report.logical_bytes
     assert report.file_bytes is not None and report.file_bytes > 0
-    # A real redb file is at least as large as the data it stores.
+    # The on-disk file is at least as large as the data it stores.
     assert report.bloat_ratio is not None and report.bloat_ratio >= 1.0
 
     d = report.as_dict()
@@ -63,5 +64,5 @@ def test_bloat_report_in_memory_has_no_file_bytes(fake: Faker) -> None:
     assert report.bloat_ratio is None
     assert report.node_count == 1
     assert report.logical_bytes > 0
-    assert report.stored_bytes > report.logical_bytes
+    assert report.stored_bytes >= report.logical_bytes
     assert report.index_bytes == report.stored_bytes - report.logical_bytes
