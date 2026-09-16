@@ -179,12 +179,6 @@ pub struct Drevo {
     /// [`IntegrityReport::counter_drift_repaired`] — see the module-level
     /// "WAL / crash recovery" section.
     counter_drift_repaired: AtomicBool,
-    /// The native read mirror serving this database's reads, when the
-    /// engine flip is active (RFC #307 Phase 6). Installed once by
-    /// [`crate::native_mirror::MirrorRegistry::for_db`] and held weakly —
-    /// the server owns the mirror; this back-reference only lets the
-    /// `drevo.engine.status` procedure report routing statistics.
-    native_mirror: std::sync::OnceLock<std::sync::Weak<crate::native_mirror::NativeMirror>>,
     /// In-flight explicit transactions, keyed by [`TxId`] (Phase 11 task
     /// `00072`; per-connection isolation, issue #298).
     ///
@@ -809,7 +803,6 @@ impl Drevo {
             next_node_id: AtomicU64::new(next_node_id),
             next_edge_id: AtomicU64::new(next_edge_id),
             counter_drift_repaired: AtomicBool::new(drift_repaired),
-            native_mirror: std::sync::OnceLock::new(),
             txs: Mutex::new(HashMap::new()),
             next_tx_id: AtomicU64::new(1),
             fts_lock: Mutex::new(()),
@@ -1838,7 +1831,6 @@ impl Drevo {
             next_node_id: AtomicU64::new(1),
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
-            native_mirror: std::sync::OnceLock::new(),
             txs: Mutex::new(HashMap::new()),
             next_tx_id: AtomicU64::new(1),
             fts_lock: Mutex::new(()),
@@ -2234,29 +2226,10 @@ impl Drevo {
         &self.backend
     }
 
-    /// Install the back-reference to this database's native read mirror
-    /// (engine flip, RFC #307). First caller wins; later calls are no-ops —
-    /// a database has at most one mirror for the process lifetime.
-    pub(crate) fn attach_native_mirror(
-        &self,
-        mirror: &std::sync::Arc<crate::native_mirror::NativeMirror>,
-    ) {
-        let _ = self.native_mirror.set(std::sync::Arc::downgrade(mirror));
-    }
-
-    /// The attached native read mirror, if the engine flip is active and
-    /// the mirror is still alive.
-    pub(crate) fn native_mirror(
-        &self,
-    ) -> Option<std::sync::Arc<crate::native_mirror::NativeMirror>> {
-        self.native_mirror.get().and_then(std::sync::Weak::upgrade)
-    }
-
     /// The store's **mutation epoch** — a monotonic counter bumped by every
-    /// mutating storage call (engine flip, #307 Phase 6). The native read
-    /// mirror ([`crate::native_mirror::NativeMirror`]) stamps the epoch it
-    /// was built at and compares against this to detect staleness; equal
-    /// stamps mean no mutation has completed since the mirror's snapshot.
+    /// mutating storage call. Content-addressed caches stamp the epoch they
+    /// were built at and compare against this to detect staleness; equal
+    /// stamps mean no mutation has completed since the snapshot.
     ///
     /// Reads never change the epoch. Content-preserving maintenance
     /// (`flush`, compaction, online shrink) does not either.
@@ -6329,7 +6302,6 @@ mod tests {
             next_node_id: AtomicU64::new(1),
             next_edge_id: AtomicU64::new(1),
             counter_drift_repaired: AtomicBool::new(false),
-            native_mirror: std::sync::OnceLock::new(),
             txs: Mutex::new(HashMap::new()),
             next_tx_id: AtomicU64::new(1),
             fts_lock: Mutex::new(()),

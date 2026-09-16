@@ -5099,27 +5099,17 @@ impl<'a> Executor<'a> {
                 feature: "drevo.engine.status".into(),
             });
         };
-        Ok(vec![match db.native_mirror() {
-            Some(mirror) => {
-                let stats = mirror.stats();
-                vec![
-                    Value::String("native".to_string()),
-                    Value::Bool(mirror.is_fresh(db)),
-                    Value::Integer(stats.native_hits as i64),
-                    Value::Integer(stats.kv_fallbacks as i64),
-                    Value::Integer(stats.kv_routed as i64),
-                    Value::Integer(stats.rebuild_errors as i64),
-                ]
-            }
-            None => vec![
-                Value::String("kv".to_string()),
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-            ],
-        }])
+        // The read-mirror engine mode has been removed; `engine.status` reports
+        // the KV engine with no routing statistics.
+        let _ = db;
+        Ok(vec![vec![
+            Value::String("kv".to_string()),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+        ]])
     }
 
     /// `CALL drevo.semantic.reindex(label, embedding_property, batch_size)

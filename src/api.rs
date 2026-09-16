@@ -145,12 +145,6 @@ pub struct ApiState {
     /// `None` only in states built without the server wiring (some tests),
     /// where the config endpoint reports "unavailable".
     pub embeddings_config: Option<Arc<crate::embeddings::EmbeddingsConfigStore>>,
-    /// Per-database native read mirrors (engine flip, RFC #307 Phase 6).
-    /// `None` — the default — means every query executes on the KV engine;
-    /// `Some` (set by the server when `DREVO_ENGINE=native`) routes
-    /// read-only Cypher through each database's
-    /// [`crate::native_mirror::NativeMirror`].
-    pub mirrors: Option<Arc<crate::native_mirror::MirrorRegistry>>,
 }
 
 impl ApiState {
@@ -168,7 +162,6 @@ impl ApiState {
             metrics: Arc::new(DrevoMetrics::new()),
             embeddings: None,
             embeddings_config: None,
-            mirrors: None,
         }
     }
 
@@ -189,7 +182,6 @@ impl ApiState {
             metrics: Arc::new(DrevoMetrics::new()),
             embeddings: None,
             embeddings_config: None,
-            mirrors: None,
         }
     }
 
@@ -213,24 +205,6 @@ impl ApiState {
     ) -> Self {
         self.embeddings_config = Some(store);
         self
-    }
-
-    /// Attach the per-database native read mirrors, flipping read-only
-    /// Cypher onto the native engine (engine flip, RFC #307 Phase 6).
-    /// Consuming builder like
-    /// [`with_embeddings_backend`](Self::with_embeddings_backend).
-    #[must_use]
-    pub fn with_native_mirrors(
-        mut self,
-        registry: Arc<crate::native_mirror::MirrorRegistry>,
-    ) -> Self {
-        self.mirrors = Some(registry);
-        self
-    }
-
-    /// The native read mirror for `db`, when the engine flip is active.
-    fn mirror_for(&self, db: &Arc<Drevo>) -> Option<Arc<crate::native_mirror::NativeMirror>> {
-        self.mirrors.as_ref().map(|registry| registry.for_db(db))
     }
 
     /// Mark the API as draining.
@@ -929,13 +903,11 @@ async fn cypher(
             // Route the (optional) inner query at the named database.
             let target = state.catalog.get(&name)?;
             match query {
-                Some(inner) => {
-                    run_cypher_query(&target, state.mirror_for(&target), &inner, params).map(Json)
-                }
+                Some(inner) => run_cypher_query(&target, &inner, params).map(Json),
                 None => Ok(Json(using_response(&name))),
             }
         }
-        None => run_cypher_query(&db, state.mirror_for(&db), &query, params).map(Json),
+        None => run_cypher_query(&db, &query, params).map(Json),
     }
 }
 
@@ -943,21 +915,13 @@ async fn cypher(
 /// [`ApiError::BadRequest`] with the executor's message.
 fn run_cypher_query(
     db: &Arc<Drevo>,
-    mirror: Option<Arc<crate::native_mirror::NativeMirror>>,
     query: &str,
     params: std::collections::HashMap<String, CypherValue>,
 ) -> Result<CypherResponse, ApiError> {
     let ast = parser::parse(query)
         .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
-    // With the engine flip active, the mirror routes read-only queries to
-    // the native engine and everything else (writes, stale reads,
-    // non-mirrorable procedures) to the KV engine — same results either
-    // way, pinned by the differential corpus.
-    let result = match &mirror {
-        Some(mirror) => mirror.execute(db, &ast, params),
-        None => executor::execute(&ast, db, params),
-    }
-    .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
+    let result = executor::execute(&ast, db, params)
+        .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
     Ok(exec_result_to_response(result))
 }
 

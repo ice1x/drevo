@@ -1,9 +1,8 @@
 //! Durable-native serving layer (RFC `docs/rfc-native-core.md` #307,
 //! Phase 4/7 — the track toward retiring redb).
 //!
-//! Where the read mirror ([`crate::native_mirror::NativeMirror`]) accelerates
-//! reads *beside* a KV store of record, [`crate::native_service::NativeService`]
-//! IS the store of record: a WAL-backed [`crate::native::NativeGraph`]
+//! [`crate::native_service::NativeService`] IS the store of record: a
+//! WAL-backed [`crate::native::NativeGraph`]
 //! (crash-recovering, fsync-per-statement — see
 //! [`crate::native::NativeGraph::open_durable`]) plus the full native index
 //! stack — label, property, value cache, **and full-text** — kept current by
