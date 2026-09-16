@@ -371,13 +371,19 @@ mod server_tests {
         }
         assert!(connected, "server did not start listening on {addr}");
 
-        // Verify the redb file landed inside the configured data_dir
-        // — proves the Config::db_path() contract is honoured by run().
-        let db_file = dir_path.join("drevo.redb");
+        // Verify the durable native WAL landed inside the configured data_dir.
+        // `run()` serves the durable native engine (the KV serving mode was
+        // removed, epic #444), so the store of record is `<data_dir>/native.wal`
+        // and no `drevo.redb` is created.
+        let wal_file = dir_path.join("native.wal");
         assert!(
-            db_file.exists(),
-            "expected the redb file at {} once run() opens the database",
-            db_file.display()
+            wal_file.exists(),
+            "expected the native WAL at {} once run() opens the durable store",
+            wal_file.display()
+        );
+        assert!(
+            !dir_path.join("drevo.redb").exists(),
+            "run() must not open a KV redb file — the KV serving mode is removed"
         );
 
         // Trigger graceful shutdown by closing the runtime task —
