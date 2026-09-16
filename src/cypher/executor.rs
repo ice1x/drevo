@@ -5304,20 +5304,22 @@ impl<'a> Executor<'a> {
         let embedding_property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
         let batch_size = self.eval_usize(&args[2], &empty)?;
 
-        let target = self
-            .secondary("drevo.semantic.status")?
-            .semantic_status_detailed()
-            .map_err(|e| ExecError::InvalidProcedureCall {
-                name: "drevo.semantic.reindexRel".to_string(),
-                message: e.to_string(),
-                span,
-            })?
-            .into_iter()
-            .find(|s| {
-                s.target_kind == "relationship"
-                    && s.index.label == rel_type
-                    && s.index.embedding_property == embedding_property
-            });
+        let details = match self.native_semantic {
+            Some(svc) => svc.semantic_status_detailed(),
+            None => self
+                .secondary("drevo.semantic.status")?
+                .semantic_status_detailed()
+                .map_err(|e| ExecError::InvalidProcedureCall {
+                    name: "drevo.semantic.reindexRel".to_string(),
+                    message: e.to_string(),
+                    span,
+                })?,
+        };
+        let target = details.into_iter().find(|s| {
+            s.target_kind == "relationship"
+                && s.index.label == rel_type
+                && s.index.embedding_property == embedding_property
+        });
         let Some(status) = target else {
             return Err(ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.reindexRel".to_string(),
@@ -5331,18 +5333,27 @@ impl<'a> Executor<'a> {
         };
 
         let report = if matches!(status.index.mode, IndexMode::Auto) {
-            self.secondary("drevo.semantic.reindexRel")?
-                .semantic_reindex_rel(
+            match self.native_semantic {
+                Some(svc) => svc.semantic_reindex_rel(
                     &status.index.label,
                     &status.index.text_property,
                     &status.index.embedding_property,
                     batch_size,
-                )
-                .map_err(|e| ExecError::InvalidProcedureCall {
-                    name: "drevo.semantic.reindexRel".to_string(),
-                    message: e.to_string(),
-                    span,
-                })?
+                ),
+                None => self
+                    .secondary("drevo.semantic.reindexRel")?
+                    .semantic_reindex_rel(
+                        &status.index.label,
+                        &status.index.text_property,
+                        &status.index.embedding_property,
+                        batch_size,
+                    ),
+            }
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.reindexRel".to_string(),
+                message: e.to_string(),
+                span,
+            })?
         } else {
             crate::db::SemanticReindexReport::default()
         };

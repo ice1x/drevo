@@ -295,6 +295,35 @@ fn semantic_reindex_backfills_embeddings_on_native() {
 }
 
 #[test]
+fn semantic_reindex_rel_backfills_edge_embeddings_on_native() {
+    let service = NativeService::in_memory();
+    assert!(service.set_embedder(Arc::new(MockEmbedder)));
+    run(
+        &service,
+        "CREATE (:N {title: 'a'})-[:LINKS {text: 'rust ownership'}]->(:N {title: 'b'})",
+    );
+    run(
+        &service,
+        "CALL drevo.semantic.registerRel('LINKS', 'text', 'emb', 'auto')",
+    );
+    let report = run(
+        &service,
+        "CALL drevo.semantic.reindexRel('LINKS', 'emb', 100) \
+         YIELD scanned, embedded, skipped, remaining \
+         RETURN scanned, embedded, skipped, remaining",
+    );
+    assert_eq!(
+        report.rows,
+        vec![vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(0),
+            Value::Integer(0),
+        ]]
+    );
+}
+
+#[test]
 fn semantic_embed_and_query_use_the_installed_native_embedder() {
     let service = NativeService::in_memory();
     assert!(service.set_embedder(Arc::new(MockEmbedder)));
