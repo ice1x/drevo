@@ -84,9 +84,11 @@ async fn cypher_reads_writes_and_fts_flow_through_the_native_router() {
     let (_, s) = send(&app, "GET", "/status", None).await;
     assert_eq!(s["engine"], "native-durable");
 
-    // The KV REST surface is absent by design, not silently empty.
+    // The raw-REST surface is now served on the native engine too (REST-CRUD
+    // parity): `GET /nodes` without a `kind` is a 400, not a 404 — the route
+    // exists and validates its query, exactly like the KV router.
     let (status, _) = send(&app, "GET", "/nodes", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -116,6 +118,137 @@ async fn parse_and_execution_errors_are_bad_requests() {
         status,
         StatusCode::BAD_REQUEST,
         "KV-only procedure surfaces as 400"
+    );
+}
+
+/// Raw-REST CRUD + traversal + faceting + metrics now have parity with the KV
+/// router on the durable-native engine, so a non-Cypher client migrates
+/// unchanged (issue: native-router REST-CRUD parity).
+#[tokio::test]
+async fn rest_crud_surface_has_parity_with_the_kv_router() {
+    let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
+
+    // POST /nodes → 201 with a generated id.
+    let (status, a) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(
+            json!({ "kind": "note", "title": "A", "body": "graph database engine",
+                     "body_html": "", "properties": {} }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let a_id = a["id"].as_u64().expect("node id");
+    let (status, b) = send(
+        &app,
+        "POST",
+        "/nodes",
+        Some(
+            json!({ "kind": "note", "title": "B", "body": "graph database theory",
+                     "body_html": "", "properties": {} }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let b_id = b["id"].as_u64().expect("node id");
+
+    // GET /nodes?kind= lists them; a missing kind is a 400.
+    let (status, list) = send(&app, "GET", "/nodes?kind=note", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["nodes"].as_array().unwrap().len(), 2);
+    let (status, _) = send(&app, "GET", "/nodes", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // POST /edges → 201; GET /edges?kind= lists it.
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(json!({ "from_id": a_id, "to_id": b_id, "kind": "link",
+                     "weight": 1.0, "properties": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, edges) = send(&app, "GET", "/edges?kind=link", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(edges["edges"].as_array().unwrap().len(), 1);
+    // An edge to a missing endpoint is a 404, like the KV router.
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/edges",
+        Some(json!({ "from_id": a_id, "to_id": 999_999, "kind": "link",
+                     "weight": 1.0, "properties": {} })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // GET /paths/shortest: a→b reachable, unreachable target is 200 {path:null},
+    // a missing endpoint is 404.
+    let (status, path) = send(
+        &app,
+        "GET",
+        &format!("/paths/shortest?from={a_id}&to={b_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(path["path"], json!([a_id, b_id]));
+    let (status, path) = send(
+        &app,
+        "GET",
+        &format!("/paths/shortest?from={b_id}&to={a_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(path["path"], Value::Null, "b→a has no outgoing route");
+    let (status, _) = send(&app, "GET", "/paths/shortest?from=1&to=999999", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // GET /facets groups the two notes by the shared keywords of their body.
+    let (status, facets) = send(&app, "GET", "/facets?kind=note&property=body&k=5", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let labels: Vec<&str> = facets["facets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["facet"].as_str().unwrap())
+        .collect();
+    assert!(
+        labels.contains(&"graph") && labels.contains(&"database"),
+        "shared keywords should surface as facets, got {labels:?}"
+    );
+
+    // GET /metrics renders Prometheus text with the standard gauges.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/metrics")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.starts_with("text/plain; version=0.0.4"), "got {ct}");
+    let text = String::from_utf8(
+        resp.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        text.contains("drevo_process_uptime_seconds"),
+        "metrics body missing uptime gauge: {text}"
     );
 }
 

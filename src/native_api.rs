@@ -1,14 +1,17 @@
 //! HTTP surface for the durable-native server mode (RFC
 //! `docs/rfc-native-core.md` #307, Phase 4/7 — `DREVO_ENGINE=native-durable`).
 //!
-//! A deliberately minimal router over a
-//! [`crate::native_service::NativeService`]: liveness (`/health`, `/ready`),
-//! identity (`/status`), and Cypher (`POST /cypher`) — the query surface the
-//! native engine serves natively, full-text included. The KV REST surface
-//! (nodes/edges CRUD, exports, vectors, semantic, Web UI) is **absent by
-//! design** in this mode, not silently empty: those endpoints are the KV
-//! store's, and this server runs without one. They return 404 until they are
-//! ported to the native engine.
+//! A router over a [`crate::native_service::NativeService`]: liveness
+//! (`/health`, `/ready`), identity (`/status`), Cypher (`POST /cypher`,
+//! full-text included), the storage panel, the Web UI, and the raw-REST graph
+//! surface — node/edge CRUD (`/nodes`, `/edges`), traversal (`/paths/shortest`),
+//! keyword faceting (`/facets`), and Prometheus metrics (`/metrics`) — all on
+//! the **same routes and contracts as the KV router** ([`crate::api`]), so a
+//! non-Cypher client migrates from KV to native-durable unchanged.
+//!
+//! A handful of endpoints remain KV-only for now and 404 here until ported:
+//! the per-node traversal routes (`/nodes/{id}/edges`, `/neighbors`,
+//! `/subgraph`) and `POST /import/json`.
 //!
 //! Multi-database catalogs are also out of scope for this slice — the mode
 //! serves the single durable graph the process was pointed at.
@@ -28,13 +31,17 @@ use axum::Router;
 
 use crate::api::{
     embeddings_response, exec_result_to_response, json_to_cypher_value, ApiError, CypherRequest,
-    CypherResponse, DatabaseListResponse, ImportGraphmlRequest, SearchFtsRequest,
-    SearchFtsResponse,
+    CypherResponse, DatabaseListResponse, EdgeListResponse, FacetsQuery, FacetsResponse,
+    ImportGraphmlRequest, ListEdgesQuery, ListNodesQuery, NodeListResponse, SearchFtsRequest,
+    SearchFtsResponse, ShortestPathQuery, ShortestPathResponse, DEFAULT_FACET_KEYWORDS,
+    DEFAULT_LIST_LIMIT, MAX_FACET_KEYWORDS, MAX_LIST_LIMIT,
 };
 use crate::catalog::DEFAULT_DB;
 use crate::cypher::parser;
 use crate::embeddings::{EmbeddingBackend, EmbeddingsRequest};
+use crate::fts::facet::{FacetCollapse, DEFAULT_TRIGRAM_THRESHOLD};
 use crate::native_service::NativeService;
+use crate::observability::DrevoMetrics;
 
 /// Shared state of the durable-native HTTP surface.
 #[derive(Clone)]
@@ -53,6 +60,11 @@ pub struct NativeApiState {
     /// reads, so a write takes effect live. Mirrors
     /// [`crate::api::ApiState::embeddings_config`].
     embeddings_config: Option<Arc<crate::embeddings::EmbeddingsConfigStore>>,
+    /// Prometheus metrics registry backing `GET /metrics` and the per-request
+    /// instrumentation middleware — the same [`DrevoMetrics`] contract as
+    /// [`crate::api::ApiState::metrics`], so a scrape looks identical on either
+    /// engine.
+    metrics: Arc<DrevoMetrics>,
 }
 
 impl NativeApiState {
@@ -64,6 +76,7 @@ impl NativeApiState {
             shutting_down: Arc::new(AtomicBool::new(false)),
             embeddings: None,
             embeddings_config: None,
+            metrics: Arc::new(DrevoMetrics::new()),
         }
     }
 
@@ -119,6 +132,17 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/export/json", get(export_json))
         .route("/databases", get(list_databases))
         .route("/nodes/{id}", get(get_node))
+        // Raw-REST graph CRUD + traversal + faceting — the same routes/contracts
+        // as the KV router (src/api.rs), served over the native engine so a
+        // non-Cypher client migrates unchanged. Cypher/Bolt clients never needed
+        // these; a raw-REST client did (issue: native-router REST-CRUD parity).
+        .route("/nodes", get(list_nodes).post(create_node))
+        .route("/edges", get(list_edges).post(create_edge))
+        .route("/facets", get(facets))
+        .route("/paths/shortest", get(get_shortest_path))
+        // Prometheus scrape — same exposition format and gauges as the KV
+        // router, refreshed from the WAL store's physical size + uptime.
+        .route("/metrics", get(metrics))
         // The storage panel is engine-agnostic: the same endpoints/contracts as
         // the KV router, implemented over the WAL store — bloat = physical WAL
         // vs compacted size, shrink = WAL compaction, benchmark = the same
@@ -166,6 +190,13 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             "/import/graphml",
             post(import_graphml).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
+        // Per-request metrics instrumentation — layered after the routes so it
+        // wraps every handler and before `with_state` so it can extract the
+        // shared state, exactly as the KV router does.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            track_metrics,
+        ))
         .with_state(state)
 }
 
@@ -234,6 +265,180 @@ async fn get_node(
     axum::extract::Path(id): axum::extract::Path<u64>,
 ) -> Result<Json<crate::model::Node>, ApiError> {
     Ok(Json(state.service.get_node(id)?))
+}
+
+/// `POST /nodes` — create a node from a JSON [`NewNode`](crate::model::NewNode)
+/// body; returns the stored node (201). KV-router parity.
+async fn create_node(
+    State(state): State<NativeApiState>,
+    body: Result<Json<crate::model::NewNode>, JsonRejection>,
+) -> Result<(StatusCode, Json<crate::model::Node>), ApiError> {
+    let Json(new_node) = body?;
+    let node = state.service.create_node(new_node)?;
+    Ok((StatusCode::CREATED, Json(node)))
+}
+
+/// `GET /nodes?kind=&limit=&offset=` — list nodes of a kind, paginated. A
+/// missing `kind` is a 400, exactly as the KV router reports it.
+async fn list_nodes(
+    State(state): State<NativeApiState>,
+    query: Result<axum::extract::Query<ListNodesQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<NodeListResponse>, ApiError> {
+    let axum::extract::Query(ListNodesQuery {
+        kind,
+        limit,
+        offset,
+    }) = query?;
+    let kind =
+        kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
+    let offset = offset.unwrap_or(0);
+    let nodes = state.service.list_nodes_by_kind(&kind, limit, offset);
+    Ok(Json(NodeListResponse { nodes }))
+}
+
+/// `POST /edges` — create an edge from a JSON [`NewEdge`](crate::model::NewEdge)
+/// body; returns the stored edge (201). A missing endpoint node is a 404.
+async fn create_edge(
+    State(state): State<NativeApiState>,
+    body: Result<Json<crate::model::NewEdge>, JsonRejection>,
+) -> Result<(StatusCode, Json<crate::model::Edge>), ApiError> {
+    let Json(new_edge) = body?;
+    let edge = state.service.create_edge(new_edge)?;
+    Ok((StatusCode::CREATED, Json(edge)))
+}
+
+/// `GET /edges?kind=&limit=&offset=` — list edges of a kind, paginated. A
+/// missing `kind` is a 400, matching the KV router.
+async fn list_edges(
+    State(state): State<NativeApiState>,
+    query: Result<axum::extract::Query<ListEdgesQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<EdgeListResponse>, ApiError> {
+    let axum::extract::Query(ListEdgesQuery {
+        kind,
+        limit,
+        offset,
+    }) = query?;
+    let kind =
+        kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
+    let offset = offset.unwrap_or(0);
+    let edges = state.service.list_edges_by_kind(&kind, limit, offset);
+    Ok(Json(EdgeListResponse { edges }))
+}
+
+/// `GET /facets?kind=&property=&k=&collapse=&threshold=` — keyword faceting over
+/// nodes of `kind`, keywords scored with the native FTS corpus statistics. Same
+/// contract as the KV router; `collapse=semantic` is rejected (no HTTP-hosted
+/// embedder), exactly as there.
+async fn facets(
+    State(state): State<NativeApiState>,
+    query: Result<axum::extract::Query<FacetsQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<FacetsResponse>, ApiError> {
+    let axum::extract::Query(FacetsQuery {
+        kind,
+        property,
+        k,
+        collapse,
+        threshold,
+    }) = query?;
+    let kind =
+        kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
+    let property = property.unwrap_or_else(|| "body".to_string());
+    let k = k.unwrap_or(DEFAULT_FACET_KEYWORDS).min(MAX_FACET_KEYWORDS);
+
+    let collapse = match collapse.as_deref().unwrap_or("none") {
+        "none" => FacetCollapse::None,
+        "lexical" => FacetCollapse::Lexical {
+            trigram_threshold: threshold.unwrap_or(DEFAULT_TRIGRAM_THRESHOLD),
+        },
+        "semantic" => {
+            return Err(ApiError::BadRequest(
+                "collapse=semantic requires an embedder, which is not configured on the HTTP \
+                 server; use the Rust/Python API with precomputed keyword embeddings"
+                    .to_string(),
+            ))
+        }
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "unknown collapse mode '{other}' (expected none|lexical|semantic)"
+            )))
+        }
+    };
+
+    let facets = state.service.facets(&kind, &property, k, &collapse)?;
+    Ok(Json(FacetsResponse { facets }))
+}
+
+/// `GET /paths/shortest?from=&to=` — Dijkstra over the native graph. Both
+/// endpoints must exist (404 otherwise); an unreachable target is a 200 with
+/// `{"path": null}`, so a client can tell "no such node" from "no route" —
+/// identical to the KV router.
+async fn get_shortest_path(
+    State(state): State<NativeApiState>,
+    query: Result<
+        axum::extract::Query<ShortestPathQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<ShortestPathResponse>, ApiError> {
+    let axum::extract::Query(ShortestPathQuery { from, to }) = query?;
+    let from =
+        from.ok_or_else(|| ApiError::BadRequest("query parameter 'from' is required".to_string()))?;
+    let to =
+        to.ok_or_else(|| ApiError::BadRequest("query parameter 'to' is required".to_string()))?;
+
+    // Validate both endpoints up front — `get_node` surfaces a missing node as
+    // 404, distinguishing it from an unreachable target (`{"path": null}`).
+    state.service.get_node(from)?;
+    state.service.get_node(to)?;
+
+    let path = state.service.shortest_path(from, to)?;
+    Ok(Json(ShortestPathResponse { path }))
+}
+
+/// Prometheus content type — must be exact; scrapers key off it.
+const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// `GET /metrics` — render process metrics in the Prometheus text format, the
+/// same registry/gauges as the KV router. The uptime gauge is refreshed from
+/// `started_at` and the physical-size gauge from the WAL's on-disk size just
+/// before rendering, so a scrape needs no background ticker.
+async fn metrics(State(state): State<NativeApiState>) -> Response {
+    state
+        .metrics
+        .uptime_seconds
+        .set(state.started_at.elapsed().as_secs() as i64);
+    // Physical WAL size (O(1) stat). A probe failure leaves the previous value
+    // rather than faking a zero.
+    if let Some(bytes) = state.service.graph().wal_bytes() {
+        state.metrics.storage_file_bytes.set(bytes as i64);
+    }
+    let body = state.metrics.render_prometheus();
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
+        body,
+    )
+        .into_response()
+}
+
+/// Per-request instrumentation middleware — the native counterpart of the KV
+/// router's `track_metrics`: count in-flight, time the handler, record the
+/// status class + latency into the shared [`DrevoMetrics`].
+async fn track_metrics(
+    State(state): State<NativeApiState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    state.metrics.request_started();
+    let start = Instant::now();
+    let response = next.run(request).await;
+    let elapsed = start.elapsed().as_secs_f64();
+    state
+        .metrics
+        .record_http(response.status().as_u16(), elapsed);
+    state.metrics.request_finished();
+    response
 }
 
 /// `GET /storage/bloat` — physical WAL size vs compacted (logical) size, in the

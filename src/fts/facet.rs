@@ -138,6 +138,28 @@ pub fn build_facets(
     collapse_keyword_docs(&docs, collapse)
 }
 
+/// Resolve the faceting source text for a node and a `property` name.
+///
+/// `"title"` / `"body"` map to the node's title/body; any other name reads
+/// that `properties` key (a JSON string verbatim, any other value via its
+/// `to_string`). Returns `None` when the field is absent or empty so the
+/// node simply contributes no keywords. Shared by both the KV
+/// (`crate::db::Drevo::facets`) and native
+/// (`crate::native_service::NativeService::facets`) faceting paths — it lives
+/// here, beside `build_facets`, so it outlives the KV engine.
+pub(crate) fn node_property_text(node: &crate::model::Node, property: &str) -> Option<String> {
+    let text = match property {
+        "title" => node.title.clone(),
+        "body" => node.body.clone(),
+        other => match node.properties.get(other)? {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Null => return None,
+            value => value.to_string(),
+        },
+    };
+    (!text.trim().is_empty()).then_some(text)
+}
+
 /// Collapse a fully-accumulated `keyword → documents` map into facets.
 fn collapse_keyword_docs(
     docs: &BTreeMap<String, BTreeSet<u64>>,
