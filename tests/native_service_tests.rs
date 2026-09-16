@@ -512,3 +512,26 @@ fn in_memory_service_has_an_origin() {
     let _ = service.origin_id();
     assert_eq!(service.next_stamp().origin(), service.origin_id());
 }
+
+#[test]
+fn keywords_are_extracted_on_native() {
+    // `keywords(...)` reached into the KV secondary before #447; it now computes
+    // its corpus statistics from the native FTS index.
+    let service = NativeService::in_memory();
+    run(
+        &service,
+        "CREATE (:Doc {body: 'rust ownership and borrowing'}), \
+                (:Doc {body: 'bread baking recipe'}), \
+                (:Doc {body: 'rust concurrency model'})",
+    );
+    let kws = run(&service, "RETURN keywords('rust ownership model', 2)");
+    match &kws.rows[0][0] {
+        Value::List(terms) => {
+            assert!(
+                !terms.is_empty() && terms.len() <= 2,
+                "expected 1-2 keywords, got {terms:?}"
+            );
+        }
+        other => panic!("expected a list of keywords, got {other:?}"),
+    }
+}

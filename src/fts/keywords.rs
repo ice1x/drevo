@@ -53,6 +53,33 @@ pub(crate) fn extract_keywords(
     k: usize,
     stem_terms: bool,
 ) -> Result<Vec<String>> {
+    // The KV engine supplies the two corpus statistics — document count and
+    // per-term document frequency — from its trigram FTS index.
+    let n = corpus_stats(backend)?.doc_count;
+    extract_keywords_scored(text, k, stem_terms, n, &|term_trigrams| {
+        Ok(intersect_trigrams(backend, term_trigrams)?.len() as u64)
+    })
+}
+
+/// Engine-agnostic keyword extraction (#447 native port): the tokenize →
+/// stopword → stem → BM25 tf·idf ranking, parameterised by the two corpus
+/// statistics an engine must supply — `n` (indexed document count) and `df`
+/// (documents containing all of a term's trigrams). The KV path (above) and the
+/// native path (`NativeFtsIndex::doc_count` / `trigram_df`) both feed this, so
+/// the ranking is identical on either engine.
+///
+/// # Errors
+/// Propagates a `df` lookup failure.
+pub(crate) fn extract_keywords_scored<F>(
+    text: &str,
+    k: usize,
+    stem_terms: bool,
+    n: u64,
+    df: &F,
+) -> Result<Vec<String>>
+where
+    F: Fn(&[String]) -> Result<u64>,
+{
     if k == 0 {
         return Ok(Vec::new());
     }
@@ -73,11 +100,7 @@ pub(crate) fn extract_keywords(
         return Ok(Vec::new());
     }
 
-    // 2. Corpus-wide N (number of indexed documents) for the IDF weight.
-    let stats = corpus_stats(backend)?;
-    let n = stats.doc_count;
-
-    // 3. Score each distinct term by tf · idf.
+    // 2. Score each distinct term by tf · idf.
     let mut scored: Vec<(String, f32)> = Vec::with_capacity(tf.len());
     for (term, freq) in tf {
         let term_trigrams = trigrams(&term);
@@ -86,19 +109,19 @@ pub(crate) fn extract_keywords(
         // any trigram (e.g. a 2-char token) we cannot estimate df, so we
         // assign it the minimal IDF (df = N) rather than the maximal one,
         // keeping such low-signal tokens from floating to the top.
-        let df = if term_trigrams.is_empty() {
+        let df_val = if term_trigrams.is_empty() {
             n
         } else {
-            intersect_trigrams(backend, &term_trigrams)?.len() as u64
+            df(&term_trigrams)?
         };
         // df can never exceed N for a consistent index, but clamp defensively
         // so bm25_idf stays non-negative even against a legacy/over-counted
         // index.
-        let idf = bm25_idf(n, df.min(n));
+        let idf = bm25_idf(n, df_val.min(n));
         scored.push((term, freq as f32 * idf));
     }
 
-    // 4. Rank: score descending, then term ascending for deterministic ties.
+    // 3. Rank: score descending, then term ascending for deterministic ties.
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     scored.truncate(k);
     Ok(scored.into_iter().map(|(term, _)| term).collect())

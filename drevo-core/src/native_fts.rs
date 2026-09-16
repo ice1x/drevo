@@ -89,6 +89,40 @@ impl NativeFtsIndex {
         self.docs.is_empty()
     }
 
+    /// The number of indexed documents (corpus `N`) — the IDF denominator for
+    /// keyword extraction (`drevo.keywords`, #447 native port).
+    pub fn doc_count(&self) -> u64 {
+        self.docs.len() as u64
+    }
+
+    /// Estimate a term's document frequency from its trigrams: the number of
+    /// indexed docs containing **all** of them. Mirrors the KV FTS
+    /// `intersect_trigrams(...).len()` used by keyword extraction. An empty
+    /// trigram set, or any trigram absent from the corpus, yields 0.
+    pub fn trigram_df(&self, term_trigrams: &[String]) -> u64 {
+        if term_trigrams.is_empty() {
+            return 0;
+        }
+        // Gather each trigram's posting list; a missing trigram means no doc can
+        // contain all of them.
+        let mut lists: Vec<&HashMap<u64, u32>> = Vec::with_capacity(term_trigrams.len());
+        for tg in term_trigrams {
+            match self.postings.get(tg) {
+                Some(list) => lists.push(list),
+                None => return 0,
+            }
+        }
+        // Intersect from the rarest list outward.
+        lists.sort_by_key(|l| l.len());
+        let Some((first, rest)) = lists.split_first() else {
+            return 0;
+        };
+        first
+            .keys()
+            .filter(|id| rest.iter().all(|l| l.contains_key(*id)))
+            .count() as u64
+    }
+
     /// Bring the index up to date with `graph` by consuming its change-feed
     /// since the last [`cursor`](Self::cursor).
     ///
