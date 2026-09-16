@@ -58,6 +58,27 @@ fn engine_parses_native_durable() {
     assert_eq!(cfg.engine, EngineMode::NativeDurable);
 }
 
+#[test]
+fn default_engine_is_native_durable_and_kv_still_parses() {
+    // The KV serving mode was removed (epic #444): native-durable is the
+    // default and the only served engine.
+    assert_eq!(EngineMode::default(), EngineMode::NativeDurable);
+    let cfg = Config::from_env(|_| None).unwrap();
+    assert_eq!(
+        cfg.engine,
+        EngineMode::NativeDurable,
+        "no DREVO_ENGINE must default to native-durable"
+    );
+    // `kv` still parses (the KV code compiles for the test corpus); `run()`
+    // warns and serves native for it, but the value is not rejected.
+    let kv = Config::from_env(|k| match k {
+        "DREVO_ENGINE" => Some("kv".to_string()),
+        _ => None,
+    })
+    .unwrap();
+    assert_eq!(kv.engine, EngineMode::Kv);
+}
+
 #[tokio::test]
 async fn cypher_reads_writes_and_fts_flow_through_the_native_router() {
     let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));

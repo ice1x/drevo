@@ -24,8 +24,8 @@
 //! |-------------------|-------------|-----------------------------------|
 //! | `DREVO_HOST`      | `0.0.0.0`   | Bind address (IPv4, IPv6, or DNS) |
 //! | `DREVO_PORT`      | `8080`      | TCP port (1..=65535)              |
-//! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `drevo.redb`    |
-//! | `DREVO_ENGINE`    | `kv`        | Cypher execution engine: `kv` (today's storage engine), `native` (read-only queries served from the in-memory native mirror, writes still on KV — RFC #307 Phase 6), or `native-durable` (the WAL-backed native engine IS the store of record; minimal HTTP surface, no KV — Phase 4/7) |
+//! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `native.wal`    |
+//! | `DREVO_ENGINE`    | `native-durable` | Serving engine. `native-durable` (default) — the WAL-backed native engine IS the store of record (`<data_dir>/native.wal`), no KV. `kv` still parses but its serving mode was removed (epic #444): a `kv` process warns and is served by the native engine. |
 //!
 //! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
 //! variables opt the server into hosting `POST /v1/embeddings` by proxying a
@@ -52,11 +52,6 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
-
-use crate::api::{build_router, ApiState};
-use crate::bolt::listener::accept_and_run_session;
-use crate::catalog::Catalog;
 
 /// Default bind address — every interface (container convention).
 const DEFAULT_HOST: &str = "0.0.0.0";
@@ -95,15 +90,17 @@ pub struct Config {
 /// KV store, or the durable native engine (the store of record).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EngineMode {
-    /// Every query executes on the KV storage engine (today's default).
-    #[default]
-    Kv,
     /// The durable native engine IS the store of record — no KV store at
-    /// all. Serves the minimal native HTTP surface
-    /// ([`crate::native_api::build_native_router`]) and, when
-    /// `DREVO_BOLT_PORT` is set, Bolt (autocommit statements only). The KV
-    /// REST surface is not wired for this mode.
+    /// all — and the **only** serving mode (epic #444). Serves the full
+    /// native HTTP surface ([`crate::native_api::build_native_router`]) and,
+    /// when `DREVO_BOLT_PORT` is set, Bolt.
+    #[default]
     NativeDurable,
+    /// Legacy KV storage engine. Its *serving* path has been removed — the
+    /// value still parses (the KV code still compiles for the test corpus),
+    /// but [`run`] no longer serves it: a `DREVO_ENGINE=kv` process warns and
+    /// serves with the durable native engine instead.
+    Kv,
 }
 
 /// Errors produced while parsing or validating a [`Config`].
@@ -336,70 +333,6 @@ fn build_embeddings_store(
     ))
 }
 
-/// Attach the store-backed embeddings proxy to `state`. Installed
-/// unconditionally (when the feature is built) so a later Web-UI configuration
-/// enables `/v1/embeddings` with no restart; until a config is set the proxy
-/// answers `503` ("not configured").
-#[cfg(feature = "embeddings-proxy")]
-fn configure_embeddings(
-    state: ApiState,
-    store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
-) -> Result<ApiState, RunError> {
-    use crate::embeddings::{EmbeddingBackend, ProxyBackend};
-    if let Some(snap) = store.snapshot() {
-        tracing::info!(upstream = %snap.upstream, "embeddings proxy enabled");
-    }
-    let backend = ProxyBackend::new(store).map_err(|e| RunError::Embeddings(e.to_string()))?;
-    Ok(state.with_embeddings_backend(EmbeddingBackend::Proxy(backend)))
-}
-
-/// No-op when the proxy backend is not compiled in — `/v1/embeddings` then
-/// always answers `503`.
-#[cfg(not(feature = "embeddings-proxy"))]
-fn configure_embeddings(
-    state: ApiState,
-    _store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
-) -> Result<ApiState, RunError> {
-    Ok(state)
-}
-
-/// Install a server-side query embedder on the catalog's default database so
-/// `drevo.semantic.query` can embed query text (#251 slice 3), when the
-/// `embeddings-proxy` feature is built and `DREVO_EMBEDDINGS_UPSTREAM` is set.
-///
-/// The embedder is set on the **default** handle only — the one HTTP `/cypher`
-/// and the Bolt listener share (Bolt has no database selection wired yet), so
-/// this covers both server-side Cypher paths. Databases opened lazily by name
-/// through the catalog do not receive it and report "not configured"; wiring
-/// the multi-database case is a follow-up. A no-op (leaving
-/// `drevo.semantic.query` to report "not configured") when the feature is off
-/// or the upstream is unset.
-#[cfg(feature = "embeddings-proxy")]
-fn configure_query_embedder(
-    catalog: &crate::catalog::Catalog,
-    store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
-) -> Result<(), RunError> {
-    use crate::embeddings::SyncEmbedder;
-    let embedder =
-        SyncEmbedder::from_store(store).map_err(|e| RunError::Embeddings(e.to_string()))?;
-    if catalog
-        .default_db()
-        .set_embedder(std::sync::Arc::new(embedder))
-    {
-        tracing::info!("drevo.semantic.query embedder installed on default database");
-    }
-    Ok(())
-}
-
-/// No-op when the proxy backend is not compiled in.
-#[cfg(not(feature = "embeddings-proxy"))]
-fn configure_query_embedder(
-    _catalog: &crate::catalog::Catalog,
-    _store: std::sync::Arc<crate::embeddings::EmbeddingsConfigStore>,
-) -> Result<(), RunError> {
-    Ok(())
-}
-
 /// Install the process-global text-to-Cypher generator (`drevo.cypher.fromText`,
 /// issue #429) when the `embeddings-proxy` feature is built and
 /// `DREVO_TEXT2CYPHER_UPSTREAM` is set. Engine-agnostic (a process global), so
@@ -513,99 +446,18 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
         );
     }
 
-    // Durable-native mode never opens a KV store at all — branch to its own
-    // serving path before the catalog exists.
-    if cfg.engine == EngineMode::NativeDurable {
-        return run_native_durable(cfg, addr).await;
+    // The durable native engine is the only store of record and the only
+    // serving path (epic #444 — the KV serving mode has been removed). A
+    // `DREVO_ENGINE=kv` process still parses its config (the KV code compiles
+    // for the test corpus) but is served by the native engine, with a warning
+    // so the operator notices the stale setting.
+    if cfg.engine == EngineMode::Kv {
+        tracing::warn!(
+            "DREVO_ENGINE=kv: the KV serving mode has been removed; serving with the durable \
+             native engine instead. Drop DREVO_ENGINE or set it to `native-durable`."
+        );
     }
-
-    // Open the multi-database catalog rooted at the data directory. Every
-    // `<name>.redb` file becomes a database; `default` maps to the legacy
-    // `drevo.redb`, so a pre-catalog data directory opens unchanged. The
-    // default handle is what the Bolt listener shares (Bolt has no
-    // database-selection wired yet).
-    tracing::info!(dir = %cfg.data_dir.display(), "opening database catalog");
-    let catalog = Arc::new(Catalog::open(cfg.data_dir.clone())?);
-    tracing::info!(databases = ?catalog.list(), "catalog ready");
-    // The shared, persisted embeddings config store (Web-UI-settable API
-    // key/upstream/model): the `<data_dir>/embeddings_config.json` file wins,
-    // falling back to `DREVO_EMBEDDINGS_*`. One store backs the proxy, the
-    // query embedder, and `/config/embeddings`.
-    let embeddings_store = build_embeddings_store(&cfg)?;
-    // Install the server-side query embedder for `drevo.semantic.query` on the
-    // shared default handle (#251 slice 3); no-op unless `embeddings-proxy` is
-    // built.
-    configure_query_embedder(&catalog, embeddings_store.clone())?;
-    let state = ApiState::with_catalog(Arc::clone(&catalog));
-    // Opt-in embeddings proxy (Phase 19 task `00217`), now store-backed so the
-    // key/upstream/model are Web-UI-settable; no-op unless the
-    // `embeddings-proxy` feature is built.
-    let state = state.with_embeddings_config_store(embeddings_store.clone());
-    let state = configure_embeddings(state, embeddings_store)?;
-    let db = Arc::clone(&state.db);
-    let shutdown_state = state.clone();
-    let router = build_router(state);
-
-    // Optional Bolt protocol listener (Neo4j-compatible), opt-in via the
-    // `DREVO_BOLT_PORT` env var. It shares the SAME `Drevo` handle as the HTTP
-    // server: redb is single-process, so HTTP + Web UI + Bolt must live in one
-    // process on one handle (you cannot run a second process against the same
-    // file). Runs without authentication (Authenticator = None). Sessions end
-    // when the process exits — no separate graceful drain.
-    if let Some(bolt_port) = std::env::var("DREVO_BOLT_PORT")
-        .ok()
-        .and_then(|raw| raw.parse::<u16>().ok())
-    {
-        let bolt_addr = SocketAddr::new(addr.ip(), bolt_port);
-        let bolt_listener = tokio::net::TcpListener::bind(bolt_addr)
-            .await
-            .map_err(|source| RunError::Bind {
-                addr: bolt_addr,
-                source,
-            })?;
-        tracing::info!(%bolt_addr, "bolt listening");
-        let bolt_db = Arc::clone(&db);
-        // In native mode Bolt shares the default database's read mirror —
-        // Bolt has no database selection wired, so the default handle's
-        // mirror covers every session.
-        tokio::spawn(async move {
-            loop {
-                match bolt_listener.accept().await {
-                    Ok((socket, _peer)) => {
-                        let conn_db = Arc::clone(&bolt_db);
-                        tokio::spawn(async move {
-                            let ended = accept_and_run_session(socket, &conn_db).await;
-                            if let Err(err) = ended {
-                                tracing::warn!(error = %err, "bolt session ended with error");
-                            }
-                        });
-                    }
-                    Err(err) => tracing::warn!(error = %err, "bolt accept failed"),
-                }
-            }
-        });
-    }
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|source| RunError::Bind { addr, source })?;
-
-    tracing::info!(%addr, "listening");
-
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            // Flip /health and /ready to 503 *before* axum begins
-            // draining in-flight requests so that load balancers stop
-            // forwarding new traffic during the drain window.
-            shutdown_state.signal_shutdown();
-            tracing::info!("shutdown signal received, draining");
-        })
-        .await
-        .map_err(RunError::Serve)?;
-
-    tracing::info!("shut down cleanly");
-    Ok(())
+    run_native_durable(cfg, addr).await
 }
 
 /// Serve `DREVO_ENGINE=native-durable`: the WAL-backed native engine as the
