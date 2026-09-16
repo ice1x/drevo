@@ -34,21 +34,21 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeGraph {
+    NativeGraph::new()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeGraph) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").rows
 }
 
 /// Execute, expecting exactly one row with one column, and return that value.
-fn one(source: &str, drevo: &Drevo) -> Value {
+fn one(source: &str, drevo: &NativeGraph) -> Value {
     let rows = run(source, drevo);
     assert_eq!(rows.len(), 1, "expected exactly one row from `{source}`");
     assert_eq!(
@@ -73,13 +73,13 @@ fn approx(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-9, "expected {b}, got {a}");
 }
 
-fn err(source: &str, drevo: &Drevo) -> ExecError {
+fn err(source: &str, drevo: &NativeGraph) -> ExecError {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect_err("expected an execution error")
 }
 
 /// The textbook eight-value sample whose population stdev is exactly `2.0`.
-fn make_textbook(drevo: &Drevo) {
+fn make_textbook(drevo: &NativeGraph) {
     for v in [2, 4, 4, 4, 5, 5, 7, 9] {
         run(&format!("CREATE (:M {{v: {v}}})"), drevo);
     }
@@ -168,7 +168,7 @@ fn stdev_rejects_non_numeric_value() {
 // percentileCont
 // ---------------------------------------------------------------------------
 
-fn make_quartet(drevo: &Drevo) {
+fn make_quartet(drevo: &NativeGraph) {
     for v in [1, 2, 3, 4] {
         run(&format!("CREATE (:M {{v: {v}}})"), drevo);
     }
