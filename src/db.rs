@@ -3727,7 +3727,7 @@ impl Drevo {
         let nodes = self.list_nodes_by_kind(kind, usize::MAX, 0)?;
         let mut per_doc: Vec<(u64, Vec<String>)> = Vec::with_capacity(nodes.len());
         for node in nodes {
-            let Some(text) = node_property_text(&node, property) else {
+            let Some(text) = crate::fts::facet::node_property_text(&node, property) else {
                 continue;
             };
             let keywords = crate::fts::keywords::extract_keywords(&self.backend, &text, k, false)?;
@@ -5119,25 +5119,6 @@ fn node_kind_key(kind: &str, node_id: u64) -> Vec<u8> {
     key.push(b':');
     key.extend_from_slice(&node_id.to_le_bytes());
     key
-}
-
-/// Resolve the faceting source text for a node and a `property` name.
-///
-/// `"title"` / `"body"` map to the node's title/body; any other name reads
-/// that `properties` key (a JSON string verbatim, any other value via its
-/// `to_string`). Returns `None` when the field is absent or empty so the
-/// node simply contributes no keywords (see [`Drevo::facets`]).
-fn node_property_text(node: &Node, property: &str) -> Option<String> {
-    let text = match property {
-        "title" => node.title.clone(),
-        "body" => node.body.clone(),
-        other => match node.properties.get(other)? {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Null => return None,
-            value => value.to_string(),
-        },
-    };
-    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Build the scan prefix for a node kind: `node_kind:{kind}:`.

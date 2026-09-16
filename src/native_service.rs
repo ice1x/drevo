@@ -528,6 +528,90 @@ impl NativeService {
         self.graph.list_edges_by_kind(kind, limit, offset)
     }
 
+    /// Create a node — the engine of `POST /nodes`, embedded-handle parity with
+    /// `Drevo::create_node`. Returns the stored node with generated id, uuid and
+    /// timestamps.
+    ///
+    /// # Errors
+    /// Propagates a WAL/encode failure as [`DrevoError`].
+    pub fn create_node(
+        &self,
+        new_node: crate::model::NewNode,
+    ) -> Result<crate::model::Node, DrevoError> {
+        use crate::engine::GraphEngine;
+        Ok(self.graph.create_node(new_node)?)
+    }
+
+    /// Create an edge — the engine of `POST /edges`, parity with
+    /// `Drevo::create_edge`. Returns the stored edge.
+    ///
+    /// # Errors
+    /// [`DrevoError::NodeNotFound`] when either endpoint is absent; propagates a
+    /// WAL/encode failure.
+    pub fn create_edge(
+        &self,
+        new_edge: crate::model::NewEdge,
+    ) -> Result<crate::model::Edge, DrevoError> {
+        use crate::engine::GraphEngine;
+        Ok(self.graph.create_edge(new_edge)?)
+    }
+
+    /// Nodes of `kind`, id-ascending, paginated — parity with
+    /// `Drevo::list_nodes_by_kind` (the engine of `GET /nodes?kind=`).
+    pub fn list_nodes_by_kind(
+        &self,
+        kind: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Vec<crate::model::Node> {
+        use crate::engine::GraphEngine;
+        self.graph
+            .nodes_by_kind(kind, limit, offset)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| (*n).clone())
+            .collect()
+    }
+
+    /// Keyword facets over nodes of `kind` — the engine of `GET /facets` and the
+    /// engine-agnostic counterpart of [`crate::db::Drevo::facets`]. Keywords are
+    /// scored with the native FTS corpus statistics (`doc_count` / `trigram_df`)
+    /// rather than the KV backend, so the facet counts match what `fts.search`
+    /// would rank; `build_facets`/`node_property_text` are shared with the KV
+    /// path.
+    ///
+    /// # Errors
+    /// Propagates a keyword-extraction failure as [`DrevoError`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn facets(
+        &self,
+        kind: &str,
+        property: &str,
+        k: usize,
+        collapse: &crate::fts::facet::FacetCollapse<'_>,
+    ) -> Result<Vec<crate::fts::facet::Facet>, DrevoError> {
+        let nodes = self.list_nodes_by_kind(kind, usize::MAX, 0);
+        self.with_fresh_indexes(|idx| {
+            let mut per_doc: Vec<(u64, Vec<String>)> = Vec::with_capacity(nodes.len());
+            for node in &nodes {
+                let Some(text) = crate::fts::facet::node_property_text(node, property) else {
+                    continue;
+                };
+                let keywords = crate::fts::keywords::extract_keywords_scored(
+                    &text,
+                    k,
+                    false,
+                    idx.fts.doc_count(),
+                    &|term_trigrams| Ok(idx.fts.trigram_df(term_trigrams)),
+                )?;
+                if !keywords.is_empty() {
+                    per_doc.push((node.id, keywords));
+                }
+            }
+            Ok(crate::fts::facet::build_facets(&per_doc, collapse))
+        })
+    }
+
     // ----- durable embedding store + HNSW (embedded parity, #446) ------------
     //
     // The native counterpart of the KV `vec:` store + `build_vector_index`.
