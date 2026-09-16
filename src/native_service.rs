@@ -97,6 +97,41 @@ pub struct NativeService {
     last_compact_head: AtomicU64,
     /// Guards against overlapping compactions.
     compacting: AtomicBool,
+    /// Node-side auto-embedding registry — the native home of what the KV
+    /// handle keeps in `Drevo::semantic` (issue #447). Authoritative
+    /// control-plane state, persisted to the `semantic.json` sidecar.
+    semantic: RwLock<crate::semantic_index::SemanticIndexRegistry>,
+    /// Relationship-side registry — the edge mirror of [`Self::semantic`],
+    /// the native home of `Drevo::rel_semantic`.
+    rel_semantic: RwLock<crate::semantic_index::SemanticIndexRegistry>,
+    /// Sidecar path for the two registries (`<wal dir>/semantic.json`), or
+    /// `None` for an in-memory service (nothing to persist).
+    semantic_sidecar: Option<std::path::PathBuf>,
+}
+
+/// On-disk shape of the `semantic.json` sidecar: both registries in one file,
+/// atomically rewritten on every control-plane mutation (the native
+/// counterpart of the KV `meta:semantic_registry` / `..._rel_registry` blobs).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct SemanticSidecar {
+    node: crate::semantic_index::SemanticIndexRegistry,
+    rel: crate::semantic_index::SemanticIndexRegistry,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn semantic_sidecar_path(wal_path: &std::path::Path) -> std::path::PathBuf {
+    wal_path.with_file_name("semantic.json")
+}
+
+/// Load both registries from the sidecar, or empty ones if absent/unparseable
+/// (best-effort, mirroring the tombstone sidecar and the KV loader).
+#[cfg(not(target_arch = "wasm32"))]
+fn load_semantic_sidecar(path: &std::path::Path) -> SemanticSidecar {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => SemanticSidecar::default(),
+    }
 }
 
 impl NativeService {
@@ -132,10 +167,13 @@ impl NativeService {
         // The replica identity (issue #389) lives on the store of record:
         // `NativeGraph::open_durable` loads/mints+persists `origin.json` next to
         // the WAL, reused across restarts.
+        let path = path.as_ref();
         let graph = NativeGraph::open_durable(path)?;
         graph.compact_wal()?;
         let indexes = RwLock::new(ServiceIndexes::synced_over(&graph));
         let last_compact_head = AtomicU64::new(graph.change_head());
+        let sidecar = semantic_sidecar_path(path);
+        let SemanticSidecar { node, rel } = load_semantic_sidecar(&sidecar);
         Ok(Self {
             graph,
             indexes,
@@ -144,6 +182,9 @@ impl NativeService {
             compact_every_ops,
             last_compact_head,
             compacting: AtomicBool::new(false),
+            semantic: RwLock::new(node),
+            rel_semantic: RwLock::new(rel),
+            semantic_sidecar: Some(sidecar),
         })
     }
 
@@ -171,6 +212,9 @@ impl NativeService {
             compact_every_ops: Self::DEFAULT_COMPACT_EVERY_OPS,
             last_compact_head: AtomicU64::new(0),
             compacting: AtomicBool::new(false),
+            semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
+            rel_semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
+            semantic_sidecar: None,
         }
     }
 
@@ -542,6 +586,106 @@ impl NativeService {
         let _ = self.graph.node_count();
         let _ = self.graph.edge_count();
         Ok(())
+    }
+
+    // ── Semantic auto-embedding registry (issue #447) ────────────────────────
+    //
+    // The native home of the KV handle's `Drevo::semantic` / `rel_semantic`
+    // control plane. The registry type (`SemanticIndexRegistry`) is pure and
+    // reused verbatim; mutations persist to the `semantic.json` sidecar so a
+    // registration survives a restart. The query/embed path already runs on
+    // native; these are the register/status control-plane methods the executor
+    // will resolve native-first (a later slice), replacing the KV `secondary`.
+
+    /// Register (or re-enable) a node-side auto-embedding target — parity with
+    /// `Drevo::semantic_register`.
+    ///
+    /// # Errors
+    /// Propagates the registry transition error (e.g. already enabled).
+    pub fn semantic_register(
+        &self,
+        label: &str,
+        text_property: &str,
+        embedding_property: &str,
+        mode: crate::semantic_index::IndexMode,
+        model: Option<String>,
+    ) -> Result<crate::semantic_index::SemanticIndex, crate::semantic_index::IndexError> {
+        let target = {
+            let mut reg = self.semantic.write().unwrap_or_else(|e| e.into_inner());
+            reg.enable(label, text_property, embedding_property, mode, model)
+                .cloned()?
+        };
+        self.persist_semantic();
+        Ok(target)
+    }
+
+    /// Register (or re-enable) a relationship-side target — parity with
+    /// `Drevo::semantic_register_rel`.
+    ///
+    /// # Errors
+    /// Propagates the registry transition error.
+    pub fn semantic_register_rel(
+        &self,
+        rel_type: &str,
+        text_property: &str,
+        embedding_property: &str,
+        mode: crate::semantic_index::IndexMode,
+        model: Option<String>,
+    ) -> Result<crate::semantic_index::SemanticIndex, crate::semantic_index::IndexError> {
+        let target = {
+            let mut reg = self.rel_semantic.write().unwrap_or_else(|e| e.into_inner());
+            reg.enable(rel_type, text_property, embedding_property, mode, model)
+                .cloned()?
+        };
+        self.persist_semantic();
+        Ok(target)
+    }
+
+    /// The registered node-side targets — parity with `Drevo::semantic_status`.
+    pub fn semantic_status(&self) -> Vec<crate::semantic_index::SemanticIndex> {
+        self.semantic
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+            .to_vec()
+    }
+
+    /// The registered relationship-side targets.
+    pub fn semantic_status_rel(&self) -> Vec<crate::semantic_index::SemanticIndex> {
+        self.rel_semantic
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+            .to_vec()
+    }
+
+    /// Atomically rewrite the `semantic.json` sidecar with both registries.
+    /// Best-effort (a storage hiccup must not fail a control-plane call); a
+    /// no-op for an in-memory service. Mirrors the KV `persist_semantic_registry`.
+    fn persist_semantic(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(path) = self.semantic_sidecar.as_ref() else {
+                return;
+            };
+            let sidecar = SemanticSidecar {
+                node: self
+                    .semantic
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                rel: self
+                    .rel_semantic
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            };
+            let Ok(bytes) = serde_json::to_vec(&sidecar) else {
+                return;
+            };
+            let tmp = path.with_extension("json.tmp");
+            let _ = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, path));
+        }
     }
 
     /// Rebuild an in-memory HNSW index over every stored embedding — parity
@@ -949,5 +1093,57 @@ mod health_and_batch_tests {
         svc.health_check().unwrap();
         svc.graph().create_nodes(vec![nn("a"), nn("b")]).unwrap();
         svc.health_check().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod semantic_registry_tests {
+    //! Native semantic registry (#447): register/status + sidecar durability.
+    use super::NativeService;
+    use crate::semantic_index::IndexMode;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    fn tmp_wal() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "drevo_sem_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("native.wal")
+    }
+
+    #[test]
+    fn register_and_status_in_memory() {
+        let svc = NativeService::in_memory();
+        assert!(svc.semantic_status().is_empty());
+        svc.semantic_register("Doc", "text", "embedding", IndexMode::Manual, None)
+            .unwrap();
+        svc.semantic_register_rel("MENTIONS", "note", "vec", IndexMode::Auto, None)
+            .unwrap();
+        let node = svc.semantic_status();
+        assert_eq!(node.len(), 1);
+        assert_eq!(node[0].label, "Doc");
+        assert_eq!(svc.semantic_status_rel().len(), 1);
+        // In-memory has no sidecar, so this is a no-op (must not panic).
+    }
+
+    #[test]
+    fn registration_survives_reopen_via_sidecar() {
+        let wal = tmp_wal();
+        {
+            let svc = NativeService::open(&wal).unwrap();
+            svc.semantic_register("Doc", "text", "embedding", IndexMode::Auto, None)
+                .unwrap();
+        }
+        // A fresh service over the same WAL dir reloads the registry from
+        // semantic.json next to the WAL.
+        let svc = NativeService::open(&wal).unwrap();
+        let targets = svc.semantic_status();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].label, "Doc");
+        assert_eq!(targets[0].mode, IndexMode::Auto);
+        let _ = std::fs::remove_dir_all(wal.parent().unwrap());
     }
 }
