@@ -2,16 +2,15 @@
 //! `CALL drevo.triangles()` (RFC #307 Phase 8). Same pattern as the other
 //! analytics slices: the KV `Drevo::triangle_counts` is the oracle, and a
 //! hand-built graph — a triangle {0,1,2} with a pendant 2-3 — pins the counts
-//! and coefficients. Gated on `redb-backend` for the KV oracle.
+//! and coefficients. Gated on `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
 #![cfg(feature = "redb-backend")]
 
 use std::collections::HashMap;
 
-use drevo::algorithms::triangles_native;
-use drevo::cypher::executor::{execute, execute_on_engine, Value};
+use drevo::algorithms::{triangles, triangles_native, AdjacencyList};
+use drevo::cypher::executor::{execute_on_engine, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
@@ -54,19 +53,25 @@ fn triangle_with_pendant<E: GraphEngine>(engine: &E) -> Vec<u64> {
 }
 
 #[test]
-fn native_triangles_match_kv_oracle() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    let kids = triangle_with_pendant(&kv);
-    let kv_tri = kv.triangle_counts().expect("kv triangles");
-
+fn native_triangles_match_the_reference_over_the_raw_edge_list() {
     let native = NativeGraph::new();
-    let nids = triangle_with_pendant(&native);
+    let ids = triangle_with_pendant(&native);
     let nat_tri = triangles_native(&native);
 
-    assert_eq!(kids, nids, "engines assigned different ids");
+    // Reference: the same serial triangle count over an adjacency list built
+    // straight from the known edge list (triangle {0,1,2} + pendant 2->3).
+    let reference = triangles(&AdjacencyList::from_parts(
+        ids.clone(),
+        vec![
+            (ids[0], ids[1], 1.0f32),
+            (ids[1], ids[2], 1.0),
+            (ids[2], ids[0], 1.0),
+            (ids[2], ids[3], 1.0),
+        ],
+    ));
     assert_eq!(
-        nat_tri, kv_tri,
-        "native triangles diverged from the KV oracle"
+        nat_tri, reference,
+        "native triangles diverged from the reference"
     );
     assert_eq!(nat_tri.total_triangles, 1);
 }
@@ -108,15 +113,6 @@ fn assert_triangle_with_pendant(rows: &HashMap<String, (i64, f64)>) {
     assert!((rows["n2"].1 - 1.0 / 3.0).abs() < 1e-12);
     // The pendant is in no triangle, degree 1 → coefficient 0.
     assert_eq!(rows["n3"], (0, 0.0));
-}
-
-#[test]
-fn call_drevo_triangles_over_cypher_on_kv() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    triangle_with_pendant(&kv);
-    let q = parse(TRI_CYPHER).expect("parse");
-    let res = execute(&q, &kv, HashMap::new()).expect("execute");
-    assert_triangle_with_pendant(&cypher_rows(&res.rows));
 }
 
 #[test]

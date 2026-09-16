@@ -2,16 +2,15 @@
 //! (RFC #307 Phase 8). Same pattern as the other analytics slices: the KV
 //! `Drevo::betweenness_centrality` is the oracle, and a directed diamond
 //! (1 -> {2,3} -> 4) pins the split-dependency behaviour. Gated on
-//! `redb-backend` for the KV oracle.
+//! `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
 #![cfg(feature = "redb-backend")]
 
 use std::collections::HashMap;
 
-use drevo::algorithms::betweenness_native;
-use drevo::cypher::executor::{execute, execute_on_engine, Value};
+use drevo::algorithms::{betweenness, betweenness_native, AdjacencyList};
+use drevo::cypher::executor::{execute_on_engine, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
@@ -54,19 +53,25 @@ fn diamond<E: GraphEngine>(engine: &E) -> Vec<u64> {
 }
 
 #[test]
-fn native_betweenness_matches_kv_oracle() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    let kids = diamond(&kv);
-    let kv_bt = kv.betweenness_centrality().expect("kv betweenness");
-
+fn native_betweenness_matches_the_reference_over_the_raw_edge_list() {
     let native = NativeGraph::new();
-    let nids = diamond(&native);
+    let ids = diamond(&native);
     let nat_bt = betweenness_native(&native);
 
-    assert_eq!(kids, nids, "engines assigned different ids");
+    // Reference: the same serial betweenness over an adjacency list built
+    // straight from the known edge list (directed diamond 0->{1,2}->3).
+    let reference = betweenness(&AdjacencyList::from_parts(
+        ids.clone(),
+        vec![
+            (ids[0], ids[1], 1.0f32),
+            (ids[0], ids[2], 1.0),
+            (ids[1], ids[3], 1.0),
+            (ids[2], ids[3], 1.0),
+        ],
+    ));
     assert_eq!(
-        nat_bt, kv_bt,
-        "native betweenness diverged from the KV oracle"
+        nat_bt, reference,
+        "native betweenness diverged from the reference"
     );
 }
 
@@ -96,15 +101,6 @@ fn assert_diamond(scores: &HashMap<String, f64>) {
     assert!((scores["n2"] - 0.5).abs() < 1e-12, "n2 = {}", scores["n2"]);
     assert_eq!(scores["n0"], 0.0);
     assert_eq!(scores["n3"], 0.0);
-}
-
-#[test]
-fn call_drevo_betweenness_over_cypher_on_kv() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    diamond(&kv);
-    let q = parse(BT_CYPHER).expect("parse");
-    let res = execute(&q, &kv, HashMap::new()).expect("execute");
-    assert_diamond(&cypher_scores(&res.rows));
 }
 
 #[test]

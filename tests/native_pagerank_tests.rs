@@ -1,19 +1,17 @@
 //! Parallel PageRank over the native engine (RFC #307 Phase 8, slice 1).
 //!
-//! The proven single-threaded `algorithms::pagerank` (reached here through the
-//! KV `Drevo::pagerank`) is the correctness oracle: the new parallel,
-//! pull-based `pagerank_native` must agree with it within tolerance on the same
-//! graph, plus the usual PageRank invariants (mass conserved, structure
-//! reflected). Gated on `redb-backend` for the KV oracle side.
+//! The proven single-threaded `algorithms::pagerank`, run over an adjacency
+//! list built straight from the raw edge list, is the reference: the native
+//! `pagerank_native` must agree with it within tolerance on the same graph,
+//! plus the usual PageRank invariants (mass conserved, structure reflected).
 
 #![cfg(feature = "redb-backend")]
 
 use std::collections::HashMap;
 
-use drevo::algorithms::{pagerank_native, PageRankConfig, PageRankResult};
-use drevo::cypher::executor::{execute, execute_on_engine, Value};
+use drevo::algorithms::{pagerank, pagerank_native, AdjacencyList, PageRankConfig, PageRankResult};
+use drevo::cypher::executor::{execute_on_engine, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
@@ -58,52 +56,62 @@ fn as_map(r: &PageRankResult) -> HashMap<u64, f64> {
     r.ranked().into_iter().collect()
 }
 
-/// Run native-parallel PageRank and the KV-serial oracle on the same graph and
-/// assert every node's rank agrees within `tol`.
-fn assert_native_matches_kv(n: usize, edges: &[(usize, usize)], tol: f64) -> HashMap<u64, f64> {
+/// Run native PageRank and the serial reference (the same `pagerank` over an
+/// adjacency list built straight from the raw edge list) on the same graph and
+/// assert every node's rank agrees within `tol`. This pins that the native
+/// engine's adjacency extraction reproduces the intended graph.
+fn assert_native_matches_reference(
+    n: usize,
+    edges: &[(usize, usize)],
+    tol: f64,
+) -> HashMap<u64, f64> {
     let cfg = PageRankConfig::default();
-
-    let kv = Drevo::open_in_memory().expect("kv");
-    let kids = build(&kv, n, edges);
-    let kv_ranks = as_map(&kv.pagerank(&cfg).expect("kv pagerank"));
 
     let native = NativeGraph::new();
     let nids = build(&native, n, edges);
-    let nat = pagerank_native(&native, &cfg);
-    let nat_ranks = as_map(&nat);
+    let nat_ranks = as_map(&pagerank_native(&native, &cfg));
 
-    assert_eq!(kids, nids, "engines assigned different ids");
+    let adj = AdjacencyList::from_parts(
+        nids.clone(),
+        edges
+            .iter()
+            .map(|&(a, b)| (nids[a], nids[b], 1.0f32))
+            .collect::<Vec<_>>(),
+    );
+    let ref_ranks = as_map(&pagerank(&adj, &cfg));
+
     assert_eq!(
         nat_ranks.len(),
-        kv_ranks.len(),
+        ref_ranks.len(),
         "rank vector length mismatch"
     );
-    for (id, kv_r) in &kv_ranks {
+    for (id, ref_r) in &ref_ranks {
         let nat_r = nat_ranks.get(id).copied().unwrap_or(f64::NAN);
         assert!(
-            (nat_r - kv_r).abs() <= tol,
-            "node {id}: native {nat_r} vs kv {kv_r} (Δ {:.3e} > {tol:.0e})",
-            (nat_r - kv_r).abs()
+            (nat_r - ref_r).abs() <= tol,
+            "node {id}: native {nat_r} vs reference {ref_r} (Δ {:.3e} > {tol:.0e})",
+            (nat_r - ref_r).abs()
         );
     }
     nat_ranks
 }
 
 #[test]
-fn native_parallel_matches_kv_serial_on_varied_shapes() {
+fn native_parallel_matches_the_serial_reference_on_varied_shapes() {
     // chain, cycle, star, a dangling sink, parallel edges, and a disconnected mix.
-    assert_native_matches_kv(4, &[(0, 1), (1, 2), (2, 3)], 1e-6); // chain (3 is dangling)
-    assert_native_matches_kv(3, &[(0, 1), (1, 2), (2, 0)], 1e-6); // 3-cycle
-    assert_native_matches_kv(4, &[(0, 1), (0, 2), (0, 3)], 1e-6); // star out of 0
-    assert_native_matches_kv(5, &[(0, 4), (1, 4), (2, 4), (3, 4)], 1e-6); // hub sink 4
-    assert_native_matches_kv(2, &[(0, 1), (0, 1), (0, 1)], 1e-6); // parallel edges
-    assert_native_matches_kv(6, &[(0, 1), (1, 0), (2, 3), (4, 5)], 1e-6); // disjoint bits
+    assert_native_matches_reference(4, &[(0, 1), (1, 2), (2, 3)], 1e-6); // chain (3 is dangling)
+    assert_native_matches_reference(3, &[(0, 1), (1, 2), (2, 0)], 1e-6); // 3-cycle
+    assert_native_matches_reference(4, &[(0, 1), (0, 2), (0, 3)], 1e-6); // star out of 0
+    assert_native_matches_reference(5, &[(0, 4), (1, 4), (2, 4), (3, 4)], 1e-6); // hub sink 4
+    assert_native_matches_reference(2, &[(0, 1), (0, 1), (0, 1)], 1e-6); // parallel edges
+    assert_native_matches_reference(6, &[(0, 1), (1, 0), (2, 3), (4, 5)], 1e-6);
+    // disjoint bits
 }
 
 #[test]
 fn ranks_conserve_mass_and_reflect_structure() {
     // A hub that everyone points to must outrank every leaf, and total rank ≈ 1.
-    let ranks = assert_native_matches_kv(5, &[(0, 4), (1, 4), (2, 4), (3, 4)], 1e-6);
+    let ranks = assert_native_matches_reference(5, &[(0, 4), (1, 4), (2, 4), (3, 4)], 1e-6);
     let total: f64 = ranks.values().sum();
     assert!((total - 1.0).abs() < 1e-6, "mass not conserved: {total}");
     let hub = ranks[&5]; // id 5 = index 4, the sink everyone links to
@@ -137,16 +145,19 @@ const PAGERANK_CYPHER: &str =
     "CALL drevo.pagerank() YIELD node, score RETURN node.title AS t, score AS s ORDER BY s DESC";
 
 #[test]
-fn call_drevo_pagerank_over_cypher_ranks_the_hub_first_on_kv() {
+fn call_drevo_pagerank_over_cypher_runs_on_the_native_engine() {
     // 0,1,2,3 → 4; index 4 (id 5, title "n4") is the hub everyone points to.
-    let kv = Drevo::open_in_memory().expect("kv");
-    build(&kv, 5, &[(0, 4), (1, 4), (2, 4), (3, 4)]);
+    let native = NativeGraph::new();
+    build(&native, 5, &[(0, 4), (1, 4), (2, 4), (3, 4)]);
     let q = parse(PAGERANK_CYPHER).expect("parse");
-    let res = execute(&q, &kv, HashMap::new()).expect("execute");
+    let res = execute_on_engine(&q, &native, HashMap::new()).expect("execute on native");
 
     assert_eq!(res.rows.len(), 5, "one row per node");
     let (top, scores) = cypher_pagerank_scores(&res.rows);
-    assert_eq!(top, "n4", "the hub must rank first");
+    assert_eq!(
+        top, "n4",
+        "native CALL drevo.pagerank must rank the hub first"
+    );
     assert!(
         (scores.iter().sum::<f64>() - 1.0).abs() < 1e-6,
         "mass ≈ 1: {scores:?}"
@@ -154,21 +165,6 @@ fn call_drevo_pagerank_over_cypher_ranks_the_hub_first_on_kv() {
     assert!(
         scores.windows(2).all(|w| w[0] >= w[1]),
         "scores descending: {scores:?}"
-    );
-}
-
-#[test]
-fn call_drevo_pagerank_over_cypher_runs_on_the_native_engine() {
-    let native = NativeGraph::new();
-    build(&native, 5, &[(0, 4), (1, 4), (2, 4), (3, 4)]);
-    let q = parse(PAGERANK_CYPHER).expect("parse");
-    let res = execute_on_engine(&q, &native, HashMap::new()).expect("execute on native");
-
-    assert_eq!(res.rows.len(), 5);
-    let (top, _scores) = cypher_pagerank_scores(&res.rows);
-    assert_eq!(
-        top, "n4",
-        "native CALL drevo.pagerank must rank the hub first"
     );
 }
 

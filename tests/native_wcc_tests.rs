@@ -1,17 +1,15 @@
 //! Weakly connected components over the native engine + `CALL drevo.wcc()`
-//! (RFC #307 Phase 8). Same pattern as the PageRank / Louvain slices: the KV
-//! `Drevo::weakly_connected_components` is the oracle, and a hand-built graph
-//! with two disjoint clusters plus an isolated node pins the structure.
-//! Gated on `redb-backend` for the KV oracle.
+//! (RFC #307 Phase 8). A hand-built graph with two disjoint clusters plus an
+//! isolated node pins the structure; the raw-API result is checked against the
+//! same serial WCC over an adjacency list built straight from the edge list.
 
 #![cfg(feature = "redb-backend")]
 
 use std::collections::HashMap;
 
-use drevo::algorithms::wcc_native;
-use drevo::cypher::executor::{execute, execute_on_engine, Value};
+use drevo::algorithms::{wcc, wcc_native, AdjacencyList};
+use drevo::cypher::executor::{execute_on_engine, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
@@ -54,17 +52,24 @@ fn three_components<E: GraphEngine>(engine: &E) -> Vec<u64> {
 }
 
 #[test]
-fn native_wcc_matches_kv_oracle() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    let kids = three_components(&kv);
-    let kv_wcc = kv.weakly_connected_components().expect("kv wcc").components;
-
+fn native_wcc_matches_the_reference_over_the_raw_edge_list() {
     let native = NativeGraph::new();
-    let nids = three_components(&native);
+    let ids = three_components(&native);
     let nat_wcc = wcc_native(&native).components;
 
-    assert_eq!(kids, nids, "engines assigned different ids");
-    assert_eq!(nat_wcc, kv_wcc, "native WCC diverged from the KV oracle");
+    // Reference: the same serial WCC over an adjacency list built straight from
+    // the known edge list. This pins that the native engine's adjacency
+    // extraction reproduces the intended graph (0->1->2, 3->4, 5 isolated).
+    let reference = wcc(&AdjacencyList::from_parts(
+        ids.clone(),
+        vec![
+            (ids[0], ids[1], 1.0f32),
+            (ids[1], ids[2], 1.0),
+            (ids[3], ids[4], 1.0),
+        ],
+    ))
+    .components;
+    assert_eq!(nat_wcc, reference, "native WCC diverged from the reference");
 }
 
 /// `CALL drevo.wcc() YIELD node, component` → title → component id.
@@ -98,15 +103,6 @@ fn assert_three_components(comp: &HashMap<String, i64>) {
     assert_ne!(comp["n0"], comp["n3"]);
     assert_ne!(comp["n0"], comp["n5"]);
     assert_ne!(comp["n3"], comp["n5"]);
-}
-
-#[test]
-fn call_drevo_wcc_over_cypher_finds_three_components_on_kv() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    three_components(&kv);
-    let q = parse(WCC_CYPHER).expect("parse");
-    let res = execute(&q, &kv, HashMap::new()).expect("execute");
-    assert_three_components(&cypher_components(&res.rows));
 }
 
 #[test]

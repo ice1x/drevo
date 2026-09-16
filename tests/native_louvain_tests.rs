@@ -2,16 +2,15 @@
 //! (RFC #307 Phase 8). Same pattern as the PageRank slice: the proven
 //! single-threaded `algorithms::louvain` (via KV `Drevo::louvain_communities`)
 //! is the oracle, and a hand-built two-cluster graph pins the structure.
-//! Gated on `redb-backend` for the KV oracle.
+//! Gated on `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
 #![cfg(feature = "redb-backend")]
 
 use std::collections::HashMap;
 
-use drevo::algorithms::{louvain_native, LouvainConfig};
-use drevo::cypher::executor::{execute, execute_on_engine, Value};
+use drevo::algorithms::{louvain, louvain_native, AdjacencyList, LouvainConfig};
+use drevo::cypher::executor::{execute_on_engine, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
@@ -60,24 +59,27 @@ fn two_clusters<E: GraphEngine>(engine: &E) -> Vec<u64> {
 }
 
 #[test]
-fn native_louvain_matches_kv_oracle() {
+fn native_louvain_matches_the_reference_over_the_raw_edge_list() {
     let cfg = LouvainConfig::default();
 
-    let kv = Drevo::open_in_memory().expect("kv");
-    let kids = two_clusters(&kv);
-    let kv_comm = kv
-        .louvain_communities(&cfg)
-        .expect("kv louvain")
-        .communities;
-
     let native = NativeGraph::new();
-    let nids = two_clusters(&native);
+    let ids = two_clusters(&native);
     let nat_comm = louvain_native(&native, &cfg).communities;
 
-    assert_eq!(kids, nids, "engines assigned different ids");
+    // Reference: the same serial Louvain over an adjacency list built straight
+    // from the known edge list — two triangles {0,1,2} and {3,4,5} (each edge
+    // added both ways) joined by a single one-way bridge 2->3.
+    let bidir = |a: usize, b: usize| [(ids[a], ids[b], 1.0f32), (ids[b], ids[a], 1.0f32)];
+    let mut edges = Vec::new();
+    for (a, b) in [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3)] {
+        edges.extend(bidir(a, b));
+    }
+    edges.push((ids[2], ids[3], 1.0f32)); // the one bridge
+    let reference = louvain(&AdjacencyList::from_parts(ids.clone(), edges), &cfg).communities;
+
     assert_eq!(
-        nat_comm, kv_comm,
-        "native Louvain diverged from the KV oracle"
+        nat_comm, reference,
+        "native Louvain diverged from the reference"
     );
 }
 
@@ -109,15 +111,6 @@ fn assert_two_communities(comm: &HashMap<String, i64>) {
     assert_eq!(comm["n3"], comm["n4"]);
     assert_eq!(comm["n4"], comm["n5"]);
     assert_ne!(comm["n0"], comm["n3"], "the two clusters must differ");
-}
-
-#[test]
-fn call_drevo_louvain_over_cypher_finds_two_clusters_on_kv() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    two_clusters(&kv);
-    let q = parse(LOUVAIN_CYPHER).expect("parse");
-    let res = execute(&q, &kv, HashMap::new()).expect("execute");
-    assert_two_communities(&cypher_communities(&res.rows));
 }
 
 #[test]
