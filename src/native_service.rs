@@ -769,6 +769,75 @@ impl NativeService {
         Ok(report)
     }
 
+    /// Backfill embeddings for existing **edges** of `rel_type` — the edge
+    /// mirror of [`Self::semantic_reindex`], parity with
+    /// `Drevo::semantic_reindex_rel` (#266). Same idempotent / resumable /
+    /// fail-open semantics.
+    ///
+    /// # Errors
+    /// Propagates an edge-update failure from the graph.
+    #[cfg(feature = "http")]
+    pub fn semantic_reindex_rel(
+        &self,
+        rel_type: &str,
+        text_property: &str,
+        embedding_property: &str,
+        batch_size: usize,
+    ) -> Result<crate::db::SemanticReindexReport, DrevoError> {
+        use crate::engine::GraphEngine;
+        let mut report = crate::db::SemanticReindexReport::default();
+        let mut budget = batch_size;
+        for edge in self.graph.snapshot().all_edges() {
+            if edge.kind != rel_type {
+                continue;
+            }
+            report.scanned += 1;
+            let text = edge
+                .properties
+                .0
+                .get(text_property)
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let already_embedded = edge.properties.0.contains_key(embedding_property);
+            let Some(text) = text.filter(|_| !already_embedded) else {
+                report.skipped += 1;
+                continue;
+            };
+            if budget == 0 {
+                report.remaining += 1;
+                continue;
+            }
+            let Some(embedder) = self.embedder.get() else {
+                report.remaining += 1;
+                continue;
+            };
+            match embedder.embed_query(&text) {
+                Ok(vector) => {
+                    let mut props = edge.properties.clone();
+                    props.0.insert(
+                        embedding_property.to_string(),
+                        serde_json::Value::Array(
+                            vector.into_iter().map(|f| serde_json::json!(f)).collect(),
+                        ),
+                    );
+                    let patch = crate::model::EdgePatch {
+                        properties: Some(props),
+                        ..Default::default()
+                    };
+                    self.graph.update_edge(edge.id, patch)?;
+                    report.embedded += 1;
+                    budget -= 1;
+                }
+                Err(error) => {
+                    tracing::warn!(rel_type, error = %error, "native reindex (rel) embed failed (ignored)");
+                    report.remaining += 1;
+                }
+            }
+        }
+        Ok(report)
+    }
+
     /// Atomically rewrite the `semantic.json` sidecar with both registries.
     /// Best-effort (a storage hiccup must not fail a control-plane call); a
     /// no-op for an in-memory service. Mirrors the KV `persist_semantic_registry`.
