@@ -23,38 +23,38 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeGraph {
+    NativeGraph::new()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeGraph) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").rows
 }
 
-fn run_err(source: &str, drevo: &Drevo) -> ExecError {
+fn run_err(source: &str, drevo: &NativeGraph) -> ExecError {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect_err("expected execution error")
 }
 
-fn exec(source: &str, drevo: &Drevo) {
+fn exec(source: &str, drevo: &NativeGraph) {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute");
 }
 
 /// One-row, one-column projection helper.
-fn one(source: &str, drevo: &Drevo) -> Value {
+fn one(source: &str, drevo: &NativeGraph) -> Value {
     let rows = run(source, drevo);
     assert_eq!(rows.len(), 1, "expected exactly one row from {source:?}");
     rows[0][0].clone()
 }
 
 /// Pull a `Float` out of a one-row projection, failing on any other shape.
-fn one_float(source: &str, drevo: &Drevo) -> f64 {
+fn one_float(source: &str, drevo: &NativeGraph) -> f64 {
     match one(source, drevo) {
         Value::Float(f) => f,
         other => panic!("expected Float from {source:?}, got {other:?}"),

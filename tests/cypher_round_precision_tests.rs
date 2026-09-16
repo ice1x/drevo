@@ -29,26 +29,26 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native::NativeGraph;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeGraph {
+    NativeGraph::new()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeGraph) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute").rows
 }
 
-fn run_err(source: &str, drevo: &Drevo) -> ExecError {
+fn run_err(source: &str, drevo: &NativeGraph) -> ExecError {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect_err("expected execution error")
 }
 
 /// One-row, one-column projection helper.
-fn one(source: &str, drevo: &Drevo) -> Value {
+fn one(source: &str, drevo: &NativeGraph) -> Value {
     let rows = run(source, drevo);
     assert_eq!(rows.len(), 1, "expected exactly one row from {source:?}");
     rows[0][0].clone()
@@ -65,7 +65,7 @@ fn float_of(v: Value) -> f64 {
 /// Assert a query returns a `Float` within a tiny tolerance of `want`. Decimal
 /// rounding results (e.g. `3.14`) are not exactly representable in binary, so
 /// an exact `==` would be brittle.
-fn assert_close(source: &str, drevo: &Drevo, want: f64) {
+fn assert_close(source: &str, drevo: &NativeGraph, want: f64) {
     let got = float_of(one(source, drevo));
     assert!(
         (got - want).abs() < 1e-9,
@@ -335,7 +335,7 @@ fn story_editor_round_average_chapter_length() {
 }
 
 /// Run a mutating statement, discarding the (empty) result.
-fn db_create(drevo: &Drevo, source: &str) {
+fn db_create(drevo: &NativeGraph, source: &str) {
     let q = parse(source).expect("parse");
     execute(&q, drevo, HashMap::new()).expect("execute create");
 }
