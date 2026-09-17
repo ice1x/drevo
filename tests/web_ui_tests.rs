@@ -187,6 +187,22 @@ async fn ui_live_physics_arms_on_drag_not_on_grab() {
         js.contains("handleDisconnected: false"),
         "the live layout must NOT repack disconnected components (that jolts peripheral nodes)"
     );
+    // The live sim must run ONLY on the dragged node's closed neighbourhood, not
+    // the whole graph. cola is a stress layout: over the full graph its all-pairs
+    // model reflows every node toward cola's own equilibrium (≠ the fcose layout
+    // the graph is sitting in), so distant nodes visibly spread apart during a
+    // drag even though only smooth-adjacent springs were tuned. Confining the
+    // layout's element set to the 1-hop neighbourhood freezes everything else, so
+    // only the dragged node's direct neighbours tug along.
+    assert!(
+        js.contains("closedNeighborhood()"),
+        "the live layout must be confined to the dragged node's closed neighbourhood"
+    );
+    assert!(
+        !js.contains("cy.layout(colaLiveOptions())"),
+        "the live cola sim must run on the neighbourhood collection, not the whole cy graph \
+         (whole-graph cola stress-reflows distant nodes and they drift apart during a drag)"
+    );
 }
 
 // The pure geometry module app.js depends on must be served same-origin and
