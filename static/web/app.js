@@ -565,11 +565,25 @@
       ungrabifyWhileSimulating: false,
     };
   }
-  function startLiveLayout() {
-    if (!cy) return;
+  // Run the live sim ONLY over the dragged node's closed neighbourhood (the node
+  // itself + its direct neighbours + the edges between them), never the whole
+  // graph. cola is a *stress* layout: over the full graph its all-pairs model
+  // pulls every pair of nodes toward a distance proportional to their hop count,
+  // i.e. cola's own equilibrium — which differs from the fcose layout the graph
+  // is already sitting in. With `infinite: true` it keeps marching toward that
+  // equilibrium for as long as the drag lasts, so distant, untouched nodes
+  // visibly spread apart across the canvas (the #471 per-edge rest-length fix
+  // only neutralised *adjacent* springs; the all-pairs stress term still reflows
+  // everything). Restricting the layout's element set to the 1-hop neighbourhood
+  // freezes every other node — cola literally can't move a node that isn't in
+  // its set — so only the dragged node's direct neighbours trail it, exactly the
+  // Neo4j-Browser-style local tug we want.
+  function startLiveLayout(node) {
+    if (!cy || !node) return;
     stopLiveLayout();
     try {
-      liveLayout = cy.layout(colaLiveOptions());
+      const region = node.closedNeighborhood();
+      liveLayout = region.layout(colaLiveOptions());
       liveLayout.run();
     } catch (e) {
       // cola unavailable → fall back to plain (static) dragging.
@@ -771,7 +785,7 @@
       const node = evt.target;
       if (liveLayout) return; // already simulating this drag
       if (node.degree(false) === 0) return; // lone node: nothing to tug
-      startLiveLayout();
+      startLiveLayout(node); // confine the sim to this node's neighbourhood
       if (liveLayout) node.emit("grab"); // let cola pin the dragged node
     });
     cy.on("free", "node", () => stopLiveLayout());
