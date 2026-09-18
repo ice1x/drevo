@@ -7,21 +7,21 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::Value;
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
 
 /// A graph of 2-D movie-plot embeddings:
 /// A=[1,0] (identical to the query), B=[0.9,0.1] (close), C=[0,1] (orthogonal).
-fn seeded() -> Drevo {
-    let d = Drevo::open_in_memory().expect("open");
+fn seeded() -> NativeService {
+    let d = NativeService::in_memory();
     let seed = parse(
         "CREATE (:Movie {title: 'A', plotEmbedding: [1.0, 0.0]}), \
                 (:Movie {title: 'B', plotEmbedding: [0.9, 0.1]}), \
                 (:Movie {title: 'C', plotEmbedding: [0.0, 1.0]})",
     )
     .expect("parse seed");
-    execute(&seed, &d, HashMap::new()).expect("seed");
+    d.execute(&seed, HashMap::new()).expect("seed");
     d
 }
 
@@ -53,7 +53,7 @@ fn search_returns_top_k_ordered_by_similarity_with_score() {
          RETURN n.title AS title, score",
     )
     .expect("parse");
-    let r = execute(&q, &d, query_param()).expect("execute");
+    let r = d.execute(&q, query_param()).expect("execute");
 
     assert_eq!(r.columns, vec!["title".to_string(), "score".to_string()]);
     // Ordered by descending cosine similarity: A (1.0) > B (~0.994) > C (0.0).
@@ -91,7 +91,7 @@ fn search_limit_bounds_cardinality_not_multiplied_by_match() {
          RETURN n.title AS title",
     )
     .expect("parse");
-    let r = execute(&q, &d, query_param()).expect("execute");
+    let r = d.execute(&q, query_param()).expect("execute");
     assert_eq!(r.rows.len(), 2, "top-2 → exactly 2 rows");
     assert_eq!(titles(&r.rows, 0), ["A", "B"]);
 }
@@ -106,7 +106,7 @@ fn search_inner_where_filters_results() {
          RETURN n.title AS title",
     )
     .expect("parse");
-    let r = execute(&q, &d, query_param()).expect("execute");
+    let r = d.execute(&q, query_param()).expect("execute");
     assert_eq!(
         titles(&r.rows, 0),
         ["B", "C"],
@@ -123,7 +123,7 @@ fn search_without_score_as_binds_only_the_node() {
          RETURN n.title AS title",
     )
     .expect("parse");
-    let r = execute(&q, &d, query_param()).expect("execute");
+    let r = d.execute(&q, query_param()).expect("execute");
     assert_eq!(titles(&r.rows, 0), ["A"]);
 }
 
@@ -138,7 +138,7 @@ fn search_matches_the_vector_query_procedure() {
              RETURN n.title AS title, score",
         )
         .expect("parse");
-        execute(&q, &d, query_param()).expect("execute").rows
+        d.execute(&q, query_param()).expect("execute").rows
     };
     let via_proc = {
         let q = parse(
@@ -146,7 +146,7 @@ fn search_matches_the_vector_query_procedure() {
              RETURN node.title AS title, score",
         )
         .expect("parse");
-        execute(&q, &d, query_param()).expect("execute").rows
+        d.execute(&q, query_param()).expect("execute").rows
     };
     assert_eq!(
         titles(&via_clause, 0),
@@ -158,11 +158,11 @@ fn search_matches_the_vector_query_procedure() {
 #[test]
 fn search_is_a_soft_keyword_property_named_search_still_works() {
     // `search` must remain usable as a property (not reserved).
-    let d = Drevo::open_in_memory().expect("open");
+    let d = NativeService::in_memory();
     let seed = parse("CREATE (:Doc {title: 'd', search: 'hits'})").expect("parse seed");
-    execute(&seed, &d, HashMap::new()).expect("seed");
+    d.execute(&seed, HashMap::new()).expect("seed");
     let q = parse("MATCH (n:Doc) RETURN n.search AS search").expect("parse");
-    let r = execute(&q, &d, HashMap::new()).expect("execute");
+    let r = d.execute(&q, HashMap::new()).expect("execute");
     assert_eq!(
         match &r.rows[0][0] {
             Value::String(s) => s.as_str(),
