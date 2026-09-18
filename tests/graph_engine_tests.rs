@@ -1,19 +1,17 @@
 //! Guards for the `GraphEngine` seam (RFC `docs/rfc-native-core.md`, #307).
 //!
-//! The trait is introduced **additively** — `Drevo` implements it by delegating
-//! to its existing inherent methods, so there is zero behaviour change. These
-//! tests pin that (a) the seam exists and is object-safe, (b) driving a `Drevo`
-//! purely through `&dyn GraphEngine` reproduces the same graph CRUD + traversal
-//! behaviour as the inherent API. That gives a future native `drevo-core`
-//! engine an executable contract to match.
+//! These tests pin that (a) the seam exists and is object-safe, and (b) driving
+//! the native engine purely through `&dyn GraphEngine` reproduces the expected
+//! graph CRUD + traversal behaviour — the executable contract every engine
+//! behind the seam must match.
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::{execute_on_engine as execute, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{Direction, EdgePatch, NewEdge, NewNode, NodePatch};
+use drevo::native::NativeGraph;
 
 fn node(kind: &str, title: &str) -> NewNode {
     NewNode {
@@ -37,7 +35,7 @@ fn edge(from: u64, to: u64, kind: &str) -> NewEdge {
 
 #[test]
 fn drevo_is_usable_purely_through_the_graph_engine_seam() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeGraph::new();
     let engine: &dyn GraphEngine = &db;
 
     let a = engine.create_node(node("note", "a")).unwrap();
@@ -76,7 +74,7 @@ fn drevo_is_usable_purely_through_the_graph_engine_seam() {
 
 #[test]
 fn seam_matches_inherent_api_for_update_and_delete() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeGraph::new();
     let a = db.create_node(node("note", "orig")).unwrap();
 
     // Update through the trait; the inherent API observes the same state.
@@ -115,7 +113,7 @@ fn seam_matches_inherent_api_for_update_and_delete() {
 
 #[test]
 fn executor_read_paths_resolve_nodes_and_edges_through_the_seam() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeGraph::new();
     let a = db.create_node(node("person", "alice")).unwrap();
     let b = db.create_node(node("person", "bob")).unwrap();
     db.create_edge(edge(a.id, b.id, "KNOWS")).unwrap();
@@ -146,14 +144,14 @@ fn executor_read_paths_resolve_nodes_and_edges_through_the_seam() {
 
 #[test]
 fn executor_write_paths_create_update_delete_through_the_seam() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeGraph::new();
 
     // CREATE → create_node ×2 + create_edge ×1.
     let q = parse("CREATE (a:person {title: 'ann'})-[:KNOWS]->(b:person {title: 'ben'})").unwrap();
     execute(&q, &db, HashMap::new()).unwrap();
 
-    let ann = db.get_node_by_title("ann").unwrap().expect("ann exists");
-    let ben = db.get_node_by_title("ben").unwrap().expect("ben exists");
+    let ann = db.get_node_by_title("ann").expect("ann exists");
+    let ben = db.get_node_by_title("ben").expect("ben exists");
     assert_eq!(
         db.neighbor_ids(ann.id, Direction::Outgoing, Some("KNOWS"))
             .unwrap(),
@@ -189,7 +187,7 @@ fn executor_write_paths_create_update_delete_through_the_seam() {
 
 #[test]
 fn update_edge_through_the_seam_direct_and_via_cypher() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeGraph::new();
     let a = db.create_node(node("person", "u")).unwrap();
     let b = db.create_node(node("person", "v")).unwrap();
     let e = db.create_edge(edge(a.id, b.id, "LINKS")).unwrap();
@@ -229,7 +227,7 @@ fn update_edge_through_the_seam_direct_and_via_cypher() {
 
 #[test]
 fn scans_and_edges_of_through_the_seam() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeGraph::new();
     let a = db.create_node(node("person", "p1")).unwrap();
     let b = db.create_node(node("person", "p2")).unwrap();
     let t = db.create_node(node("tag", "t1")).unwrap();
