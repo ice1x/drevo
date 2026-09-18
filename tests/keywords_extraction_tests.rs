@@ -20,22 +20,24 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeService) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect("execute").rows
+    drevo.execute(&q, HashMap::new()).expect("execute").rows
 }
 
-fn err(source: &str, drevo: &Drevo) -> ExecError {
+fn err(source: &str, drevo: &NativeService) -> ExecError {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect_err("expected error")
+    drevo
+        .execute(&q, HashMap::new())
+        .expect_err("expected error")
 }
 
 /// Extract the single `Value::List` of strings returned in the first column
@@ -55,7 +57,7 @@ fn keyword_list(rows: &[Vec<Value>]) -> Vec<String> {
 
 /// Create a node with a unique title and the given body text (which feeds the
 /// FTS / BM25 corpus that keyword IDF is computed against).
-fn create(drevo: &Drevo, label: &str, title: &str, body: &str) {
+fn create(drevo: &NativeService, label: &str, title: &str, body: &str) {
     run(
         &format!("CREATE (:{label} {{title: '{title}', body: '{body}'}})"),
         drevo,

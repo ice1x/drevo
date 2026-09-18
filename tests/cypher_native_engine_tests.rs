@@ -2,19 +2,18 @@
 //! engine (RFC `docs/rfc-native-core.md`, #307).
 //!
 //! [`execute_on_engine`](drevo::cypher::executor::execute_on_engine) drives the
-//! same executor against a [`NativeGraph`](drevo::native::NativeGraph) instead
-//! of the KV [`Drevo`](drevo::db::Drevo). The core graph language — CREATE,
-//! MATCH, MERGE, SET, DELETE, traversal, RETURN — must produce the same results
-//! it does on KV, because both engines sit behind the shared
+//! Cypher executor against a [`NativeGraph`](drevo::native::NativeGraph). The
+//! core graph language — CREATE, MATCH, MERGE, SET, DELETE, traversal, RETURN —
+//! runs on the native engine through the shared
 //! [`GraphEngine`](drevo::engine::GraphEngine) seam. Queries that reach for a
-//! KV-only secondary subsystem (FTS, vector, keyword extraction) must fail
-//! deterministically with [`ExecError::EngineCapability`], not panic.
+//! secondary subsystem that needs the index stack or an embedder (FTS,
+//! semantic) must fail deterministically with
+//! [`ExecError::EngineCapability`] when it is absent, not panic.
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, execute_on_engine, ExecError, Value};
+use drevo::cypher::executor::{execute_on_engine, ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::native::NativeGraph;
 
 fn run_native(source: &str, g: &NativeGraph) -> Vec<Vec<Value>> {
@@ -84,7 +83,7 @@ fn merge_set_delete_on_native() {
 }
 
 #[test]
-fn native_and_kv_agree_on_the_same_workload() {
+fn native_runs_a_mixed_mutation_workload() {
     let script = [
         "CREATE (:Task {title: 'design'})-[:BLOCKS]->(:Task {title: 'build'})",
         "CREATE (:Task {title: 'ship'})",
@@ -92,19 +91,15 @@ fn native_and_kv_agree_on_the_same_workload() {
     ];
 
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     for stmt in script {
         let q = parse(stmt).unwrap();
         execute_on_engine(&q, &native, HashMap::new()).unwrap();
-        execute(&q, &kv, HashMap::new()).unwrap();
     }
 
     let query = parse("MATCH (a:Task)-[:BLOCKS]->(b:Task) RETURN a.title, b.title").unwrap();
     let n_rows = execute_on_engine(&query, &native, HashMap::new())
         .unwrap()
         .rows;
-    let k_rows = execute(&query, &kv, HashMap::new()).unwrap().rows;
-    assert_eq!(n_rows, k_rows);
     assert_eq!(n_rows.len(), 1);
     assert_eq!(string(&n_rows[0][0]), Some("design"));
     assert_eq!(string(&n_rows[0][1]), Some("build"));
@@ -166,10 +161,10 @@ fn scores(rows: &[Vec<Value>]) -> Vec<f64> {
 }
 
 #[test]
-fn vector_query_works_on_native_and_matches_kv() {
+fn vector_query_works_on_native() {
     // `drevo.vector.query` (bring-your-own-vector) reads through the GraphEngine
     // seam (`all_nodes` + cosine), so it needs no KV secondary — it works on the
-    // native engine, and produces the same ranking as the KV store.
+    // native engine.
     let corpus = [
         "CREATE (:Emb {title: 'x-axis', vec: [1.0, 0.0, 0.0]})",
         "CREATE (:Emb {title: 'y-axis', vec: [0.0, 1.0, 0.0]})",
@@ -177,11 +172,9 @@ fn vector_query_works_on_native_and_matches_kv() {
         "CREATE (:Other {title: 'wrong-label', vec: [1.0, 0.0, 0.0]})",
     ];
     let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
     for stmt in corpus {
         let q = parse(stmt).unwrap();
         execute_on_engine(&q, &native, HashMap::new()).unwrap();
-        execute(&q, &kv, HashMap::new()).unwrap();
     }
 
     let q = parse(
@@ -192,13 +185,13 @@ fn vector_query_works_on_native_and_matches_kv() {
     let native_rows = execute_on_engine(&q, &native, HashMap::new())
         .expect("vector.query on native")
         .rows;
-    let kv_rows = execute(&q, &kv, HashMap::new()).unwrap().rows;
 
     // Only the three `Emb` nodes match (the `Other`-labelled node is excluded),
-    // exact match ranks first, and the scores are identical to the KV ranker.
+    // the exact match ranks first (~1.0), and scores are non-increasing.
     assert_eq!(native_rows.len(), 3);
-    assert_eq!(scores(&native_rows), scores(&kv_rows));
-    assert!((scores(&native_rows)[0] - 1.0).abs() < 1e-6);
+    let s = scores(&native_rows);
+    assert!((s[0] - 1.0).abs() < 1e-6, "exact match ranks first: {s:?}");
+    assert!(s[0] >= s[1] && s[1] >= s[2], "scores descend: {s:?}");
 }
 
 #[test]
