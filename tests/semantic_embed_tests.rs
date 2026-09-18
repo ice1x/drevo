@@ -28,10 +28,10 @@ use serde_json::{json, Value as JsonValue};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::embeddings::{EmbeddingsConfig, SyncEmbedder};
+use drevo::native_service::NativeService;
 
 /// What the stub upstream captured from the last request, for assertions.
 #[derive(Clone, Default)]
@@ -83,14 +83,14 @@ fn semantic_embed_returns_query_vector() {
     let cap = Captured::default();
     let addr = spawn_stub(&rt, cap.clone());
 
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     assert!(db.set_embedder(Arc::new(embedder_for(addr))), "installs");
 
     let q = parse(
         "CALL drevo.semantic.embed('anxious thoughts about work') YIELD vector RETURN vector",
     )
     .expect("parse");
-    let rows = execute(&q, &db, HashMap::new()).expect("execute").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("execute").rows;
 
     assert_eq!(rows.len(), 1, "one row");
     match &rows[0][0] {
@@ -125,7 +125,7 @@ fn semantic_embed_returns_query_vector() {
 fn semantic_embed_feeds_filtered_cosine_similarity() {
     let rt = Runtime::new().expect("runtime");
     let addr = spawn_stub(&rt, Captured::default());
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.set_embedder(Arc::new(embedder_for(addr)));
 
     // Two tenants; `a`/`b`/`c` are the usual near/close/orthogonal directions.
@@ -136,7 +136,7 @@ fn semantic_embed_feeds_filtered_cosine_similarity() {
                 (:Chunk {title: 'other', group_id: 'g2', embedding: [1.0, 0.0]})",
     )
     .expect("parse seed");
-    execute(&seed, &db, HashMap::new()).expect("seed");
+    db.execute(&seed, HashMap::new()).expect("seed");
 
     // Embed server-side, then rank ONLY tenant g1 by cosine to that vector.
     let q = parse(
@@ -147,7 +147,7 @@ fn semantic_embed_feeds_filtered_cosine_similarity() {
          RETURN n.title AS t ORDER BY score DESC",
     )
     .expect("parse");
-    let rows = execute(&q, &db, HashMap::new()).expect("execute").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("execute").rows;
 
     let titles: Vec<String> = rows
         .iter()
@@ -161,20 +161,17 @@ fn semantic_embed_feeds_filtered_cosine_similarity() {
 }
 
 /// With no embedder installed the call fails cleanly (mirrors `semantic.query`),
-/// so a client can catch it and fall back to an external embedder.
+/// so a client can catch it and fall back to an external embedder. On the
+/// native engine "no server-side embedder" is an engine-capability error.
 #[test]
-fn semantic_embed_without_embedder_reports_not_configured() {
-    let db = Drevo::open_in_memory().expect("open");
+fn semantic_embed_without_embedder_reports_a_capability_error() {
+    let db = NativeService::in_memory();
     let q = parse("CALL drevo.semantic.embed('x') YIELD vector RETURN vector").expect("parse");
-    let err = execute(&q, &db, HashMap::new()).expect_err("should error");
+    let err = db.execute(&q, HashMap::new()).expect_err("should error");
     match err {
-        ExecError::InvalidProcedureCall { name, message, .. } => {
-            assert_eq!(name, "drevo.semantic.embed");
-            assert!(
-                message.contains("not configured"),
-                "expected a not-configured message, got: {message}"
-            );
+        ExecError::EngineCapability { feature } => {
+            assert_eq!(feature, "semantic embedding");
         }
-        other => panic!("expected InvalidProcedureCall, got {other:?}"),
+        other => panic!("expected EngineCapability, got {other:?}"),
     }
 }

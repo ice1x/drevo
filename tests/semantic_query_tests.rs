@@ -17,7 +17,7 @@
 //! - the query text is actually forwarded to the configured upstream (captured
 //!   by the stub) — proving the bridge from the synchronous executor to the
 //!   async embedder works without a runtime-in-runtime panic;
-//! - a handle with **no** embedder installed reports a clean "not configured"
+//! - a handle with **no** embedder installed reports a clean engine-capability
 //!   error rather than panicking.
 //!
 //! The test bodies are plain `#[test]` (not `#[tokio::test]`): the executor and
@@ -38,10 +38,10 @@ use serde_json::{json, Value as JsonValue};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::embeddings::{EmbeddingsConfig, SyncEmbedder};
+use drevo::native_service::NativeService;
 
 /// What the stub upstream captured from the last request, for assertions.
 #[derive(Clone, Default)]
@@ -80,14 +80,14 @@ fn spawn_stub(rt: &Runtime, cap: Captured) -> SocketAddr {
 
 /// Seed three chunks: `a` is identical to the stub's query direction, `b`
 /// close, `c` orthogonal.
-fn seed_chunks(db: &Drevo) {
+fn seed_chunks(db: &NativeService) {
     let q = parse(
         "CREATE (:Chunk {title: 'a', embedding: [1.0, 0.0]}), \
                 (:Chunk {title: 'b', embedding: [0.8, 0.6]}), \
                 (:Chunk {title: 'c', embedding: [0.0, 1.0]})",
     )
     .expect("parse seed");
-    execute(&q, db, HashMap::new()).expect("seed");
+    db.execute(&q, HashMap::new()).expect("seed");
 }
 
 fn titles(rows: &[Vec<Value>]) -> Vec<String> {
@@ -112,7 +112,7 @@ fn semantic_query_embeds_text_and_ranks_by_cosine() {
     };
     let embedder = SyncEmbedder::from_config(cfg).expect("build embedder");
 
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     assert!(db.set_embedder(Arc::new(embedder)), "first set installs");
     seed_chunks(&db);
 
@@ -121,7 +121,7 @@ fn semantic_query_embeds_text_and_ranks_by_cosine() {
          YIELD node, score RETURN node.title AS t ORDER BY score DESC",
     )
     .expect("parse query");
-    let rows = execute(&q, &db, HashMap::new()).expect("execute").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("execute").rows;
 
     // Ranked by cosine to the embedded query direction [1.0, 0.0].
     assert_eq!(titles(&rows), vec!["a", "b", "c"]);
@@ -146,7 +146,7 @@ fn semantic_query_honours_k_limit() {
         api_key: None,
         model: None,
     };
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.set_embedder(Arc::new(SyncEmbedder::from_config(cfg).expect("embedder")));
     seed_chunks(&db);
 
@@ -155,28 +155,26 @@ fn semantic_query_honours_k_limit() {
          YIELD node, score RETURN node.title AS t ORDER BY score DESC",
     )
     .expect("parse");
-    let rows = execute(&q, &db, HashMap::new()).expect("execute").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("execute").rows;
     assert_eq!(titles(&rows), vec!["a", "b"]);
 }
 
 #[test]
-fn semantic_query_without_embedder_reports_not_configured() {
-    // No upstream spawned, no embedder installed — the procedure must fail
-    // cleanly instead of panicking.
-    let db = Drevo::open_in_memory().expect("open");
+fn semantic_query_without_embedder_reports_a_capability_error() {
+    // No embedder installed — the procedure must fail cleanly instead of
+    // panicking. On the native engine "no server-side embedder" surfaces an
+    // engine-capability error (the engine cannot embed), the native
+    // counterpart of the KV handle's "not configured" message.
+    let db = NativeService::in_memory();
     seed_chunks(&db);
 
     let q = parse("CALL drevo.semantic.query('Chunk', 'embedding', 'x', 3) YIELD node, score")
         .expect("parse");
-    let err = execute(&q, &db, HashMap::new()).expect_err("should error");
+    let err = db.execute(&q, HashMap::new()).expect_err("should error");
     match err {
-        ExecError::InvalidProcedureCall { name, message, .. } => {
-            assert_eq!(name, "drevo.semantic.query");
-            assert!(
-                message.contains("not configured"),
-                "expected a not-configured message, got: {message}"
-            );
+        ExecError::EngineCapability { feature } => {
+            assert_eq!(feature, "semantic embedding");
         }
-        other => panic!("expected InvalidProcedureCall, got {other:?}"),
+        other => panic!("expected EngineCapability, got {other:?}"),
     }
 }

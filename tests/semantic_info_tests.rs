@@ -26,10 +26,10 @@ use serde_json::{json, Value as JsonValue};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::Value;
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::embeddings::{EmbeddingsConfig, SyncEmbedder};
+use drevo::native_service::NativeService;
 
 /// Stub answering a fixed 3-dimensional embedding, so `info` reports dimension 3.
 async fn stub_embed(Json(_body): Json<JsonValue>) -> Json<JsonValue> {
@@ -53,14 +53,14 @@ fn spawn_stub(rt: &Runtime) -> SocketAddr {
     })
 }
 
-fn info_row(db: &Drevo) -> Vec<Value> {
+fn info_row(db: &NativeService) -> Vec<Value> {
     let q = parse(
         "CALL drevo.semantic.info() \
          YIELD embedder_present, model, dimension, upstream \
          RETURN embedder_present, model, dimension, upstream",
     )
     .expect("parse");
-    let rows = execute(&q, db, HashMap::new()).expect("exec").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("exec").rows;
     assert_eq!(rows.len(), 1, "info() returns exactly one row");
     rows[0].clone()
 }
@@ -75,7 +75,7 @@ fn info_reports_model_dimension_upstream_when_configured() {
         api_key: Some("sk-secret-should-not-leak".to_string()),
         model: Some("text-embedding-3-small".to_string()),
     };
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.set_embedder(Arc::new(SyncEmbedder::from_config(cfg).expect("embedder")));
 
     let row = info_row(&db);
@@ -94,7 +94,7 @@ fn info_reports_model_dimension_upstream_when_configured() {
 
 #[test]
 fn info_reports_absent_when_no_embedder() {
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     let row = info_row(&db);
     assert_eq!(row[0], Value::Bool(false)); // embedder_present
     assert_eq!(row[1], Value::Null); // model
@@ -112,7 +112,7 @@ fn info_dimension_is_stable_across_calls() {
         api_key: None,
         model: Some("m".to_string()),
     };
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.set_embedder(Arc::new(SyncEmbedder::from_config(cfg).expect("embedder")));
 
     assert_eq!(info_row(&db)[2], Value::Integer(3));
