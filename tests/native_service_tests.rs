@@ -236,6 +236,35 @@ fn vector_query_is_served_on_the_native_engine() {
     assert_eq!(titles, ["a", "c"], "top-2 by cosine, label-scoped");
 }
 
+#[test]
+fn fts_search_relationships_is_served_on_the_native_engine() {
+    // Edge full-text (fts.searchRelationships, #229) reads the native
+    // relationship FTS index the service syncs from the change-feed — no KV
+    // secondary. An edge's document is its string properties.
+    let service = NativeService::in_memory();
+    run(
+        &service,
+        "CREATE (a:Doc {title: 'a'}), (b:Doc {title: 'b'}), (c:Doc {title: 'c'}) \
+         CREATE (a)-[:MENTIONS {note: 'the quick brown zebra'}]->(b) \
+         CREATE (a)-[:MENTIONS {note: 'a lazy dog sleeps'}]->(c)",
+    );
+    let hits = run(
+        &service,
+        "CALL fts.searchRelationships('zebra', 10) YIELD rel, score \
+         RETURN rel, score",
+    );
+    // Only the zebra edge matches, with a positive BM25 score.
+    assert_eq!(hits.rows.len(), 1, "exactly the zebra relationship matches");
+    match &hits.rows[0][0] {
+        Value::Relationship(_) => {}
+        other => panic!("expected a relationship, got {other:?}"),
+    }
+    match &hits.rows[0][1] {
+        Value::Float(s) => assert!(*s > 0.0, "positive BM25 score, got {s}"),
+        other => panic!("expected a float score, got {other:?}"),
+    }
+}
+
 /// Deterministic test embedder: 'rust'-ish text points at [1, 0], anything
 /// else at [0, 1].
 struct MockEmbedder;

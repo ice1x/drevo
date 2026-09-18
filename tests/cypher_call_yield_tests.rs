@@ -27,27 +27,29 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeService) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect("execute").rows
+    drevo.execute(&q, HashMap::new()).expect("execute").rows
 }
 
-fn exec(source: &str, drevo: &Drevo) {
+fn exec(source: &str, drevo: &NativeService) {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect("execute");
+    drevo.execute(&q, HashMap::new()).expect("execute");
 }
 
-fn exec_err(source: &str, drevo: &Drevo) -> ExecError {
+fn exec_err(source: &str, drevo: &NativeService) -> ExecError {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect_err("expected execution error")
+    drevo
+        .execute(&q, HashMap::new())
+        .expect_err("expected execution error")
 }
 
 /// Flatten a single-column string result into a `Vec<String>`.
@@ -199,7 +201,7 @@ fn bug_tracker_standalone_call_projects_output_column() {
         &db,
     );
     let q = parse("CALL db.labels()").expect("parse");
-    let res = execute(&q, &db, HashMap::new()).expect("execute");
+    let res = db.execute(&q, HashMap::new()).expect("execute");
     assert_eq!(res.columns, vec!["label"]);
     assert_eq!(strings(&res.rows), vec!["Bug", "Component"]);
 }
@@ -255,7 +257,7 @@ fn error_is_deterministic_on_empty_graph() {
 
 /// Seed three chunks: `a` is identical to the query direction, `b` close,
 /// `c` orthogonal; `a`/`b` in book 1, `c` in book 2.
-fn seed_chunks(db: &Drevo) {
+fn seed_chunks(db: &NativeService) {
     exec(
         "CREATE (:Chunk {title: 'a', book_id: 1, embedding: [1.0, 0.0]}), \
                 (:Chunk {title: 'b', book_id: 1, embedding: [0.8, 0.6]}), \
@@ -381,7 +383,7 @@ fn vector_query_wrong_arity_is_an_error() {
 
 /// Two entities carry the distinctive term `zorptastic` (in different groups);
 /// a third is unrelated (no shared trigrams with the query term).
-fn seed_fts_entities(db: &Drevo) {
+fn seed_fts_entities(db: &NativeService) {
     exec(
         "CREATE (:Entity {title: 'zorptastic anxiety spiral', group_id: 1}), \
                 (:Entity {title: 'zorptastic calm morning', group_id: 2}), \
