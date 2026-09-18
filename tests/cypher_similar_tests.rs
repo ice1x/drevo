@@ -19,27 +19,31 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeService) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect("execute").rows
+    drevo.execute(&q, HashMap::new()).expect("execute").rows
 }
 
-fn run_with(source: &str, drevo: &Drevo, params: HashMap<String, Value>) -> Vec<Vec<Value>> {
+fn run_with(
+    source: &str,
+    drevo: &NativeService,
+    params: HashMap<String, Value>,
+) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, params).expect("execute").rows
+    drevo.execute(&q, params).expect("execute").rows
 }
 
-fn err(source: &str, drevo: &Drevo, params: HashMap<String, Value>) -> ExecError {
+fn err(source: &str, drevo: &NativeService, params: HashMap<String, Value>) -> ExecError {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, params).expect_err("expected error")
+    drevo.execute(&q, params).expect_err("expected error")
 }
 
 /// Build a `Value::List` embedding from `f64` components — the runtime
@@ -64,7 +68,7 @@ fn names(rows: &[Vec<Value>]) -> Vec<String> {
 }
 
 /// Insert a `:Doc` node whose `embedding` property is a vector literal.
-fn create_doc(drevo: &Drevo, title: &str, embedding: &[f64]) {
+fn create_doc(drevo: &NativeService, title: &str, embedding: &[f64]) {
     let list = embedding
         .iter()
         .map(|c| c.to_string())
