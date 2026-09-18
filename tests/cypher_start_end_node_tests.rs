@@ -19,27 +19,29 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
-fn run(source: &str, drevo: &Drevo) -> Vec<Vec<Value>> {
+fn run(source: &str, drevo: &NativeService) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect("execute").rows
+    drevo.execute(&q, HashMap::new()).expect("execute").rows
 }
 
-fn exec(source: &str, drevo: &Drevo) {
+fn exec(source: &str, drevo: &NativeService) {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect("execute");
+    drevo.execute(&q, HashMap::new()).expect("execute");
 }
 
-fn exec_err(source: &str, drevo: &Drevo) -> ExecError {
+fn exec_err(source: &str, drevo: &NativeService) -> ExecError {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, HashMap::new()).expect_err("expected execution error")
+    drevo
+        .execute(&q, HashMap::new())
+        .expect_err("expected execution error")
 }
 
 #[test]

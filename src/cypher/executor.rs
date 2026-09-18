@@ -720,6 +720,7 @@ pub fn execute(
         None,
         None,
         None,
+        None,
         params,
     )
 }
@@ -742,7 +743,7 @@ pub fn execute_on_engine(
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     execute_inner(
-        query, engine, None, None, None, None, None, None, None, params,
+        query, engine, None, None, None, None, None, None, None, None, params,
     )
 }
 
@@ -769,6 +770,7 @@ pub fn execute_on_engine_with_fts(
         engine,
         None,
         Some(fts),
+        None,
         None,
         None,
         None,
@@ -803,7 +805,7 @@ pub fn execute_on_engine_with_indexes(
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     execute_inner(
-        query, engine, None, fts, labels, props, None, None, None, params,
+        query, engine, None, fts, None, labels, props, None, None, None, params,
     )
 }
 
@@ -827,7 +829,7 @@ pub fn execute_on_engine_with_indexes_and_values(
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     execute_inner(
-        query, engine, None, fts, labels, props, values, None, None, params,
+        query, engine, None, fts, None, labels, props, values, None, None, params,
     )
 }
 
@@ -850,6 +852,8 @@ pub type QueryEmbedder<'a> = &'a std::convert::Infallible;
 pub struct NativeQueryContext<'a> {
     /// Full-text index (`fts.search`).
     pub fts: Option<&'a crate::native_fts::NativeFtsIndex>,
+    /// Relationship full-text index (`fts.searchRelationships`).
+    pub fts_rel: Option<&'a crate::native_fts::NativeFtsRelIndex>,
     /// Secondary-label index (`MATCH (n:Label)`).
     pub labels: Option<&'a crate::native_label_index::NativeLabelIndex>,
     /// Property-equality index (`MATCH (n {key: value})`).
@@ -882,6 +886,7 @@ pub fn execute_on_engine_with_context(
         engine,
         None,
         ctx.fts,
+        ctx.fts_rel,
         ctx.labels,
         ctx.properties,
         ctx.values,
@@ -897,6 +902,7 @@ fn execute_inner(
     engine: &dyn GraphEngine,
     secondary: Option<&Drevo>,
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
+    native_fts_rel: Option<&crate::native_fts::NativeFtsRelIndex>,
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
     native_props: Option<&crate::native_property_index::NativePropertyIndex>,
     native_values: Option<&crate::native_value_cache::NativeValueCache>,
@@ -912,6 +918,7 @@ fn execute_inner(
             engine,
             secondary,
             native_fts,
+            native_fts_rel,
             native_labels,
             native_props,
             native_values,
@@ -958,6 +965,7 @@ fn execute_inner(
             engine,
             secondary,
             native_fts,
+            native_fts_rel,
             native_labels,
             native_props,
             native_values,
@@ -1093,6 +1101,7 @@ fn execute_single(
     engine: &dyn GraphEngine,
     secondary: Option<&Drevo>,
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
+    native_fts_rel: Option<&crate::native_fts::NativeFtsRelIndex>,
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
     native_props: Option<&crate::native_property_index::NativePropertyIndex>,
     native_values: Option<&crate::native_value_cache::NativeValueCache>,
@@ -1119,6 +1128,7 @@ fn execute_single(
         engine,
         secondary,
         native_fts,
+        native_fts_rel,
         native_labels,
         native_props,
         native_values,
@@ -2193,6 +2203,12 @@ struct Executor<'a> {
     /// index was supplied (then `fts.search` surfaces
     /// [`ExecError::EngineCapability`]).
     native_fts: Option<&'a crate::native_fts::NativeFtsIndex>,
+    /// A native relationship full-text index tailing the engine's change-feed,
+    /// when running over a non-KV engine that has one. Lets
+    /// `fts.searchRelationships` be answered on the native engine; `None` on the
+    /// KV path (which uses `secondary`) or when no index was supplied (then
+    /// `fts.searchRelationships` surfaces [`ExecError::EngineCapability`]).
+    native_fts_rel: Option<&'a crate::native_fts::NativeFtsRelIndex>,
     /// A native secondary-label index tailing the engine's change-feed, when
     /// running over a non-KV engine that has one. Lets `MATCH (n:Label)` gather
     /// candidates from `nodes_by_kind(label) ∪ node_ids(label)` instead of a
@@ -5441,6 +5457,27 @@ impl<'a> Executor<'a> {
         let query = query.as_string(span)?.to_string();
         let k = self.eval_usize(&args[1], &empty)?;
 
+        // On the native engine, answer from the change-feed-fed relationship
+        // full-text index; otherwise use the KV store's edge FTS. Both return
+        // edges ranked by descending BM25 score. As with `fts.search`, once
+        // this statement has written the pre-statement snapshot may be missing
+        // those writes and edge FTS has no exact-scan fallback, so the index is
+        // treated as absent (surfacing the capability error) rather than stale.
+        if let Some(fts_rel) = self
+            .native_fts_rel
+            .filter(|_| !self.statement_has_written())
+        {
+            let mut rows = Vec::new();
+            for (id, score) in fts_rel.search(&query, k) {
+                if let Some(edge) = self.engine().get_edge(id)? {
+                    rows.push(vec![
+                        Value::Relationship(edge_to_value(&edge)),
+                        Value::Float(f64::from(score)),
+                    ]);
+                }
+            }
+            return Ok(rows);
+        }
         let hits = self
             .secondary("fts.searchRelationships")?
             .search_fts_relationships(&query, k)?;

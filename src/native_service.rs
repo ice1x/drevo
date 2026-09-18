@@ -33,7 +33,7 @@ use crate::cypher::executor::{
 use crate::error::DrevoError;
 use crate::lww::{OriginId, Stamp};
 use crate::native::NativeGraph;
-use crate::native_fts::NativeFtsIndex;
+use crate::native_fts::{NativeFtsIndex, NativeFtsRelIndex};
 use crate::native_label_index::NativeLabelIndex;
 use crate::native_property_index::NativePropertyIndex;
 use crate::native_value_cache::NativeValueCache;
@@ -48,6 +48,9 @@ struct ServiceIndexes {
     values: NativeValueCache,
     /// Trigram BM25 full-text index — `fts.search` served natively.
     fts: NativeFtsIndex,
+    /// Trigram BM25 relationship full-text index — `fts.searchRelationships`
+    /// served natively.
+    fts_rel: NativeFtsRelIndex,
     /// [`crate::native::NativeGraph::change_head`] at the last sync.
     synced_head: u64,
 }
@@ -59,6 +62,7 @@ impl ServiceIndexes {
             props: NativePropertyIndex::new(),
             values: NativeValueCache::new(),
             fts: NativeFtsIndex::new(),
+            fts_rel: NativeFtsRelIndex::new(),
             synced_head: 0,
         };
         idx.catch_up(graph);
@@ -70,6 +74,7 @@ impl ServiceIndexes {
         self.props.sync(graph);
         self.values.sync(graph);
         self.fts.sync(graph);
+        self.fts_rel.sync(graph);
         self.synced_head = graph.change_head();
     }
 }
@@ -1128,6 +1133,7 @@ impl NativeService {
     ) -> Result<ExecResult, ExecError> {
         let ctx = NativeQueryContext {
             fts: Some(&idx.fts),
+            fts_rel: Some(&idx.fts_rel),
             labels: Some(&idx.labels),
             properties: Some(&idx.props),
             values: Some(&idx.values),
