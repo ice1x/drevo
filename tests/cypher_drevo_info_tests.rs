@@ -9,17 +9,17 @@
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::Value;
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
-fn run(src: &str, d: &Drevo) -> (Vec<String>, Vec<Vec<Value>>) {
+fn run(src: &str, d: &NativeService) -> (Vec<String>, Vec<Vec<Value>>) {
     let q = parse(src).expect("parse");
-    let r = execute(&q, d, HashMap::new()).expect("execute");
+    let r = d.execute(&q, HashMap::new()).expect("execute");
     (r.columns, r.rows)
 }
 
@@ -75,7 +75,7 @@ fn drevo_info_takes_no_arguments() {
     let d = db();
     let q = parse("CALL drevo.info(1) YIELD version RETURN version").expect("parse");
     assert!(
-        execute(&q, &d, HashMap::new()).is_err(),
+        d.execute(&q, HashMap::new()).is_err(),
         "drevo.info has arity 0 — a positional argument must be rejected"
     );
 }
