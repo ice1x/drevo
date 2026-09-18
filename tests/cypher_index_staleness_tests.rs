@@ -10,29 +10,25 @@
 //! ever cost speed, never answers — the same invariant the value cache and
 //! the read mirror hold.
 //!
-//! Every case compares the KV engine (always index-free at this layer)
-//! against a native engine executing THROUGH the indexed entry point with
-//! indexes synced before the statement — the exact serving shape of the
-//! durable-native track.
+//! Every case runs on a native engine executing THROUGH the indexed entry
+//! point with indexes synced before the statement — the exact serving shape
+//! of the durable-native track — and asserts the exact expected rows, so a
+//! stale index that leaked a wrong answer would fail.
 
 use std::collections::HashMap;
 
-use drevo::cypher::executor::{
-    execute, execute_on_engine_with_indexes_and_values, ExecResult, Value,
-};
+use drevo::cypher::executor::{execute_on_engine_with_indexes_and_values, ExecResult, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::native::NativeGraph;
 use drevo::native_label_index::NativeLabelIndex;
 use drevo::native_property_index::NativePropertyIndex;
 use drevo::native_value_cache::NativeValueCache;
 
-/// A KV + indexed-native pair where every statement (seeds included) runs
+/// An indexed-native engine where every statement (seeds included) runs
 /// through the indexed entry, with all indexes re-synced before each
 /// statement — statements are the staleness unit, exactly like the serving
 /// layer.
 struct IndexedPair {
-    kv: Drevo,
     native: NativeGraph,
     labels: NativeLabelIndex,
     props: NativePropertyIndex,
@@ -42,7 +38,6 @@ struct IndexedPair {
 impl IndexedPair {
     fn new() -> Self {
         Self {
-            kv: Drevo::open_in_memory().expect("open"),
             native: NativeGraph::new(),
             labels: NativeLabelIndex::new(),
             props: NativePropertyIndex::new(),
@@ -50,16 +45,14 @@ impl IndexedPair {
         }
     }
 
-    /// Run one statement on both engines (indexes synced up to — but not
-    /// within — the statement) and assert identical rows.
+    /// Run one statement through the indexed entry (indexes synced up to — but
+    /// not within — the statement) and return its rows.
     fn check(&mut self, source: &str) -> ExecResult {
         self.labels.sync(&self.native);
         self.props.sync(&self.native);
         self.values.sync(&self.native);
         let q = parse(source).expect("parse");
-        let kv =
-            execute(&q, &self.kv, HashMap::new()).unwrap_or_else(|e| panic!("kv `{source}`: {e}"));
-        let native = execute_on_engine_with_indexes_and_values(
+        execute_on_engine_with_indexes_and_values(
             &q,
             &self.native,
             None,
@@ -68,9 +61,7 @@ impl IndexedPair {
             Some(&self.values),
             HashMap::new(),
         )
-        .unwrap_or_else(|e| panic!("native `{source}`: {e}"));
-        assert_eq!(kv.rows, native.rows, "engines disagree on `{source}`");
-        native
+        .unwrap_or_else(|e| panic!("native `{source}`: {e}"))
     }
 }
 

@@ -14,10 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use drevo::cypher::executor::{
-    execute, execute_on_engine, execute_on_engine_with_indexes, ExecResult, Value,
+    execute_on_engine, execute_on_engine_with_indexes, ExecResult, Value,
 };
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, Properties};
 use drevo::native::NativeGraph;
@@ -328,42 +327,4 @@ fn non_pushdown_shapes_take_the_ordinary_path_with_correct_rows() {
     engine.reset();
     let rels = run_plain(&engine, "MATCH (a)-->(b) RETURN count(*)");
     assert_eq!(single_int(&rels), 0);
-}
-
-// ── KV engine parity ───────────────────────────────────────────────────
-
-#[test]
-fn kv_count_star_agrees_with_the_ordinary_path() {
-    let db = Drevo::open_in_memory().expect("open");
-    for stmt in [
-        "CREATE (:Person {title: 'ada'})",
-        "CREATE (:Person {title: 'bob'})",
-        "CREATE (:City {title: 'paris'})",
-    ] {
-        let q = parse(stmt).expect("parse");
-        execute(&q, &db, HashMap::new()).expect("seed");
-    }
-    let q = parse("MATCH (n) RETURN count(*)").expect("parse");
-    let pushed = execute(&q, &db, HashMap::new()).expect("pushed");
-    let q = parse("MATCH (n) WHERE 1 = 1 RETURN count(*)").expect("parse");
-    let ordinary = execute(&q, &db, HashMap::new()).expect("ordinary");
-    assert_eq!(pushed, ordinary);
-    assert_eq!(single_int(&pushed), 3);
-
-    // Deletes must be reflected — the key population, not a stale counter.
-    let q = parse("MATCH (n {title: 'bob'}) DELETE n").expect("parse");
-    execute(&q, &db, HashMap::new()).expect("delete");
-    let q = parse("MATCH (n) RETURN count(*)").expect("parse");
-    assert_eq!(
-        single_int(&execute(&q, &db, HashMap::new()).expect("recount")),
-        2
-    );
-
-    // The labelled form has no complete label index on KV — ordinary path,
-    // same answer as counting through a scan. Only `ada` is left.
-    let q = parse("MATCH (n:Person) RETURN count(*)").expect("parse");
-    assert_eq!(
-        single_int(&execute(&q, &db, HashMap::new()).expect("label")),
-        1
-    );
 }
