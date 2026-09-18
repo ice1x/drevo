@@ -4846,6 +4846,18 @@ impl<'a> Executor<'a> {
                 embedder.upstream().map_or(Value::Null, Value::String),
             ]]);
         }
+        // On a native engine (no KV secondary) with no server-side embedder,
+        // introspection reports "absent" rather than erroring — `semantic.info`
+        // needs no embedder to answer, and a client uses it precisely to learn
+        // that none is configured.
+        if self.secondary.is_none() {
+            return Ok(vec![vec![
+                Value::Bool(false),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            ]]);
+        }
         let cap = self.secondary("semantic embedding")?.embedder_info();
         let dimension = cap.dimension.map_or(Value::Null, |d| {
             Value::Integer(i64::try_from(d).unwrap_or(i64::MAX))
