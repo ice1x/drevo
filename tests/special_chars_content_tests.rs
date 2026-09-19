@@ -19,15 +19,16 @@
 //! adversarial/injection-shaped content, Unicode whitespace and Cypher string
 //! parameters carrying special characters as untested categories.
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::Value;
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::engine::GraphEngine;
 use drevo::model::{NewEdge, NewNode, Properties};
+use drevo::native_service::NativeService;
 use serde_json::json;
 use std::collections::HashMap;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
 /// Create a node whose title and body both carry `content`, read it back by id,
@@ -46,10 +47,7 @@ fn round_trip_text(content: &str) {
         })
         .expect("create_node");
 
-    let fetched = db
-        .get_node(created.id)
-        .expect("get_node")
-        .expect("node exists");
+    let fetched = db.get_node(created.id).expect("node exists");
 
     assert_eq!(fetched.title, content, "title must round-trip verbatim");
     assert_eq!(fetched.body, content, "body must round-trip verbatim");
@@ -148,7 +146,7 @@ fn long_property_array_round_trips() {
             properties: Properties::from(props),
         })
         .expect("create_node");
-    let fetched = db.get_node(created.id).unwrap().unwrap();
+    let fetched = db.get_node(created.id).unwrap();
     assert_eq!(fetched.properties.get("items"), Some(&json!(items)));
 }
 
@@ -169,11 +167,11 @@ fn cypher_injection_shaped_content_is_stored_as_inert_data() {
             properties: Properties::default(),
         })
         .expect("create_node");
-    let fetched = db.get_node(created.id).unwrap().unwrap();
+    let fetched = db.get_node(created.id).unwrap();
     assert_eq!(fetched.title, payload);
     assert_eq!(fetched.body, payload);
     assert_eq!(
-        db.list_recent(usize::MAX).unwrap().len(),
+        db.list_recent(usize::MAX).len(),
         1,
         "no phantom nodes created"
     );
@@ -226,15 +224,19 @@ fn edge_properties_with_special_chars_round_trip() {
         })
         .expect("create_edge");
 
-    let fetched = db.get_edge(edge.id).unwrap().unwrap();
+    let fetched = db.graph().get_edge(edge.id).unwrap().expect("edge exists");
     assert_eq!(fetched.properties.get("label"), Some(&json!(weird)));
 }
 
 // ===== Cypher string parameters carrying special characters =================
 
-fn run_with(source: &str, drevo: &Drevo, params: HashMap<String, Value>) -> Vec<Vec<Value>> {
+fn run_with(
+    source: &str,
+    drevo: &NativeService,
+    params: HashMap<String, Value>,
+) -> Vec<Vec<Value>> {
     let q = parse(source).expect("parse");
-    execute(&q, drevo, params).expect("execute").rows
+    drevo.execute(&q, params).expect("execute").rows
 }
 
 #[test]
@@ -268,7 +270,7 @@ fn cypher_create_with_special_char_parameter_persists_verbatim() {
         other => panic!("expected String, got {other:?}"),
     }
     // And it must be the title actually persisted to storage.
-    let node = db.list_nodes_by_kind("Note", 10, 0).unwrap();
+    let node = db.list_nodes_by_kind("Note", 10, 0);
     assert_eq!(node.len(), 1);
     assert_eq!(node[0].title, payload);
 }
