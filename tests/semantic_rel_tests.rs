@@ -27,10 +27,10 @@ use serde_json::{json, Value as JsonValue};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::embeddings::{EmbeddingsConfig, SyncEmbedder};
+use drevo::native_service::NativeService;
 use drevo::semantic_index::IndexMode;
 
 async fn stub_embed(Json(_body): Json<JsonValue>) -> Json<JsonValue> {
@@ -54,24 +54,24 @@ fn spawn_stub(rt: &Runtime) -> SocketAddr {
     })
 }
 
-fn db_with_embedder(addr: SocketAddr) -> Drevo {
+fn db_with_embedder(addr: SocketAddr) -> NativeService {
     let cfg = EmbeddingsConfig {
         upstream: format!("http://{addr}/v1/embeddings"),
         api_key: None,
         model: Some("stub".to_string()),
     };
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.set_embedder(Arc::new(SyncEmbedder::from_config(cfg).expect("embedder")));
     db
 }
 
-fn run(db: &Drevo, src: &str) -> Vec<Vec<Value>> {
+fn run(db: &NativeService, src: &str) -> Vec<Vec<Value>> {
     let q = parse(src).expect("parse");
-    execute(&q, db, HashMap::new()).expect("execute").rows
+    db.execute(&q, HashMap::new()).expect("execute").rows
 }
 
 /// The `fact_embedding` of the single RELATES_TO edge, if present.
-fn edge_embedding(db: &Drevo) -> Value {
+fn edge_embedding(db: &NativeService) -> Value {
     let rows = run(
         db,
         "MATCH ()-[r:RELATES_TO]->() RETURN r.fact_embedding AS e",
@@ -81,7 +81,7 @@ fn edge_embedding(db: &Drevo) -> Value {
 }
 
 /// Create two nodes joined by one RELATES_TO edge carrying `fact`.
-fn create_edge(db: &Drevo, fact: &str) {
+fn create_edge(db: &NativeService, fact: &str) {
     run(
         db,
         &format!(
@@ -210,7 +210,7 @@ fn rel_manual_target_is_not_auto_embedded() {
 
 #[test]
 fn rel_no_embedder_no_auto_embed() {
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.semantic_register_rel(
         "RELATES_TO",
         "fact",
@@ -246,7 +246,7 @@ fn rel_reindex_rel_unregistered_errors() {
          YIELD scanned RETURN scanned",
     )
     .expect("parse");
-    match execute(&q, &db, HashMap::new()).expect_err("should error") {
+    match db.execute(&q, HashMap::new()).expect_err("should error") {
         ExecError::InvalidProcedureCall { name, message, .. } => {
             assert_eq!(name, "drevo.semantic.reindexRel");
             assert!(

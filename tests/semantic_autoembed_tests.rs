@@ -37,11 +37,11 @@ use serde_json::{json, Value as JsonValue};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::Value;
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::embeddings::{EmbeddingsConfig, SyncEmbedder};
 use drevo::model::{NewNode, Properties};
+use drevo::native_service::NativeService;
 use drevo::semantic_index::IndexMode;
 
 /// Stub `/v1/embeddings` that always answers with the fixed vector `[1.0, 0.0]`.
@@ -66,14 +66,14 @@ fn spawn_stub(rt: &Runtime) -> SocketAddr {
     })
 }
 
-/// A `Drevo` with a real [`SyncEmbedder`] pointed at `addr`.
-fn db_with_embedder(addr: SocketAddr) -> Drevo {
+/// A `NativeService` with a real [`SyncEmbedder`] pointed at `addr`.
+fn db_with_embedder(addr: SocketAddr) -> NativeService {
     let cfg = EmbeddingsConfig {
         upstream: format!("http://{addr}/v1/embeddings"),
         api_key: None,
         model: Some("stub-embed".to_string()),
     };
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.set_embedder(Arc::new(SyncEmbedder::from_config(cfg).expect("embedder")));
     db
 }
@@ -93,8 +93,8 @@ fn new_node(kind: &str, title: &str, text: Option<&str>) -> NewNode {
 }
 
 /// The `embedding` property of the node with `title`, if any.
-fn embedding_of(db: &Drevo, title: &str) -> Option<JsonValue> {
-    let node = db.get_node_by_title(title).expect("get").expect("exists");
+fn embedding_of(db: &NativeService, title: &str) -> Option<JsonValue> {
+    let node = db.get_node_by_title(title).expect("exists");
     node.properties.0.get("embedding").cloned()
 }
 
@@ -120,7 +120,7 @@ fn auto_embed_on_create_then_semantic_query_finds_it() {
          YIELD node, score RETURN node.title AS t ORDER BY score DESC",
     )
     .expect("parse");
-    let rows = execute(&q, &db, HashMap::new()).expect("execute").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("execute").rows;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][0], Value::String("d1".to_string()));
 }
@@ -134,7 +134,7 @@ fn auto_embed_via_cypher_create() {
         .expect("register");
 
     let q = parse("CREATE (:Doc {title: 'c1', text: 'some text'})").expect("parse");
-    execute(&q, &db, HashMap::new()).expect("create");
+    db.execute(&q, HashMap::new()).expect("create");
 
     assert_eq!(embedding_of(&db, "c1"), Some(json!([1.0, 0.0])));
 }
@@ -170,7 +170,7 @@ fn manual_mode_is_not_auto_embedded() {
 fn no_embedder_means_no_auto_embed() {
     // Registered Auto target but NO embedder installed → the write path is the
     // ordinary one; nothing is embedded.
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.semantic_register("Doc", "text", "embedding", IndexMode::Auto, None)
         .expect("register");
     db.create_node(new_node("Doc", "x1", Some("hello")))
@@ -206,7 +206,7 @@ fn update_reembeds_when_text_changes() {
 
     // Change the source text via Cypher SET; the embedding is refreshed.
     let q = parse("MATCH (d:Doc {title: 'u1'}) SET d.text = 'second'").expect("parse");
-    execute(&q, &db, HashMap::new()).expect("update");
+    db.execute(&q, HashMap::new()).expect("update");
     // (stub returns the same vector, so we assert the embedding is still present
     // and well-formed — the re-embed path ran without error.)
     assert_eq!(embedding_of(&db, "u1"), Some(json!([1.0, 0.0])));

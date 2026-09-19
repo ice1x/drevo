@@ -28,11 +28,11 @@ use serde_json::{json, Value as JsonValue};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::Value;
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::embeddings::{EmbeddingsConfig, SyncEmbedder};
 use drevo::model::{NewNode, Properties};
+use drevo::native_service::NativeService;
 use drevo::semantic_index::IndexMode;
 
 /// A healthy stub: fixed embedding `[1.0, 0.0]`.
@@ -65,13 +65,13 @@ fn spawn(rt: &Runtime, router: Router) -> SocketAddr {
     })
 }
 
-fn db_at(addr: SocketAddr) -> Drevo {
+fn db_at(addr: SocketAddr) -> NativeService {
     let cfg = EmbeddingsConfig {
         upstream: format!("http://{addr}/v1/embeddings"),
         api_key: None,
         model: Some("stub".to_string()),
     };
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.set_embedder(Arc::new(SyncEmbedder::from_config(cfg).expect("embedder")));
     db
 }
@@ -89,14 +89,14 @@ fn doc(title: &str, text: &str) -> NewNode {
 }
 
 /// Read the single status row's columns by name.
-fn status_row(db: &Drevo) -> HashMap<String, Value> {
+fn status_row(db: &NativeService) -> HashMap<String, Value> {
     let q = parse(
         "CALL drevo.semantic.status() \
          YIELD label, state, pending_count, failed_count, last_error \
          RETURN label, state, pending_count, failed_count, last_error",
     )
     .expect("parse");
-    let rows = execute(&q, db, HashMap::new()).expect("exec").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("exec").rows;
     assert_eq!(rows.len(), 1, "expected exactly one registered target");
     let cols = [
         "label",
@@ -196,7 +196,7 @@ fn preexisting_unembedded_nodes_show_as_pending() {
          YIELD embedded RETURN embedded",
     )
     .expect("parse");
-    execute(&reindex, &db, HashMap::new()).expect("reindex");
+    db.execute(&reindex, HashMap::new()).expect("reindex");
 
     let row = status_row(&db);
     assert_eq!(row["pending_count"], Value::Integer(0));
