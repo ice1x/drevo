@@ -70,6 +70,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+// Only the disk-backed `drevo_open` needs a filesystem path, and that is
+// gated on `redb-backend`; without the backend the import is dead.
+#[cfg(feature = "redb-backend")]
 use std::path::Path;
 use std::ptr;
 
@@ -244,12 +247,29 @@ pub unsafe extern "C" fn drevo_open(path: *const c_char) -> *mut DrevoHandle {
         let Some(p) = read_c_str(path, "path") else {
             return ptr::null_mut();
         };
-        match Drevo::open(Path::new(p)) {
-            Ok(db) => Box::into_raw(Box::new(db)),
-            Err(e) => {
-                set_error(format!("{e}"));
-                ptr::null_mut()
+        // The disk-backed handle is the redb KV store. Without `redb-backend`
+        // there is no durable KV engine to open; keep the symbol (so the C
+        // header stays stable) but fail with a clear error and point callers
+        // at the in-memory constructor.
+        #[cfg(feature = "redb-backend")]
+        {
+            match Drevo::open(Path::new(p)) {
+                Ok(db) => Box::into_raw(Box::new(db)),
+                Err(e) => {
+                    set_error(format!("{e}"));
+                    ptr::null_mut()
+                }
             }
+        }
+        #[cfg(not(feature = "redb-backend"))]
+        {
+            let _ = p;
+            set_error(
+                "drevo_open requires the `redb-backend` feature; \
+                 use drevo_open_in_memory for an ephemeral database"
+                    .to_string(),
+            );
+            ptr::null_mut()
         }
     })
 }
