@@ -153,7 +153,13 @@ idna_adapter = { version = "=1.2.0", optional = true }
 cbindgen = { version = "0.27", optional = true }
 
 [features]
-default = ["redb-backend", "cbindgen", "http"]
+# `redb-backend` is deliberately NOT in `default` (epic #444): the live engine
+# is native-durable (WAL, zero-redb) and a bare `cargo build` / crate consumer
+# now gets the native engine only. redb (the legacy embedded KV store + its
+# on-disk catalog and the redb→WAL first-boot migration) remains fully
+# available as an opt-in via `--features redb-backend` — the migration path for
+# early-version data still ships. It is removed outright in the next version.
+default = ["cbindgen", "http"]
 redb-backend = ["redb"]
 wasm = ["wasm-bindgen", "js-sys", "getrandom/wasm_js", "drevo-core/wasm"]
 http = ["dep:axum", "dep:tokio", "dep:tower", "dep:tracing", "dep:tracing-subscriber"]

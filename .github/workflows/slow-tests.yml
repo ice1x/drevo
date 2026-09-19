@@ -147,7 +147,9 @@ jobs:
       # cells from rotting into a permanent skip; locked by
       # `tests/ci_self_hosted_runner_tests.rs`.
       - name: Heavy redb compaction cells (ignored on PR path — task 00129)
-        run: cargo nextest run --run-ignored ignored-only --no-fail-fast -E 'binary(compaction_tests)'
+        # redb is opt-in since epic #444 (not in `default`); these cells are
+        # redb compaction tests, so enable the feature explicitly.
+        run: cargo nextest run --run-ignored ignored-only --no-fail-fast --features redb-backend -E 'binary(compaction_tests)'
 
       # Phase 10.5 task 00123 — layer-1 agentic workload baseline.
       # `#[ignore]` by default so it never touches the PR path; this
@@ -157,5 +159,7 @@ jobs:
       # the job-level `continue-on-error: true` above means a perf-envelope
       # breach annotates the run rather than hard-failing an unrelated branch.
       - name: agentic workload baseline soak (layer 1)
-        run: cargo nextest run --run-ignored ignored-only --no-fail-fast
+        # The soak's Rust-API harness opens a redb-backed on-disk DB
+        # (`Drevo::open`), opt-in since epic #444 — enable it explicitly.
+        run: cargo nextest run --run-ignored ignored-only --no-fail-fast --features redb-backend
           -E 'test(rust_api_agentic_workload_soak)' --nocapture
