@@ -31,7 +31,7 @@ Then open <http://localhost:8080/ui>. Full deploy options — Compose, host bind
 
 ## Use Cases
 
-drevo is the storage engine for a cross-platform graph notebook. Target scenarios:
+drevo is a standalone embedded graph database: link it into an app as a library, or run it as a container / HTTP / Bolt service, to store, traverse, and full-text-search a property graph. Its primitives — node/edge **kinds**, arbitrary **properties**, **FTS**, **subgraph** extraction, and **transactions** — are domain-agnostic, so one engine models very different domains. A few concrete examples of what you can build on it:
 
 ### CBT Journal (Cognitive Behavioral Therapy)
 
@@ -88,7 +88,7 @@ Because drevo runs embedded on Linux/macOS/Windows, iOS/Android, WASM, and as a 
 - **FTS** enables search across all content (titles, bodies, properties)
 - **Subgraph** extraction provides bounded context for AI agents (MCP)
 - **Transactions** ensure consistency for multi-step operations
-- **Cross-platform**: all scenarios must work identically on desktop, mobile (iOS/Android), and WASM
+- **Cross-platform**: the same engine runs identically on desktop, mobile (iOS/Android), and WASM
 
 ---
 
