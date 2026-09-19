@@ -171,7 +171,11 @@ jobs:
         run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-${{ github.job }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --all-targets
+      # `redb-backend` is opt-in since epic #444 (not in `default`); enable it
+      # explicitly so `--all-targets` still compiles the redb-backed examples,
+      # benches and integration tests. The shipped no-redb default is compiled
+      # by the MSRV job's `--no-default-features --features http,cbindgen` guard.
+      - run: cargo check --all-targets --features redb-backend
       # cbindgen header drift guard. `build.rs` regenerates the tracked
       # `drevo.h` (CARGO_MANIFEST_DIR) on every build with the default
       # `cbindgen` feature, so the `cargo check` above just rewrote it.
@@ -308,7 +312,12 @@ jobs:
             echo "deps after clean: $(ls -1f "$deps" 2>/dev/null | wc -l | tr -d ' ')"
           fi
       - name: Run unit + integration tests (cargo test, sequential)
-        run: cargo test --tests --no-fail-fast
+        # `--features redb-backend`: redb is opt-in since epic #444 (not in
+        # `default`), but its engine, on-disk catalog, FFI disk-open and the
+        # redb→WAL migration still ship and must stay tested. The native
+        # engine's own suites run here too (they are feature-agnostic). The
+        # no-redb default build is guarded by the MSRV job's cargo check.
+        run: cargo test --tests --no-fail-fast --features redb-backend
       # Phase 11 task `00073` — Bolt-over-TLS lives behind the
       # `bolt-tls` Cargo feature, which is NOT in the default set
       # (rustls + tokio-rustls + rustls-pemfile add ~10 transitive
@@ -357,7 +366,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --all-targets -- -D warnings
+      # `--features redb-backend`: opt-in since epic #444, enabled so
+      # `--all-targets` lints the redb code + its tests/examples/benches. The
+      # no-redb default build is guarded by the MSRV job's cargo check.
+      - run: cargo clippy --all-targets --features redb-backend -- -D warnings
       # Phase 11 task `00073` — guard the `bolt-tls`-gated code paths
       # against clippy regressions. Default-feature clippy doesn't see
       # `src/bolt/tls.rs` or `tests/bolt_tls_tests.rs`, so a second
