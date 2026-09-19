@@ -2,7 +2,7 @@
 
 use drevo::db::Drevo;
 use drevo::error::DrevoError;
-use drevo::model::{NewNode, NodePatch, Properties};
+use drevo::model::{Direction, NewEdge, NewNode, NodePatch, Properties};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -271,6 +271,149 @@ fn delete_node_nonexistent_fails() {
     let db = Drevo::open_in_memory().unwrap();
     let err = db.delete_node(999).unwrap_err();
     assert!(matches!(err, DrevoError::NodeNotFound(999)));
+}
+
+// --- delete_nodes: batched multi-delete (#441) ---
+//
+// The motivating workflow: a note-taking app deletes a folder subtree (the
+// folder plus its child notes and the `contains` edges) in one call, instead
+// of a per-node `delete_node` loop that costs one fsync per node.
+
+fn note(title: &str, body: &str) -> NewNode {
+    NewNode {
+        kind: "note".to_string(),
+        title: title.to_string(),
+        body: body.to_string(),
+        body_html: String::new(),
+        properties: Properties::default(),
+    }
+}
+
+#[test]
+fn delete_nodes_removes_folder_subtree_in_one_call() {
+    let db = Drevo::open_in_memory().unwrap();
+    let folder = db.create_node(note("Folder", "")).unwrap();
+    let mut child_ids = Vec::new();
+    for i in 0..5 {
+        let child = db
+            .create_node(note(&format!("Note {i}"), "shared keyword body"))
+            .unwrap();
+        db.create_edge(NewEdge {
+            from_id: folder.id,
+            to_id: child.id,
+            kind: "contains".into(),
+            weight: 1.0,
+            properties: Default::default(),
+        })
+        .unwrap();
+        child_ids.push(child.id);
+    }
+
+    // One call deletes the folder and every child.
+    let mut targets = child_ids.clone();
+    targets.push(folder.id);
+    let removed = db.delete_nodes(&targets).unwrap();
+    assert_eq!(removed, 6);
+
+    assert_eq!(db.get_node(folder.id).unwrap(), None);
+    for id in &child_ids {
+        assert_eq!(db.get_node(*id).unwrap(), None);
+    }
+    // No dangling adjacency and no stray full-text postings.
+    assert!(db.search_fts("keyword", 10).unwrap().is_empty());
+}
+
+#[test]
+fn delete_nodes_leaves_untargeted_siblings_and_their_index_intact() {
+    // A batch delete of one subtree must not disturb a sibling that shares
+    // full-text tokens with the deleted nodes.
+    let db = Drevo::open_in_memory().unwrap();
+    let doomed = db.create_node(note("doomed", "apricot marmalade")).unwrap();
+    let kept = db.create_node(note("kept", "apricot preserve")).unwrap();
+    let link = db
+        .create_edge(NewEdge {
+            from_id: doomed.id,
+            to_id: kept.id,
+            kind: "links_to".into(),
+            weight: 1.0,
+            properties: Default::default(),
+        })
+        .unwrap();
+
+    assert_eq!(db.delete_nodes(&[doomed.id]).unwrap(), 1);
+
+    // The survivor and its adjacency-free FTS entry are untouched.
+    assert!(db.get_node(kept.id).unwrap().is_some());
+    assert_eq!(db.get_edge(link.id).unwrap(), None);
+    let hits = db.search_fts("apricot", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node.id, kept.id);
+    assert!(db.edges_of(kept.id, Direction::Both).unwrap().is_empty());
+}
+
+#[test]
+fn delete_nodes_matches_sequential_loop_end_state() {
+    // Build the same graph twice; delete a subtree via the batched call in one
+    // DB and a per-node loop in the other, then assert identical survivor state.
+    fn build(db: &Drevo) -> (Vec<u64>, Vec<u64>) {
+        let mut doomed = Vec::new();
+        let mut kept = Vec::new();
+        for i in 0..4 {
+            let d = db
+                .create_node(note(&format!("doomed {i}"), "quokka thicket"))
+                .unwrap();
+            doomed.push(d.id);
+        }
+        for i in 0..3 {
+            let k = db
+                .create_node(note(&format!("kept {i}"), "quokka meadow"))
+                .unwrap();
+            kept.push(k.id);
+        }
+        // Edges within the doomed set and crossing into the kept set.
+        db.create_edge(NewEdge {
+            from_id: doomed[0],
+            to_id: doomed[1],
+            kind: "links_to".into(),
+            weight: 1.0,
+            properties: Default::default(),
+        })
+        .unwrap();
+        db.create_edge(NewEdge {
+            from_id: doomed[2],
+            to_id: kept[0],
+            kind: "links_to".into(),
+            weight: 1.0,
+            properties: Default::default(),
+        })
+        .unwrap();
+        (doomed, kept)
+    }
+
+    let batched = Drevo::open_in_memory().unwrap();
+    let (doomed_b, kept_b) = build(&batched);
+    let sequential = Drevo::open_in_memory().unwrap();
+    let (doomed_s, kept_s) = build(&sequential);
+
+    batched.delete_nodes(&doomed_b).unwrap();
+    for id in &doomed_s {
+        sequential.delete_node(*id).unwrap();
+    }
+
+    // Same survivors, same full-text index, same edge-free survivor adjacency.
+    for (kb, ks) in kept_b.iter().zip(kept_s.iter()) {
+        assert_eq!(
+            batched.get_node(*kb).unwrap().map(|n| n.title),
+            sequential.get_node(*ks).unwrap().map(|n| n.title),
+        );
+    }
+    assert_eq!(
+        batched.search_fts("quokka", 10).unwrap().len(),
+        sequential.search_fts("quokka", 10).unwrap().len(),
+    );
+    for id in &doomed_b {
+        assert_eq!(batched.get_node(*id).unwrap(), None);
+    }
 }
 
 // --- Persistence across close/reopen ---

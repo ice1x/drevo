@@ -48,6 +48,13 @@ impl GraphEngine for Drevo {
         Ok(Drevo::delete_node(self, id)?)
     }
 
+    fn delete_nodes(&self, ids: &[u64]) -> CoreResult<usize> {
+        // Override the trait's per-node default with the KV handle's batched
+        // multi-delete (#441): one `delete_batch` + one `put_batch`, so a
+        // subtree delete costs two commits, not one per node.
+        Ok(Drevo::delete_nodes(self, ids)?)
+    }
+
     fn create_edge(&self, new_edge: NewEdge) -> CoreResult<Edge> {
         Ok(Drevo::create_edge(self, new_edge)?)
     }
