@@ -86,8 +86,7 @@ User- and operator-facing guides live in [`docs/`](docs/) and render on the [doc
 | [Architecture & Design](docs/architecture.md) | Vision, requirements, data model, storage engine, Rust API surface, serialization, error handling, performance targets, crate layout, dependencies |
 | [Benchmarks](docs/benchmarks.md) · [Native-core baseline](docs/native-core-baseline.md) · [Native load & concurrency](docs/native-load.md) | Measured performance, engine baselines, load/concurrency behaviour |
 | [Adjacency Key Schema](docs/adjacency-key-schema.md) · [RFC: Native Graph Core](docs/rfc-native-core.md) | Internal storage schema and the native-engine design RFC |
-| [Contributing](docs/contributing.md) | Coding conventions and the agent working model |
-| [**Phase History**](PHASE-HISTORY.md) | Frozen log of completed phases (PoC → Phase 21, plus the Phase 8.5 audit) — the detailed build narrative that used to live here |
+| [Contributing](docs/contributing.md) | Coding conventions and contribution workflow |
 
 ---
 
