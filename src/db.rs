@@ -2823,6 +2823,125 @@ impl Drevo {
         Ok(())
     }
 
+    /// Delete many nodes — with their incident edges and index entries — in a
+    /// single pair of batched storage commits (#441, follow-up to #435/#436).
+    ///
+    /// The bulk companion to [`delete_node`](Self::delete_node). A per-node
+    /// loop pays one durable write per `backend` mutation — for a text node,
+    /// that is a read-modify-write per trigram plus one write per index key, so
+    /// deleting a subtree of a dozen notes stalls on dozens of `fsync`s. This
+    /// instead gathers **every** mutation for the whole set and applies it as
+    /// one `delete_batch` (all removed keys) plus one `put_batch` (the FTS
+    /// posting lists that shrink but survive) — two storage commits regardless
+    /// of `N`.
+    ///
+    /// Semantics match [`delete_node`](Self::delete_node) row-for-row: incident
+    /// edges cascade (an edge between two deleted nodes is collected once), and
+    /// FTS / property / embedding index entries are cleaned up. Each removal
+    /// records an inverse op, so an enclosing explicit transaction still rolls
+    /// the whole batch back. Ids that are already absent — or repeated — are
+    /// skipped; the return value is the count of distinct nodes actually
+    /// removed. Unlike [`delete_node`](Self::delete_node), a missing id is not
+    /// an error.
+    ///
+    /// The FTS posting-list read and the rewrite are performed under the FTS
+    /// write lock so a concurrent indexer cannot clobber the batched rewrite.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`DrevoError`] from a backend read or either batched write.
+    pub fn delete_nodes(&self, ids: &[u64]) -> Result<usize> {
+        use std::collections::HashSet;
+
+        // 1. Resolve distinct, present targets (skip duplicate + absent ids).
+        let mut seen_nodes: HashSet<u64> = HashSet::new();
+        let mut nodes: Vec<Node> = Vec::new();
+        for &id in ids {
+            if seen_nodes.insert(id) {
+                if let Some(node) = self.get_node(id)? {
+                    nodes.push(node);
+                }
+            }
+        }
+        if nodes.is_empty() {
+            return Ok(0);
+        }
+
+        // 2. Collect every incident edge once. An edge between two targets
+        //    appears in both nodes' adjacency, so dedup by edge id.
+        let mut seen_edges: HashSet<u64> = HashSet::new();
+        let mut edges: Vec<Edge> = Vec::new();
+        for node in &nodes {
+            for edge in self.edges_of(node.id, Direction::Both)? {
+                if seen_edges.insert(edge.id) {
+                    edges.push(edge);
+                }
+            }
+        }
+
+        // 3. Gather all plain key removals (no backend reads needed — every
+        //    key is derivable from the already-fetched records).
+        let mut deletes: Vec<Vec<u8>> = Vec::new();
+        for edge in &edges {
+            deletes.push(edge_key(edge.id));
+            deletes.push(edge_uuid_key(&edge.uuid));
+            deletes.push(out_edge_key(edge.from_id, &edge.kind, edge.id));
+            deletes.push(in_edge_key(edge.to_id, &edge.kind, edge.id));
+            deletes.push(edge_kind_key(&edge.kind, edge.id));
+        }
+        for node in &nodes {
+            deletes.push(node_key(node.id));
+            deletes.push(node_uuid_key(&node.uuid));
+            deletes.push(node_title_key(&node.title));
+            deletes.push(node_kind_key(&node.kind, node.id));
+            deletes.push(updated_key(node.updated_at, node.id));
+            deletes.push(vector_store::delete_key(node.id));
+            for (key, _) in property_index::node_index_entries(node.id, &node.properties)? {
+                deletes.push(key);
+            }
+        }
+
+        // 4. Under the FTS write lock: read the affected posting lists, extend
+        //    the batch with their rewrites/removals, then apply both batches
+        //    while still holding the lock so a concurrent indexer cannot
+        //    interleave a lost update. Data-key deletes are folded into the
+        //    same `delete_batch`, so the whole multi-delete is two commits.
+        let mut puts: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        {
+            let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let edge_docs: Vec<(u64, &Properties)> =
+                edges.iter().map(|e| (e.id, &e.properties)).collect();
+            let (eputs, edels) = edge_index::deindex_edges_collect(self.backend(), &edge_docs)?;
+            puts.extend(eputs);
+            deletes.extend(edels);
+
+            let node_docs: Vec<(u64, &str, &str, &Properties)> = nodes
+                .iter()
+                .map(|n| (n.id, n.title.as_str(), n.body.as_str(), &n.properties))
+                .collect();
+            let (nputs, ndels) = fts_index::deindex_nodes_collect(self.backend(), &node_docs)?;
+            puts.extend(nputs);
+            deletes.extend(ndels);
+
+            self.backend.delete_batch(&deletes)?;
+            if !puts.is_empty() {
+                self.backend.put_batch(&puts)?;
+            }
+        }
+
+        // 5. Journal inverse ops for explicit-transaction rollback parity.
+        //    Record every edge first, then every node, so a reverse replay
+        //    recreates all nodes before any edge that references them.
+        let count = nodes.len();
+        for edge in edges {
+            self.record_undo(UndoOp::DeletedEdge(edge));
+        }
+        for node in nodes {
+            self.record_undo(UndoOp::DeletedNode(node));
+        }
+        Ok(count)
+    }
+
     // ---------------------------------------------------------------
     // Vector embeddings (Phase 12 task `00078`)
     // ---------------------------------------------------------------
@@ -7216,6 +7335,226 @@ mod tests {
         assert_eq!(restored_e.from_id, a.id);
         assert_eq!(restored_e.to_id, b.id);
         // Adjacency restored too.
+        let out = db.edges_of(a.id, Direction::Outgoing).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, e.id);
+    }
+
+    // --- delete_nodes: batched multi-delete (#441) ---
+
+    #[test]
+    fn delete_nodes_removes_all_targets_and_returns_count() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db.create_node(sample_node("a")).unwrap();
+        let b = db.create_node(sample_node("b")).unwrap();
+        let c = db.create_node(sample_node("c")).unwrap();
+        let removed = db.delete_nodes(&[a.id, b.id, c.id]).unwrap();
+        assert_eq!(removed, 3);
+        assert!(db.get_node(a.id).unwrap().is_none());
+        assert!(db.get_node(b.id).unwrap().is_none());
+        assert!(db.get_node(c.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_nodes_empty_input_is_noop() {
+        let db = Drevo::open_in_memory().unwrap();
+        assert_eq!(db.delete_nodes(&[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn delete_nodes_skips_absent_ids() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db.create_node(sample_node("a")).unwrap();
+        // 999 never existed — skipped, not an error.
+        let removed = db.delete_nodes(&[a.id, 999]).unwrap();
+        assert_eq!(removed, 1);
+        assert!(db.get_node(a.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_nodes_dedups_repeated_ids() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db.create_node(sample_node("a")).unwrap();
+        // The same id twice counts once and deletes once.
+        let removed = db.delete_nodes(&[a.id, a.id]).unwrap();
+        assert_eq!(removed, 1);
+        assert!(db.get_node(a.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_nodes_cascades_incident_edges() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db.create_node(sample_node("a")).unwrap();
+        let b = db.create_node(sample_node("b")).unwrap();
+        let c = db.create_node(sample_node("c")).unwrap();
+        let e_ab = db
+            .create_edge(NewEdge {
+                from_id: a.id,
+                to_id: b.id,
+                kind: "links_to".into(),
+                weight: 1.0,
+                properties: Default::default(),
+            })
+            .unwrap();
+        let e_bc = db
+            .create_edge(NewEdge {
+                from_id: b.id,
+                to_id: c.id,
+                kind: "links_to".into(),
+                weight: 1.0,
+                properties: Default::default(),
+            })
+            .unwrap();
+        // Deleting the hub B removes both incident edges but leaves A and C.
+        let removed = db.delete_nodes(&[b.id]).unwrap();
+        assert_eq!(removed, 1);
+        assert!(db.get_node(b.id).unwrap().is_none());
+        assert!(db.get_node(a.id).unwrap().is_some());
+        assert!(db.get_node(c.id).unwrap().is_some());
+        assert!(db.get_edge(e_ab.id).unwrap().is_none());
+        assert!(db.get_edge(e_bc.id).unwrap().is_none());
+        assert!(db.edges_of(a.id, Direction::Both).unwrap().is_empty());
+        assert!(db.edges_of(c.id, Direction::Both).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_nodes_removes_edge_between_two_deleted_nodes_once() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db.create_node(sample_node("a")).unwrap();
+        let b = db.create_node(sample_node("b")).unwrap();
+        let e = db
+            .create_edge(NewEdge {
+                from_id: a.id,
+                to_id: b.id,
+                kind: "links_to".into(),
+                weight: 1.0,
+                properties: Default::default(),
+            })
+            .unwrap();
+        // The A–B edge is incident to both targets; it must be collected and
+        // deleted exactly once, not twice.
+        let removed = db.delete_nodes(&[a.id, b.id]).unwrap();
+        assert_eq!(removed, 2);
+        assert!(db.get_edge(e.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_nodes_deindexes_fts() {
+        let db = Drevo::open_in_memory().unwrap();
+        let n = db
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "t".into(),
+                body: "kumquat orchard".into(),
+                body_html: String::new(),
+                properties: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(db.search_fts("kumquat", 10).unwrap().len(), 1);
+        db.delete_nodes(&[n.id]).unwrap();
+        assert!(db.search_fts("kumquat", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_nodes_matches_sequential_loop_for_shared_trigram() {
+        // Two nodes share the token "kumquat"; deleting one must leave the
+        // survivor's posting list intact (the cumulative per-trigram removal is
+        // the batch path's core correctness risk).
+        let db = Drevo::open_in_memory().unwrap();
+        let keep = db
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "keep".into(),
+                body: "kumquat orchard".into(),
+                body_html: String::new(),
+                properties: Default::default(),
+            })
+            .unwrap();
+        let drop = db
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "drop".into(),
+                body: "kumquat harvest".into(),
+                body_html: String::new(),
+                properties: Default::default(),
+            })
+            .unwrap();
+        db.delete_nodes(&[drop.id]).unwrap();
+        let hits = db.search_fts("kumquat", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].node.id, keep.id);
+    }
+
+    #[test]
+    fn delete_nodes_removes_embeddings() {
+        let db = Drevo::open_in_memory().unwrap();
+        let n = db.create_node(sample_node("a")).unwrap();
+        db.set_embedding(n.id, Vector(vec![0.1, 0.2, 0.3])).unwrap();
+        assert_eq!(db.embedding_count().unwrap(), 1);
+        db.delete_nodes(&[n.id]).unwrap();
+        assert_eq!(db.embedding_count().unwrap(), 0);
+        assert!(db.get_embedding(n.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_nodes_removes_property_index_entries() {
+        let mut props = HashMap::new();
+        props.insert("color".to_string(), serde_json::json!("red"));
+        let db = Drevo::open_in_memory().unwrap();
+        let n = db
+            .create_node(NewNode {
+                kind: "note".into(),
+                title: "a".into(),
+                body: String::new(),
+                body_html: String::new(),
+                properties: Properties(props),
+            })
+            .unwrap();
+        let before = crate::property_index::node_ids_for_value(
+            db.backend(),
+            "color",
+            &serde_json::json!("red"),
+        )
+        .unwrap();
+        assert_eq!(before, vec![n.id]);
+        db.delete_nodes(&[n.id]).unwrap();
+        let after = crate::property_index::node_ids_for_value(
+            db.backend(),
+            "color",
+            &serde_json::json!("red"),
+        )
+        .unwrap();
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn delete_nodes_tx_rollback_restores_nodes_and_cascade_edges() {
+        let db = Drevo::open_in_memory().unwrap();
+        let a = db.create_node(sample_node("a")).unwrap();
+        let b = db.create_node(sample_node("b")).unwrap();
+        let e = db
+            .create_edge(NewEdge {
+                from_id: a.id,
+                to_id: b.id,
+                kind: "links_to".into(),
+                weight: 1.0,
+                properties: Default::default(),
+            })
+            .unwrap();
+        let tx = db.tx_begin();
+        {
+            let _scope = enter_tx_scope(tx);
+            db.delete_nodes(&[a.id, b.id]).unwrap();
+            assert!(db.get_node(a.id).unwrap().is_none());
+            assert!(db.get_node(b.id).unwrap().is_none());
+            assert!(db.get_edge(e.id).unwrap().is_none());
+        }
+        db.tx_rollback(tx).unwrap();
+        assert_eq!(db.get_node(a.id).unwrap().expect("A restored").title, "a");
+        assert_eq!(db.get_node(b.id).unwrap().expect("B restored").title, "b");
+        let restored_e = db.get_edge(e.id).unwrap().expect("edge restored");
+        assert_eq!(restored_e.from_id, a.id);
+        assert_eq!(restored_e.to_id, b.id);
         let out = db.edges_of(a.id, Direction::Outgoing).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, e.id);

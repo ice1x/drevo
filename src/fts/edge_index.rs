@@ -167,6 +167,54 @@ pub(crate) fn deindex_edge(
     Ok(())
 }
 
+/// Collect the edge-FTS posting-list mutations to remove a **set** of edges at
+/// once (#441), returned as `(puts, deletes)` for a single storage batch — the
+/// edge companion of [`crate::fts::index::deindex_nodes_collect`]. Each
+/// affected trigram's list is read once and every batch edge removed from it,
+/// then the row is rewritten (non-empty) or dropped (empty); every edge's
+/// `eftslen:` row is deleted. Row-for-row equivalent to a per-edge
+/// [`deindex_edge`] loop. Apply under the FTS write lock.
+pub(crate) fn deindex_edges_collect(
+    backend: &dyn StorageBackend,
+    edges: &[(u64, &Properties)],
+) -> Result<crate::fts::index::BatchMutations> {
+    use std::collections::BTreeMap;
+
+    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut deletes: Vec<Vec<u8>> = Vec::with_capacity(edges.len());
+    for (edge_id, properties) in edges {
+        let text = collect_property_text(properties);
+        let fields: Vec<&str> = text.iter().map(String::as_str).collect();
+        for trigram in extract_trigrams_fields(&fields) {
+            by_trigram.entry(trigram).or_default().push(*edge_id);
+        }
+        deletes.push(efts_len_key(*edge_id));
+    }
+
+    let mut puts: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (trigram, ids) in by_trigram {
+        let key = efts_key(&trigram);
+        let Some(bytes) = backend.get(&key)? else {
+            continue;
+        };
+        let mut list = decode_postings(&bytes);
+        let mut changed = false;
+        for id in ids {
+            if remove_posting(&mut list, id) {
+                changed = true;
+            }
+        }
+        if changed {
+            if list.is_empty() {
+                deletes.push(key);
+            } else {
+                puts.push((key, encode_postings(&list)));
+            }
+        }
+    }
+    Ok((puts, deletes))
+}
+
 /// Edge ids in the posting list of a single trigram — a single `get` (#275).
 pub(crate) fn edge_ids_for_trigram(
     backend: &dyn StorageBackend,

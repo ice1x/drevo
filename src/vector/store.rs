@@ -56,6 +56,13 @@ fn vector_key(node_id: u64) -> Vec<u8> {
     key
 }
 
+/// The storage key holding `node_id`'s embedding — exposed so a caller
+/// batching many removals (`Drevo::delete_nodes`, #441) can fold the embedding
+/// delete into its own `delete_batch` instead of a separate [`delete`] commit.
+pub(crate) fn delete_key(node_id: u64) -> Vec<u8> {
+    vector_key(node_id)
+}
+
 /// Decode the node id from a `vec:` key, or `None` if it is malformed.
 fn node_id_from_key(key: &[u8]) -> Option<u64> {
     let suffix = key.strip_prefix(PREFIX_VECTOR)?;

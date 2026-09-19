@@ -392,6 +392,66 @@ pub(crate) fn deindex_node_with_props(
     Ok(())
 }
 
+/// A batch of storage mutations gathered for a single commit: `(puts,
+/// deletes)` — key/value rows to write and keys to remove (#441).
+pub(crate) type BatchMutations = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
+
+/// Collect the FTS posting-list mutations to remove a **set** of nodes at once
+/// (#441), returned as `(puts, deletes)` to apply in a single storage batch.
+///
+/// Each affected trigram's posting list is read **once** and every batch node
+/// removed from it, then the row is either rewritten (still non-empty → a put)
+/// or dropped (now empty → a delete); every node's `ftslen:` row is deleted.
+/// The result is row-for-row identical to calling
+/// [`deindex_node_with_props`] for each node in sequence, but a bulk delete
+/// pays one commit instead of a per-node read-modify-write loop. The caller
+/// must apply the returned mutations while holding the same FTS write lock the
+/// per-node path takes, so concurrent indexers cannot clobber the rewrite.
+///
+/// Same serialization requirement as [`index_nodes_grouped`].
+pub(crate) fn deindex_nodes_collect(
+    backend: &dyn StorageBackend,
+    docs: &[(u64, &str, &str, &Properties)],
+) -> Result<BatchMutations> {
+    use std::collections::BTreeMap;
+
+    // trigram → the batch node ids that contributed it (dedup of trigram keys
+    // via the map; a node listed twice under one trigram removes idempotently).
+    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut deletes: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
+    for (node_id, title, body, properties) in docs {
+        let prop_text = collect_property_text(properties);
+        let fields = node_fields(title, body, &prop_text);
+        for trigram in extract_trigrams_fields(&fields) {
+            by_trigram.entry(trigram).or_default().push(*node_id);
+        }
+        deletes.push(fts_len_key(*node_id));
+    }
+
+    let mut puts: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (trigram, ids) in by_trigram {
+        let key = fts_key(&trigram);
+        let Some(bytes) = backend.get(&key)? else {
+            continue;
+        };
+        let mut list = decode_node_postings(&bytes);
+        let mut changed = false;
+        for id in ids {
+            if remove_node_posting(&mut list, id) {
+                changed = true;
+            }
+        }
+        if changed {
+            if list.is_empty() {
+                deletes.push(key);
+            } else {
+                puts.push((key, encode_node_postings(&list)));
+            }
+        }
+    }
+    Ok((puts, deletes))
+}
+
 /// Corpus-level FTS statistics used by BM25 ranking.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CorpusStats {
