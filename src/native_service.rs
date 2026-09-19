@@ -111,6 +111,26 @@ pub struct NativeService {
     /// Sidecar path for the two registries (`<wal dir>/semantic.json`), or
     /// `None` for an in-memory service (nothing to persist).
     semantic_sidecar: Option<std::path::PathBuf>,
+    /// Cumulative auto-embed failures per target (issue #447; native mirror of
+    /// `Drevo::embed_failures`), keyed by `(target_kind, name, embedding_property)`.
+    /// Auto-embed on write is fail-open — a transient embedder outage never
+    /// fails a write — so each swallowed failure is tallied here to feed
+    /// `drevo.semantic.status`'s `failed_count` / `last_error`. Runtime-only
+    /// (not persisted); `http`-gated like the embedder that produces it.
+    #[cfg(feature = "http")]
+    embed_failures:
+        std::sync::Mutex<std::collections::HashMap<(String, String, String), EmbedFailureStat>>,
+}
+
+/// A per-target tally of swallowed native auto-embed failures (issue #447;
+/// mirrors the KV `crate::db::EmbedFailureStat`).
+#[cfg(feature = "http")]
+#[derive(Debug, Clone, Default)]
+struct EmbedFailureStat {
+    /// How many embed attempts have been swallowed for this target.
+    count: u64,
+    /// The most recent failure message, for the `last_error` column.
+    last_error: String,
 }
 
 /// On-disk shape of the `semantic.json` sidecar: both registries in one file,
@@ -189,6 +209,8 @@ impl NativeService {
             semantic: RwLock::new(node),
             rel_semantic: RwLock::new(rel),
             semantic_sidecar: Some(sidecar),
+            #[cfg(feature = "http")]
+            embed_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -219,6 +241,8 @@ impl NativeService {
             semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             rel_semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             semantic_sidecar: None,
+            #[cfg(feature = "http")]
+            embed_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -541,9 +565,13 @@ impl NativeService {
     /// Propagates a WAL/encode failure as [`DrevoError`].
     pub fn create_node(
         &self,
-        new_node: crate::model::NewNode,
+        mut new_node: crate::model::NewNode,
     ) -> Result<crate::model::Node, DrevoError> {
         use crate::engine::GraphEngine;
+        // Server-side auto-embed on ingest (#447): embed the configured text
+        // property before the write, so `drevo.semantic.query` retrieves the
+        // node with no client round-trip. Fail-open, no-op without an embedder.
+        self.apply_auto_embeddings(&new_node.kind, &mut new_node.properties, None);
         Ok(self.graph.create_node(new_node)?)
     }
 
@@ -555,9 +583,11 @@ impl NativeService {
     /// WAL/encode failure.
     pub fn create_edge(
         &self,
-        new_edge: crate::model::NewEdge,
+        mut new_edge: crate::model::NewEdge,
     ) -> Result<crate::model::Edge, DrevoError> {
         use crate::engine::GraphEngine;
+        // Relationship auto-embed on ingest (#447), mirroring `create_node`.
+        self.apply_auto_embeddings_edge(&new_edge.kind, &mut new_edge.properties, None);
         Ok(self.graph.create_edge(new_edge)?)
     }
 
@@ -748,33 +778,344 @@ impl NativeService {
     }
 
     /// Detailed status for `drevo.semantic.status` — parity with
-    /// `Drevo::semantic_status_detailed`. The Auto-mode backlog (`pending` /
-    /// `failed` / `degraded`) is populated by the native auto-embed worker
-    /// (a later slice); until then it reports zero, so Manual targets are fully
-    /// accurate and Auto targets show no backlog yet.
+    /// `Drevo::semantic_status_detailed` (#263/#266, ported to native in #447).
+    ///
+    /// For each Auto target it scans the live backlog (`pending` = matching
+    /// nodes/edges that carry the text property but no embedding) and reads the
+    /// cumulative swallowed-failure tally (`failed` / `last_error`) recorded by
+    /// the fail-open auto-embed write path. `degraded` is `pending > 0`, so a
+    /// client can tell "fully embedded" from "writes landed, embeddings
+    /// missing". Manual targets have no drevo-managed backlog, so they always
+    /// read clean.
     pub fn semantic_status_detailed(&self) -> Vec<crate::db::SemanticTargetStatus> {
         let mut out = Vec::new();
         for index in self.semantic_status() {
-            out.push(crate::db::SemanticTargetStatus {
-                target_kind: "node",
-                index,
-                pending: 0,
-                failed: 0,
-                last_error: None,
-                degraded: false,
-            });
+            out.push(self.status_for("node", index));
         }
         for index in self.semantic_status_rel() {
-            out.push(crate::db::SemanticTargetStatus {
-                target_kind: "relationship",
-                index,
-                pending: 0,
-                failed: 0,
-                last_error: None,
-                degraded: false,
-            });
+            out.push(self.status_for("relationship", index));
         }
         out
+    }
+
+    /// Build the health row for one target (#447; native mirror of
+    /// `Drevo::status_for`). Only Auto targets are drevo-managed, so only they
+    /// have a backlog.
+    fn status_for(
+        &self,
+        kind: &'static str,
+        index: crate::semantic_index::SemanticIndex,
+    ) -> crate::db::SemanticTargetStatus {
+        let pending = if matches!(index.mode, crate::semantic_index::IndexMode::Auto) {
+            match kind {
+                "relationship" => self.semantic_pending_count_rel(
+                    &index.label,
+                    &index.text_property,
+                    &index.embedding_property,
+                ),
+                _ => self.semantic_pending_count(
+                    &index.label,
+                    &index.text_property,
+                    &index.embedding_property,
+                ),
+            }
+        } else {
+            0
+        };
+        let (failed, last_error) =
+            self.embed_failure_stat(kind, &index.label, &index.embedding_property);
+        crate::db::SemanticTargetStatus {
+            target_kind: kind,
+            index,
+            pending,
+            failed,
+            last_error,
+            degraded: pending > 0,
+        }
+    }
+
+    /// Count nodes of `label` that carry a non-empty `text_property` but still
+    /// lack `embedding_property` — the live auto-embed backlog (#447; mirror of
+    /// `Drevo::semantic_pending_count`). Scans a consistent snapshot.
+    fn semantic_pending_count(
+        &self,
+        label: &str,
+        text_property: &str,
+        embedding_property: &str,
+    ) -> usize {
+        let mut pending = 0;
+        for node in self.graph.snapshot().all_nodes() {
+            let matches_label = node.kind == label
+                || matches!(
+                    node.properties.0.get("_labels"),
+                    Some(serde_json::Value::Array(arr))
+                        if arr.iter().any(|v| v.as_str() == Some(label))
+                );
+            if !matches_label {
+                continue;
+            }
+            let has_text = node
+                .properties
+                .0
+                .get(text_property)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| !s.is_empty());
+            let has_embedding = node.properties.0.contains_key(embedding_property);
+            if has_text && !has_embedding {
+                pending += 1;
+            }
+        }
+        pending
+    }
+
+    /// Relationship mirror of [`Self::semantic_pending_count`] (#447): edges of
+    /// `rel_type` with a non-empty `text_property` but no `embedding_property`.
+    fn semantic_pending_count_rel(
+        &self,
+        rel_type: &str,
+        text_property: &str,
+        embedding_property: &str,
+    ) -> usize {
+        let mut pending = 0;
+        for edge in self.graph.snapshot().all_edges() {
+            if edge.kind != rel_type {
+                continue;
+            }
+            let has_text = edge
+                .properties
+                .0
+                .get(text_property)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| !s.is_empty());
+            let has_embedding = edge.properties.0.contains_key(embedding_property);
+            if has_text && !has_embedding {
+                pending += 1;
+            }
+        }
+        pending
+    }
+
+    /// Record a swallowed auto-embed failure for a target (#447; mirror of
+    /// `Drevo::record_embed_failure`), keyed by `kind` so a node label and a
+    /// relationship type of the same name never collide.
+    #[cfg(feature = "http")]
+    fn record_embed_failure(&self, kind: &str, name: &str, embedding_property: &str, error: &str) {
+        let mut map = self
+            .embed_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let stat = map
+            .entry((
+                kind.to_string(),
+                name.to_string(),
+                embedding_property.to_string(),
+            ))
+            .or_default();
+        stat.count += 1;
+        stat.last_error = error.to_string();
+    }
+
+    /// Read the cumulative failure count and most-recent error for a target
+    /// (#447). `(0, None)` when nothing has failed — and always so on a build
+    /// without `http` (no embedder to fail).
+    fn embed_failure_stat(
+        &self,
+        kind: &str,
+        name: &str,
+        embedding_property: &str,
+    ) -> (u64, Option<String>) {
+        #[cfg(feature = "http")]
+        {
+            let map = self
+                .embed_failures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match map.get(&(
+                kind.to_string(),
+                name.to_string(),
+                embedding_property.to_string(),
+            )) {
+                Some(stat) if stat.count > 0 => (stat.count, Some(stat.last_error.clone())),
+                _ => (0, None),
+            }
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            let _ = (kind, name, embedding_property);
+            (0, None)
+        }
+    }
+
+    /// Apply server-side auto-embedding to a **node's** properties just before
+    /// it is persisted (#447; native mirror of `Drevo::apply_auto_embeddings`).
+    ///
+    /// For every registered [`crate::semantic_index::IndexMode::Auto`] target
+    /// whose label matches this node (primary `kind` or a `_labels` secondary
+    /// label), embed the text in the target's `text_property` and write the
+    /// vector into its `embedding_property`. A double no-op keeps the common
+    /// path free: it returns immediately when no embedder is installed and when
+    /// no Auto target matches. `old` is the pre-patch property map on update; a
+    /// target whose source text is unchanged and whose embedding is already
+    /// present is skipped. An upstream failure is logged, tallied, and swallowed
+    /// — a transient embedder outage must never fail a write.
+    #[cfg(feature = "http")]
+    pub fn apply_auto_embeddings(
+        &self,
+        kind: &str,
+        properties: &mut crate::model::Properties,
+        old: Option<&crate::model::Properties>,
+    ) {
+        let Some(embedder) = self.embedder.get() else {
+            return;
+        };
+        let targets: Vec<(String, String, String)> = {
+            let reg = self.semantic.read().unwrap_or_else(|e| e.into_inner());
+            reg.list()
+                .iter()
+                .filter(|t| matches!(t.mode, crate::semantic_index::IndexMode::Auto))
+                .map(|t| {
+                    (
+                        t.label.clone(),
+                        t.text_property.clone(),
+                        t.embedding_property.clone(),
+                    )
+                })
+                .collect()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let mut labels = vec![kind.to_string()];
+        if let Some(serde_json::Value::Array(arr)) = properties.0.get("_labels") {
+            for item in arr {
+                if let serde_json::Value::String(s) = item {
+                    if !labels.iter().any(|l| l == s) {
+                        labels.push(s.clone());
+                    }
+                }
+            }
+        }
+        for (label, text_prop, emb_prop) in targets {
+            if !labels.iter().any(|l| l == &label) {
+                continue;
+            }
+            let Some(text) = properties
+                .0
+                .get(&text_prop)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            if text.is_empty() {
+                continue;
+            }
+            if let Some(old) = old {
+                let unchanged = old.0.get(&text_prop).and_then(serde_json::Value::as_str)
+                    == Some(text.as_str());
+                if unchanged && properties.0.contains_key(&emb_prop) {
+                    continue;
+                }
+            }
+            match embedder.embed_query(&text) {
+                Ok(vector) => {
+                    let arr = serde_json::Value::Array(
+                        vector.into_iter().map(|f| serde_json::json!(f)).collect(),
+                    );
+                    properties.0.insert(emb_prop, arr);
+                }
+                Err(error) => {
+                    tracing::warn!(label = %label, %error, "native auto-embed failed (ignored)");
+                    self.record_embed_failure("node", &label, &emb_prop, &error.to_string());
+                }
+            }
+        }
+    }
+
+    /// No-op stand-in on a build without `http` (no embedder is compiled in).
+    #[cfg(not(feature = "http"))]
+    pub fn apply_auto_embeddings(
+        &self,
+        kind: &str,
+        properties: &mut crate::model::Properties,
+        old: Option<&crate::model::Properties>,
+    ) {
+        let _ = (kind, properties, old);
+    }
+
+    /// Relationship mirror of [`Self::apply_auto_embeddings`] (#447): apply
+    /// auto-embedding to an **edge's** properties before it is persisted.
+    /// `rel_type` is the edge's `kind`; matching Auto-mode targets in the
+    /// relationship registry embed `text_property` into `embedding_property`.
+    #[cfg(feature = "http")]
+    pub fn apply_auto_embeddings_edge(
+        &self,
+        rel_type: &str,
+        properties: &mut crate::model::Properties,
+        old: Option<&crate::model::Properties>,
+    ) {
+        let Some(embedder) = self.embedder.get() else {
+            return;
+        };
+        let targets: Vec<(String, String, String)> = {
+            let reg = self.rel_semantic.read().unwrap_or_else(|e| e.into_inner());
+            reg.list()
+                .iter()
+                .filter(|t| {
+                    matches!(t.mode, crate::semantic_index::IndexMode::Auto) && t.label == rel_type
+                })
+                .map(|t| {
+                    (
+                        t.label.clone(),
+                        t.text_property.clone(),
+                        t.embedding_property.clone(),
+                    )
+                })
+                .collect()
+        };
+        for (rel, text_prop, emb_prop) in targets {
+            let Some(text) = properties
+                .0
+                .get(&text_prop)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            if text.is_empty() {
+                continue;
+            }
+            if let Some(old) = old {
+                let unchanged = old.0.get(&text_prop).and_then(serde_json::Value::as_str)
+                    == Some(text.as_str());
+                if unchanged && properties.0.contains_key(&emb_prop) {
+                    continue;
+                }
+            }
+            match embedder.embed_query(&text) {
+                Ok(vector) => {
+                    let arr = serde_json::Value::Array(
+                        vector.into_iter().map(|f| serde_json::json!(f)).collect(),
+                    );
+                    properties.0.insert(emb_prop, arr);
+                }
+                Err(error) => {
+                    tracing::warn!(rel_type = %rel, %error, "native auto-embed (rel) failed (ignored)");
+                    self.record_embed_failure("relationship", &rel, &emb_prop, &error.to_string());
+                }
+            }
+        }
+    }
+
+    /// No-op stand-in on a build without `http`.
+    #[cfg(not(feature = "http"))]
+    pub fn apply_auto_embeddings_edge(
+        &self,
+        rel_type: &str,
+        properties: &mut crate::model::Properties,
+        old: Option<&crate::model::Properties>,
+    ) {
+        let _ = (rel_type, properties, old);
     }
 
     /// Backfill embeddings for existing nodes of `label` — parity with
