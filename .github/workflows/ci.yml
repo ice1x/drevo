@@ -507,6 +507,12 @@ jobs:
       - run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown
         # The wasm sanity check is the cheapest way to catch a future MSRV
         # bump on `getrandom/wasm_js` (audit 00111 / 00113 cross-link).
+      - run: cargo check --no-default-features --features http,cbindgen
+        # `redb-backend` must stay a genuinely OPTIONAL feature on the road to
+        # retiring redb (epic #444, P8): this is the default feature set with
+        # `redb-backend` removed, so a future ungated `Drevo::open` / redb-only
+        # call reachable from the native serving + FFI surface fails here
+        # instead of on the day the default flips.
 
   # Phase 9 task 00058 — coverage-guided fuzz smoke run for the FTS
   # tokenizer. cargo-fuzz needs nightly Rust + libFuzzer; the job is

@@ -471,7 +471,10 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     let wal = cfg.data_dir.join("native.wal");
     // First boot with existing KV data: copy the graph into the new durable
     // store through the dump cycle. The redb file is left untouched, so the
-    // rollback is just flipping the engine env back.
+    // rollback is just flipping the engine env back. Gated on `redb-backend`:
+    // without it there is no KV/redb store to migrate from, and the migration
+    // helper (which opens the redb file) is compiled out with the backend.
+    #[cfg(feature = "redb-backend")]
     if let Some(report) =
         crate::native_service::migrate_kv_into_wal_if_first_boot(&cfg.db_path(), &wal)
             .map_err(RunError::NativeOpen)?
