@@ -513,6 +513,15 @@ jobs:
         # `redb-backend` removed, so a future ungated `Drevo::open` / redb-only
         # call reachable from the native serving + FFI surface fails here
         # instead of on the day the default flips.
+        #
+        # `-D warnings`: the no-redb build is kept WARNING-CLEAN (redb-only
+        # helpers carry `#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]`),
+        # so that when the default eventually drops `redb-backend` the main
+        # `-D warnings` clippy/check jobs — which would then run on this config —
+        # do not suddenly fail on a pile of dead-code warnings. New dead code
+        # in the no-redb build fails here first.
+        env:
+          RUSTFLAGS: -D warnings
 
   # Phase 9 task 00058 — coverage-guided fuzz smoke run for the FTS
   # tokenizer. cargo-fuzz needs nightly Rust + libFuzzer; the job is
