@@ -2,7 +2,7 @@
 //!
 //! This is **layer 2** of the five-layer agentic workload model (README →
 //! "Phase 10.5 — Cypher Reliability & Agentic Hardening"). Where layer 1
-//! (`00123`, `agentic_workload_rust_api.rs`) measured the *raw [`Drevo`] API*
+//! (`00123`, `agentic_workload_rust_api.rs`) measured the *raw `Drevo` API*
 //! — the upper bound of "redb + our indexes, nothing on top" — this layer
 //! drives the **identical agentic query mix** through the full Cypher pipeline:
 //!
@@ -75,10 +75,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::Value;
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::model::{NewEdge, NewNode, Properties};
+use drevo::native_service::NativeService;
 
 // ---------------------------------------------------------------------------
 // Deterministic RNG
@@ -377,7 +377,7 @@ struct Corpus {
 /// mod n) so 2-hop / 3-hop traversals and depth-2 subgraphs return rich,
 /// non-trivial result sets. Built through the **raw API** — corpus
 /// construction is setup, not part of the measured Cypher workload.
-fn build_corpus(db: &Drevo, n: usize, rng: &mut Rng) -> Corpus {
+fn build_corpus(db: &NativeService, n: usize, rng: &mut Rng) -> Corpus {
     assert!(
         n >= 4,
         "corpus must have at least 4 nodes for the edge fabric"
@@ -609,18 +609,18 @@ fn build_query(
 /// exactly this `expect` surfacing a regression.
 fn execute_query(
     class: QueryClass,
-    db: &Drevo,
+    db: &NativeService,
     corpus: &Corpus,
     state: &mut WorkloadState,
     rng: &mut Rng,
 ) {
     let (source, params) = build_query(class, corpus, state, rng);
     let query = parse(&source).expect("parse cypher");
-    execute(&query, db, params).expect("execute cypher");
+    db.execute(&query, params).expect("execute cypher");
 }
 
 /// Run a workload to completion and return its report.
-fn run_workload(db: &Drevo, cfg: &WorkloadConfig) -> WorkloadReport {
+fn run_workload(db: &NativeService, cfg: &WorkloadConfig) -> WorkloadReport {
     assert!(
         cfg.max_queries.is_some() || cfg.duration.is_some(),
         "workload needs a stop condition (max_queries and/or duration)"
@@ -814,7 +814,7 @@ fn latency_percentiles_match_known_distribution() {
 
 #[test]
 fn build_corpus_creates_connected_graph_with_unique_seqs() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let mut rng = Rng::new(7);
     let corpus = build_corpus(&db, 50, &mut rng);
 
@@ -823,7 +823,7 @@ fn build_corpus_creates_connected_graph_with_unique_seqs() {
 
     // Every base node resolves by title (the uniqueness-constrained index).
     for title in &corpus.titles {
-        assert!(db.get_node_by_title(title).unwrap().is_some());
+        assert!(db.get_node_by_title(title).is_some());
     }
 
     // seqs are 0..50 and unique.
@@ -847,7 +847,7 @@ fn every_query_template_parses_and_executes() {
     // must parse and execute against a live corpus, returning the shape the
     // class promises. If a future grammar/executor change breaks one, this
     // fails loudly on every PR rather than only in the ignored soak.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let mut rng = Rng::new(13);
     let corpus = build_corpus(&db, 60, &mut rng);
     let mut state = WorkloadState {
@@ -860,7 +860,8 @@ fn every_query_template_parses_and_executes() {
         let (source, params) = build_query(class, &corpus, &mut state, &mut rng);
         let query =
             parse(&source).unwrap_or_else(|e| panic!("{} failed to parse: {e:?}", class.name()));
-        let result = execute(&query, &db, params)
+        let result = db
+            .execute(&query, params)
             .unwrap_or_else(|e| panic!("{} failed to execute: {e:?}", class.name()));
 
         match class {
@@ -923,7 +924,7 @@ fn every_query_template_parses_and_executes() {
 
 #[test]
 fn short_workload_exercises_every_query_class() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let cfg = WorkloadConfig {
         corpus_size: 200,
         seed: 2026,
@@ -956,7 +957,7 @@ fn short_workload_exercises_every_query_class() {
 
 #[test]
 fn duration_bounded_workload_stops_on_time() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let cfg = WorkloadConfig {
         corpus_size: 80,
         seed: 1,

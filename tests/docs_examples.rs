@@ -20,9 +20,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use drevo::cypher::executor::{execute, Value};
+use drevo::cypher::executor::Value;
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
 
 /// Repository root (the `drevo` crate manifest dir is the workspace root).
 fn repo_root() -> PathBuf {
@@ -124,8 +124,8 @@ fn every_cypher_block_in_the_reference_parses_and_executes() {
 
         // Each example runs against its own pristine database so CREATE/MERGE
         // examples can never collide on drevo's globally-unique node titles.
-        let db = Drevo::open_in_memory().expect("open in-memory drevo");
-        execute(&query, &db, doc_params()).unwrap_or_else(|e| {
+        let db = NativeService::in_memory();
+        db.execute(&query, doc_params()).unwrap_or_else(|e| {
             panic!("EXECUTE failed for cypher block at {loc}:\n---\n{source}\n---\nerror: {e}")
         });
     }
@@ -150,9 +150,17 @@ fn needs_runtime_config(source: &str) -> bool {
     // `drevo.semantic.embed` (#272) likewise embeds server-side, so a bare
     // in-memory DB returns "embeddings backend not configured". End-to-end
     // coverage lives in `tests/semantic_embed_tests.rs`.
+    //
+    // `drevo.engine.status` is KV-only: it reports the (now-removed) KV read
+    // mirror's routing counters and errors with `EngineCapability` on the
+    // native engine — which is the engine this harness (and the shipping
+    // server) runs. The construct still parses and stays documented, but it
+    // cannot execute against the native in-memory database, so it is skipped
+    // exactly like the config-dependent semantic procedures above.
     source.contains("drevo.semantic.query")
         || source.contains("drevo.semantic.reindex")
         || source.contains("drevo.semantic.embed")
+        || source.contains("drevo.engine.status")
 }
 
 #[test]
