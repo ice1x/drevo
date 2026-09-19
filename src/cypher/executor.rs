@@ -3453,13 +3453,20 @@ impl<'a> Executor<'a> {
             );
         }
 
-        let new_node = NewNode {
+        let mut new_node = NewNode {
             kind: label,
             title,
             body,
             body_html: String::new(),
             properties: Properties::from(storage_props),
         };
+        // Native auto-embed on ingest (#447): the KV engine embeds inside
+        // `Drevo::create_node`, but the native `GraphEngine::create_node` does
+        // not, so apply it here through the native serving layer before the
+        // write. Gated on `native_semantic`, so the KV path never double-embeds.
+        if let Some(svc) = self.native_semantic {
+            svc.apply_auto_embeddings(&new_node.kind, &mut new_node.properties, None);
+        }
         let stored = self.engine().create_node(new_node)?;
         self.stats.nodes_created += 1;
         let nv = node_to_value(&stored);
@@ -3509,13 +3516,18 @@ impl<'a> Executor<'a> {
             })?;
             storage_props.insert(k.clone(), json);
         }
-        let new_edge = NewEdge {
+        let mut new_edge = NewEdge {
             from_id,
             to_id,
             kind: rel.types[0].clone(),
             weight: 1.0,
             properties: Properties::from(storage_props),
         };
+        // Native relationship auto-embed on ingest (#447), mirroring the node
+        // path above; the KV engine does this inside `Drevo::create_edge`.
+        if let Some(svc) = self.native_semantic {
+            svc.apply_auto_embeddings_edge(&new_edge.kind, &mut new_edge.properties, None);
+        }
         let stored = self.engine().create_edge(new_edge)?;
         self.stats.relationships_created += 1;
         let rv = edge_to_value(&stored);
