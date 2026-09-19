@@ -145,6 +145,7 @@ impl From<drevo_core::error::CoreError> for DrevoError {
             C::InvalidWeight(w) => DrevoError::InvalidWeight(w),
             C::Io(e) => DrevoError::Io(e),
             C::Json(e) => DrevoError::Json(e),
+            C::Locked => DrevoError::Locked,
             C::Backend(msg) => DrevoError::Io(std::io::Error::other(msg)),
         }
     }
@@ -174,6 +175,7 @@ impl From<DrevoError> for drevo_core::error::CoreError {
             DrevoError::InvalidWeight(w) => C::InvalidWeight(w),
             DrevoError::Io(e) => C::Io(e),
             DrevoError::Json(e) => C::Json(e),
+            DrevoError::Locked => C::Locked,
             // No structured counterpart in the core — keep the message.
             other => C::Backend(other.to_string()),
         }
@@ -195,6 +197,7 @@ mod tests {
             CoreError::EdgeNotFound(7),
             CoreError::DuplicateTitle("Existing".into()),
             CoreError::InvalidWeight(1.5),
+            CoreError::Locked,
         ];
         for original in cases {
             let rendered = original.to_string();
@@ -221,18 +224,23 @@ mod tests {
             DrevoError::from(CoreError::InvalidWeight(2.0)),
             DrevoError::InvalidWeight(_)
         ));
+        // `Locked` is a shared variant too (#455): the durable engine's
+        // exclusive-open failure surfaces structurally, not as an opaque `Io`.
+        assert!(matches!(
+            DrevoError::from(CoreError::Locked),
+            DrevoError::Locked
+        ));
     }
 
     #[test]
     fn backend_specific_drevo_variants_collapse_to_core_backend() {
         // A variant with no structured core counterpart becomes `Backend`,
         // keeping its message; it must not be silently dropped.
-        let core: CoreError = DrevoError::Locked.into();
-        assert!(matches!(core, CoreError::Backend(_)));
-        assert_eq!(core.to_string(), "backend error: database locked");
-
         let core: CoreError = DrevoError::TransactionAlreadyActive.into();
         assert!(matches!(core, CoreError::Backend(ref m) if m == "transaction already active"));
+
+        let core: CoreError = DrevoError::NoActiveTransaction.into();
+        assert!(matches!(core, CoreError::Backend(ref m) if m == "no active transaction"));
     }
 
     #[test]

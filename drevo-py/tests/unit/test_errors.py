@@ -145,17 +145,25 @@ def test_node_not_found_carries_id_in_args(drevo_db: drevo.Drevo) -> None:
         pytest.fail("expected NodeNotFoundError")
 
 
-def test_double_open_on_same_path_is_permitted_for_now() -> None:
-    """The native durable engine does not yet take a cross-handle lock, so a
-    second `Drevo.open(path)` currently succeeds where the redb backend used to
-    raise. Tracked in issue #455 (restore exclusive-open via an OS `flock`);
-    this flips back to asserting a `DrevoError` when that lands.
+def test_second_open_on_same_path_raises_locked_error() -> None:
+    """A second `Drevo.open(path)` while the first handle is open is rejected
+    with `LockedError`, mirroring the redb backend's exclusive file lock.
+
+    The native durable engine takes an OS advisory lock on the store's lock
+    sidecar at open (issue #455): a second writer on one WAL would interleave
+    appends and corrupt the log. The lock is advisory and tied to the open file
+    description, so closing the first handle releases it and the process dying
+    never strands a stale lock.
     """
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "lock.drevo")
         first = drevo.Drevo.open(path)
         try:
-            second = drevo.Drevo.open(path)
-            second.close()
+            with pytest.raises(drevo.LockedError):
+                drevo.Drevo.open(path)
         finally:
             first.close()
+        # Once the first handle is closed the lock is released and the path
+        # opens again.
+        reopened = drevo.Drevo.open(path)
+        reopened.close()

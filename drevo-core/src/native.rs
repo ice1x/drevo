@@ -929,6 +929,20 @@ pub struct NativeGraph {
     ///
     /// [`stamps`]: Self::stamps
     tombstones: RwLock<HashMap<StampTarget, Tomb>>,
+    /// The held exclusive-open lock for a durable store (#455): the open
+    /// lock-sidecar file whose advisory `flock`/`LockFileEx` this handle owns.
+    /// Kept for the engine's whole lifetime so a second `open_durable` on the
+    /// same path fails with [`CoreError::Locked`](crate::error::CoreError::Locked)
+    /// instead of interleaving WAL appends and corrupting the log. Dropping the
+    /// handle (or the process dying) closes the fd and releases the lock, so a
+    /// crash never leaves a stale lock that would block the restart flow.
+    /// `None` for an in-memory engine — nothing on disk to guard.
+    ///
+    /// Held purely for its `Drop` side-effect (releasing the advisory lock), so
+    /// it is intentionally never read — the leading underscore keeps the
+    /// dead-code lint quiet without an `allow`.
+    #[cfg(not(target_arch = "wasm32"))]
+    _lock: Option<std::fs::File>,
 }
 
 /// A tombstone: the causal [`Stamp`] of a delete plus the deleted entity's
@@ -1012,6 +1026,101 @@ fn persist_origin(sidecar: &std::path::Path, origin: OriginId) -> std::io::Resul
 #[cfg(not(target_arch = "wasm32"))]
 fn tombstone_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
     wal_path.with_file_name("tombstones.json")
+}
+
+/// The exclusive-open lock sidecar path: the WAL path with a `.lock` suffix
+/// appended (`native.wal` → `native.wal.lock`) (#455). Derived from the *full*
+/// WAL filename — not a fixed name in the directory — so two distinct stores
+/// sharing one directory get distinct locks. A stable companion file that
+/// `compact_wal` never renames, so the advisory lock held on it survives
+/// compaction — unlike an flock on the WAL inode, which a compaction rename
+/// would swap out from under the guard.
+#[cfg(not(target_arch = "wasm32"))]
+fn lock_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = wal_path.as_os_str().to_os_string();
+    name.push(".lock");
+    std::path::PathBuf::from(name)
+}
+
+/// Take an exclusive, non-blocking advisory lock on `lock_path`, creating the
+/// sidecar if absent, and return the held file handle (#455). The lock guards a
+/// durable store against a second `open_durable` on the same path: a contended
+/// acquisition returns [`CoreError::Locked`], any other failure
+/// [`CoreError::Io`]. The lock is *advisory* and tied to the open file
+/// description, so it is released automatically when the handle drops or the
+/// process dies — a crash never strands a stale lock that would block a restart.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn acquire_exclusive_lock(lock_path: &std::path::Path) -> Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    // SAFETY: `flock` takes a valid open fd and the two documented flags; it
+    // has no memory-safety preconditions. `file` keeps the fd alive.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        // `EWOULDBLOCK` (== `EAGAIN` on Linux/macOS) means another handle holds
+        // the lock — the double-open we exist to reject.
+        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Err(CoreError::Locked);
+        }
+        return Err(CoreError::Io(err));
+    }
+    Ok(file)
+}
+
+/// Windows counterpart of [`acquire_exclusive_lock`] using `LockFileEx` with
+/// `LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY` (#455). Byte-range lock
+/// over the whole file; released when the handle closes or the process exits.
+#[cfg(all(windows, not(target_arch = "wasm32")))]
+fn acquire_exclusive_lock(lock_path: &std::path::Path) -> Result<std::fs::File> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    // SAFETY: zeroed `OVERLAPPED` is the documented way to lock from offset 0;
+    // the handle is valid and kept alive by `file`.
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as _,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if ok == 0 {
+        // Contention surfaces as `ERROR_LOCK_VIOLATION`; treat any immediate
+        // failure to acquire as a locked store.
+        return Err(CoreError::Locked);
+    }
+    Ok(file)
+}
+
+/// Fallback for the rare non-unix, non-windows, non-wasm target: open the
+/// sidecar without an OS lock (best-effort, no cross-handle guard) so the
+/// durable engine still builds and runs there.
+#[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
+fn acquire_exclusive_lock(lock_path: &std::path::Path) -> Result<std::fs::File> {
+    Ok(std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?)
 }
 
 /// Load the checkpointed tombstone table from `sidecar`, or an empty map if it
@@ -2317,6 +2426,8 @@ impl NativeGraph {
             clock: std::sync::Mutex::new(HlcClock::new()),
             stamps: RwLock::new(HashMap::new()),
             tombstones: RwLock::new(HashMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            _lock: None,
         }
     }
 
@@ -2350,6 +2461,15 @@ impl NativeGraph {
     pub fn open_durable(path: impl AsRef<std::path::Path>) -> Result<Self> {
         use std::io::Read;
         let path = path.as_ref();
+        // Take the exclusive-open lock BEFORE reading/replaying the WAL (#455):
+        // a second handle on the same store must be turned away up front, so two
+        // writers never interleave appends into one log. The lock lives on a
+        // stable `.lock` sidecar rather than on the WAL fd itself, because
+        // `compact_wal` renames a fresh file over the WAL path — an flock on the
+        // WAL inode would be silently defeated when the inode is swapped, letting
+        // a second opener lock the new inode and slip through. The sidecar is
+        // never renamed, so the guard holds across compaction.
+        let lock = acquire_exclusive_lock(&lock_sidecar(path))?;
         let mut inner = Inner::default();
         if path.exists() {
             let mut bytes = Vec::new();
@@ -2431,6 +2551,8 @@ impl NativeGraph {
             // peer cannot resurrect a deleted entity on the next sync (issue #389).
             // Live stamps are not persisted (upserts re-sync in full).
             tombstones: RwLock::new(load_tombstones(&tombstone_sidecar(path))),
+            // Hold the exclusive-open lock for this handle's lifetime (#455).
+            _lock: Some(lock),
         })
     }
 
