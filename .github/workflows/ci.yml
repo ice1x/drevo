@@ -329,7 +329,10 @@ jobs:
       # tests; the rest of the suite is already covered by the
       # full-suite step above.
       - name: Run bolt-tls feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features bolt-tls -E 'binary(bolt_tls_tests) | (kind(lib) & test(bolt::tls))'
+        # `redb-backend` too: nextest compiles the whole test set before the
+        # `-E` filter selects what runs, and the redb integration tests need it
+        # since epic #444 dropped redb-backend from the default feature set.
+        run: cargo nextest run --no-fail-fast --features bolt-tls,redb-backend -E 'binary(bolt_tls_tests) | (kind(lib) & test(bolt::tls))'
       # Phase 11 task `00074` — Bolt authentication. The argon2-backed
       # `UserStore` lives behind the `bolt-auth` Cargo feature (NOT in
       # the default set), so re-run nextest with the feature on over the
@@ -337,7 +340,9 @@ jobs:
       # auth tests in `bolt_session_tests` are already covered by the
       # full-suite step above; this step adds the argon2 path.
       - name: Run bolt-auth feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features bolt-auth -E 'binary(bolt_auth_tests) | (kind(lib) & test(bolt::auth))'
+        # `redb-backend` too (see the bolt-tls step): the full test set must
+        # compile before `-E` filters it, and redb is opt-in since epic #444.
+        run: cargo nextest run --no-fail-fast --features bolt-auth,redb-backend -E 'binary(bolt_auth_tests) | (kind(lib) & test(bolt::auth))'
       - name: Run doctests
         run: cargo test --doc --all-features
 
@@ -375,11 +380,14 @@ jobs:
       # `src/bolt/tls.rs` or `tests/bolt_tls_tests.rs`, so a second
       # invocation with the feature enabled is the only way to catch
       # warnings in those files before merge.
-      - run: cargo clippy --all-targets --features bolt-tls -- -D warnings
+      # `,redb-backend`: `--all-targets` lints the redb integration tests too,
+      # and redb is opt-in since epic #444.
+      - run: cargo clippy --all-targets --features bolt-tls,redb-backend -- -D warnings
       # Phase 11 task `00074` — guard the `bolt-auth`-gated code paths
       # (`src/bolt/auth.rs` UserStore + `tests/bolt_auth_tests.rs`)
       # against clippy regressions the default-feature pass can't see.
-      - run: cargo clippy --all-targets --features bolt-auth -- -D warnings
+      # `,redb-backend`: see the bolt-tls clippy step.
+      - run: cargo clippy --all-targets --features bolt-auth,redb-backend -- -D warnings
 
   fmt:
     name: Format
