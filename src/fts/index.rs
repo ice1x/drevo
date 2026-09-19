@@ -322,6 +322,7 @@ pub(crate) fn index_nodes_grouped(
 /// (packed sorted posting list) plus one `ftslen:` per document, so the whole
 /// index can be written in a single `put_batch` (one commit) instead of a
 /// read-modify-write per trigram. Used by the #275 reindex-on-open.
+#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
 pub(crate) fn build_full_index_batch(
     docs: &[(u64, &str, &str, &Properties)],
 ) -> Vec<(Vec<u8>, Vec<u8>)> {

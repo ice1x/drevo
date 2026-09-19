@@ -45,6 +45,9 @@ use crate::error::DrevoError;
 pub const DEFAULT_DB: &str = "drevo";
 
 /// redb file extension the catalog scans for and creates.
+// redb-only: used by the disk-catalog branch (redb-gated `Catalog::open`) and by
+// tests, so it is kept rather than `#[cfg]`-removed. Removed wholesale in #444 P8.
+#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
 const DB_EXTENSION: &str = "redb";
 
 /// Maximum database-name length in bytes. Comfortably below any filesystem
@@ -93,6 +96,7 @@ pub fn is_valid_name(name: &str) -> bool {
 
 /// The on-disk filename for a database name: `<name>.redb`. The default
 /// database (`drevo`) therefore lands on the legacy `drevo.redb`.
+#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
 fn filename_for(name: &str) -> String {
     format!("{name}.{DB_EXTENSION}")
 }
@@ -100,6 +104,7 @@ fn filename_for(name: &str) -> String {
 /// The database name encoded by a `*.redb` filename, or `None` if the file
 /// is not a recognised database file. Inverse of [`filename_for`]:
 /// `<name>.redb` → `<name>` (validated); `drevo.redb` → `drevo`.
+#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
 fn name_for_file(file_name: &str) -> Option<String> {
     let stem = file_name.strip_suffix(&format!(".{DB_EXTENSION}"))?;
     if is_valid_name(stem) {
@@ -112,6 +117,10 @@ fn name_for_file(file_name: &str) -> Option<String> {
 /// How a catalog opens the databases it manages.
 enum Backing {
     /// Disk-backed: databases are `*.redb` files under this directory.
+    // Never constructed without `redb-backend` (its only constructor,
+    // `Catalog::open`, is redb-gated), but kept so `open_handle`'s match keeps
+    // its runtime-error arm. Removed wholesale in #444 P8.
+    #[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
     Disk(PathBuf),
     /// Ephemeral: every database is a fresh in-memory [`Drevo`].
     Memory,

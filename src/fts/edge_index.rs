@@ -112,6 +112,7 @@ pub(crate) fn index_edges_grouped(
 
 /// Build the complete `efts:` posting-list index for a set of edges as one
 /// batch (assumes no existing `efts:` rows), for the #275 reindex-on-open.
+#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
 pub(crate) fn build_full_edge_index_batch(docs: &[(u64, &Properties)]) -> Vec<(Vec<u8>, Vec<u8>)> {
     use std::collections::BTreeMap;
 

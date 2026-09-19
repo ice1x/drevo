@@ -78,6 +78,9 @@ const META_SEMANTIC_REL_REGISTRY: &[u8] = b"meta:semantic_rel_registry";
 /// to [`FTS_FORMAT_POSTING`]) means the file predates the posting-list layout
 /// (one row per `(trigram, node)`); [`Drevo::ensure_fts_posting_format`]
 /// rebuilds the index on open and stamps this. Value is a single version byte.
+// redb-only: reachable only from the redb-gated open/migration path; kept
+// (not `#[cfg]`-removed) because tests reference it. Removed wholesale in #444 P8.
+#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
 const META_FTS_FORMAT: &[u8] = b"meta:fts_format";
 
 /// Current FTS layout version for `fts:{trigram}:` -> packed node posting list.
@@ -85,6 +88,7 @@ const META_FTS_FORMAT: &[u8] = b"meta:fts_format";
 /// `(u64 id, u32 tf)` — the per-document term frequency stored inline, so BM25
 /// scores a candidate from the index without a per-candidate node read. A bump
 /// makes [`Drevo::ensure_fts_posting_format`] rebuild the index on next open.
+#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
 const FTS_FORMAT_POSTING: u8 = 3;
 
 /// The reserved property key holding a node's secondary `:Label`s (mirrors the
@@ -857,6 +861,7 @@ impl Drevo {
     /// the storage layer stamped current but whose keys are still v1).
     /// Backends without a durable stamp (in-memory) rely on the sample alone,
     /// which for a freshly written database is unambiguously v2.
+    #[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
     fn adjacency_needs_migration(&self) -> Result<bool> {
         if let Some(major) = self.backend.format_major()? {
             if major < ADJ_FORMAT_MAJOR {
@@ -1008,6 +1013,7 @@ impl Drevo {
 
     /// Load a persisted semantic-index registry from `key`, or an empty one when
     /// absent or unreadable (#251 / #266). Used by [`Self::open`].
+    #[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
     fn load_semantic_registry(backend: &dyn StorageBackend, key: &[u8]) -> SemanticIndexRegistry {
         match backend.get(key) {
             Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
@@ -2164,6 +2170,7 @@ impl Drevo {
     /// index from the current nodes in one `put_batch`, then stamps
     /// [`META_FTS_FORMAT`] so it runs exactly once. Idempotent: on an
     /// already-current file it is a single `get` and returns.
+    #[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
     fn ensure_fts_posting_format(&self) -> Result<()> {
         if self.backend.get(META_FTS_FORMAT)?.as_deref() == Some(&[FTS_FORMAT_POSTING]) {
             return Ok(());
@@ -5116,6 +5123,7 @@ fn adjacency_kind_prefix(prefix: &[u8], node_id: u64, kind: &str) -> Vec<u8> {
 /// edge id); a v2 key has the `{kind}:` segment in between, so ≥ 9 bytes
 /// remain (an empty kind still contributes the extra `:` delimiter). Used by
 /// the open-time migration gate and never on the read hot path.
+#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
 fn adjacency_key_is_v1(key: &[u8], prefix: &[u8]) -> bool {
     let header = prefix.len() + 8 + 1; // {prefix}{node_8}:
     key.len() == header + 8
