@@ -362,48 +362,6 @@ fn edges_of_self_loop() {
     assert_eq!(both.len(), 1);
     assert_eq!(both[0].id, edge.id);
 }
-
-// --- Persistence ---
-
-#[test]
-fn edges_persist_across_close_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test.db");
-
-    let edge_uuid;
-    {
-        let db = Drevo::open(&path).unwrap();
-        let n1 = db.create_node(sample_node("A")).unwrap();
-        let n2 = db.create_node(sample_node("B")).unwrap();
-        let edge = db.create_edge(sample_edge(n1.id, n2.id)).unwrap();
-        edge_uuid = edge.uuid;
-        db.close().unwrap();
-    }
-
-    {
-        let db = Drevo::open(&path).unwrap();
-        // Edge data persists
-        let edge = db.get_edge(1).unwrap().expect("edge should persist");
-        assert_eq!(edge.kind, "links_to");
-        assert_eq!(edge.uuid, edge_uuid);
-        // UUID index persists
-        let by_uuid = db
-            .get_edge_by_uuid(&edge_uuid)
-            .unwrap()
-            .expect("uuid index should persist");
-        assert_eq!(by_uuid.id, 1);
-        // Adjacency lists persist
-        let out = db.edges_of(1, Direction::Outgoing).unwrap();
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].id, 1);
-        // Next edge ID continues
-        let n1 = db.create_node(sample_node("C")).unwrap();
-        let e2 = db.create_edge(sample_edge(1, n1.id)).unwrap();
-        assert_eq!(e2.id, 2);
-        db.close().unwrap();
-    }
-}
-
 // --- Full CRUD workflow ---
 
 #[test]

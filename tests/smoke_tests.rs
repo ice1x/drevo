@@ -278,38 +278,6 @@ fn smoke_memory_backend_full_workflow() {
 // Smoke test 2: RedbBackend (native only — desktop, iOS, Android)
 // ===========================================================================
 
-#[cfg(feature = "redb-backend")]
-#[test]
-fn smoke_redb_backend_full_workflow() {
-    let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("smoke_test.db");
-    let db = Drevo::open(&db_path).unwrap();
-    run_smoke_workflow(&db).unwrap();
-    db.close().unwrap();
-
-    // Verify persistence: reopen and check data survived
-    let db2 = Drevo::open(&db_path).unwrap();
-    let recent = db2.list_recent(10).unwrap();
-    // After workflow: 3 created, 1 deleted = 2 remaining
-    assert_eq!(
-        recent.len(),
-        2,
-        "persistence check: expected 2 nodes after reopen"
-    );
-
-    let notes = db2.list_nodes_by_kind("note", 10, 0).unwrap();
-    assert_eq!(notes.len(), 2, "persistence check: expected 2 notes");
-
-    // Search should still work on persisted data
-    let results = db2.search_fts("smoke", 10).unwrap();
-    assert!(
-        !results.is_empty(),
-        "persistence check: FTS should find results"
-    );
-
-    db2.close().unwrap();
-}
-
 // ===========================================================================
 // Smoke test 3: FFI surface (native only — C API roundtrip)
 // ===========================================================================

@@ -365,36 +365,3 @@ fn bug_tracker_triage_by_status() {
 // ---------------------------------------------------------------
 // redb backend: the index is durable across a close/reopen
 // ---------------------------------------------------------------
-
-#[cfg(feature = "redb-backend")]
-#[test]
-fn property_index_survives_reopen_on_redb() {
-    use tempfile::TempDir;
-
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("graph.redb");
-
-    let open_id;
-    {
-        let db = Drevo::open(&path).unwrap();
-        let open_bug = db
-            .create_node(node("bug", "Persisted", &[("status", json!("open"))]))
-            .unwrap();
-        let _closed = db
-            .create_node(node("bug", "Done", &[("status", json!("closed"))]))
-            .unwrap();
-        open_id = open_bug.id;
-    }
-
-    // Reopen: the persisted property index must answer the same lookup
-    // without any rebuild step.
-    let db = Drevo::open(&path).unwrap();
-    let found = db.nodes_by_property("status", &json!("open")).unwrap();
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].id, open_id);
-    assert_eq!(
-        db.count_nodes_by_property("status", &json!("closed"))
-            .unwrap(),
-        1
-    );
-}

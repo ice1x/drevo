@@ -57,16 +57,25 @@ fn test_open_in_memory_and_close() {
 }
 
 #[test]
-fn test_open_disk_and_close() {
+fn test_open_disk_is_no_longer_supported() {
+    // The embedded redb KV store was removed (epic #444). `drevo_open` keeps its
+    // C symbol (so the generated header stays stable) but always fails with a
+    // clear error pointing callers at the in-memory constructor.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
     let c_path = CString::new(path.to_str().unwrap()).unwrap();
 
     unsafe {
         let db = drevo_open(c_path.as_ptr());
-        assert!(!db.is_null(), "Failed to open disk DB: {:?}", last_error());
-        let rc = drevo_close(db);
-        assert_eq!(rc, 0);
+        assert!(
+            db.is_null(),
+            "drevo_open must fail — the disk backend is gone"
+        );
+        let err = last_error().expect("drevo_open must set a descriptive error");
+        assert!(
+            err.contains("drevo_open_in_memory"),
+            "the error should point callers at the in-memory constructor: {err}"
+        );
     }
 }
 

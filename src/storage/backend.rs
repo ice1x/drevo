@@ -37,11 +37,8 @@ pub trait StorageBackend: Send + Sync {
     /// Existing keys are overwritten. The default implementation simply
     /// calls [`put`](Self::put) for each pair, which is correct for any
     /// backend; durable backends are encouraged to override it so the
-    /// whole batch commits in a **single** transaction. The redb backend
-    /// does exactly that — per-key `put` opens its own write transaction
-    /// (one `fsync` each), which is unusable for the bulk vector inserts
-    /// Phase 12 task `00078` performs, so [`RedbBackend`](super::RedbBackend)
-    /// folds the entire slice into one `begin_write` / `commit`.
+    /// whole batch commits in a **single** transaction rather than one
+    /// per key.
     ///
     /// The batch is not required to be atomic for the default
     /// implementation (a mid-loop failure leaves earlier puts applied);
@@ -239,8 +236,7 @@ pub trait StorageBackend: Send + Sync {
     /// Returns `Ok(None)` for backends without a durable format marker (the
     /// ephemeral in-memory backend) or a file predating format versioning.
     /// The graph layer uses it as one of two signals — alongside sampling an
-    /// actual adjacency key — for the #243 slice 2 kind-in-key migration gate
-    /// in [`crate::db::Drevo::open`].
+    /// actual adjacency key — for the #243 slice 2 kind-in-key migration gate.
     ///
     /// # Errors
     ///
@@ -252,10 +248,9 @@ pub trait StorageBackend: Send + Sync {
     /// Persist the on-disk format version marker `major.minor`.
     ///
     /// The default is a no-op (ephemeral backends have nothing durable to
-    /// stamp). The redb backend writes the `meta.format_version` marker so a
-    /// completed adjacency migration ([`crate::db::Drevo::migrate_adjacency`])
-    /// records the new layout version and old, layout-incompatible builds
-    /// refuse the file with
+    /// stamp). A durable backend would write the `meta.format_version` marker so
+    /// a completed adjacency migration records the new layout version and old,
+    /// layout-incompatible builds refuse the file with
     /// [`StorageError::IncompatibleFormat`](super::error::StorageError::IncompatibleFormat).
     ///
     /// # Errors

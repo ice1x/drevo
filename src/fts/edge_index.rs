@@ -110,36 +110,6 @@ pub(crate) fn index_edges_grouped(
     Ok(())
 }
 
-/// Build the complete `efts:` posting-list index for a set of edges as one
-/// batch (assumes no existing `efts:` rows), for the #275 reindex-on-open.
-#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-pub(crate) fn build_full_edge_index_batch(docs: &[(u64, &Properties)]) -> Vec<(Vec<u8>, Vec<u8>)> {
-    use std::collections::BTreeMap;
-
-    let mut by_trigram: BTreeMap<String, Vec<u64>> = BTreeMap::new();
-    let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for (edge_id, properties) in docs {
-        let text = collect_property_text(properties);
-        let fields: Vec<&str> = text.iter().map(String::as_str).collect();
-        for trigram in extract_trigrams_fields(&fields) {
-            by_trigram.entry(trigram).or_default().push(*edge_id);
-        }
-        let doc_len = extract_raw_trigrams_fields(&fields).len();
-        if doc_len > 0 {
-            out.push((
-                efts_len_key(*edge_id),
-                (doc_len as u32).to_le_bytes().to_vec(),
-            ));
-        }
-    }
-    for (trigram, mut ids) in by_trigram {
-        ids.sort_unstable();
-        ids.dedup();
-        out.push((efts_key(&trigram), encode_postings(&ids)));
-    }
-    out
-}
-
 /// Remove an edge's `edge_id` from every trigram posting list it contributed to
 /// (re-deriving trigrams from `properties`) and delete its `eftslen:` entry. A
 /// posting list that becomes empty has its row deleted. Same FTS-write-lock

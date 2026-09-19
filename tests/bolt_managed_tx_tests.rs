@@ -19,7 +19,7 @@
 //! mutation sites the Cypher executor can reach inside a transaction, so the
 //! journaling refactor cannot silently drop a site.
 
-#![cfg(all(not(target_arch = "wasm32"), feature = "redb-backend"))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::BTreeMap;
 

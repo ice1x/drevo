@@ -4,8 +4,6 @@
 //! graph with two directed cycles joined by a one-way bridge plus an isolated
 //! node pins the structure. Gated on `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
-#![cfg(feature = "redb-backend")]
-
 use std::collections::HashMap;
 
 use drevo::algorithms::{scc, scc_native, AdjacencyList};

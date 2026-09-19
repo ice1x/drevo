@@ -6,11 +6,7 @@
 //! socket. The codec / framing tests cover the bytes themselves; these
 //! tests cover the wiring.
 
-#![cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "http",
-    feature = "redb-backend"
-))]
+#![cfg(all(not(target_arch = "wasm32"), feature = "http"))]
 
 use drevo::bolt::handshake::{BoltVersion, MAGIC_PREAMBLE};
 use drevo::bolt::listener::{accept_and_run_session, accept_handshake};

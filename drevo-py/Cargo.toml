@@ -39,11 +39,12 @@ name = "_drevo"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Wraps the public `drevo::*` API. `default-features = false` plus
-# `features = ["redb-backend"]` keeps the HTTP server, cbindgen build
-# step, and tokio runtime out of the Python wheel — they belong to the
-# server / FFI surfaces, not the Python embedding.
-drevo = { path = "..", default-features = false, features = ["redb-backend"] }
+# Wraps the public `drevo::*` API. `default-features = false` keeps the
+# HTTP server, cbindgen build step, and tokio runtime out of the Python
+# wheel — they belong to the server / FFI surfaces, not the Python
+# embedding. drevo-py binds the native engine (`NativeBackend`), so it
+# needs no storage-backend feature.
+drevo = { path = "..", default-features = false }
 
 # PyO3 0.23 is the latest stable as of Phase 16 kickoff. `extension-module`
 # tells PyO3 to compile against the Python ABI without linking libpython

@@ -249,34 +249,3 @@ fn create_edge_to_deleted_node_fails() {
         drevo::error::DrevoError::NodeNotFound(id) if id == a.id
     ));
 }
-
-// --- Persistence: cascade survives close/reopen ---
-
-#[test]
-fn cascade_delete_persists_across_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("cascade.db");
-
-    {
-        let db = Drevo::open(&path).unwrap();
-        let a = db.create_node(node("note", "A")).unwrap();
-        let b = db.create_node(node("note", "B")).unwrap();
-        let _e = db.create_edge(edge(a.id, b.id, "links_to")).unwrap();
-
-        db.delete_node(a.id).unwrap();
-        db.close().unwrap();
-    }
-
-    {
-        let db = Drevo::open(&path).unwrap();
-        // Node A and its edge should be gone
-        assert!(db.get_node(1).unwrap().is_none());
-        // Edge 1 should be gone
-        assert!(db.get_edge(1).unwrap().is_none());
-        // Node B should still exist
-        assert!(db.get_node(2).unwrap().is_some());
-        // B should have no incoming edges
-        assert!(db.edges_of(2, Direction::Incoming).unwrap().is_empty());
-        db.close().unwrap();
-    }
-}

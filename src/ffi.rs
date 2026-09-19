@@ -70,10 +70,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-// Only the disk-backed `drevo_open` needs a filesystem path, and that is
-// gated on `redb-backend`; without the backend the import is dead.
-#[cfg(feature = "redb-backend")]
-use std::path::Path;
 use std::ptr;
 
 use crate::db::Drevo;
@@ -235,8 +231,13 @@ fn direction_from_int(d: i32) -> Option<Direction> {
 
 /// Open a disk-backed database at the given path.
 ///
-/// Returns an opaque handle on success, or `NULL` on failure (check
-/// [`drevo_last_error`]).
+/// **Deprecated — always fails.** The disk-backed redb KV store was removed in
+/// epic #444; there is no durable embedded KV engine to open. The C symbol is
+/// retained so the generated header stays stable, but every call fails with a
+/// clear error. Use [`drevo_open_in_memory`] for an ephemeral database, or run
+/// the native-durable server for a persistent store.
+///
+/// Returns `NULL` and sets [`drevo_last_error`].
 ///
 /// # Safety
 /// `path` must be a valid NUL-terminated UTF-8 string.
@@ -244,33 +245,16 @@ fn direction_from_int(d: i32) -> Option<Direction> {
 pub unsafe extern "C" fn drevo_open(path: *const c_char) -> *mut DrevoHandle {
     ffi_guard_ptr!("drevo_open", {
         clear_error();
-        let Some(p) = read_c_str(path, "path") else {
+        let Some(_p) = read_c_str(path, "path") else {
             return ptr::null_mut();
         };
-        // The disk-backed handle is the redb KV store. Without `redb-backend`
-        // there is no durable KV engine to open; keep the symbol (so the C
-        // header stays stable) but fail with a clear error and point callers
-        // at the in-memory constructor.
-        #[cfg(feature = "redb-backend")]
-        {
-            match Drevo::open(Path::new(p)) {
-                Ok(db) => Box::into_raw(Box::new(db)),
-                Err(e) => {
-                    set_error(format!("{e}"));
-                    ptr::null_mut()
-                }
-            }
-        }
-        #[cfg(not(feature = "redb-backend"))]
-        {
-            let _ = p;
-            set_error(
-                "drevo_open requires the `redb-backend` feature; \
-                 use drevo_open_in_memory for an ephemeral database"
-                    .to_string(),
-            );
-            ptr::null_mut()
-        }
+        set_error(
+            "drevo_open is no longer supported (the embedded redb KV store was \
+             removed in epic #444); use drevo_open_in_memory for an ephemeral \
+             database, or the native-durable server for a persistent store"
+                .to_string(),
+        );
+        ptr::null_mut()
     })
 }
 

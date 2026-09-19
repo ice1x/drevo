@@ -576,55 +576,6 @@ fn invariants_hold_under_random_mutations_seed_99999() {
 // RedbBackend parity — invariants hold on disk-backed storage too
 // ---------------------------------------------------------------
 
-#[cfg(feature = "redb-backend")]
-#[test]
-fn verify_invariants_holds_on_redb_backend_after_workflow() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("inv.db");
-    let db = Drevo::open(&path).unwrap();
-
-    let a = db.create_node(new_node("note", "A", "alpha")).unwrap();
-    let b = db.create_node(new_node("note", "B", "beta")).unwrap();
-    let c = db.create_node(new_node("note", "C", "gamma")).unwrap();
-    db.create_edge(new_edge(a.id, b.id, "k", 1.0)).unwrap();
-    db.create_edge(new_edge(b.id, c.id, "k", 2.0)).unwrap();
-    db.update_node(
-        a.id,
-        NodePatch {
-            body: Some("alpha-updated".to_string()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    db.delete_node(b.id).unwrap();
-
-    let v = db.verify_invariants().unwrap();
-    assert!(v.is_empty(), "redb invariants: {v:?}");
-    db.close().unwrap();
-}
-
-#[cfg(feature = "redb-backend")]
-#[test]
-fn verify_invariants_holds_after_redb_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("inv-persist.db");
-
-    {
-        let db = Drevo::open(&path).unwrap();
-        let a = db.create_node(new_node("note", "A", "")).unwrap();
-        let b = db.create_node(new_node("note", "B", "")).unwrap();
-        db.create_edge(new_edge(a.id, b.id, "k", 1.0)).unwrap();
-        db.close().unwrap();
-    }
-
-    {
-        let db = Drevo::open(&path).unwrap();
-        let v = db.verify_invariants().unwrap();
-        assert!(v.is_empty(), "after reopen: {v:?}");
-        db.close().unwrap();
-    }
-}
-
 fn invariants_hold_under_random_mutations(seed: u32, ops: usize) {
     let mut state = seed;
     let db = Drevo::open_in_memory().unwrap();

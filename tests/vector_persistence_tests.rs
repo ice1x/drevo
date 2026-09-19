@@ -21,10 +21,9 @@
 //!   rebuild the index, query nearest neighbours — works end to end.
 
 use drevo::db::Drevo;
-use drevo::model::{NewEdge, NewNode, Properties};
-use drevo::storage::{MemoryBackend, RedbBackend, StorageBackend};
+use drevo::model::{NewNode, Properties};
+use drevo::storage::{MemoryBackend, StorageBackend};
 use drevo::vector::{store, HnswConfig, Vector};
-use tempfile::TempDir;
 
 fn new_node(kind: &str, title: &str) -> NewNode {
     NewNode {
@@ -44,11 +43,6 @@ fn new_node(kind: &str, title: &str) -> NewNode {
 /// so the two implementations are held to an identical contract.
 fn for_each_backend(test: impl Fn(&dyn StorageBackend)) {
     test(&MemoryBackend::new());
-
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("vectors.redb");
-    let redb = RedbBackend::open(&path).unwrap();
-    test(&redb);
 }
 
 #[test]
@@ -126,66 +120,6 @@ fn vector_keys_do_not_collide_with_graph_keys() {
         assert_eq!(store::scan_all(b).unwrap().len(), 1);
     });
 }
-
-// ---------------------------------------------------------------
-// Durability: embeddings survive a redb reopen.
-// ---------------------------------------------------------------
-
-#[test]
-fn embeddings_persist_across_redb_reopen() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("persist.redb");
-
-    {
-        let backend = RedbBackend::open(&path).unwrap();
-        store::put_batch(
-            &backend,
-            &[
-                (1, Vector::from(vec![1.0, 0.0, 0.0])),
-                (2, Vector::from(vec![0.0, 1.0, 0.0])),
-                (3, Vector::from(vec![0.0, 0.0, 1.0])),
-            ],
-        )
-        .unwrap();
-    }
-
-    let backend = RedbBackend::open(&path).unwrap();
-    assert_eq!(store::count(&backend).unwrap(), 3);
-    assert_eq!(
-        store::get(&backend, 2).unwrap(),
-        Some(Vector::from(vec![0.0, 1.0, 0.0]))
-    );
-}
-
-#[test]
-fn build_hnsw_after_reopen_finds_nearest() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("rebuild.redb");
-
-    {
-        let backend = RedbBackend::open(&path).unwrap();
-        store::put_batch(
-            &backend,
-            &[
-                (1, Vector::from(vec![1.0, 0.0, 0.0])),
-                (2, Vector::from(vec![0.0, 1.0, 0.0])),
-                (3, Vector::from(vec![0.9, 0.1, 0.0])),
-            ],
-        )
-        .unwrap();
-    }
-
-    let backend = RedbBackend::open(&path).unwrap();
-    let index = store::build_hnsw(&backend, HnswConfig::default()).unwrap();
-    assert_eq!(index.len(), 3);
-    // Query closest to node 1 / node 3; node 2 is orthogonal.
-    let hits = index.search(&[1.0, 0.0, 0.0], 2).unwrap();
-    let keys: Vec<u64> = hits.iter().map(|n| n.key).collect();
-    assert!(keys.contains(&1));
-    assert!(keys.contains(&3));
-    assert!(!keys.contains(&2));
-}
-
 // ---------------------------------------------------------------
 // Drevo facade: validation, cascade, and the index bridge.
 // ---------------------------------------------------------------
@@ -267,60 +201,4 @@ fn build_vector_index_through_facade_round_trips() {
     q[4] = 1.0;
     let hits = index.search(&q, 1).unwrap();
     assert_eq!(hits[0].key, target_id);
-}
-
-// ---------------------------------------------------------------
-// End-to-end graph-RAG scenario across a reopen.
-// ---------------------------------------------------------------
-
-#[test]
-fn graph_rag_corpus_persist_reopen_and_retrieve() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("rag.redb");
-
-    // Ingest a tiny "document" corpus with reference edges, then embed it
-    // and persist the embeddings — the canonical graph-RAG write path.
-    let (alpha_id, beta_id) = {
-        let db = Drevo::open(&path).unwrap();
-        let alpha = db
-            .create_node(new_node("doc", "Vectors in databases"))
-            .unwrap();
-        let beta = db.create_node(new_node("doc", "Graph traversal")).unwrap();
-        let gamma = db
-            .create_node(new_node("doc", "Unrelated cooking"))
-            .unwrap();
-        db.create_edge(NewEdge {
-            from_id: alpha.id,
-            to_id: beta.id,
-            kind: "cites".to_string(),
-            weight: 1.0,
-            properties: Properties::default(),
-        })
-        .unwrap();
-
-        db.set_embeddings_batch(&[
-            (alpha.id, Vector::from(vec![1.0, 0.1, 0.0])),
-            (beta.id, Vector::from(vec![0.9, 0.2, 0.0])),
-            (gamma.id, Vector::from(vec![0.0, 0.0, 1.0])),
-        ])
-        .unwrap();
-        db.close().unwrap();
-        (alpha.id, beta.id)
-    };
-
-    // Reopen, rebuild the index from disk, and retrieve: a query near the
-    // "vectors" cluster returns alpha, whose neighbourhood (via the cites
-    // edge) is beta — similarity hit expanded into graph context.
-    let db = Drevo::open(&path).unwrap();
-    assert_eq!(db.embedding_count().unwrap(), 3);
-
-    let index = db.build_vector_index(HnswConfig::default()).unwrap();
-    let hits = index.search(&[1.0, 0.1, 0.0], 1).unwrap();
-    assert_eq!(hits[0].key, alpha_id);
-
-    // Expand the similarity hit into its neighbourhood.
-    let neighbours = db
-        .neighbors(alpha_id, drevo::model::Direction::Outgoing, None)
-        .unwrap();
-    assert!(neighbours.iter().any(|n| n.id == beta_id));
 }

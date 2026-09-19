@@ -14,8 +14,8 @@
 //! NODES=20000 OPS=5000 READ_PCT=80 cargo run --release --example load_harness
 //! ```
 //!
-//! Deferred to follow-up PRs (see #241): the churn→compact→recovery curve, the
-//! redb-backed (on-disk, single-writer) variant, and the HTTP load path.
+//! Deferred to follow-up PRs (see #241): the churn→compact→recovery curve and
+//! the HTTP load path.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,7 +23,6 @@ use std::time::Instant;
 use drevo::db::Drevo;
 use drevo::model::{Direction, NewEdge, NewNode, Properties};
 use serde::Serialize;
-use tempfile::TempDir;
 
 // --- latency summary --------------------------------------------------------
 
@@ -209,53 +208,6 @@ fn run_load(db: &Arc<Drevo>, ids: &Arc<Vec<u64>>, cfg: LoadConfig) -> SweepPoint
     }
 }
 
-// --- backend selection ------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Backend {
-    /// Ephemeral in-memory backend (default) — measures the lock/contention
-    /// ceiling without fsync cost.
-    Memory,
-    /// On-disk redb backend — the same sweep now pays redb's single-writer
-    /// fsync + copy-on-write cost per commit.
-    Redb,
-}
-
-impl Backend {
-    fn label(self) -> &'static str {
-        match self {
-            Backend::Memory => "in-memory",
-            Backend::Redb => "redb (on-disk)",
-        }
-    }
-}
-
-/// Parse the `BACKEND` env value. Anything other than a redb alias falls back
-/// to the in-memory backend, so an unset/garbage value keeps the fast default.
-fn resolve_backend(s: &str) -> Backend {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "redb" | "disk" | "ondisk" | "on-disk" => Backend::Redb,
-        _ => Backend::Memory,
-    }
-}
-
-/// Open a fresh backend for one sweep point. For redb the returned `TempDir`
-/// guard must outlive the returned handle — dropping it deletes the file.
-fn open_backend(backend: Backend, idx: usize) -> (Option<TempDir>, Arc<Drevo>) {
-    match backend {
-        Backend::Memory => (
-            None,
-            Arc::new(Drevo::open_in_memory().expect("open in-memory drevo")),
-        ),
-        Backend::Redb => {
-            let dir = TempDir::new().expect("temp dir");
-            let path = dir.path().join(format!("load_{idx}.redb"));
-            let db = Drevo::open(&path).expect("open redb drevo");
-            (Some(dir), Arc::new(db))
-        }
-    }
-}
-
 // --- main -------------------------------------------------------------------
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -269,20 +221,12 @@ fn main() {
     let node_count = env_u64("NODES", 5_000);
     let ops_per_thread = env_u64("OPS", 2_000);
     let read_pct = env_u64("READ_PCT", 80).min(100) as u8;
-    let backend = resolve_backend(&std::env::var("BACKEND").unwrap_or_default());
     let sweep = [1usize, 2, 4, 8, 16];
 
     eprintln!(
         "load_harness: nodes={node_count} ops/thread={ops_per_thread} read_pct={read_pct} \
-         sweep={sweep:?} backend={}",
-        backend.label()
+         sweep={sweep:?} backend=in-memory"
     );
-    if backend == Backend::Redb {
-        eprintln!(
-            "note: redb writes are fsync-bound — every create_edge commits to disk. \
-             Lower NODES/OPS if this is slow on your host."
-        );
-    }
     eprintln!(
         "{:>7}  {:>10}  {:>10}  {:>9}  {:>9}  {:>9}  {:>9}",
         "threads", "ops/s", "wall_ms", "rd_p50", "rd_p99", "wr_p50", "wr_p99"
@@ -291,9 +235,9 @@ fn main() {
     let mut points = Vec::with_capacity(sweep.len());
     for (idx, &threads) in sweep.iter().enumerate() {
         // Fresh graph per point so sweep points are comparable (writes don't
-        // accumulate across higher thread counts). `_guard` keeps the redb
-        // temp dir alive for the duration of this point.
-        let (_guard, db) = open_backend(backend, idx);
+        // accumulate across higher thread counts).
+        let _ = idx;
+        let db = Arc::new(Drevo::open_in_memory().expect("open in-memory drevo"));
         let ids = Arc::new(seed_graph(&db, node_count));
         let point = run_load(
             &db,

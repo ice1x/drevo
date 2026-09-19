@@ -192,31 +192,6 @@ fn full_graph_round_trip_in_memory() {
 // ---------------------------------------------------------------
 // 3b. Round-trip on disk-backed RedbBackend
 // ---------------------------------------------------------------
-
-#[test]
-fn full_graph_round_trip_on_disk_redb_backend() {
-    let dir = TempDir::new().unwrap();
-    let src_path = dir.path().join("src.db");
-    let dst_path = dir.path().join("dst.db");
-
-    let dump = {
-        let src = Drevo::open(&src_path).unwrap();
-        let (_nodes, _edges) = populate_sample_graph(&src);
-        let dump = src.export_json().unwrap();
-        src.close().unwrap();
-        dump
-    };
-
-    {
-        let dst = Drevo::open(&dst_path).unwrap();
-        let report = dst.import_json(&dump).unwrap();
-        assert_eq!(report.nodes_imported, 5);
-        assert_eq!(report.edges_imported, 4);
-        assert!(dst.verify_invariants().unwrap().is_empty());
-        dst.close().unwrap();
-    }
-}
-
 // ---------------------------------------------------------------
 // 4. Indexes are fully rebuilt on import
 // ---------------------------------------------------------------
@@ -507,55 +482,6 @@ fn import_into_populated_db_with_id_collision_yields_io_error() {
         other => panic!("expected Io(id collision), got {other:?}"),
     }
 }
-
-// ---------------------------------------------------------------
-// 10. Cross-backend parity
-// ---------------------------------------------------------------
-
-#[test]
-fn round_trip_memory_to_redb_preserves_graph() {
-    let dir = TempDir::new().unwrap();
-    let dst_path = dir.path().join("imported.db");
-
-    let src = Drevo::open_in_memory().unwrap();
-    let (node_ids, edge_ids) = populate_sample_graph(&src);
-    let dump = src.export_json().unwrap();
-
-    let dst = Drevo::open(&dst_path).unwrap();
-    dst.import_json(&dump).unwrap();
-    for id in &node_ids {
-        let original = src.get_node(*id).unwrap().unwrap();
-        let restored = dst.get_node(*id).unwrap().unwrap();
-        assert_eq!(restored, original, "node {id} differs across backends");
-    }
-    for id in &edge_ids {
-        let original = src.get_edge(*id).unwrap().unwrap();
-        let restored = dst.get_edge(*id).unwrap().unwrap();
-        assert_eq!(restored, original, "edge {id} differs across backends");
-    }
-    dst.close().unwrap();
-}
-
-#[test]
-fn round_trip_redb_to_memory_preserves_graph() {
-    let dir = TempDir::new().unwrap();
-    let src_path = dir.path().join("source.db");
-
-    let dump = {
-        let src = Drevo::open(&src_path).unwrap();
-        populate_sample_graph(&src);
-        let dump = src.export_json().unwrap();
-        src.close().unwrap();
-        dump
-    };
-
-    let dst = Drevo::open_in_memory().unwrap();
-    let report = dst.import_json(&dump).unwrap();
-    assert_eq!(report.nodes_imported, 5);
-    assert_eq!(report.edges_imported, 4);
-    assert!(dst.verify_invariants().unwrap().is_empty());
-}
-
 // ---------------------------------------------------------------
 // Edge-case coverage
 // ---------------------------------------------------------------

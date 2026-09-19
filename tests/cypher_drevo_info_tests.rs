@@ -82,7 +82,7 @@ fn drevo_info_takes_no_arguments() {
 
 // The procedure must be reachable over the actual Bolt RUN/PULL path — the way
 // graphiti's neo4j-python client calls it — not only via the executor directly.
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb-backend"))]
+#[cfg(not(target_arch = "wasm32"))]
 mod over_bolt {
     use std::collections::BTreeMap;
 

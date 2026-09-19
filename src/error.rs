@@ -99,14 +99,11 @@ pub enum DrevoError {
     /// The database on disk uses an older adjacency layout than this build
     /// and must be migrated before it can be opened (#243 slice 2).
     ///
-    /// Raised by [`crate::db::Drevo::open`] when the file's adjacency index
-    /// predates the kind-in-key layout (`found_major < required_major`). The
-    /// fix is an explicit, reversible migration — run `drevo migrate up`
-    /// (which backs up to GraphML first) or call
-    /// [`crate::db::Drevo::migrate_adjacency`] — which rewrites the index and
-    /// re-stamps the on-disk format version. The graph data itself is never at
-    /// risk: the migration rebuilds a derived index from the intact node/edge
-    /// records. Maps to HTTP 503 and the Bolt status
+    /// A legacy error from the retired redb KV backend (epic #444): it was
+    /// raised when an on-disk file's adjacency index predated the kind-in-key
+    /// layout (`found_major < required_major`). The durable native engine has
+    /// no such migration gate, so this variant is no longer produced; it is
+    /// retained for API stability. Maps to HTTP 503 and the Bolt status
     /// `Neo.TransientError.Database.Unavailable`.
     #[error(
         "database needs migration: on-disk adjacency format v{found_major} \

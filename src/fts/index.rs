@@ -316,38 +316,6 @@ pub(crate) fn index_nodes_grouped(
     Ok(())
 }
 
-/// Build the **complete** posting-list FTS index for a set of documents as a
-/// batch of rows, from scratch — assumes there are no existing `fts:` rows to
-/// merge with (the reindex clears them first). One row per distinct trigram
-/// (packed sorted posting list) plus one `ftslen:` per document, so the whole
-/// index can be written in a single `put_batch` (one commit) instead of a
-/// read-modify-write per trigram. Used by the #275 reindex-on-open.
-#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-pub(crate) fn build_full_index_batch(
-    docs: &[(u64, &str, &str, &Properties)],
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    use std::collections::BTreeMap;
-
-    let mut by_trigram: BTreeMap<String, Vec<(u64, u32)>> = BTreeMap::new();
-    let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for (node_id, title, body, properties) in docs {
-        let prop_text = collect_property_text(properties);
-        let fields = node_fields(title, body, &prop_text);
-        let (tfs, doc_len) = trigram_frequencies(&fields);
-        for (trigram, tf) in tfs {
-            by_trigram.entry(trigram).or_default().push((*node_id, tf));
-        }
-        if doc_len > 0 {
-            out.push((fts_len_key(*node_id), doc_len.to_le_bytes().to_vec()));
-        }
-    }
-    for (trigram, mut entries) in by_trigram {
-        entries.sort_by_key(|(id, _)| *id);
-        out.push((fts_key(&trigram), encode_node_postings(&entries)));
-    }
-    out
-}
-
 /// Remove FTS index entries for a node. Test convenience (title + body only).
 #[cfg(test)]
 pub(crate) fn deindex_node(

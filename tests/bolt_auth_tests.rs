@@ -14,11 +14,7 @@
 //! Gated on the `bolt-auth` feature — the whole file compiles to nothing
 //! in the default build (mirroring `tests/bolt_tls_tests.rs`).
 
-#![cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "redb-backend",
-    feature = "bolt-auth"
-))]
+#![cfg(all(not(target_arch = "wasm32"), feature = "bolt-auth"))]
 
 use std::collections::BTreeMap;
 use std::io::Cursor;

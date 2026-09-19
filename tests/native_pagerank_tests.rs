@@ -5,8 +5,6 @@
 //! `pagerank_native` must agree with it within tolerance on the same graph,
 //! plus the usual PageRank invariants (mass conserved, structure reflected).
 
-#![cfg(feature = "redb-backend")]
-
 use std::collections::HashMap;
 
 use drevo::algorithms::{pagerank, pagerank_native, AdjacencyList, PageRankConfig, PageRankResult};

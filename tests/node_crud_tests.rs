@@ -415,48 +415,6 @@ fn delete_nodes_matches_sequential_loop_end_state() {
         assert_eq!(batched.get_node(*id).unwrap(), None);
     }
 }
-
-// --- Persistence across close/reopen ---
-
-#[test]
-fn nodes_persist_across_close_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test.db");
-
-    // Create a node, close
-    let uuid;
-    {
-        let db = Drevo::open(&path).unwrap();
-        let node = db.create_node(sample_node("Persistent")).unwrap();
-        uuid = node.uuid;
-        db.close().unwrap();
-    }
-
-    // Reopen and verify
-    {
-        let db = Drevo::open(&path).unwrap();
-        let node = db.get_node(1).unwrap().expect("node should persist");
-        assert_eq!(node.title, "Persistent");
-        assert_eq!(node.uuid, uuid);
-        // Title index should also persist
-        let by_title = db
-            .get_node_by_title("Persistent")
-            .unwrap()
-            .expect("title index should persist");
-        assert_eq!(by_title.id, 1);
-        // UUID index should also persist
-        let by_uuid = db
-            .get_node_by_uuid(&uuid)
-            .unwrap()
-            .expect("uuid index should persist");
-        assert_eq!(by_uuid.id, 1);
-        // Next ID should continue from 2
-        let node2 = db.create_node(sample_node("Second")).unwrap();
-        assert_eq!(node2.id, 2);
-        db.close().unwrap();
-    }
-}
-
 // --- Edge case: empty title ---
 
 #[test]

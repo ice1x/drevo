@@ -18,7 +18,7 @@
 //!    `test_cbt_journal.py`, `test_story_editor.py`,
 //!    `test_task_manager.py`, `test_erp.py`, `test_bug_tracker.py`,
 //!    `test_graph_rag.py`.
-//! 4. Every scenario module drives the on-disk redb backend via
+//! 4. Every scenario module drives the on-disk durable (native) backend via
 //!    `drevo.Drevo.open(...)` (mirrors the 00119 boundary).
 //! 5. Each domain scenario mirrors the Rust counterpart's
 //!    domain-language node kinds — searching the module text for the
@@ -169,8 +169,8 @@ fn every_scenario_module_drives_the_disk_backend() {
         let uses_disk_db = body.contains("disk_db") || body.contains("drevo.Drevo.open");
         assert!(
             uses_disk_db,
-            "drevo-py/tests/e2e/{module} must drive the on-disk redb \
-             backend — the e2e tier inherits the boundary 00119 \
+            "drevo-py/tests/e2e/{module} must drive the on-disk durable \
+             (native) backend — the e2e tier inherits the boundary 00119 \
              defends, scenarios cannot regress to in-memory shortcuts"
         );
     }

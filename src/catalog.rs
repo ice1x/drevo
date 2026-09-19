@@ -1,57 +1,37 @@
 //! Named-database catalog — multiple [`Drevo`](crate::db::Drevo) databases
 //! in one process.
 //!
-//! drevo is built on redb, which is single-process: exactly one handle may
-//! be open against a given file at a time. The catalog embraces that
-//! constraint instead of fighting it — each *named* database is its own
-//! redb file under a shared data directory, and the catalog owns the single
-//! open handle for each. One process, many databases, one handle per file.
+//! Each *named* database is an independent in-memory [`Drevo`](crate::db::Drevo)
+//! handle; the catalog owns them and multiplexes lookups by name. One process,
+//! many databases, one handle each.
 //!
-//! ## Naming and files
-//!
-//! A database name maps to `<name>.redb` inside the data directory. The
-//! default database is named `drevo`, so it maps to the legacy `drevo.redb`
-//! file — existing single-file deployments keep working with zero migration.
+//! ## Naming
 //!
 //! Names are validated ([`is_valid_name`](crate::catalog::is_valid_name)):
 //! non-empty, at most [`MAX_NAME_LEN`](crate::catalog::MAX_NAME_LEN) bytes,
-//! and drawn from `[A-Za-z0-9_-]`. That character set
-//! is deliberately narrow — it is exactly what is safe both as a bare
-//! filename component (no path separators, no `.`, no leading `-` tricks
-//! because the `.redb` suffix always follows) and as an HTTP header / query
-//! value the Web UI passes back unescaped.
+//! and drawn from `[A-Za-z0-9_-]`. That character set is deliberately narrow —
+//! it is exactly what is safe as an HTTP header / query value the Web UI passes
+//! back unescaped.
 //!
 //! ## Lifecycle
 //!
-//! [`Catalog::open`](crate::catalog::Catalog::open) scans the data directory
-//! for `*.redb` files, registers their names, and guarantees a `default`
-//! entry exists. Handles open lazily on first
+//! [`Catalog::from_default`](crate::catalog::Catalog::from_default) wraps an
+//! already-open handle as the `default` database;
+//! [`Catalog::open_in_memory`](crate::catalog::Catalog::open_in_memory) gives an
+//! all-ephemeral catalog. Handles open lazily on first
 //! [`Catalog::get`](crate::catalog::Catalog::get) /
-//! [`Catalog::create`](crate::catalog::Catalog::create) and are cached, so
-//! the single-handle-per-file invariant holds and repeated lookups are cheap.
-//! [`Catalog::open_in_memory`](crate::catalog::Catalog::open_in_memory) gives
-//! tests (and `wasm32`) an all-ephemeral catalog where every database is a
-//! fresh in-memory [`Drevo`](crate::db::Drevo).
+//! [`Catalog::create`](crate::catalog::Catalog::create) and are cached.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::db::Drevo;
 use crate::error::DrevoError;
 
-/// The always-present database. Named `drevo`, so it maps to the legacy
-/// `drevo.redb` file and a pre-catalog data directory opens unchanged.
+/// The always-present database. Named `drevo`.
 pub const DEFAULT_DB: &str = "drevo";
 
-/// redb file extension the catalog scans for and creates.
-// redb-only: used by the disk-catalog branch (redb-gated `Catalog::open`) and by
-// tests, so it is kept rather than `#[cfg]`-removed. Removed wholesale in #444 P8.
-#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-const DB_EXTENSION: &str = "redb";
-
-/// Maximum database-name length in bytes. Comfortably below any filesystem
-/// component limit once the `.redb` suffix is added.
+/// Maximum database-name length in bytes.
 pub const MAX_NAME_LEN: usize = 64;
 
 /// Errors surfaced by the [`Catalog`]. Deliberately a small, self-contained
@@ -94,34 +74,8 @@ pub fn is_valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// The on-disk filename for a database name: `<name>.redb`. The default
-/// database (`drevo`) therefore lands on the legacy `drevo.redb`.
-#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-fn filename_for(name: &str) -> String {
-    format!("{name}.{DB_EXTENSION}")
-}
-
-/// The database name encoded by a `*.redb` filename, or `None` if the file
-/// is not a recognised database file. Inverse of [`filename_for`]:
-/// `<name>.redb` → `<name>` (validated); `drevo.redb` → `drevo`.
-#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-fn name_for_file(file_name: &str) -> Option<String> {
-    let stem = file_name.strip_suffix(&format!(".{DB_EXTENSION}"))?;
-    if is_valid_name(stem) {
-        Some(stem.to_string())
-    } else {
-        None
-    }
-}
-
 /// How a catalog opens the databases it manages.
 enum Backing {
-    /// Disk-backed: databases are `*.redb` files under this directory.
-    // Never constructed without `redb-backend` (its only constructor,
-    // `Catalog::open`, is redb-gated), but kept so `open_handle`'s match keeps
-    // its runtime-error arm. Removed wholesale in #444 P8.
-    #[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-    Disk(PathBuf),
     /// Ephemeral: every database is a fresh in-memory [`Drevo`].
     Memory,
 }
@@ -157,48 +111,6 @@ fn seed_known() -> BTreeSet<String> {
 }
 
 impl Catalog {
-    /// Open a disk-backed catalog rooted at `data_dir`.
-    ///
-    /// Opens (creating if absent) the [`DEFAULT_DB`] handle first — so a
-    /// misconfigured data directory fails fast at startup — then scans the
-    /// directory for other `*.redb` files and registers each as a database.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CatalogError::Open`] if the `default` database cannot be
-    /// opened.
-    #[cfg(feature = "redb-backend")]
-    pub fn open(data_dir: PathBuf) -> Result<Self, CatalogError> {
-        let default_path = data_dir.join(filename_for(DEFAULT_DB));
-        let default =
-            Arc::new(
-                Drevo::open(&default_path).map_err(|source| CatalogError::Open {
-                    name: DEFAULT_DB.to_string(),
-                    source,
-                })?,
-            );
-        let mut known = seed_known();
-
-        // Register any pre-existing database files. A missing directory is
-        // fine — it means a fresh deployment; `create`/`get` create files on
-        // demand, and the caller is responsible for the directory existing
-        // (the server binary mkdir's the data dir, mirroring the old path).
-        if let Ok(entries) = std::fs::read_dir(&data_dir) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str().and_then(name_for_file) {
-                    known.insert(name);
-                }
-            }
-        }
-
-        Ok(Self {
-            backing: Backing::Disk(data_dir),
-            default,
-            known: RwLock::new(known),
-            open: RwLock::new(HashMap::new()),
-        })
-    }
-
     /// Build a catalog around an already-open [`Drevo`] handle, installed as
     /// [`DEFAULT_DB`]. Any databases [`create`](Self::create)d afterwards are
     /// in-memory. This is the back-compat path for callers (and tests) that
@@ -336,21 +248,6 @@ impl Catalog {
     /// Open the backing handle for `name` without touching the caches.
     fn open_handle(&self, name: &str) -> Result<Drevo, CatalogError> {
         match &self.backing {
-            #[cfg(feature = "redb-backend")]
-            Backing::Disk(dir) => {
-                let path = dir.join(filename_for(name));
-                Drevo::open(&path).map_err(|source| CatalogError::Open {
-                    name: name.to_string(),
-                    source,
-                })
-            }
-            #[cfg(not(feature = "redb-backend"))]
-            Backing::Disk(_) => Err(CatalogError::Open {
-                name: name.to_string(),
-                source: DrevoError::Io(std::io::Error::other(
-                    "disk catalog requires the redb-backend feature",
-                )),
-            }),
             Backing::Memory => Drevo::open_in_memory().map_err(|source| CatalogError::Open {
                 name: name.to_string(),
                 source,
@@ -381,22 +278,6 @@ mod tests {
         assert!(!is_valid_name("slash/name"));
         assert!(!is_valid_name("emoji😀"));
         assert!(!is_valid_name(&"x".repeat(MAX_NAME_LEN + 1)));
-    }
-
-    // ── filename mapping ────────────────────────────────────────────────
-    #[test]
-    fn default_maps_to_legacy_file() {
-        assert_eq!(DEFAULT_DB, "drevo");
-        assert_eq!(filename_for(DEFAULT_DB), "drevo.redb");
-        assert_eq!(filename_for("projectA"), "projectA.redb");
-    }
-
-    #[test]
-    fn file_to_name_is_inverse() {
-        assert_eq!(name_for_file("drevo.redb").as_deref(), Some("drevo"));
-        assert_eq!(name_for_file("projectA.redb").as_deref(), Some("projectA"));
-        assert_eq!(name_for_file("notes.txt"), None);
-        assert_eq!(name_for_file("README"), None);
     }
 
     // ── in-memory catalog behaviour ─────────────────────────────────────
@@ -466,60 +347,5 @@ mod tests {
     fn get_unknown_is_not_found() {
         let cat = Catalog::open_in_memory().unwrap();
         assert!(matches!(cat.get("nope"), Err(CatalogError::NotFound(_))));
-    }
-
-    // ── disk catalog: discovery + persistence ───────────────────────────
-    #[cfg(feature = "redb-backend")]
-    #[test]
-    fn disk_catalog_discovers_existing_files_and_persists() {
-        let dir = std::env::temp_dir().join(format!(
-            "drevo-catalog-test-{}-{}",
-            std::process::id(),
-            // A monotonic-ish suffix without pulling in rand: nanos since a
-            // fixed epoch are unique enough across sequential test runs.
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // First open: create `default` and one extra database, write to it.
-        {
-            let cat = Catalog::open(dir.clone()).unwrap();
-            let p = cat.create("projectA").unwrap();
-            p.create_node(crate::model::NewNode {
-                kind: "k".into(),
-                title: "persisted".into(),
-                body: String::new(),
-                body_html: String::new(),
-                properties: crate::model::Properties::default(),
-            })
-            .unwrap();
-            // Writes autocommit; dropping the block releases both `p` and the
-            // catalog's cached handle so the file can be reopened below.
-        }
-
-        // Second open of the same directory: both databases are discovered
-        // from their files, and projectA's data survived.
-        {
-            let cat = Catalog::open(dir.clone()).unwrap();
-            let names = cat.list();
-            assert!(names.contains(&"drevo".to_string()));
-            assert!(
-                names.contains(&"projectA".to_string()),
-                "existing *.redb files must be discovered on open, got {names:?}"
-            );
-            assert_eq!(
-                cat.get("projectA")
-                    .unwrap()
-                    .list_nodes_by_kind("k", 10, 0)
-                    .unwrap()
-                    .len(),
-                1
-            );
-        }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

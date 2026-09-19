@@ -171,7 +171,6 @@ mod server_tests {
         // uses this as the default storage directory.
         let cfg = Config::from_env(|_| None).unwrap();
         assert_eq!(cfg.data_dir.to_string_lossy(), "/data");
-        assert_eq!(cfg.db_path().to_string_lossy(), "/data/drevo.redb");
     }
 
     #[test]

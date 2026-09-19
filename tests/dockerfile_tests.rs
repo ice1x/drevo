@@ -145,7 +145,7 @@ fn dockerfile_features_are_build_arg_overridable() {
     // The compiled Cargo feature set is a build ARG (`CARGO_FEATURES`) so a
     // deployment can override it via `docker build --build-arg` without editing
     // the Dockerfile. The deploy image's DEFAULT ships the full server —
-    // http + redb-backend + embeddings-proxy — so `/v1/embeddings` (issue #217)
+    // http + embeddings-proxy — so `/v1/embeddings` (issue #217)
     // is available out of the box (runtime-gated to 503 until configured); the
     // build must consume the ARG rather than a hardcoded feature list.
     let content = read_dockerfile();
@@ -154,8 +154,12 @@ fn dockerfile_features_are_build_arg_overridable() {
         .find(|l| l.trim_start().starts_with("ARG CARGO_FEATURES"))
         .expect("Dockerfile must declare `ARG CARGO_FEATURES` for an overridable feature set");
     assert!(
-        arg_line.contains("http") && arg_line.contains("redb-backend"),
-        "the default CARGO_FEATURES must keep http + redb-backend: {arg_line}"
+        arg_line.contains("http"),
+        "the default CARGO_FEATURES must keep http: {arg_line}"
+    );
+    assert!(
+        !arg_line.contains("redb"),
+        "redb was retired (epic #444 P8) — CARGO_FEATURES must not reference it: {arg_line}"
     );
     assert!(
         arg_line.contains("embeddings-proxy"),

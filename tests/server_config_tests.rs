@@ -40,14 +40,6 @@ fn from_env_defaults_when_nothing_is_set() {
     assert_eq!(cfg.data_dir.to_string_lossy(), "/data");
 }
 
-#[test]
-fn db_path_appends_drevo_redb_filename() {
-    let cfg = Config::from_env(getter(HashMap::new())).unwrap();
-    assert_eq!(cfg.db_path().file_name().unwrap(), "drevo.redb");
-    // Parent must be the data_dir.
-    assert_eq!(cfg.db_path().parent().unwrap(), cfg.data_dir);
-}
-
 // ---------------------------------------------------------------------
 // Overrides — happy path
 // ---------------------------------------------------------------------
@@ -72,7 +64,6 @@ fn drevo_data_dir_override_is_honoured() {
     )])))
     .unwrap();
     assert_eq!(cfg.data_dir.to_string_lossy(), "/var/lib/drevo");
-    assert_eq!(cfg.db_path().to_string_lossy(), "/var/lib/drevo/drevo.redb");
 }
 
 #[test]

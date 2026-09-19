@@ -68,7 +68,7 @@ fn cargo_toml_declares_rust_version() {
     let minor = minor.expect("`rust-version` minor is not a number");
     assert!(
         major >= 1 && minor >= 70,
-        "MSRV {value} is suspiciously low for a project that uses bincode 2 / redb 2 / axum 0.8",
+        "MSRV {value} is suspiciously low for a project that uses bincode 2 / axum 0.8",
     );
 }
 
