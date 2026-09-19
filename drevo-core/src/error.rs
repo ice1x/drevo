@@ -61,6 +61,18 @@ pub enum CoreError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// The durable store is already open by another handle or process (#455).
+    ///
+    /// [`NativeGraph::open_durable`](crate::native::NativeGraph::open_durable)
+    /// takes an exclusive advisory lock on the store's lock sidecar; a second
+    /// open of the same path fails with this rather than letting two writers
+    /// interleave WAL appends and corrupt the log. The counterpart of the
+    /// KV/redb backend's exclusive file lock, and the structural twin of the
+    /// main crate's `DrevoError::Locked`. The advisory lock is released when the
+    /// owning process dies, so a crash never leaves a stale lock behind.
+    #[error("database locked")]
+    Locked,
+
     /// A backend-specific failure from a concrete engine — a KV storage error,
     /// a vector-index error, a transaction-state error — that has no structured
     /// counterpart in the storage-agnostic core. Carries the lower layer's
@@ -96,6 +108,7 @@ mod tests {
             CoreError::Backend("scan failed".into()).to_string(),
             "backend error: scan failed"
         );
+        assert_eq!(CoreError::Locked.to_string(), "database locked");
     }
 
     #[test]

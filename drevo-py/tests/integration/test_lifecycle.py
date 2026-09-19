@@ -14,20 +14,21 @@ import pytest
 import drevo
 
 
-def test_second_open_on_same_path_is_permitted_for_now(tmp_db_path: str) -> None:
-    """The native durable engine does not yet take a cross-handle lock on
-    the WAL, so a second `Drevo.open(path)` while the first is open
-    currently succeeds (the redb backend used to raise here via its
-    exclusive file lock).
+def test_second_open_on_same_path_raises_drevo_error(tmp_db_path: str) -> None:
+    """A second `Drevo.open(path)` while the first handle is still open is
+    rejected, mirroring the redb backend's exclusive file lock.
 
-    This is a known gap tracked in issue #455 (restore exclusive-open via an
-    OS advisory `flock`, which — unlike a lock file — is released when the
-    process dies and so cannot leave a stale lock that blocks a restart).
-    When that lands this test flips back to asserting a `DrevoError`.
+    The native durable engine takes an OS **advisory** lock on the store's
+    lock sidecar at open (issue #455): a second writer on one WAL would
+    interleave appends and corrupt the log, so it fails fast with
+    `LockedError` (a `DrevoError` subclass). Because the lock is advisory and
+    tied to the open file description, it is released when the owning process
+    dies — unlike a content lock file, a crash cannot strand a stale lock that
+    would block the prod watchdog's restart.
     """
     with drevo.Drevo.open(tmp_db_path):
-        second = drevo.Drevo.open(tmp_db_path)
-        second.close()
+        with pytest.raises(drevo.DrevoError):
+            drevo.Drevo.open(tmp_db_path)
 
 
 def test_open_after_close_succeeds(tmp_db_path: str) -> None:

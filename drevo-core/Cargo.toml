@@ -49,6 +49,21 @@ getrandom = { version = "0.4", optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 
+# Advisory file locking for the durable engine's exclusive-open guard (#455):
+# `flock(LOCK_EX|LOCK_NB)` on unix, `LockFileEx` on Windows. Scoped to the
+# concrete OS targets so the dependency-light wasm build (which has no
+# filesystem to lock, and never calls `open_durable`) pulls in neither. `libc`
+# is already in the workspace lock, so unix adds no new dependency.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
 [features]
 # Enables the wasm getrandom backend so uuid v7's random bits resolve on
 # `wasm32-unknown-unknown`. Forwarded from the main crate's `wasm` feature.
