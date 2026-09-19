@@ -13,6 +13,8 @@
 //! - registering an `Auto`-mode target then `CREATE`ing a matching node/edge
 //!   embeds its `text_property` into `embedding_property` server-side, so
 //!   `drevo.semantic.query` / `.queryRel` retrieve it with no client round-trip;
+//! - `SET` re-embeds when the source text changes and skips when it does not,
+//!   for a single property, a `+=` map merge, and a relationship property;
 //! - the double no-op (no embedder, unregistered label, `Manual` mode, no text);
 //! - the reindex backfill drains a pre-existing un-embedded target;
 //! - `drevo.semantic.status` surfaces the real backlog: `pending_count`,
@@ -31,7 +33,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -73,6 +75,52 @@ async fn stub_embed(
     } else {
         (StatusCode::INTERNAL_SERVER_ERROR, "stub outage").into_response()
     }
+}
+
+/// A `/v1/embeddings` stub that returns a *distinct* vector `[n, 0.0]` per
+/// call, where `n` is the pre-increment call count. Unlike [`stub_embed`]'s
+/// fixed vector, this lets a test tell a fresh embed apart from a skipped one:
+/// a re-embed advances the counter (`[k+1, 0]`), a skip leaves the stored
+/// vector untouched. Reads via [`embedding_of`] don't call the stub, so the
+/// counter only moves on an actual write-path embed.
+async fn counting_embed(
+    State(state): State<CountingState>,
+    Json(_body): Json<JsonValue>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let n = state.calls.fetch_add(1, Ordering::SeqCst);
+    Json(json!({
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": [n as f64, 0.0]}],
+        "model": "stub-embed",
+        "usage": {"total_tokens": 1}
+    }))
+    .into_response()
+}
+
+#[derive(Clone, Default)]
+struct CountingState {
+    calls: Arc<AtomicUsize>,
+}
+
+/// Spawn the counting stub on `rt`, returning its address and the call counter.
+fn spawn_counting_stub(rt: &Runtime) -> (SocketAddr, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let state = CountingState {
+        calls: calls.clone(),
+    };
+    let addr = rt.block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let router = Router::new()
+            .route("/v1/embeddings", post(counting_embed))
+            .with_state(state);
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.expect("serve");
+        });
+        addr
+    });
+    (addr, calls)
 }
 
 /// Spawn the stub on `rt`, returning its address and the health toggle.
@@ -252,10 +300,91 @@ fn node_without_text_property_is_left_alone() {
     assert_eq!(embedding_of(&svc, "d1"), None);
 }
 
-// Re-embed on SET/update is a separate slice (KV threads it through several
-// `update_node` call sites; the native funnel differs) — this PR covers the
-// core ingest path (CREATE) plus the reindex backfill, which together let
-// native serve semantic queries without a KV secondary.
+// ── Re-embed on SET / update (#447) ──────────────────────────────────
+//
+// The KV engine re-embeds inside `Drevo::update_node` / `update_edge` when the
+// source text changes; the native `GraphEngine::update_*` has no embedder, so
+// the executor's SET write paths apply it through the serving layer. The
+// counting stub proves the distinction: a text change advances the vector, an
+// unrelated change leaves it (skip-unchanged).
+
+#[test]
+fn set_single_property_reembeds_when_text_changes() {
+    let rt = Runtime::new().expect("rt");
+    let (addr, _calls) = spawn_counting_stub(&rt);
+    let svc = service_with_embedder(addr);
+
+    svc.semantic_register("Doc", "text", "embedding", IndexMode::Auto, None)
+        .expect("register");
+    svc.create_node(new_node("Doc", "d1", Some("one")))
+        .expect("create"); // embed call 0 → [0, 0]
+    assert_eq!(embedding_of(&svc, "d1"), Some(json!([0.0, 0.0])));
+
+    run(&svc, "MATCH (n:Doc {title: 'd1'}) SET n.text = 'two'"); // call 1 → [1, 0]
+    assert_eq!(embedding_of(&svc, "d1"), Some(json!([1.0, 0.0])));
+}
+
+#[test]
+fn set_unrelated_property_does_not_reembed() {
+    let rt = Runtime::new().expect("rt");
+    let (addr, _calls) = spawn_counting_stub(&rt);
+    let svc = service_with_embedder(addr);
+
+    svc.semantic_register("Doc", "text", "embedding", IndexMode::Auto, None)
+        .expect("register");
+    svc.create_node(new_node("Doc", "d1", Some("one")))
+        .expect("create"); // call 0 → [0, 0]
+
+    // The source text is untouched and the embedding is present → skip-unchanged.
+    run(&svc, "MATCH (n:Doc {title: 'd1'}) SET n.color = 'red'");
+    assert_eq!(embedding_of(&svc, "d1"), Some(json!([0.0, 0.0])));
+}
+
+#[test]
+fn set_map_merge_reembeds_changed_text() {
+    let rt = Runtime::new().expect("rt");
+    let (addr, _calls) = spawn_counting_stub(&rt);
+    let svc = service_with_embedder(addr);
+
+    svc.semantic_register("Doc", "text", "embedding", IndexMode::Auto, None)
+        .expect("register");
+    svc.create_node(new_node("Doc", "d1", Some("one")))
+        .expect("create"); // call 0 → [0, 0]
+
+    // `+=` map merge lands in the replace path; changing `text` must re-embed.
+    run(&svc, "MATCH (n:Doc {title: 'd1'}) SET n += {text: 'three'}"); // call 1 → [1, 0]
+    assert_eq!(embedding_of(&svc, "d1"), Some(json!([1.0, 0.0])));
+}
+
+#[test]
+fn set_rel_property_reembeds_when_text_changes() {
+    let rt = Runtime::new().expect("rt");
+    let (addr, _calls) = spawn_counting_stub(&rt);
+    let svc = service_with_embedder(addr);
+
+    svc.semantic_register_rel(
+        "RELATES_TO",
+        "fact",
+        "fact_embedding",
+        IndexMode::Auto,
+        None,
+    )
+    .expect("register rel");
+    run(
+        &svc,
+        "CREATE (a:P {title: 'a'})-[:RELATES_TO {fact: 'first'}]->(b:P {title: 'b'})",
+    ); // call 0 → [0, 0]
+
+    run(&svc, "MATCH ()-[r:RELATES_TO]->() SET r.fact = 'second'"); // call 1 → [1, 0]
+    let rows = run(
+        &svc,
+        "MATCH ()-[r:RELATES_TO]->() RETURN r.fact_embedding AS e",
+    );
+    assert_eq!(
+        rows[0][0],
+        Value::List(vec![Value::Float(1.0), Value::Float(0.0)])
+    );
+}
 
 // ── Relationship auto-embed ──────────────────────────────────────────
 

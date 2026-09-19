@@ -3980,6 +3980,11 @@ impl<'a> Executor<'a> {
                     })?;
                     props.insert(prop_name.to_string(), json);
                 }
+                // Native re-embed on update (#447), mirroring `Drevo::update_node`;
+                // passing the pre-image skips when the source text is unchanged.
+                if let Some(svc) = self.native_semantic {
+                    svc.apply_auto_embeddings(&stored.kind, &mut props, Some(&stored.properties));
+                }
                 patch.properties = Some(props);
             }
         }
@@ -4013,6 +4018,10 @@ impl<'a> Executor<'a> {
                 ))
             })?;
             props.insert(prop_name.to_string(), json);
+        }
+        // Native re-embed on update (#447), mirroring `Drevo::update_edge`.
+        if let Some(svc) = self.native_semantic {
+            svc.apply_auto_embeddings_edge(&stored.kind, &mut props, Some(&stored.properties));
         }
         let patch = crate::model::EdgePatch {
             properties: Some(props),
@@ -4086,6 +4095,11 @@ impl<'a> Executor<'a> {
                 patch.body = Some(String::new());
             }
         }
+        // Native re-embed on update (#447): the merged/replaced map is the new
+        // source of truth, so embed it against the pre-image (skip-unchanged).
+        if let Some(svc) = self.native_semantic {
+            svc.apply_auto_embeddings(&stored.kind, &mut next_props, Some(&stored.properties));
+        }
         patch.properties = Some(next_props);
         self.engine().update_node(nv.id, patch)?;
         if let Some(refreshed) = self.engine().get_node(nv.id)? {
@@ -4123,6 +4137,10 @@ impl<'a> Executor<'a> {
                 })?;
                 next.insert(k.clone(), json);
             }
+        }
+        // Native re-embed on update (#447), mirroring the node replace path.
+        if let Some(svc) = self.native_semantic {
+            svc.apply_auto_embeddings_edge(&stored.kind, &mut next, Some(&stored.properties));
         }
         let patch = crate::model::EdgePatch {
             properties: Some(next),
