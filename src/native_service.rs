@@ -575,6 +575,27 @@ impl NativeService {
         Ok(self.graph.create_node(new_node)?)
     }
 
+    /// Create many nodes in one durable batch — parity with
+    /// `Drevo::create_nodes`. Each node is passed through the server-side
+    /// auto-embed step (#447) before the batch is written, so a registered
+    /// label's text property is embedded on bulk ingest exactly as it is on the
+    /// single-node [`create_node`](Self::create_node) path. Fail-open: without a
+    /// configured embedder (or for an unregistered label) the node is stored
+    /// unchanged.
+    ///
+    /// # Errors
+    /// Propagates a duplicate-title validation error (the whole batch fails and
+    /// nothing is written) or a WAL/encode failure as [`DrevoError`].
+    pub fn create_nodes(
+        &self,
+        mut new_nodes: Vec<crate::model::NewNode>,
+    ) -> Result<Vec<crate::model::Node>, DrevoError> {
+        for nn in &mut new_nodes {
+            self.apply_auto_embeddings(&nn.kind, &mut nn.properties, None);
+        }
+        Ok(self.graph.create_nodes(new_nodes)?)
+    }
+
     /// Create an edge — the engine of `POST /edges`, parity with
     /// `Drevo::create_edge`. Returns the stored edge.
     ///
@@ -1711,6 +1732,33 @@ mod health_and_batch_tests {
         svc.health_check().unwrap();
         svc.graph().create_nodes(vec![nn("a"), nn("b")]).unwrap();
         svc.health_check().unwrap();
+    }
+
+    #[test]
+    fn create_nodes_stores_the_whole_batch() {
+        // The service-level batch create (auto-embed-aware parity with
+        // `Drevo::create_nodes`) writes every node and hands back the stored
+        // rows with generated ids. Without a configured embedder the auto-embed
+        // step is a fail-open no-op, so this exercises the storage path itself.
+        let svc = NativeService::in_memory();
+        let stored = svc.create_nodes(vec![nn("a"), nn("b"), nn("c")]).unwrap();
+        assert_eq!(stored.len(), 3);
+        assert!(stored.iter().all(|n| n.id != 0), "ids are assigned");
+        assert!(svc.get_node_by_title("a").is_some());
+        assert!(svc.get_node_by_title("c").is_some());
+    }
+
+    #[test]
+    fn create_nodes_is_atomic_on_duplicate_title() {
+        // A duplicate title fails the whole batch — nothing is written, matching
+        // `NativeGraph::create_nodes`' all-or-nothing contract.
+        let svc = NativeService::in_memory();
+        svc.create_node(nn("dup")).unwrap();
+        assert!(svc.create_nodes(vec![nn("fresh"), nn("dup")]).is_err());
+        assert!(
+            svc.get_node_by_title("fresh").is_none(),
+            "the batch must not have written the first node"
+        );
     }
 }
 

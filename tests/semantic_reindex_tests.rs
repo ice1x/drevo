@@ -29,11 +29,11 @@ use serde_json::{json, Value as JsonValue};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
-use drevo::cypher::executor::{execute, ExecError, Value};
+use drevo::cypher::executor::{ExecError, Value};
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::embeddings::{EmbeddingsConfig, SyncEmbedder};
 use drevo::model::{NewNode, Properties};
+use drevo::native_service::NativeService;
 use drevo::semantic_index::IndexMode;
 
 async fn stub_embed(Json(_body): Json<JsonValue>) -> Json<JsonValue> {
@@ -57,13 +57,13 @@ fn spawn_stub(rt: &Runtime) -> SocketAddr {
     })
 }
 
-fn db_with_embedder(addr: SocketAddr) -> Drevo {
+fn db_with_embedder(addr: SocketAddr) -> NativeService {
     let cfg = EmbeddingsConfig {
         upstream: format!("http://{addr}/v1/embeddings"),
         api_key: None,
         model: Some("stub-embed".to_string()),
     };
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.set_embedder(Arc::new(SyncEmbedder::from_config(cfg).expect("embedder")));
     db
 }
@@ -82,20 +82,20 @@ fn new_node(kind: &str, title: &str, text: Option<&str>) -> NewNode {
     }
 }
 
-fn embedding_of(db: &Drevo, title: &str) -> Option<JsonValue> {
-    let node = db.get_node_by_title(title).expect("get").expect("exists");
+fn embedding_of(db: &NativeService, title: &str) -> Option<JsonValue> {
+    let node = db.get_node_by_title(title).expect("exists");
     node.properties.0.get("embedding").cloned()
 }
 
 /// Run `drevo.semantic.reindex` and return (scanned, embedded, skipped, remaining).
-fn reindex(db: &Drevo, label: &str, prop: &str, batch: usize) -> (i64, i64, i64, i64) {
+fn reindex(db: &NativeService, label: &str, prop: &str, batch: usize) -> (i64, i64, i64, i64) {
     let src = format!(
         "CALL drevo.semantic.reindex('{label}', '{prop}', {batch}) \
          YIELD scanned, embedded, skipped, remaining \
          RETURN scanned, embedded, skipped, remaining"
     );
     let q = parse(&src).expect("parse");
-    let rows = execute(&q, db, HashMap::new()).expect("execute").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("execute").rows;
     assert_eq!(rows.len(), 1);
     let int = |v: &Value| match v {
         Value::Integer(i) => *i,
@@ -134,7 +134,8 @@ fn reindex_backfills_preexisting_nodes_then_query_finds_them() {
          YIELD node, score RETURN node.title AS t",
     )
     .expect("parse");
-    assert!(execute(&q, &db, HashMap::new())
+    assert!(db
+        .execute(&q, HashMap::new())
         .expect("exec")
         .rows
         .is_empty());
@@ -146,7 +147,7 @@ fn reindex_backfills_preexisting_nodes_then_query_finds_them() {
     assert_eq!(embedding_of(&db, "old-2"), Some(json!([1.0, 0.0])));
 
     // Now the pre-existing nodes are retrievable.
-    let rows = execute(&q, &db, HashMap::new()).expect("exec").rows;
+    let rows = db.execute(&q, HashMap::new()).expect("exec").rows;
     assert_eq!(rows.len(), 2);
 }
 
@@ -221,7 +222,7 @@ fn reindex_unregistered_target_errors() {
          YIELD scanned RETURN scanned",
     )
     .expect("parse");
-    match execute(&q, &db, HashMap::new()).expect_err("should error") {
+    match db.execute(&q, HashMap::new()).expect_err("should error") {
         ExecError::InvalidProcedureCall { name, message, .. } => {
             assert_eq!(name, "drevo.semantic.reindex");
             assert!(
@@ -237,7 +238,7 @@ fn reindex_unregistered_target_errors() {
 fn reindex_without_embedder_reports_backlog() {
     // Registered Auto target but no embedder → nothing embeds, all candidates
     // reported as remaining so a client sees the backlog.
-    let db = Drevo::open_in_memory().expect("open");
+    let db = NativeService::in_memory();
     db.create_node(new_node("Doc", "d1", Some("hi")))
         .expect("create");
     db.semantic_register("Doc", "text", "embedding", IndexMode::Auto, None)
