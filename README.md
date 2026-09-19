@@ -31,27 +31,7 @@ Then open <http://localhost:8080/ui>. Full deploy options — Compose, host bind
 
 ## Use Cases
 
-drevo is a standalone embedded graph database: link it into an app as a library, or run it as a container / HTTP / Bolt service, to store, traverse, and full-text-search a property graph. Its primitives — node/edge **kinds**, arbitrary **properties**, **FTS**, **subgraph** extraction, and **transactions** — are domain-agnostic, so one engine models very different domains. A few concrete examples of what you can build on it:
-
-### CBT Journal (Cognitive Behavioral Therapy)
-
-Nodes: `thought`, `emotion`, `situation`, `cognitive_distortion`, `rational_response`. Edges: `triggered_by`, `leads_to`, `challenges`, `reframed_as`. The graph enables tracing chains of thoughts and finding recurring distortion patterns via traversal.
-
-### Scenario / Book / Story Editor
-
-Tree-structured narratives: nodes are `chapter`, `scene`, `character`, `location`, `plot_point`. Edges: `contains`, `follows`, `involves`, `takes_place_in`. Subgraph extraction gives a complete context for a scene. MCP integration allows AI agents to read/write the graph for co-authoring.
-
-### IT Task Manager
-
-Nodes: `task`, `epic`, `sprint`, `developer`, `component`. Edges: `assigned_to`, `blocks`, `part_of`, `depends_on`. BFS from a blocked task reveals the full dependency chain. Kind index enables board views (all tasks in a sprint).
-
-### ERP System
-
-Nodes: `order`, `product`, `customer`, `warehouse`, `invoice`. Edges: `ordered_by`, `contains`, `stored_in`, `billed_to`. Transactions ensure consistency when updating order status and inventory simultaneously.
-
-### Bug Tracker / Control System
-
-Nodes: `bug`, `feature`, `release`, `test_case`, `assignee`. Edges: `reported_in`, `fixed_by`, `verified_by`, `blocks_release`. FTS over bug descriptions, traversal for impact analysis.
+drevo is a standalone embedded graph database: link it into an app as a library, or run it as a container / HTTP / Bolt service, to store, traverse, and full-text-search a property graph. Its primitives — node/edge **kinds**, arbitrary **properties**, **FTS**, **subgraph** extraction, and **transactions** — are domain-agnostic, so one engine models very different domains: knowledge graphs, agent memory, narrative or document trees, dependency and catalog graphs. One worked example — drevo as agent memory:
 
 ### Agent Memory Graph
 
@@ -80,7 +60,7 @@ Because drevo runs embedded on Linux/macOS/Windows, iOS/Android, WASM, and as a 
 
 > An agent-memory MCP server that exposes this surface to MCP-capable orchestrators lives in the separate [`ice1x/drevo-mcp`](https://github.com/ice1x/drevo-mcp) repo, not here.
 
-### Common patterns across all scenarios
+### Common modeling patterns
 
 - **Node kinds** define domain entities — the `kind` field + `kind_index` provide filtered views
 - **Edge kinds** define relationships — `scan_prefix` retrieves all edges of a given type
