@@ -5,8 +5,6 @@
 //! sums and the disconnected-stays-finite behaviour. Gated on `redb-backend`
 //! for the `CALL drevo.<algo>()` procedure path.
 
-#![cfg(feature = "redb-backend")]
-
 use std::collections::HashMap;
 
 use drevo::algorithms::{closeness, closeness_native, AdjacencyList};

@@ -4,8 +4,6 @@
 //! is the oracle, and a hand-built two-cluster graph pins the structure.
 //! Gated on `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
-#![cfg(feature = "redb-backend")]
-
 use std::collections::HashMap;
 
 use drevo::algorithms::{louvain, louvain_native, AdjacencyList, LouvainConfig};

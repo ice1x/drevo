@@ -4,8 +4,6 @@
 //! (1 -> {2,3} -> 4) pins the split-dependency behaviour. Gated on
 //! `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
-#![cfg(feature = "redb-backend")]
-
 use std::collections::HashMap;
 
 use drevo::algorithms::{betweenness, betweenness_native, AdjacencyList};

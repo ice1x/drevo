@@ -38,8 +38,6 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-#[cfg(feature = "redb-backend")]
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -54,8 +52,6 @@ use crate::model::{
 };
 use crate::property_index;
 use crate::semantic_index::{IndexError, IndexMode, SemanticIndex, SemanticIndexRegistry};
-#[cfg(feature = "redb-backend")]
-use crate::storage::RedbBackend;
 use crate::storage::{MemoryBackend, StorageBackend};
 use crate::vector::store as vector_store;
 use crate::vector::{HnswConfig, HnswIndex, Vector};
@@ -73,23 +69,6 @@ const META_SEMANTIC_REGISTRY: &[u8] = b"meta:semantic_registry";
 /// Meta key for the persisted #266 relationship semantic-index registry — the
 /// edge-side mirror of [`META_SEMANTIC_REGISTRY`].
 const META_SEMANTIC_REL_REGISTRY: &[u8] = b"meta:semantic_rel_registry";
-
-/// Meta key stamping the on-disk FTS index layout (#275). Absent (or not equal
-/// to [`FTS_FORMAT_POSTING`]) means the file predates the posting-list layout
-/// (one row per `(trigram, node)`); [`Drevo::ensure_fts_posting_format`]
-/// rebuilds the index on open and stamps this. Value is a single version byte.
-// redb-only: reachable only from the redb-gated open/migration path; kept
-// (not `#[cfg]`-removed) because tests reference it. Removed wholesale in #444 P8.
-#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-const META_FTS_FORMAT: &[u8] = b"meta:fts_format";
-
-/// Current FTS layout version for `fts:{trigram}:` -> packed node posting list.
-/// v2 (#275 slice 2): entries are bare `u64` node ids. v3 (PR-2): entries are
-/// `(u64 id, u32 tf)` — the per-document term frequency stored inline, so BM25
-/// scores a candidate from the index without a per-candidate node read. A bump
-/// makes [`Drevo::ensure_fts_posting_format`] rebuild the index on next open.
-#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-const FTS_FORMAT_POSTING: u8 = 3;
 
 /// The reserved property key holding a node's secondary `:Label`s (mirrors the
 /// private constant in [`crate::cypher::executor`]). #251 slice 4 matches
@@ -137,15 +116,6 @@ const PREFIX_OUT: &[u8] = b"out:";
 /// Key prefix for incoming adjacency. v2 layout (#243 slice 2):
 /// `in:{to_id}:{kind}:{edge_id}` -> `(from_id, kind)`.
 const PREFIX_IN: &[u8] = b"in:";
-
-/// Current adjacency-index layout **major** version this build reads and
-/// writes (#243 slice 2 — the kind-in-key layout). Kept in lockstep with the
-/// redb on-disk [`crate::storage::redb::FORMAT_MAJOR`]; a
-/// `debug_assert`-backed test pins them equal. A database whose adjacency
-/// index is an older major is refused by [`Drevo::open`] with
-/// [`DrevoError::NeedsMigration`] until [`Drevo::migrate_adjacency`] upgrades
-/// it.
-const ADJ_FORMAT_MAJOR: u32 = 2;
 
 /// Key prefix for node kind index: `node_kind:{kind}:{node_id}` -> empty.
 const PREFIX_NODE_KIND: &[u8] = b"node_kind:";
@@ -650,14 +620,13 @@ pub struct KeyspaceStat {
 
 /// Opt-in policy for automatic compaction (#253 slice 2).
 ///
-/// redb only reclaims high-water-mark bloat on an explicit `compact()`, which
-/// needs **exclusive** access to the file (see [`Drevo::compact`]). The single
-/// point where a [`Drevo`] handle is the sole owner of its backend is right
-/// after [`Drevo::open`] builds it — before it is shared behind an `Arc`. This
-/// policy lets that open path reclaim bloat automatically when a database has
-/// grown past a configured ratio, so a churny long-lived store (the
-/// agent-memory / KG workload) stays bounded across restarts instead of
-/// climbing forever.
+/// A backend reclaims high-water-mark bloat only on an explicit `compact()`,
+/// which needs **exclusive** access (see [`Drevo::compact`]). The single point
+/// where a [`Drevo`] handle is the sole owner of its backend is right after it
+/// is built — before it is shared behind an `Arc`. This policy lets that open
+/// path reclaim bloat automatically when a database has grown past a configured
+/// ratio, so a churny long-lived store (the agent-memory / KG workload) stays
+/// bounded instead of climbing forever.
 ///
 /// **Disabled by default** — bloat reclamation stays a deliberate opt-in
 /// (`DREVO_AUTO_COMPACT=1`). See [`AutoCompactPolicy::from_env`] for the knobs.
@@ -720,221 +689,7 @@ impl AutoCompactPolicy {
     }
 }
 
-/// Direction of the #243 slice 2 adjacency-format migration, as passed to
-/// [`Drevo::migrate`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MigrationDirection {
-    /// Upgrade a legacy (v1) database to the current kind-in-key layout.
-    /// After a successful `Up`, the file opens normally.
-    Up,
-    /// Downgrade a kind-in-key (v2) database back to the v1 layout so an
-    /// older, pre-#243-slice-2 drevo build can read it again.
-    Down,
-}
-
 impl Drevo {
-    /// Open a disk-backed database at the given path.
-    ///
-    /// Creates the database file if it does not exist.
-    /// Loads auto-increment counters from the stored metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DrevoError::Storage`] if the backend cannot be opened.
-    ///
-    /// # Availability
-    ///
-    /// This method requires the `redb-backend` feature and is not available
-    /// on `wasm32` targets. Use [`open_in_memory`](Self::open_in_memory) instead.
-    #[cfg(feature = "redb-backend")]
-    pub fn open(path: &Path) -> Result<Self> {
-        let mut db = Self::open_ungated(path)?;
-        // #243 slice 2: refuse a database whose adjacency index predates the
-        // kind-in-key layout, rather than silently misreading it. The graph
-        // is never at risk — the fix is a reversible, index-only migration.
-        if db.adjacency_needs_migration()? {
-            let found_major = db.backend.format_major()?.unwrap_or(1);
-            return Err(DrevoError::NeedsMigration {
-                found_major,
-                required_major: ADJ_FORMAT_MAJOR,
-            });
-        }
-        // #275: rebuild the FTS index into the posting-list layout on the first
-        // open of a file written by an older drevo. Derived-index reindex, not a
-        // graph migration — the graph is never at risk, and it runs once.
-        db.ensure_fts_posting_format()?;
-        // #253 slice 2: opt-in automatic compaction. This is the one moment the
-        // handle solely owns its backend (refcount 1), satisfying compact()'s
-        // exclusive-access requirement. Best-effort: the graph data is intact
-        // whether or not the reclaim succeeds, so a maintenance failure must
-        // never deny access — it is logged (when tracing is built in) and
-        // swallowed rather than propagated.
-        let policy = AutoCompactPolicy::from_env(|k| std::env::var(k).ok());
-        if policy.enabled {
-            match db.maybe_auto_compact(&policy) {
-                Ok(Some(_report)) => {
-                    #[cfg(feature = "http")]
-                    tracing::info!(
-                        reclaimed = _report.bytes_reclaimed,
-                        "auto-compaction reclaimed storage on open"
-                    );
-                }
-                Ok(None) => {}
-                Err(_e) => {
-                    #[cfg(feature = "http")]
-                    tracing::warn!(error = %_e, "auto-compaction on open failed (ignored)");
-                }
-            }
-        }
-        Ok(db)
-    }
-
-    /// Open the redb-backed handle **without** the #243 slice 2 migration
-    /// gate. Used by [`Self::open`] (which then runs the gate) and by
-    /// [`Self::migrate`] (which must open a pre-migration file to upgrade it).
-    #[cfg(feature = "redb-backend")]
-    fn open_ungated(path: &Path) -> Result<Self> {
-        let backend = RedbBackend::open(path)?;
-        let backend = crate::storage::EpochBackend::new(Box::new(backend));
-        let (next_node_id, next_edge_id, drift_repaired) = Self::load_counters(&backend)?;
-        // Restore any persisted semantic-index registry (#251) so registered
-        // auto-embedding targets survive a restart. The relationship registry
-        // (#266) is restored the same way from its own meta key.
-        let semantic = Self::load_semantic_registry(&backend, META_SEMANTIC_REGISTRY);
-        let rel_semantic = Self::load_semantic_registry(&backend, META_SEMANTIC_REL_REGISTRY);
-        Ok(Self {
-            backend,
-            next_node_id: AtomicU64::new(next_node_id),
-            next_edge_id: AtomicU64::new(next_edge_id),
-            counter_drift_repaired: AtomicBool::new(drift_repaired),
-            txs: Mutex::new(HashMap::new()),
-            next_tx_id: AtomicU64::new(1),
-            fts_lock: Mutex::new(()),
-            semantic: Mutex::new(semantic),
-            #[cfg(feature = "http")]
-            embedder: std::sync::OnceLock::new(),
-            #[cfg(feature = "http")]
-            embed_failures: Mutex::new(std::collections::HashMap::new()),
-            #[cfg(feature = "http")]
-            embedder_dimension: Mutex::new(None),
-            rel_semantic: Mutex::new(rel_semantic),
-        })
-    }
-
-    /// Open a database that needs migration, run the #243 slice 2 adjacency
-    /// migration in the requested `direction`, and return the number of edges
-    /// re-indexed.
-    ///
-    /// `direction` is [`MigrationDirection::Up`] to upgrade a legacy file to
-    /// the kind-in-key layout (the common case — after this the file opens
-    /// normally) or [`MigrationDirection::Down`] to revert to the v1 layout so
-    /// an older drevo build can read it again.
-    ///
-    /// The migration is **safe**: it rebuilds the derived `out:`/`in:`
-    /// adjacency index from the intact node/edge records, so an interrupted
-    /// run loses no graph data and simply resumes on the next call (the
-    /// per-edge rewrite is idempotent). Callers SHOULD still take a GraphML
-    /// backup first — the `drevo migrate` CLI does so automatically.
-    ///
-    /// # Availability
-    ///
-    /// Requires the `redb-backend` feature; the ephemeral in-memory backend is
-    /// always current and never needs migration.
-    #[cfg(feature = "redb-backend")]
-    pub fn migrate(path: &Path, direction: MigrationDirection) -> Result<u64> {
-        let db = Self::open_ungated(path)?;
-        let to_major = match direction {
-            MigrationDirection::Up => ADJ_FORMAT_MAJOR,
-            MigrationDirection::Down => 1,
-        };
-        db.migrate_adjacency(to_major)
-    }
-
-    /// Whether the open database's adjacency index predates the current
-    /// kind-in-key layout and must be migrated (#243 slice 2).
-    ///
-    /// Two independent signals are consulted so the gate is robust: the
-    /// persisted format-version stamp (`< ADJ_FORMAT_MAJOR` ⇒ not yet
-    /// migrated, and — because [`Self::migrate_adjacency`] stamps only on
-    /// completion — also catches a half-finished migration), and a direct
-    /// sample of an actual adjacency key (catches a pre-versioning file that
-    /// the storage layer stamped current but whose keys are still v1).
-    /// Backends without a durable stamp (in-memory) rely on the sample alone,
-    /// which for a freshly written database is unambiguously v2.
-    #[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-    fn adjacency_needs_migration(&self) -> Result<bool> {
-        if let Some(major) = self.backend.format_major()? {
-            if major < ADJ_FORMAT_MAJOR {
-                return Ok(true);
-            }
-        }
-        for prefix in [PREFIX_OUT, PREFIX_IN] {
-            let sample = self.backend.scan_prefix_limited(prefix, None, 1)?;
-            if sample
-                .first()
-                .is_some_and(|(key, _)| adjacency_key_is_v1(key, prefix))
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// Rewrite the `out:`/`in:` adjacency index into the layout for
-    /// `to_major` (2 = kind-in-key, 1 = legacy) and re-stamp the on-disk
-    /// format version (#243 slice 2).
-    ///
-    /// The index is a projection of the edge records, so this rebuilds it from
-    /// scratch: for every edge it deletes both possible key layouts (making
-    /// the operation idempotent and direction-agnostic) and writes the target
-    /// layout with the denormalized `(neighbor_id, kind)` value. The node and
-    /// edge tables are never touched, so the graph cannot be lost even if the
-    /// process is killed mid-run — the format stamp is written last, so an
-    /// interrupted migration still reports "needs migration" and completes on
-    /// the next call.
-    ///
-    /// Returns the number of edges re-indexed.
-    pub fn migrate_adjacency(&self, to_major: u32) -> Result<u64> {
-        let edge_entries = self.backend.scan_prefix(PREFIX_EDGE)?;
-        let mut migrated = 0u64;
-        for (key, bytes) in &edge_entries {
-            if key.len() != PREFIX_EDGE.len() + 8 {
-                continue; // not an edge record row
-            }
-            let edge = deserialize_edge(bytes)?;
-            // Drop whichever layout currently holds this edge's entries.
-            self.backend
-                .delete(&out_edge_key_v1(edge.from_id, edge.id))?;
-            self.backend.delete(&in_edge_key_v1(edge.to_id, edge.id))?;
-            self.backend
-                .delete(&out_edge_key(edge.from_id, &edge.kind, edge.id))?;
-            self.backend
-                .delete(&in_edge_key(edge.to_id, &edge.kind, edge.id))?;
-            // Write the target layout with a fully denormalized value.
-            let (out_key, in_key) = if to_major >= ADJ_FORMAT_MAJOR {
-                (
-                    out_edge_key(edge.from_id, &edge.kind, edge.id),
-                    in_edge_key(edge.to_id, &edge.kind, edge.id),
-                )
-            } else {
-                (
-                    out_edge_key_v1(edge.from_id, edge.id),
-                    in_edge_key_v1(edge.to_id, edge.id),
-                )
-            };
-            self.backend
-                .put(&out_key, &adjacency_value(edge.to_id, &edge.kind))?;
-            self.backend
-                .put(&in_key, &adjacency_value(edge.from_id, &edge.kind))?;
-            migrated += 1;
-        }
-        self.backend.flush()?;
-        // Stamp last: the on-disk version only advances once every edge is
-        // re-indexed, so a crash before this point re-triggers the gate.
-        self.backend.set_format_version(to_major, 0)?;
-        Ok(migrated)
-    }
-
     /// Register (or re-enable) a semantic-index target and return its current
     /// [`SemanticIndex`] record (#251 Phase 21 control plane).
     ///
@@ -1008,16 +763,6 @@ impl Drevo {
         if let Err(_e) = self.backend.put(key, &bytes) {
             #[cfg(feature = "http")]
             tracing::warn!(error = %_e, "failed to persist semantic registry (ignored)");
-        }
-    }
-
-    /// Load a persisted semantic-index registry from `key`, or an empty one when
-    /// absent or unreadable (#251 / #266). Used by [`Self::open`].
-    #[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-    fn load_semantic_registry(backend: &dyn StorageBackend, key: &[u8]) -> SemanticIndexRegistry {
-        match backend.get(key) {
-            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
-            _ => SemanticIndexRegistry::new(),
         }
     }
 
@@ -1796,36 +1541,6 @@ impl Drevo {
         Ok(out)
     }
 
-    /// Open a disk-backed database and run [`Self::check_integrity`] in
-    /// one shot.
-    ///
-    /// Returns the live database handle alongside an [`IntegrityReport`]
-    /// summarising any structural anomalies discovered on this open. The
-    /// counter rescan that fixes the headline crash-recovery bug runs
-    /// inside [`Self::open`] regardless — `recover` adds the integrity
-    /// scan so operators can react to surprises after a known-bad crash
-    /// instead of opening blind.
-    ///
-    /// Cost: one extra full scan of `node:` + `edge:` + every secondary
-    /// index — proportional to the database size, *not* to anything in
-    /// memory. Call this on a known-bad open path, not on every start.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DrevoError::Storage`] / [`DrevoError::Decode`] if the
-    /// scan itself fails — that is a hard failure distinct from the
-    /// soft-warning counts the [`IntegrityReport`] surfaces.
-    ///
-    /// # Availability
-    ///
-    /// Requires the `redb-backend` feature; mirrors [`open`](Self::open).
-    #[cfg(feature = "redb-backend")]
-    pub fn recover(path: &Path) -> Result<(Self, IntegrityReport)> {
-        let db = Self::open(path)?;
-        let report = db.check_integrity()?;
-        Ok((db, report))
-    }
-
     /// Open an ephemeral in-memory database.
     ///
     /// Data is lost when the database is dropped. Useful for tests
@@ -1969,10 +1684,9 @@ impl Drevo {
     ///
     /// This needs the same **exclusive** access as [`Self::compact`] (it calls
     /// it), so it is only safe to invoke while this handle is the sole owner of
-    /// the backend — which is exactly the case inside [`Self::open`], before the
-    /// handle is shared behind an `Arc`. That is where the opt-in automatic
-    /// trigger lives; embedders can also call this directly at any quiescent
-    /// point they control.
+    /// the backend — which is exactly the case right after a fresh handle is
+    /// built, before it is shared behind an `Arc`. Embedders can also call this
+    /// directly at any quiescent point they control.
     pub fn maybe_auto_compact(
         &mut self,
         policy: &AutoCompactPolicy,
@@ -2157,54 +1871,6 @@ impl Drevo {
     ) -> Result<()> {
         let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
         fts_index::deindex_node_with_props(&self.backend, node_id, title, body, properties)
-    }
-
-    /// Ensure the FTS index is in the #275 posting-list layout, rebuilding it
-    /// from source on the first open of a database written by an older drevo
-    /// (which stored one empty row per `(trigram, node)`).
-    ///
-    /// This is a **derived-index reindex, not a graph-data migration**: nodes,
-    /// edges, and their properties are never touched, and no `FORMAT_MAJOR` is
-    /// bumped. It clears every existing `fts:` / `ftslen:` row in one
-    /// `delete_batch` (millions of old rows → one commit) and rewrites the whole
-    /// index from the current nodes in one `put_batch`, then stamps
-    /// [`META_FTS_FORMAT`] so it runs exactly once. Idempotent: on an
-    /// already-current file it is a single `get` and returns.
-    #[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-    fn ensure_fts_posting_format(&self) -> Result<()> {
-        if self.backend.get(META_FTS_FORMAT)?.as_deref() == Some(&[FTS_FORMAT_POSTING]) {
-            return Ok(());
-        }
-        let _guard = self.fts_lock.lock().unwrap_or_else(|e| e.into_inner());
-        // Clear any existing node + edge FTS rows (old per-pair format or a
-        // partial index). The `b"..."` literals mirror the fts modules' PREFIX_*
-        // wire prefixes (node: fts:/ftslen:, edge: efts:/eftslen:).
-        let mut stale: Vec<Vec<u8>> = Vec::new();
-        for prefix in [b"fts:".as_slice(), b"ftslen:", b"efts:", b"eftslen:"] {
-            for (key, _) in self.backend.scan_prefix(prefix)? {
-                stale.push(key);
-            }
-        }
-        self.backend.delete_batch(&stale)?;
-
-        // Rebuild the whole posting-list index from source nodes + edges, each
-        // in one batch.
-        let nodes = self.collect_all_nodes()?;
-        let node_docs: Vec<(u64, &str, &str, &Properties)> = nodes
-            .iter()
-            .map(|n| (n.id, n.title.as_str(), n.body.as_str(), &n.properties))
-            .collect();
-        self.backend
-            .put_batch(&fts_index::build_full_index_batch(&node_docs))?;
-
-        let edges = self.collect_all_edges()?;
-        let edge_docs: Vec<(u64, &Properties)> =
-            edges.iter().map(|e| (e.id, &e.properties)).collect();
-        self.backend
-            .put_batch(&edge_index::build_full_edge_index_batch(&edge_docs))?;
-
-        self.backend.put(META_FTS_FORMAT, &[FTS_FORMAT_POSTING])?;
-        Ok(())
     }
 
     /// Storage writes to insert a **verbatim** [`Edge`] (id / uuid / timestamp
@@ -4705,67 +4371,6 @@ impl Drevo {
         Ok(edges)
     }
 
-    /// Load auto-increment counters with a max-scan recovery pass.
-    ///
-    /// Phase 9 task `00053`. Returns `(next_node_id, next_edge_id,
-    /// drift_repaired)`. The persisted `meta:next_*_id` values are read
-    /// first (default to 1 if missing); then the `node:` and `edge:`
-    /// prefixes are scanned to find the highest id already stored. The
-    /// effective counter is `max(persisted, max_stored + 1)` — so if a
-    /// process is killed between two `create_node` calls (before
-    /// `close()` ever persists the bumped counter), the next `Drevo::open`
-    /// still hands out a fresh id instead of colliding with an already-
-    /// stored row. `drift_repaired` reflects whether the rescan had to
-    /// clamp the counter upward; it surfaces through
-    /// [`IntegrityReport::counter_drift_repaired`].
-    #[cfg(feature = "redb-backend")]
-    fn load_counters(backend: &dyn StorageBackend) -> Result<(u64, u64, bool)> {
-        let persisted_node = match backend.get(META_NEXT_NODE_ID)? {
-            Some(bytes) => u64_from_bytes(&bytes),
-            None => 1,
-        };
-        let persisted_edge = match backend.get(META_NEXT_EDGE_ID)? {
-            Some(bytes) => u64_from_bytes(&bytes),
-            None => 1,
-        };
-
-        let max_node_id = Self::scan_max_id(backend, PREFIX_NODE)?;
-        let max_edge_id = Self::scan_max_id(backend, PREFIX_EDGE)?;
-
-        // The on-disk rows are the source of truth — the persisted
-        // counter is a hint. After a crash the persisted counter may be
-        // stale (only `close()` writes it); the rescan ensures the next
-        // allocation cannot collide with an existing id.
-        let next_node = std::cmp::max(persisted_node, max_node_id.map_or(1, |m| m + 1));
-        let next_edge = std::cmp::max(persisted_edge, max_edge_id.map_or(1, |m| m + 1));
-        let drift_repaired = next_node > persisted_node || next_edge > persisted_edge;
-
-        Ok((next_node, next_edge, drift_repaired))
-    }
-
-    /// Scan the given prefix (one of `PREFIX_NODE` / `PREFIX_EDGE`) and
-    /// return the highest 8-byte little-endian id appended after the
-    /// prefix — the recovery primitive used by `load_counters`.
-    ///
-    /// `node:` and `edge:` are substrings of `node_uuid:` / `edge_uuid:`
-    /// etc., so the per-key length guard isolates the data rows from the
-    /// secondary-index rows. Returns `None` on an empty database.
-    #[cfg(feature = "redb-backend")]
-    fn scan_max_id(backend: &dyn StorageBackend, prefix: &[u8]) -> Result<Option<u64>> {
-        let entries = backend.scan_prefix(prefix)?;
-        let mut max_id: Option<u64> = None;
-        for (key, _) in entries {
-            if key.len() != prefix.len() + 8 {
-                continue;
-            }
-            let mut arr = [0u8; 8];
-            arr.copy_from_slice(&key[prefix.len()..]);
-            let id = u64::from_le_bytes(arr);
-            max_id = Some(max_id.map_or(id, |m| m.max(id)));
-        }
-        Ok(max_id)
-    }
-
     /// Run an integrity scan and return a structured [`IntegrityReport`].
     ///
     /// Phase 9 task `00053`. Scans every secondary index and the
@@ -4932,23 +4537,6 @@ impl Drevo {
         })
     }
 
-    /// Load auto-increment counters from storage metadata — legacy entry
-    /// retained for tests that pre-date the recovery rescan. Returns just
-    /// the persisted counters, no rescan.
-    #[cfg(all(feature = "redb-backend", test))]
-    #[allow(dead_code)]
-    fn load_counters_persisted_only(backend: &dyn StorageBackend) -> Result<(u64, u64)> {
-        let node_id = match backend.get(META_NEXT_NODE_ID)? {
-            Some(bytes) => u64_from_bytes(&bytes),
-            None => 1,
-        };
-        let edge_id = match backend.get(META_NEXT_EDGE_ID)? {
-            Some(bytes) => u64_from_bytes(&bytes),
-            None => 1,
-        };
-        Ok((node_id, edge_id))
-    }
-
     /// Persist current auto-increment counters to storage metadata.
     fn persist_counters(&self) -> Result<()> {
         let node_id = self.next_node_id.load(Ordering::Relaxed);
@@ -5046,29 +4634,6 @@ fn adjacency_key(prefix: &[u8], node_id: u64, kind: &str, edge_id: u64) -> Vec<u
     key
 }
 
-/// Build the **legacy v1** outgoing adjacency key `out:{from_id}:{edge_id}`.
-///
-/// Retained only for the format migration ([`Drevo::migrate_adjacency`]),
-/// which must delete the exact pre-v2 keys, and for the byte-format tests.
-fn out_edge_key_v1(from_id: u64, edge_id: u64) -> Vec<u8> {
-    adjacency_key_v1(PREFIX_OUT, from_id, edge_id)
-}
-
-/// Build the **legacy v1** incoming adjacency key `in:{to_id}:{edge_id}`.
-fn in_edge_key_v1(to_id: u64, edge_id: u64) -> Vec<u8> {
-    adjacency_key_v1(PREFIX_IN, to_id, edge_id)
-}
-
-/// Shared builder for the v1 adjacency layout `{prefix}{node_id_8}:{edge_id_8}`.
-fn adjacency_key_v1(prefix: &[u8], node_id: u64, edge_id: u64) -> Vec<u8> {
-    let mut key = Vec::with_capacity(prefix.len() + 8 + 1 + 8);
-    key.extend_from_slice(prefix);
-    key.extend_from_slice(&node_id.to_le_bytes());
-    key.push(b':');
-    key.extend_from_slice(&edge_id.to_le_bytes());
-    key
-}
-
 /// Build the scan prefix for **all** outgoing edges of a node:
 /// `out:{node_id}:`. Matches both v1 and v2 keys (the kind segment sits after
 /// this prefix), so full fan-out and the migration scan are layout-agnostic.
@@ -5114,19 +4679,6 @@ fn adjacency_kind_prefix(prefix: &[u8], node_id: u64, kind: &str) -> Vec<u8> {
     key.extend_from_slice(kind.as_bytes());
     key.push(b':');
     key
-}
-
-/// Classify an adjacency key as legacy **v1** (`{prefix}{node_8}:{edge_8}`)
-/// versus **v2** (`{prefix}{node_8}:{kind}:{edge_8}`, #243 slice 2).
-///
-/// A v1 key has exactly 8 bytes after the `{prefix}{node_8}:` header (the
-/// edge id); a v2 key has the `{kind}:` segment in between, so ≥ 9 bytes
-/// remain (an empty kind still contributes the extra `:` delimiter). Used by
-/// the open-time migration gate and never on the read hot path.
-#[cfg_attr(not(feature = "redb-backend"), allow(dead_code))]
-fn adjacency_key_is_v1(key: &[u8], prefix: &[u8]) -> bool {
-    let header = prefix.len() + 8 + 1; // {prefix}{node_8}:
-    key.len() == header + 8
 }
 
 /// Decode the first u64 from an `out:`/`in:` adjacency key.
@@ -5404,79 +4956,6 @@ mod tests {
         db.compact().unwrap();
     }
 
-    // --- open (disk-backed) ---
-
-    #[test]
-    fn open_creates_new_db() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let db = Drevo::open(&path).unwrap();
-        assert_eq!(db.next_node_id.load(Ordering::Relaxed), 1);
-        assert_eq!(db.next_edge_id.load(Ordering::Relaxed), 1);
-        db.close().unwrap();
-    }
-
-    #[test]
-    fn open_persists_counters_across_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-
-        // Open, allocate some IDs, close
-        {
-            let db = Drevo::open(&path).unwrap();
-            assert_eq!(db.alloc_node_id(), 1);
-            assert_eq!(db.alloc_node_id(), 2);
-            assert_eq!(db.alloc_node_id(), 3);
-            assert_eq!(db.alloc_edge_id(), 1);
-            assert_eq!(db.alloc_edge_id(), 2);
-            db.close().unwrap();
-        }
-
-        // Reopen and verify counters continue
-        {
-            let db = Drevo::open(&path).unwrap();
-            assert_eq!(db.next_node_id.load(Ordering::Relaxed), 4);
-            assert_eq!(db.next_edge_id.load(Ordering::Relaxed), 3);
-            assert_eq!(db.alloc_node_id(), 4);
-            assert_eq!(db.alloc_edge_id(), 3);
-            db.close().unwrap();
-        }
-    }
-
-    #[test]
-    fn open_without_close_loses_counter_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-
-        // Open and allocate without closing properly
-        {
-            let db = Drevo::open(&path).unwrap();
-            let _ = db.alloc_node_id();
-            let _ = db.alloc_node_id();
-            // Drop without close — counters not persisted
-        }
-
-        // Reopen — counters should be back at 1
-        {
-            let db = Drevo::open(&path).unwrap();
-            assert_eq!(db.next_node_id.load(Ordering::Relaxed), 1);
-            db.close().unwrap();
-        }
-    }
-
-    #[test]
-    fn compact_persists_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let mut db = Drevo::open(&path).unwrap();
-        let report = db.compact().unwrap();
-        // Disk-backed → both sizes measurable, bytes_after <= bytes_before.
-        assert!(report.bytes_before.is_some());
-        assert!(report.bytes_after.is_some());
-        assert!(report.bytes_after.unwrap() <= report.bytes_before.unwrap());
-        db.close().unwrap();
-    }
-
     // --- health_check (task 00048) ---
 
     #[test]
@@ -5500,16 +4979,6 @@ mod tests {
             .unwrap();
         db.health_check()
             .expect("health_check after node creation must succeed");
-    }
-
-    #[test]
-    fn health_check_succeeds_on_redb_backend() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("hc.db");
-        let db = Drevo::open(&path).unwrap();
-        db.health_check()
-            .expect("health_check on redb-backed DB must succeed");
-        db.close().unwrap();
     }
 
     // --- Debug ---
@@ -5690,26 +5159,10 @@ mod tests {
     }
 
     #[test]
-    fn adjacency_key_classifier_distinguishes_v1_and_v2() {
-        let v1 = out_edge_key_v1(1, 42);
-        let v2 = out_edge_key(1, "likes", 42);
-        let v2_empty_kind = out_edge_key(1, "", 42);
-        assert!(adjacency_key_is_v1(&v1, PREFIX_OUT));
-        assert!(!adjacency_key_is_v1(&v2, PREFIX_OUT));
-        // Even an empty-kind v2 key carries the extra ':' delimiter, so it is
-        // never mistaken for v1.
-        assert!(!adjacency_key_is_v1(&v2_empty_kind, PREFIX_OUT));
-    }
-
-    #[test]
-    fn edge_id_from_adjacency_key_valid_for_both_layouts() {
-        // The edge id is the last 8 bytes in both layouts.
+    fn edge_id_from_adjacency_key_reads_trailing_id() {
+        // The edge id is the last 8 bytes of a kind-in-key (v2) adjacency key.
         assert_eq!(
             edge_id_from_adjacency_key(&out_edge_key(1, "likes", 42), PREFIX_OUT),
-            42
-        );
-        assert_eq!(
-            edge_id_from_adjacency_key(&out_edge_key_v1(1, 42), PREFIX_OUT),
             42
         );
         assert_eq!(
@@ -5723,15 +5176,6 @@ mod tests {
         let prefix = b"out:";
         let key = b"out:short";
         assert_eq!(edge_id_from_adjacency_key(key, prefix), 0);
-    }
-
-    #[cfg(feature = "redb-backend")]
-    #[test]
-    fn adjacency_format_major_matches_on_disk_format_major() {
-        // The adjacency layout version and the redb on-disk format version are
-        // bumped together (#243 slice 2), so a v2 adjacency file is exactly the
-        // set of files an old build refuses via the on-disk major check.
-        assert_eq!(ADJ_FORMAT_MAJOR, crate::storage::redb::FORMAT_MAJOR);
     }
 
     // --- Bloat report (#253 slice 1) ---
@@ -5804,167 +5248,10 @@ mod tests {
         assert_eq!(report.bloat_ratio, None);
     }
 
-    #[cfg(feature = "redb-backend")]
-    #[test]
-    fn bloat_report_on_disk_measures_file_and_ratio() {
-        use crate::model::{NewNode, Properties};
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("bloat.redb");
-        let db = Drevo::open(&path).unwrap();
-        for i in 0..10 {
-            db.create_node(NewNode {
-                kind: "n".into(),
-                title: format!("t{i}"),
-                body: "x".repeat(64),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .unwrap();
-        }
-        db.close().unwrap();
-
-        let db = Drevo::open(&path).unwrap();
-        let report = db.bloat_report().unwrap();
-        assert!(report.file_bytes.is_some(), "disk backend measures itself");
-        assert_eq!(report.node_count, 10);
-        assert!(report.logical_bytes > 0);
-        // stored_bytes = records + indexes ≥ records-only logical_bytes.
-        assert!(report.stored_bytes >= report.logical_bytes);
-        assert_eq!(
-            report.index_bytes,
-            report.stored_bytes - report.logical_bytes
-        );
-        // The honest ratio divides the file by the FULL stored footprint, so it
-        // is defined and ≥ 1 (the physical file always covers its own data).
-        let ratio = report.bloat_ratio.expect("ratio defined on disk");
-        assert!(ratio >= 1.0, "physical must be ≥ stored, got {ratio}");
-    }
-
-    #[cfg(feature = "redb-backend")]
-    #[test]
-    fn shrink_online_preserves_graph_and_reports() {
-        // Graph-integrity + wiring proof for the online shrink. (The *file
-        // actually shrinks* under real bloat is proven at the storage layer in
-        // `storage::redb::tests::shrink_rebuild_reclaims_bloat_and_preserves_data`;
-        // here we keep the dataset small — one batched commit — so the test is
-        // fast, and only assert the file does not grow.)
-        use crate::model::{NewEdge, NewNode, Properties};
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("shrink.redb");
-        let db = Drevo::open(&path).unwrap();
-
-        let new_nodes: Vec<NewNode> = (0..20u32)
-            .map(|i| NewNode {
-                kind: "note".into(),
-                title: format!("title {i}"),
-                body: "anxious deadlines graph vectors embeddings semantic search relationships"
-                    .into(),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .collect();
-        let nodes = db.create_nodes(new_nodes).unwrap();
-        let ids: Vec<u64> = nodes.iter().map(|n| n.id).collect();
-        let edge = db
-            .create_edge(NewEdge {
-                from_id: ids[0],
-                to_id: ids[1],
-                kind: "relates".into(),
-                properties: Properties::default(),
-                weight: 1.0,
-            })
-            .unwrap();
-        // A little churn so there is at least some reclaimable slack.
-        for &id in &ids[2..] {
-            db.delete_node(id).unwrap();
-        }
-        let before = db.file_bytes().unwrap().unwrap();
-
-        // Online shrink on a shared handle (&self) — no exclusive ownership.
-        let report = db
-            .shrink_online()
-            .unwrap()
-            .expect("disk-backed database shrinks online");
-        let after = db.file_bytes().unwrap().unwrap();
-        assert_eq!(report.bytes_before, Some(before));
-        assert_eq!(report.bytes_after, Some(after));
-        assert!(
-            after <= before,
-            "rebuild must never grow the file: {after} > {before}"
-        );
-        assert_eq!(report.bytes_reclaimed, before.saturating_sub(after));
-
-        // Graph survives verbatim: the two kept nodes + their edge, deleted
-        // nodes gone, FTS still finds the survivors, and the handle keeps
-        // working (a further write commits to the swapped-in file).
-        assert!(db.get_node(ids[0]).unwrap().is_some());
-        assert!(db.get_node(ids[1]).unwrap().is_some());
-        assert!(db.get_node(ids[19]).unwrap().is_none());
-        assert!(db.get_edge(edge.id).unwrap().is_some());
-        assert!(
-            !db.search_fts("deadlines", 10).unwrap().is_empty(),
-            "FTS index survived the rebuild"
-        );
-        let n = db
-            .create_node(NewNode {
-                kind: "note".into(),
-                title: "after shrink".into(),
-                body: "still writable".into(),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .unwrap();
-        assert!(db.get_node(n.id).unwrap().is_some());
-    }
-
     #[test]
     fn shrink_online_is_none_for_in_memory() {
         let db = Drevo::open_in_memory().unwrap();
         assert!(db.shrink_online().unwrap().is_none());
-    }
-
-    /// Regression guard for the honest ratio: on a text-heavy graph the FTS
-    /// trigram index dominates the record rows, so `index_bytes` exceeds
-    /// `logical_bytes`. The old `file / logical_bytes` ratio double-counted that
-    /// index as "bloat"; the new `file / stored_bytes` ratio must not.
-    #[cfg(feature = "redb-backend")]
-    #[test]
-    fn bloat_report_ratio_excludes_fts_index_footprint() {
-        use crate::model::{NewNode, Properties};
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("fts_bloat.redb");
-        let db = Drevo::open(&path).unwrap();
-        // Batch-create (one commit) so this stays fast on the slow CI runner.
-        let nodes: Vec<NewNode> = (0..50)
-            .map(|i| NewNode {
-                kind: "n".into(),
-                title: format!("t{i}"),
-                body: format!(
-                    "node {i} anxious deadlines mentoring graph vectors embeddings \
-                     semantic search relationships knowledge base entity {i} lorem \
-                     ipsum dolor sit amet consectetur adipiscing elit sed eiusmod"
-                ),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .collect();
-        db.create_nodes(nodes).unwrap();
-        let report = db.bloat_report().unwrap();
-        // FTS trigrams over the bodies make the index footprint dominate.
-        assert!(
-            report.index_bytes > report.logical_bytes,
-            "index ({}) should dwarf records ({}) for text-heavy data",
-            report.index_bytes,
-            report.logical_bytes
-        );
-        let honest = report.bloat_ratio.expect("disk ratio defined");
-        // The misleading old metric (file / logical) would read strictly larger,
-        // because it divides by a strictly smaller denominator.
-        let misleading = report.file_bytes.unwrap() as f64 / report.logical_bytes as f64;
-        assert!(
-            misleading > honest,
-            "old metric ({misleading}) must over-report vs honest ({honest})"
-        );
     }
 
     #[test]
@@ -6020,110 +5307,6 @@ mod tests {
             "fts rows ({}) should be ~distinct-trigram count, not per-pair",
             fts.entries
         );
-    }
-
-    #[cfg(feature = "redb-backend")]
-    #[test]
-    fn fts_reindex_on_open_rebuilds_old_format_index() {
-        use crate::model::{NewNode, Properties};
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("fts_migrate.redb");
-        let mk = |t: &str, b: &str| NewNode {
-            kind: "n".into(),
-            title: t.into(),
-            body: b.into(),
-            body_html: String::new(),
-            properties: Properties::default(),
-        };
-        {
-            let db = Drevo::open(&path).unwrap();
-            db.create_nodes(vec![
-                mk("a", "hello world graph"),
-                mk("b", "hello there graph"),
-            ])
-            .unwrap();
-            // Simulate a file written by an OLDER drevo: drop the format marker
-            // and inject a legacy one-row-per-(trigram,node) posting the reindex
-            // must discard.
-            db.backend.delete(META_FTS_FORMAT).unwrap();
-            let legacy_key = b"fts:xyz:\x01\x00\x00\x00\x00\x00\x00\x00";
-            db.backend.put(legacy_key, &[]).unwrap();
-            db.close().unwrap();
-        }
-
-        // Reopen → reindex-on-open fires (marker was absent).
-        let db = Drevo::open(&path).unwrap();
-        // Marker stamped, so a second open is a no-op.
-        assert_eq!(
-            db.backend.get(META_FTS_FORMAT).unwrap().as_deref(),
-            Some(&[FTS_FORMAT_POSTING][..])
-        );
-        // Legacy row discarded by the rebuild.
-        assert!(db
-            .backend
-            .get(b"fts:xyz:\x01\x00\x00\x00\x00\x00\x00\x00")
-            .unwrap()
-            .is_none());
-        // Search rebuilt correctly from source: both nodes match "hel"/"gra".
-        assert_eq!(
-            fts_index::node_ids_for_trigram(&db.backend, "hel")
-                .unwrap()
-                .len(),
-            2
-        );
-        assert_eq!(
-            fts_index::node_ids_for_trigram(&db.backend, "gra")
-                .unwrap()
-                .len(),
-            2
-        );
-    }
-
-    #[test]
-    fn fts_reindex_upgrades_v2_id_only_postings_to_tf() {
-        // The production migration: a file written at FTS format 2 (posting
-        // entries are bare 8-byte node ids, no term frequency) must upgrade to
-        // format 3 on open — reindex-on-open rebuilds tf-bearing 12-byte entries
-        // from source nodes, so BM25 can score straight from the index.
-        use crate::model::{NewNode, Properties};
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fts_v2_upgrade.redb");
-        let node_id;
-        {
-            let db = Drevo::open(&path).unwrap();
-            let n = db
-                .create_node(NewNode {
-                    kind: "n".into(),
-                    title: "doc".into(),
-                    body: "rust rust rust".into(),
-                    body_html: String::new(),
-                    properties: Properties::default(),
-                })
-                .unwrap();
-            node_id = n.id;
-            // Downgrade on disk to a v2-style index: overwrite the tf-bearing
-            // "rus" posting with a legacy id-only (8-byte) one and stamp the old
-            // format marker, exactly as a file from before this change looks.
-            db.backend
-                .put(b"fts:rus:", &fts_index::encode_postings(&[node_id]))
-                .unwrap();
-            db.backend.put(META_FTS_FORMAT, &[2]).unwrap();
-            db.close().unwrap();
-        }
-        // Reopen → the marker (2) != current (3) triggers reindex-on-open.
-        let db = Drevo::open(&path).unwrap();
-        assert_eq!(
-            db.backend.get(META_FTS_FORMAT).unwrap().as_deref(),
-            Some(&[FTS_FORMAT_POSTING][..]),
-            "format marker upgraded to 3"
-        );
-        // Rebuilt postings carry tf: the repeated "rust" gives tf > 1.
-        let postings = fts_index::postings_for_trigram(&db.backend, "rus").unwrap();
-        assert_eq!(postings.len(), 1);
-        assert_eq!(postings[0].0, node_id);
-        assert!(postings[0].1 > 1, "reindex must restore term frequency");
-        // And search works against the upgraded index.
-        assert_eq!(db.search_fts("rust", 10).unwrap().len(), 1);
     }
 
     #[test]
@@ -6242,84 +5425,7 @@ mod tests {
         assert!(db.maybe_auto_compact(&policy).unwrap().is_none());
     }
 
-    #[cfg(feature = "redb-backend")]
-    #[test]
-    fn maybe_auto_compact_respects_thresholds_and_runs_when_enabled() {
-        use crate::model::{NewNode, Properties};
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("ac.redb");
-        {
-            let db = Drevo::open(&path).unwrap();
-            for i in 0..20 {
-                db.create_node(NewNode {
-                    kind: "n".into(),
-                    title: format!("t{i}"),
-                    body: "x".repeat(128),
-                    body_html: String::new(),
-                    properties: Properties::default(),
-                })
-                .unwrap();
-            }
-            db.close().unwrap();
-        }
-
-        // Disabled → no-op even though the file exists.
-        let mut db = Drevo::open(&path).unwrap();
-        assert!(db
-            .maybe_auto_compact(&AutoCompactPolicy {
-                enabled: true,
-                min_ratio: 1.0,
-                min_bytes: u64::MAX, // file is below this floor → skip
-            })
-            .unwrap()
-            .is_none());
-        // Ratio floor above the real ratio → skip.
-        assert!(db
-            .maybe_auto_compact(&AutoCompactPolicy {
-                enabled: true,
-                min_ratio: 1e9,
-                min_bytes: 0,
-            })
-            .unwrap()
-            .is_none());
-        // Enabled, thresholds satisfied (any on-disk file has ratio ≥ 1) → a
-        // compaction runs and reports before/after byte counts.
-        let report = db
-            .maybe_auto_compact(&AutoCompactPolicy {
-                enabled: true,
-                min_ratio: 1.0,
-                min_bytes: 0,
-            })
-            .unwrap()
-            .expect("compaction should have run");
-        assert!(report.bytes_before.is_some());
-        assert!(report.bytes_after.is_some());
-        // Data is intact after the reclaim.
-        assert_eq!(db.bloat_report().unwrap().node_count, 20);
-    }
-
     // --- Semantic-index registry persistence (#251) ---
-
-    #[cfg(feature = "redb-backend")]
-    #[test]
-    fn semantic_registry_survives_reopen() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("sem.redb");
-        {
-            let db = Drevo::open(&path).unwrap();
-            db.semantic_register("Entity", "summary", "embedding", IndexMode::Auto, None)
-                .unwrap();
-            db.close().unwrap();
-        }
-        // A fresh open must restore the registered target from redb.
-        let db = Drevo::open(&path).unwrap();
-        let status = db.semantic_status();
-        assert_eq!(status.len(), 1);
-        assert_eq!(status[0].label, "Entity");
-        assert_eq!(status[0].text_property, "summary");
-        assert_eq!(status[0].embedding_property, "embedding");
-        assert_eq!(status[0].mode, IndexMode::Auto);
-    }
 
     #[test]
     fn semantic_registry_empty_by_default() {

@@ -6,7 +6,7 @@
 //! transitions, and the wiring through `cypher::parser` +
 //! `cypher::executor` (Phase 10, `00063` onward).
 
-#![cfg(all(not(target_arch = "wasm32"), feature = "redb-backend"))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::BTreeMap;
 

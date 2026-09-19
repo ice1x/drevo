@@ -138,7 +138,7 @@ jobs:
 
       # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
-      # Check: compile for iOS with default features (redb + cbindgen)
+      # Check: compile for iOS with default features (cbindgen + http)
       - name: cargo check (iOS)
         run: >
           cargo check
@@ -303,13 +303,12 @@ jobs:
           EOF
           echo "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$NDK_PREBUILT_DIR/bin" >> $GITHUB_PATH
 
-      # Check: compile for Android (no cbindgen in cross-compile, redb enabled)
+      # Check: compile for Android (bare lib — no cbindgen/http in cross-compile)
       - name: cargo check (Android)
         run: >
           cargo check
           --target aarch64-linux-android
           --no-default-features
-          --features redb-backend
           --lib
 
       # Build: produce shared library for Android
@@ -318,7 +317,6 @@ jobs:
           cargo build
           --target aarch64-linux-android
           --no-default-features
-          --features redb-backend
           --lib
 
       # Verify the shared library artifact exists

@@ -119,17 +119,6 @@ async fn exercise(app: axum::Router) {
     assert_eq!(st, StatusCode::BAD_REQUEST);
 }
 
-#[cfg(feature = "redb-backend")]
-#[tokio::test]
-async fn config_embeddings_endpoint_on_kv_router() {
-    use drevo::api::{build_router, ApiState};
-    use drevo::db::Drevo;
-    let db = Arc::new(Drevo::open_in_memory().expect("db"));
-    let store = EmbeddingsConfigStore::in_memory(None);
-    let app = build_router(ApiState::new(db).with_embeddings_config_store(store));
-    exercise(app).await;
-}
-
 #[tokio::test]
 async fn config_embeddings_endpoint_on_native_router() {
     use drevo::native_api::{build_native_router, NativeApiState};
@@ -138,17 +127,4 @@ async fn config_embeddings_endpoint_on_native_router() {
     let store = EmbeddingsConfigStore::in_memory(None);
     let app = build_native_router(NativeApiState::new(service).with_embeddings_config_store(store));
     exercise(app).await;
-}
-
-/// Without a store wired in, the endpoint reports unavailable rather than
-/// panicking (a state some tests build).
-#[cfg(feature = "redb-backend")]
-#[tokio::test]
-async fn config_embeddings_without_store_is_unavailable() {
-    use drevo::api::{build_router, ApiState};
-    use drevo::db::Drevo;
-    let db = Arc::new(Drevo::open_in_memory().expect("db"));
-    let app = build_router(ApiState::new(db));
-    let (st, _, _) = send(&app, "GET", "/config/embeddings", None).await;
-    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
 }

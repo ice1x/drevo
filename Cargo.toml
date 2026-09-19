@@ -87,7 +87,6 @@ drevo-core = { path = "drevo-core" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 bincode = { version = "2", features = ["serde"] }
-redb = { version = "2", optional = true }
 uuid = { version = "1", features = ["v4", "v7", "rng-getrandom"] }
 getrandom = { version = "0.4", optional = true }
 serde_json = "1"
@@ -153,14 +152,11 @@ idna_adapter = { version = "=1.2.0", optional = true }
 cbindgen = { version = "0.27", optional = true }
 
 [features]
-# `redb-backend` is deliberately NOT in `default` (epic #444): the live engine
-# is native-durable (WAL, zero-redb) and a bare `cargo build` / crate consumer
-# now gets the native engine only. redb (the legacy embedded KV store + its
-# on-disk catalog and the redb→WAL first-boot migration) remains fully
-# available as an opt-in via `--features redb-backend` — the migration path for
-# early-version data still ships. It is removed outright in the next version.
+# The engine is native-durable (WAL, zero-redb). The legacy redb embedded KV
+# store, its on-disk catalog, and the redb→WAL migration were removed outright
+# in epic #444 P8 (PR2); the in-memory KV `Drevo` handle survives only as the
+# differential-test oracle (`Drevo::open_in_memory`, RFC #307 §8 non-goal).
 default = ["cbindgen", "http"]
-redb-backend = ["redb"]
 wasm = ["wasm-bindgen", "js-sys", "getrandom/wasm_js", "drevo-core/wasm"]
 http = ["dep:axum", "dep:tokio", "dep:tower", "dep:tracing", "dep:tracing-subscriber"]
 # Phase 11 task `00073` — Bolt over TLS. Compiles `src/bolt/tls.rs`
@@ -227,7 +223,7 @@ rcgen = "0.13"
 [[bin]]
 name = "drevo-server"
 path = "src/bin/server.rs"
-required-features = ["http", "redb-backend"]
+required-features = ["http"]
 
 # NOTE: the embedded `drevo-mcp` stdio MCP server (former Phase 15 task
 # `00090`) was removed — its in-process model opened the redb file
@@ -236,31 +232,24 @@ required-features = ["http", "redb-backend"]
 # (https://github.com/ice1x/drevo-mcp) and talks to a running
 # `drevo-server` over HTTP / Bolt, so it never contends for the file.
 
-# Both harness examples (#241) call `Drevo::open` — gated on `redb-backend` —
-# for their on-disk paths (`load_harness` via its optional `BACKEND=redb` mode,
-# `churn_compact` always). `required-features` skips them (rather than failing
-# to compile) under `--no-default-features`, where `Drevo::open` does not exist.
+# The in-memory load harness (#241) drives `Drevo::open_in_memory` (the KV
+# oracle), always available — no feature gate. (The redb `churn_compact`
+# example was removed with the redb backend in epic #444 P8.)
 [[example]]
 name = "load_harness"
-required-features = ["redb-backend"]
-
-[[example]]
-name = "churn_compact"
-required-features = ["redb-backend"]
 
 # The HTTP load harness (#241 slice 4) starts the axum API and drives it over
 # a real socket, so it needs the `http` feature (axum + tokio). `Drevo::open_in_memory`
-# is always available, so no `redb-backend` gate is required.
+# is always available, so no other gate is required.
 [[example]]
 name = "http_load"
 required-features = ["http"]
 
 # Native-engine load harness (#307): concurrency sweep + deep (3-hop) traversal
-# + durable-write throughput, native-durable vs KV over the GraphEngine seam.
-# Needs `redb-backend` for the KV comparison side (`Drevo::open_in_memory`).
+# + durable-write throughput, native-durable vs the in-memory KV oracle over
+# the GraphEngine seam.
 [[example]]
 name = "native_load"
-required-features = ["redb-backend"]
 
 [[bench]]
 name = "storage_bench"

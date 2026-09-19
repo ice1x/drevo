@@ -895,40 +895,6 @@ fn short_burst_in_memory_is_healthy() {
     assert!(report.total_creates() > 0, "no churn creates");
 }
 
-/// The same burst against the disk-backed redb backend — the path with real
-/// MVCC snapshots. This is the one that proves redb's single-writer +
-/// many-reader model neither deadlocks nor produces torn reads under load.
-///
-/// `#[ignore]`d on the PR path. Each redb write is its own fsync'd
-/// `WriteTransaction`; on the shared self-hosted CI runner under nextest's full
-/// parallelism a single write has been measured at ~5 s, so seeding the corpus
-/// plus draining four serialised writers pushes this past a minute — a
-/// *bounded-but-slow* profile indistinguishable, to a PR-fast budget, from a
-/// hang (the first CI run of this suite tripped exactly that false positive).
-/// The in-memory burst gives the PR-time end-to-end signal; this redb variant
-/// runs on demand / nightly:
-///
-/// ```text
-/// cargo nextest run --test concurrent_agents -- --ignored --nocapture
-/// ```
-///
-/// It inherits the generous 120 s grace / ceiling from [`ConcurrencyConfig::soak`].
-#[test]
-#[ignore = "redb fsync latency on the shared CI runner makes this slow (~1 min); run via --ignored on demand / nightly"]
-#[cfg(feature = "redb-backend")]
-fn short_burst_redb_is_healthy() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Drevo::open(&dir.path().join("concurrent.redb")).unwrap());
-    let cfg = ConcurrencyConfig {
-        invariant_nodes: 32,
-        duration: Duration::from_millis(500),
-        ..ConcurrencyConfig::soak(Duration::from_millis(500))
-    };
-    let (report, verify) = run_and_verify(db, &cfg);
-    report.print("scaffolding — redb short burst");
-    assert_healthy(&report, &verify, &cfg);
-}
-
 /// `run_concurrent` (the variant used by callers that don't need the
 /// post-run generation map) also runs deadlock-free and reports every agent.
 #[test]
@@ -1008,42 +974,3 @@ fn deadlock_detector_times_out_on_missing_report() {
 // ===========================================================================
 // Soak — 5-minute concurrency suite (run via --ignored in nightly CI / on demand).
 // ===========================================================================
-
-/// The full task-`00125` deliverable: 2 writers + 4 readers + 2 mixed agents
-/// pounding one shared `Drevo` for 5 minutes (env-overridable, floored at 5
-/// min so the "5 minute" criterion can't be silently undercut).
-///
-/// Run with:
-///
-/// ```text
-/// cargo nextest run --test concurrent_agents -- --ignored --nocapture
-/// DREVO_CONCURRENCY_SECS=1800 cargo nextest run --test concurrent_agents -- --ignored --nocapture
-/// ```
-///
-/// Asserts the four invariants: no deadlocks, no panics, no torn reads + FTS
-/// consistent, and bounded write-starvation. The printed report (per-agent
-/// tallies + worst write latency) is the operator-facing deliverable.
-#[test]
-#[ignore = "soak: 5+ min concurrency suite — run via --ignored in nightly CI / on demand"]
-#[cfg(feature = "redb-backend")]
-fn concurrency_suite_soak() {
-    let secs = std::env::var("DREVO_CONCURRENCY_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(5 * 60)
-        .max(5 * 60);
-
-    let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Drevo::open(&dir.path().join("soak.redb")).unwrap());
-    let cfg = ConcurrencyConfig::soak(Duration::from_secs(secs));
-
-    let (report, verify) = run_and_verify(db, &cfg);
-    report.print("SOAK — 5-minute concurrency suite (redb)");
-
-    assert!(
-        report.elapsed >= Duration::from_secs(5 * 60),
-        "soak ran for {:?}, under the 5-minute floor",
-        report.elapsed
-    );
-    assert_healthy(&report, &verify, &cfg);
-}

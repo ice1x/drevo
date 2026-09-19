@@ -10,11 +10,7 @@
 //! via `rcgen` (dev-dep) so there is no checked-in PEM bundle to
 //! rotate.
 
-#![cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "bolt-tls",
-    feature = "redb-backend"
-))]
+#![cfg(all(not(target_arch = "wasm32"), feature = "bolt-tls"))]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

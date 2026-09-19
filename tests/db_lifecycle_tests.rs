@@ -1,7 +1,6 @@
 //! Integration tests for Drevo lifecycle: open, open_in_memory, close, compact.
 
 use drevo::db::Drevo;
-use tempfile::TempDir;
 
 // --- open_in_memory ---
 
@@ -17,76 +16,6 @@ fn in_memory_db_compact_is_noop() {
     db.compact().unwrap();
     db.close().unwrap();
 }
-
-// --- open (disk-backed) ---
-
-#[test]
-fn disk_db_opens_new_file() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("drevo.db");
-    let db = Drevo::open(&path).unwrap();
-    assert!(path.exists());
-    db.close().unwrap();
-}
-
-#[test]
-fn disk_db_reopens_existing_file() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("drevo.db");
-
-    {
-        let db = Drevo::open(&path).unwrap();
-        db.close().unwrap();
-    }
-
-    // Reopen the same file
-    let db = Drevo::open(&path).unwrap();
-    db.close().unwrap();
-}
-
-#[test]
-fn disk_db_counters_persist_through_close_reopen_cycle() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("drevo.db");
-
-    // First session: allocate IDs 1..5 for nodes, 1..3 for edges
-    {
-        let db = Drevo::open(&path).unwrap();
-        for _ in 0..5 {
-            db.alloc_node_id();
-        }
-        for _ in 0..3 {
-            db.alloc_edge_id();
-        }
-        db.close().unwrap();
-    }
-
-    // Second session: counters should continue from 6 and 4
-    {
-        let db = Drevo::open(&path).unwrap();
-        assert_eq!(db.alloc_node_id(), 6);
-        assert_eq!(db.alloc_edge_id(), 4);
-        db.close().unwrap();
-    }
-
-    // Third session: counters should continue from 7 and 5
-    {
-        let db = Drevo::open(&path).unwrap();
-        assert_eq!(db.alloc_node_id(), 7);
-        assert_eq!(db.alloc_edge_id(), 5);
-        db.close().unwrap();
-    }
-}
-
-#[test]
-fn disk_db_compact_flushes_backend() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("drevo.db");
-    let mut db = Drevo::open(&path).unwrap();
-    db.compact().unwrap();
-    db.close().unwrap();
-}
-
 // --- concurrent ID allocation ---
 
 #[test]

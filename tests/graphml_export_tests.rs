@@ -387,23 +387,6 @@ fn export_graphml_normalises_property_order_across_databases() {
 // 6. Cross-backend parity (Memory vs Redb)
 // ---------------------------------------------------------------
 
-#[cfg(feature = "redb-backend")]
-#[test]
-fn export_graphml_parity_memory_vs_redb() {
-    let mem = Drevo::open_in_memory().unwrap();
-    populate_sample_graph(&mem);
-
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("parity.redb");
-    let disk = Drevo::open(&path).unwrap();
-    populate_sample_graph(&disk);
-
-    assert_eq!(
-        strip_volatile(mem.export_graphml().unwrap()),
-        strip_volatile(disk.export_graphml().unwrap()),
-    );
-}
-
 // ---------------------------------------------------------------
 // 7. Filesystem variant
 // ---------------------------------------------------------------

@@ -14,8 +14,6 @@
 //!
 //! Gated on `redb-backend` for the KV comparison side.
 
-#![cfg(feature = "redb-backend")]
-
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Barrier;

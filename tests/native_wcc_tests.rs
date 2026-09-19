@@ -3,8 +3,6 @@
 //! isolated node pins the structure; the raw-API result is checked against the
 //! same serial WCC over an adjacency list built straight from the edge list.
 
-#![cfg(feature = "redb-backend")]
-
 use std::collections::HashMap;
 
 use drevo::algorithms::{wcc, wcc_native, AdjacencyList};

@@ -305,23 +305,6 @@ fn import_graphml_rejects_edge_referencing_undeclared_node() {
 // 7. Cross-backend parity (Memory → Redb)
 // ---------------------------------------------------------------
 
-#[cfg(feature = "redb-backend")]
-#[test]
-fn import_graphml_into_redb_matches_memory() {
-    let src = Drevo::open_in_memory().unwrap();
-    populate_sample_graph(&src);
-    let xml = src.export_graphml().unwrap();
-
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("imported.redb");
-    let disk = Drevo::open(&path).unwrap();
-    let report = disk.import_graphml(&xml).unwrap();
-    assert_eq!(report.nodes_imported, 5);
-    assert_eq!(report.edges_imported, 4);
-
-    assert_same_graph(&src, &disk);
-}
-
 // ---------------------------------------------------------------
 // 8. Filesystem variant
 // ---------------------------------------------------------------

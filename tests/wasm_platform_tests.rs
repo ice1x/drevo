@@ -37,31 +37,6 @@ fn memory_backend_scan_prefix_works() {
     let results = backend.scan_prefix(b"prefix:").unwrap();
     assert_eq!(results.len(), 2);
 }
-
-// ---------------------------------------------------------------------------
-// RedbBackend is gated: available on native, absent on WASM
-// ---------------------------------------------------------------------------
-
-/// On native targets, `RedbBackend` should be importable and functional.
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn redb_backend_available_on_native() {
-    use drevo::storage::RedbBackend;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test.db");
-    let _backend = RedbBackend::open(&path).unwrap();
-}
-
-/// On native targets, `Drevo::open()` (disk-backed) should work.
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn drevodb_open_available_on_native() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test.db");
-    let db = Drevo::open(&path).unwrap();
-    db.close().unwrap();
-}
-
 // ---------------------------------------------------------------------------
 // Drevo::open_in_memory() — the WASM fallback path
 // ---------------------------------------------------------------------------

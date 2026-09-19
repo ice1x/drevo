@@ -23,21 +23,6 @@ use drevo::storage::{MemoryBackend, StorageBackend};
 // Feature gate correctness
 // ---------------------------------------------------------------------------
 
-/// `RedbBackend` must be available when compiled with default features
-/// (which include `redb-backend`). This test proves the native CI build
-/// includes the persistent backend.
-#[cfg(feature = "redb-backend")]
-#[test]
-fn redb_backend_available_with_feature() {
-    use drevo::storage::RedbBackend;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("cross_compile_test.db");
-    let backend = RedbBackend::open(&path).unwrap();
-    backend.put(b"key", b"value").unwrap();
-    let val = backend.get(b"key").unwrap();
-    assert_eq!(val, Some(b"value".to_vec()));
-}
-
 /// `MemoryBackend` must always be available — it is the universal fallback
 /// for WASM targets and in-memory use.
 #[test]
@@ -190,37 +175,6 @@ fn full_api_surface_via_open_in_memory() {
 
     db.close().unwrap();
 }
-
-// ---------------------------------------------------------------------------
-// Disk-backed path (native only, excluded on WASM)
-// ---------------------------------------------------------------------------
-
-/// `Drevo::open(path)` must work on native targets. This constructor
-/// is excluded on WASM (no filesystem), but iOS and Android have filesystem
-/// access and must use the persistent path.
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn open_disk_backed_on_native() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("native_test.db");
-    let db = Drevo::open(&path).unwrap();
-
-    let node = db
-        .create_node(NewNode {
-            kind: "note".to_string(),
-            title: "Persistent Note".to_string(),
-            body: "Stored on disk".to_string(),
-            body_html: String::new(),
-            properties: Properties::default(),
-        })
-        .unwrap();
-
-    let fetched = db.get_node(node.id).unwrap().unwrap();
-    assert_eq!(fetched.title, "Persistent Note");
-
-    db.close().unwrap();
-}
-
 /// `MemoryBackend::open(path)` (persistent memory backend) works on native.
 /// This is the fallback for platforms where redb is unavailable but
 /// filesystem access exists (hypothetical future targets).

@@ -144,8 +144,7 @@
 #define FAILURE 127
 
 /**
- * Maximum database-name length in bytes. Comfortably below any filesystem
- * component limit once the `.redb` suffix is added.
+ * Maximum database-name length in bytes.
  */
 #define MAX_NAME_LEN 64
 
@@ -238,32 +237,6 @@
 #define MIN_SUPERNODE_THRESHOLD 100
 
 /**
- * Current on-disk format **major** version this build writes and reads.
- *
- * Compatibility rule (semver-style): a build opens any file whose major
- * version is `<= FORMAT_MAJOR`. A file with a greater major was written by
- * a newer, layout-incompatible drevo and is refused with
- * [`StorageError::IncompatibleFormat`] instead of being silently misread.
- * Files predating format versioning carry no marker and are treated as the
- * original `1.0` format (then stamped on first open). This is the on-disk
- * durability guarantee for the agent-memory-graph file (issue #48).
- *
- * **v2** (#243 slice 2): the adjacency index moved to the kind-in-key layout
- * `out:{from}:{kind}:{edge}`. A v1 file opens (its major `1 <= 2`), but the
- * graph layer detects the old adjacency layout and refuses it with
- * [`crate::error::DrevoError::NeedsMigration`] until
- * [`crate::db::Drevo::migrate_adjacency`] rewrites the index and re-stamps.
- */
-#define FORMAT_MAJOR 2
-
-/**
- * Current on-disk format **minor** version. Bumped for additive,
- * backward-compatible layout changes within a major; purely informational
- * for the compatibility check (any minor of a compatible major opens).
- */
-#define FORMAT_MINOR 0
-
-/**
  * The default batch size used by [`IngestConsumer::new`] when none is
  * specified.
  */
@@ -326,8 +299,13 @@ typedef uint64_t Xid;
 /**
  * Open a disk-backed database at the given path.
  *
- * Returns an opaque handle on success, or `NULL` on failure (check
- * [`drevo_last_error`]).
+ * **Deprecated — always fails.** The disk-backed redb KV store was removed in
+ * epic #444; there is no durable embedded KV engine to open. The C symbol is
+ * retained so the generated header stays stable, but every call fails with a
+ * clear error. Use [`drevo_open_in_memory`] for an ephemeral database, or run
+ * the native-durable server for a persistent store.
+ *
+ * Returns `NULL` and sets [`drevo_last_error`].
  *
  * # Safety
  * `path` must be a valid NUL-terminated UTF-8 string.

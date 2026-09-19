@@ -62,11 +62,11 @@ COPY static/ static/
 # nothing is forced on and the "opt-in at runtime" contract holds. The extra
 # HTTP client uses pure-Rust `rustls` on the `ring` provider (no aws-lc-rs / no
 # extra system deps). Override to a lean build via:
-#   docker build --build-arg CARGO_FEATURES="http,redb-backend" .
+#   docker build --build-arg CARGO_FEATURES="http" .
 # (The Cargo library default stays dependency-free; this opinionated default is
 # the deploy image only.) Locked by
 # `tests/dockerfile_tests.rs::dockerfile_features_are_build_arg_overridable`.
-ARG CARGO_FEATURES="http,redb-backend,embeddings-proxy"
+ARG CARGO_FEATURES="http,embeddings-proxy"
 # The version the built server reports (`/`, `/status`, Bolt `server` agent,
 # metrics). `.git` is excluded from the build context, so `build.rs` cannot run
 # `git describe` here and would fall back to `CARGO_PKG_VERSION` (0.0.0, since the
@@ -99,7 +99,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --system drevo && \
     useradd --system --gid drevo --create-home drevo
 
-# Data directory for the redb database file
+# Data directory for the native-durable write-ahead log (`native.wal`)
 RUN mkdir -p /data && chown drevo:drevo /data
 VOLUME ["/data"]
 
@@ -112,7 +112,7 @@ ENV DREVO_PORT=8080
 ENV DREVO_DATA_DIR=/data
 # Enable the Neo4j-compatible Bolt listener by default in the container
 # (task 00163) so Neo4j drivers / Cypher tools can connect. It shares the same
-# single drevo-server process + redb handle as the HTTP API.
+# single drevo-server process + native-durable store as the HTTP API.
 ENV DREVO_BOLT_PORT=7687
 
 EXPOSE 8080 7687

@@ -17,7 +17,7 @@
 //!     a fresh transaction that must still succeed while the failed one is
 //!     open on another connection.
 
-#![cfg(all(not(target_arch = "wasm32"), feature = "redb-backend"))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

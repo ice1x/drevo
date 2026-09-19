@@ -146,9 +146,9 @@ jobs:
           # the active venv in editable mode, mirroring what
           # contributors run locally. `--release` matches the wheel
           # configuration cibuildwheel uses, so any -O / -strip
-          # interaction surfaces here too. We compile via the
-          # workspace's `redb-backend` feature (the wheel's default)
-          # to keep parity with the runtime contract in test_shim.py.
+          # interaction surfaces here too. drevo-py binds the native
+          # engine (no storage-backend feature), matching the runtime
+          # contract in test_shim.py.
           cd drevo-py
           maturin develop --release
 

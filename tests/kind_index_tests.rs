@@ -242,28 +242,3 @@ fn delete_edge_removes_from_edge_kind_index() {
     let links = db.list_edges_by_kind("links_to", 10, 0).unwrap();
     assert!(links.is_empty());
 }
-
-// --- disk-backed persistence ---
-
-#[test]
-fn kind_index_persists_across_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test.db");
-
-    {
-        let db = Drevo::open(&path).unwrap();
-        db.create_node(node("note", "A")).unwrap();
-        db.create_node(node("task", "B")).unwrap();
-        db.create_node(node("note", "C")).unwrap();
-        db.close().unwrap();
-    }
-
-    {
-        let db = Drevo::open(&path).unwrap();
-        let notes = db.list_nodes_by_kind("note", 10, 0).unwrap();
-        assert_eq!(notes.len(), 2);
-        let tasks = db.list_nodes_by_kind("task", 10, 0).unwrap();
-        assert_eq!(tasks.len(), 1);
-        db.close().unwrap();
-    }
-}

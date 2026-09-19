@@ -60,8 +60,6 @@ const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 8080;
 /// Default data directory — matches the volume mount in `Dockerfile`.
 const DEFAULT_DATA_DIR: &str = "/data";
-/// Filename of the redb file inside [`DEFAULT_DATA_DIR`].
-const DB_FILENAME: &str = "drevo.redb";
 
 /// First non-privileged TCP port on most POSIX systems. Ports below
 /// this value require `CAP_NET_BIND_SERVICE` (or root). Operators can
@@ -79,8 +77,8 @@ pub struct Config {
     pub host: String,
     /// TCP port to listen on.
     pub port: u16,
-    /// Directory that holds the redb database file. The full path is
-    /// produced by [`Config::db_path`].
+    /// Directory that holds the durable native store (`<data_dir>/native.wal`)
+    /// and the persisted embeddings config.
     pub data_dir: PathBuf,
     /// Which engine serves Cypher queries (engine flip, RFC #307 Phase 6).
     pub engine: EngineMode,
@@ -127,8 +125,7 @@ pub enum ConfigError {
     },
     /// `DREVO_DATA_DIR` was set to an empty string. (Non-empty values
     /// — absolute or relative — are accepted; existence is verified
-    /// later when [`Catalog::open`](crate::catalog::Catalog::open) tries to
-    /// open the data directory.)
+    /// later when the durable native store opens the data directory.)
     #[error("invalid DREVO_DATA_DIR: {reason}")]
     InvalidDataDir {
         /// Human-readable parse failure.
@@ -218,12 +215,6 @@ impl Config {
                 value: self.host.clone(),
                 reason: err.to_string(),
             })
-    }
-
-    /// Full path to the redb database file (`<data_dir>/drevo.redb`).
-    #[must_use]
-    pub fn db_path(&self) -> PathBuf {
-        self.data_dir.join(DB_FILENAME)
     }
 
     /// True when the configured port is below `1024` and therefore
@@ -469,22 +460,6 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
 /// transactions.
 async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunError> {
     let wal = cfg.data_dir.join("native.wal");
-    // First boot with existing KV data: copy the graph into the new durable
-    // store through the dump cycle. The redb file is left untouched, so the
-    // rollback is just flipping the engine env back. Gated on `redb-backend`:
-    // without it there is no KV/redb store to migrate from, and the migration
-    // helper (which opens the redb file) is compiled out with the backend.
-    #[cfg(feature = "redb-backend")]
-    if let Some(report) =
-        crate::native_service::migrate_kv_into_wal_if_first_boot(&cfg.db_path(), &wal)
-            .map_err(RunError::NativeOpen)?
-    {
-        tracing::info!(
-            nodes = report.nodes_imported,
-            edges = report.edges_imported,
-            "KV graph migrated into the durable native store (the redb file is untouched)"
-        );
-    }
     tracing::info!(wal = %wal.display(), "engine=native-durable — opening the durable native store");
     let service = std::sync::Arc::new(
         crate::native_service::NativeService::open(&wal).map_err(RunError::NativeOpen)?,

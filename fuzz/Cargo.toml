@@ -38,14 +38,11 @@ libfuzzer-sys = "0.4"
 
 [dependencies.drevo]
 path = ".."
-# Enable only `redb-backend` — the FFI module (`src/ffi.rs`) is compiled
-# on every non-WASM target and references `Drevo::open(path)`, which is
-# itself feature-gated behind `redb-backend`. Anything else from the
-# default feature set (`cbindgen`, `http`) is left out so the fuzz binary
-# stays small and avoids dragging `axum` / `tokio` / `tower` through the
-# sanitised libFuzzer build.
+# `default-features = false` keeps `cbindgen` / `http` (and their `axum` /
+# `tokio` / `tower` trees) out of the sanitised libFuzzer build. The fuzz
+# targets only need the core parser/model/storage surface, all in the
+# default-off library.
 default-features = false
-features = ["redb-backend"]
 
 # Isolate this directory from any auto-discovered parent workspace.
 [workspace]

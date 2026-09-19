@@ -32,34 +32,20 @@ pub enum StorageError {
     #[error("decode error: {0}")]
     Decode(#[from] bincode::error::DecodeError),
 
-    /// A redb-backed storage operation failed.
-    ///
-    /// Wraps the upstream `redb::Error` directly so callers can match on
-    /// the exact failure mode (table missing, txn aborted, I/O, etc.)
-    /// instead of parsing a string. Boxed because `redb::Error` is a
-    /// large enum (~160 bytes) and inflating every `StorageError` to that
-    /// size triggers clippy's `result_large_err` lint at every `?` site.
-    #[cfg(feature = "redb-backend")]
-    #[error("redb error: {0}")]
-    Redb(Box<redb::Error>),
-
     /// A `Mutex` or `RwLock` protecting backend state was poisoned by a
     /// previous panic.
     ///
     /// The backend is in an unrecoverable state — the only sane response
-    /// is to log and discard the backend handle. Distinguished from
-    /// `StorageError::Redb` (which only exists with the `redb-backend`
-    /// feature) because a poisoned lock is structural, not a
+    /// is to log and discard the backend handle. Structural, not a
     /// backend-internal I/O or transaction failure.
     #[error("lock poisoned")]
     LockPoisoned,
 
     /// `StorageBackend::compact` was called on a backend whose internal
-    /// handle is shared with another owner (e.g. an outstanding
-    /// `Arc<Database>` clone on the redb backend). Reclaiming free pages
-    /// in redb requires exclusive `&mut Database` access via
-    /// `Arc::get_mut`; when that fails the operator must drop the extra
-    /// reference and retry. Surfaced by Phase 9 task `00054`.
+    /// handle is shared with another owner. Reclaiming free pages requires
+    /// exclusive `&mut` access via `Arc::get_mut`; when that fails the
+    /// operator must drop the extra reference and retry. Surfaced by
+    /// Phase 9 task `00054`.
     #[error("compact requires exclusive backend access")]
     CompactNotExclusive,
 
@@ -99,51 +85,6 @@ pub enum StorageError {
         /// `(data_rows, meta_rows)` actually found in the rebuilt file.
         got: (u64, u64),
     },
-}
-
-// Lift redb sub-error types into `StorageError::Redb` so `?` works at every
-// redb call site without an intermediate `.map_err(...)`. Each redb sub-type
-// already implements `From<X> for redb::Error` upstream; we box the result.
-#[cfg(feature = "redb-backend")]
-impl From<redb::Error> for StorageError {
-    fn from(e: redb::Error) -> Self {
-        Self::Redb(Box::new(e))
-    }
-}
-
-#[cfg(feature = "redb-backend")]
-impl From<redb::TableError> for StorageError {
-    fn from(e: redb::TableError) -> Self {
-        Self::Redb(Box::new(e.into()))
-    }
-}
-
-#[cfg(feature = "redb-backend")]
-impl From<redb::CommitError> for StorageError {
-    fn from(e: redb::CommitError) -> Self {
-        Self::Redb(Box::new(e.into()))
-    }
-}
-
-#[cfg(feature = "redb-backend")]
-impl From<redb::TransactionError> for StorageError {
-    fn from(e: redb::TransactionError) -> Self {
-        Self::Redb(Box::new(e.into()))
-    }
-}
-
-#[cfg(feature = "redb-backend")]
-impl From<redb::DatabaseError> for StorageError {
-    fn from(e: redb::DatabaseError) -> Self {
-        Self::Redb(Box::new(e.into()))
-    }
-}
-
-#[cfg(feature = "redb-backend")]
-impl From<redb::StorageError> for StorageError {
-    fn from(e: redb::StorageError) -> Self {
-        Self::Redb(Box::new(e.into()))
-    }
 }
 
 /// Helper to display byte slices in error messages.

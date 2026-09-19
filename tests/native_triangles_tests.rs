@@ -4,8 +4,6 @@
 //! hand-built graph — a triangle {0,1,2} with a pendant 2-3 — pins the counts
 //! and coefficients. Gated on `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
-#![cfg(feature = "redb-backend")]
-
 use std::collections::HashMap;
 
 use drevo::algorithms::{triangles, triangles_native, AdjacencyList};
