@@ -1,25 +1,23 @@
-//! Audit tests for `src/fts/*` and `Drevo::search_fts` — Phase 8.5 task
-//! `00108`.
+//! Audit tests for `src/fts/*` and `NativeService::search_fts` — Phase 8.5
+//! task `00108`.
 //!
-//! These tests pin behaviours that the audit verified:
+//! These tests pin behaviours that the audit verified. The FTS-index
+//! assertions run against the native engine, which (unlike the KV engine)
+//! exposes no trigram posting lists, so they are stated through observable
+//! `search_fts` behaviour rather than by inspecting index internals:
 //!
 //! * **Tokenizer is deterministic on Unicode** — Cyrillic, Hebrew (RTL),
 //!   combining diacritics, mixed scripts and emoji follow the documented
-//!   normalise → trigram pipeline (`drevo-database` §"FTS index").
-//! * **Posting-list intersection has clean AND semantics** — idempotent,
-//!   commutative w.r.t. trigram order, empty-on-mismatch
-//!   (`drevo-database` §"intersect posting lists").
+//!   normalise → trigram pipeline (`drevo-database` §"FTS index"). These
+//!   exercise the shared `drevo::fts` functions directly and are
+//!   engine-independent.
 //! * **FTS reindex invariant** — under random create / update / delete
-//!   mutation streams, every node's *current* title+body trigrams are
-//!   exactly the trigrams whose posting lists currently contain the
-//!   node's id, and no stale entries linger
-//!   (`drevo-database` invariants #2 + #3; `drevo-rust` common pitfalls
-//!   #1 + #2).
-//! * **`updated_idx` parity under mutation** — every create / update /
-//!   delete leaves exactly one (or zero, for deleted nodes) entry per
-//!   node in the inverted-timestamp index
-//!   (`drevo-database` §"updated_idx"; cross-link with `00106` invariant
-//!   #4).
+//!   mutation streams, every live node is found by searching its own current
+//!   title (create/update reindexed) and no search returns a deleted node
+//!   (`drevo-database` invariants #2 + #3).
+//! * **Recency parity under mutation** — after every mutation, `list_recent`'s
+//!   id set equals the live node set: one entry per live node, zero for
+//!   deleted ones (cross-link with `00106` invariant #4).
 //! * **`search_fts` ordering is deterministic** — the same query against
 //!   the same corpus produces the same result vector across runs
 //!   (`drevo-tdd` §"Property-based tests for invariants").
@@ -29,17 +27,17 @@
 //! tests are deterministic across runs without pulling in `proptest`
 //! (which is scheduled for Phase 9 task `00057`).
 
-use drevo::db::Drevo;
 use drevo::fts::{extract_trigrams, normalize, trigrams};
 use drevo::model::{NewNode, NodePatch, Properties};
-use std::collections::{BTreeSet, HashSet};
+use drevo::native_service::NativeService;
+use std::collections::HashSet;
 
 // ===================================================================
 // Helpers
 // ===================================================================
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().unwrap()
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -197,129 +195,48 @@ fn tokenizer_extract_trigrams_is_deterministic_on_random_unicode() {
     }
 }
 
-// ===================================================================
-// Posting-list intersection: AND semantics
-// ===================================================================
-
-#[test]
-fn intersect_trigrams_is_idempotent() {
-    let db = db();
-    let a = db.create_node(node("note", "Hello World", "")).unwrap();
-    let b = db.create_node(node("note", "Hello There", "")).unwrap();
-    let _ = db.create_node(node("note", "Other Body", "")).unwrap();
-
-    let q1 = vec!["hel".to_string()];
-    let r1 = db.fts_intersect_trigrams(&q1).unwrap();
-    let r2 = db.fts_intersect_trigrams(&q1).unwrap();
-    assert_eq!(r1, r2, "intersect_trigrams must be deterministic");
-    let set: HashSet<u64> = r1.into_iter().collect();
-    assert!(set.contains(&a.id));
-    assert!(set.contains(&b.id));
-}
-
-#[test]
-fn intersect_trigrams_is_commutative_in_input_order() {
-    // The set-AND of posting lists must not depend on the order in
-    // which trigrams are presented.
-    let db = db();
-    let a = db
-        .create_node(node("note", "Rust programming", ""))
-        .unwrap();
-    let _ = db.create_node(node("note", "Rust language", "")).unwrap();
-    let _ = db
-        .create_node(node("note", "Python programming", ""))
-        .unwrap();
-
-    let r1 = db
-        .fts_intersect_trigrams(&["rus".to_string(), "pro".to_string()])
-        .unwrap();
-    let r2 = db
-        .fts_intersect_trigrams(&["pro".to_string(), "rus".to_string()])
-        .unwrap();
-    assert_eq!(
-        r1, r2,
-        "intersect_trigrams must be commutative in input order"
-    );
-    assert_eq!(r1, vec![a.id]);
-}
-
-#[test]
-fn intersect_trigrams_empty_when_any_trigram_misses() {
-    let db = db();
-    let _ = db.create_node(node("note", "Hello", "")).unwrap();
-
-    // One trigram present, one absent → AND of the two is empty.
-    let r = db
-        .fts_intersect_trigrams(&["hel".to_string(), "zzz".to_string()])
-        .unwrap();
-    assert!(
-        r.is_empty(),
-        "intersection with a non-existent trigram must be empty"
-    );
-}
+// Note: the KV engine exposed a low-level `fts_intersect_trigrams` posting-list
+// primitive, and this file used to pin its AND semantics (idempotent /
+// commutative / empty-on-miss) directly. The native engine performs that
+// intersection internally and does not expose it; the observable AND behaviour
+// is covered by `fts_recall_tests` (a narrower multi-term query never returns
+// more than the broader one) and by the search-determinism tests below.
 
 // ===================================================================
 // FTS reindex invariant — random mutation stream
 // ===================================================================
 
-/// Recompute every node's current title+body trigram set and compare
-/// it against the FTS posting lists by:
-///   1. For each (node, expected_trigram), assert that the posting
-///      list of `expected_trigram` contains the node id.
-///   2. For each known trigram in any node, the union of all node
-///      ids in its posting list must be a subset of the live nodes
-///      (i.e. no stale entries from deleted/old text remain).
-fn assert_fts_index_matches_live_nodes(db: &Drevo, live_node_ids: &HashSet<u64>) {
-    // For every live node, every trigram in its current title+body
-    // MUST appear in the index pointing at that node.
+/// Assert the FTS index is consistent with the live node set: every live node
+/// is found by searching its own current title (create/update was reindexed),
+/// and no search returns a node that is not live (delete was deindexed).
+fn assert_fts_index_matches_live_nodes(db: &NativeService, live_node_ids: &HashSet<u64>) {
+    // Observable form of the FTS-index invariant — the native engine exposes no
+    // trigram posting lists (unlike the KV `fts_node_ids_for_trigram`), so the
+    // contract is checked through `search_fts`:
+    //   * every live node is found by searching its own *current* title, which
+    //     proves the index was (re)built on create and on title/body update;
+    //   * no search ever returns a node that is not live, which proves cascade
+    //     delete deindexes a removed node.
     for &id in live_node_ids {
-        let n = db
-            .get_node(id)
-            .unwrap()
-            .expect("live node must be retrievable");
-        let expected: Vec<String> = extract_trigrams(&n.title, &n.body);
-        for tg in &expected {
-            let posting = db.fts_node_ids_for_trigram(tg).unwrap();
+        let n = db.get_node(id).expect("live node must be retrievable");
+        if n.title.trim().is_empty() {
+            continue;
+        }
+        let hits = db.search_fts(&n.title, 100);
+        assert!(
+            hits.iter().any(|h| h.node.id == id),
+            "FTS index does not surface live node id={id} by its own title \
+             (title='{}', body='{}')",
+            n.title,
+            n.body,
+        );
+        for h in &hits {
             assert!(
-                posting.contains(&id),
-                "FTS index missing trigram '{}' for live node id={} \
-                 (title='{}', body='{}'). posting={:?}",
-                tg,
-                id,
-                n.title,
-                n.body,
-                posting,
+                live_node_ids.contains(&h.node.id),
+                "FTS search (title of {id}) returned non-live node id={}",
+                h.node.id,
             );
         }
-    }
-
-    // The union of every trigram known to any *live* node forms the
-    // complete set of trigrams that SHOULD be present in the index.
-    // Build that set, then walk the index and assert no node id sits
-    // in a posting list it does not belong to.
-    let mut all_trigrams: BTreeSet<String> = BTreeSet::new();
-    let mut expected_membership: std::collections::HashMap<String, HashSet<u64>> =
-        std::collections::HashMap::new();
-    for &id in live_node_ids {
-        let n = db.get_node(id).unwrap().unwrap();
-        for tg in extract_trigrams(&n.title, &n.body) {
-            all_trigrams.insert(tg.clone());
-            expected_membership.entry(tg).or_default().insert(id);
-        }
-    }
-    for tg in &all_trigrams {
-        let observed: HashSet<u64> = db
-            .fts_node_ids_for_trigram(tg)
-            .unwrap()
-            .into_iter()
-            .collect();
-        let expected = expected_membership.get(tg).cloned().unwrap_or_default();
-        assert_eq!(
-            observed, expected,
-            "posting list for trigram '{}' has stale or missing entries: \
-             observed={:?}, expected={:?}",
-            tg, observed, expected,
-        );
     }
 }
 
@@ -397,13 +314,11 @@ fn fts_index_matches_node_text_under_random_mutations() {
 
 #[test]
 fn updated_idx_parity_under_random_mutations() {
-    // Cross-link with `00106` invariant #4: every create / update /
-    // delete leaves exactly one entry per live node in the
-    // `updated:` index, and zero for deleted nodes.
-    // We delegate the heavy lifting to `Drevo::verify_invariants` —
-    // this test exercises the FTS-adjacent path (title/body updates)
-    // specifically, so a regression in `updated_idx` maintenance
-    // *during an FTS-touching mutation* is caught here.
+    // Every create / update / delete must leave exactly one recency entry per
+    // live node and zero for deleted ones. On the native engine the observable
+    // form of that invariant is `list_recent`: its id set must equal the set of
+    // live nodes after every FTS-touching mutation (a stale entry for a deleted
+    // node, or a missing entry for a live one, fails the equality).
     let seeds = [0x2u32, 100u32, 0xdeadbeefu32];
     for &seed in &seeds {
         let db = db();
@@ -451,13 +366,12 @@ fn updated_idx_parity_under_random_mutations() {
                 _ => {}
             }
 
-            let violations = db.verify_invariants().unwrap();
-            assert!(
-                violations.is_empty(),
-                "invariants violated after seed={:#x} op={:?}: {:?}",
-                seed,
-                op,
-                violations,
+            let recent: HashSet<u64> = db.list_recent(usize::MAX).iter().map(|n| n.id).collect();
+            let live_set: HashSet<u64> = live.iter().copied().collect();
+            assert_eq!(
+                recent, live_set,
+                "recency index diverged from live set after seed={:#x} op={:?}",
+                seed, op,
             );
         }
     }
@@ -485,8 +399,8 @@ fn search_fts_results_are_deterministic_across_runs() {
         .create_node(node("note", "Programming Rust idioms", ""))
         .unwrap();
 
-    let r1 = db.search_fts("rust programming", 10).unwrap();
-    let r2 = db.search_fts("rust programming", 10).unwrap();
+    let r1 = db.search_fts("rust programming", 10);
+    let r2 = db.search_fts("rust programming", 10);
     assert_eq!(r1.len(), r2.len());
     for (a, b) in r1.iter().zip(r2.iter()) {
         assert_eq!(a.node.id, b.node.id);
@@ -504,7 +418,7 @@ fn search_fts_ordering_stable_on_tied_scores() {
     let db = db();
     let a = db.create_node(node("note", "Alpha beta", "")).unwrap();
     let b = db.create_node(node("note", "Gamma beta", "")).unwrap();
-    let results = db.search_fts("beta", 10).unwrap();
+    let results = db.search_fts("beta", 10);
     // Both nodes contain "bet" so both are candidates.
     let ids: Vec<u64> = results.iter().map(|s| s.node.id).collect();
     assert_eq!(ids.len(), 2);
@@ -526,7 +440,7 @@ fn search_fts_smoothed_idf_is_positive_when_df_equals_n() {
         db.create_node(node("note", &format!("rust note {}", i), ""))
             .unwrap();
     }
-    let results = db.search_fts("rust", 10).unwrap();
+    let results = db.search_fts("rust", 10);
     assert_eq!(
         results.len(),
         3,
