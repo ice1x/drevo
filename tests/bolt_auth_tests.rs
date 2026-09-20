@@ -1,8 +1,8 @@
 //! Integration tests for Bolt authentication — Phase 11 task `00074`.
 //!
 //! These drive the argon2-backed [`UserStore`] end-to-end through the
-//! synchronous session loop (`run_session_sync_with_auth`), the same
-//! path the async listener entry point (`accept_and_run_session_with_auth`)
+//! synchronous session loop (`run_session_sync_with_auth_durable`), the same
+//! path the async listener entry point (the durable auth listener)
 //! reuses over TCP/TLS. They prove that:
 //!
 //! * a correct basic-auth `HELLO` reaches `READY` and runs Cypher;
