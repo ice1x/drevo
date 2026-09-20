@@ -409,8 +409,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Drevo;
     use crate::model::{NewEdge, NewNode, Properties};
+    use crate::native_service::NativeService;
 
     fn make_node(kind: &str, title: &str) -> NewNode {
         NewNode {
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn bfs_depth_zero_returns_empty() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let n = db.create_node(make_node("note", "A")).unwrap();
         let result = db.bfs(n.id, 0, Direction::Outgoing, None).unwrap();
         assert!(result.is_empty());
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn bfs_no_edges_returns_empty() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let n = db.create_node(make_node("note", "Isolated")).unwrap();
         let result = db.bfs(n.id, 3, Direction::Outgoing, None).unwrap();
         assert!(result.is_empty());
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn bfs_single_hop() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn bfs_does_not_include_start_node() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn bfs_multi_hop() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn bfs_respects_direction_outgoing() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         // Edge points from B to A
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn bfs_respects_direction_incoming() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         // Edge points from B to A
@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn bfs_direction_both() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn bfs_edge_kind_filter() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn bfs_handles_cycle() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn bfs_self_loop() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         db.create_edge(make_edge(a.id, a.id, "self_ref")).unwrap();
 
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn bfs_nonexistent_edge_kind_returns_empty() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn bfs_fan_out() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let hub = db.create_node(make_node("note", "Hub")).unwrap();
         let mut spoke_ids = Vec::new();
         for i in 0..10 {
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn bfs_diamond_graph_no_duplicates() {
         // A -> B, A -> C, B -> D, C -> D
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn dfs_depth_zero_returns_empty() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let n = db.create_node(make_node("note", "A")).unwrap();
         let result = db.dfs(n.id, 0, Direction::Outgoing, None).unwrap();
         assert!(result.is_empty());
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn dfs_no_edges_returns_empty() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let n = db.create_node(make_node("note", "Isolated")).unwrap();
         let result = db.dfs(n.id, 3, Direction::Outgoing, None).unwrap();
         assert!(result.is_empty());
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn dfs_single_hop() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn dfs_does_not_include_start_node() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn dfs_multi_hop() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn dfs_respects_direction_outgoing() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(b.id, a.id, "links_to")).unwrap();
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn dfs_respects_direction_incoming() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(b.id, a.id, "links_to")).unwrap();
@@ -731,7 +731,7 @@ mod tests {
 
     #[test]
     fn dfs_direction_both() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn dfs_edge_kind_filter() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn dfs_handles_cycle() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn dfs_self_loop() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         db.create_edge(make_edge(a.id, a.id, "self_ref")).unwrap();
 
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn dfs_nonexistent_edge_kind_returns_empty() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn dfs_fan_out() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let hub = db.create_node(make_node("note", "Hub")).unwrap();
         let mut spoke_ids = Vec::new();
         for i in 0..10 {
@@ -828,7 +828,7 @@ mod tests {
 
     #[test]
     fn dfs_diamond_graph_no_duplicates() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -851,7 +851,7 @@ mod tests {
         // A -> B -> C, A -> D
         // DFS from A should visit B then C before D (or D then ...) depending on stack order.
         // Key property: DFS goes deep before wide.
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -890,7 +890,7 @@ mod tests {
 
     #[test]
     fn sp_same_node() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let path = db.shortest_path(a.id, a.id).unwrap();
         assert_eq!(path, Some(vec![a.id]));
@@ -898,7 +898,7 @@ mod tests {
 
     #[test]
     fn sp_direct_edge() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_weighted_edge(a.id, b.id, "links_to", 1.0))
@@ -909,7 +909,7 @@ mod tests {
 
     #[test]
     fn sp_no_connection() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let path = db.shortest_path(a.id, b.id).unwrap();
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn sp_prefers_lower_weight() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn sp_handles_cycle() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -951,7 +951,7 @@ mod tests {
 
     #[test]
     fn sp_nonexistent_source() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let path = db.shortest_path(999, b.id).unwrap();
         assert_eq!(path, None);
@@ -959,7 +959,7 @@ mod tests {
 
     #[test]
     fn sp_wrong_direction() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_weighted_edge(b.id, a.id, "links_to", 1.0))
@@ -970,7 +970,7 @@ mod tests {
 
     #[test]
     fn sp_self_loop_ignored() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_weighted_edge(a.id, a.id, "self_ref", 0.1))
@@ -987,7 +987,7 @@ mod tests {
 
     #[test]
     fn subgraph_depth_zero_returns_root_only() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -1000,14 +1000,14 @@ mod tests {
 
     #[test]
     fn subgraph_nonexistent_root_returns_error() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let result = db.subgraph(999, 2);
         assert!(result.is_err());
     }
 
     #[test]
     fn subgraph_single_hop_includes_root_neighbor_and_edge() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let e = db.create_edge(make_edge(a.id, b.id, "links_to")).unwrap();
@@ -1023,7 +1023,7 @@ mod tests {
 
     #[test]
     fn subgraph_follows_both_directions() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn subgraph_multi_hop() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -1057,7 +1057,7 @@ mod tests {
 
     #[test]
     fn subgraph_handles_cycle() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -1073,7 +1073,7 @@ mod tests {
     #[test]
     fn subgraph_diamond_no_duplicates() {
         // A -> B, A -> C, B -> D, C -> D
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
@@ -1095,7 +1095,7 @@ mod tests {
 
     #[test]
     fn subgraph_self_loop() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let e = db.create_edge(make_edge(a.id, a.id, "self_ref")).unwrap();
 
@@ -1107,7 +1107,7 @@ mod tests {
 
     #[test]
     fn subgraph_isolated_node() {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "Isolated")).unwrap();
 
         let sg = db.subgraph(a.id, 5).unwrap();
@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn subgraph_only_includes_edges_between_subgraph_nodes() {
         // A -> B -> C -> D, with an edge D -> E (outside radius)
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let a = db.create_node(make_node("note", "A")).unwrap();
         let b = db.create_node(make_node("note", "B")).unwrap();
         let c = db.create_node(make_node("note", "C")).unwrap();
