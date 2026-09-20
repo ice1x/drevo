@@ -16,9 +16,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
-use drevo::api::{build_router, ApiState};
-use drevo::db::Drevo;
 use drevo::model::{NewNode, Properties};
+use drevo::native_api::{build_native_router, NativeApiState};
+use drevo::native_service::NativeService;
 
 // --- minimal HTTP/1.1 client (mirrors examples/http_load.rs) ----------------
 
@@ -70,7 +70,7 @@ fn wait_ready(addr: SocketAddr) -> bool {
     false
 }
 
-fn seed(db: &Drevo, n: u64) -> Vec<u64> {
+fn seed(db: &NativeService, n: u64) -> Vec<u64> {
     (0..n)
         .map(|i| {
             db.create_node(NewNode {
@@ -88,12 +88,12 @@ fn seed(db: &Drevo, n: u64) -> Vec<u64> {
 
 /// Start the real axum server on an ephemeral port. The returned `Runtime`
 /// must be kept alive for the server to keep serving.
-fn start_server(db: Arc<Drevo>) -> (tokio::runtime::Runtime, SocketAddr) {
+fn start_server(db: Arc<NativeService>) -> (tokio::runtime::Runtime, SocketAddr) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let router = build_router(ApiState::new(db));
+    let router = build_native_router(NativeApiState::new(db));
     let listener = rt
         .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
         .expect("bind ephemeral");
@@ -122,7 +122,7 @@ fn parse_status_extracts_code() {
 
 #[test]
 fn http_load_end_to_end_small_scale() {
-    let db = Arc::new(Drevo::open_in_memory().expect("open"));
+    let db = Arc::new(NativeService::in_memory());
     let ids = seed(&db, 10);
     let (_rt, addr) = start_server(Arc::clone(&db));
     assert!(wait_ready(addr), "server must become ready");

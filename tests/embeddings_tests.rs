@@ -22,16 +22,16 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use drevo::api::{build_router, ApiState};
-use drevo::db::Drevo;
+use drevo::native_api::{build_native_router, NativeApiState};
+use drevo::native_service::NativeService;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 fn make_app() -> axum::Router {
-    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
-    let state = ApiState::new(db);
-    build_router(state)
+    let db = Arc::new(NativeService::in_memory());
+    let state = NativeApiState::new(db);
+    build_native_router(state)
 }
 
 async fn post_embeddings(app: &axum::Router, body: Value) -> (StatusCode, Value) {

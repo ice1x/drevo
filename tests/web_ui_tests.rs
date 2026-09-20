@@ -2,7 +2,7 @@
 //! Web UI handlers.
 //!
 //! Sibling to `src/web_ui.rs` (unit tests). This file drives the
-//! actual `axum::Router` returned by [`drevo::api::build_router`]
+//! actual `axum::Router` returned by [`drevo::native_api::build_native_router`]
 //! via `tower::ServiceExt::oneshot` — the same pattern used by
 //! `tests/http_api_tests.rs`. No real TCP listener; the router is
 //! exercised in-process so the tests run on any CI cell that
@@ -23,15 +23,15 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use drevo::api::{build_router, ApiState};
-use drevo::db::Drevo;
+use drevo::native_api::{build_native_router, NativeApiState};
+use drevo::native_service::NativeService;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 fn make_app() -> axum::Router {
-    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
-    let state = ApiState::new(db);
-    build_router(state)
+    let db = Arc::new(NativeService::in_memory());
+    let state = NativeApiState::new(db);
+    build_native_router(state)
 }
 
 /// Send a `GET` and return (status, content-type header, body bytes).
