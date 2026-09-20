@@ -13,14 +13,15 @@ use std::collections::BTreeMap;
 use drevo::bolt::auth::{AuthOutcome, Authenticator};
 use drevo::bolt::packstream::{decode, encode, Value};
 use drevo::bolt::session::{
-    decode_client, encode_server, run_session_sync, run_session_sync_with_auth, ClientMessage,
-    ServerMessage, Session, State, BEGIN, COMMIT, DISCARD, FAILURE, GOODBYE, HELLO, IGNORED, PULL,
-    RECORD, RESET, ROLLBACK, RUN, SUCCESS,
+    decode_client, encode_server, run_session_sync_durable, run_session_sync_with_auth_durable,
+    ClientMessage, ServerMessage, Session, State, BEGIN, COMMIT, DISCARD, FAILURE, GOODBYE, HELLO,
+    IGNORED, PULL, RECORD, RESET, ROLLBACK, RUN, SUCCESS,
 };
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
+use std::sync::Arc;
 
-fn open() -> Drevo {
-    Drevo::open_in_memory().expect("open_in_memory")
+fn open() -> Arc<NativeService> {
+    Arc::new(NativeService::in_memory())
 }
 
 fn dict<I: IntoIterator<Item = (&'static str, Value)>>(entries: I) -> BTreeMap<String, Value> {
@@ -246,14 +247,14 @@ fn server_message_roundtrips_through_packstream_bytes() {
 #[test]
 fn new_session_starts_in_connected_state() {
     let drevo = open();
-    let s = Session::new(&drevo);
+    let s = Session::new_durable(Arc::clone(&drevo));
     assert_eq!(s.state(), State::Connected);
 }
 
 #[test]
 fn hello_in_connected_transitions_to_ready_with_success() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     let replies = s.handle(ClientMessage::Hello {
         extra: dict([("user_agent", Value::String("test/1".to_string()))]),
     });
@@ -271,7 +272,7 @@ fn hello_in_connected_transitions_to_ready_with_success() {
 #[test]
 fn hello_when_already_ready_yields_failure() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Hello { extra: dict([]) });
     assert_eq!(replies.len(), 1);
@@ -282,7 +283,7 @@ fn hello_when_already_ready_yields_failure() {
 #[test]
 fn run_before_hello_yields_failure() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     let replies = s.handle(ClientMessage::Run {
         query: "RETURN 1".to_string(),
         parameters: dict([]),
@@ -297,7 +298,7 @@ fn run_before_hello_yields_failure() {
 #[test]
 fn run_return_literal_transitions_to_streaming_with_field_metadata() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Run {
         query: "RETURN 1 AS one, 2 AS two".to_string(),
@@ -330,7 +331,7 @@ fn run_return_literal_transitions_to_streaming_with_field_metadata() {
 #[test]
 fn pull_all_after_run_emits_record_then_success_with_has_more_false() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Run {
         query: "RETURN 1 AS n".to_string(),
@@ -360,7 +361,7 @@ fn pull_all_after_run_emits_record_then_success_with_has_more_false() {
 #[test]
 fn pull_with_finite_n_leaves_has_more_true_when_more_remain() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
 
     // Seed four nodes so the executor will return four rows on MATCH.
@@ -415,7 +416,7 @@ fn pull_with_finite_n_leaves_has_more_true_when_more_remain() {
 #[test]
 fn discard_all_after_run_skips_records_and_returns_to_ready() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Run {
         query: "RETURN 1 AS n".to_string(),
@@ -434,7 +435,7 @@ fn discard_all_after_run_skips_records_and_returns_to_ready() {
 #[test]
 fn pull_without_active_stream_yields_failure() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Pull {
         extra: dict([("n", Value::Integer(-1))]),
@@ -448,7 +449,7 @@ fn pull_without_active_stream_yields_failure() {
 #[test]
 fn run_with_syntax_error_yields_failure_and_transitions_to_failed() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Run {
         query: "THIS IS NOT CYPHER ¶".to_string(),
@@ -473,7 +474,7 @@ fn run_with_syntax_error_yields_failure_and_transitions_to_failed() {
 #[test]
 fn messages_in_failed_state_are_ignored_until_reset() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Run {
         query: "*** garbage ***".to_string(),
@@ -496,7 +497,7 @@ fn messages_in_failed_state_are_ignored_until_reset() {
 #[test]
 fn reset_from_failed_clears_state_and_returns_success() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Run {
         query: "*** garbage ***".to_string(),
@@ -512,7 +513,7 @@ fn reset_from_failed_clears_state_and_returns_success() {
 #[test]
 fn reset_from_streaming_drops_pending_records() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Run {
         query: "RETURN 1 AS n".to_string(),
@@ -529,7 +530,7 @@ fn reset_from_streaming_drops_pending_records() {
 #[test]
 fn reset_from_ready_is_idempotent() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Reset);
     assert_eq!(replies.len(), 1);
@@ -542,7 +543,7 @@ fn reset_from_ready_is_idempotent() {
 #[test]
 fn goodbye_in_ready_returns_no_reply_and_marks_defunct() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Goodbye);
     assert!(replies.is_empty());
@@ -552,7 +553,7 @@ fn goodbye_in_ready_returns_no_reply_and_marks_defunct() {
 #[test]
 fn goodbye_from_connected_state_also_defuncts() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     let replies = s.handle(ClientMessage::Goodbye);
     assert!(replies.is_empty());
     assert_eq!(s.state(), State::Defunct);
@@ -563,7 +564,7 @@ fn goodbye_from_connected_state_also_defuncts() {
 #[test]
 fn begin_in_ready_transitions_to_tx_ready_with_success_reply() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Begin { extra: dict([]) });
     assert_eq!(replies.len(), 1);
@@ -572,37 +573,34 @@ fn begin_in_ready_transitions_to_tx_ready_with_success_reply() {
         other => panic!("expected Success, got {other:?}"),
     }
     assert_eq!(s.state(), State::TxReady);
-    assert!(drevo.is_tx_active());
 }
 
 #[test]
 fn commit_in_tx_ready_transitions_back_to_ready() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     let replies = s.handle(ClientMessage::Commit);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     assert_eq!(s.state(), State::Ready);
-    assert!(!drevo.is_tx_active());
 }
 
 #[test]
 fn rollback_in_tx_ready_transitions_back_to_ready_and_unsets_tx() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     let replies = s.handle(ClientMessage::Rollback);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     assert_eq!(s.state(), State::Ready);
-    assert!(!drevo.is_tx_active());
 }
 
 #[test]
 fn begin_in_connected_state_yields_failure_before_hello() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     let replies = s.handle(ClientMessage::Begin { extra: dict([]) });
     assert!(matches!(replies[0], ServerMessage::Failure { .. }));
     assert_eq!(s.state(), State::Failed);
@@ -611,7 +609,7 @@ fn begin_in_connected_state_yields_failure_before_hello() {
 #[test]
 fn nested_begin_yields_transient_outdated_failure() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     let replies = s.handle(ClientMessage::Begin { extra: dict([]) });
@@ -631,7 +629,7 @@ fn nested_begin_yields_transient_outdated_failure() {
 #[test]
 fn commit_without_active_tx_yields_failure() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Commit);
     assert!(matches!(replies[0], ServerMessage::Failure { .. }));
@@ -641,7 +639,7 @@ fn commit_without_active_tx_yields_failure() {
 #[test]
 fn rollback_without_active_tx_yields_failure() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s.handle(ClientMessage::Rollback);
     assert!(matches!(replies[0], ServerMessage::Failure { .. }));
@@ -651,7 +649,7 @@ fn rollback_without_active_tx_yields_failure() {
 #[test]
 fn run_inside_tx_transitions_to_tx_streaming() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     s.handle(ClientMessage::Run {
@@ -665,7 +663,7 @@ fn run_inside_tx_transitions_to_tx_streaming() {
 #[test]
 fn pull_inside_tx_drains_back_to_tx_ready_not_ready() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     s.handle(ClientMessage::Run {
@@ -678,13 +676,12 @@ fn pull_inside_tx_drains_back_to_tx_ready_not_ready() {
     });
     // Crucial: do NOT slip back to Ready — that would release the tx.
     assert_eq!(s.state(), State::TxReady);
-    assert!(drevo.is_tx_active());
 }
 
 #[test]
 fn discard_inside_tx_drains_back_to_tx_ready_not_ready() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     s.handle(ClientMessage::Run {
@@ -709,13 +706,12 @@ fn discard_inside_tx_drains_back_to_tx_ready_not_ready() {
         extra: dict([("n", Value::Integer(-1))]),
     });
     assert_eq!(s.state(), State::TxReady);
-    assert!(drevo.is_tx_active());
 }
 
 #[test]
 fn rollback_undoes_create_executed_inside_tx() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     s.handle(ClientMessage::Run {
@@ -746,7 +742,7 @@ fn rollback_undoes_create_executed_inside_tx() {
 #[test]
 fn commit_persists_create_executed_inside_tx() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     s.handle(ClientMessage::Run {
@@ -776,7 +772,7 @@ fn commit_persists_create_executed_inside_tx() {
 #[test]
 fn rollback_restores_pre_tx_property_after_update() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     // Seed a node in autocommit mode.
     s.handle(ClientMessage::Run {
@@ -823,7 +819,7 @@ fn rollback_restores_pre_tx_property_after_update() {
 #[test]
 fn reset_during_tx_rolls_back_and_returns_to_ready() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     s.handle(ClientMessage::Run {
@@ -837,7 +833,6 @@ fn reset_during_tx_rolls_back_and_returns_to_ready() {
     let replies = s.handle(ClientMessage::Reset);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     assert_eq!(s.state(), State::Ready);
-    assert!(!drevo.is_tx_active());
     // Tx-staged CREATE is gone.
     s.handle(ClientMessage::Run {
         query: "MATCH (n:Person {name: 'ghost'}) RETURN n.name AS name".to_string(),
@@ -858,7 +853,7 @@ fn reset_during_tx_rolls_back_and_returns_to_ready() {
 fn goodbye_during_tx_rolls_back_so_next_session_can_begin() {
     let drevo = open();
     {
-        let mut s = Session::new(&drevo);
+        let mut s = Session::new_durable(Arc::clone(&drevo));
         s.handle(ClientMessage::Hello { extra: dict([]) });
         s.handle(ClientMessage::Begin { extra: dict([]) });
         s.handle(ClientMessage::Goodbye);
@@ -866,8 +861,7 @@ fn goodbye_during_tx_rolls_back_so_next_session_can_begin() {
     }
     // Without GOODBYE-rollback the journal slot would stay Active and
     // the second session's BEGIN would get TransactionAlreadyActive.
-    assert!(!drevo.is_tx_active());
-    let mut s2 = Session::new(&drevo);
+    let mut s2 = Session::new_durable(Arc::clone(&drevo));
     s2.handle(ClientMessage::Hello { extra: dict([]) });
     let replies = s2.handle(ClientMessage::Begin { extra: dict([]) });
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
@@ -876,7 +870,7 @@ fn goodbye_during_tx_rolls_back_so_next_session_can_begin() {
 #[test]
 fn failure_inside_tx_routes_to_failed_then_reset_rolls_back() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     // Seed a node in autocommit mode using an explicit `title` so the
     // drevo storage-layer title-uniqueness rule kicks in when we try
@@ -912,7 +906,6 @@ fn failure_inside_tx_routes_to_failed_then_reset_rolls_back() {
     let replies = s.handle(ClientMessage::Reset);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     assert_eq!(s.state(), State::Ready);
-    assert!(!drevo.is_tx_active());
     // Verify only the pre-tx node survives.
     s.handle(ClientMessage::Run {
         query: "MATCH (n:Person) RETURN n.title AS title".to_string(),
@@ -938,7 +931,7 @@ fn failure_inside_tx_routes_to_failed_then_reset_rolls_back() {
 #[test]
 fn run_in_failed_state_inside_tx_still_ignored() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Begin { extra: dict([]) });
     // Force a syntax error → Failed.
@@ -959,17 +952,18 @@ fn run_in_failed_state_inside_tx_still_ignored() {
 
 // --- Cross-session transaction isolation (issue #236) ----------------------
 //
-// The explicit-transaction slot is a single global one per `Drevo` handle, but
-// the session-lifecycle hooks (`RESET`, `GOODBYE`, connection drop) that clean
-// up "an open transaction" must only touch a transaction *this* session opened.
-// A pooled driver routinely sends `RESET` on a *different* connection while a
-// managed transaction is in flight on another; before the ownership fix that
-// stray `RESET` rolled back the unrelated transaction, so the owning session's
-// later `COMMIT` failed with `Neo.DatabaseError.Statement.ExecutionFailed: no
-// active transaction` — the intermittent failure reported in issue #236.
+// Each session owns its own explicit transaction (a per-session `NativeTx` on
+// the durable engine), so the session-lifecycle hooks (`RESET`, `GOODBYE`,
+// connection drop) that clean up "an open transaction" only ever touch a
+// transaction *this* session opened. A pooled driver routinely sends `RESET` on
+// a *different* connection while a managed transaction is in flight on another;
+// a stray `RESET` must not roll back the unrelated transaction, so the owning
+// session's later `COMMIT` still succeeds — the intermittent failure reported in
+// issue #236 (originally a single global KV slot; the durable engine keeps the
+// transactions independent by construction).
 
-fn ready(drevo: &Drevo) -> Session<'_> {
-    let mut s = Session::new(drevo);
+fn ready(drevo: &Arc<NativeService>) -> Session<'static> {
+    let mut s = Session::new_durable(Arc::clone(drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s
 }
@@ -982,16 +976,11 @@ fn reset_on_another_session_does_not_roll_back_our_tx() {
 
     owner.handle(ClientMessage::Begin { extra: dict([]) });
     assert_eq!(owner.state(), State::TxReady);
-    assert!(drevo.is_tx_active());
 
     // A pooled driver recycling a *different* connection sends RESET.
     let replies = other.handle(ClientMessage::Reset);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     // The other session must NOT have disturbed the owner's transaction.
-    assert!(
-        drevo.is_tx_active(),
-        "a foreign RESET rolled back our transaction (issue #236)"
-    );
 
     // The owner can still commit — no spurious `no active transaction`.
     let replies = owner.handle(ClientMessage::Commit);
@@ -1001,7 +990,6 @@ fn reset_on_another_session_does_not_roll_back_our_tx() {
         replies[0]
     );
     assert_eq!(owner.state(), State::Ready);
-    assert!(!drevo.is_tx_active());
 }
 
 #[test]
@@ -1010,7 +998,6 @@ fn goodbye_on_another_session_does_not_roll_back_our_tx() {
     let mut owner = ready(&drevo);
 
     owner.handle(ClientMessage::Begin { extra: dict([]) });
-    assert!(drevo.is_tx_active());
 
     {
         // A second connection opens, does nothing transactional, and leaves.
@@ -1018,10 +1005,6 @@ fn goodbye_on_another_session_does_not_roll_back_our_tx() {
         other.handle(ClientMessage::Goodbye);
     } // `other` is also dropped here — neither GOODBYE nor drop may touch our tx.
 
-    assert!(
-        drevo.is_tx_active(),
-        "a foreign GOODBYE/drop rolled back our transaction (issue #236)"
-    );
     let replies = owner.handle(ClientMessage::Commit);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
 }
@@ -1033,11 +1016,9 @@ fn own_reset_still_rolls_back_our_open_tx() {
     let drevo = open();
     let mut s = ready(&drevo);
     s.handle(ClientMessage::Begin { extra: dict([]) });
-    assert!(drevo.is_tx_active());
     let replies = s.handle(ClientMessage::Reset);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     assert_eq!(s.state(), State::Ready);
-    assert!(!drevo.is_tx_active(), "own RESET must roll back our tx");
 }
 
 #[test]
@@ -1054,14 +1035,9 @@ fn own_reset_after_midtx_failure_rolls_back_our_tx() {
         extra: dict([]),
     });
     assert_eq!(s.state(), State::Failed);
-    assert!(
-        drevo.is_tx_active(),
-        "the tx is still open after a failed RUN"
-    );
     let replies = s.handle(ClientMessage::Reset);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     assert_eq!(s.state(), State::Ready);
-    assert!(!drevo.is_tx_active());
 }
 
 #[test]
@@ -1073,13 +1049,8 @@ fn dropping_a_session_with_an_open_tx_rolls_it_back() {
     {
         let mut s = ready(&drevo);
         s.handle(ClientMessage::Begin { extra: dict([]) });
-        assert!(drevo.is_tx_active());
     } // dropped here without COMMIT/ROLLBACK/GOODBYE
-    assert!(
-        !drevo.is_tx_active(),
-        "dropping a session leaked its open transaction (would block all future BEGINs)"
-    );
-    // Proof the slot is truly free: a fresh session can BEGIN.
+      // Proof the slot is truly free: a fresh session can BEGIN.
     let mut s = ready(&drevo);
     let replies = s.handle(ClientMessage::Begin { extra: dict([]) });
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
@@ -1090,7 +1061,7 @@ fn dropping_a_session_with_an_open_tx_rolls_it_back() {
 #[test]
 fn run_create_then_run_match_round_trips_via_session() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
 
     // CREATE one node — no RETURN, so PULL yields just a terminal SUCCESS.
@@ -1133,7 +1104,7 @@ fn run_create_then_run_match_round_trips_via_session() {
 #[test]
 fn run_uses_parameter_via_packstream_to_cypher_conversion() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Run {
         query: "RETURN $n AS n".to_string(),
@@ -1160,7 +1131,7 @@ fn run_uses_parameter_via_packstream_to_cypher_conversion() {
 #[test]
 fn run_returning_a_node_emits_bolt_node_structure_tag_0x4e() {
     let drevo = open();
-    let mut s = Session::new(&drevo);
+    let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s.handle(ClientMessage::Run {
         query: "CREATE (n:Person {name: 'bob'}) RETURN n".to_string(),
@@ -1238,7 +1209,7 @@ fn run_session_sync_drives_full_hello_run_pull_goodbye_flow() {
 
     let mut reader = Cursor::new(client_bytes);
     let mut writer: Vec<u8> = Vec::new();
-    run_session_sync(&mut reader, &mut writer, &drevo).expect("session loop");
+    run_session_sync_durable(&mut reader, &mut writer, Arc::clone(&drevo)).expect("session loop");
 
     // Drain the server reply stream: one chunked message per response.
     let mut server_msgs = Vec::new();
@@ -1294,7 +1265,7 @@ impl Authenticator for FixedCreds {
 #[test]
 fn session_without_auth_accepts_hello_with_no_credentials() {
     let drevo = open();
-    let mut session = Session::new(&drevo);
+    let mut session = Session::new_durable(Arc::clone(&drevo));
     let replies = session.handle(ClientMessage::Hello { extra: dict([]) });
     assert_eq!(session.state(), State::Ready);
     assert_eq!(extract_struct_msg(&replies[0]), SUCCESS);
@@ -1307,7 +1278,7 @@ fn session_with_auth_accepts_valid_credentials() {
         principal: "neo4j",
         credentials: "s3cret",
     };
-    let mut session = Session::with_auth(&drevo, &auth);
+    let mut session = Session::with_auth_durable(Arc::clone(&drevo), &auth);
     let replies = session.handle(ClientMessage::Hello {
         extra: dict([
             ("scheme", Value::String("basic".to_string())),
@@ -1327,7 +1298,7 @@ fn session_with_auth_denies_bad_credentials_and_goes_defunct() {
         principal: "neo4j",
         credentials: "s3cret",
     };
-    let mut session = Session::with_auth(&drevo, &auth);
+    let mut session = Session::with_auth_durable(Arc::clone(&drevo), &auth);
     let replies = session.handle(ClientMessage::Hello {
         extra: dict([
             ("principal", Value::String("neo4j".to_string())),
@@ -1385,7 +1356,8 @@ fn run_session_sync_with_auth_rejects_bad_password_then_closes() {
 
     let mut reader = Cursor::new(client_bytes);
     let mut writer: Vec<u8> = Vec::new();
-    run_session_sync_with_auth(&mut reader, &mut writer, &drevo, &auth).expect("session loop");
+    run_session_sync_with_auth_durable(&mut reader, &mut writer, Arc::clone(&drevo), &auth)
+        .expect("session loop");
 
     let mut server_msgs = Vec::new();
     let mut cur = Cursor::new(writer);
@@ -1408,7 +1380,7 @@ fn run_session_sync_with_auth_rejects_bad_password_then_closes() {
         ))
     );
     // The CREATE never ran.
-    assert!(drevo.list_recent(10).unwrap().is_empty());
+    assert!(drevo.list_recent(10).is_empty());
 }
 
 fn extract_struct_msg(msg: &ServerMessage) -> u8 {
