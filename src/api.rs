@@ -920,7 +920,11 @@ fn run_cypher_query(
 ) -> Result<CypherResponse, ApiError> {
     let ast = parser::parse(query)
         .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
-    let result = executor::execute(&ast, db, params)
+    // The KV store is a `GraphEngine`, so it serves core Cypher through the
+    // engine seam. Secondary subsystems (FTS, vector/semantic, keyword
+    // extraction) are the durable-native serving layer's job now — they surface
+    // `EngineCapability` here rather than a KV fallback.
+    let result = executor::execute_on_engine(&ast, db.as_ref(), params)
         .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
     Ok(exec_result_to_response(result))
 }

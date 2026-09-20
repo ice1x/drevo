@@ -160,7 +160,6 @@ use crate::cypher::ast::{
     UnwindClause,
 };
 use crate::cypher::lexer::Span;
-use crate::db::Drevo;
 use crate::engine::GraphEngine;
 use crate::error::DrevoError;
 use crate::model::{
@@ -692,42 +691,9 @@ fn extend_path_multi(
 
 // ===== Public entry point ===================================================
 
-/// Execute a parsed Cypher [`Query`] against a [`Drevo`] handle.
-///
-/// `params` provides bindings for `$name` parameters; pass an empty map
-/// for queries that don't use them.
-///
-/// # Errors
-///
-/// Returns the first executor error encountered (see [`ExecError`]).
-/// The executor is fail-fast — no partial result is returned for failed
-/// queries. CREATE side effects performed before an error are *not*
-/// rolled back; `00064` will introduce explicit transaction boundaries.
-pub fn execute(
-    query: &Query,
-    drevo: &Drevo,
-    params: HashMap<String, Value>,
-) -> ExecResultT<ExecResult> {
-    // The KV store is both the graph engine and the home of the secondary
-    // subsystems, so it is passed in both roles.
-    execute_inner(
-        query,
-        drevo,
-        Some(drevo),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        params,
-    )
-}
-
 /// Execute a Cypher query over **any** [`GraphEngine`] — the native
-/// `drevo-core` engine or the KV [`Drevo`] — without a KV secondary store
-/// (RFC `docs/rfc-native-core.md`, #307, Phase 6).
+/// `drevo-core` engine or the KV [`crate::db::Drevo`] — without a KV secondary
+/// store (RFC `docs/rfc-native-core.md`, #307, Phase 6).
 ///
 /// Core graph work (node/edge/adjacency CRUD, MATCH, MERGE, SET, DELETE,
 /// traversal) runs directly on `engine`. Queries that reach for a KV-only
@@ -736,14 +702,14 @@ pub fn execute(
 /// because those indexes are not (yet) fed to a non-KV engine.
 ///
 /// # Errors
-/// Returns the first [`ExecError`] encountered (see [`execute`]).
+/// Returns the first [`ExecError`] encountered (see [`execute_on_engine`]).
 pub fn execute_on_engine(
     query: &Query,
     engine: &dyn GraphEngine,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     execute_inner(
-        query, engine, None, None, None, None, None, None, None, None, params,
+        query, engine, None, None, None, None, None, None, None, params,
     )
 }
 
@@ -758,7 +724,7 @@ pub fn execute_on_engine(
 /// [`ExecError::EngineCapability`].
 ///
 /// # Errors
-/// Returns the first [`ExecError`] encountered (see [`execute`]).
+/// Returns the first [`ExecError`] encountered (see [`execute_on_engine`]).
 pub fn execute_on_engine_with_fts(
     query: &Query,
     engine: &dyn GraphEngine,
@@ -768,7 +734,6 @@ pub fn execute_on_engine_with_fts(
     execute_inner(
         query,
         engine,
-        None,
         Some(fts),
         None,
         None,
@@ -795,7 +760,7 @@ pub fn execute_on_engine_with_fts(
 /// [`ExecError::EngineCapability`].
 ///
 /// # Errors
-/// Returns the first [`ExecError`] encountered (see [`execute`]).
+/// Returns the first [`ExecError`] encountered (see [`execute_on_engine`]).
 pub fn execute_on_engine_with_indexes(
     query: &Query,
     engine: &dyn GraphEngine,
@@ -805,7 +770,7 @@ pub fn execute_on_engine_with_indexes(
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     execute_inner(
-        query, engine, None, fts, None, labels, props, None, None, None, params,
+        query, engine, fts, None, labels, props, None, None, None, params,
     )
 }
 
@@ -817,7 +782,7 @@ pub fn execute_on_engine_with_indexes(
 /// speed, never correctness.
 ///
 /// # Errors
-/// Returns the first [`ExecError`] encountered (see [`execute`]).
+/// Returns the first [`ExecError`] encountered (see [`execute_on_engine`]).
 #[allow(clippy::too_many_arguments)]
 pub fn execute_on_engine_with_indexes_and_values(
     query: &Query,
@@ -829,7 +794,7 @@ pub fn execute_on_engine_with_indexes_and_values(
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     execute_inner(
-        query, engine, None, fts, None, labels, props, values, None, None, params,
+        query, engine, fts, None, labels, props, values, None, None, params,
     )
 }
 
@@ -874,7 +839,7 @@ pub struct NativeQueryContext<'a> {
 /// durable-native serving entry (RFC #307 Phase 4/7).
 ///
 /// # Errors
-/// Returns the first [`ExecError`] encountered (see [`execute`]).
+/// Returns the first [`ExecError`] encountered (see [`execute_on_engine`]).
 pub fn execute_on_engine_with_context(
     query: &Query,
     engine: &dyn GraphEngine,
@@ -884,7 +849,6 @@ pub fn execute_on_engine_with_context(
     execute_inner(
         query,
         engine,
-        None,
         ctx.fts,
         ctx.fts_rel,
         ctx.labels,
@@ -900,7 +864,6 @@ pub fn execute_on_engine_with_context(
 fn execute_inner(
     query: &Query,
     engine: &dyn GraphEngine,
-    secondary: Option<&Drevo>,
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
     native_fts_rel: Option<&crate::native_fts::NativeFtsRelIndex>,
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
@@ -916,7 +879,6 @@ fn execute_inner(
         return execute_single(
             &query.parts[0].query,
             engine,
-            secondary,
             native_fts,
             native_fts_rel,
             native_labels,
@@ -963,7 +925,6 @@ fn execute_inner(
         let arm = execute_single(
             &part.query,
             engine,
-            secondary,
             native_fts,
             native_fts_rel,
             native_labels,
@@ -1094,12 +1055,11 @@ fn try_count_pushdown(
 }
 
 /// Execute one `UNION`-free arm against a fresh executor over the given engine
-/// (and optional KV secondary store).
+/// (and its optional native index stack).
 #[allow(clippy::too_many_arguments)]
 fn execute_single(
     single: &SingleQuery,
     engine: &dyn GraphEngine,
-    secondary: Option<&Drevo>,
     native_fts: Option<&crate::native_fts::NativeFtsIndex>,
     native_fts_rel: Option<&crate::native_fts::NativeFtsRelIndex>,
     native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
@@ -1126,7 +1086,6 @@ fn execute_single(
 
     let mut executor = Executor {
         engine,
-        secondary,
         native_fts,
         native_fts_rel,
         native_labels,
@@ -2188,15 +2147,9 @@ type SortableRows = Vec<(Vec<(Value, OrderDirection)>, (Vec<Value>, Bindings))>;
 
 struct Executor<'a> {
     /// The graph store viewed through the [`GraphEngine`] seam — the KV-backed
-    /// [`Drevo`] or the native `drevo-core`. All node/edge/adjacency work goes
-    /// through this.
+    /// [`crate::db::Drevo`] or the native `drevo-core`. All node/edge/adjacency
+    /// work goes through this.
     engine: &'a dyn GraphEngine,
-    /// The KV store, when it is the active engine — the home of the secondary
-    /// subsystems (FTS, vector/semantic, recency, keyword extraction) that are
-    /// not (yet) on the graph seam. `None` when running over a non-KV engine,
-    /// so those subsystems surface [`ExecError::EngineCapability`] instead of a
-    /// panic or a wrong answer.
-    secondary: Option<&'a Drevo>,
     /// A native full-text index tailing the engine's change-feed, when running
     /// over a non-KV engine that has one. Lets `fts.search` be answered on the
     /// native engine; `None` on the KV path (which uses `secondary`) or when no
@@ -2269,21 +2222,22 @@ impl<'a> Executor<'a> {
         self.engine
     }
 
-    /// The KV store backing the secondary subsystems (FTS, vector/semantic,
-    /// recency, keyword extraction) that are not yet on the graph seam. Returns
-    /// [`ExecError::EngineCapability`] when the active engine is not the KV
-    /// store, so a query that reaches for one of those subsystems on a native
-    /// engine fails deterministically instead of panicking.
-    fn secondary(&self, feature: &str) -> ExecResultT<&'a Drevo> {
-        self.secondary.ok_or_else(|| ExecError::EngineCapability {
+    /// The capability error raised when a query reaches for a secondary
+    /// subsystem (FTS, vector/semantic, keyword extraction) that the active
+    /// engine does not carry — i.e. no native index/service was attached for
+    /// it. Since the retirement of the KV executor entry there is no KV
+    /// fallback: the durable-native serving layer supplies these through its
+    /// native index stack, and every other engine fails deterministically here
+    /// instead of panicking or answering wrongly.
+    fn engine_capability(feature: &str) -> ExecError {
+        ExecError::EngineCapability {
             feature: feature.to_string(),
-        })
+        }
     }
 
-    /// Embed query text server-side: through the native path's attached
-    /// embedder when one is present (the durable-native serving layer),
-    /// otherwise through the KV secondary's installed embedder — surfacing
-    /// the same capability / not-configured errors either way.
+    /// Embed query text server-side through the native path's attached
+    /// embedder. Without one, surfaces the engine-capability error — there is
+    /// no KV secondary embedder to fall back to.
     #[cfg(feature = "http")]
     fn embed_query_text(&self, proc_name: &str, text: &str, span: Span) -> ExecResultT<Vec<f32>> {
         let embed_err = |e: crate::embeddings::EmbeddingsError| ExecError::InvalidProcedureCall {
@@ -2294,9 +2248,7 @@ impl<'a> Executor<'a> {
         if let Some(embedder) = self.native_embedder {
             return embedder.embed_query(text).map_err(embed_err);
         }
-        self.secondary("semantic embedding")?
-            .embed_text(text)
-            .map_err(embed_err)
+        Err(Self::engine_capability("semantic embedding"))
     }
 
     fn take_result(self) -> ExecResult {
@@ -2759,41 +2711,36 @@ impl<'a> Executor<'a> {
         }
 
         let first_label = pattern.labels.first();
-        let nodes: Vec<Arc<Node>> = if self.secondary.is_some() {
-            // KV: the engine and the secondary store are the same `Drevo`; a
-            // full id-ascending scan through the seam (owned decodes wrapped
-            // in `Arc` once).
-            self.engine().all_nodes()?
-        } else {
-            // Native. A label candidate set is only *complete* when a label
-            // index is present (it catches secondary-label-only matches that
-            // `nodes_by_kind` alone would miss); without one, leave label
-            // narrowing to the exact filter and rely on the property set / scan.
-            //
-            // Neither index may be trusted once THIS statement has written:
-            // the indexes are synced from the change-feed between statements,
-            // so a candidate set narrowed through them can be missing this
-            // statement's own writes — a false negative that would drop rows.
-            // Falling back to the scan + exact filter (which reads the live
-            // engine) keeps a stale index costing only speed, never answers.
-            let indexes_trusted = !self.statement_has_written();
-            let label_cands = match (self.native_labels, first_label) {
-                (Some(label_idx), Some(label)) if indexes_trusted => {
-                    Some(self.native_label_candidates(label_idx, label)?)
-                }
-                _ => None,
-            };
-            let prop_cands = if indexes_trusted {
-                self.native_property_candidates(pattern, row)?
-            } else {
-                None
-            };
-            match (label_cands, prop_cands) {
-                (Some(l), Some(p)) => intersect_nodes_by_id(l, p),
-                (Some(l), None) => l,
-                (None, Some(p)) => p,
-                (None, None) => self.engine().all_nodes()?,
+        // A label candidate set is only *complete* when a label index is present
+        // (it catches secondary-label-only matches that `nodes_by_kind` alone
+        // would miss); without one, leave label narrowing to the exact filter and
+        // rely on the property set / scan. An engine with no native index stack
+        // (e.g. a bare KV `Drevo` served through `execute_on_engine`) supplies
+        // neither, so it falls through to a full id-ascending scan.
+        //
+        // Neither index may be trusted once THIS statement has written: the
+        // indexes are synced from the change-feed between statements, so a
+        // candidate set narrowed through them can be missing this statement's own
+        // writes — a false negative that would drop rows. Falling back to the scan
+        // + exact filter (which reads the live engine) keeps a stale index costing
+        // only speed, never answers.
+        let indexes_trusted = !self.statement_has_written();
+        let label_cands = match (self.native_labels, first_label) {
+            (Some(label_idx), Some(label)) if indexes_trusted => {
+                Some(self.native_label_candidates(label_idx, label)?)
             }
+            _ => None,
+        };
+        let prop_cands = if indexes_trusted {
+            self.native_property_candidates(pattern, row)?
+        } else {
+            None
+        };
+        let nodes: Vec<Arc<Node>> = match (label_cands, prop_cands) {
+            (Some(l), Some(p)) => intersect_nodes_by_id(l, p),
+            (Some(l), None) => l,
+            (None, Some(p)) => p,
+            (None, None) => self.engine().all_nodes()?,
         };
         let mut out = Vec::with_capacity(nodes.len());
         for node in &nodes {
@@ -4397,7 +4344,7 @@ impl<'a> Executor<'a> {
     ///   empty expansion, not a type error.
     /// - A non-list, non-null value is an [`ExecError::TypeMismatch`].
     ///
-    /// A leading `UNWIND` works because [`execute`] seeds `bindings`
+    /// A leading `UNWIND` works because [`execute_single`] seeds `bindings`
     /// with a single empty row; an `UNWIND` after a `MATCH` that
     /// produced no rows correctly yields nothing because there is no
     /// input row to expand (the seed row was already consumed).
@@ -4811,21 +4758,18 @@ impl<'a> Executor<'a> {
             message: e.to_string(),
             span,
         })?;
-        // Native-first (issue #447): the durable-native serving layer manages
-        // its own registry; only the KV path falls back to `secondary`.
-        let target = match self.native_semantic {
-            Some(svc) => {
-                svc.semantic_register(&label, &text_property, &embedding_property, mode, None)
-            }
-            None => self
-                .secondary("drevo.semantic.register")?
-                .semantic_register(&label, &text_property, &embedding_property, mode, None),
-        }
-        .map_err(|e| ExecError::InvalidProcedureCall {
-            name: "drevo.semantic.register".to_string(),
-            message: e.to_string(),
-            span,
-        })?;
+        // The durable-native serving layer manages its own registry; with no
+        // native semantic service attached the procedure is unavailable.
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("drevo.semantic.register"))?;
+        let target = svc
+            .semantic_register(&label, &text_property, &embedding_property, mode, None)
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.register".to_string(),
+                message: e.to_string(),
+                span,
+            })?;
         Ok(vec![semantic_index_row(&target)])
     }
 
@@ -4852,12 +4796,10 @@ impl<'a> Executor<'a> {
         _args: &[Expression],
         _span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
-        let statuses = match self.native_semantic {
-            Some(svc) => svc.semantic_status_detailed(),
-            None => self
-                .secondary("drevo.semantic.status")?
-                .semantic_status_detailed()?,
-        };
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("drevo.semantic.status"))?;
+        let statuses = svc.semantic_status_detailed();
         Ok(statuses.iter().map(semantic_status_row).collect())
     }
 
@@ -4876,8 +4818,7 @@ impl<'a> Executor<'a> {
         _args: &[Expression],
         _span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
-        // Native-first (issue #447): report the native serving layer's embedder
-        // capability directly; only the KV path falls back to `secondary`.
+        // Report the native serving layer's embedder capability directly.
         #[cfg(feature = "http")]
         if let Some(embedder) = self.native_embedder {
             let dimension = embedder
@@ -4892,27 +4833,14 @@ impl<'a> Executor<'a> {
                 embedder.upstream().map_or(Value::Null, Value::String),
             ]]);
         }
-        // On a native engine (no KV secondary) with no server-side embedder,
-        // introspection reports "absent" rather than erroring — `semantic.info`
-        // needs no embedder to answer, and a client uses it precisely to learn
-        // that none is configured.
-        if self.secondary.is_none() {
-            return Ok(vec![vec![
-                Value::Bool(false),
-                Value::Null,
-                Value::Null,
-                Value::Null,
-            ]]);
-        }
-        let cap = self.secondary("semantic embedding")?.embedder_info();
-        let dimension = cap.dimension.map_or(Value::Null, |d| {
-            Value::Integer(i64::try_from(d).unwrap_or(i64::MAX))
-        });
+        // With no server-side embedder attached, introspection reports "absent"
+        // rather than erroring — `semantic.info` needs no embedder to answer, and
+        // a client uses it precisely to learn that none is configured.
         Ok(vec![vec![
-            Value::Bool(cap.present),
-            cap.model.map_or(Value::Null, Value::String),
-            dimension,
-            cap.upstream.map_or(Value::Null, Value::String),
+            Value::Bool(false),
+            Value::Null,
+            Value::Null,
+            Value::Null,
         ]])
     }
 
@@ -5152,22 +5080,12 @@ impl<'a> Executor<'a> {
     /// on the mirror's own allowlist: the call routes to the KV path, where
     /// the attached mirror's live counters are readable.
     fn proc_engine_status(&self) -> ExecResultT<Vec<Vec<Value>>> {
-        let Some(db) = self.secondary else {
-            return Err(ExecError::EngineCapability {
-                feature: "drevo.engine.status".into(),
-            });
-        };
-        // The read-mirror engine mode has been removed; `engine.status` reports
-        // the KV engine with no routing statistics.
-        let _ = db;
-        Ok(vec![vec![
-            Value::String("kv".to_string()),
-            Value::Null,
-            Value::Null,
-            Value::Null,
-            Value::Null,
-            Value::Null,
-        ]])
+        // `drevo.engine.status` reported the (now-removed) KV read mirror's
+        // routing counters. With the KV executor entry retired, the native
+        // engine is the only engine and there is nothing to report — the
+        // procedure surfaces the engine-capability error, exactly as the other
+        // KV-only secondary subsystems do.
+        Err(Self::engine_capability("drevo.engine.status"))
     }
 
     /// `CALL drevo.semantic.reindex(label, embedding_property, batch_size)
@@ -5198,11 +5116,11 @@ impl<'a> Executor<'a> {
 
         // Resolve and validate the registered target (keeps db.rs registry-free
         // and maps a missing target to a clean procedure error).
-        let registered = match self.native_semantic {
-            Some(svc) => svc.semantic_status(),
-            None => self.secondary("drevo.semantic.status")?.semantic_status(),
-        };
-        let target = registered
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("drevo.semantic.reindex"))?;
+        let target = svc
+            .semantic_status()
             .into_iter()
             .find(|t| t.label == label && t.embedding_property == embedding_property);
         let Some(target) = target else {
@@ -5217,20 +5135,12 @@ impl<'a> Executor<'a> {
         };
 
         let report = if matches!(target.mode, IndexMode::Auto) {
-            match self.native_semantic {
-                Some(svc) => svc.semantic_reindex(
-                    &target.label,
-                    &target.text_property,
-                    &target.embedding_property,
-                    batch_size,
-                ),
-                None => self.secondary("drevo.semantic.reindex")?.semantic_reindex(
-                    &target.label,
-                    &target.text_property,
-                    &target.embedding_property,
-                    batch_size,
-                ),
-            }
+            svc.semantic_reindex(
+                &target.label,
+                &target.text_property,
+                &target.embedding_property,
+                batch_size,
+            )
             .map_err(|e| ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.reindex".to_string(),
                 message: e.to_string(),
@@ -5269,23 +5179,16 @@ impl<'a> Executor<'a> {
             message: e.to_string(),
             span,
         })?;
-        let target = match self.native_semantic {
-            Some(svc) => svc.semantic_register_rel(
-                &rel_type,
-                &text_property,
-                &embedding_property,
-                mode,
-                None,
-            ),
-            None => self
-                .secondary("drevo.semantic.registerRel")?
-                .semantic_register_rel(&rel_type, &text_property, &embedding_property, mode, None),
-        }
-        .map_err(|e| ExecError::InvalidProcedureCall {
-            name: "drevo.semantic.registerRel".to_string(),
-            message: e.to_string(),
-            span,
-        })?;
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("drevo.semantic.registerRel"))?;
+        let target = svc
+            .semantic_register_rel(&rel_type, &text_property, &embedding_property, mode, None)
+            .map_err(|e| ExecError::InvalidProcedureCall {
+                name: "drevo.semantic.registerRel".to_string(),
+                message: e.to_string(),
+                span,
+            })?;
         Ok(vec![semantic_index_row(&target)])
     }
 
@@ -5368,17 +5271,10 @@ impl<'a> Executor<'a> {
         let embedding_property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
         let batch_size = self.eval_usize(&args[2], &empty)?;
 
-        let details = match self.native_semantic {
-            Some(svc) => svc.semantic_status_detailed(),
-            None => self
-                .secondary("drevo.semantic.status")?
-                .semantic_status_detailed()
-                .map_err(|e| ExecError::InvalidProcedureCall {
-                    name: "drevo.semantic.reindexRel".to_string(),
-                    message: e.to_string(),
-                    span,
-                })?,
-        };
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("drevo.semantic.reindexRel"))?;
+        let details = svc.semantic_status_detailed();
         let target = details.into_iter().find(|s| {
             s.target_kind == "relationship"
                 && s.index.label == rel_type
@@ -5397,22 +5293,12 @@ impl<'a> Executor<'a> {
         };
 
         let report = if matches!(status.index.mode, IndexMode::Auto) {
-            match self.native_semantic {
-                Some(svc) => svc.semantic_reindex_rel(
-                    &status.index.label,
-                    &status.index.text_property,
-                    &status.index.embedding_property,
-                    batch_size,
-                ),
-                None => self
-                    .secondary("drevo.semantic.reindexRel")?
-                    .semantic_reindex_rel(
-                        &status.index.label,
-                        &status.index.text_property,
-                        &status.index.embedding_property,
-                        batch_size,
-                    ),
-            }
+            svc.semantic_reindex_rel(
+                &status.index.label,
+                &status.index.text_property,
+                &status.index.embedding_property,
+                batch_size,
+            )
             .map_err(|e| ExecError::InvalidProcedureCall {
                 name: "drevo.semantic.reindexRel".to_string(),
                 message: e.to_string(),
@@ -5474,16 +5360,7 @@ impl<'a> Executor<'a> {
             }
             return Ok(rows);
         }
-        let hits = self.secondary("fts.search")?.search_fts(&query, k)?;
-        Ok(hits
-            .into_iter()
-            .map(|scored| {
-                vec![
-                    Value::Node(node_to_value(&scored.node)),
-                    Value::Float(f64::from(scored.score)),
-                ]
-            })
-            .collect())
+        Err(Self::engine_capability("fts.search"))
     }
 
     /// `CALL fts.searchRelationships(query, k) YIELD rel, score` (#227-B) — the
@@ -5520,18 +5397,7 @@ impl<'a> Executor<'a> {
             }
             return Ok(rows);
         }
-        let hits = self
-            .secondary("fts.searchRelationships")?
-            .search_fts_relationships(&query, k)?;
-        Ok(hits
-            .into_iter()
-            .map(|scored| {
-                vec![
-                    Value::Relationship(edge_to_value(&scored.edge)),
-                    Value::Float(f64::from(scored.score)),
-                ]
-            })
-            .collect())
+        Err(Self::engine_capability("fts.searchRelationships"))
     }
 
     /// Run a built-in procedure and return its output rows, each a
@@ -7005,24 +6871,18 @@ impl<'a> Executor<'a> {
             },
         };
 
-        // Native-first (issue #447): compute the corpus statistics from the
-        // native FTS index; only the KV path reaches into `secondary`.
-        let terms = if let Some(fts) = self.native_fts {
-            crate::fts::keywords::extract_keywords_scored(
-                &text,
-                k,
-                stem,
-                fts.doc_count(),
-                &|term_trigrams| Ok(fts.trigram_df(term_trigrams)),
-            )?
-        } else {
-            crate::fts::keywords::extract_keywords(
-                self.secondary("keywords()")?.backend(),
-                &text,
-                k,
-                stem,
-            )?
+        // Compute the corpus statistics from the native FTS index; without one
+        // attached the procedure is unavailable (no KV secondary fallback).
+        let Some(fts) = self.native_fts else {
+            return Err(Self::engine_capability("keywords()"));
         };
+        let terms = crate::fts::keywords::extract_keywords_scored(
+            &text,
+            k,
+            stem,
+            fts.doc_count(),
+            &|term_trigrams| Ok(fts.trigram_df(term_trigrams)),
+        )?;
         Ok(Value::List(terms.into_iter().map(Value::String).collect()))
     }
 
@@ -9393,12 +9253,68 @@ mod tests {
 
     fn run_with_params(source: &str, db: &Drevo, params: HashMap<String, Value>) -> ExecResult {
         let query = parse(source).expect("parse");
-        execute(&query, db, params).expect("execute")
+        execute_on_engine(&query, db, params).expect("execute")
     }
 
     fn err(source: &str, db: &Drevo) -> ExecError {
         let query = parse(source).expect("parse");
-        execute(&query, db, HashMap::new()).expect_err("expected execution error")
+        execute_on_engine(&query, db, HashMap::new()).expect_err("expected execution error")
+    }
+
+    // ---- KV secondary retirement (epic #444) ------------------------------
+    //
+    // The executor no longer carries a KV secondary handle: `execute_on_engine`
+    // runs core Cypher over any `GraphEngine` but has no KV fallback for the
+    // secondary subsystems. Reached over a bare engine (here the KV store as a
+    // plain graph engine) with no native index/service attached, each such
+    // procedure must surface `EngineCapability` deterministically rather than
+    // panic or answer wrongly. The durable-native serving layer supplies these
+    // through its native index stack instead (exercised in its own suites).
+
+    /// Assert that `source` fails with [`ExecError::EngineCapability`] naming
+    /// `feature` when run over an engine with no native subsystem attached.
+    fn assert_engine_capability(source: &str, feature: &str) {
+        let db = drevo();
+        match err(source, &db) {
+            ExecError::EngineCapability { feature: f } => assert_eq!(f, feature),
+            other => panic!("expected EngineCapability({feature}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fts_search_without_native_index_is_a_capability_error() {
+        assert_engine_capability("CALL fts.search('hello', 5)", "fts.search");
+    }
+
+    #[test]
+    fn fts_search_relationships_without_native_index_is_a_capability_error() {
+        assert_engine_capability(
+            "CALL fts.searchRelationships('hello', 5)",
+            "fts.searchRelationships",
+        );
+    }
+
+    #[test]
+    fn keywords_without_native_index_is_a_capability_error() {
+        assert_engine_capability("RETURN keywords('the quick brown fox', 3)", "keywords()");
+    }
+
+    #[test]
+    fn semantic_status_without_native_service_is_a_capability_error() {
+        assert_engine_capability("CALL drevo.semantic.status()", "drevo.semantic.status");
+    }
+
+    #[test]
+    fn semantic_register_without_native_service_is_a_capability_error() {
+        assert_engine_capability(
+            "CALL drevo.semantic.register('Doc', 'body', 'embedding', 'manual')",
+            "drevo.semantic.register",
+        );
+    }
+
+    #[test]
+    fn engine_status_is_a_capability_error() {
+        assert_engine_capability("CALL drevo.engine.status()", "drevo.engine.status");
     }
 
     // ---- CREATE -----------------------------------------------------------
@@ -9722,7 +9638,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("name".to_string(), Value::String("A".into()));
         let q = parse("MATCH (n:Person {name: $name}) RETURN n.name AS name").unwrap();
-        let res = execute(&q, &db, params).unwrap();
+        let res = execute_on_engine(&q, &db, params).unwrap();
         assert_eq!(res.rows.len(), 1);
     }
 
@@ -9763,7 +9679,7 @@ mod tests {
     fn missing_parameter_is_reported() {
         let db = drevo();
         let q = parse("RETURN $missing AS m").unwrap();
-        let e = execute(&q, &db, HashMap::new()).expect_err("expected error");
+        let e = execute_on_engine(&q, &db, HashMap::new()).expect_err("expected error");
         assert!(matches!(e, ExecError::MissingParameter(name) if name == "missing"));
     }
 
@@ -10277,7 +10193,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("who".to_string(), Value::String("Alice".into()));
         let q = parse("MATCH (n:Person) WHERE n.name = $who RETURN n.name AS name").unwrap();
-        let res = execute(&q, &db, params).unwrap();
+        let res = execute_on_engine(&q, &db, params).unwrap();
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0][0], Value::String("Alice".into()));
     }
@@ -11738,7 +11654,7 @@ mod tests {
         );
         let query =
             parse("MATCH (d:Doc) WHERE similar(d.embedding, $q, 0.5) RETURN d.title").unwrap();
-        let e = execute(&query, &db, params).expect_err("zero vector must error");
+        let e = execute_on_engine(&query, &db, params).expect_err("zero vector must error");
         assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
     }
 
