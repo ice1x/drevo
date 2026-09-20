@@ -148,6 +148,11 @@ pub mod fts;
 /// (KV-backed [`db::Drevo`] ⇄ native [`native::NativeGraph`]) over the shared
 /// `drevo-json-v1` dump interchange, preserving every node/edge id.
 pub mod migrate;
+/// Engine-independent storage & semantic report DTOs (`CompactReport`,
+/// `BloatReport`, `KeyspaceStat`, `SemanticReindexReport`,
+/// `SemanticTargetStatus`) — relocated out of `db` so they outlive the KV
+/// engine's retirement (epic #444).
+pub mod report;
 /// Text-to-Cypher LLM proxy (`drevo.cypher.fromText`, issue #429). Gated on
 /// `http` like [`embeddings`]; the `reqwest`-backed proxy is further gated on
 /// `embeddings-proxy`.
