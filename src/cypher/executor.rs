@@ -9241,24 +9241,35 @@ fn string_test(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<
 mod tests {
     use super::*;
     use crate::cypher::parser::parse;
-    use crate::db::Drevo;
+    use crate::native_service::NativeService;
 
-    fn drevo() -> Drevo {
-        Drevo::open_in_memory().expect("open in-memory")
+    // These executor tests run over a *bare* engine — a `NativeService`'s
+    // underlying `NativeGraph` reached via `db.graph()`, with no FTS / vector
+    // / semantic index or embedder attached — which is exactly what exercises
+    // the `EngineCapability` deterministic-error paths for the secondary
+    // subsystems. `NativeService::in_memory()` also gives the inherent
+    // `list_nodes_by_kind` used as a read-side assertion helper (it returns a
+    // `Vec`, not a `Result`, on the native engine).
+    fn drevo() -> NativeService {
+        NativeService::in_memory()
     }
 
-    fn run(source: &str, db: &Drevo) -> ExecResult {
+    fn run(source: &str, db: &NativeService) -> ExecResult {
         run_with_params(source, db, HashMap::new())
     }
 
-    fn run_with_params(source: &str, db: &Drevo, params: HashMap<String, Value>) -> ExecResult {
+    fn run_with_params(
+        source: &str,
+        db: &NativeService,
+        params: HashMap<String, Value>,
+    ) -> ExecResult {
         let query = parse(source).expect("parse");
-        execute_on_engine(&query, db, params).expect("execute")
+        execute_on_engine(&query, db.graph(), params).expect("execute")
     }
 
-    fn err(source: &str, db: &Drevo) -> ExecError {
+    fn err(source: &str, db: &NativeService) -> ExecError {
         let query = parse(source).expect("parse");
-        execute_on_engine(&query, db, HashMap::new()).expect_err("expected execution error")
+        execute_on_engine(&query, db.graph(), HashMap::new()).expect_err("expected execution error")
     }
 
     // ---- KV secondary retirement (epic #444) ------------------------------
@@ -9325,7 +9336,7 @@ mod tests {
         let res = run("CREATE (n:Person {name: 'Alice', age: 30})", &db);
         assert_eq!(res.stats.nodes_created, 1);
         assert!(res.columns.is_empty());
-        let persisted = db.list_nodes_by_kind("Person", 10, 0).unwrap();
+        let persisted = db.list_nodes_by_kind("Person", 10, 0);
         assert_eq!(persisted.len(), 1);
         let n = &persisted[0];
         assert_eq!(n.properties.get("name").unwrap().as_str(), Some("Alice"));
@@ -9351,7 +9362,7 @@ mod tests {
         let db = drevo();
         let res = run("CREATE (:Person), (:Person), (:Person)", &db);
         assert_eq!(res.stats.nodes_created, 3);
-        assert_eq!(db.list_nodes_by_kind("Person", 100, 0).unwrap().len(), 3);
+        assert_eq!(db.list_nodes_by_kind("Person", 100, 0).len(), 3);
     }
 
     #[test]
@@ -9363,7 +9374,7 @@ mod tests {
         );
         assert_eq!(res.stats.nodes_created, 2);
         assert_eq!(res.stats.relationships_created, 1);
-        let people = db.list_nodes_by_kind("Person", 10, 0).unwrap();
+        let people = db.list_nodes_by_kind("Person", 10, 0);
         assert_eq!(people.len(), 2);
     }
 
@@ -9435,8 +9446,8 @@ mod tests {
         );
         assert_eq!(res.stats.nodes_created, 1);
         assert_eq!(res.stats.relationships_created, 1);
-        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 1);
-        assert_eq!(db.list_nodes_by_kind("Animal", 10, 0).unwrap().len(), 1);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).len(), 1);
+        assert_eq!(db.list_nodes_by_kind("Animal", 10, 0).len(), 1);
     }
 
     #[test]
@@ -9638,7 +9649,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("name".to_string(), Value::String("A".into()));
         let q = parse("MATCH (n:Person {name: $name}) RETURN n.name AS name").unwrap();
-        let res = execute_on_engine(&q, &db, params).unwrap();
+        let res = execute_on_engine(&q, db.graph(), params).unwrap();
         assert_eq!(res.rows.len(), 1);
     }
 
@@ -9679,7 +9690,7 @@ mod tests {
     fn missing_parameter_is_reported() {
         let db = drevo();
         let q = parse("RETURN $missing AS m").unwrap();
-        let e = execute_on_engine(&q, &db, HashMap::new()).expect_err("expected error");
+        let e = execute_on_engine(&q, db.graph(), HashMap::new()).expect_err("expected error");
         assert!(matches!(e, ExecError::MissingParameter(name) if name == "missing"));
     }
 
@@ -9691,7 +9702,7 @@ mod tests {
         run("CREATE (:Person {name: 'A', age: 30})", &db);
         let res = run("MATCH (n:Person {name: 'A'}) SET n.age = 31", &db);
         assert_eq!(res.stats.properties_set, 1);
-        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0)[0];
         assert_eq!(persisted.properties.get("age").unwrap().as_i64(), Some(31));
     }
 
@@ -9700,7 +9711,7 @@ mod tests {
         let db = drevo();
         run("CREATE (:Person {name: 'A'})", &db);
         run("MATCH (n:Person) SET n.email = 'a@b.com'", &db);
-        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0)[0];
         assert_eq!(
             persisted.properties.get("email").unwrap().as_str(),
             Some("a@b.com")
@@ -9712,7 +9723,7 @@ mod tests {
         let db = drevo();
         run("CREATE (:Note {title: 'Old'})", &db);
         run("MATCH (n:Note) SET n.title = 'New'", &db);
-        let persisted = &db.list_nodes_by_kind("Note", 10, 0).unwrap()[0];
+        let persisted = &db.list_nodes_by_kind("Note", 10, 0)[0];
         assert_eq!(persisted.title, "New");
     }
 
@@ -9721,7 +9732,7 @@ mod tests {
         let db = drevo();
         run("CREATE (:Note {title: 'T', body: 'Old body'})", &db);
         run("MATCH (n:Note) SET n.body = 'New body'", &db);
-        let persisted = &db.list_nodes_by_kind("Note", 10, 0).unwrap()[0];
+        let persisted = &db.list_nodes_by_kind("Note", 10, 0)[0];
         assert_eq!(persisted.body, "New body");
     }
 
@@ -9733,7 +9744,7 @@ mod tests {
             "MATCH (n:Person {name: 'A'}) SET n = {name: 'A', score: 99}",
             &db,
         );
-        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0)[0];
         assert!(persisted.properties.get("age").is_none());
         assert!(persisted.properties.get("team").is_none());
         assert_eq!(
@@ -9750,7 +9761,7 @@ mod tests {
             "MATCH (n:Person {name: 'A'}) SET n += {age: 31, team: 'blue'}",
             &db,
         );
-        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0)[0];
         assert_eq!(persisted.properties.get("age").unwrap().as_i64(), Some(31));
         assert_eq!(
             persisted.properties.get("team").unwrap().as_str(),
@@ -9800,7 +9811,7 @@ mod tests {
         let db = drevo();
         run("CREATE (:Person {name: 'A', age: 30, team: 'red'})", &db);
         run("MATCH (n:Person) REMOVE n.team", &db);
-        let persisted = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        let persisted = &db.list_nodes_by_kind("Person", 10, 0)[0];
         assert!(persisted.properties.get("team").is_none());
         assert_eq!(persisted.properties.get("age").unwrap().as_i64(), Some(30));
     }
@@ -9835,7 +9846,7 @@ mod tests {
         run("CREATE (:Person {name: 'Solo'})", &db);
         let res = run("MATCH (n:Person {name: 'Solo'}) DELETE n", &db);
         assert_eq!(res.stats.nodes_deleted, 1);
-        assert!(db.list_nodes_by_kind("Person", 10, 0).unwrap().is_empty());
+        assert!(db.list_nodes_by_kind("Person", 10, 0).is_empty());
     }
 
     #[test]
@@ -9852,7 +9863,7 @@ mod tests {
             e
         );
         // The error is fail-fast — node should still exist.
-        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 2);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).len(), 2);
     }
 
     #[test]
@@ -9865,7 +9876,7 @@ mod tests {
         let res = run("MATCH (a:Person {name: 'A'}) DETACH DELETE a", &db);
         assert_eq!(res.stats.nodes_deleted, 1);
         assert_eq!(res.stats.relationships_deleted, 1);
-        let people = db.list_nodes_by_kind("Person", 10, 0).unwrap();
+        let people = db.list_nodes_by_kind("Person", 10, 0);
         assert_eq!(people.len(), 1);
         assert_eq!(
             people[0].properties.get("name").and_then(|v| v.as_str()),
@@ -9883,7 +9894,7 @@ mod tests {
         let res = run("MATCH (a:Person)-[r:KNOWS]->(b:Person) DELETE r", &db);
         assert_eq!(res.stats.relationships_deleted, 1);
         assert_eq!(res.stats.nodes_deleted, 0);
-        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 2);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).len(), 2);
     }
 
     #[test]
@@ -9905,7 +9916,7 @@ mod tests {
         let db = drevo();
         let res = run("MERGE (n:Person {name: 'A'})", &db);
         assert_eq!(res.stats.nodes_created, 1);
-        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 1);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).len(), 1);
     }
 
     #[test]
@@ -9914,7 +9925,7 @@ mod tests {
         run("CREATE (:Person {name: 'A'})", &db);
         let res = run("MERGE (n:Person {name: 'A'})", &db);
         assert_eq!(res.stats.nodes_created, 0);
-        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 1);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).len(), 1);
     }
 
     #[test]
@@ -9923,7 +9934,7 @@ mod tests {
         for _ in 0..3 {
             run("MERGE (n:Person {name: 'A'})", &db);
         }
-        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).unwrap().len(), 1);
+        assert_eq!(db.list_nodes_by_kind("Person", 10, 0).len(), 1);
     }
 
     #[test]
@@ -9933,7 +9944,7 @@ mod tests {
             "MERGE (n:Person {name: 'A'}) ON CREATE SET n.created = true ON MATCH SET n.matched = true",
             &db,
         );
-        let p = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        let p = &db.list_nodes_by_kind("Person", 10, 0)[0];
         assert_eq!(p.properties.get("created").unwrap().as_bool(), Some(true));
         assert!(p.properties.get("matched").is_none());
     }
@@ -9946,7 +9957,7 @@ mod tests {
             "MERGE (n:Person {name: 'A'}) ON CREATE SET n.created = true ON MATCH SET n.matched = true",
             &db,
         );
-        let p = &db.list_nodes_by_kind("Person", 10, 0).unwrap()[0];
+        let p = &db.list_nodes_by_kind("Person", 10, 0)[0];
         assert_eq!(p.properties.get("matched").unwrap().as_bool(), Some(true));
         assert!(p.properties.get("created").is_none());
     }
@@ -10193,7 +10204,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("who".to_string(), Value::String("Alice".into()));
         let q = parse("MATCH (n:Person) WHERE n.name = $who RETURN n.name AS name").unwrap();
-        let res = execute_on_engine(&q, &db, params).unwrap();
+        let res = execute_on_engine(&q, db.graph(), params).unwrap();
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0][0], Value::String("Alice".into()));
     }
@@ -11001,7 +11012,7 @@ mod tests {
             "UNWIND ['Alice', 'Bob', 'Carol'] AS nm CREATE (:Person {name: nm})",
             &db,
         );
-        let people = db.list_nodes_by_kind("Person", 100, 0).unwrap();
+        let people = db.list_nodes_by_kind("Person", 100, 0);
         assert_eq!(people.len(), 3);
     }
 
@@ -11039,7 +11050,7 @@ mod tests {
             &db,
         );
         assert_eq!(res.stats.nodes_created, 3);
-        let tasks = db.list_nodes_by_kind("Task", 100, 0).unwrap();
+        let tasks = db.list_nodes_by_kind("Task", 100, 0);
         assert_eq!(tasks.len(), 3);
     }
 
@@ -11051,7 +11062,7 @@ mod tests {
             &db,
         );
         assert_eq!(res.stats.nodes_created, 0);
-        assert!(db.list_nodes_by_kind("Task", 100, 0).unwrap().is_empty());
+        assert!(db.list_nodes_by_kind("Task", 100, 0).is_empty());
     }
 
     #[test]
@@ -11064,7 +11075,7 @@ mod tests {
             &db,
         );
         assert_eq!(res.stats.nodes_created, 0);
-        assert!(db.list_nodes_by_kind("Task", 100, 0).unwrap().is_empty());
+        assert!(db.list_nodes_by_kind("Task", 100, 0).is_empty());
     }
 
     #[test]
@@ -11091,7 +11102,7 @@ mod tests {
             "MATCH (t:Task) WITH collect(t) AS ts FOREACH (n IN ts | SET n.done = true)",
             &db,
         );
-        let tasks = db.list_nodes_by_kind("Task", 100, 0).unwrap();
+        let tasks = db.list_nodes_by_kind("Task", 100, 0);
         assert_eq!(tasks.len(), 2);
         for t in tasks {
             assert_eq!(
@@ -11110,7 +11121,7 @@ mod tests {
         );
         assert_eq!(res.stats.nodes_created, 2);
         assert_eq!(res.stats.properties_set, 2);
-        let tasks = db.list_nodes_by_kind("Task", 100, 0).unwrap();
+        let tasks = db.list_nodes_by_kind("Task", 100, 0);
         assert!(tasks
             .iter()
             .all(|t| t.properties.get("flag").and_then(|v| v.as_bool()) == Some(true)));
@@ -11144,7 +11155,7 @@ mod tests {
                CREATE (p)-[:HAS_SUBTASK]->(:Task {title: name}))",
             &db,
         );
-        let subtasks = db.list_nodes_by_kind("Task", 100, 0).unwrap();
+        let subtasks = db.list_nodes_by_kind("Task", 100, 0);
         assert_eq!(subtasks.len(), 3);
         let res = run(
             "MATCH (:Project {title: 'Launch'})-[:HAS_SUBTASK]->(t:Task) RETURN count(t)",
@@ -11161,7 +11172,7 @@ mod tests {
                FOREACH (cell IN row | CREATE (:Cell {title: 'c' + toString(cell)})))",
             &db,
         );
-        let cells = db.list_nodes_by_kind("Cell", 100, 0).unwrap();
+        let cells = db.list_nodes_by_kind("Cell", 100, 0);
         assert_eq!(cells.len(), 4);
     }
 
@@ -11196,7 +11207,7 @@ mod tests {
             "MATCH (p:Project) FOREACH (name IN ['a', 'b'] | CREATE (p)-[:HAS_SUBTASK]->(:Task {title: name}))",
             &db,
         );
-        assert!(db.list_nodes_by_kind("Task", 100, 0).unwrap().is_empty());
+        assert!(db.list_nodes_by_kind("Task", 100, 0).is_empty());
     }
 
     #[test]
@@ -11251,7 +11262,7 @@ mod tests {
 
     // ---- Variable-length paths (00069) ----------------------------------
 
-    fn varlen_chain(db: &Drevo, names: &[&str]) {
+    fn varlen_chain(db: &NativeService, names: &[&str]) {
         // CREATE (:N {name: names[0]})-[:NEXT]->(:N {name: names[1]})-[:NEXT]->...
         if names.is_empty() {
             return;
@@ -11654,7 +11665,7 @@ mod tests {
         );
         let query =
             parse("MATCH (d:Doc) WHERE similar(d.embedding, $q, 0.5) RETURN d.title").unwrap();
-        let e = execute_on_engine(&query, &db, params).expect_err("zero vector must error");
+        let e = execute_on_engine(&query, db.graph(), params).expect_err("zero vector must error");
         assert!(matches!(e, ExecError::InvalidFunctionCall { .. }), "{e:?}");
     }
 
@@ -12099,7 +12110,7 @@ mod tests {
 
     /// Evaluate a single scalar expression via `RETURN <expr> AS v` and
     /// return the one projected value.
-    fn scalar(source: &str, db: &Drevo) -> Value {
+    fn scalar(source: &str, db: &NativeService) -> Value {
         let res = run(source, db);
         assert_eq!(res.rows.len(), 1, "expected one row from {source:?}");
         res.rows[0][0].clone()
@@ -12761,7 +12772,7 @@ mod tests {
     // ---- Trigonometric / logarithmic functions (00156) -------------------
 
     /// Pull the `f64` out of a scalar `Float` projection.
-    fn scalar_float(source: &str, db: &Drevo) -> f64 {
+    fn scalar_float(source: &str, db: &NativeService) -> f64 {
         match scalar(source, db) {
             Value::Float(f) => f,
             other => panic!("expected Float from {source:?}, got {other:?}"),
@@ -13713,7 +13724,7 @@ mod tests {
     // ---- shortestPath / allShortestPaths (00155) ------------------------
 
     /// A 4-node diamond `a → b → d`, `a → c → d` plus tail `d → e`.
-    fn shortest_diamond() -> Drevo {
+    fn shortest_diamond() -> NativeService {
         let db = drevo();
         run(
             "CREATE (a:N {name:'a'}) CREATE (b:N {name:'b'}) CREATE (c:N {name:'c'})
