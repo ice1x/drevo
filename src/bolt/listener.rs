@@ -5,17 +5,16 @@
 //! pulls in `tokio`. [`crate::bolt::listener::accept_handshake`] runs
 //! the 20-byte exchange and returns the still-open socket so callers
 //! can layer their own protocol on top;
-//! [`crate::bolt::listener::accept_and_run_session`] (task `00071`)
+//! [`crate::bolt::listener::accept_and_run_session_durable`] (task `00071`)
 //! bundles handshake + session loop in one call so a `tokio::spawn`-
 //! per-connection server is a one-liner.
 //!
 //! ## What's intentionally minimal
 //!
-//! * Authentication is opt-in (task `00074`): the plain entry points
-//!   here accept any connection, while the `_with_auth` siblings
-//!   ([`accept_and_run_session_with_auth`](crate::bolt::listener::accept_and_run_session_with_auth) /
-//!   [`run_session_on_with_auth`](crate::bolt::listener::run_session_on_with_auth)) enforce a
-//!   [`crate::bolt::auth::Authenticator`] on every `HELLO`.
+//! * Authentication is opt-in (task `00074`): the entry points here accept
+//!   any connection; credential enforcement is provided by the
+//!   `with_auth_durable` session constructors in [`crate::bolt::session`],
+//!   which bind a [`crate::bolt::auth::Authenticator`] on every `HELLO`.
 //! * No back-pressure / connection limit — added when MVCC concurrency
 //!   work (`00080`+) gives us a meaningful budget to enforce.
 //!
@@ -24,7 +23,7 @@
 //! features so this rustdoc compiles either way). It is layered on
 //! top of the generic
 //! [`crate::bolt::listener::accept_handshake_on`] /
-//! [`crate::bolt::listener::run_session_on`] entry points exposed
+//! [`crate::bolt::listener::run_session_on_durable`] entry points exposed
 //! here — those work over *any* `AsyncRead + AsyncWrite + Unpin`
 //! stream, not just [`tokio::net::TcpStream`], so the only TLS-aware
 //! code path is the wrapper that calls `tokio_rustls::TlsAcceptor`
@@ -35,13 +34,11 @@ use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use super::auth::Authenticator;
 use super::chunked::MAX_CHUNK_SIZE;
 use super::error::{BoltError, BoltResult};
 use super::handshake::{parse_client_handshake, select_version, BoltVersion, HANDSHAKE_LEN};
 use super::packstream::{decode, encode};
 use super::session::{decode_client, encode_server, ServerMessage, Session, State};
-use crate::db::Drevo;
 
 /// Result of a completed Bolt handshake.
 #[derive(Debug)]
@@ -134,24 +131,6 @@ pub async fn accept_handshake_on<S: AsyncRead + AsyncWrite + Unpin>(
 /// Propagates handshake / I/O errors from [`accept_handshake`]; Cypher
 /// errors are surfaced as `FAILURE` messages on the wire and do *not*
 /// abort this loop.
-pub async fn accept_and_run_session(socket: TcpStream, drevo: &Drevo) -> BoltResult<()> {
-    let accepted = accept_handshake_on(socket).await?;
-    if accepted.negotiated.is_none() {
-        return Ok(());
-    }
-    let mut stream = accepted.stream;
-    run_session_on(&mut stream, drevo).await
-}
-
-/// Durable-native counterpart of [`accept_and_run_session`]
-/// (`DREVO_ENGINE=native-durable`, RFC #307 Phase 4/7): the session executes
-/// every autocommit statement on the WAL-backed
-/// [`crate::native_service::NativeService`]; `BEGIN` is refused until the
-/// executor can drive native transactions.
-///
-/// # Errors
-///
-/// Same as [`accept_and_run_session`].
 pub async fn accept_and_run_session_durable(
     socket: TcpStream,
     service: &std::sync::Arc<crate::native_service::NativeService>,
@@ -168,66 +147,27 @@ pub async fn accept_and_run_session_durable(
     .await
 }
 
-/// Authenticating counterpart of [`accept_and_run_session`]. Every
-/// `HELLO` is checked against `authenticator` (a shared
-/// [`crate::bolt::auth::Authenticator`] — most commonly an
-/// [`crate::bolt::auth::UserStore`]) before the session reaches
-/// [`State::Ready`]. Phase 11 task `00074`.
-///
-/// # Errors
-///
-/// Same as [`accept_and_run_session`].
-pub async fn accept_and_run_session_with_auth(
-    socket: TcpStream,
-    drevo: &Drevo,
-    authenticator: &dyn Authenticator,
-) -> BoltResult<()> {
-    let accepted = accept_handshake_on(socket).await?;
-    if accepted.negotiated.is_none() {
-        return Ok(());
-    }
-    let mut stream = accepted.stream;
-    run_session_on_with_auth(&mut stream, drevo, authenticator).await
-}
-
-/// Post-handshake session loop. Drives a [`Session`] over any
-/// `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS, etc. The
-/// stream must already be past the 20-byte handshake (call
+/// Post-handshake session loop over the durable native store of record. Drives
+/// a [`Session`] over any `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS,
+/// etc. The stream must already be past the 20-byte handshake (call
 /// [`accept_handshake_on`] first).
 ///
-/// Used directly by the TLS module (task `00073`) so the same
-/// session-loop bytes flow whether the underlying transport is plain
-/// TCP or TLS-wrapped TCP.
+/// Used directly by the TLS module (task `00073`) so the same session-loop
+/// bytes flow whether the underlying transport is plain TCP or TLS-wrapped TCP.
 ///
-/// Returns once the peer hits clean EOF, sends `GOODBYE`, or the
-/// connection errors. Cypher errors are reported on the wire as
-/// `FAILURE` messages and do *not* abort the loop.
-///
-/// # Errors
-///
-/// Propagates I/O failures from the stream. Cypher / protocol errors
-/// are surfaced as Bolt `FAILURE` messages.
-pub async fn run_session_on<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: &mut S,
-    drevo: &Drevo,
-) -> BoltResult<()> {
-    run_session_on_inner(stream, Session::new(drevo)).await
-}
-
-/// Authenticating counterpart of [`run_session_on`]. Drives a
-/// [`Session::with_auth`](crate::bolt::session::Session::with_auth) over any `AsyncRead + AsyncWrite + Unpin`
-/// stream so both plain-TCP and TLS transports share the same
-/// auth-aware loop. Phase 11 task `00074`.
+/// Returns once the peer hits clean EOF, sends `GOODBYE`, or the connection
+/// errors. Cypher errors are reported on the wire as `FAILURE` messages and do
+/// *not* abort the loop.
 ///
 /// # Errors
 ///
-/// Same as [`run_session_on`].
-pub async fn run_session_on_with_auth<S: AsyncRead + AsyncWrite + Unpin>(
+/// Propagates I/O failures from the stream. Cypher / protocol errors are
+/// surfaced as Bolt `FAILURE` messages.
+pub async fn run_session_on_durable<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
-    drevo: &Drevo,
-    authenticator: &dyn Authenticator,
+    service: &std::sync::Arc<crate::native_service::NativeService>,
 ) -> BoltResult<()> {
-    run_session_on_inner(stream, Session::with_auth(drevo, authenticator)).await
+    run_session_on_inner(stream, Session::new_durable(std::sync::Arc::clone(service))).await
 }
 
 async fn run_session_on_inner<S: AsyncRead + AsyncWrite + Unpin>(

@@ -51,8 +51,9 @@
 //!   `RECORD`s, then replies `SUCCESS`. Same `Ready` / `TxReady`
 //!   routing as `PULL`.
 //! - `BEGIN` (`0x11`) — opens an explicit transaction (Phase 11 task
-//!   `00072`). `Ready` → `TxReady`. Calls
-//!   [`crate::db::Drevo::tx_begin`]; concurrent attempts get
+//!   `00072`). `Ready` → `TxReady`. Each connection opens its own
+//!   [`NativeTx`](crate::native::NativeTx) on the durable engine; a commit
+//!   that conflicts with a concurrent one gets
 //!   `Neo.TransientError.Transaction.Outdated`.
 //! - `COMMIT` (`0x12`) — commits the in-flight transaction. `TxReady` →
 //!   `Ready`; the journal is discarded.
@@ -67,10 +68,10 @@
 //!
 //! ## Authentication (task `00074`)
 //!
-//! [`Session::new`](crate::bolt::session::Session::new) accepts any
-//! `HELLO` extras (loopback / embedded use).
-//! [`Session::with_auth`](crate::bolt::session::Session::with_auth) binds a
-//! [`crate::bolt::auth::Authenticator`] that validates the `scheme` /
+//! [`Session::new_durable`](crate::bolt::session::Session::new_durable) accepts
+//! any `HELLO` extras (loopback / embedded use).
+//! [`Session::with_auth_durable`](crate::bolt::session::Session::with_auth_durable)
+//! binds a [`crate::bolt::auth::Authenticator`] that validates the `scheme` /
 //! `principal` / `credentials` tuple before reaching `Ready`; a denial
 //! replies `Neo.ClientError.Security.Unauthorized` and marks the
 //! session `Defunct`.
@@ -78,9 +79,9 @@
 //! ## Not in scope
 //!
 //! - TLS — task `00073`.
-//! - Multi-statement transaction isolation across concurrent sessions —
-//!   lands with MVCC (`00080`–`00084`). For 00072 only one explicit
-//!   transaction is in flight per [`crate::db::Drevo`] handle at a time.
+//! - Multi-statement transaction isolation across concurrent sessions is
+//!   provided by the durable engine's per-session transactions with
+//!   optimistic-concurrency commit.
 //!
 //! ## Why a materialised result
 //!
@@ -99,9 +100,8 @@ use crate::bolt::auth::{AuthOutcome, Authenticator};
 use crate::bolt::chunked::{read_message, write_message};
 use crate::bolt::error::{BoltError, BoltResult};
 use crate::bolt::packstream::{decode, encode, Value};
-use crate::cypher::executor::{self, ExecError, Value as CypherValue};
+use crate::cypher::executor::{ExecError, Value as CypherValue};
 use crate::cypher::parser::{self, ParseError};
-use crate::db::Drevo;
 
 // -------------------------------------------------------------------------
 // Message tag bytes — pinned to the Bolt v4.4 spec.
@@ -404,19 +404,20 @@ mod codes {
 // Session.
 // -------------------------------------------------------------------------
 
-/// Connection identifier generator — incremented per `Session::new` call.
+/// Connection identifier generator — incremented per session.
 /// Wrapped in an `AtomicU64` so concurrent sessions get distinct ids
 /// without taking a lock.
 static CONNECTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Per-connection Bolt session.
+/// Per-connection Bolt session over the durable native store of record.
 ///
-/// The session borrows the [`Drevo`] handle for its lifetime — multiple
-/// concurrent sessions just hold separate `&Drevo` refs. The session
-/// itself is not `Sync`; callers that want to multiplex requests across
-/// threads should wrap it in an [`std::sync::Mutex`].
+/// The session holds an [`Arc`](std::sync::Arc) of the shared
+/// [`NativeService`](crate::native_service::NativeService); multiple concurrent
+/// sessions just clone the handle. The session itself is not `Sync`; callers
+/// that want to multiplex requests across threads should wrap it in an
+/// [`std::sync::Mutex`].
 pub struct Session<'a> {
-    engine: SessionEngine<'a>,
+    service: std::sync::Arc<crate::native_service::NativeService>,
     state: State,
     server_agent: String,
     connection_id: String,
@@ -428,19 +429,15 @@ pub struct Session<'a> {
     /// `scheme`/`principal`/`credentials` tuple before reaching
     /// [`State::Ready`]. Phase 11 task `00074`.
     authenticator: Option<&'a dyn Authenticator>,
-    /// The [`TxId`](crate::db::TxId) of *this* session's open explicit
-    /// transaction, if any — set on `BEGIN`, cleared on `COMMIT` / `ROLLBACK`
-    /// (and by the cleanup on `RESET` / `GOODBYE` / drop).
+    /// The open registered transaction on the durable engine, if any — set on
+    /// `BEGIN`, cleared on `COMMIT` / `ROLLBACK` and the teardown paths
+    /// (`RESET` / `GOODBYE` / drop).
     ///
     /// Each connection's `BEGIN` allocates its own id, so concurrent pooled
-    /// connections never collide on a shared slot (issue #298), and the
-    /// lifecycle teardown hooks roll back only *this* session's transaction —
-    /// a pooled driver's `RESET` on one connection can never disturb a
-    /// managed transaction in flight on another (issue #236).
-    tx: Option<crate::db::TxId>,
-    /// The open registered transaction on the durable engine, if any —
-    /// the [`SessionEngine::Durable`] counterpart of [`Self::tx`]. Set on
-    /// `BEGIN`, cleared on `COMMIT` / `ROLLBACK` and the teardown paths.
+    /// connections never collide (issue #298), and the lifecycle teardown hooks
+    /// roll back only *this* session's transaction — a pooled driver's `RESET`
+    /// on one connection can never disturb a managed transaction in flight on
+    /// another (issue #236).
     native_tx: Option<crate::native::NativeTxId>,
 }
 
@@ -448,79 +445,38 @@ struct PendingResult {
     rows: std::vec::IntoIter<Vec<CypherValue>>,
 }
 
-/// Which engine this session executes against (engine flip, RFC #307).
-enum SessionEngine<'a> {
-    /// The KV store (legacy engine).
-    Kv(&'a Drevo),
-    /// The durable native store of record (`DREVO_ENGINE=native-durable`).
-    /// Autocommit statements only; explicit transactions are refused until
-    /// the executor can drive [`crate::native::NativeTx`].
-    Durable(std::sync::Arc<crate::native_service::NativeService>),
-}
-
 impl<'a> Session<'a> {
-    /// Create a new session bound to `drevo`. Starts in
+    /// Create a session over the durable native store of record. Starts in
     /// [`State::Connected`]; the caller must send `HELLO` next.
     ///
     /// No authentication is enforced — every `HELLO` is accepted. Use
-    /// [`Session::with_auth`](crate::bolt::session::Session::with_auth) to require credentials.
-    pub fn new(drevo: &'a Drevo) -> Self {
-        Self::build(drevo, None)
-    }
-
-    /// Create a new session that authenticates every `HELLO` against
-    /// `authenticator` before transitioning to [`State::Ready`]. A
-    /// `HELLO` with missing / wrong / unsupported credentials is
-    /// answered with a `Neo.ClientError.Security.Unauthorized` failure
-    /// and the connection is marked [`State::Defunct`]. Phase 11 task
-    /// `00074`.
-    pub fn with_auth(drevo: &'a Drevo, authenticator: &'a dyn Authenticator) -> Self {
-        Self::build(drevo, Some(authenticator))
-    }
-
-    /// Create a session over the durable native store of record
-    /// (`DREVO_ENGINE=native-durable`, RFC #307 Phase 4/7). Autocommit
-    /// statements execute on the service; `BEGIN` is refused until the
-    /// executor can drive native transactions. No authentication (matching
-    /// [`Session::new`]).
+    /// [`Session::with_auth_durable`](crate::bolt::session::Session::with_auth_durable)
+    /// to require credentials.
     pub fn new_durable(service: std::sync::Arc<crate::native_service::NativeService>) -> Self {
-        Self::build_engine(SessionEngine::Durable(service), None)
+        Self::build(service, None)
     }
 
     /// Create an authenticating session over the durable native store of record
-    /// — the [`Session::new_durable`] counterpart of [`Session::with_auth`].
+    /// — the [`Session::new_durable`] counterpart with credential enforcement.
     /// Every `HELLO` is checked against `authenticator` before the connection
-    /// reaches [`State::Ready`]; the authentication machinery is independent of
-    /// the engine, so the durable path enforces credentials exactly as the KV
-    /// path does.
+    /// reaches [`State::Ready`]; a `HELLO` with missing / wrong / unsupported
+    /// credentials is answered with a `Neo.ClientError.Security.Unauthorized`
+    /// failure and the connection is marked [`State::Defunct`]. Phase 11 task
+    /// `00074`.
     pub fn with_auth_durable(
         service: std::sync::Arc<crate::native_service::NativeService>,
         authenticator: &'a dyn Authenticator,
     ) -> Self {
-        Self::build_engine(SessionEngine::Durable(service), Some(authenticator))
+        Self::build(service, Some(authenticator))
     }
 
-    /// The KV handle, when this session runs on the KV engine. `None` on the
-    /// durable native engine — whose sessions never own a KV transaction, so
-    /// every `self.tx`-guarded path is KV-only by construction.
-    fn kv(&self) -> Option<&Drevo> {
-        match &self.engine {
-            SessionEngine::Kv(db) => Some(db),
-            SessionEngine::Durable(_) => None,
-        }
-    }
-
-    fn build(drevo: &'a Drevo, authenticator: Option<&'a dyn Authenticator>) -> Self {
-        Self::build_engine(SessionEngine::Kv(drevo), authenticator)
-    }
-
-    fn build_engine(
-        engine: SessionEngine<'a>,
+    fn build(
+        service: std::sync::Arc<crate::native_service::NativeService>,
         authenticator: Option<&'a dyn Authenticator>,
     ) -> Self {
         let id = CONNECTION_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
-            engine,
+            service,
             state: State::Connected,
             // The `server` agent MUST start with `Neo4j/` — the official Neo4j
             // drivers reject any other product with `UnsupportedServerProduct`.
@@ -531,7 +487,6 @@ impl<'a> Session<'a> {
             connection_id: format!("drevo-bolt-{id}"),
             pending: None,
             authenticator,
-            tx: None,
             native_tx: None,
         }
     }
@@ -626,21 +581,14 @@ impl<'a> Session<'a> {
     /// no-reply teardown paths (`GOODBYE`, connection drop) where there is
     /// no client left to receive a `FAILURE`.
     fn roll_back_own_tx(&mut self) {
-        if let Some(id) = self.tx.take() {
-            if let Some(db) = self.kv() {
-                let _ = db.tx_rollback(id);
-            }
-        }
         if let Some(id) = self.native_tx.take() {
-            if let SessionEngine::Durable(service) = &self.engine {
-                let _ = service.rollback_tx(id);
-            }
+            let _ = self.service.rollback_tx(id);
         }
     }
 
     fn handle_goodbye(&mut self) -> Vec<ServerMessage> {
         // An explicit transaction *this* session left open at GOODBYE is
-        // rolled back so the next session through the same `Drevo` handle
+        // rolled back so the next session through the shared service handle
         // isn't blocked by a stale journal slot. We gate on `owns_tx`, not
         // the global `is_tx_active()`: another connection may legitimately
         // hold the slot, and its transaction is none of our business
@@ -654,32 +602,13 @@ impl<'a> Session<'a> {
 
     fn handle_reset(&mut self) -> Vec<ServerMessage> {
         self.pending = None;
-        // RESET inside *our own* explicit transaction rolls it back,
-        // matching the Neo4j driver contract: the transaction is gone when
-        // the session returns to READY. Gated on `owns_tx` so a pooled
-        // driver's RESET on this connection never disturbs a transaction
-        // in flight on another (issue #236). Any rollback failure surfaces
-        // as FAILURE so the driver gets a deterministic signal rather than
-        // a torn connection.
-        if let Some(id) = self.tx.take() {
-            // `self.tx` is only ever set on the KV engine (BEGIN is refused
-            // on the durable one), so a missing KV handle cannot happen with
-            // an open transaction; skipping the rollback is then a no-op.
-            let Some(db) = self.kv() else {
-                return vec![ServerMessage::Success {
-                    metadata: BTreeMap::new(),
-                }];
-            };
-            if let Err(e) = db.tx_rollback(id) {
-                self.state = State::Failed;
-                return vec![ServerMessage::Failure {
-                    metadata: failure_metadata(
-                        codes::STORAGE,
-                        &format!("rollback during RESET failed: {e}"),
-                    ),
-                }];
-            }
-        }
+        // RESET inside *our own* explicit transaction rolls it back, matching
+        // the Neo4j driver contract: the transaction is gone when the session
+        // returns to READY. Each session owns its own `NativeTx`, so this only
+        // ever touches this connection's transaction — a pooled driver's RESET
+        // on one connection never disturbs one in flight on another (issue
+        // #236).
+        self.roll_back_own_tx();
         self.state = State::Ready;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
@@ -696,20 +625,13 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
-        // Per-connection transactions (issue #298): `tx_begin` allocates a
+        // Per-connection transactions (issue #298): `begin_tx` allocates a
         // fresh id and never collides with another connection's in-flight
         // transaction, so a pooled driver's concurrent `execute_write` calls
         // each open their own instead of one getting `transaction already
         // active`. Nesting on a *single* connection is still rejected above by
         // the `state != Ready` guard.
-        match &self.engine {
-            SessionEngine::Durable(service) => {
-                self.native_tx = Some(service.begin_tx());
-            }
-            SessionEngine::Kv(db) => {
-                self.tx = Some(db.tx_begin());
-            }
-        }
+        self.native_tx = Some(self.service.begin_tx());
         self.state = State::TxReady;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
@@ -726,54 +648,17 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
-        // Whatever the outcome, the slot is no longer ours to clean up. The
-        // TxReady state guarantees an id is present; treat its absence
-        // defensively rather than panicking.
-        // Durable engine: commit the registered transaction, mapping the
-        // conflict outcome to the transient class official drivers retry.
-        if let SessionEngine::Durable(service) = &self.engine {
-            let Some(id) = self.native_tx.take() else {
-                self.state = State::Failed;
-                return vec![ServerMessage::Failure {
-                    metadata: failure_metadata(
-                        codes::STORAGE,
-                        "COMMIT without an active transaction",
-                    ),
-                }];
-            };
-            return match service.commit_tx(id) {
-                Ok(()) => {
-                    self.state = State::Ready;
-                    vec![ServerMessage::Success {
-                        metadata: BTreeMap::new(),
-                    }]
-                }
-                Err(e) => {
-                    let code = match &e {
-                        crate::native::CommitError::Conflict => codes::TRANSIENT_OUTDATED,
-                        crate::native::CommitError::Constraint(_) => codes::CONSTRAINT_FAILED,
-                        crate::native::CommitError::Io(_) => codes::STORAGE,
-                    };
-                    self.state = State::Failed;
-                    vec![ServerMessage::Failure {
-                        metadata: failure_metadata(code, &format!("{e}")),
-                    }]
-                }
-            };
-        }
-        let Some(id) = self.tx.take() else {
+        // The TxReady state guarantees an id is present; treat its absence
+        // defensively rather than panicking. Commit the registered
+        // transaction, mapping the conflict outcome to the transient class
+        // official drivers retry.
+        let Some(id) = self.native_tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
                 metadata: failure_metadata(codes::STORAGE, "COMMIT without an active transaction"),
             }];
         };
-        let Some(db) = self.kv() else {
-            self.state = State::Failed;
-            return vec![ServerMessage::Failure {
-                metadata: failure_metadata(codes::STORAGE, "COMMIT without a KV engine"),
-            }];
-        };
-        match db.tx_commit(id) {
+        match self.service.commit_tx(id) {
             Ok(()) => {
                 self.state = State::Ready;
                 vec![ServerMessage::Success {
@@ -781,9 +666,14 @@ impl<'a> Session<'a> {
                 }]
             }
             Err(e) => {
+                let code = match &e {
+                    crate::native::CommitError::Conflict => codes::TRANSIENT_OUTDATED,
+                    crate::native::CommitError::Constraint(_) => codes::CONSTRAINT_FAILED,
+                    crate::native::CommitError::Io(_) => codes::STORAGE,
+                };
                 self.state = State::Failed;
                 vec![ServerMessage::Failure {
-                    metadata: failure_metadata(codes::STORAGE, &format!("{e}")),
+                    metadata: failure_metadata(code, &format!("{e}")),
                 }]
             }
         }
@@ -800,23 +690,7 @@ impl<'a> Session<'a> {
             }];
         }
         // Whatever the outcome, the slot is no longer ours to clean up.
-        if let SessionEngine::Durable(service) = &self.engine {
-            let Some(id) = self.native_tx.take() else {
-                self.state = State::Failed;
-                return vec![ServerMessage::Failure {
-                    metadata: failure_metadata(
-                        codes::STORAGE,
-                        "ROLLBACK without an active transaction",
-                    ),
-                }];
-            };
-            service.rollback_tx(id);
-            self.state = State::Ready;
-            return vec![ServerMessage::Success {
-                metadata: BTreeMap::new(),
-            }];
-        }
-        let Some(id) = self.tx.take() else {
+        let Some(id) = self.native_tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
                 metadata: failure_metadata(
@@ -825,26 +699,11 @@ impl<'a> Session<'a> {
                 ),
             }];
         };
-        let Some(db) = self.kv() else {
-            self.state = State::Failed;
-            return vec![ServerMessage::Failure {
-                metadata: failure_metadata(codes::STORAGE, "ROLLBACK without a KV engine"),
-            }];
-        };
-        match db.tx_rollback(id) {
-            Ok(()) => {
-                self.state = State::Ready;
-                vec![ServerMessage::Success {
-                    metadata: BTreeMap::new(),
-                }]
-            }
-            Err(e) => {
-                self.state = State::Failed;
-                vec![ServerMessage::Failure {
-                    metadata: failure_metadata(codes::STORAGE, &format!("{e}")),
-                }]
-            }
-        }
+        self.service.rollback_tx(id);
+        self.state = State::Ready;
+        vec![ServerMessage::Success {
+            metadata: BTreeMap::new(),
+        }]
     }
 
     fn handle_run(
@@ -890,41 +749,22 @@ impl<'a> Session<'a> {
                 }];
             }
         };
-        // Execute (already returns a fully-materialised ExecResult). Inside an
-        // explicit transaction, bind this statement's mutations to *this*
-        // connection's transaction for its duration, so its undo ops journal
-        // into the right per-connection slot (issue #298). The guard drops at
-        // the end of this block — the scope never outlives the synchronous
-        // execute call, so it cannot leak onto a later statement.
-        let exec = match &self.engine {
-            // Durable native store of record: autocommit statements execute
-            // on the service; inside an explicit transaction the statement
-            // runs on the registered transaction's working copy.
-            SessionEngine::Durable(service) => match (in_tx, self.native_tx) {
-                (true, Some(tx)) => service.execute_in_tx(tx, &ast, cypher_params),
-                (true, None) => {
-                    self.state = State::Failed;
-                    return vec![ServerMessage::Failure {
-                        metadata: failure_metadata(
-                            codes::STORAGE,
-                            "RUN in transaction state without an open transaction",
-                        ),
-                    }];
-                }
-                (false, _) => service.execute(&ast, cypher_params),
-            },
-            SessionEngine::Kv(db) => {
-                let _tx_scope = if in_tx {
-                    self.tx.map(crate::db::enter_tx_scope)
-                } else {
-                    None
-                };
-                // The KV store serves core Cypher through the `GraphEngine`
-                // seam; secondary subsystems (FTS, vector/semantic) are the
-                // durable-native serving layer's job and surface
-                // `EngineCapability` here rather than a KV fallback.
-                executor::execute_on_engine(&ast, *db, cypher_params)
+        // Execute (already returns a fully-materialised ExecResult). Autocommit
+        // statements execute on the service; inside an explicit transaction the
+        // statement runs on this connection's registered transaction working
+        // copy (issue #298).
+        let exec = match (in_tx, self.native_tx) {
+            (true, Some(tx)) => self.service.execute_in_tx(tx, &ast, cypher_params),
+            (true, None) => {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(
+                        codes::STORAGE,
+                        "RUN in transaction state without an open transaction",
+                    ),
+                }];
             }
+            (false, _) => self.service.execute(&ast, cypher_params),
         };
         let result = match exec {
             Ok(r) => r,
@@ -1065,24 +905,23 @@ impl<'a> Session<'a> {
 impl Drop for Session<'_> {
     /// A connection that drops without `COMMIT` / `ROLLBACK` / `GOODBYE`
     /// (a hard disconnect, a cancelled task, a panicked handler) must not
-    /// leak the `Drevo` handle's single explicit-transaction slot — with
-    /// per-session ownership (issue #236), no *other* session will clean
-    /// it up, so a leaked slot would reject every future `BEGIN` with
-    /// `transaction already active`. Rolling back our own transaction here
-    /// closes that gap on every exit path. A no-op unless we still own the
-    /// slot (`COMMIT` / `ROLLBACK` / `RESET` / `GOODBYE` already cleared it).
+    /// leak its open transaction. Rolling back our own transaction here
+    /// closes that gap on every exit path. A no-op unless we still hold an
+    /// open transaction (`COMMIT` / `ROLLBACK` / `RESET` / `GOODBYE` already
+    /// cleared it).
     fn drop(&mut self) {
         self.roll_back_own_tx();
     }
 }
 
 // -------------------------------------------------------------------------
-// run_session_sync — drives the loop over a sync Read/Write pair.
+// run_session_sync_durable — drives the loop over a sync Read/Write pair.
 // -------------------------------------------------------------------------
 
 /// Read framed Bolt messages from `reader`, dispatch them through a
-/// [`Session`], and write framed responses back to `writer`. Terminates
-/// when the reader hits clean EOF or the session enters [`State::Defunct`].
+/// [`Session`] over the durable native store of record, and write framed
+/// responses back to `writer`. Terminates when the reader hits clean EOF or the
+/// session enters [`State::Defunct`].
 ///
 /// # Errors
 ///
@@ -1093,40 +932,6 @@ impl Drop for Session<'_> {
 /// responses on the wire and do not abort the loop; the function only
 /// returns `Err` for codec-level failures that make further dispatch
 /// impossible.
-pub fn run_session_sync<R: Read, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    drevo: &Drevo,
-) -> BoltResult<()> {
-    run_session_sync_inner(reader, writer, Session::new(drevo))
-}
-
-/// Authenticating counterpart of [`run_session_sync`]. Every `HELLO` is
-/// checked against `authenticator`; a denial is reported as a
-/// `Neo.ClientError.Security.Unauthorized` `FAILURE` and the loop
-/// returns (the connection is closed). Phase 11 task `00074`.
-///
-/// # Errors
-///
-/// Same as [`run_session_sync`] — only codec-level failures abort the
-/// loop; auth denials and Cypher errors surface as `FAILURE` messages.
-pub fn run_session_sync_with_auth<R: Read, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    drevo: &Drevo,
-    authenticator: &dyn Authenticator,
-) -> BoltResult<()> {
-    run_session_sync_inner(reader, writer, Session::with_auth(drevo, authenticator))
-}
-
-/// Durable-native counterpart of [`run_session_sync`] — drives the synchronous
-/// session loop over the native store of record instead of the KV engine. The
-/// loop itself is engine-agnostic; only the backend the session executes
-/// against differs.
-///
-/// # Errors
-///
-/// Same as [`run_session_sync`].
 pub fn run_session_sync_durable<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
@@ -1135,13 +940,14 @@ pub fn run_session_sync_durable<R: Read, W: Write>(
     run_session_sync_inner(reader, writer, Session::new_durable(service))
 }
 
-/// Authenticating durable-native counterpart of [`run_session_sync_with_auth`].
-/// Enforces credentials on every `HELLO` exactly as the KV path does, over the
-/// native store of record.
+/// Authenticating counterpart of [`run_session_sync_durable`]. Every `HELLO` is
+/// checked against `authenticator`; a denial is reported as a
+/// `Neo.ClientError.Security.Unauthorized` `FAILURE` and the loop returns (the
+/// connection is closed). Phase 11 task `00074`.
 ///
 /// # Errors
 ///
-/// Same as [`run_session_sync`].
+/// Same as [`run_session_sync_durable`].
 pub fn run_session_sync_with_auth_durable<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
@@ -1484,7 +1290,7 @@ fn failure_metadata(code: &str, message: &str) -> BTreeMap<String, Value> {
 /// Build a `FAILURE` metadata dictionary for protocol-level decode
 /// errors (bad tag, mis-shaped fields). Exposed for callers that hand-
 /// roll a Bolt loop on top of an async transport — see
-/// [`crate::bolt::listener::accept_and_run_session`].
+/// [`crate::bolt::listener::accept_and_run_session_durable`].
 pub fn protocol_failure_metadata(message: &str) -> BTreeMap<String, Value> {
     failure_metadata(codes::PROTOCOL_VIOLATION, message)
 }
@@ -1524,6 +1330,7 @@ fn extract_n(extra: &BTreeMap<String, Value>) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cypher::executor;
 
     #[test]
     fn extract_n_defaults_to_all_when_missing() {
@@ -1544,8 +1351,9 @@ mod tests {
         // does not start with `Neo4j/` (UnsupportedServerProduct). drevo's
         // Bolt surface is a Neo4j-compatible drop-in, so the agent must carry
         // that prefix while still identifying drevo.
-        let db = crate::db::Drevo::open_in_memory().unwrap();
-        let session = Session::new(&db);
+        let session = Session::new_durable(std::sync::Arc::new(
+            crate::native_service::NativeService::in_memory(),
+        ));
         let agent = session.server_agent();
         assert!(
             agent.starts_with("Neo4j/"),
@@ -1564,8 +1372,9 @@ mod tests {
         // throwaway `Peekable` and then dropped it — silently losing one row
         // at every PULL batch boundary. Pull three rows one at a time and
         // assert none go missing.
-        let db = crate::db::Drevo::open_in_memory().unwrap();
-        let mut session = Session::new(&db);
+        let mut session = Session::new_durable(std::sync::Arc::new(
+            crate::native_service::NativeService::in_memory(),
+        ));
         session.state = State::Ready; // skip the HELLO handshake for the unit
         let run = session.handle_run(
             "UNWIND [1, 2, 3] AS x RETURN x".to_string(),

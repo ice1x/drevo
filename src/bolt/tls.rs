@@ -45,7 +45,7 @@
 //!
 //! Both `_tls` entry points are thin wrappers over the generic
 //! [`crate::bolt::listener::accept_handshake_on`] /
-//! [`crate::bolt::listener::run_session_on`] helpers — the only
+//! [`crate::bolt::listener::run_session_on_durable`] helpers — the only
 //! TLS-specific code lives here. Plain-TCP and TLS code paths share
 //! the same session-loop bytes.
 
@@ -60,8 +60,7 @@ use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 
 use super::error::{BoltError, BoltResult};
-use super::listener::{accept_handshake_on, run_session_on, AcceptedConnectionOn};
-use crate::db::Drevo;
+use super::listener::{accept_handshake_on, run_session_on_durable, AcceptedConnectionOn};
 
 /// Server-side TLS configuration for the Bolt listener.
 ///
@@ -218,7 +217,7 @@ pub async fn accept_handshake_tls(
 
 /// Bundle TLS handshake + Bolt handshake + session loop into a
 /// single call. Drop-in TLS equivalent of
-/// [`crate::bolt::listener::accept_and_run_session`].
+/// [`crate::bolt::listener::accept_and_run_session_durable`].
 ///
 /// Suitable as the body of a `tokio::spawn`-per-connection accept
 /// loop on a `bolt+s://` / `bolt+ssc://` listener.
@@ -230,14 +229,14 @@ pub async fn accept_handshake_tls(
 pub async fn accept_and_run_session_tls(
     socket: TcpStream,
     acceptor: &TlsAcceptor,
-    drevo: &Drevo,
+    service: &Arc<crate::native_service::NativeService>,
 ) -> BoltResult<()> {
     let accepted = accept_handshake_tls(socket, acceptor).await?;
     if accepted.negotiated.is_none() {
         return Ok(());
     }
     let mut stream = accepted.stream;
-    run_session_on(&mut stream, drevo).await
+    run_session_on_durable(&mut stream, service).await
 }
 
 #[cfg(test)]

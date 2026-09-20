@@ -20,7 +20,7 @@ use drevo::bolt::handshake::MAGIC_PREAMBLE;
 use drevo::bolt::packstream::{decode, encode, Value};
 use drevo::bolt::session::{GOODBYE, HELLO, PULL, RUN};
 use drevo::bolt::tls::{accept_and_run_session_tls, accept_handshake_tls, TlsConfig};
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -142,7 +142,7 @@ async fn tls_accept_and_run_session_handles_hello_run_pull_goodbye_over_tls() {
     let listener = bind_loopback().await;
     let addr = listener.local_addr().unwrap();
 
-    let drevo = Arc::new(Drevo::open_in_memory().expect("open in-memory drevo"));
+    let drevo = Arc::new(NativeService::in_memory());
     let drevo_for_server = Arc::clone(&drevo);
 
     let server = tokio::spawn(async move {
