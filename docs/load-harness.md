@@ -122,52 +122,26 @@ throughput / p50–p99 / on-disk `file_bytes`, plus the `CompactReport`
 > `NODES`/`EDGES`) to see non-zero reclaim; the existing
 > `redb_compact_reclaims_after_heavy_churn` documents the same caveat.
 
-## HTTP load path (`http_load` example)
+## HTTP load path
 
-The sweeps above call the in-process API directly. `http_load` instead starts
-the drevo HTTP API on an ephemeral localhost port and drives it with a minimal,
-dependency-free HTTP/1.1 client, so the numbers include the **full request
-path** — TCP connect, HTTP framing, axum routing, JSON (de)serialisation.
+The sweeps above call the in-process API directly. The standalone `http_load`
+over-the-wire example was removed together with the legacy KV HTTP router
+(epic #444): it drove the KV-only REST endpoints (`GET /nodes/{id}`,
+`POST /edges`) that no longer exist — the shipping server serves the durable
+native router, where graph reads and writes go through Cypher on `POST /cypher`.
 
-```text
-cargo run --release --example http_load
-NODES=5000 OPS=2000 READ_PCT=80 cargo run --release --example http_load
-```
-
-| Var | Default | Meaning |
-|---|---|---|
-| `NODES` | `2000` | seed nodes |
-| `OPS` | `500` | requests **per thread** |
-| `READ_PCT` | `80` | percent reads (`GET /nodes/{id}`); the rest are writes (`POST /edges`) |
-
-Same fixed thread sweep `[1, 2, 4, 8, 16]`; stdout is a JSON array (per-thread
-`requests_per_sec` + read/write p50–p99), stderr a table.
-
-### Sample (in-memory backend, localhost)
-
-Illustrative, hardware-specific — regenerate with the command above.
-
-| threads | req/sec | read p99 µs | write p99 µs |
-|--:|--:|--:|--:|
-| 1 | 8 305 | 250 | 262 |
-| 4 | 18 602 | 340 | 329 |
-| 16 | 20 406 | 1 082 | 1 382 |
-
-Unlike the in-process write ceiling, HTTP **RPS scales up** with concurrency
-(8.3k → 20k) before plateauing: reads dominate (80 %) and axum/tokio serve them
-across a worker pool, while the serialized writes are only a fifth of the load.
-Latency still climbs under contention (read p99 250 µs → ~1 ms).
-
-The over-the-wire flow is covered on the normal PR gate by
+The over-the-wire flow is still covered on the normal PR gate by
 `http_load_end_to_end_small_scale` in `tests/http_load_tests.rs` (localhost +
-in-memory is fast); the status-line parser has its own unit test. The full RPS
-sweep is on-demand.
+in-memory native backend is fast); the status-line parser has its own unit test.
+A native `/cypher`-based RPS sweep can be reintroduced as a follow-up if a
+large-scale over-the-wire benchmark is needed again.
 
 ---
 
-All four planned slices of [#241] have landed: the in-memory concurrency sweep,
-the redb backend variant, the churn → compact → recovery harness, and this HTTP
-load path.
+All four planned slices of [#241] landed: the in-memory concurrency sweep, the
+redb backend variant, the churn → compact → recovery harness, and the HTTP load
+path (the standalone over-the-wire example was later retired with the KV HTTP
+router — see above).
 
 [#240]: https://github.com/ice1x/drevo/issues/240
 [#241]: https://github.com/ice1x/drevo/issues/241
