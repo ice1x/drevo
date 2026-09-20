@@ -15,16 +15,16 @@
 //! - Kind index: board views (all characters, all scenes, etc.)
 //! - Scene ordering via edge weights and `follows` edges
 
-use drevo::db::Drevo;
 use drevo::model::*;
+use drevo::native_service::NativeService;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn make_node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -128,7 +128,7 @@ struct StoryData {
     plot_meet_guardian: u64,
 }
 
-fn build_story(db: &Drevo) -> StoryData {
+fn build_story(db: &NativeService) -> StoryData {
     // --- Book ---
     let book = db
         .create_node(make_node(
@@ -385,23 +385,23 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 // 17 nodes total
-                assert!(db.get_node(s.book).unwrap().is_some());
-                assert!(db.get_node(s.chapter1).unwrap().is_some());
-                assert!(db.get_node(s.chapter2).unwrap().is_some());
-                assert!(db.get_node(s.scene1).unwrap().is_some());
-                assert!(db.get_node(s.scene2).unwrap().is_some());
-                assert!(db.get_node(s.scene3).unwrap().is_some());
-                assert!(db.get_node(s.scene4).unwrap().is_some());
-                assert!(db.get_node(s.elena).unwrap().is_some());
-                assert!(db.get_node(s.marcus).unwrap().is_some());
-                assert!(db.get_node(s.guardian).unwrap().is_some());
-                assert!(db.get_node(s.forest_path).unwrap().is_some());
-                assert!(db.get_node(s.garden_wall).unwrap().is_some());
-                assert!(db.get_node(s.lost_garden).unwrap().is_some());
-                assert!(db.get_node(s.plot_find_map).unwrap().is_some());
-                assert!(db.get_node(s.plot_open_gate).unwrap().is_some());
-                assert!(db.get_node(s.plot_garden_alive).unwrap().is_some());
-                assert!(db.get_node(s.plot_meet_guardian).unwrap().is_some());
+                assert!(db.get_node(s.book).is_ok());
+                assert!(db.get_node(s.chapter1).is_ok());
+                assert!(db.get_node(s.chapter2).is_ok());
+                assert!(db.get_node(s.scene1).is_ok());
+                assert!(db.get_node(s.scene2).is_ok());
+                assert!(db.get_node(s.scene3).is_ok());
+                assert!(db.get_node(s.scene4).is_ok());
+                assert!(db.get_node(s.elena).is_ok());
+                assert!(db.get_node(s.marcus).is_ok());
+                assert!(db.get_node(s.guardian).is_ok());
+                assert!(db.get_node(s.forest_path).is_ok());
+                assert!(db.get_node(s.garden_wall).is_ok());
+                assert!(db.get_node(s.lost_garden).is_ok());
+                assert!(db.get_node(s.plot_find_map).is_ok());
+                assert!(db.get_node(s.plot_open_gate).is_ok());
+                assert!(db.get_node(s.plot_garden_alive).is_ok());
+                assert!(db.get_node(s.plot_meet_guardian).is_ok());
             }
 
             #[test]
@@ -409,12 +409,12 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                assert_eq!(db.get_node(s.book).unwrap().unwrap().kind, "book");
-                assert_eq!(db.get_node(s.chapter1).unwrap().unwrap().kind, "chapter");
-                assert_eq!(db.get_node(s.scene1).unwrap().unwrap().kind, "scene");
-                assert_eq!(db.get_node(s.elena).unwrap().unwrap().kind, "character");
-                assert_eq!(db.get_node(s.forest_path).unwrap().unwrap().kind, "location");
-                assert_eq!(db.get_node(s.plot_find_map).unwrap().unwrap().kind, "plot_point");
+                assert_eq!(db.get_node(s.book).unwrap().kind, "book");
+                assert_eq!(db.get_node(s.chapter1).unwrap().kind, "chapter");
+                assert_eq!(db.get_node(s.scene1).unwrap().kind, "scene");
+                assert_eq!(db.get_node(s.elena).unwrap().kind, "character");
+                assert_eq!(db.get_node(s.forest_path).unwrap().kind, "location");
+                assert_eq!(db.get_node(s.plot_find_map).unwrap().kind, "plot_point");
             }
 
             // -----------------------------------------------------------------
@@ -427,8 +427,7 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 let chapters = db
-                    .neighbors(s.book, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                    .neighbors(s.book, Direction::Outgoing, Some("contains"));
                 assert_eq!(chapters.len(), 2);
                 let ids: Vec<u64> = chapters.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.chapter1));
@@ -441,8 +440,7 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 let scenes = db
-                    .neighbors(s.chapter1, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                    .neighbors(s.chapter1, Direction::Outgoing, Some("contains"));
                 assert_eq!(scenes.len(), 2);
                 let ids: Vec<u64> = scenes.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.scene1));
@@ -455,8 +453,7 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 let scenes = db
-                    .neighbors(s.chapter2, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                    .neighbors(s.chapter2, Direction::Outgoing, Some("contains"));
                 assert_eq!(scenes.len(), 2);
                 let ids: Vec<u64> = scenes.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.scene3));
@@ -469,8 +466,7 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 let parents = db
-                    .neighbors(s.scene1, Direction::Incoming, Some("contains"))
-                    .unwrap();
+                    .neighbors(s.scene1, Direction::Incoming, Some("contains"));
                 assert_eq!(parents.len(), 1);
                 assert_eq!(parents[0].id, s.chapter1);
             }
@@ -485,8 +481,7 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 let next_chapters = db
-                    .neighbors(s.chapter1, Direction::Outgoing, Some("follows"))
-                    .unwrap();
+                    .neighbors(s.chapter1, Direction::Outgoing, Some("follows"));
                 assert_eq!(next_chapters.len(), 1);
                 assert_eq!(next_chapters[0].id, s.chapter2);
             }
@@ -498,15 +493,13 @@ macro_rules! story_tests {
 
                 // Chapter 1: scene1 → scene2
                 let next = db
-                    .neighbors(s.scene1, Direction::Outgoing, Some("follows"))
-                    .unwrap();
+                    .neighbors(s.scene1, Direction::Outgoing, Some("follows"));
                 assert_eq!(next.len(), 1);
                 assert_eq!(next[0].id, s.scene2);
 
                 // Chapter 2: scene3 → scene4
                 let next = db
-                    .neighbors(s.scene3, Direction::Outgoing, Some("follows"))
-                    .unwrap();
+                    .neighbors(s.scene3, Direction::Outgoing, Some("follows"));
                 assert_eq!(next.len(), 1);
                 assert_eq!(next[0].id, s.scene4);
             }
@@ -518,14 +511,12 @@ macro_rules! story_tests {
 
                 // scene2 is last in chapter1 — no follows edge
                 let next = db
-                    .neighbors(s.scene2, Direction::Outgoing, Some("follows"))
-                    .unwrap();
+                    .neighbors(s.scene2, Direction::Outgoing, Some("follows"));
                 assert!(next.is_empty());
 
                 // scene4 is last in chapter2
                 let next = db
-                    .neighbors(s.scene4, Direction::Outgoing, Some("follows"))
-                    .unwrap();
+                    .neighbors(s.scene4, Direction::Outgoing, Some("follows"));
                 assert!(next.is_empty());
             }
 
@@ -540,15 +531,13 @@ macro_rules! story_tests {
 
                 // Scene 1: only Elena
                 let chars = db
-                    .neighbors(s.scene1, Direction::Outgoing, Some("involves"))
-                    .unwrap();
+                    .neighbors(s.scene1, Direction::Outgoing, Some("involves"));
                 assert_eq!(chars.len(), 1);
                 assert_eq!(chars[0].id, s.elena);
 
                 // Scene 2: Elena and Marcus
                 let chars = db
-                    .neighbors(s.scene2, Direction::Outgoing, Some("involves"))
-                    .unwrap();
+                    .neighbors(s.scene2, Direction::Outgoing, Some("involves"));
                 assert_eq!(chars.len(), 2);
                 let ids: Vec<u64> = chars.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.elena));
@@ -556,8 +545,7 @@ macro_rules! story_tests {
 
                 // Scene 4: Elena and Guardian
                 let chars = db
-                    .neighbors(s.scene4, Direction::Outgoing, Some("involves"))
-                    .unwrap();
+                    .neighbors(s.scene4, Direction::Outgoing, Some("involves"));
                 assert_eq!(chars.len(), 2);
                 let ids: Vec<u64> = chars.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.elena));
@@ -570,14 +558,12 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 let loc = db
-                    .neighbors(s.scene1, Direction::Outgoing, Some("takes_place_in"))
-                    .unwrap();
+                    .neighbors(s.scene1, Direction::Outgoing, Some("takes_place_in"));
                 assert_eq!(loc.len(), 1);
                 assert_eq!(loc[0].id, s.forest_path);
 
                 let loc = db
-                    .neighbors(s.scene2, Direction::Outgoing, Some("takes_place_in"))
-                    .unwrap();
+                    .neighbors(s.scene2, Direction::Outgoing, Some("takes_place_in"));
                 assert_eq!(loc.len(), 1);
                 assert_eq!(loc[0].id, s.garden_wall);
             }
@@ -588,14 +574,12 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 let plot = db
-                    .neighbors(s.scene1, Direction::Outgoing, Some("relates_to"))
-                    .unwrap();
+                    .neighbors(s.scene1, Direction::Outgoing, Some("relates_to"));
                 assert_eq!(plot.len(), 1);
                 assert_eq!(plot[0].id, s.plot_find_map);
 
                 let plot = db
-                    .neighbors(s.scene4, Direction::Outgoing, Some("relates_to"))
-                    .unwrap();
+                    .neighbors(s.scene4, Direction::Outgoing, Some("relates_to"));
                 assert_eq!(plot.len(), 1);
                 assert_eq!(plot[0].id, s.plot_meet_guardian);
             }
@@ -610,8 +594,7 @@ macro_rules! story_tests {
                 let s = build_story(&db);
 
                 let related = db
-                    .neighbors(s.elena, Direction::Outgoing, Some("relates_to"))
-                    .unwrap();
+                    .neighbors(s.elena, Direction::Outgoing, Some("relates_to"));
                 assert_eq!(related.len(), 1);
                 assert_eq!(related[0].id, s.marcus);
             }
@@ -623,8 +606,7 @@ macro_rules! story_tests {
 
                 // Elena appears in all 4 scenes (via incoming "involves" edges)
                 let scenes = db
-                    .neighbors(s.elena, Direction::Incoming, Some("involves"))
-                    .unwrap();
+                    .neighbors(s.elena, Direction::Incoming, Some("involves"));
                 assert_eq!(scenes.len(), 4);
                 let ids: Vec<u64> = scenes.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.scene1));
@@ -634,8 +616,7 @@ macro_rules! story_tests {
 
                 // Marcus appears in scene2 and scene3
                 let scenes = db
-                    .neighbors(s.marcus, Direction::Incoming, Some("involves"))
-                    .unwrap();
+                    .neighbors(s.marcus, Direction::Incoming, Some("involves"));
                 assert_eq!(scenes.len(), 2);
                 let ids: Vec<u64> = scenes.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.scene2));
@@ -643,8 +624,7 @@ macro_rules! story_tests {
 
                 // Guardian appears only in scene4
                 let scenes = db
-                    .neighbors(s.guardian, Direction::Incoming, Some("involves"))
-                    .unwrap();
+                    .neighbors(s.guardian, Direction::Incoming, Some("involves"));
                 assert_eq!(scenes.len(), 1);
                 assert_eq!(scenes[0].id, s.scene4);
             }
@@ -656,8 +636,7 @@ macro_rules! story_tests {
 
                 // The lost garden hosts scene3 and scene4
                 let scenes = db
-                    .neighbors(s.lost_garden, Direction::Incoming, Some("takes_place_in"))
-                    .unwrap();
+                    .neighbors(s.lost_garden, Direction::Incoming, Some("takes_place_in"));
                 assert_eq!(scenes.len(), 2);
                 let ids: Vec<u64> = scenes.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.scene3));
@@ -777,7 +756,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                let chars = db.list_nodes_by_kind("character", 100, 0).unwrap();
+                let chars = db.list_nodes_by_kind("character", 100, 0);
                 assert_eq!(chars.len(), 3);
                 let ids: Vec<u64> = chars.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.elena));
@@ -790,7 +769,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                let scenes = db.list_nodes_by_kind("scene", 100, 0).unwrap();
+                let scenes = db.list_nodes_by_kind("scene", 100, 0);
                 assert_eq!(scenes.len(), 4);
                 let ids: Vec<u64> = scenes.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.scene1));
@@ -804,7 +783,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                let locs = db.list_nodes_by_kind("location", 100, 0).unwrap();
+                let locs = db.list_nodes_by_kind("location", 100, 0);
                 assert_eq!(locs.len(), 3);
                 let ids: Vec<u64> = locs.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.forest_path));
@@ -817,7 +796,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let _s = build_story(&db);
 
-                let plots = db.list_nodes_by_kind("plot_point", 100, 0).unwrap();
+                let plots = db.list_nodes_by_kind("plot_point", 100, 0);
                 assert_eq!(plots.len(), 4);
             }
 
@@ -826,7 +805,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                let chapters = db.list_nodes_by_kind("chapter", 100, 0).unwrap();
+                let chapters = db.list_nodes_by_kind("chapter", 100, 0);
                 assert_eq!(chapters.len(), 2);
                 let ids: Vec<u64> = chapters.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&s.chapter1));
@@ -842,7 +821,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let _s = build_story(&db);
 
-                let results = db.search_fts("Elena", 10).unwrap();
+                let results = db.search_fts("Elena", 10);
                 assert!(!results.is_empty(), "should find Elena");
                 let has_elena = results.iter().any(|r| r.node.title == "Elena");
                 assert!(has_elena);
@@ -853,7 +832,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let _s = build_story(&db);
 
-                let results = db.search_fts("parchment", 10).unwrap();
+                let results = db.search_fts("parchment", 10);
                 assert!(!results.is_empty(), "should find scene by body text");
             }
 
@@ -862,7 +841,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 build_story(&db);
 
-                let results = db.search_fts("moss covered stone wall", 10).unwrap();
+                let results = db.search_fts("moss covered stone wall", 10);
                 assert!(!results.is_empty(), "should find location");
             }
 
@@ -871,7 +850,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 build_story(&db);
 
-                let results = db.search_fts("translucent figure", 10).unwrap();
+                let results = db.search_fts("translucent figure", 10);
                 assert!(!results.is_empty());
                 let found_plot = results.iter().any(|r| r.node.kind == "plot_point" || r.node.kind == "scene");
                 assert!(found_plot, "should find content mentioning translucent figure");
@@ -886,11 +865,11 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                let elena = db.get_node(s.elena).unwrap().unwrap();
+                let elena = db.get_node(s.elena).unwrap();
                 assert_eq!(elena.properties.get("role").unwrap(), &serde_json::json!("protagonist"));
                 assert_eq!(elena.properties.get("age").unwrap(), &serde_json::json!(28));
 
-                let guardian = db.get_node(s.guardian).unwrap().unwrap();
+                let guardian = db.get_node(s.guardian).unwrap();
                 assert_eq!(guardian.properties.get("role").unwrap(), &serde_json::json!("antagonist"));
                 assert_eq!(guardian.properties.get("species").unwrap(), &serde_json::json!("spirit"));
             }
@@ -990,7 +969,7 @@ macro_rules! story_tests {
                 )
                 .unwrap();
 
-                let updated = db.get_node(s.scene1).unwrap().unwrap();
+                let updated = db.get_node(s.scene1).unwrap();
                 assert!(updated.body.contains("hidden compartment"));
             }
 
@@ -1013,7 +992,7 @@ macro_rules! story_tests {
                 )
                 .unwrap();
 
-                let updated = db.get_node(s.elena).unwrap().unwrap();
+                let updated = db.get_node(s.elena).unwrap();
                 assert_eq!(
                     updated.properties.get("arc").unwrap(),
                     &serde_json::json!("from skeptic to believer")
@@ -1032,22 +1011,20 @@ macro_rules! story_tests {
                 // Delete scene1 — edges to chapter1, elena, forest_path, plot_find_map removed
                 db.delete_node(s.scene1).unwrap();
 
-                assert!(db.get_node(s.scene1).unwrap().is_none());
+                assert!(db.get_node(s.scene1).is_err());
 
                 // Chapter1 now contains only scene2
                 let scenes = db
-                    .neighbors(s.chapter1, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                    .neighbors(s.chapter1, Direction::Outgoing, Some("contains"));
                 assert_eq!(scenes.len(), 1);
                 assert_eq!(scenes[0].id, s.scene2);
 
                 // Elena still exists (no cascade to connected nodes)
-                assert!(db.get_node(s.elena).unwrap().is_some());
+                assert!(db.get_node(s.elena).is_ok());
 
                 // Elena now appears in 3 scenes instead of 4
                 let elena_scenes = db
-                    .neighbors(s.elena, Direction::Incoming, Some("involves"))
-                    .unwrap();
+                    .neighbors(s.elena, Direction::Incoming, Some("involves"));
                 assert_eq!(elena_scenes.len(), 3);
             }
 
@@ -1074,14 +1051,12 @@ macro_rules! story_tests {
 
                 // Book now contains 3 chapters
                 let chapters = db
-                    .neighbors(s.book, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                    .neighbors(s.book, Direction::Outgoing, Some("contains"));
                 assert_eq!(chapters.len(), 3);
 
                 // Chapter2 → Chapter3 ordering
                 let next = db
-                    .neighbors(s.chapter2, Direction::Outgoing, Some("follows"))
-                    .unwrap();
+                    .neighbors(s.chapter2, Direction::Outgoing, Some("follows"));
                 assert_eq!(next.len(), 1);
                 assert_eq!(next[0].id, chapter3.id);
             }
@@ -1104,7 +1079,7 @@ macro_rules! story_tests {
                     ))
                     .unwrap();
 
-                let recent = db.list_recent(3).unwrap();
+                let recent = db.list_recent(3);
                 assert!(!recent.is_empty());
                 assert_eq!(recent[0].id, newest.id, "newest entry should be first");
             }
@@ -1120,14 +1095,12 @@ macro_rules! story_tests {
 
                 // The lost garden is used in scene3 and scene4
                 let scenes_at_garden = db
-                    .neighbors(s.lost_garden, Direction::Incoming, Some("takes_place_in"))
-                    .unwrap();
+                    .neighbors(s.lost_garden, Direction::Incoming, Some("takes_place_in"));
                 assert_eq!(scenes_at_garden.len(), 2);
 
                 // Forest path is used only in scene1
                 let scenes_at_forest = db
-                    .neighbors(s.forest_path, Direction::Incoming, Some("takes_place_in"))
-                    .unwrap();
+                    .neighbors(s.forest_path, Direction::Incoming, Some("takes_place_in"));
                 assert_eq!(scenes_at_forest.len(), 1);
             }
 
@@ -1140,7 +1113,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                let edges = db.edges_of(s.scene1, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(s.scene1, Direction::Outgoing);
                 let follows_edges: Vec<&Edge> =
                     edges.iter().filter(|e| e.kind == "follows").collect();
                 assert_eq!(follows_edges.len(), 1);

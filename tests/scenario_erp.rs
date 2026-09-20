@@ -20,16 +20,16 @@
 //! - Transactional updates: order status transitions, inventory changes
 //! - Cascade delete: removing a product cleans up all contains/stored_in edges
 
-use drevo::db::Drevo;
 use drevo::model::*;
+use drevo::native_service::NativeService;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn make_node_with_props(
@@ -181,7 +181,7 @@ struct ErpGraph {
     invoice_3: u64,
 }
 
-fn build_erp_graph(db: &Drevo) -> ErpGraph {
+fn build_erp_graph(db: &NativeService) -> ErpGraph {
     // --- Customers ---
     let cust_acme = db
         .create_node(make_node_with_props(
@@ -517,24 +517,24 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                assert!(db.get_node(g.cust_acme).unwrap().is_some());
-                assert!(db.get_node(g.cust_globex).unwrap().is_some());
-                assert!(db.get_node(g.cust_initech).unwrap().is_some());
-                assert!(db.get_node(g.wh_north).unwrap().is_some());
-                assert!(db.get_node(g.wh_south).unwrap().is_some());
-                assert!(db.get_node(g.wh_east).unwrap().is_some());
-                assert!(db.get_node(g.prod_widget).unwrap().is_some());
-                assert!(db.get_node(g.prod_gadget).unwrap().is_some());
-                assert!(db.get_node(g.prod_gizmo).unwrap().is_some());
-                assert!(db.get_node(g.prod_thingamajig).unwrap().is_some());
-                assert!(db.get_node(g.prod_doohickey).unwrap().is_some());
-                assert!(db.get_node(g.order_1001).unwrap().is_some());
-                assert!(db.get_node(g.order_1002).unwrap().is_some());
-                assert!(db.get_node(g.order_1003).unwrap().is_some());
-                assert!(db.get_node(g.order_1004).unwrap().is_some());
-                assert!(db.get_node(g.invoice_1).unwrap().is_some());
-                assert!(db.get_node(g.invoice_2).unwrap().is_some());
-                assert!(db.get_node(g.invoice_3).unwrap().is_some());
+                assert!(db.get_node(g.cust_acme).is_ok());
+                assert!(db.get_node(g.cust_globex).is_ok());
+                assert!(db.get_node(g.cust_initech).is_ok());
+                assert!(db.get_node(g.wh_north).is_ok());
+                assert!(db.get_node(g.wh_south).is_ok());
+                assert!(db.get_node(g.wh_east).is_ok());
+                assert!(db.get_node(g.prod_widget).is_ok());
+                assert!(db.get_node(g.prod_gadget).is_ok());
+                assert!(db.get_node(g.prod_gizmo).is_ok());
+                assert!(db.get_node(g.prod_thingamajig).is_ok());
+                assert!(db.get_node(g.prod_doohickey).is_ok());
+                assert!(db.get_node(g.order_1001).is_ok());
+                assert!(db.get_node(g.order_1002).is_ok());
+                assert!(db.get_node(g.order_1003).is_ok());
+                assert!(db.get_node(g.order_1004).is_ok());
+                assert!(db.get_node(g.invoice_1).is_ok());
+                assert!(db.get_node(g.invoice_2).is_ok());
+                assert!(db.get_node(g.invoice_3).is_ok());
             }
 
             #[test]
@@ -542,11 +542,11 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                assert_eq!(db.get_node(g.cust_acme).unwrap().unwrap().kind, "customer");
-                assert_eq!(db.get_node(g.wh_north).unwrap().unwrap().kind, "warehouse");
-                assert_eq!(db.get_node(g.prod_widget).unwrap().unwrap().kind, "product");
-                assert_eq!(db.get_node(g.order_1001).unwrap().unwrap().kind, "order");
-                assert_eq!(db.get_node(g.invoice_1).unwrap().unwrap().kind, "invoice");
+                assert_eq!(db.get_node(g.cust_acme).unwrap().kind, "customer");
+                assert_eq!(db.get_node(g.wh_north).unwrap().kind, "warehouse");
+                assert_eq!(db.get_node(g.prod_widget).unwrap().kind, "product");
+                assert_eq!(db.get_node(g.order_1001).unwrap().kind, "order");
+                assert_eq!(db.get_node(g.invoice_1).unwrap().kind, "invoice");
             }
 
             #[test]
@@ -554,7 +554,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let widget = db.get_node(g.prod_widget).unwrap().unwrap();
+                let widget = db.get_node(g.prod_widget).unwrap();
                 assert_eq!(
                     widget.properties.get("sku").unwrap(),
                     &serde_json::json!("WID-001")
@@ -570,7 +570,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let order = db.get_node(g.order_1001).unwrap().unwrap();
+                let order = db.get_node(g.order_1001).unwrap();
                 assert_eq!(
                     order.properties.get("status").unwrap(),
                     &serde_json::json!("shipped")
@@ -586,7 +586,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let acme = db.get_node(g.cust_acme).unwrap().unwrap();
+                let acme = db.get_node(g.cust_acme).unwrap();
                 assert_eq!(
                     acme.properties.get("tier").unwrap(),
                     &serde_json::json!("enterprise")
@@ -602,7 +602,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let north = db.get_node(g.wh_north).unwrap().unwrap();
+                let north = db.get_node(g.wh_north).unwrap();
                 assert_eq!(
                     north.properties.get("location").unwrap(),
                     &serde_json::json!("Seattle, WA")
@@ -622,9 +622,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let customer = db
-                    .neighbors(g.order_1001, Direction::Outgoing, Some("ordered_by"))
-                    .unwrap();
+                let customer = db.neighbors(g.order_1001, Direction::Outgoing, Some("ordered_by"));
                 assert_eq!(customer.len(), 1);
                 assert_eq!(customer[0].id, g.cust_acme);
             }
@@ -635,9 +633,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Acme has 2 orders: 1001 and 1004
-                let orders = db
-                    .neighbors(g.cust_acme, Direction::Incoming, Some("ordered_by"))
-                    .unwrap();
+                let orders = db.neighbors(g.cust_acme, Direction::Incoming, Some("ordered_by"));
                 assert_eq!(orders.len(), 2);
                 let ids: Vec<u64> = orders.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.order_1001));
@@ -649,9 +645,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let orders = db
-                    .neighbors(g.cust_globex, Direction::Incoming, Some("ordered_by"))
-                    .unwrap();
+                let orders = db.neighbors(g.cust_globex, Direction::Incoming, Some("ordered_by"));
                 assert_eq!(orders.len(), 1);
                 assert_eq!(orders[0].id, g.order_1002);
             }
@@ -666,9 +660,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Order 1001 contains Widget and Gadget
-                let items = db
-                    .neighbors(g.order_1001, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let items = db.neighbors(g.order_1001, Direction::Outgoing, Some("contains"));
                 assert_eq!(items.len(), 2);
                 let ids: Vec<u64> = items.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.prod_widget));
@@ -680,9 +672,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let items = db
-                    .neighbors(g.order_1002, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let items = db.neighbors(g.order_1002, Direction::Outgoing, Some("contains"));
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].id, g.prod_gizmo);
             }
@@ -693,9 +683,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Gadget appears in orders 1001 and 1004
-                let orders = db
-                    .neighbors(g.prod_gadget, Direction::Incoming, Some("contains"))
-                    .unwrap();
+                let orders = db.neighbors(g.prod_gadget, Direction::Incoming, Some("contains"));
                 // Both orders and (no invoice contains this product) → 2 incoming contains
                 let order_ids: Vec<u64> = orders
                     .iter()
@@ -713,7 +701,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Check order 1002 has Gizmo with qty=100
-                let edges = db.edges_of(g.order_1002, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.order_1002, Direction::Outgoing);
                 let gizmo_line = edges
                     .iter()
                     .find(|e| e.kind == "contains" && e.to_id == g.prod_gizmo)
@@ -733,7 +721,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let edges = db.edges_of(g.order_1003, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.order_1003, Direction::Outgoing);
                 let sum: f64 = edges
                     .iter()
                     .filter(|e| e.kind == "contains")
@@ -747,7 +735,7 @@ macro_rules! erp_tests {
                 // 5*129.99 + 10*7.49 = 649.95 + 74.90 = 724.85
                 assert!((sum - 724.85).abs() < 0.001);
 
-                let order = db.get_node(g.order_1003).unwrap().unwrap();
+                let order = db.get_node(g.order_1003).unwrap();
                 let total = order.properties.get("total").unwrap().as_f64().unwrap();
                 assert!((sum - total).abs() < 0.001);
             }
@@ -761,9 +749,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let warehouses = db
-                    .neighbors(g.prod_gizmo, Direction::Outgoing, Some("stored_in"))
-                    .unwrap();
+                let warehouses = db.neighbors(g.prod_gizmo, Direction::Outgoing, Some("stored_in"));
                 assert_eq!(warehouses.len(), 1);
                 assert_eq!(warehouses[0].id, g.wh_south);
             }
@@ -773,9 +759,8 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let warehouses = db
-                    .neighbors(g.prod_widget, Direction::Outgoing, Some("stored_in"))
-                    .unwrap();
+                let warehouses =
+                    db.neighbors(g.prod_widget, Direction::Outgoing, Some("stored_in"));
                 assert_eq!(warehouses.len(), 2);
                 let ids: Vec<u64> = warehouses.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.wh_north));
@@ -788,9 +773,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // North warehouse has Widget, Gadget, Doohickey
-                let products = db
-                    .neighbors(g.wh_north, Direction::Incoming, Some("stored_in"))
-                    .unwrap();
+                let products = db.neighbors(g.wh_north, Direction::Incoming, Some("stored_in"));
                 assert_eq!(products.len(), 3);
                 let ids: Vec<u64> = products.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.prod_widget));
@@ -803,7 +786,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let edges = db.edges_of(g.prod_widget, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.prod_widget, Direction::Outgoing);
                 let north_stock = edges
                     .iter()
                     .find(|e| e.kind == "stored_in" && e.to_id == g.wh_north)
@@ -820,7 +803,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Widget: 500 + 200 = 700
-                let edges = db.edges_of(g.prod_widget, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.prod_widget, Direction::Outgoing);
                 let total_stock: u64 = edges
                     .iter()
                     .filter(|e| e.kind == "stored_in")
@@ -843,9 +826,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let orders = db
-                    .neighbors(g.invoice_1, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let orders = db.neighbors(g.invoice_1, Direction::Outgoing, Some("contains"));
                 assert_eq!(orders.len(), 1);
                 assert_eq!(orders[0].id, g.order_1001);
             }
@@ -855,9 +836,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let customer = db
-                    .neighbors(g.invoice_1, Direction::Outgoing, Some("billed_to"))
-                    .unwrap();
+                let customer = db.neighbors(g.invoice_1, Direction::Outgoing, Some("billed_to"));
                 assert_eq!(customer.len(), 1);
                 assert_eq!(customer[0].id, g.cust_acme);
             }
@@ -867,9 +846,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let invoices = db
-                    .neighbors(g.cust_acme, Direction::Incoming, Some("billed_to"))
-                    .unwrap();
+                let invoices = db.neighbors(g.cust_acme, Direction::Incoming, Some("billed_to"));
                 assert_eq!(invoices.len(), 1);
                 assert_eq!(invoices[0].id, g.invoice_1);
             }
@@ -880,9 +857,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Order 1004 has no invoice yet (contains incoming must be empty)
-                let incoming = db
-                    .neighbors(g.order_1004, Direction::Incoming, Some("contains"))
-                    .unwrap();
+                let incoming = db.neighbors(g.order_1004, Direction::Incoming, Some("contains"));
                 assert_eq!(incoming.len(), 0);
             }
 
@@ -895,7 +870,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let customers = db.list_nodes_by_kind("customer", 100, 0).unwrap();
+                let customers = db.list_nodes_by_kind("customer", 100, 0);
                 assert_eq!(customers.len(), 3);
             }
 
@@ -904,7 +879,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let warehouses = db.list_nodes_by_kind("warehouse", 100, 0).unwrap();
+                let warehouses = db.list_nodes_by_kind("warehouse", 100, 0);
                 assert_eq!(warehouses.len(), 3);
             }
 
@@ -913,7 +888,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let products = db.list_nodes_by_kind("product", 100, 0).unwrap();
+                let products = db.list_nodes_by_kind("product", 100, 0);
                 assert_eq!(products.len(), 5);
             }
 
@@ -922,7 +897,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let orders = db.list_nodes_by_kind("order", 100, 0).unwrap();
+                let orders = db.list_nodes_by_kind("order", 100, 0);
                 assert_eq!(orders.len(), 4);
             }
 
@@ -931,7 +906,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let invoices = db.list_nodes_by_kind("invoice", 100, 0).unwrap();
+                let invoices = db.list_nodes_by_kind("invoice", 100, 0);
                 assert_eq!(invoices.len(), 3);
             }
 
@@ -940,11 +915,11 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let page1 = db.list_nodes_by_kind("product", 2, 0).unwrap();
+                let page1 = db.list_nodes_by_kind("product", 2, 0);
                 assert_eq!(page1.len(), 2);
-                let page2 = db.list_nodes_by_kind("product", 2, 2).unwrap();
+                let page2 = db.list_nodes_by_kind("product", 2, 2);
                 assert_eq!(page2.len(), 2);
-                let page3 = db.list_nodes_by_kind("product", 2, 4).unwrap();
+                let page3 = db.list_nodes_by_kind("product", 2, 4);
                 assert_eq!(page3.len(), 1);
             }
 
@@ -957,7 +932,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let results = db.search_fts("Widget", 10).unwrap();
+                let results = db.search_fts("Widget", 10);
                 assert!(!results.is_empty());
                 let titles: Vec<&str> = results.iter().map(|r| r.node.title.as_str()).collect();
                 assert!(titles.contains(&"Widget"));
@@ -968,7 +943,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let results = db.search_fts("manufacturing", 10).unwrap();
+                let results = db.search_fts("manufacturing", 10);
                 assert!(!results.is_empty());
                 // Widget body mentions "manufacturing assemblies"
                 let found = results.iter().any(|r| r.node.title == "Widget");
@@ -980,7 +955,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let results = db.search_fts("Seattle", 10).unwrap();
+                let results = db.search_fts("Seattle", 10);
                 assert!(!results.is_empty());
                 let found = results.iter().any(|r| r.node.title == "North Warehouse");
                 assert!(found);
@@ -991,7 +966,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let results = db.search_fts("Globex", 10).unwrap();
+                let results = db.search_fts("Globex", 10);
                 assert!(!results.is_empty());
                 let titles: Vec<&str> = results.iter().map(|r| r.node.title.as_str()).collect();
                 assert!(titles.contains(&"Globex"));
@@ -1002,7 +977,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let results = db.search_fts("holiday", 10).unwrap();
+                let results = db.search_fts("holiday", 10);
                 assert!(!results.is_empty());
                 // Order 1002 body mentions "holiday season"
                 let found = results.iter().any(|r| r.node.title == "Order 1002");
@@ -1175,7 +1150,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let edges = db.list_edges_by_kind("ordered_by", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("ordered_by", 100, 0);
                 assert_eq!(edges.len(), 4); // 4 orders each ordered_by 1 customer
             }
 
@@ -1185,7 +1160,7 @@ macro_rules! erp_tests {
                 let _g = build_erp_graph(&db);
 
                 // Line items: 2 + 1 + 2 + 2 = 7, plus 3 invoice→order contains = 10
-                let edges = db.list_edges_by_kind("contains", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("contains", 100, 0);
                 assert_eq!(edges.len(), 10);
             }
 
@@ -1195,7 +1170,7 @@ macro_rules! erp_tests {
                 let _g = build_erp_graph(&db);
 
                 // Widget 2 + Gadget 2 + Gizmo 1 + Thingamajig 1 + Doohickey 2 = 8
-                let edges = db.list_edges_by_kind("stored_in", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("stored_in", 100, 0);
                 assert_eq!(edges.len(), 8);
             }
 
@@ -1204,7 +1179,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let edges = db.list_edges_by_kind("billed_to", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("billed_to", 100, 0);
                 assert_eq!(edges.len(), 3);
             }
 
@@ -1246,7 +1221,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Simulate an inventory decrement: Widget at North goes from 500 → 498 (after Order 1001 ships)
-                let edges = db.edges_of(g.prod_widget, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.prod_widget, Direction::Outgoing);
                 let north_edge = edges
                     .iter()
                     .find(|e| e.kind == "stored_in" && e.to_id == g.wh_north)
@@ -1297,9 +1272,7 @@ macro_rules! erp_tests {
                 .unwrap();
 
                 // Globex now has 2 orders
-                let orders = db
-                    .neighbors(g.cust_globex, Direction::Incoming, Some("ordered_by"))
-                    .unwrap();
+                let orders = db.neighbors(g.cust_globex, Direction::Incoming, Some("ordered_by"));
                 assert_eq!(orders.len(), 2);
             }
 
@@ -1317,9 +1290,7 @@ macro_rules! erp_tests {
                 ))
                 .unwrap();
 
-                let warehouses = db
-                    .neighbors(g.prod_gizmo, Direction::Outgoing, Some("stored_in"))
-                    .unwrap();
+                let warehouses = db.neighbors(g.prod_gizmo, Direction::Outgoing, Some("stored_in"));
                 assert_eq!(warehouses.len(), 2);
             }
 
@@ -1334,26 +1305,21 @@ macro_rules! erp_tests {
 
                 db.delete_node(g.prod_doohickey).unwrap();
 
-                assert!(db.get_node(g.prod_doohickey).unwrap().is_none());
+                assert!(db.get_node(g.prod_doohickey).is_err());
 
                 // Order 1003 now contains only thingamajig
-                let items = db
-                    .neighbors(g.order_1003, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let items = db.neighbors(g.order_1003, Direction::Outgoing, Some("contains"));
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].id, g.prod_thingamajig);
 
                 // Order 1004 now contains only gadget
-                let items4 = db
-                    .neighbors(g.order_1004, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let items4 = db.neighbors(g.order_1004, Direction::Outgoing, Some("contains"));
                 assert_eq!(items4.len(), 1);
                 assert_eq!(items4[0].id, g.prod_gadget);
 
                 // North warehouse no longer has doohickey stocked
-                let north_products = db
-                    .neighbors(g.wh_north, Direction::Incoming, Some("stored_in"))
-                    .unwrap();
+                let north_products =
+                    db.neighbors(g.wh_north, Direction::Incoming, Some("stored_in"));
                 assert!(!north_products.iter().any(|n| n.id == g.prod_doohickey));
             }
 
@@ -1363,19 +1329,16 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 db.delete_node(g.order_1001).unwrap();
-                assert!(db.get_node(g.order_1001).unwrap().is_none());
+                assert!(db.get_node(g.order_1001).is_err());
 
                 // Acme now has 1 remaining order (1004)
-                let acme_orders = db
-                    .neighbors(g.cust_acme, Direction::Incoming, Some("ordered_by"))
-                    .unwrap();
+                let acme_orders =
+                    db.neighbors(g.cust_acme, Direction::Incoming, Some("ordered_by"));
                 assert_eq!(acme_orders.len(), 1);
                 assert_eq!(acme_orders[0].id, g.order_1004);
 
                 // Invoice 1 no longer contains any order
-                let inv1_orders = db
-                    .neighbors(g.invoice_1, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let inv1_orders = db.neighbors(g.invoice_1, Direction::Outgoing, Some("contains"));
                 assert_eq!(inv1_orders.len(), 0);
             }
 
@@ -1385,16 +1348,14 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Remove line items from order 1004 (cancel order)
-                let edges = db.edges_of(g.order_1004, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.order_1004, Direction::Outgoing);
                 for e in edges.iter().filter(|e| e.kind == "contains") {
                     db.delete_edge(e.id).unwrap();
                 }
 
                 // Order still exists but has no line items
-                assert!(db.get_node(g.order_1004).unwrap().is_some());
-                let items = db
-                    .neighbors(g.order_1004, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                assert!(db.get_node(g.order_1004).is_ok());
+                let items = db.neighbors(g.order_1004, Direction::Outgoing, Some("contains"));
                 assert_eq!(items.len(), 0);
             }
 
@@ -1407,7 +1368,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let orders = db.list_nodes_by_kind("order", 100, 0).unwrap();
+                let orders = db.list_nodes_by_kind("order", 100, 0);
                 let pending: Vec<&Node> = orders
                     .iter()
                     .filter(|o| {
@@ -1436,12 +1397,11 @@ macro_rules! erp_tests {
                     ))
                     .unwrap();
 
-                let customers = db.list_nodes_by_kind("customer", 100, 0).unwrap();
+                let customers = db.list_nodes_by_kind("customer", 100, 0);
                 let without_orders: Vec<&Node> = customers
                     .iter()
                     .filter(|c| {
                         db.neighbors(c.id, Direction::Incoming, Some("ordered_by"))
-                            .unwrap()
                             .is_empty()
                     })
                     .collect();
@@ -1458,7 +1418,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // For North: compute sum of stock * product.price across all stored products
-                let stored_edges = db.edges_of(g.wh_north, Direction::Incoming).unwrap();
+                let stored_edges = db.edges_of(g.wh_north, Direction::Incoming);
                 let mut total_value = 0.0;
                 for edge in stored_edges.iter().filter(|e| e.kind == "stored_in") {
                     let stock = edge
@@ -1466,7 +1426,7 @@ macro_rules! erp_tests {
                         .get("stock")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as f64;
-                    let product = db.get_node(edge.from_id).unwrap().unwrap();
+                    let product = db.get_node(edge.from_id).unwrap();
                     let price = product
                         .properties
                         .get("price")
@@ -1488,7 +1448,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let node = db.get_node_by_title("Acme Corp").unwrap();
+                let node = db.get_node_by_title("Acme Corp");
                 assert!(node.is_some());
                 assert_eq!(node.unwrap().id, g.cust_acme);
             }
@@ -1498,8 +1458,8 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let original = db.get_node(g.prod_widget).unwrap().unwrap();
-                let by_uuid = db.get_node_by_uuid(&original.uuid).unwrap();
+                let original = db.get_node(g.prod_widget).unwrap();
+                let by_uuid = db.get_node_by_uuid(original.uuid);
                 assert!(by_uuid.is_some());
                 assert_eq!(by_uuid.unwrap().id, g.prod_widget);
             }
@@ -1509,7 +1469,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let _g = build_erp_graph(&db);
 
-                let recent = db.list_recent(5).unwrap();
+                let recent = db.list_recent(5);
                 assert_eq!(recent.len(), 5);
             }
 
@@ -1523,7 +1483,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Order 1001: outgoing = 2 contains + 1 ordered_by, incoming = 1 contains (from invoice)
-                let all = db.edges_of(g.order_1001, Direction::Both).unwrap();
+                let all = db.edges_of(g.order_1001, Direction::Both);
                 assert_eq!(all.len(), 4);
             }
 
@@ -1532,7 +1492,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let out = db.edges_of(g.order_1001, Direction::Outgoing).unwrap();
+                let out = db.edges_of(g.order_1001, Direction::Outgoing);
                 assert_eq!(out.len(), 3); // 2 contains + 1 ordered_by
                 assert!(out.iter().all(|e| e.from_id == g.order_1001));
             }
@@ -1542,7 +1502,7 @@ macro_rules! erp_tests {
                 let db = $db_expr;
                 let g = build_erp_graph(&db);
 
-                let incoming = db.edges_of(g.order_1001, Direction::Incoming).unwrap();
+                let incoming = db.edges_of(g.order_1001, Direction::Incoming);
                 assert_eq!(incoming.len(), 1); // contains from invoice_1
                 assert!(incoming.iter().all(|e| e.to_id == g.order_1001));
             }
@@ -1557,7 +1517,7 @@ macro_rules! erp_tests {
                 let g = build_erp_graph(&db);
 
                 // Bump weight on Widget→North to mark as primary warehouse
-                let edges = db.edges_of(g.prod_widget, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.prod_widget, Direction::Outgoing);
                 let north_edge = edges
                     .iter()
                     .find(|e| e.kind == "stored_in" && e.to_id == g.wh_north)

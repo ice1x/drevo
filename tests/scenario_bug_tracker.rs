@@ -22,16 +22,16 @@
 //! - Transactional updates: status transitions, reassignment
 //! - Cascade delete: removing a release cleans up all incident edges
 
-use drevo::db::Drevo;
 use drevo::model::*;
+use drevo::native_service::NativeService;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn make_node_with_props(
@@ -191,7 +191,7 @@ struct BugBoard {
     bug_5: u64,
 }
 
-fn build_bug_board(db: &Drevo) -> BugBoard {
+fn build_bug_board(db: &NativeService) -> BugBoard {
     // --- Releases ---
     let rel_v1_0 = db
         .create_node(make_node_with_props(
@@ -490,25 +490,25 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                assert!(db.get_node(g.rel_v1_0).unwrap().is_some());
-                assert!(db.get_node(g.rel_v1_1).unwrap().is_some());
-                assert!(db.get_node(g.rel_v2_0).unwrap().is_some());
-                assert!(db.get_node(g.dev_alice).unwrap().is_some());
-                assert!(db.get_node(g.dev_bob).unwrap().is_some());
-                assert!(db.get_node(g.dev_carol).unwrap().is_some());
-                assert!(db.get_node(g.feat_login).unwrap().is_some());
-                assert!(db.get_node(g.feat_search).unwrap().is_some());
-                assert!(db.get_node(g.feat_export).unwrap().is_some());
-                assert!(db.get_node(g.feat_settings).unwrap().is_some());
-                assert!(db.get_node(g.tc_login_1).unwrap().is_some());
-                assert!(db.get_node(g.tc_search_1).unwrap().is_some());
-                assert!(db.get_node(g.tc_export_1).unwrap().is_some());
-                assert!(db.get_node(g.tc_login_2).unwrap().is_some());
-                assert!(db.get_node(g.bug_1).unwrap().is_some());
-                assert!(db.get_node(g.bug_2).unwrap().is_some());
-                assert!(db.get_node(g.bug_3).unwrap().is_some());
-                assert!(db.get_node(g.bug_4).unwrap().is_some());
-                assert!(db.get_node(g.bug_5).unwrap().is_some());
+                assert!(db.get_node(g.rel_v1_0).is_ok());
+                assert!(db.get_node(g.rel_v1_1).is_ok());
+                assert!(db.get_node(g.rel_v2_0).is_ok());
+                assert!(db.get_node(g.dev_alice).is_ok());
+                assert!(db.get_node(g.dev_bob).is_ok());
+                assert!(db.get_node(g.dev_carol).is_ok());
+                assert!(db.get_node(g.feat_login).is_ok());
+                assert!(db.get_node(g.feat_search).is_ok());
+                assert!(db.get_node(g.feat_export).is_ok());
+                assert!(db.get_node(g.feat_settings).is_ok());
+                assert!(db.get_node(g.tc_login_1).is_ok());
+                assert!(db.get_node(g.tc_search_1).is_ok());
+                assert!(db.get_node(g.tc_export_1).is_ok());
+                assert!(db.get_node(g.tc_login_2).is_ok());
+                assert!(db.get_node(g.bug_1).is_ok());
+                assert!(db.get_node(g.bug_2).is_ok());
+                assert!(db.get_node(g.bug_3).is_ok());
+                assert!(db.get_node(g.bug_4).is_ok());
+                assert!(db.get_node(g.bug_5).is_ok());
             }
 
             #[test]
@@ -516,14 +516,11 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                assert_eq!(db.get_node(g.rel_v1_0).unwrap().unwrap().kind, "release");
-                assert_eq!(db.get_node(g.dev_alice).unwrap().unwrap().kind, "assignee");
-                assert_eq!(db.get_node(g.feat_login).unwrap().unwrap().kind, "feature");
-                assert_eq!(
-                    db.get_node(g.tc_login_1).unwrap().unwrap().kind,
-                    "test_case"
-                );
-                assert_eq!(db.get_node(g.bug_1).unwrap().unwrap().kind, "bug");
+                assert_eq!(db.get_node(g.rel_v1_0).unwrap().kind, "release");
+                assert_eq!(db.get_node(g.dev_alice).unwrap().kind, "assignee");
+                assert_eq!(db.get_node(g.feat_login).unwrap().kind, "feature");
+                assert_eq!(db.get_node(g.tc_login_1).unwrap().kind, "test_case");
+                assert_eq!(db.get_node(g.bug_1).unwrap().kind, "bug");
             }
 
             #[test]
@@ -531,7 +528,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let bug = db.get_node(g.bug_1).unwrap().unwrap();
+                let bug = db.get_node(g.bug_1).unwrap();
                 assert_eq!(
                     bug.properties.get("severity").unwrap(),
                     &serde_json::json!("critical")
@@ -551,7 +548,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let rel = db.get_node(g.rel_v1_0).unwrap().unwrap();
+                let rel = db.get_node(g.rel_v1_0).unwrap();
                 assert_eq!(
                     rel.properties.get("version").unwrap(),
                     &serde_json::json!("1.0.0")
@@ -567,7 +564,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let alice = db.get_node(g.dev_alice).unwrap().unwrap();
+                let alice = db.get_node(g.dev_alice).unwrap();
                 assert_eq!(
                     alice.properties.get("role").unwrap(),
                     &serde_json::json!("frontend")
@@ -583,7 +580,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let tc = db.get_node(g.tc_login_1).unwrap().unwrap();
+                let tc = db.get_node(g.tc_login_1).unwrap();
                 assert_eq!(
                     tc.properties.get("kind").unwrap(),
                     &serde_json::json!("regression")
@@ -603,9 +600,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let releases = db
-                    .neighbors(g.bug_1, Direction::Outgoing, Some("reported_in"))
-                    .unwrap();
+                let releases = db.neighbors(g.bug_1, Direction::Outgoing, Some("reported_in"));
                 assert_eq!(releases.len(), 1);
                 assert_eq!(releases[0].id, g.rel_v1_0);
             }
@@ -616,9 +611,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // v1.0.0 has BUG-1, BUG-4, BUG-5 reported against it
-                let bugs = db
-                    .neighbors(g.rel_v1_0, Direction::Incoming, Some("reported_in"))
-                    .unwrap();
+                let bugs = db.neighbors(g.rel_v1_0, Direction::Incoming, Some("reported_in"));
                 assert_eq!(bugs.len(), 3);
                 let ids: Vec<u64> = bugs.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.bug_1));
@@ -631,9 +624,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let bugs = db
-                    .neighbors(g.rel_v1_1, Direction::Incoming, Some("reported_in"))
-                    .unwrap();
+                let bugs = db.neighbors(g.rel_v1_1, Direction::Incoming, Some("reported_in"));
                 assert_eq!(bugs.len(), 2);
                 let ids: Vec<u64> = bugs.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.bug_2));
@@ -649,9 +640,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let fixers = db
-                    .neighbors(g.bug_1, Direction::Outgoing, Some("fixed_by"))
-                    .unwrap();
+                let fixers = db.neighbors(g.bug_1, Direction::Outgoing, Some("fixed_by"));
                 assert_eq!(fixers.len(), 1);
                 assert_eq!(fixers[0].id, g.dev_alice);
             }
@@ -662,9 +651,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // Alice fixed BUG-1 and BUG-4
-                let bugs = db
-                    .neighbors(g.dev_alice, Direction::Incoming, Some("fixed_by"))
-                    .unwrap();
+                let bugs = db.neighbors(g.dev_alice, Direction::Incoming, Some("fixed_by"));
                 assert_eq!(bugs.len(), 2);
                 let ids: Vec<u64> = bugs.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.bug_1));
@@ -676,7 +663,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let edges = db.edges_of(g.bug_3, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.bug_3, Direction::Outgoing);
                 let fix = edges.iter().find(|e| e.kind == "fixed_by").unwrap();
                 assert_eq!(fix.to_id, g.dev_carol);
                 assert_eq!(
@@ -695,7 +682,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // BUG-5 is still "open" — its fixed_by edge has resolved_at = 0
-                let edges = db.edges_of(g.bug_5, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.bug_5, Direction::Outgoing);
                 let fix = edges.iter().find(|e| e.kind == "fixed_by").unwrap();
                 assert_eq!(
                     fix.properties.get("resolved_at").unwrap(),
@@ -712,9 +699,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let tests = db
-                    .neighbors(g.bug_1, Direction::Outgoing, Some("verified_by"))
-                    .unwrap();
+                let tests = db.neighbors(g.bug_1, Direction::Outgoing, Some("verified_by"));
                 assert_eq!(tests.len(), 1);
                 assert_eq!(tests[0].id, g.tc_login_1);
             }
@@ -725,9 +710,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // TC-LOGIN-1 verifies exactly BUG-1
-                let covered = db
-                    .neighbors(g.tc_login_1, Direction::Incoming, Some("verified_by"))
-                    .unwrap();
+                let covered = db.neighbors(g.tc_login_1, Direction::Incoming, Some("verified_by"));
                 assert_eq!(covered.len(), 1);
                 assert_eq!(covered[0].id, g.bug_1);
             }
@@ -738,9 +721,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // BUG-5 has no verified_by edge
-                let tests = db
-                    .neighbors(g.bug_5, Direction::Outgoing, Some("verified_by"))
-                    .unwrap();
+                let tests = db.neighbors(g.bug_5, Direction::Outgoing, Some("verified_by"));
                 assert!(tests.is_empty());
             }
 
@@ -749,7 +730,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let edges = db.edges_of(g.bug_1, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.bug_1, Direction::Outgoing);
                 let verify = edges.iter().find(|e| e.kind == "verified_by").unwrap();
                 assert_eq!(
                     verify.properties.get("run_count").unwrap(),
@@ -771,9 +752,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // BUG-1 blocks v1.1.0
-                let blocked = db
-                    .neighbors(g.bug_1, Direction::Outgoing, Some("blocks_release"))
-                    .unwrap();
+                let blocked = db.neighbors(g.bug_1, Direction::Outgoing, Some("blocks_release"));
                 assert_eq!(blocked.len(), 1);
                 assert_eq!(blocked[0].id, g.rel_v1_1);
             }
@@ -784,9 +763,8 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // v2.0.0 is blocked by BUG-3
-                let blockers = db
-                    .neighbors(g.rel_v2_0, Direction::Incoming, Some("blocks_release"))
-                    .unwrap();
+                let blockers =
+                    db.neighbors(g.rel_v2_0, Direction::Incoming, Some("blocks_release"));
                 assert_eq!(blockers.len(), 1);
                 assert_eq!(blockers[0].id, g.bug_3);
             }
@@ -797,9 +775,8 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // v1.0.0 was the initial release — nothing blocks it
-                let blockers = db
-                    .neighbors(g.rel_v1_0, Direction::Incoming, Some("blocks_release"))
-                    .unwrap();
+                let blockers =
+                    db.neighbors(g.rel_v1_0, Direction::Incoming, Some("blocks_release"));
                 assert!(blockers.is_empty());
             }
 
@@ -812,9 +789,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let releases = db
-                    .neighbors(g.feat_login, Direction::Outgoing, Some("part_of"))
-                    .unwrap();
+                let releases = db.neighbors(g.feat_login, Direction::Outgoing, Some("part_of"));
                 assert_eq!(releases.len(), 1);
                 assert_eq!(releases[0].id, g.rel_v1_0);
             }
@@ -825,9 +800,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // v1.1.0 contains Search and Export
-                let features = db
-                    .neighbors(g.rel_v1_1, Direction::Incoming, Some("part_of"))
-                    .unwrap();
+                let features = db.neighbors(g.rel_v1_1, Direction::Incoming, Some("part_of"));
                 assert_eq!(features.len(), 2);
                 let ids: Vec<u64> = features.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.feat_search));
@@ -840,9 +813,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // v2.0.0 ships with Settings
-                let features = db
-                    .neighbors(g.rel_v2_0, Direction::Incoming, Some("part_of"))
-                    .unwrap();
+                let features = db.neighbors(g.rel_v2_0, Direction::Incoming, Some("part_of"));
                 assert_eq!(features.len(), 1);
                 assert_eq!(features[0].id, g.feat_settings);
             }
@@ -856,7 +827,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let bugs = db.list_nodes_by_kind("bug", 100, 0).unwrap();
+                let bugs = db.list_nodes_by_kind("bug", 100, 0);
                 assert_eq!(bugs.len(), 5);
             }
 
@@ -865,7 +836,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let releases = db.list_nodes_by_kind("release", 100, 0).unwrap();
+                let releases = db.list_nodes_by_kind("release", 100, 0);
                 assert_eq!(releases.len(), 3);
             }
 
@@ -874,7 +845,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let devs = db.list_nodes_by_kind("assignee", 100, 0).unwrap();
+                let devs = db.list_nodes_by_kind("assignee", 100, 0);
                 assert_eq!(devs.len(), 3);
             }
 
@@ -883,7 +854,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let features = db.list_nodes_by_kind("feature", 100, 0).unwrap();
+                let features = db.list_nodes_by_kind("feature", 100, 0);
                 assert_eq!(features.len(), 4);
             }
 
@@ -892,7 +863,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let tests = db.list_nodes_by_kind("test_case", 100, 0).unwrap();
+                let tests = db.list_nodes_by_kind("test_case", 100, 0);
                 assert_eq!(tests.len(), 4);
             }
 
@@ -901,11 +872,11 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let page1 = db.list_nodes_by_kind("bug", 2, 0).unwrap();
+                let page1 = db.list_nodes_by_kind("bug", 2, 0);
                 assert_eq!(page1.len(), 2);
-                let page2 = db.list_nodes_by_kind("bug", 2, 2).unwrap();
+                let page2 = db.list_nodes_by_kind("bug", 2, 2);
                 assert_eq!(page2.len(), 2);
-                let page3 = db.list_nodes_by_kind("bug", 2, 4).unwrap();
+                let page3 = db.list_nodes_by_kind("bug", 2, 4);
                 assert_eq!(page3.len(), 1);
             }
 
@@ -918,7 +889,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let results = db.search_fts("BUG-1", 10).unwrap();
+                let results = db.search_fts("BUG-1", 10);
                 assert!(!results.is_empty());
                 let titles: Vec<&str> = results.iter().map(|r| r.node.title.as_str()).collect();
                 assert!(titles.contains(&"BUG-1"));
@@ -930,7 +901,7 @@ macro_rules! bug_tracker_tests {
                 let _g = build_bug_board(&db);
 
                 // BUG-3 body mentions "SVG"
-                let results = db.search_fts("SVG", 10).unwrap();
+                let results = db.search_fts("SVG", 10);
                 assert!(!results.is_empty());
                 let found = results.iter().any(|r| r.node.title == "BUG-3");
                 assert!(found);
@@ -941,7 +912,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let results = db.search_fts("corrupts", 10).unwrap();
+                let results = db.search_fts("corrupts", 10);
                 assert!(!results.is_empty());
                 let found = results.iter().any(|r| r.node.title == "BUG-3");
                 assert!(found);
@@ -952,7 +923,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let results = db.search_fts("authentication", 10).unwrap();
+                let results = db.search_fts("authentication", 10);
                 assert!(!results.is_empty());
                 let found = results.iter().any(|r| r.node.title == "Login");
                 assert!(found);
@@ -963,7 +934,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let results = db.search_fts("regression", 10).unwrap();
+                let results = db.search_fts("regression", 10);
                 assert!(!results.is_empty());
                 // All regression test cases should surface
                 let matched: Vec<&str> = results.iter().map(|r| r.node.title.as_str()).collect();
@@ -1118,7 +1089,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let edges = db.list_edges_by_kind("reported_in", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("reported_in", 100, 0);
                 assert_eq!(edges.len(), 5);
             }
 
@@ -1127,7 +1098,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let edges = db.list_edges_by_kind("fixed_by", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("fixed_by", 100, 0);
                 assert_eq!(edges.len(), 5);
             }
 
@@ -1137,7 +1108,7 @@ macro_rules! bug_tracker_tests {
                 let _g = build_bug_board(&db);
 
                 // 4 bugs verified, BUG-5 has no test
-                let edges = db.list_edges_by_kind("verified_by", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("verified_by", 100, 0);
                 assert_eq!(edges.len(), 4);
             }
 
@@ -1146,7 +1117,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let edges = db.list_edges_by_kind("blocks_release", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("blocks_release", 100, 0);
                 assert_eq!(edges.len(), 2);
             }
 
@@ -1155,7 +1126,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let edges = db.list_edges_by_kind("part_of", 100, 0).unwrap();
+                let edges = db.list_edges_by_kind("part_of", 100, 0);
                 assert_eq!(edges.len(), 4);
             }
 
@@ -1198,7 +1169,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // Remove existing fixed_by on BUG-5 and create a new one pointing to Carol
-                let edges = db.edges_of(g.bug_5, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.bug_5, Direction::Outgoing);
                 for e in edges.iter().filter(|e| e.kind == "fixed_by") {
                     db.delete_edge(e.id).unwrap();
                 }
@@ -1210,9 +1181,7 @@ macro_rules! bug_tracker_tests {
                 ))
                 .unwrap();
 
-                let fixers = db
-                    .neighbors(g.bug_5, Direction::Outgoing, Some("fixed_by"))
-                    .unwrap();
+                let fixers = db.neighbors(g.bug_5, Direction::Outgoing, Some("fixed_by"));
                 assert_eq!(fixers.len(), 1);
                 assert_eq!(fixers[0].id, g.dev_carol);
             }
@@ -1235,9 +1204,7 @@ macro_rules! bug_tracker_tests {
                     .unwrap();
 
                 // v1.1.0 now has 3 reported bugs (BUG-2, BUG-3, BUG-6)
-                let bugs = db
-                    .neighbors(g.rel_v1_1, Direction::Incoming, Some("reported_in"))
-                    .unwrap();
+                let bugs = db.neighbors(g.rel_v1_1, Direction::Incoming, Some("reported_in"));
                 assert_eq!(bugs.len(), 3);
             }
 
@@ -1250,9 +1217,8 @@ macro_rules! bug_tracker_tests {
                 db.create_edge(make_edge(g.bug_5, g.rel_v2_0, "blocks_release"))
                     .unwrap();
 
-                let blockers = db
-                    .neighbors(g.rel_v2_0, Direction::Incoming, Some("blocks_release"))
-                    .unwrap();
+                let blockers =
+                    db.neighbors(g.rel_v2_0, Direction::Incoming, Some("blocks_release"));
                 assert_eq!(blockers.len(), 2);
                 let ids: Vec<u64> = blockers.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&g.bug_3));
@@ -1264,7 +1230,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let edges = db.edges_of(g.bug_1, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.bug_1, Direction::Outgoing);
                 let verify = edges.iter().find(|e| e.kind == "verified_by").unwrap();
 
                 let mut new_props = HashMap::new();
@@ -1298,28 +1264,20 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 db.delete_node(g.rel_v1_1).unwrap();
-                assert!(db.get_node(g.rel_v1_1).unwrap().is_none());
+                assert!(db.get_node(g.rel_v1_1).is_err());
 
                 // BUG-1 no longer has a blocks_release edge to v1.1.0
-                let blocked = db
-                    .neighbors(g.bug_1, Direction::Outgoing, Some("blocks_release"))
-                    .unwrap();
+                let blocked = db.neighbors(g.bug_1, Direction::Outgoing, Some("blocks_release"));
                 assert!(blocked.is_empty());
 
                 // BUG-2 and BUG-3 no longer have any reported_in edges
-                let bug2_rel = db
-                    .neighbors(g.bug_2, Direction::Outgoing, Some("reported_in"))
-                    .unwrap();
+                let bug2_rel = db.neighbors(g.bug_2, Direction::Outgoing, Some("reported_in"));
                 assert!(bug2_rel.is_empty());
-                let bug3_rel = db
-                    .neighbors(g.bug_3, Direction::Outgoing, Some("reported_in"))
-                    .unwrap();
+                let bug3_rel = db.neighbors(g.bug_3, Direction::Outgoing, Some("reported_in"));
                 assert!(bug3_rel.is_empty());
 
                 // Search and Export no longer have part_of edges
-                let search_rel = db
-                    .neighbors(g.feat_search, Direction::Outgoing, Some("part_of"))
-                    .unwrap();
+                let search_rel = db.neighbors(g.feat_search, Direction::Outgoing, Some("part_of"));
                 assert!(search_rel.is_empty());
             }
 
@@ -1331,13 +1289,9 @@ macro_rules! bug_tracker_tests {
                 db.delete_node(g.dev_alice).unwrap();
 
                 // BUG-1 and BUG-4 no longer have fixed_by edges
-                let bug1_fix = db
-                    .neighbors(g.bug_1, Direction::Outgoing, Some("fixed_by"))
-                    .unwrap();
+                let bug1_fix = db.neighbors(g.bug_1, Direction::Outgoing, Some("fixed_by"));
                 assert!(bug1_fix.is_empty());
-                let bug4_fix = db
-                    .neighbors(g.bug_4, Direction::Outgoing, Some("fixed_by"))
-                    .unwrap();
+                let bug4_fix = db.neighbors(g.bug_4, Direction::Outgoing, Some("fixed_by"));
                 assert!(bug4_fix.is_empty());
             }
 
@@ -1347,17 +1301,16 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // Remove the blocks_release edge from BUG-3 to v2.0.0
-                let edges = db.edges_of(g.bug_3, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.bug_3, Direction::Outgoing);
                 for e in edges.iter().filter(|e| e.kind == "blocks_release") {
                     db.delete_edge(e.id).unwrap();
                 }
 
-                let blockers = db
-                    .neighbors(g.rel_v2_0, Direction::Incoming, Some("blocks_release"))
-                    .unwrap();
+                let blockers =
+                    db.neighbors(g.rel_v2_0, Direction::Incoming, Some("blocks_release"));
                 assert!(blockers.is_empty());
                 // Bug itself still exists
-                assert!(db.get_node(g.bug_3).unwrap().is_some());
+                assert!(db.get_node(g.bug_3).is_ok());
             }
 
             // -----------------------------------------------------------------
@@ -1369,7 +1322,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let bugs = db.list_nodes_by_kind("bug", 100, 0).unwrap();
+                let bugs = db.list_nodes_by_kind("bug", 100, 0);
                 let open: Vec<&Node> = bugs
                     .iter()
                     .filter(|b| {
@@ -1388,7 +1341,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let bugs = db.list_nodes_by_kind("bug", 100, 0).unwrap();
+                let bugs = db.list_nodes_by_kind("bug", 100, 0);
                 let critical: Vec<&Node> = bugs
                     .iter()
                     .filter(|b| {
@@ -1406,12 +1359,11 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let bugs = db.list_nodes_by_kind("bug", 100, 0).unwrap();
+                let bugs = db.list_nodes_by_kind("bug", 100, 0);
                 let blockers: Vec<&Node> = bugs
                     .iter()
                     .filter(|b| {
                         !db.neighbors(b.id, Direction::Outgoing, Some("blocks_release"))
-                            .unwrap()
                             .is_empty()
                     })
                     .collect();
@@ -1426,12 +1378,11 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let bugs = db.list_nodes_by_kind("bug", 100, 0).unwrap();
+                let bugs = db.list_nodes_by_kind("bug", 100, 0);
                 let uncovered: Vec<&Node> = bugs
                     .iter()
                     .filter(|b| {
                         db.neighbors(b.id, Direction::Outgoing, Some("verified_by"))
-                            .unwrap()
                             .is_empty()
                     })
                     .collect();
@@ -1445,7 +1396,7 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // Sum of commits across Alice's fixed_by edges: 3 (BUG-1) + 1 (BUG-4) = 4
-                let edges = db.edges_of(g.dev_alice, Direction::Incoming).unwrap();
+                let edges = db.edges_of(g.dev_alice, Direction::Incoming);
                 let total: u64 = edges
                     .iter()
                     .filter(|e| e.kind == "fixed_by")
@@ -1468,7 +1419,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let node = db.get_node_by_title("BUG-1").unwrap();
+                let node = db.get_node_by_title("BUG-1");
                 assert!(node.is_some());
                 assert_eq!(node.unwrap().id, g.bug_1);
             }
@@ -1478,8 +1429,8 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let original = db.get_node(g.rel_v1_0).unwrap().unwrap();
-                let by_uuid = db.get_node_by_uuid(&original.uuid).unwrap();
+                let original = db.get_node(g.rel_v1_0).unwrap();
+                let by_uuid = db.get_node_by_uuid(original.uuid);
                 assert!(by_uuid.is_some());
                 assert_eq!(by_uuid.unwrap().id, g.rel_v1_0);
             }
@@ -1489,7 +1440,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let _g = build_bug_board(&db);
 
-                let recent = db.list_recent(5).unwrap();
+                let recent = db.list_recent(5);
                 assert_eq!(recent.len(), 5);
             }
 
@@ -1504,7 +1455,7 @@ macro_rules! bug_tracker_tests {
 
                 // BUG-1 outgoing: reported_in, fixed_by, verified_by, blocks_release (4)
                 // BUG-1 incoming: none
-                let all = db.edges_of(g.bug_1, Direction::Both).unwrap();
+                let all = db.edges_of(g.bug_1, Direction::Both);
                 assert_eq!(all.len(), 4);
             }
 
@@ -1515,7 +1466,7 @@ macro_rules! bug_tracker_tests {
 
                 // v1.1.0 incoming: 2 reported_in (BUG-2, BUG-3) + 1 blocks_release (BUG-1)
                 //                  + 2 part_of (Search, Export) = 5
-                let incoming = db.edges_of(g.rel_v1_1, Direction::Incoming).unwrap();
+                let incoming = db.edges_of(g.rel_v1_1, Direction::Incoming);
                 assert_eq!(incoming.len(), 5);
                 assert!(incoming.iter().all(|e| e.to_id == g.rel_v1_1));
             }
@@ -1526,11 +1477,11 @@ macro_rules! bug_tracker_tests {
                 let g = build_bug_board(&db);
 
                 // Alice has no outgoing edges
-                let outgoing = db.edges_of(g.dev_alice, Direction::Outgoing).unwrap();
+                let outgoing = db.edges_of(g.dev_alice, Direction::Outgoing);
                 assert!(outgoing.is_empty());
 
                 // Incoming: 2 fixed_by edges
-                let incoming = db.edges_of(g.dev_alice, Direction::Incoming).unwrap();
+                let incoming = db.edges_of(g.dev_alice, Direction::Incoming);
                 assert_eq!(incoming.len(), 2);
                 assert!(incoming.iter().all(|e| e.kind == "fixed_by"));
             }
@@ -1544,7 +1495,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                let edges = db.edges_of(g.bug_3, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(g.bug_3, Direction::Outgoing);
                 let block = edges
                     .iter()
                     .find(|e| e.kind == "blocks_release" && e.to_id == g.rel_v2_0)

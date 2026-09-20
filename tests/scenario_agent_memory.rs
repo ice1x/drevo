@@ -22,16 +22,16 @@
 //! - supersede           → a `supersedes` edge
 //! - compact             → `delete_node` for low-confidence, stale rows
 
-use drevo::db::Drevo;
 use drevo::model::*;
+use drevo::native_service::NativeService;
 use std::collections::HashMap;
 
 // =========================================================================
 // Helpers — the tiny "agent memory API" an orchestrator would wrap.
 // =========================================================================
 
-fn memory_db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn props(pairs: &[(&str, serde_json::Value)]) -> Properties {
@@ -65,7 +65,7 @@ fn edge(from_id: u64, to_id: u64, kind: &str) -> NewEdge {
 /// `record_observation(session, content, source, confidence) -> node_id`,
 /// wired to the `agent` (observed_by) and the `session` (performed_in_session).
 fn record_observation(
-    db: &Drevo,
+    db: &NativeService,
     agent_id: u64,
     session_id: u64,
     title: &str,
@@ -92,9 +92,8 @@ fn record_observation(
 }
 
 /// `recall(query, limit)` restricted to observations — the retrieval hot path.
-fn recall_observations(db: &Drevo, query: &str, limit: usize) -> Vec<Node> {
+fn recall_observations(db: &NativeService, query: &str, limit: usize) -> Vec<Node> {
     db.search_fts(query, limit)
-        .expect("fts")
         .into_iter()
         .map(|s| s.node)
         .filter(|n| n.kind == "observation")
@@ -111,9 +110,8 @@ fn confidence_of(n: &Node) -> f64 {
 /// `compact` candidates: every `observation` whose confidence is below
 /// `threshold`. A scan by kind (not a search) — compaction inspects the whole
 /// memory surface, not just what matches a query.
-fn stale_observations(db: &Drevo, threshold: f64) -> Vec<u64> {
+fn stale_observations(db: &NativeService, threshold: f64) -> Vec<u64> {
     db.list_nodes_by_kind("observation", 10_000, 0)
-        .expect("list observations")
         .into_iter()
         .filter(|n| confidence_of(n) < threshold)
         .map(|n| n.id)
@@ -215,9 +213,7 @@ fn agent_memory_full_orchestrator_flow() {
     db.create_edge(edge(light_mode, dark_mode, "supersedes"))
         .expect("supersedes");
     // The supersedes edge is traversable from the new memory to the old.
-    let out = db
-        .edges_of(light_mode, Direction::Outgoing)
-        .expect("edges_of");
+    let out = db.edges_of(light_mode, Direction::Outgoing);
     assert!(
         out.iter()
             .any(|e| e.kind == "supersedes" && e.to_id == dark_mode),
@@ -235,12 +231,12 @@ fn agent_memory_full_orchestrator_flow() {
         db.delete_node(*id).expect("compact delete");
     }
     assert!(
-        db.get_node(flaky).expect("get").is_none(),
+        db.get_node(flaky).is_err(),
         "compacted observation must be gone"
     );
     // High-confidence memories survive compaction.
-    assert!(db.get_node(dark_mode).expect("get").is_some());
-    assert!(db.get_node(light_mode).expect("get").is_some());
+    assert!(db.get_node(dark_mode).is_ok());
+    assert!(db.get_node(light_mode).is_ok());
 }
 
 #[test]
@@ -295,5 +291,5 @@ fn compact_is_a_no_op_when_nothing_is_stale() {
         0.9,
     );
     assert!(stale_observations(&db, 0.5).is_empty());
-    assert!(db.get_node(keep).unwrap().is_some());
+    assert!(db.get_node(keep).is_ok());
 }
