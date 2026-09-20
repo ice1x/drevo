@@ -1,28 +1,29 @@
 //! Integration tests for WASM bindings.
 //!
 //! These tests validate the WASM binding logic by exercising the same
-//! Drevo API surface that [`WasmDrevo`] delegates to.
+//! [`NativeService`] API surface that [`WasmDrevo`] delegates to.
 //! They run natively (not in a WASM runtime) to test correctness of
 //! the binding layer's data flow: create → serialize → deserialize roundtrip.
 //!
 //! The actual `#[wasm_bindgen]` methods require a JS runtime (wasm-pack test),
 //! so these tests verify the Rust-side logic without that dependency.
 
-use drevo::db::Drevo;
+use drevo::error::DrevoError;
 use drevo::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, Properties, SubGraph,
 };
+use drevo::native_service::NativeService;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_db() -> Drevo {
-    Drevo::open_in_memory().unwrap()
+fn make_db() -> NativeService {
+    NativeService::in_memory()
 }
 
-fn make_node(db: &Drevo, kind: &str, title: &str) -> Node {
+fn make_node(db: &NativeService, kind: &str, title: &str) -> Node {
     db.create_node(NewNode {
         kind: kind.to_string(),
         title: title.to_string(),
@@ -33,7 +34,7 @@ fn make_node(db: &Drevo, kind: &str, title: &str) -> Node {
     .unwrap()
 }
 
-fn make_edge(db: &Drevo, from: u64, to: u64, kind: &str) -> Edge {
+fn make_edge(db: &NativeService, from: u64, to: u64, kind: &str) -> Edge {
     db.create_edge(NewEdge {
         from_id: from,
         to_id: to,
@@ -56,8 +57,11 @@ fn json_roundtrip<T: serde::Serialize + serde::de::DeserializeOwned>(val: &T) ->
 
 #[test]
 fn wasm_lifecycle_open_close() {
+    // The native engine has no fallible `close()`; the WASM binding's
+    // `close()` just drops the handle (an in-memory service holds nothing
+    // durable), so closing is modelled here by dropping the service.
     let db = make_db();
-    db.close().unwrap();
+    drop(db);
 }
 
 #[test]
@@ -67,10 +71,10 @@ fn wasm_lifecycle_multiple_instances() {
     make_node(&db1, "note", "In DB1");
     make_node(&db2, "note", "In DB2");
     // Instances are independent
-    assert!(db1.get_node_by_title("In DB2").unwrap().is_none());
-    assert!(db2.get_node_by_title("In DB1").unwrap().is_none());
-    db1.close().unwrap();
-    db2.close().unwrap();
+    assert!(db1.get_node_by_title("In DB2").is_none());
+    assert!(db2.get_node_by_title("In DB1").is_none());
+    drop(db1);
+    drop(db2);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,8 +124,13 @@ fn wasm_node_with_properties_json_roundtrip() {
 
 #[test]
 fn wasm_node_get_returns_none_for_missing() {
+    // The native engine returns `NodeNotFound` where the KV store returned
+    // `Ok(None)`; the WASM binding maps this back to a JS `null`.
     let db = make_db();
-    assert!(db.get_node(999).unwrap().is_none());
+    assert!(matches!(
+        db.get_node(999),
+        Err(DrevoError::NodeNotFound(999))
+    ));
 }
 
 #[test]
@@ -150,7 +159,10 @@ fn wasm_node_delete() {
     let db = make_db();
     let node = make_node(&db, "note", "To Delete");
     db.delete_node(node.id).unwrap();
-    assert!(db.get_node(node.id).unwrap().is_none());
+    assert!(matches!(
+        db.get_node(node.id),
+        Err(DrevoError::NodeNotFound(_))
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +230,7 @@ fn wasm_edge_cascading_delete() {
 // Traversal — JSON roundtrip
 // ---------------------------------------------------------------------------
 
-fn setup_chain(db: &Drevo) -> Vec<Node> {
+fn setup_chain(db: &NativeService) -> Vec<Node> {
     // A -> B -> C
     let a = make_node(db, "note", "Chain_A");
     let b = make_node(db, "note", "Chain_B");
@@ -233,9 +245,7 @@ fn wasm_neighbors_json_roundtrip() {
     let db = make_db();
     let nodes = setup_chain(&db);
 
-    let neighbors = db
-        .neighbors(nodes[0].id, Direction::Outgoing, None)
-        .unwrap();
+    let neighbors = db.neighbors(nodes[0].id, Direction::Outgoing, None);
     let rt: Vec<Node> = json_roundtrip(&neighbors);
     assert_eq!(rt.len(), 1);
     assert_eq!(rt[0].id, nodes[1].id);
@@ -250,15 +260,11 @@ fn wasm_neighbors_with_kind_filter() {
     make_edge(&db, a.id, b.id, "links_to");
     make_edge(&db, a.id, c.id, "blocks");
 
-    let links = db
-        .neighbors(a.id, Direction::Outgoing, Some("links_to"))
-        .unwrap();
+    let links = db.neighbors(a.id, Direction::Outgoing, Some("links_to"));
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].id, b.id);
 
-    let blocks = db
-        .neighbors(a.id, Direction::Outgoing, Some("blocks"))
-        .unwrap();
+    let blocks = db.neighbors(a.id, Direction::Outgoing, Some("blocks"));
     assert_eq!(blocks.len(), 1);
     assert_eq!(blocks[0].id, c.id);
 }
@@ -332,7 +338,7 @@ fn wasm_subgraph_depth_2() {
 /// Build a graph with parallel edges of different kinds between the same
 /// pair of nodes. Returns (a, b, c) where a→b "links_to", a→c "blocks",
 /// c→b "blocks" exist.
-fn setup_parallel_kinds(db: &Drevo) -> (Node, Node, Node) {
+fn setup_parallel_kinds(db: &NativeService) -> (Node, Node, Node) {
     let a = make_node(db, "note", "Filt_A");
     let b = make_node(db, "note", "Filt_B");
     let c = make_node(db, "note", "Filt_C");
@@ -451,7 +457,7 @@ fn wasm_search_fts_json_roundtrip() {
     })
     .unwrap();
 
-    let results = db.search_fts("systems programming language", 10).unwrap();
+    let results = db.search_fts("systems programming language", 10);
     assert!(!results.is_empty());
 
     // Verify ScoredNode serializes correctly
@@ -465,7 +471,7 @@ fn wasm_search_fts_json_roundtrip() {
 fn wasm_search_fts_empty_query() {
     let db = make_db();
     make_node(&db, "note", "Anything");
-    let results = db.search_fts("", 10).unwrap();
+    let results = db.search_fts("", 10);
     assert!(results.is_empty());
 }
 
@@ -480,11 +486,11 @@ fn wasm_list_nodes_by_kind_json_roundtrip() {
         make_node(&db, "note", &format!("Note_{i}"));
     }
 
-    let tags = db.list_nodes_by_kind("tag", 10, 0).unwrap();
+    let tags = db.list_nodes_by_kind("tag", 10, 0);
     let rt: Vec<Node> = json_roundtrip(&tags);
     assert_eq!(rt.len(), 5);
 
-    let notes = db.list_nodes_by_kind("note", 10, 0).unwrap();
+    let notes = db.list_nodes_by_kind("note", 10, 0);
     assert_eq!(notes.len(), 3);
 }
 
@@ -496,8 +502,8 @@ fn wasm_list_nodes_by_kind_pagination() {
         make_node(&db, "item", &format!("Item_{i}"));
     }
 
-    let page1 = db.list_nodes_by_kind("item", 3, 0).unwrap();
-    let page2 = db.list_nodes_by_kind("item", 3, 3).unwrap();
+    let page1 = db.list_nodes_by_kind("item", 3, 0);
+    let page2 = db.list_nodes_by_kind("item", 3, 3);
     assert_eq!(page1.len(), 3);
     assert_eq!(page2.len(), 3);
     // Pages should not overlap
@@ -512,7 +518,7 @@ fn wasm_list_recent_json_roundtrip() {
         make_node(&db, "note", &format!("Recent_{i}"));
     }
 
-    let recent = db.list_recent(3).unwrap();
+    let recent = db.list_recent(3);
     let rt: Vec<Node> = json_roundtrip(&recent);
     assert_eq!(rt.len(), 3);
     // Newest first
@@ -590,22 +596,22 @@ fn wasm_direction_encoding() {
     make_edge(&db, a.id, b.id, "links_to");
 
     // Outgoing from A -> B
-    let out = db.neighbors(a.id, Direction::Outgoing, None).unwrap();
+    let out = db.neighbors(a.id, Direction::Outgoing, None);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].id, b.id);
 
     // Incoming to B <- A
-    let inc = db.neighbors(b.id, Direction::Incoming, None).unwrap();
+    let inc = db.neighbors(b.id, Direction::Incoming, None);
     assert_eq!(inc.len(), 1);
     assert_eq!(inc[0].id, a.id);
 
     // Both from A: B (outgoing)
-    let both_a = db.neighbors(a.id, Direction::Both, None).unwrap();
+    let both_a = db.neighbors(a.id, Direction::Both, None);
     assert_eq!(both_a.len(), 1);
     assert_eq!(both_a[0].id, b.id);
 
     // Both from B: A (incoming)
-    let both_b = db.neighbors(b.id, Direction::Both, None).unwrap();
+    let both_b = db.neighbors(b.id, Direction::Both, None);
     assert_eq!(both_b.len(), 1);
     assert_eq!(both_b[0].id, a.id);
 }
@@ -651,7 +657,7 @@ fn wasm_unicode_roundtrip() {
     assert_eq!(rt2.body, "中文测试");
 
     // Unicode kind is queryable via list_nodes_by_kind through the WASM API
-    let listed = db.list_nodes_by_kind("подтверждение", 10, 0).unwrap();
+    let listed = db.list_nodes_by_kind("подтверждение", 10, 0);
     assert_eq!(listed.len(), 2);
     let titles: Vec<&str> = listed.iter().map(|n| n.title.as_str()).collect();
     assert!(titles.contains(&"Цикл BFS"));
@@ -712,10 +718,10 @@ fn wasm_cbt_journal_scenario() {
     assert_eq!(rt.edges.len(), 2);
 
     // FTS: find distortions
-    let results = db.search_fts("overgeneralization", 10).unwrap();
+    let results = db.search_fts("overgeneralization", 10);
     assert!(!results.is_empty());
 
     // List by kind
-    let thoughts = db.list_nodes_by_kind("thought", 10, 0).unwrap();
+    let thoughts = db.list_nodes_by_kind("thought", 10, 0);
     assert_eq!(thoughts.len(), 1);
 }
