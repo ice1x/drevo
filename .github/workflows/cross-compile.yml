@@ -335,7 +335,12 @@ jobs:
           fi
 
   # -------------------------------------------------------------------------
-  # Native host tests (verify cross-compilation test suite)
+  # Native host tests — run the native engine suite on the host to catch a
+  # host-native regression on the very next merge into main (this workflow
+  # runs on push:main + schedule, complementing the wasm/iOS/Android
+  # cross-target check+build jobs above). Formerly ran the KV-engine
+  # `cross_compilation_tests` suite, which epic #444 deleted along with the
+  # KV storage layer it validated.
   # -------------------------------------------------------------------------
   cross-compile-tests:
     name: "Cross-compilation tests (host)"
@@ -358,11 +363,14 @@ jobs:
 
       # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
-      - name: Run cross-compilation tests
-        run: cargo test --test cross_compilation_tests -- --nocapture
+      - name: Run native engine tests (host)
+        run: cargo test --test native_engine_tests -- --nocapture
 
   # -------------------------------------------------------------------------
-  # Platform smoke tests (host — validates full workflow on all backends)
+  # Platform smoke tests (host) — exercise the native durable engine's full
+  # open → create → get → update → edge → search → traversal round-trip on a
+  # Linux host. Formerly ran the KV-engine `smoke_tests` suite (deleted with
+  # the KV engine in epic #444); `native_service_tests` is its native heir.
   # -------------------------------------------------------------------------
   smoke-tests:
     name: "Platform smoke tests (host)"
@@ -386,10 +394,13 @@ jobs:
       # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests
-        run: cargo test --test smoke_tests -- --nocapture
+        run: cargo test --test native_service_tests -- --nocapture
 
   # -------------------------------------------------------------------------
-  # macOS smoke tests (validates on Apple Silicon host)
+  # macOS smoke tests (validates on Apple Silicon host) — the same native
+  # durable round-trip on a real macOS host, coverage ci.yml's Linux-only
+  # `Test` job does not provide (and the sole justification for this
+  # workflow's macos-latest runner — see ci_self_hosted_runner_tests.rs).
   # -------------------------------------------------------------------------
   smoke-tests-macos:
     name: "Platform smoke tests (macOS)"
@@ -414,4 +425,4 @@ jobs:
       # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests (macOS)
-        run: cargo test --test smoke_tests -- --nocapture
+        run: cargo test --test native_service_tests -- --nocapture

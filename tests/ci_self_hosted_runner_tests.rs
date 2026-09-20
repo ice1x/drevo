@@ -99,6 +99,105 @@ fn at_least_one_runs_on_directive_exists() {
     );
 }
 
+/// Every `cargo test --test <name>` / `cargo bench --bench <name>` a
+/// workflow invokes must name a target file that actually exists
+/// (`tests/<name>.rs` / `benches/<name>.rs` respectively).
+///
+/// cargo selects an integration-test or bench binary by its file stem
+/// (`cargo test --test smoke_tests` runs `tests/smoke_tests.rs`); if that
+/// file is deleted, cargo aborts the whole job with `error: no test target
+/// named 'smoke_tests' in default-run packages` (exit 101). Because
+/// `cross-compile.yml` only runs on `push:main` (never on PRs — see that
+/// file's header), such a break is invisible to PR CI and only turns
+/// `main` red on the very next merge.
+///
+/// This is exactly what epic #444 did: deleting the KV `Drevo` engine and
+/// the KV benches removed `tests/smoke_tests.rs`,
+/// `tests/cross_compilation_tests.rs`, and `benches/comparison_bench.rs`,
+/// but the `cross-compile.yml` jobs and `benchmarks.yml` that ran them by
+/// name were not updated — so `main` went red on the #518 merge while
+/// every PR check had been green. This guard makes any future
+/// `--test`/`--bench <deleted>` a local + PR failure instead.
+#[test]
+fn workflow_cargo_test_and_bench_targets_all_exist() {
+    // (flag, target directory) — cargo resolves each `--<flag> <name>` to
+    // `<dir>/<name>.rs` in the package.
+    let target_dirs: &[(&str, PathBuf)] = &[
+        ("--test", repo_root().join("tests")),
+        ("--bench", repo_root().join("benches")),
+    ];
+    let mut missing: Vec<String> = Vec::new();
+
+    for path in workflow_files() {
+        let file_label = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        let body = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+        for raw_line in body.lines() {
+            // Drop full-line YAML comments and any trailing ` # ...` comment
+            // so a `--test foo` mentioned in prose never false-positives.
+            let line = raw_line.trim_start();
+            if line.starts_with('#') {
+                continue;
+            }
+            let code = line.split(" #").next().unwrap_or(line);
+
+            // Only cargo's `--test`/`--bench` select a target binary by file
+            // stem. Other tools spell an unrelated `--test` (e.g. `node --test
+            // static/web/*.test.js`), so require `cargo` on the same command
+            // line. Every such invocation in these workflows is a single-line
+            // `run:`, so a per-line check is sufficient.
+            if !code.contains("cargo") {
+                continue;
+            }
+
+            let tokens: Vec<&str> = code.split_whitespace().collect();
+            for (flag, dir) in target_dirs {
+                // Match the exact flag (NOT `--tests`, `--test-threads`,
+                // `--benches`, …). Accept both `--flag <name>` and
+                // `--flag=<name>` spellings.
+                let eq_prefix = format!("{flag}=");
+                for (i, tok) in tokens.iter().enumerate() {
+                    let name = if let Some(rest) = tok.strip_prefix(&eq_prefix) {
+                        rest
+                    } else if tok == flag {
+                        match tokens.get(i + 1) {
+                            Some(next) => next,
+                            None => continue,
+                        }
+                    } else {
+                        continue;
+                    };
+                    // A real target name, not another flag or a `--` separator.
+                    if name.is_empty() || name.starts_with('-') {
+                        continue;
+                    }
+                    if !dir.join(format!("{name}.rs")).exists() {
+                        let dir_label = dir.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+                        missing.push(format!(
+                            "{file_label}: `{flag} {name}` names \
+                             {dir_label}/{name}.rs, which does not exist"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "Workflow(s) invoke `cargo test --test <name>` / `cargo bench --bench \
+         <name>` for target file(s) that no longer exist — the job aborts with \
+         `no test target named ...` (exit 101). Repoint the step to an existing \
+         target or drop it:\n{}",
+        missing.join("\n"),
+    );
+}
+
 /// Allow-listed `runs-on:` scalar values. Anything else fails the test.
 /// Keep this list short and intentional: every entry is a deliberate
 /// policy decision. New aliases require a code review explaining why
