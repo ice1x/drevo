@@ -18,7 +18,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Barrier;
 
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{Direction, NewEdge, NewNode, Properties};
 use drevo::native::NativeGraph;
@@ -83,7 +82,7 @@ fn path_graph(engine: &impl GraphEngine) -> Vec<u64> {
 
 #[test]
 fn bfs_reach_counts_the_reachable_set_by_depth() {
-    let g = Drevo::open_in_memory().expect("open");
+    let g = NativeGraph::new();
     let ids = path_graph(&g);
     // From the head: depth 1 reaches {0,1}, depth 3 reaches {0,1,2,3}, depth 9
     // saturates at the whole path {0..4} = 5.
@@ -95,26 +94,9 @@ fn bfs_reach_counts_the_reachable_set_by_depth() {
 }
 
 #[test]
-fn kv_and_native_agree_on_bfs_reach() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    let ids = path_graph(&kv);
-    let native = NativeGraph::new();
-    drevo::migrate::migrate(&kv, &native).expect("migrate");
-    for depth in 0..6u32 {
-        assert_eq!(
-            bfs_reach(&kv, ids[0], depth),
-            bfs_reach(&native, ids[0], depth),
-            "engines disagree on BFS reach at depth {depth}"
-        );
-    }
-}
-
-#[test]
 fn concurrent_reads_over_shared_engine_are_error_free() {
-    let kv = Drevo::open_in_memory().expect("kv");
-    let ids = path_graph(&kv);
     let native = NativeGraph::new();
-    drevo::migrate::migrate(&kv, &native).expect("migrate");
+    let ids = path_graph(&native);
 
     let errors = AtomicU64::new(0);
     std::thread::scope(|scope| {

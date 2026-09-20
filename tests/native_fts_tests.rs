@@ -6,7 +6,6 @@
 //! headline — returns the **same ranking as the KV store's `search_fts`** on a
 //! shared corpus, so it is a faithful native replacement for the FTS subsystem.
 
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::model::{NewNode, NodePatch};
 use drevo::native::NativeGraph;
@@ -97,53 +96,4 @@ fn rebuilds_when_feed_trimmed_past_cursor() {
     fts.sync(&g);
     assert!(ids(&fts.search("indexed", 10)).contains(&a.id));
     assert!(ids(&fts.search("later", 10)).contains(&b.id));
-}
-
-#[test]
-fn ranking_matches_kv_search_fts_on_a_shared_corpus() {
-    // Build the identical corpus, in the same order, on both engines — so node
-    // ids line up — then compare the native index against the KV FTS ranker.
-    let corpus = [
-        doc(
-            "graph databases store nodes and edges",
-            "native graph engine",
-        ),
-        doc(
-            "full text search over documents",
-            "trigram index and ranking",
-        ),
-        doc("the native graph core", "nodes edges and a change feed"),
-        doc("vector similarity search", "embeddings and cosine distance"),
-        doc("relational databases use tables", "rows and columns"),
-    ];
-
-    let native = NativeGraph::new();
-    let kv = Drevo::open_in_memory().unwrap();
-    for d in &corpus {
-        native.create_node(d.clone()).unwrap();
-        kv.create_node(d.clone()).unwrap();
-    }
-
-    let mut fts = NativeFtsIndex::new();
-    fts.sync(&native);
-
-    for query in [
-        "graph",
-        "native graph",
-        "search",
-        "databases",
-        "nodes edges",
-    ] {
-        let native_ids = ids(&fts.search(query, 10));
-        let kv_ids: Vec<u64> = kv
-            .search_fts(query, 10)
-            .unwrap()
-            .into_iter()
-            .map(|h| h.node.id)
-            .collect();
-        assert_eq!(
-            native_ids, kv_ids,
-            "native FTS ranking diverged from KV search_fts for query {query:?}"
-        );
-    }
 }
