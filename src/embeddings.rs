@@ -439,7 +439,7 @@ pub fn build_upstream_body(req: &EmbeddingsRequest, config: &EmbeddingsConfig) -
 ///
 /// This is an enum rather than a trait object so the crate stays free of an
 /// async-trait dependency. When no backend feature is enabled it is an
-/// uninhabited type, and [`crate::api::ApiState`] simply holds `None` — the
+/// uninhabited type, and the HTTP state simply holds `None` — the
 /// endpoint answers `503`.
 pub enum EmbeddingBackend {
     /// Forward requests to a configured OpenAI-compatible upstream.

@@ -7,7 +7,7 @@
 //! `drevo-server` is self-contained — no separate `static/`
 //! directory to ship alongside.
 //!
-//! ## Routes wired by [`api::build_router`]
+//! ## Routes wired by [`crate::native_api::build_native_router`]
 //!
 //! - `GET /ui` → `index.html` (`text/html; charset=utf-8`)
 //! - `GET /ui/app.js` → `app.js` (`text/javascript; charset=utf-8`)

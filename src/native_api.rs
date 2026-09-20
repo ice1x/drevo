@@ -51,20 +51,19 @@ pub struct NativeApiState {
     pub service: Arc<NativeService>,
     /// Construction instant, for `/status` uptime.
     started_at: Instant,
-    /// Graceful-shutdown flag, mirroring [`crate::api::ApiState`]'s contract.
+    /// Graceful-shutdown flag: flipped once on SIGTERM/Ctrl+C so `/health`
+    /// and `/ready` report draining.
     shutting_down: Arc<AtomicBool>,
     /// Optional embeddings proxy backend — `POST /v1/embeddings` answers
     /// `503` ("not configured") without one, exactly like the KV router.
     embeddings: Option<Arc<EmbeddingBackend>>,
     /// Shared runtime embeddings config store backing `/config/embeddings`
     /// (Web-UI-settable API key/upstream/model); the same `Arc` the proxy
-    /// reads, so a write takes effect live. Mirrors
-    /// [`crate::api::ApiState::embeddings_config`].
+    /// reads, so a write takes effect live.
     embeddings_config: Option<Arc<crate::embeddings::EmbeddingsConfigStore>>,
     /// Prometheus metrics registry backing `GET /metrics` and the per-request
-    /// instrumentation middleware — the same [`DrevoMetrics`] contract as
-    /// [`crate::api::ApiState::metrics`], so a scrape looks identical on either
-    /// engine.
+    /// instrumentation middleware — a [`DrevoMetrics`] registry, so a scrape
+    /// looks identical on either engine.
     metrics: Arc<DrevoMetrics>,
 }
 
@@ -81,8 +80,7 @@ impl NativeApiState {
         }
     }
 
-    /// Attach an embeddings backend, enabling `POST /v1/embeddings` —
-    /// mirroring [`crate::api::ApiState::with_embeddings_backend`].
+    /// Attach an embeddings backend, enabling `POST /v1/embeddings`.
     #[must_use]
     pub fn with_embeddings_backend(mut self, backend: EmbeddingBackend) -> Self {
         self.embeddings = Some(Arc::new(backend));
@@ -90,8 +88,7 @@ impl NativeApiState {
     }
 
     /// Attach the shared embeddings config store, enabling
-    /// `GET`/`POST /config/embeddings` — mirroring
-    /// [`crate::api::ApiState::with_embeddings_config_store`].
+    /// `GET`/`POST /config/embeddings`.
     #[must_use]
     pub fn with_embeddings_config_store(
         mut self,

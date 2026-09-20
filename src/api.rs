@@ -1,294 +1,39 @@
-//! HTTP API for drevo.
+//! Shared HTTP request/response types and helpers for drevo's JSON API.
 //!
-//! This module exposes a thin JSON adapter over [`crate::db::Drevo`] built on
-//! [`axum`] and [`tokio`]. Task 00037 introduced the server skeleton
-//! (shared state, unified error type, root endpoint) and task 00038
-//! added node CRUD endpoints:
+//! This module is the engine-independent HTTP layer that the durable-native
+//! router in [`crate::native_api`] builds on. It no longer owns a router: the
+//! legacy KV `Drevo` HTTP surface — the `ApiState`/`Db` extractor, `build_router`,
+//! and every KV-backed handler — was removed with the rest of the KV serving path
+//! (epic #444). What remains is the reusable library those handlers and the
+//! native ones share:
 //!
-//! - `GET /` — server metadata
-//! - `POST /nodes` — create a node
-//! - `GET /nodes?kind=&limit=&offset=` — list nodes filtered by kind
-//! - `GET /nodes/{id}` — fetch a node by id
-//! - `PATCH /nodes/{id}` — partial update
-//! - `DELETE /nodes/{id}` — delete a node
+//! - [`ApiError`](crate::api::ApiError) — the unified error type and its
+//!   `IntoResponse` + `From<…>` conversions (the `DrevoError → HTTP status`
+//!   mapping is fenced by the tests at the bottom of this file).
+//! - The request/response DTOs and query structs (`CypherRequest`,
+//!   `CypherResponse`, `SearchFtsRequest`, `ListNodesQuery`, `FacetsResponse`,
+//!   …) plus their default/limit constants, deserialized/serialized on both
+//!   routers so the wire shapes stay identical.
+//! - The engine-independent handler bodies (crate-internal) reused verbatim by
+//!   [`crate::native_api`]: `exec_result_to_response` (Cypher `ExecResult` →
+//!   JSON rows + graph projection), `json_to_cypher_value`,
+//!   `embeddings_response`, and `embeddings_config_status` /
+//!   `embeddings_config_apply`.
 //!
-//! Task 00039 added edge endpoints:
-//!
-//! - `POST /edges` — create an edge
-//! - `GET /edges?kind=&limit=&offset=` — list edges filtered by kind
-//! - `GET /edges/{id}` — fetch an edge by id
-//! - `PATCH /edges/{id}` — partial update (task 00046)
-//! - `DELETE /edges/{id}` — delete an edge
-//! - `GET /nodes/{id}/edges?direction=outgoing|incoming|both` —
-//!   edges incident to a node (default: both)
-//!
-//! Task 00040 added graph traversal endpoints:
-//!
-//! - `GET /nodes/{id}/neighbors?direction=&kind=&depth=` — BFS-based
-//!   neighbor discovery (default depth 1, direction both)
-//! - `GET /paths/shortest?from=&to=` — Dijkstra shortest path as an
-//!   ordered list of node ids
-//! - `GET /nodes/{id}/subgraph?depth=` — bounded subgraph extraction
-//!   (default depth 1)
-//!
-//! Task 00041 added the full-text search endpoint:
-//!
-//! - `POST /search/fts` — JSON body `{query, limit?}`, returns
-//!   `{results: [ScoredNode]}` ranked by Okapi BM25 (task `00131`)
-//!
-//! Task 00055 (Phase 9 hardening) added JSON import / export endpoints
-//! for backups and cross-deployment migration:
-//!
-//! - `GET /export/json` — full graph as `drevo-json-v1` document.
-//! - `POST /import/json` — JSON body `{dump}`, returns
-//!   `{nodes_imported, edges_imported, nodes_skipped, edges_skipped}`.
-//!
-//! Task 00056 (Phase 9 hardening) added the GraphML interop export:
-//!
-//! - `GET /export/graphml` — full graph as a GraphML 1.0 document
-//!   (`application/xml`). Read-only — there is no `import_graphml`
-//!   companion; `drevo-json-v1` remains the authoritative wire format.
-//!
-//! Task 00042 added the admin endpoints used by container liveness
-//! probes and operators:
-//!
-//! - `GET /health` — cheap liveness probe, returns `{"status": "ok"}`
-//!   while the process is serving and `{"status": "shutting_down"}`
-//!   with HTTP 503 once graceful shutdown has been signalled (task
-//!   00048).
-//! - `GET /status` — server metadata including crate name, version,
-//!   and process uptime in seconds since the [`crate::api::ApiState`] was built.
-//!
-//! Task 00048 added the readiness probe and made liveness shutdown-
-//! aware so the standalone server binary cooperates correctly with
-//! Kubernetes-style rolling restarts:
-//!
-//! - `GET /ready` — readiness probe that actively exercises the
-//!   storage backend via [`crate::db::Drevo::health_check`]. Returns 200 with
-//!   `{"status": "ready"}` while the DB is responsive and 503
-//!   otherwise.
-//!
-//! The whole module is gated behind the `http` feature so that
-//! WebAssembly builds (`--no-default-features --features wasm`) are
-//! unaffected.
-
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+//! The whole module is gated behind the `http` feature so that WebAssembly
+//! builds (`--no-default-features --features wasm`) are unaffected.
 
 use axum::extract::rejection::{JsonRejection, QueryRejection};
-use axum::extract::{FromRequestParts, Path, Query, State};
-use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
 use axum::Json;
-use axum::Router;
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{Catalog, CatalogError, DEFAULT_DB};
-use crate::cypher::admin::{self as cypher_admin, AdminCommand};
 use crate::cypher::executor::{self, ExecResult, Value as CypherValue};
-use crate::cypher::parser;
-use crate::db::Drevo;
-use crate::dump::ImportReport;
 use crate::embeddings::{EmbeddingBackend, EmbeddingsError, EmbeddingsRequest};
 use crate::error::DrevoError;
-use crate::fts::facet::{Facet, FacetCollapse, DEFAULT_TRIGRAM_THRESHOLD};
-use crate::model::{
-    Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
-};
-use crate::observability::DrevoMetrics;
-
-/// Shared application state passed to every HTTP handler.
-///
-/// Wraps a reference-counted [`Drevo`] so the same database
-/// instance is shared across all requests without locking at the
-/// router level. The database itself is `Send + Sync` because the
-/// underlying `StorageBackend` is.
-#[derive(Clone)]
-pub struct ApiState {
-    /// The default database handle ([`DEFAULT_DB`]). Retained as a direct
-    /// field for back-compat and for consumers that never select a database
-    /// (the Bolt server, admin probes). Per-request database selection goes
-    /// through [`ApiState::catalog`] via the [`Db`] extractor.
-    pub db: Arc<Drevo>,
-    /// The multi-database catalog. Every data handler resolves its target
-    /// database from here through the [`Db`] extractor (`X-Drevo-Database`
-    /// header or `?db=` query, defaulting to [`DEFAULT_DB`]).
-    pub catalog: Arc<Catalog>,
-    /// Wall-clock instant at which this state was constructed. Used by
-    /// `GET /status` to compute the process uptime without pulling in
-    /// a system-time crate.
-    pub started_at: Instant,
-    /// Shared "graceful shutdown in progress" flag. Cloned `ApiState`
-    /// instances (axum hands one per handler invocation) point at the
-    /// same atomic so that flipping the flag from any task is visible
-    /// to every other handler. `/health` and `/ready` consult it to
-    /// return 503 once the process enters draining.
-    shutting_down: Arc<AtomicBool>,
-    /// Process metrics (Phase 15 task `00130`). Shared across every handler
-    /// (and the request-instrumentation middleware) so request counts,
-    /// latencies, and in-flight gauges accumulate into one registry that the
-    /// `GET /metrics` route renders in the Prometheus exposition format.
-    pub metrics: Arc<DrevoMetrics>,
-    /// Optional embeddings backend (Phase 19 task `00217`). When `None` — the
-    /// default — `POST /v1/embeddings` answers `503` ("not configured"). A
-    /// backend is wired in only when the operator opts in (e.g. via
-    /// `DREVO_EMBEDDINGS_UPSTREAM` with the `embeddings-proxy` feature), so the
-    /// upstream is always an operator choice, never taken from a request
-    /// (the SSRF boundary — OWASP A10).
-    pub embeddings: Option<Arc<EmbeddingBackend>>,
-    /// Shared runtime embeddings config store backing `GET`/`POST
-    /// /config/embeddings` (the Web-UI-settable API key/upstream/model). The
-    /// same `Arc` the proxy backend reads, so a write takes effect live.
-    /// `None` only in states built without the server wiring (some tests),
-    /// where the config endpoint reports "unavailable".
-    pub embeddings_config: Option<Arc<crate::embeddings::EmbeddingsConfigStore>>,
-}
-
-impl ApiState {
-    /// Create a new [`ApiState`] from an existing database handle. The
-    /// `started_at` timestamp is captured at construction time so that
-    /// `GET /status` can report how long this API instance has been
-    /// serving traffic.
-    pub fn new(db: Arc<Drevo>) -> Self {
-        let catalog = Arc::new(Catalog::from_default(Arc::clone(&db)));
-        Self {
-            db,
-            catalog,
-            started_at: Instant::now(),
-            shutting_down: Arc::new(AtomicBool::new(false)),
-            metrics: Arc::new(DrevoMetrics::new()),
-            embeddings: None,
-            embeddings_config: None,
-        }
-    }
-
-    /// Build an [`ApiState`] backed by a multi-database [`Catalog`]. The
-    /// catalog's [`DEFAULT_DB`] handle becomes the [`ApiState::db`] default
-    /// so existing single-database consumers keep working unchanged.
-    ///
-    #[must_use]
-    pub fn with_catalog(catalog: Arc<Catalog>) -> Self {
-        // The default handle is always present by construction, so this is
-        // infallible — no `Result`, no panic path.
-        let db = catalog.default_db();
-        Self {
-            db,
-            catalog,
-            started_at: Instant::now(),
-            shutting_down: Arc::new(AtomicBool::new(false)),
-            metrics: Arc::new(DrevoMetrics::new()),
-            embeddings: None,
-            embeddings_config: None,
-        }
-    }
-
-    /// Attach an embeddings backend, enabling `POST /v1/embeddings`.
-    ///
-    /// Consuming builder so it composes with [`ApiState::new`] /
-    /// [`ApiState::with_catalog`]. Left unset (the default), the endpoint
-    /// reports "not configured" with a `503`.
-    #[must_use]
-    pub fn with_embeddings_backend(mut self, backend: EmbeddingBackend) -> Self {
-        self.embeddings = Some(Arc::new(backend));
-        self
-    }
-
-    /// Attach the shared embeddings config store, enabling
-    /// `GET`/`POST /config/embeddings`. Consuming builder.
-    #[must_use]
-    pub fn with_embeddings_config_store(
-        mut self,
-        store: Arc<crate::embeddings::EmbeddingsConfigStore>,
-    ) -> Self {
-        self.embeddings_config = Some(store);
-        self
-    }
-
-    /// Mark the API as draining.
-    ///
-    /// Called once by the server entry point as soon as SIGTERM or
-    /// Ctrl+C is observed, before `axum::serve` finishes the
-    /// in-flight requests. Subsequent calls to `/health` and `/ready`
-    /// return 503 so that the orchestrator (Kubernetes, Docker Swarm,
-    /// Nomad) removes this pod from the load-balancer rotation
-    /// before SIGKILL lands. Idempotent — multiple signals that land
-    /// in quick succession are safe.
-    pub fn signal_shutdown(&self) {
-        // Release pairs with Acquire in `is_shutting_down` — that is
-        // all we need: a single boolean transition that becomes
-        // visible to every reader. No total order across other atomics
-        // is required.
-        self.shutting_down.store(true, Ordering::Release);
-    }
-
-    /// Returns `true` after [`signal_shutdown`](Self::signal_shutdown)
-    /// has been called on this state (or any clone of it).
-    pub fn is_shutting_down(&self) -> bool {
-        self.shutting_down.load(Ordering::Acquire)
-    }
-}
-
-/// HTTP header naming the target database for a request. Case-insensitive
-/// per HTTP; the extractor lower-cases before lookup.
-pub const DB_HEADER: &str = "x-drevo-database";
-
-/// Query-parameter name naming the target database (`?db=<name>`). Handy for
-/// links and the Web UI where setting a header is awkward.
-pub const DB_QUERY_PARAM: &str = "db";
-
-/// Request extractor that resolves the target [`Drevo`] database for a
-/// handler from the catalog in [`ApiState`].
-///
-/// Selection precedence: the [`DB_HEADER`] header, then the
-/// [`DB_QUERY_PARAM`] query parameter, then [`DEFAULT_DB`]. An unknown or
-/// malformed name is rejected — [`CatalogError::NotFound`] → 404,
-/// [`CatalogError::InvalidName`] → 400 — via [`ApiError`].
-///
-/// Data handlers take `Db(db): Db` in place of `State(state)` and call
-/// methods on `db`, so the same handler body serves every database.
-pub struct Db(pub Arc<Drevo>);
-
-/// Extract the requested database name from the header, then the query
-/// string, defaulting to [`DEFAULT_DB`].
-fn requested_db_name(parts: &Parts) -> String {
-    if let Some(name) = parts
-        .headers
-        .get(DB_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return name.to_string();
-    }
-    if let Some(query) = parts.uri.query() {
-        for pair in query.split('&') {
-            if let Some((k, v)) = pair.split_once('=') {
-                if k == DB_QUERY_PARAM && !v.is_empty() {
-                    // Values here are plain database names (`[A-Za-z0-9_-]`),
-                    // which are URL-safe as-is, so no percent-decoding needed.
-                    return v.to_string();
-                }
-            }
-        }
-    }
-    DEFAULT_DB.to_string()
-}
-
-impl FromRequestParts<ApiState> for Db {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &ApiState,
-    ) -> Result<Self, Self::Rejection> {
-        let name = requested_db_name(parts);
-        let db = state.catalog.get(&name)?;
-        Ok(Db(db))
-    }
-}
+use crate::fts::facet::Facet;
+use crate::model::{Edge, Node, ScoredNode};
 
 /// Unified error type returned by every HTTP handler.
 ///
@@ -312,18 +57,6 @@ pub enum ApiError {
     /// An upstream dependency failed (502 Bad Gateway). Used by `POST
     /// /v1/embeddings` when the configured embeddings upstream errors.
     BadGateway(String),
-}
-
-impl From<CatalogError> for ApiError {
-    fn from(err: CatalogError) -> Self {
-        match err {
-            CatalogError::InvalidName(_) => Self::BadRequest(err.to_string()),
-            CatalogError::NotFound(_) => Self::NotFound(err.to_string()),
-            CatalogError::AlreadyExists(_) => Self::Conflict(err.to_string()),
-            // A failed handle open is an internal fault, not a client error.
-            CatalogError::Open { source, .. } => Self::Db(source),
-        }
-    }
 }
 
 impl From<DrevoError> for ApiError {
@@ -406,26 +139,6 @@ fn json_error(status: StatusCode, message: &str) -> Response {
     (status, body).into_response()
 }
 
-/// Server metadata returned by `GET /`.
-#[derive(Debug, Serialize)]
-pub struct ServerInfo {
-    /// Crate name.
-    pub name: &'static str,
-    /// Server version (from [`crate::VERSION`] — the release git tag,
-    /// injected at build time; see `build.rs`).
-    pub version: &'static str,
-}
-
-/// Handler for `GET /` — returns a small JSON document describing
-/// the running server. Acts as a smoke test for the scaffold and as
-/// a default landing page for clients that hit the root URL.
-async fn root(State(_state): State<ApiState>) -> Json<ServerInfo> {
-    Json(ServerInfo {
-        name: "drevo",
-        version: crate::VERSION,
-    })
-}
-
 // ---------------------------------------------------------------------
 // Shared list-handler defaults (task 00109 audit fix — F3)
 // ---------------------------------------------------------------------
@@ -443,7 +156,7 @@ pub const DEFAULT_LIST_LIMIT: usize = 50;
 pub const MAX_LIST_LIMIT: usize = 1000;
 
 // ---------------------------------------------------------------------
-// Node CRUD handlers (task 00038)
+// Node types (task 00038)
 // ---------------------------------------------------------------------
 
 /// Query parameters accepted by `GET /nodes`.
@@ -468,64 +181,8 @@ pub struct NodeListResponse {
     pub nodes: Vec<Node>,
 }
 
-/// Handler for `POST /nodes`. Creates a new node from a JSON
-/// [`NewNode`] body and returns the stored node with generated id,
-/// uuid, and timestamps.
-async fn create_node(
-    Db(db): Db,
-    body: Result<Json<NewNode>, JsonRejection>,
-) -> Result<(StatusCode, Json<Node>), ApiError> {
-    let Json(new_node) = body?;
-    let node = db.create_node(new_node)?;
-    Ok((StatusCode::CREATED, Json(node)))
-}
-
-/// Handler for `GET /nodes/{id}`. Returns the node or 404 if missing.
-async fn get_node(Db(db): Db, Path(id): Path<u64>) -> Result<Json<Node>, ApiError> {
-    let node = db.get_node(id)?.ok_or(DrevoError::NodeNotFound(id))?;
-    Ok(Json(node))
-}
-
-/// Handler for `PATCH /nodes/{id}`. Applies a partial update via
-/// [`NodePatch`] and returns the updated node.
-async fn update_node(
-    Db(db): Db,
-    Path(id): Path<u64>,
-    body: Result<Json<NodePatch>, JsonRejection>,
-) -> Result<Json<Node>, ApiError> {
-    let Json(patch) = body?;
-    let node = db.update_node(id, patch)?;
-    Ok(Json(node))
-}
-
-/// Handler for `DELETE /nodes/{id}`. Returns 204 on success or 404
-/// if the node does not exist.
-async fn delete_node(Db(db): Db, Path(id): Path<u64>) -> Result<StatusCode, ApiError> {
-    db.delete_node(id)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// Handler for `GET /nodes`. Lists nodes filtered by `kind` with
-/// pagination. A missing `kind` parameter yields 400 Bad Request.
-async fn list_nodes(
-    Db(db): Db,
-    query: Result<Query<ListNodesQuery>, QueryRejection>,
-) -> Result<Json<NodeListResponse>, ApiError> {
-    let Query(ListNodesQuery {
-        kind,
-        limit,
-        offset,
-    }) = query?;
-    let kind =
-        kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
-    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
-    let offset = offset.unwrap_or(0);
-    let nodes = db.list_nodes_by_kind(&kind, limit, offset)?;
-    Ok(Json(NodeListResponse { nodes }))
-}
-
 // ---------------------------------------------------------------------
-// Edge endpoints (task 00039)
+// Edge types (task 00039)
 // ---------------------------------------------------------------------
 
 /// Query parameters accepted by `GET /edges`.
@@ -546,7 +203,7 @@ pub struct ListEdgesQuery {
 /// Query parameters accepted by `GET /nodes/{id}/edges`.
 ///
 /// `direction` is optional — when absent, the handler defaults to
-/// [`Direction::Both`]. Accepted values (case-insensitive): `outgoing`,
+/// [`Direction::Both`](crate::model::Direction::Both). Accepted values (case-insensitive): `outgoing`,
 /// `incoming`, `both`.
 #[derive(Debug, Deserialize)]
 pub struct NodeEdgesQuery {
@@ -561,78 +218,8 @@ pub struct EdgeListResponse {
     pub edges: Vec<Edge>,
 }
 
-/// Handler for `POST /edges`. Creates a new edge from a JSON
-/// [`NewEdge`] body and returns the stored edge. Returns 404 if either
-/// endpoint node does not exist.
-async fn create_edge(
-    Db(db): Db,
-    body: Result<Json<NewEdge>, JsonRejection>,
-) -> Result<(StatusCode, Json<Edge>), ApiError> {
-    let Json(new_edge) = body?;
-    let edge = db.create_edge(new_edge)?;
-    Ok((StatusCode::CREATED, Json(edge)))
-}
-
-/// Handler for `GET /edges/{id}`. Returns the edge or 404 if missing.
-async fn get_edge(Db(db): Db, Path(id): Path<u64>) -> Result<Json<Edge>, ApiError> {
-    let edge = db.get_edge(id)?.ok_or(DrevoError::EdgeNotFound(id))?;
-    Ok(Json(edge))
-}
-
-/// Handler for `PATCH /edges/{id}`. Applies a partial update via
-/// [`EdgePatch`] and returns the updated edge.
-async fn update_edge(
-    Db(db): Db,
-    Path(id): Path<u64>,
-    body: Result<Json<EdgePatch>, JsonRejection>,
-) -> Result<Json<Edge>, ApiError> {
-    let Json(patch) = body?;
-    let edge = db.update_edge(id, patch)?;
-    Ok(Json(edge))
-}
-
-/// Handler for `DELETE /edges/{id}`. Returns 204 on success or 404
-/// if the edge does not exist.
-async fn delete_edge(Db(db): Db, Path(id): Path<u64>) -> Result<StatusCode, ApiError> {
-    db.delete_edge(id)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// Handler for `GET /edges`. Lists edges filtered by `kind` with
-/// pagination. A missing `kind` parameter yields 400 Bad Request.
-async fn list_edges(
-    Db(db): Db,
-    query: Result<Query<ListEdgesQuery>, QueryRejection>,
-) -> Result<Json<EdgeListResponse>, ApiError> {
-    let Query(ListEdgesQuery {
-        kind,
-        limit,
-        offset,
-    }) = query?;
-    let kind =
-        kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
-    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
-    let offset = offset.unwrap_or(0);
-    let edges = db.list_edges_by_kind(&kind, limit, offset)?;
-    Ok(Json(EdgeListResponse { edges }))
-}
-
-/// Handler for `GET /nodes/{id}/edges`. Returns all edges incident to
-/// the node in the given direction (default: both). Unknown direction
-/// values yield 400 Bad Request.
-async fn get_node_edges(
-    Db(db): Db,
-    Path(id): Path<u64>,
-    query: Result<Query<NodeEdgesQuery>, QueryRejection>,
-) -> Result<Json<EdgeListResponse>, ApiError> {
-    let Query(NodeEdgesQuery { direction }) = query?;
-    let direction = parse_direction(direction.as_deref())?;
-    let edges = db.edges_of(id, direction)?;
-    Ok(Json(EdgeListResponse { edges }))
-}
-
 // ---------------------------------------------------------------------
-// Traversal endpoints (task 00040)
+// Traversal query/response types (task 00040)
 // ---------------------------------------------------------------------
 
 /// Default depth used when `GET /nodes/{id}/neighbors` omits the
@@ -646,7 +233,7 @@ pub const DEFAULT_SUBGRAPH_DEPTH: u8 = 1;
 /// Query parameters accepted by `GET /nodes/{id}/neighbors`.
 ///
 /// All parameters are optional. `direction` defaults to
-/// [`Direction::Both`], `depth` defaults to
+/// [`Direction::Both`](crate::model::Direction::Both), `depth` defaults to
 /// [`DEFAULT_NEIGHBORS_DEPTH`], and `kind` is an optional edge kind
 /// filter passed straight through to the traversal layer.
 #[derive(Debug, Deserialize)]
@@ -690,78 +277,8 @@ pub struct ShortestPathResponse {
     pub path: Option<Vec<u64>>,
 }
 
-/// Handler for `GET /nodes/{id}/neighbors`. Returns nodes reachable
-/// from `id` via BFS with a configurable direction, edge-kind filter,
-/// and depth. Returns 404 if the start node does not exist so that
-/// callers can distinguish "node has no neighbors" from "node doesn't
-/// exist".
-async fn get_node_neighbors(
-    Db(db): Db,
-    Path(id): Path<u64>,
-    query: Result<Query<NeighborsQuery>, QueryRejection>,
-) -> Result<Json<NodeListResponse>, ApiError> {
-    let Query(NeighborsQuery {
-        direction,
-        kind,
-        depth,
-    }) = query?;
-    let direction = parse_direction(direction.as_deref())?;
-    let depth = depth.unwrap_or(DEFAULT_NEIGHBORS_DEPTH);
-
-    // Explicitly surface missing nodes as 404 — the underlying `bfs`
-    // would otherwise silently return an empty list.
-    if db.get_node(id)?.is_none() {
-        return Err(DrevoError::NodeNotFound(id).into());
-    }
-
-    let nodes = db.bfs(id, depth, direction, kind.as_deref())?;
-    Ok(Json(NodeListResponse { nodes }))
-}
-
-/// Handler for `GET /paths/shortest`. Runs Dijkstra over outgoing
-/// edges. Both endpoints must exist — missing nodes yield 404. An
-/// unreachable target produces a 200 response with `{"path": null}`
-/// so that clients can distinguish "no such node" from "no route".
-async fn get_shortest_path(
-    Db(db): Db,
-    query: Result<Query<ShortestPathQuery>, QueryRejection>,
-) -> Result<Json<ShortestPathResponse>, ApiError> {
-    let Query(ShortestPathQuery { from, to }) = query?;
-    let from =
-        from.ok_or_else(|| ApiError::BadRequest("query parameter 'from' is required".to_string()))?;
-    let to =
-        to.ok_or_else(|| ApiError::BadRequest("query parameter 'to' is required".to_string()))?;
-
-    // Validate both endpoints up front so we can return 404 instead
-    // of silently returning `None` (which means "unreachable").
-    if db.get_node(from)?.is_none() {
-        return Err(DrevoError::NodeNotFound(from).into());
-    }
-    if db.get_node(to)?.is_none() {
-        return Err(DrevoError::NodeNotFound(to).into());
-    }
-
-    let path = db.shortest_path(from, to)?;
-    Ok(Json(ShortestPathResponse { path }))
-}
-
-/// Handler for `GET /nodes/{id}/subgraph`. Extracts the subgraph of
-/// all nodes and edges within `depth` hops of the root. Returns 404
-/// if the root does not exist (the underlying traversal already maps
-/// that case to `NodeNotFound`).
-async fn get_node_subgraph(
-    Db(db): Db,
-    Path(id): Path<u64>,
-    query: Result<Query<SubgraphQuery>, QueryRejection>,
-) -> Result<Json<SubGraph>, ApiError> {
-    let Query(SubgraphQuery { depth }) = query?;
-    let depth = depth.unwrap_or(DEFAULT_SUBGRAPH_DEPTH);
-    let sub = db.subgraph(id, depth)?;
-    Ok(Json(sub))
-}
-
 // ---------------------------------------------------------------------
-// Search endpoint (task 00041)
+// Search types (task 00041)
 // ---------------------------------------------------------------------
 
 /// Default `limit` applied to `POST /search/fts` when the client omits
@@ -777,7 +294,7 @@ pub const MAX_SEARCH_LIMIT: usize = 1000;
 ///
 /// `query` is required — a missing field yields 400 Bad Request. An
 /// empty string is accepted but produces no results, mirroring the
-/// underlying [`Drevo::search_fts`] behaviour. `limit` is
+/// underlying `search_fts` behaviour. `limit` is
 /// optional and defaults to [`DEFAULT_SEARCH_LIMIT`].
 #[derive(Debug, Deserialize)]
 pub struct SearchFtsRequest {
@@ -795,32 +312,13 @@ pub struct SearchFtsResponse {
     pub results: Vec<ScoredNode>,
 }
 
-/// Handler for `POST /search/fts`. Runs BM25-ranked full-text search
-/// over the node title/body trigram index and returns up to `limit`
-/// scored matches. A missing `query` field is rejected with 400.
-async fn search_fts(
-    Db(db): Db,
-    body: Result<Json<SearchFtsRequest>, JsonRejection>,
-) -> Result<Json<SearchFtsResponse>, ApiError> {
-    let Json(SearchFtsRequest { query, limit }) = body?;
-    let query =
-        query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
-    let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT).min(MAX_SEARCH_LIMIT);
-    let results = db.search_fts(&query, limit)?;
-    Ok(Json(SearchFtsResponse { results }))
-}
-
-// ── Cypher over HTTP (`POST /cypher`) ───────────────────────────────────
-// drevo's Cypher executor was reachable only over Bolt. This endpoint runs
-// the same `cypher::executor` over HTTP so the Web UI (and any HTTP client)
-// can issue Cypher and get back BOTH a tabular result (`columns` + `rows`)
-// and a `graph` projection — every Node / Relationship / Path value in the
-// rows, deduped by id — that the browser renders on the canvas the same way
-// it renders `/export/json` and `/subgraph`.
-//
-// NOTE: like Bolt, this accepts write queries (CREATE/SET/DELETE/MERGE). The
-// HTTP server has no auth, so it inherits the same trust model as the rest
-// of the API (bind to localhost / put auth in front for shared deployments).
+// ── Cypher over HTTP (`POST /cypher`) types ─────────────────────────────
+// The request/response shapes for the Cypher-over-HTTP endpoint, served by
+// `crate::native_api`. A response carries BOTH a tabular result (`columns` +
+// `rows`) and a `graph` projection — every Node / Relationship / Path value in
+// the rows, deduped by id (see `exec_result_to_response` / `collect_graph`) —
+// that the browser renders on the canvas the same way it renders
+// `/export/json` and `/subgraph`.
 
 /// Request body for `POST /cypher`.
 #[derive(Debug, Deserialize)]
@@ -872,113 +370,6 @@ pub struct CypherResponse {
     pub stats: CypherStats,
     /// The Node / Relationship / Path values from the rows, for canvas render.
     pub graph: CypherGraph,
-}
-
-/// Handler for `POST /cypher`: parse + execute, return rows + graph.
-async fn cypher(
-    State(state): State<ApiState>,
-    Db(db): Db,
-    body: Result<Json<CypherRequest>, JsonRejection>,
-) -> Result<Json<CypherResponse>, ApiError> {
-    let Json(CypherRequest { query, params }) = body?;
-    let query =
-        query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
-    let params: std::collections::HashMap<String, CypherValue> = params
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(k, v)| (k, json_to_cypher_value(v)))
-        .collect();
-
-    // Catalog-level admin commands (`SHOW DATABASES`, `USE`, `CREATE
-    // DATABASE`) are handled here, where the catalog is in reach — the graph
-    // executor only knows a single database. Everything else is a graph query
-    // against the request-selected database.
-    match cypher_admin::parse(&query) {
-        Some(AdminCommand::ShowDatabases) => Ok(Json(show_databases_response(&state.catalog))),
-        Some(AdminCommand::CreateDatabase {
-            name,
-            if_not_exists,
-        }) => create_database_response(&state.catalog, &name, if_not_exists).map(Json),
-        Some(AdminCommand::Use { name, query }) => {
-            // Route the (optional) inner query at the named database.
-            let target = state.catalog.get(&name)?;
-            match query {
-                Some(inner) => run_cypher_query(&target, &inner, params).map(Json),
-                None => Ok(Json(using_response(&name))),
-            }
-        }
-        None => run_cypher_query(&db, &query, params).map(Json),
-    }
-}
-
-/// Parse and execute a graph query against `db`, mapping failures to
-/// [`ApiError::BadRequest`] with the executor's message.
-fn run_cypher_query(
-    db: &Arc<Drevo>,
-    query: &str,
-    params: std::collections::HashMap<String, CypherValue>,
-) -> Result<CypherResponse, ApiError> {
-    let ast = parser::parse(query)
-        .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
-    // The KV store is a `GraphEngine`, so it serves core Cypher through the
-    // engine seam. Secondary subsystems (FTS, vector/semantic, keyword
-    // extraction) are the durable-native serving layer's job now — they surface
-    // `EngineCapability` here rather than a KV fallback.
-    let result = executor::execute_on_engine(&ast, db.as_ref(), params)
-        .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
-    Ok(exec_result_to_response(result))
-}
-
-/// `SHOW DATABASES` → one row per database: its `name` and whether it is the
-/// `default`. Columns mirror a trimmed Neo4j `SHOW DATABASES`.
-fn show_databases_response(catalog: &Catalog) -> CypherResponse {
-    let rows = catalog
-        .list()
-        .into_iter()
-        .map(|name| {
-            let is_default = name == DEFAULT_DB;
-            vec![
-                serde_json::Value::String(name),
-                serde_json::json!(is_default),
-            ]
-        })
-        .collect();
-    CypherResponse {
-        columns: vec!["name".to_string(), "default".to_string()],
-        rows,
-        stats: CypherStats::default(),
-        graph: CypherGraph::default(),
-    }
-}
-
-/// `CREATE DATABASE <name>` → create it and echo the name. With
-/// `IF NOT EXISTS`, a pre-existing name is a no-op rather than a 409.
-fn create_database_response(
-    catalog: &Catalog,
-    name: &str,
-    if_not_exists: bool,
-) -> Result<CypherResponse, ApiError> {
-    match catalog.create(name) {
-        Ok(_) => {}
-        Err(CatalogError::AlreadyExists(_)) if if_not_exists => {}
-        Err(e) => return Err(e.into()),
-    }
-    Ok(CypherResponse {
-        columns: vec!["name".to_string()],
-        rows: vec![vec![serde_json::Value::String(name.to_string())]],
-        stats: CypherStats::default(),
-        graph: CypherGraph::default(),
-    })
-}
-
-/// A bare `USE <name>` (no trailing query) → acknowledge the selection.
-fn using_response(name: &str) -> CypherResponse {
-    CypherResponse {
-        columns: vec!["using".to_string()],
-        rows: vec![vec![serde_json::Value::String(name.to_string())]],
-        stats: CypherStats::default(),
-        graph: CypherGraph::default(),
-    }
 }
 
 /// Convert a JSON parameter value into a Cypher runtime value.
@@ -1176,332 +567,18 @@ pub struct FacetsResponse {
     pub facets: Vec<Facet>,
 }
 
-/// Handler for `GET /facets?kind=&property=&k=&collapse=&threshold=`.
-///
-/// Groups every node of `kind` by the keywords extracted from `property`,
-/// optionally collapsing near-duplicate keywords (lexical axis). Returns
-/// `{facets: [{facet, members, count}]}`.
-async fn facets(
-    Db(db): Db,
-    query: Result<Query<FacetsQuery>, QueryRejection>,
-) -> Result<Json<FacetsResponse>, ApiError> {
-    let Query(FacetsQuery {
-        kind,
-        property,
-        k,
-        collapse,
-        threshold,
-    }) = query?;
-    let kind =
-        kind.ok_or_else(|| ApiError::BadRequest("query parameter 'kind' is required".to_string()))?;
-    let property = property.unwrap_or_else(|| "body".to_string());
-    let k = k.unwrap_or(DEFAULT_FACET_KEYWORDS).min(MAX_FACET_KEYWORDS);
-
-    let collapse = match collapse.as_deref().unwrap_or("none") {
-        "none" => FacetCollapse::None,
-        "lexical" => FacetCollapse::Lexical {
-            trigram_threshold: threshold.unwrap_or(DEFAULT_TRIGRAM_THRESHOLD),
-        },
-        "semantic" => {
-            return Err(ApiError::BadRequest(
-                "collapse=semantic requires an embedder, which is not configured on the HTTP \
-                 server; use the Rust/Python API with precomputed keyword embeddings"
-                    .to_string(),
-            ))
-        }
-        other => {
-            return Err(ApiError::BadRequest(format!(
-                "unknown collapse mode '{other}' (expected none|lexical|semantic)"
-            )))
-        }
-    };
-
-    let facets = db.facets(&kind, &property, k, &collapse)?;
-    Ok(Json(FacetsResponse { facets }))
-}
-
 // ---------------------------------------------------------------------
-// Admin endpoints (task 00042)
-// ---------------------------------------------------------------------
-
-/// Status values reported by `GET /health` and `GET /ready`. Serialized
-/// as a lowercase string so the JSON payload stays the same as before
-/// (`"ok"`, `"ready"`, `"shutting_down"`).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HealthStatus {
-    /// Liveness — the HTTP task is serving requests.
-    Ok,
-    /// Readiness — the HTTP task and the storage backend are both
-    /// responsive.
-    Ready,
-    /// The process has received SIGTERM/Ctrl+C and is draining.
-    ShuttingDown,
-}
-
-/// JSON body returned by `GET /health` and `GET /ready`. The numeric
-/// HTTP status code conveys success (200) vs. drained/unhealthy (503).
-#[derive(Debug, Serialize)]
-pub struct HealthResponse {
-    /// Status marker — see [`HealthStatus`].
-    pub status: HealthStatus,
-}
-
-/// JSON body returned by `GET /status`.
-///
-/// Carries the same `name`/`version` pair as `GET /` plus an
-/// `uptime_seconds` field that reports how long the current
-/// [`ApiState`] has been alive. Clients can use this for basic
-/// observability and sanity checks after a restart.
-#[derive(Debug, Serialize)]
-pub struct StatusResponse {
-    /// Crate name — same value as [`ServerInfo::name`].
-    pub name: &'static str,
-    /// Crate version — same value as [`ServerInfo::version`].
-    pub version: &'static str,
-    /// Seconds elapsed since the [`ApiState`] was constructed.
-    pub uptime_seconds: u64,
-}
-
-/// 503 response emitted by both `/health` and `/ready` during
-/// graceful shutdown.
-fn shutting_down_response() -> Response {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(HealthResponse {
-            status: HealthStatus::ShuttingDown,
-        }),
-    )
-        .into_response()
-}
-
-/// Handler for `GET /health` — Kubernetes-style liveness probe. Stays
-/// dependency-free so DB contention does not trigger a pod restart.
-async fn health(State(state): State<ApiState>) -> Response {
-    if state.is_shutting_down() {
-        return shutting_down_response();
-    }
-    Json(HealthResponse {
-        status: HealthStatus::Ok,
-    })
-    .into_response()
-}
-
-/// Handler for `GET /ready` — Kubernetes-style readiness probe.
-/// Actively exercises the storage backend via
-/// [`Drevo::health_check`]; returns 503 if the probe fails or the
-/// process is draining.
-async fn ready(State(state): State<ApiState>) -> Response {
-    if state.is_shutting_down() {
-        return shutting_down_response();
-    }
-    // The readiness probe exercises the default database; a per-request
-    // database selection has no meaning for a liveness/readiness check.
-    match state.db.health_check() {
-        Ok(()) => Json(HealthResponse {
-            status: HealthStatus::Ready,
-        })
-        .into_response(),
-        Err(err) => json_error(StatusCode::SERVICE_UNAVAILABLE, &err.to_string()),
-    }
-}
-
-// ---------------------------------------------------------------------
-// Export / Import endpoints (task 00055)
+// Import/Export request types (task 00055)
 // ---------------------------------------------------------------------
 
 /// JSON body accepted by `POST /import/json`. Carries the raw dump produced
-/// by `GET /export/json` (or [`Drevo::export_json`]) — the server parses,
+/// by `GET /export/json` (or `Drevo::export_json`) — the server parses,
 /// validates the format header, and replays the payload into the live
 /// database.
 #[derive(Debug, Deserialize)]
 pub struct ImportJsonRequest {
     /// Raw `drevo-json-v1` payload — the full output of `GET /export/json`.
     pub dump: String,
-}
-
-/// Handler for `GET /export/json`. Streams the full graph as a pretty-printed
-/// `drevo-json-v1` JSON document. Operators can curl this for backups or to
-/// migrate data between deployments.
-async fn export_json(Db(db): Db) -> Result<Response, ApiError> {
-    let dump = db.export_json()?;
-    Ok((StatusCode::OK, [("content-type", "application/json")], dump).into_response())
-}
-
-/// Handler for `GET /storage/bloat` (#253 slice 1). Returns a
-/// [`BloatReport`](crate::db::BloatReport) — physical file size, the stored data
-/// size (records + all indexes), the record/index split, and the bloat ratio
-/// (`file_bytes / stored_bytes`) — so operators and automation can see how much
-/// of the redb file is *reclaimable* copy-on-write high-water-mark bloat, as
-/// opposed to a legitimately large but index-rich file.
-///
-/// This performs an on-demand streaming scan of the whole keyspace (cost
-/// proportional to the stored data), so it is a maintenance / alerting call,
-/// not a per-request one. The cheap physical size alone is also exported
-/// continuously as the `drevo_storage_file_bytes` gauge on `GET /metrics`.
-async fn storage_bloat(Db(db): Db) -> Result<Json<crate::db::BloatReport>, ApiError> {
-    Ok(Json(db.bloat_report()?))
-}
-
-/// Response body for `GET /storage/keyspaces`: the per-keyspace row breakdown
-/// that the Web UI's Storage panel renders. Wrapping the `Vec` in a named object
-/// (rather than returning a bare JSON array) keeps the shape forward-compatible —
-/// summary fields can be added alongside `keyspaces` without breaking clients.
-#[derive(serde::Serialize)]
-struct KeyspacesResponse {
-    keyspaces: Vec<crate::db::KeyspaceStat>,
-}
-
-/// Handler for `GET /storage/keyspaces`. Returns [`Drevo::keyspace_stats`], the
-/// per-prefix row-count + logical-byte breakdown, sorted largest-first. This is
-/// what makes the FTS keyspace dominance visible in the UI (the `fts` row dwarfs
-/// the rest on a text-heavy graph) — the storage-panel companion of
-/// [`storage_bloat`]. Like `bloat`, it streams the whole keyspace, so it is a
-/// maintenance call, not a per-request one.
-async fn storage_keyspaces(Db(db): Db) -> Result<Json<KeyspacesResponse>, ApiError> {
-    Ok(Json(KeyspacesResponse {
-        keyspaces: db.keyspace_stats()?,
-    }))
-}
-
-/// Handler for `POST /storage/shrink`. Runs [`Drevo::shrink_online`] — an
-/// *online* rebuild-and-hot-swap that reclaims all copy-on-write bloat on the
-/// live database with no restart and no exclusive ownership (the swap happens
-/// under a write lock that quiesces concurrent operations). Returns the
-/// [`CompactReport`](crate::db::CompactReport) (bytes before/after/reclaimed) on
-/// success, or `409 Conflict` for an in-memory database (nothing on disk to
-/// reclaim).
-///
-/// This holds the storage write lock for the rebuild's duration (proportional to
-/// the stored data, typically seconds), during which other operations on this
-/// database block — it is a deliberate maintenance action, not a per-request one.
-async fn storage_shrink(Db(db): Db) -> Result<Response, ApiError> {
-    match db.shrink_online()? {
-        Some(report) => Ok((StatusCode::OK, Json(report)).into_response()),
-        None => Ok((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "shrink requires a disk-backed database; this one is in-memory",
-            })),
-        )
-            .into_response()),
-    }
-}
-
-/// On-demand performance snapshot for the Storage panel. Reports write
-/// throughput and full-text search latency so an operator can gauge current
-/// health from the UI without leaving the browser.
-#[derive(serde::Serialize)]
-struct BenchmarkReport {
-    /// Nodes/sec creating `incr_n` nodes one at a time (isolates the indexing
-    /// cost; measured on a throwaway in-memory database).
-    incr_write_nodes_per_sec: f64,
-    /// Nodes/sec via a single grouped `create_nodes` call (the fast path).
-    batch_write_nodes_per_sec: f64,
-    /// Median `search_fts` latency in milliseconds, measured read-only against
-    /// the target database's live data.
-    search_median_ms: f64,
-    /// Node count used for each write measurement.
-    incr_n: usize,
-    /// Node count used for the batch measurement.
-    batch_n: usize,
-    /// `queries × reps` search samples behind the median.
-    search_samples: usize,
-}
-
-/// Handler for `POST /storage/benchmark`. Runs a quick, self-contained
-/// performance snapshot:
-/// - **write throughput** (incremental + batched) on a **throwaway in-memory**
-///   database — it never touches the live graph, so it is safe to run against a
-///   production instance;
-/// - **FTS search latency** (median) read-only against the target database.
-///
-/// Synchronous and bounded (a few hundred in-memory inserts + a handful of
-/// searches) — a deliberate maintenance action surfaced as a UI button.
-async fn storage_benchmark(Db(db): Db) -> Result<Json<BenchmarkReport>, ApiError> {
-    use crate::model::{NewNode, Properties};
-    // Shared vocabulary so every node contributes overlapping trigrams — the
-    // worst case for posting-list indexing, mirroring `bench/fts_storage`.
-    const SHARED: &str =
-        "anxious deadlines mentoring graph vectors embeddings semantic search relationships";
-    let incr_n: usize = 500;
-    let batch_n: usize = 500;
-
-    let mk = |prefix: &str, i: usize| NewNode {
-        kind: "bench".to_string(),
-        title: format!("{prefix}-{i}"),
-        body: format!("note {i} {SHARED}"),
-        body_html: String::new(),
-        properties: Properties::default(),
-    };
-
-    // Incremental single-node writes on a throwaway in-memory database.
-    let scratch = Drevo::open_in_memory()?;
-    let t0 = Instant::now();
-    for i in 0..incr_n {
-        scratch.create_node(mk("bench-incr", i))?;
-    }
-    let incr_secs = t0.elapsed().as_secs_f64();
-
-    // Batched writes on a second throwaway in-memory database (fast path).
-    let scratch2 = Drevo::open_in_memory()?;
-    let batch: Vec<NewNode> = (0..batch_n).map(|i| mk("bench-batch", i)).collect();
-    let t1 = Instant::now();
-    scratch2.create_nodes(batch)?;
-    let batch_secs = t1.elapsed().as_secs_f64();
-
-    // FTS search latency, read-only, against the live target database.
-    let queries = ["graph", "error", "test", "the"];
-    let reps: usize = 20;
-    let mut samples: Vec<f64> = Vec::with_capacity(queries.len() * reps);
-    for _ in 0..reps {
-        for q in &queries {
-            let t = Instant::now();
-            let _ = db.search_fts(q, 10)?;
-            samples.push(t.elapsed().as_secs_f64() * 1000.0);
-        }
-    }
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let search_median_ms = samples.get(samples.len() / 2).copied().unwrap_or(0.0);
-
-    let per_sec = |n: usize, secs: f64| if secs > 0.0 { n as f64 / secs } else { 0.0 };
-    let round1 = |x: f64| (x * 10.0).round() / 10.0;
-    let round3 = |x: f64| (x * 1000.0).round() / 1000.0;
-
-    Ok(Json(BenchmarkReport {
-        incr_write_nodes_per_sec: round1(per_sec(incr_n, incr_secs)),
-        batch_write_nodes_per_sec: round1(per_sec(batch_n, batch_secs)),
-        search_median_ms: round3(search_median_ms),
-        incr_n,
-        batch_n,
-        search_samples: samples.len(),
-    }))
-}
-
-/// Handler for `POST /import/json`. Accepts an [`ImportJsonRequest`] body and
-/// returns an [`ImportReport`] summarising newly-inserted vs. skipped rows.
-/// Malformed payloads / unknown formats return 500 via [`DrevoError::Io`];
-/// title collisions against existing nodes return 409.
-async fn import_json(
-    Db(db): Db,
-    body: Result<Json<ImportJsonRequest>, JsonRejection>,
-) -> Result<Json<ImportReport>, ApiError> {
-    let Json(req) = body?;
-    let report = db.import_json(&req.dump)?;
-    Ok(Json(report))
-}
-
-/// Handler for `GET /export/graphml`. Returns the full graph as a GraphML 1.0
-/// document (`application/xml`) — for interop with yEd, Gephi, NetworkX,
-/// Cytoscape, igraph, and friends. Paired with `POST /import/graphml`.
-async fn export_graphml(Db(db): Db) -> Result<Response, ApiError> {
-    let xml = db.export_graphml()?;
-    Ok((
-        StatusCode::OK,
-        [("content-type", "application/xml; charset=utf-8")],
-        xml,
-    )
-        .into_response())
 }
 
 /// JSON body accepted by `POST /import/graphml`. Carries a GraphML document —
@@ -1513,36 +590,6 @@ pub struct ImportGraphmlRequest {
     pub graphml: String,
 }
 
-/// Handler for `POST /import/graphml`. Accepts an [`ImportGraphmlRequest`] body
-/// and returns an [`ImportReport`] summarising newly-inserted vs. skipped rows.
-/// Malformed XML / structural errors return 500 via [`DrevoError::Io`]; title
-/// collisions against existing nodes return 409.
-async fn import_graphml(
-    Db(db): Db,
-    body: Result<Json<ImportGraphmlRequest>, JsonRejection>,
-) -> Result<Json<ImportReport>, ApiError> {
-    let Json(req) = body?;
-    let report = db.import_graphml(&req.graphml)?;
-    Ok(Json(report))
-}
-
-/// Handler for `GET /status`. Returns server metadata and the current
-/// process uptime derived from [`ApiState::started_at`].
-async fn status(State(state): State<ApiState>) -> Json<StatusResponse> {
-    let uptime_seconds = state.started_at.elapsed().as_secs();
-    Json(StatusResponse {
-        name: "drevo",
-        version: crate::VERSION,
-        uptime_seconds,
-    })
-}
-
-// ── Multi-database catalog (`/databases`) ───────────────────────────────
-// Manage the named databases the process serves. Each is a separate redb
-// file (see [`crate::catalog`]); every data endpoint selects one via the
-// `X-Drevo-Database` header or `?db=` query. These two routes let a client
-// discover what exists and create new databases without restarting.
-
 /// Response body for `GET /databases`.
 #[derive(Debug, Serialize)]
 pub struct DatabaseListResponse {
@@ -1550,156 +597,6 @@ pub struct DatabaseListResponse {
     pub databases: Vec<String>,
     /// The name selected when a request specifies none.
     pub default: &'static str,
-}
-
-/// Request body for `POST /databases`.
-#[derive(Debug, Deserialize)]
-pub struct CreateDatabaseRequest {
-    /// New database name — `[A-Za-z0-9_-]`, 1..=64 chars. Required.
-    pub name: Option<String>,
-}
-
-/// Response body for `POST /databases`.
-#[derive(Debug, Serialize)]
-pub struct CreateDatabaseResponse {
-    /// The name of the database that was created.
-    pub name: String,
-}
-
-/// Handler for `GET /databases` — list every database the catalog serves.
-async fn list_databases(State(state): State<ApiState>) -> Json<DatabaseListResponse> {
-    Json(DatabaseListResponse {
-        databases: state.catalog.list(),
-        default: DEFAULT_DB,
-    })
-}
-
-/// Handler for `POST /databases` — create a new database. A missing `name`
-/// is 400; an invalid name is 400; an existing name is 409.
-async fn create_database(
-    State(state): State<ApiState>,
-    body: Result<Json<CreateDatabaseRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<CreateDatabaseResponse>), ApiError> {
-    let Json(CreateDatabaseRequest { name }) = body?;
-    let name = name.ok_or_else(|| ApiError::BadRequest("field 'name' is required".to_string()))?;
-    state.catalog.create(&name)?;
-    Ok((StatusCode::CREATED, Json(CreateDatabaseResponse { name })))
-}
-
-/// Parse the `direction` query parameter into a [`Direction`].
-///
-/// Accepts `outgoing`, `incoming`, `both` (case-insensitive). `None`
-/// defaults to [`Direction::Both`]. Any other value yields a
-/// [`ApiError::BadRequest`].
-fn parse_direction(value: Option<&str>) -> Result<Direction, ApiError> {
-    let lowered = value.map(str::to_ascii_lowercase);
-    match lowered.as_deref() {
-        None | Some("both") => Ok(Direction::Both),
-        Some("outgoing") => Ok(Direction::Outgoing),
-        Some("incoming") => Ok(Direction::Incoming),
-        Some(other) => Err(ApiError::BadRequest(format!(
-            "invalid direction '{other}', expected one of: outgoing, incoming, both"
-        ))),
-    }
-}
-
-/// Handler for unknown routes — returns a JSON 404 so that API
-/// consumers always receive structured error responses rather than
-/// axum's default empty body.
-async fn fallback() -> Response {
-    json_error(StatusCode::NOT_FOUND, "not found")
-}
-
-/// Method-not-allowed fallback for known paths. Axum invokes this
-/// when a request reaches a registered path but uses an unregistered
-/// HTTP method (e.g. `PUT /nodes`).
-async fn method_not_allowed() -> Response {
-    json_error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")
-}
-
-/// Helper macro to attach the 405 JSON fallback to a
-/// [`MethodRouter`]. Each known path needs this so that unsupported
-/// methods return a JSON body instead of axum's default empty 405.
-fn with_405<S: Clone + Send + Sync + 'static>(
-    mr: axum::routing::MethodRouter<S>,
-) -> axum::routing::MethodRouter<S> {
-    mr.fallback(method_not_allowed)
-}
-
-/// The Prometheus text exposition `Content-Type` (version `0.0.4`). Scrapers
-/// key off this media type, so it must be exact.
-const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
-
-/// `GET /metrics` — render the process metrics in the Prometheus text
-/// exposition format (Phase 15 task `00130`).
-///
-/// The process-uptime gauge is refreshed from [`ApiState::started_at`] just
-/// before rendering so the scrape reflects the current uptime without a
-/// background ticker. Always returns 200 with `text/plain; version=0.0.4`.
-async fn metrics(State(state): State<ApiState>) -> Response {
-    state
-        .metrics
-        .uptime_seconds
-        .set(state.started_at.elapsed().as_secs() as i64);
-    // Refresh the physical file-size gauge from an O(1) stat (#253 slice 1).
-    // A probe failure leaves the previous value in place rather than faking a
-    // zero — a transient stat error must not read as "file shrank to 0".
-    if let Ok(Some(bytes)) = state.db.file_bytes() {
-        state.metrics.storage_file_bytes.set(bytes as i64);
-    }
-    let body = state.metrics.render_prometheus();
-    (
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
-        body,
-    )
-        .into_response()
-}
-
-/// Per-request instrumentation middleware (Phase 15 task `00130`).
-///
-/// Increments the in-flight gauge for the duration of the request, times the
-/// downstream handler, and records the response status class + latency into the
-/// shared [`DrevoMetrics`]. Runs for every route (including `/metrics` itself,
-/// so scrapes are visible in the request totals — the conventional behaviour).
-async fn track_metrics(
-    State(state): State<ApiState>,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
-    state.metrics.request_started();
-    let start = Instant::now();
-    let response = next.run(request).await;
-    let elapsed = start.elapsed().as_secs_f64();
-    state
-        .metrics
-        .record_http(response.status().as_u16(), elapsed);
-    state.metrics.request_finished();
-    response
-}
-
-/// Handler for `POST /v1/embeddings` (Phase 19 task `00217`).
-///
-/// OpenAI-compatible: the body is `{ "model": <name>, "input": <str|[str]> }`
-/// and the response is `{ "object": "list", "data": [ { "object":
-/// "embedding", "index": n, "embedding": [ ... ] } ], "model", "usage" }`.
-///
-/// The proxy is a transparent passthrough: `model` + `input` are validated,
-/// every other request field is forwarded verbatim to the upstream, and the
-/// upstream's JSON body is returned verbatim (so provider-specific params and
-/// base64 embeddings survive). Validation happens before the backend, so an
-/// empty input is a deterministic `400` even when no backend is configured.
-/// When no backend is wired in, the endpoint answers `503` ("not configured"),
-/// mirroring the semantic-facet `400`. The outbound destination is never taken
-/// from the request (SSRF boundary — OWASP A10): a forwarded field rides along
-/// to the operator-configured upstream but can never change where drevo
-/// connects.
-async fn embeddings(
-    State(state): State<ApiState>,
-    body: Result<Json<EmbeddingsRequest>, JsonRejection>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let Json(req) = body?;
-    embeddings_response(state.embeddings.as_deref(), req).await
 }
 
 /// The engine-independent body of `POST /v1/embeddings`, shared by the KV
@@ -1718,24 +615,6 @@ pub(crate) async fn embeddings_response(
     let backend = backend.ok_or(EmbeddingsError::NotConfigured)?;
     let resp = backend.embed(&req).await?;
     Ok(Json(resp))
-}
-
-/// `GET /config/embeddings` handler (KV router): a secret-free view of the
-/// runtime embeddings config.
-async fn get_embeddings_config(
-    State(state): State<ApiState>,
-) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
-    embeddings_config_status(state.embeddings_config.as_deref())
-}
-
-/// `POST /config/embeddings` handler (KV router): validate + persist + hot-swap
-/// the runtime embeddings config; returns the new secret-free status.
-async fn set_embeddings_config(
-    State(state): State<ApiState>,
-    body: Result<Json<crate::embeddings::EmbeddingsConfigUpdate>, JsonRejection>,
-) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
-    let Json(update) = body?;
-    embeddings_config_apply(state.embeddings_config.as_deref(), update)
 }
 
 /// The engine-independent body of `GET /config/embeddings`, shared by the KV
@@ -1762,123 +641,6 @@ pub(crate) fn embeddings_config_apply(
         other => ApiError::from(other),
     })?;
     Ok(Json(status))
-}
-
-/// Build the HTTP [`Router`] for a given [`ApiState`].
-///
-/// Returned router can be served with `axum::serve` on a TCP listener
-/// or driven directly in tests via [`tower::ServiceExt::oneshot`].
-///
-/// Unknown paths produce a JSON 404 via the fallback handler.
-/// Unregistered methods on known paths produce a JSON 405 via per-route
-/// fallbacks.
-pub fn build_router(state: ApiState) -> Router {
-    Router::new()
-        .route("/", with_405(get(root)))
-        .route("/nodes", with_405(get(list_nodes).post(create_node)))
-        .route(
-            "/nodes/{id}",
-            with_405(get(get_node).patch(update_node).delete(delete_node)),
-        )
-        .route("/nodes/{id}/edges", with_405(get(get_node_edges)))
-        .route("/nodes/{id}/neighbors", with_405(get(get_node_neighbors)))
-        .route("/nodes/{id}/subgraph", with_405(get(get_node_subgraph)))
-        .route("/edges", with_405(get(list_edges).post(create_edge)))
-        .route(
-            "/edges/{id}",
-            with_405(get(get_edge).patch(update_edge).delete(delete_edge)),
-        )
-        .route("/paths/shortest", with_405(get(get_shortest_path)))
-        .route("/search/fts", with_405(axum::routing::post(search_fts)))
-        // Cypher over HTTP — parse + execute, return rows + graph projection
-        // (the Web UI's query bar; same executor Bolt uses).
-        .route("/cypher", with_405(axum::routing::post(cypher)))
-        // ── Phase 19 task `00217` — OpenAI-compatible embeddings ────
-        .route("/v1/embeddings", with_405(axum::routing::post(embeddings)))
-        // Runtime embeddings config (Web-UI-settable API key/upstream/model).
-        .route(
-            "/config/embeddings",
-            with_405(get(get_embeddings_config).post(set_embeddings_config)),
-        )
-        // ── Phase 17 task `00133` — keyword faceting endpoint ───────
-        .route("/facets", with_405(get(facets)))
-        .route("/export/json", with_405(get(export_json)))
-        // ── #253 slice 1 — storage-bloat observability ──────────────
-        .route("/storage/bloat", with_405(get(storage_bloat)))
-        // ── Storage UI panel — per-keyspace row/byte breakdown ──────
-        .route("/storage/keyspaces", with_405(get(storage_keyspaces)))
-        // ── Online shrink — rebuild + hot-swap, no restart ──────────
-        .route(
-            "/storage/shrink",
-            with_405(axum::routing::post(storage_shrink)),
-        )
-        // ── On-demand performance snapshot (write + FTS latency) ────
-        .route(
-            "/storage/benchmark",
-            with_405(axum::routing::post(storage_benchmark)),
-        )
-        .route("/import/json", with_405(axum::routing::post(import_json)))
-        .route("/export/graphml", with_405(get(export_graphml)))
-        .route(
-            "/import/graphml",
-            with_405(axum::routing::post(import_graphml)),
-        )
-        // ── Multi-database catalog — list / create named databases ──
-        .route(
-            "/databases",
-            with_405(get(list_databases).post(create_database)),
-        )
-        .route("/health", with_405(get(health)))
-        .route("/ready", with_405(get(ready)))
-        .route("/status", with_405(get(status)))
-        // ── Phase 15 task `00130` — Prometheus metrics endpoint ─────
-        .route("/metrics", with_405(get(metrics)))
-        // ── Phase 15 task `00092` — embedded Web UI ─────────────────
-        // Routes serve HTML / JS / CSS baked into the binary via
-        // `include_str!` (see `crate::web_ui`). Same-origin with the
-        // API above so the front-end's `fetch('/search/fts', …)` does
-        // not need CORS.
-        .route("/ui", get(crate::web_ui::serve_index))
-        .route("/ui/", get(crate::web_ui::redirect_ui_slash))
-        .route("/ui/app.js", get(crate::web_ui::serve_app_js))
-        .route("/ui/graph_math.js", get(crate::web_ui::serve_graph_math_js))
-        .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
-        // Vendored Cytoscape.js + fcose layout (served same-origin so the
-        // WebUI needs no CDN — see src/web_ui.rs).
-        .route(
-            "/ui/vendor/cytoscape.min.js",
-            get(crate::web_ui::serve_vendor_cytoscape),
-        )
-        .route(
-            "/ui/vendor/layout-base.js",
-            get(crate::web_ui::serve_vendor_layout_base),
-        )
-        .route(
-            "/ui/vendor/cose-base.js",
-            get(crate::web_ui::serve_vendor_cose_base),
-        )
-        .route(
-            "/ui/vendor/cytoscape-fcose.js",
-            get(crate::web_ui::serve_vendor_fcose),
-        )
-        .route(
-            "/ui/vendor/cola.min.js",
-            get(crate::web_ui::serve_vendor_cola),
-        )
-        .route(
-            "/ui/vendor/cytoscape-cola.js",
-            get(crate::web_ui::serve_vendor_cytoscape_cola),
-        )
-        .fallback(fallback)
-        // ── Phase 15 task `00130` — per-request metrics instrumentation.
-        // Layered after the routes so it wraps every handler (including the
-        // fallback) and before `with_state` so the middleware can extract the
-        // shared `ApiState`.
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            track_metrics,
-        ))
-        .with_state(state)
 }
 
 /// Regression test that locks in the `DrevoError → HTTP status` mapping
