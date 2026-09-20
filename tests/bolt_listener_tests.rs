@@ -9,7 +9,7 @@
 #![cfg(all(not(target_arch = "wasm32"), feature = "http"))]
 
 use drevo::bolt::handshake::{BoltVersion, MAGIC_PREAMBLE};
-use drevo::bolt::listener::{accept_and_run_session, accept_handshake};
+use drevo::bolt::listener::{accept_and_run_session_durable, accept_handshake};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -84,18 +84,18 @@ async fn handshake_replies_with_zeros_when_no_version_matches() {
 async fn accept_and_run_session_handles_hello_run_pull_goodbye_end_to_end() {
     use drevo::bolt::packstream::{decode, encode, Value};
     use drevo::bolt::session::{ClientMessage, GOODBYE, HELLO, PULL, RUN};
-    use drevo::db::Drevo;
+    use drevo::native_service::NativeService;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
     let listener = bind_loopback().await;
     let addr = listener.local_addr().unwrap();
-    let drevo = Arc::new(Drevo::open_in_memory().expect("open"));
+    let drevo = Arc::new(NativeService::in_memory());
     let drevo_for_server = Arc::clone(&drevo);
 
     let server = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
-        accept_and_run_session(socket, &drevo_for_server).await
+        accept_and_run_session_durable(socket, &drevo_for_server).await
     });
 
     let mut client = TcpStream::connect(addr).await.expect("connect");
@@ -233,17 +233,17 @@ async fn accept_and_run_session_handles_hello_run_pull_goodbye_end_to_end() {
 
 #[tokio::test]
 async fn accept_and_run_session_returns_when_handshake_rejects_all_versions() {
-    use drevo::db::Drevo;
+    use drevo::native_service::NativeService;
     use std::sync::Arc;
 
     let listener = bind_loopback().await;
     let addr = listener.local_addr().unwrap();
-    let drevo = Arc::new(Drevo::open_in_memory().expect("open"));
+    let drevo = Arc::new(NativeService::in_memory());
     let drevo_for_server = Arc::clone(&drevo);
 
     let server = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
-        accept_and_run_session(socket, &drevo_for_server).await
+        accept_and_run_session_durable(socket, &drevo_for_server).await
     });
 
     let mut client = TcpStream::connect(addr).await.expect("connect");
@@ -274,18 +274,18 @@ async fn accept_and_run_session_returns_when_handshake_rejects_all_versions() {
 async fn accept_and_run_session_handles_begin_run_pull_commit_round_trip() {
     use drevo::bolt::packstream::{decode, encode, Value};
     use drevo::bolt::session::{BEGIN, COMMIT, GOODBYE, HELLO, PULL, RUN};
-    use drevo::db::Drevo;
+    use drevo::native_service::NativeService;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
     let listener = bind_loopback().await;
     let addr = listener.local_addr().unwrap();
-    let drevo = Arc::new(Drevo::open_in_memory().expect("open"));
+    let drevo = Arc::new(NativeService::in_memory());
     let drevo_for_server = Arc::clone(&drevo);
 
     let server = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
-        accept_and_run_session(socket, &drevo_for_server).await
+        accept_and_run_session_durable(socket, &drevo_for_server).await
     });
 
     let mut client = TcpStream::connect(addr).await.expect("connect");

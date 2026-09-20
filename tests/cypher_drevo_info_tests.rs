@@ -86,14 +86,15 @@ fn drevo_info_takes_no_arguments() {
 mod over_bolt {
     use std::collections::BTreeMap;
 
+    use std::sync::Arc;
+
     use drevo::bolt::packstream::Value as PackValue;
     use drevo::bolt::session::{ClientMessage, ServerMessage, Session};
-    use drevo::db::Drevo;
+    use drevo::native_service::NativeService;
 
     #[test]
     fn drevo_info_returns_version_over_bolt() {
-        let d = Drevo::open_in_memory().unwrap();
-        let mut s = Session::new(&d);
+        let mut s = Session::new_durable(Arc::new(NativeService::in_memory()));
         s.handle(ClientMessage::Hello {
             extra: BTreeMap::new(),
         });
