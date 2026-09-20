@@ -765,7 +765,7 @@ async fn graphml_round_trip_through_the_native_router() {
 
 #[tokio::test]
 async fn a_kv_backup_restores_into_the_durable_engine() {
-    use drevo::cypher::executor::execute;
+    use drevo::cypher::executor::execute_on_engine;
     use drevo::cypher::parser::parse;
     use std::collections::HashMap;
 
@@ -775,7 +775,7 @@ async fn a_kv_backup_restores_into_the_durable_engine() {
         "CREATE (:Entity {title: 'kg-node', type: 'Trait'})",
         "CREATE (:Entity {title: 'kg-other'})",
     ] {
-        execute(&parse(stmt).unwrap(), &kv, HashMap::new()).expect("seed");
+        execute_on_engine(&parse(stmt).unwrap(), &kv, HashMap::new()).expect("seed");
     }
     let backup = kv.export_graphml().expect("kv export");
 

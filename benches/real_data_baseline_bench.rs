@@ -27,8 +27,8 @@
 //!
 //! The same parsed query is executed on
 //!
-//! * the KV [`Drevo`](drevo::db::Drevo) via `execute` (today's production
-//!   path), and
+//! * the KV [`Drevo`](drevo::db::Drevo) via `execute_on_engine` (the KV store
+//!   viewed through the graph-engine seam), and
 //! * the native [`NativeGraph`](drevo::native::NativeGraph) via
 //!   `execute_on_engine_with_indexes` with the label + property indexes synced
 //!   (the flip-target path),
@@ -52,7 +52,9 @@ use criterion::Criterion;
 use std::hint::black_box;
 
 use drevo::cypher::ast::Query;
-use drevo::cypher::executor::{execute, execute_on_engine_with_indexes_and_values, ExecResult};
+use drevo::cypher::executor::{
+    execute_on_engine, execute_on_engine_with_indexes_and_values, ExecResult,
+};
 use drevo::cypher::parser::parse;
 use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
@@ -155,7 +157,7 @@ fn load() -> Result<Loaded, Box<dyn std::error::Error>> {
 }
 
 fn run_kv(l: &Loaded, q: &Query) -> ExecResult {
-    execute(q, &l.kv, HashMap::new()).expect("kv execute")
+    execute_on_engine(q, &l.kv, HashMap::new()).expect("kv execute")
 }
 
 fn run_native(l: &Loaded, q: &Query) -> ExecResult {

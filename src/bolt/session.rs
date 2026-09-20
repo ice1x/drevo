@@ -38,8 +38,9 @@
 //!
 //! - `HELLO` (`0x01`) — connection setup; replies with `SUCCESS` carrying
 //!   `server` + `connection_id` metadata.
-//! - `RUN` (`0x10`) — parses + executes a Cypher query against
-//!   [`crate::cypher::executor::execute`], materialises the result, and
+//! - `RUN` (`0x10`) — parses + executes a Cypher query through the graph
+//!   engine (`NativeService` on the durable path, or the KV store via
+//!   [`crate::cypher::executor::execute_on_engine`]), materialises the result, and
 //!   replies with `SUCCESS { fields: [..] }`. Allowed both in autocommit
 //!   mode (`Ready` → `Streaming`) and inside an explicit transaction
 //!   (`TxReady` → `TxStreaming`).
@@ -905,7 +906,11 @@ impl<'a> Session<'a> {
                 } else {
                     None
                 };
-                executor::execute(&ast, db, cypher_params)
+                // The KV store serves core Cypher through the `GraphEngine`
+                // seam; secondary subsystems (FTS, vector/semantic) are the
+                // durable-native serving layer's job and surface
+                // `EngineCapability` here rather than a KV fallback.
+                executor::execute_on_engine(&ast, *db, cypher_params)
             }
         };
         let result = match exec {
