@@ -1,17 +1,18 @@
 //! WebAssembly bindings for drevo via `wasm-bindgen`.
 //!
-//! Exposes the [`crate::db::Drevo`] API to JavaScript/TypeScript through
-//! `wasm-bindgen`, enabling browser and Tauri v2 WASM usage.
+//! Exposes the native engine ([`crate::native_service::NativeService`]) to
+//! JavaScript/TypeScript through `wasm-bindgen`, enabling browser and Tauri v2
+//! WASM usage.
 //!
 //! ## Design
 //!
-//! - **Wrapper struct**: [`crate::wasm::WasmDrevo`] wraps the Rust
-//!   [`crate::db::Drevo`] and is exported as a JS class.
+//! - **Wrapper struct**: [`crate::wasm::WasmDrevo`] wraps a Rust
+//!   [`crate::native_service::NativeService`] and is exported as a JS class.
 //! - **JSON serialization**: complex types (Node, Edge, SubGraph, ScoredNode)
 //!   cross the WASM boundary as `JsValue` (parsed from JSON via serde).
 //! - **Error handling**: Rust errors are converted to JavaScript exceptions
 //!   via `JsValue::from_str`.
-//! - **Memory-only**: WASM targets use `MemoryBackend` exclusively since
+//! - **Memory-only**: WASM targets use an in-memory service exclusively since
 //!   filesystem access is unavailable in the browser.
 //!
 //! ## API
@@ -25,8 +26,8 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::db::Drevo;
 use crate::model::{Direction, EdgePatch, NewEdge, NewNode, NodePatch, Properties};
+use crate::native_service::NativeService;
 
 // ---------------------------------------------------------------------------
 // Error conversion
@@ -81,17 +82,17 @@ fn parse_properties(val: &JsValue) -> Result<Properties, JsValue> {
 /// All complex values (Node, Edge, etc.) are passed as JS objects.
 #[wasm_bindgen]
 pub struct WasmDrevo {
-    db: Option<Drevo>,
+    db: Option<NativeService>,
 }
 
 impl WasmDrevo {
-    /// Borrow the underlying `Drevo`, returning a JS-friendly error
-    /// if `close()` has already been called.
+    /// Borrow the underlying [`NativeService`], returning a JS-friendly
+    /// error if `close()` has already been called.
     ///
     /// Extracted in audit `00111` (F2) to eliminate the four-line
     /// `db.as_ref().ok_or_else(...)` boilerplate that appeared in
     /// every binding method.
-    fn db_ref(&self) -> Result<&Drevo, JsValue> {
+    fn db_ref(&self) -> Result<&NativeService, JsValue> {
         self.db
             .as_ref()
             .ok_or_else(|| JsValue::from_str("database closed"))
@@ -102,25 +103,28 @@ impl WasmDrevo {
 impl WasmDrevo {
     // ----- Lifecycle -----
 
-    /// Create a new in-memory Drevo database.
+    /// Create a new in-memory drevo database.
     ///
     /// WASM targets always use in-memory storage (no filesystem).
     #[wasm_bindgen(constructor)]
     pub fn new() -> Result<WasmDrevo, JsValue> {
-        let db = Drevo::open_in_memory().map_err(to_js_err)?;
-        Ok(WasmDrevo { db: Some(db) })
+        Ok(WasmDrevo {
+            db: Some(NativeService::in_memory()),
+        })
     }
 
     /// Close the database and release resources.
     ///
-    /// After calling `close()`, all other methods will throw.
+    /// After calling `close()`, all other methods will throw. The native
+    /// engine has no fallible `close()` — dropping the service releases it
+    /// (an in-memory service holds nothing durable), so this just clears
+    /// the handle.
     #[wasm_bindgen]
     pub fn close(&mut self) -> Result<(), JsValue> {
-        let db = self
-            .db
+        self.db
             .take()
             .ok_or_else(|| JsValue::from_str("database already closed"))?;
-        db.close().map_err(to_js_err)
+        Ok(())
     }
 
     // ----- Node CRUD -----
@@ -159,9 +163,13 @@ impl WasmDrevo {
     #[wasm_bindgen]
     pub fn get_node(&self, id: u64) -> Result<JsValue, JsValue> {
         let db = self.db_ref()?;
-        match db.get_node(id).map_err(to_js_err)? {
-            Some(node) => to_js_value(&node),
-            None => Ok(JsValue::NULL),
+        // The native engine returns `NodeNotFound` where the KV store
+        // returned `Ok(None)`; map it back to `null` so the JS contract
+        // ("null if not found", not an exception) is preserved.
+        match db.get_node(id) {
+            Ok(node) => to_js_value(&node),
+            Err(crate::error::DrevoError::NodeNotFound(_)) => Ok(JsValue::NULL),
+            Err(e) => Err(to_js_err(e)),
         }
     }
 
@@ -272,7 +280,7 @@ impl WasmDrevo {
         } else {
             Some(edge_kind)
         };
-        let nodes = db.neighbors(node_id, dir, kind_filter).map_err(to_js_err)?;
+        let nodes = db.neighbors(node_id, dir, kind_filter);
         to_js_value(&nodes)
     }
 
@@ -424,7 +432,7 @@ impl WasmDrevo {
     #[wasm_bindgen]
     pub fn search_fts(&self, query: &str, limit: u32) -> Result<JsValue, JsValue> {
         let db = self.db_ref()?;
-        let results = db.search_fts(query, limit as usize).map_err(to_js_err)?;
+        let results = db.search_fts(query, limit as usize);
         to_js_value(&results)
     }
 
@@ -439,9 +447,7 @@ impl WasmDrevo {
         offset: u32,
     ) -> Result<JsValue, JsValue> {
         let db = self.db_ref()?;
-        let nodes = db
-            .list_nodes_by_kind(kind, limit as usize, offset as usize)
-            .map_err(to_js_err)?;
+        let nodes = db.list_nodes_by_kind(kind, limit as usize, offset as usize);
         to_js_value(&nodes)
     }
 
@@ -451,12 +457,12 @@ impl WasmDrevo {
     #[wasm_bindgen]
     pub fn list_recent(&self, limit: u32) -> Result<JsValue, JsValue> {
         let db = self.db_ref()?;
-        let nodes = db.list_recent(limit as usize).map_err(to_js_err)?;
+        let nodes = db.list_recent(limit as usize);
         to_js_value(&nodes)
     }
 }
 
 // Unit tests for wasm bindings require a JS runtime (wasm-pack test).
 // Native integration tests are in tests/wasm_tests.rs — they exercise the
-// same Drevo API surface that WasmDrevo delegates to, validating
+// same NativeService API surface that WasmDrevo delegates to, validating
 // correctness of JSON roundtrips and error handling without a WASM runtime.
