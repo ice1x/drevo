@@ -612,6 +612,75 @@ impl NativeService {
         Ok(self.graph.create_edge(new_edge)?)
     }
 
+    /// Apply a partial update to a node — embedded-handle parity with
+    /// `Drevo::update_node`. Returns the updated node.
+    ///
+    /// # Errors
+    /// [`DrevoError::NodeNotFound`] when the id does not exist; propagates a
+    /// WAL/encode failure.
+    pub fn update_node(
+        &self,
+        id: u64,
+        patch: crate::model::NodePatch,
+    ) -> Result<crate::model::Node, DrevoError> {
+        use crate::engine::GraphEngine;
+        Ok(self.graph.update_node(id, patch)?)
+    }
+
+    /// Delete a node (and its incident edges) — parity with `Drevo::delete_node`.
+    ///
+    /// # Errors
+    /// [`DrevoError::NodeNotFound`] when the id does not exist; propagates a
+    /// WAL/encode failure.
+    pub fn delete_node(&self, id: u64) -> Result<(), DrevoError> {
+        use crate::engine::GraphEngine;
+        Ok(self.graph.delete_node(id)?)
+    }
+
+    /// Fetch an edge by id — parity with `Drevo::get_edge`. `None` if absent.
+    ///
+    /// # Errors
+    /// Propagates a WAL/decode failure as [`DrevoError`].
+    pub fn get_edge(&self, id: u64) -> Result<Option<crate::model::Edge>, DrevoError> {
+        use crate::engine::GraphEngine;
+        Ok(self.graph.get_edge(id)?)
+    }
+
+    /// Apply a partial update to an edge — parity with `Drevo::update_edge`.
+    /// Returns the updated edge.
+    ///
+    /// # Errors
+    /// [`DrevoError::EdgeNotFound`] when the id does not exist; propagates a
+    /// WAL/encode failure.
+    pub fn update_edge(
+        &self,
+        id: u64,
+        patch: crate::model::EdgePatch,
+    ) -> Result<crate::model::Edge, DrevoError> {
+        use crate::engine::GraphEngine;
+        Ok(self.graph.update_edge(id, patch)?)
+    }
+
+    /// Delete an edge — parity with `Drevo::delete_edge`.
+    ///
+    /// # Errors
+    /// [`DrevoError::EdgeNotFound`] when the id does not exist; propagates a
+    /// WAL/encode failure.
+    pub fn delete_edge(&self, id: u64) -> Result<(), DrevoError> {
+        use crate::engine::GraphEngine;
+        Ok(self.graph.delete_edge(id)?)
+    }
+
+    /// Bounded subgraph around `root` within `depth` hops — parity with
+    /// `Drevo::subgraph`. Convenience wrapper over
+    /// [`subgraph_filtered`](Self::subgraph_filtered) with no edge-kind filter.
+    ///
+    /// # Errors
+    /// [`DrevoError::NodeNotFound`] when the root does not exist.
+    pub fn subgraph(&self, root: u64, depth: u8) -> Result<crate::model::SubGraph, DrevoError> {
+        self.subgraph_filtered(root, depth, None)
+    }
+
     /// Nodes of `kind`, id-ascending, paginated — parity with
     /// `Drevo::list_nodes_by_kind` (the engine of `GET /nodes?kind=`).
     pub fn list_nodes_by_kind(
@@ -1654,6 +1723,121 @@ mod traversal_parity_tests {
         // subgraph within 2 hops over "link": a, b, c
         let sg = svc.subgraph_filtered(a, 2, Some("link")).unwrap();
         assert_eq!(titles(&sg.nodes), vec!["a", "b", "c"]);
+    }
+}
+
+#[cfg(test)]
+mod crud_parity_tests {
+    //! The inherent CRUD wrappers (`update_node`/`delete_node`/`get_edge`/
+    //! `update_edge`/`delete_edge`/`subgraph`) added for embedded-handle parity
+    //! with `Drevo` (epic #444) — the surface the C-FFI and WASM bindings drive.
+    use super::NativeService;
+    use crate::error::DrevoError;
+    use crate::model::{EdgePatch, NewEdge, NewNode, NodePatch, Properties};
+
+    fn nn(title: &str) -> NewNode {
+        NewNode {
+            kind: "n".into(),
+            title: title.into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties(Default::default()),
+        }
+    }
+
+    #[test]
+    fn update_node_changes_fields_and_reports_missing() {
+        let svc = NativeService::in_memory();
+        let id = svc.create_node(nn("orig")).unwrap().id;
+        let patch = NodePatch {
+            title: Some("renamed".into()),
+            ..Default::default()
+        };
+        let updated = svc.update_node(id, patch).unwrap();
+        assert_eq!(updated.title, "renamed");
+        assert_eq!(svc.get_node(id).unwrap().title, "renamed");
+        // A patch against a missing id surfaces NodeNotFound.
+        let miss = svc.update_node(9999, NodePatch::default());
+        assert!(matches!(miss, Err(DrevoError::NodeNotFound(9999))));
+    }
+
+    #[test]
+    fn delete_node_removes_it() {
+        let svc = NativeService::in_memory();
+        let id = svc.create_node(nn("gone")).unwrap().id;
+        svc.delete_node(id).unwrap();
+        assert!(matches!(svc.get_node(id), Err(DrevoError::NodeNotFound(_))));
+        // Deleting a missing node reports NodeNotFound.
+        assert!(matches!(
+            svc.delete_node(id),
+            Err(DrevoError::NodeNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn edge_get_update_delete_roundtrip() {
+        let svc = NativeService::in_memory();
+        let a = svc.create_node(nn("a")).unwrap().id;
+        let b = svc.create_node(nn("b")).unwrap().id;
+        let e = svc
+            .create_edge(NewEdge {
+                from_id: a,
+                to_id: b,
+                kind: "link".into(),
+                weight: 1.0,
+                properties: Properties(Default::default()),
+            })
+            .unwrap();
+        // get_edge returns the stored edge; a missing id is Ok(None).
+        assert_eq!(svc.get_edge(e.id).unwrap().unwrap().kind, "link");
+        assert!(svc.get_edge(9999).unwrap().is_none());
+        // update_edge applies a patch.
+        let updated = svc
+            .update_edge(
+                e.id,
+                EdgePatch {
+                    weight: Some(2.5),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.weight, 2.5);
+        // delete_edge removes it; a second delete reports EdgeNotFound.
+        svc.delete_edge(e.id).unwrap();
+        assert!(svc.get_edge(e.id).unwrap().is_none());
+        assert!(matches!(
+            svc.delete_edge(e.id),
+            Err(DrevoError::EdgeNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn subgraph_extracts_the_local_neighbourhood() {
+        let svc = NativeService::in_memory();
+        let a = svc.create_node(nn("a")).unwrap().id;
+        let b = svc.create_node(nn("b")).unwrap().id;
+        let c = svc.create_node(nn("c")).unwrap().id;
+        svc.create_edge(NewEdge {
+            from_id: a,
+            to_id: b,
+            kind: "link".into(),
+            weight: 1.0,
+            properties: Properties(Default::default()),
+        })
+        .unwrap();
+        svc.create_edge(NewEdge {
+            from_id: b,
+            to_id: c,
+            kind: "link".into(),
+            weight: 1.0,
+            properties: Properties(Default::default()),
+        })
+        .unwrap();
+        // depth 1 from a reaches b (and the a→b edge), not c.
+        let sub = svc.subgraph(a, 1).unwrap();
+        let ids: std::collections::BTreeSet<u64> = sub.nodes.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&a) && ids.contains(&b));
+        assert!(!ids.contains(&c), "depth-1 subgraph must not reach c");
     }
 }
 
