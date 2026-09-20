@@ -57,25 +57,42 @@ fn test_open_in_memory_and_close() {
 }
 
 #[test]
-fn test_open_disk_is_no_longer_supported() {
-    // The embedded redb KV store was removed (epic #444). `drevo_open` keeps its
-    // C symbol (so the generated header stays stable) but always fails with a
-    // clear error pointing callers at the in-memory constructor.
+fn test_open_disk_persists_across_reopen() {
+    // `drevo_open` now backs the handle with the durable native store (epic
+    // #444 ported the FFI off the retired redb KV backend onto the same
+    // native engine the server runs). A node written under a path must survive
+    // closing and reopening the database at that path.
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test.db");
+    let path = dir.path().join("ffi_store");
     let c_path = CString::new(path.to_str().unwrap()).unwrap();
 
     unsafe {
+        // Open, create a node, close.
         let db = drevo_open(c_path.as_ptr());
-        assert!(
-            db.is_null(),
-            "drevo_open must fail — the disk backend is gone"
-        );
-        let err = last_error().expect("drevo_open must set a descriptive error");
-        assert!(
-            err.contains("drevo_open_in_memory"),
-            "the error should point callers at the in-memory constructor: {err}"
-        );
+        assert!(!db.is_null(), "drevo_open failed: {:?}", last_error());
+        let kind = CString::new("note").unwrap();
+        let title = CString::new("persisted").unwrap();
+        let empty = CString::new("").unwrap();
+        let props = CString::new("{}").unwrap();
+        let node_json = read_and_free(drevo_create_node(
+            db,
+            kind.as_ptr(),
+            title.as_ptr(),
+            empty.as_ptr(),
+            empty.as_ptr(),
+            props.as_ptr(),
+        ));
+        let created: serde_json::Value = serde_json::from_str(&node_json).unwrap();
+        let id = created["id"].as_u64().unwrap();
+        assert_eq!(drevo_close(db), 0);
+
+        // Reopen the same path and read the node back.
+        let db2 = drevo_open(c_path.as_ptr());
+        assert!(!db2.is_null(), "reopen failed: {:?}", last_error());
+        let fetched = read_and_free(drevo_get_node(db2, id));
+        let node: serde_json::Value = serde_json::from_str(&fetched).unwrap();
+        assert_eq!(node["title"], "persisted", "node must survive reopen");
+        assert_eq!(drevo_close(db2), 0);
     }
 }
 
