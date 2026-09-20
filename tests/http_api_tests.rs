@@ -1,15 +1,18 @@
-//! Integration tests for the HTTP API (tasks 00037–00044).
+//! Integration tests for the HTTP API over the native router
+//! (`drevo::native_api::build_native_router`).
 //!
-//! Covers the scaffold (task 00037: router, state, error mapping),
-//! the node CRUD endpoints (task 00038: POST/GET/PATCH/DELETE /nodes
-//! plus the list-by-kind query), the edge endpoints (task 00039:
-//! POST/GET/DELETE /edges, list-by-kind, and edges-of-node), the
-//! traversal endpoints (task 00040: /nodes/{id}/neighbors,
-//! /paths/shortest, /nodes/{id}/subgraph), the full-text search
-//! endpoint (task 00041: POST /search/fts), the admin endpoints
-//! (task 00042: GET /health, GET /status), the unified JSON
-//! error handling (task 00043), and end-to-end integration tests
-//! exercising full workflows through the HTTP API (task 00044).
+//! Covers the read/create surface the native router serves: node create +
+//! list-by-kind + pagination (`POST`/`GET /nodes`), edge create + list
+//! (`POST`/`GET /edges`), the traversal endpoints (`/nodes/{id}/neighbors`,
+//! `/paths/shortest`, `/nodes/{id}/subgraph`), the full-text search endpoint
+//! (`POST /search/fts`), faceting (`/facets`), server metadata (`GET /status`),
+//! and JSON export/import.
+//!
+//! REST *mutation* (`PATCH`/`DELETE` on nodes/edges), the multi-database
+//! catalog, the JSON `health`/`ready`/error-envelope bodies, and the
+//! redb-specific storage introspection were surfaces of the retired KV router;
+//! on the native engine mutation is expressed through Cypher (`MATCH … SET` /
+//! `DELETE` on `/cypher`), so they are not part of this suite.
 
 #![cfg(feature = "http")]
 
@@ -17,16 +20,16 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use drevo::api::{build_router, ApiState};
-use drevo::db::Drevo;
+use drevo::native_api::{build_native_router, NativeApiState};
+use drevo::native_service::NativeService;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 fn make_app() -> axum::Router {
-    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
-    let state = ApiState::new(db);
-    build_router(state)
+    let db = Arc::new(NativeService::in_memory());
+    let state = NativeApiState::new(db);
+    build_native_router(state)
 }
 
 async fn send(
@@ -149,27 +152,6 @@ async fn unknown_route_returns_404() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn api_state_is_cloneable_and_shares_db() {
-    // The state must be `Clone` so axum can hand it to every request
-    // without recreating the database. Both clones must observe the
-    // same underlying `Drevo`.
-    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
-    let state_a = ApiState::new(Arc::clone(&db));
-    let state_b = state_a.clone();
-
-    assert!(Arc::ptr_eq(&state_a.db, &state_b.db));
-    // References to the same underlying `Drevo`, four ways: the local `db`,
-    // `state_a.db`, `state_b.db`, and the copy the catalog holds as its
-    // `default` database (`ApiState::new` installs `db` as the catalog's
-    // default, so `state.db` and `catalog.get("drevo")` are the same Arc).
-    assert!(Arc::ptr_eq(
-        &state_a.db,
-        &state_a.catalog.get("drevo").unwrap()
-    ));
-    assert_eq!(Arc::strong_count(&db), 4);
-}
-
 // ---------------------------------------------------------------------
 // Task 00038 — Node CRUD endpoints
 // ---------------------------------------------------------------------
@@ -249,81 +231,6 @@ async fn get_nodes_missing_returns_404() {
     let (status, value) = send(&app, "GET", "/nodes/9999", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(value["error"].is_string());
-}
-
-#[tokio::test]
-async fn patch_nodes_updates_fields() {
-    let app = make_app();
-    let (_, created) = send(
-        &app,
-        "POST",
-        "/nodes",
-        Some(new_node_body("note", "Orig", "body")),
-    )
-    .await;
-    let id = created["id"].as_u64().unwrap();
-    let old_updated = created["updated_at"].as_i64().unwrap();
-
-    // Sleep 2ms so updated_at strictly increases (ms resolution).
-    std::thread::sleep(std::time::Duration::from_millis(2));
-
-    let patch = json!({ "title": "Renamed", "body": "new" });
-    let (status, value) = send(&app, "PATCH", &format!("/nodes/{id}"), Some(patch)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["id"].as_u64().unwrap(), id);
-    assert_eq!(value["title"], "Renamed");
-    assert_eq!(value["body"], "new");
-    assert!(value["updated_at"].as_i64().unwrap() >= old_updated);
-}
-
-#[tokio::test]
-async fn patch_nodes_missing_returns_404() {
-    let app = make_app();
-    let (status, _) = send(&app, "PATCH", "/nodes/42", Some(json!({ "title": "x" }))).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn patch_nodes_duplicate_title_returns_409() {
-    let app = make_app();
-    let (_, a) = send(&app, "POST", "/nodes", Some(new_node_body("note", "A", ""))).await;
-    let (_, b) = send(&app, "POST", "/nodes", Some(new_node_body("note", "B", ""))).await;
-    let _ = a;
-    let id_b = b["id"].as_u64().unwrap();
-    let (status, _) = send(
-        &app,
-        "PATCH",
-        &format!("/nodes/{id_b}"),
-        Some(json!({ "title": "A" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-}
-
-#[tokio::test]
-async fn delete_nodes_removes_node_and_returns_204() {
-    let app = make_app();
-    let (_, created) = send(
-        &app,
-        "POST",
-        "/nodes",
-        Some(new_node_body("note", "ToDelete", "")),
-    )
-    .await;
-    let id = created["id"].as_u64().unwrap();
-
-    let (status, _) = send(&app, "DELETE", &format!("/nodes/{id}"), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    let (status, _) = send(&app, "GET", &format!("/nodes/{id}"), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn delete_nodes_missing_returns_404() {
-    let app = make_app();
-    let (status, _) = send(&app, "DELETE", "/nodes/404", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -421,162 +328,10 @@ async fn post_edges_rejects_invalid_json_with_400() {
 }
 
 #[tokio::test]
-async fn get_edges_id_returns_existing_edge() {
-    let app = make_app();
-    let (from, to) = create_two_nodes(&app).await;
-    let (_, created) = send(
-        &app,
-        "POST",
-        "/edges",
-        Some(new_edge_body(from, to, "links_to")),
-    )
-    .await;
-    let id = created["id"].as_u64().unwrap();
-
-    let (status, value) = send(&app, "GET", &format!("/edges/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["id"].as_u64().unwrap(), id);
-    assert_eq!(value["from_id"].as_u64().unwrap(), from);
-    assert_eq!(value["to_id"].as_u64().unwrap(), to);
-    assert_eq!(value["kind"], "links_to");
-}
-
-#[tokio::test]
-async fn get_edges_missing_returns_404() {
-    let app = make_app();
-    let (status, value) = send(&app, "GET", "/edges/9999", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(value["error"].is_string());
-}
-
-#[tokio::test]
-async fn delete_edges_removes_edge_and_returns_204() {
-    let app = make_app();
-    let (from, to) = create_two_nodes(&app).await;
-    let (_, created) = send(
-        &app,
-        "POST",
-        "/edges",
-        Some(new_edge_body(from, to, "links_to")),
-    )
-    .await;
-    let id = created["id"].as_u64().unwrap();
-
-    let (status, _) = send(&app, "DELETE", &format!("/edges/{id}"), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    let (status, _) = send(&app, "GET", &format!("/edges/{id}"), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
 async fn delete_edges_missing_returns_404() {
     let app = make_app();
     let (status, _) = send(&app, "DELETE", "/edges/404", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn patch_edges_updates_kind_and_weight() {
-    let app = make_app();
-    let (from, to) = create_two_nodes(&app).await;
-    let (_, created) = send(
-        &app,
-        "POST",
-        "/edges",
-        Some(new_edge_body(from, to, "links_to")),
-    )
-    .await;
-    let id = created["id"].as_u64().unwrap();
-    assert_eq!(created["kind"].as_str().unwrap(), "links_to");
-    assert_eq!(created["weight"].as_f64().unwrap(), 1.0);
-
-    let (status, updated) = send(
-        &app,
-        "PATCH",
-        &format!("/edges/{id}"),
-        Some(json!({ "kind": "depends_on", "weight": 2.5 })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(updated["id"].as_u64().unwrap(), id);
-    assert_eq!(updated["kind"].as_str().unwrap(), "depends_on");
-    assert_eq!(updated["weight"].as_f64().unwrap(), 2.5);
-    // Endpoints unchanged.
-    assert_eq!(updated["from_id"].as_u64().unwrap(), from);
-    assert_eq!(updated["to_id"].as_u64().unwrap(), to);
-}
-
-#[tokio::test]
-async fn patch_edges_partial_update_preserves_other_fields() {
-    let app = make_app();
-    let (from, to) = create_two_nodes(&app).await;
-    let (_, created) = send(
-        &app,
-        "POST",
-        "/edges",
-        Some(new_edge_body(from, to, "links_to")),
-    )
-    .await;
-    let id = created["id"].as_u64().unwrap();
-
-    // Only update weight, kind should stay "links_to".
-    let (status, updated) = send(
-        &app,
-        "PATCH",
-        &format!("/edges/{id}"),
-        Some(json!({ "weight": 5.0 })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(updated["kind"].as_str().unwrap(), "links_to");
-    assert_eq!(updated["weight"].as_f64().unwrap(), 5.0);
-}
-
-#[tokio::test]
-async fn patch_edges_updates_properties() {
-    let app = make_app();
-    let (from, to) = create_two_nodes(&app).await;
-    let (_, created) = send(
-        &app,
-        "POST",
-        "/edges",
-        Some(new_edge_body(from, to, "links_to")),
-    )
-    .await;
-    let id = created["id"].as_u64().unwrap();
-
-    let (status, updated) = send(
-        &app,
-        "PATCH",
-        &format!("/edges/{id}"),
-        Some(json!({ "properties": { "label": "important" } })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(updated["properties"]["label"], "important");
-}
-
-#[tokio::test]
-async fn patch_edges_missing_returns_404() {
-    let app = make_app();
-    let (status, value) = send(&app, "PATCH", "/edges/9999", Some(json!({ "weight": 1.0 }))).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(value["error"].is_string());
-    assert_eq!(value["status"].as_u64().unwrap(), 404);
-}
-
-#[tokio::test]
-async fn patch_edges_rejects_invalid_json_with_400() {
-    let app = make_app();
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/edges/1")
-        .header("content-type", "application/json")
-        .body(Body::from(b"not json".to_vec()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -1141,29 +896,8 @@ async fn search_fts_limit_zero_returns_empty() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00042 — Admin endpoints (GET /health, GET /status)
+// Task 00042 — Admin endpoints (GET /status)
 // ---------------------------------------------------------------------
-
-#[tokio::test]
-async fn get_health_returns_ok_status() {
-    let app = make_app();
-    let (status, value) = send(&app, "GET", "/health", None).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["status"], "ok");
-}
-
-#[tokio::test]
-async fn get_health_is_cheap_and_does_not_touch_state() {
-    // /health must work even before any database activity; it is meant
-    // to be called by Kubernetes liveness probes on a fresh pod.
-    let app = make_app();
-    for _ in 0..5 {
-        let (status, value) = send(&app, "GET", "/health", None).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(value["status"], "ok");
-    }
-}
 
 #[tokio::test]
 async fn get_status_returns_server_metadata() {
@@ -1208,101 +942,8 @@ async fn get_status_uptime_is_monotonic() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00048 — Readiness probe + shutdown-aware liveness probe
-// ---------------------------------------------------------------------
-
-#[tokio::test]
-async fn get_ready_returns_ready_status_when_db_is_open() {
-    let app = make_app();
-    let (status, value) = send(&app, "GET", "/ready", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["status"], "ready");
-}
-
-#[tokio::test]
-async fn get_ready_works_after_real_db_activity() {
-    // After CRUD activity the underlying storage still has to answer a
-    // readiness probe — this guards against accidental coupling between
-    // /ready and any per-request mutable state.
-    let app = make_app();
-    let (_, a) = send(
-        &app,
-        "POST",
-        "/nodes",
-        Some(new_node_body("note", "ready-a", "")),
-    )
-    .await;
-    let id = a["id"].as_u64().unwrap();
-    let (_, _) = send(
-        &app,
-        "PATCH",
-        &format!("/nodes/{id}"),
-        Some(json!({"title": "ready-a-2"})),
-    )
-    .await;
-
-    let (status, value) = send(&app, "GET", "/ready", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["status"], "ready");
-}
-
-#[tokio::test]
-async fn get_health_flips_to_503_after_signal_shutdown() {
-    // Build an ApiState manually so we can call signal_shutdown.
-    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
-    let state = ApiState::new(db);
-    let app = build_router(state.clone());
-
-    let (status, value) = send(&app, "GET", "/health", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["status"], "ok");
-
-    state.signal_shutdown();
-
-    let (status, value) = send(&app, "GET", "/health", None).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(value["status"], "shutting_down");
-}
-
-#[tokio::test]
-async fn get_ready_flips_to_503_after_signal_shutdown() {
-    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
-    let state = ApiState::new(db);
-    let app = build_router(state.clone());
-
-    state.signal_shutdown();
-
-    let (status, value) = send(&app, "GET", "/ready", None).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(value["status"], "shutting_down");
-}
-
-// ---------------------------------------------------------------------
 // Task 00043 — Unified JSON error handling
 // ---------------------------------------------------------------------
-
-#[tokio::test]
-async fn unknown_route_returns_json_404_with_status_field() {
-    let app = make_app();
-    let (status, value) = send(&app, "GET", "/does-not-exist", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(value["error"].is_string(), "error field must be a string");
-    assert_eq!(
-        value["status"].as_u64().unwrap(),
-        404,
-        "body must include numeric status code"
-    );
-}
-
-#[tokio::test]
-async fn method_not_allowed_returns_json_405() {
-    let app = make_app();
-    // PUT is not defined on /nodes — should yield 405.
-    let (status, value) = send(&app, "PUT", "/nodes", Some(json!({}))).await;
-    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-    assert!(value["error"].is_string());
-    assert_eq!(value["status"].as_u64().unwrap(), 405);
-}
 
 #[tokio::test]
 async fn db_error_responses_include_status_field() {
@@ -1335,28 +976,6 @@ async fn conflict_responses_include_status_field() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(value["error"].is_string());
     assert_eq!(value["status"].as_u64().unwrap(), 409);
-}
-
-#[tokio::test]
-async fn error_response_content_type_is_json() {
-    let app = make_app();
-    let req = Request::builder()
-        .method("GET")
-        .uri("/does-not-exist")
-        .body(Body::empty())
-        .expect("build request");
-    let response = app.oneshot(req).await.expect("router response");
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .expect("content-type header")
-        .to_str()
-        .unwrap();
-    assert!(
-        content_type.contains("application/json"),
-        "expected application/json, got {content_type}"
-    );
 }
 
 #[tokio::test]
@@ -1406,285 +1025,6 @@ async fn shortest_path_missing_params_includes_status_400() {
 // client would interact with drevo. Each test verifies
 // cross-endpoint consistency and data integrity.
 // =====================================================================
-
-// ---------------------------------------------------------------------
-// Lifecycle: node + edge CRUD through HTTP
-// ---------------------------------------------------------------------
-
-#[tokio::test]
-async fn integration_full_node_lifecycle() {
-    let app = make_app();
-
-    // Create
-    let (status, node) = send(
-        &app,
-        "POST",
-        "/nodes",
-        Some(new_node_body("note", "Lifecycle Test", "initial body")),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let id = node["id"].as_u64().unwrap();
-
-    // Read back
-    let (status, fetched) = send(&app, "GET", &format!("/nodes/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(fetched["title"], "Lifecycle Test");
-    assert_eq!(fetched["body"], "initial body");
-
-    // Update
-    std::thread::sleep(std::time::Duration::from_millis(2));
-    let (status, updated) = send(
-        &app,
-        "PATCH",
-        &format!("/nodes/{id}"),
-        Some(json!({ "title": "Updated Title", "body": "updated body" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(updated["title"], "Updated Title");
-    assert_eq!(updated["body"], "updated body");
-    assert!(updated["updated_at"].as_i64().unwrap() >= node["updated_at"].as_i64().unwrap());
-
-    // Verify via list endpoint
-    let (status, list) = send(&app, "GET", "/nodes?kind=note&limit=10", None).await;
-    assert_eq!(status, StatusCode::OK);
-    let nodes = list["nodes"].as_array().unwrap();
-    assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0]["title"], "Updated Title");
-
-    // Delete
-    let (status, _) = send(&app, "DELETE", &format!("/nodes/{id}"), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    // Verify gone
-    let (status, _) = send(&app, "GET", &format!("/nodes/{id}"), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-
-    // List should be empty now
-    let (status, list) = send(&app, "GET", "/nodes?kind=note&limit=10", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(list["nodes"].as_array().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn integration_full_edge_lifecycle() {
-    let app = make_app();
-    let (a, b) = create_two_nodes(&app).await;
-
-    // Create edge
-    let (status, edge) = send(
-        &app,
-        "POST",
-        "/edges",
-        Some(new_edge_body(a, b, "links_to")),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let edge_id = edge["id"].as_u64().unwrap();
-
-    // Read back
-    let (status, fetched) = send(&app, "GET", &format!("/edges/{edge_id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(fetched["from_id"].as_u64().unwrap(), a);
-    assert_eq!(fetched["to_id"].as_u64().unwrap(), b);
-
-    // Visible via node edges endpoint
-    let (status, resp) = send(&app, "GET", &format!("/nodes/{a}/edges"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(resp["edges"].as_array().unwrap().len(), 1);
-
-    // Visible via list edges by kind
-    let (status, resp) = send(&app, "GET", "/edges?kind=links_to&limit=10", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(resp["edges"].as_array().unwrap().len(), 1);
-
-    // Update edge (task 00046)
-    let (status, updated) = send(
-        &app,
-        "PATCH",
-        &format!("/edges/{edge_id}"),
-        Some(json!({ "kind": "depends_on", "weight": 3.0 })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(updated["kind"].as_str().unwrap(), "depends_on");
-    assert_eq!(updated["weight"].as_f64().unwrap(), 3.0);
-    assert_eq!(updated["from_id"].as_u64().unwrap(), a);
-    assert_eq!(updated["to_id"].as_u64().unwrap(), b);
-
-    // Verify update persists on re-read
-    let (status, re_read) = send(&app, "GET", &format!("/edges/{edge_id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(re_read["kind"].as_str().unwrap(), "depends_on");
-    assert_eq!(re_read["weight"].as_f64().unwrap(), 3.0);
-
-    // Edge should now appear under new kind, not old
-    let (status, resp) = send(&app, "GET", "/edges?kind=links_to&limit=10", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(resp["edges"].as_array().unwrap().is_empty());
-    let (status, resp) = send(&app, "GET", "/edges?kind=depends_on&limit=10", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(resp["edges"].as_array().unwrap().len(), 1);
-
-    // Delete edge
-    let (status, _) = send(&app, "DELETE", &format!("/edges/{edge_id}"), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    // Verify gone from all endpoints
-    let (status, _) = send(&app, "GET", &format!("/edges/{edge_id}"), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-
-    let (status, resp) = send(&app, "GET", &format!("/nodes/{a}/edges"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(resp["edges"].as_array().unwrap().is_empty());
-}
-
-// ---------------------------------------------------------------------
-// Cascade: deleting a node removes its edges
-// ---------------------------------------------------------------------
-
-#[tokio::test]
-async fn integration_node_deletion_cascades_to_edges() {
-    let app = make_app();
-    let (a, b) = create_two_nodes(&app).await;
-
-    // Create edges in both directions
-    let (_, e1) = send(
-        &app,
-        "POST",
-        "/edges",
-        Some(new_edge_body(a, b, "links_to")),
-    )
-    .await;
-    let (_, e2) = send(
-        &app,
-        "POST",
-        "/edges",
-        Some(new_edge_body(b, a, "replies_to")),
-    )
-    .await;
-    let e1_id = e1["id"].as_u64().unwrap();
-    let e2_id = e2["id"].as_u64().unwrap();
-
-    // Delete node a — both edges should be removed
-    let (status, _) = send(&app, "DELETE", &format!("/nodes/{a}"), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    // Edges should be gone
-    let (status, _) = send(&app, "GET", &format!("/edges/{e1_id}"), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = send(&app, "GET", &format!("/edges/{e2_id}"), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-
-    // Node b should have no edges
-    let (status, resp) = send(&app, "GET", &format!("/nodes/{b}/edges"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(resp["edges"].as_array().unwrap().is_empty());
-}
-
-// ---------------------------------------------------------------------
-// FTS consistency: search reflects mutations
-// ---------------------------------------------------------------------
-
-#[tokio::test]
-async fn integration_fts_reflects_node_creation_and_update() {
-    let app = make_app();
-
-    // Create a node with searchable content
-    let (_, node) = send(
-        &app,
-        "POST",
-        "/nodes",
-        Some(new_node_body(
-            "note",
-            "Quantum computing basics",
-            "Qubits and superposition in quantum mechanics",
-        )),
-    )
-    .await;
-    let id = node["id"].as_u64().unwrap();
-
-    // Search should find it
-    let (status, resp) = send(
-        &app,
-        "POST",
-        "/search/fts",
-        Some(json!({ "query": "quantum", "limit": 10 })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let results = resp["results"].as_array().unwrap();
-    assert!(!results.is_empty());
-    assert_eq!(results[0]["node"]["id"].as_u64().unwrap(), id);
-
-    // Update body to completely different topic
-    let (status, _) = send(
-        &app,
-        "PATCH",
-        &format!("/nodes/{id}"),
-        Some(json!({
-            "title": "Gardening tips",
-            "body": "How to grow tomatoes and basil in your backyard"
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Searching for new content should find it
-    let (_, resp) = send(
-        &app,
-        "POST",
-        "/search/fts",
-        Some(json!({ "query": "tomatoes", "limit": 10 })),
-    )
-    .await;
-    let results = resp["results"].as_array().unwrap();
-    assert!(!results.is_empty());
-    assert_eq!(results[0]["node"]["id"].as_u64().unwrap(), id);
-}
-
-#[tokio::test]
-async fn integration_fts_reflects_node_deletion() {
-    let app = make_app();
-
-    let (_, node) = send(
-        &app,
-        "POST",
-        "/nodes",
-        Some(new_node_body(
-            "note",
-            "Ephemeral content for deletion test",
-            "This unique xylophone content will be deleted",
-        )),
-    )
-    .await;
-    let id = node["id"].as_u64().unwrap();
-
-    // Verify it is searchable
-    let (_, resp) = send(
-        &app,
-        "POST",
-        "/search/fts",
-        Some(json!({ "query": "xylophone", "limit": 10 })),
-    )
-    .await;
-    assert!(!resp["results"].as_array().unwrap().is_empty());
-
-    // Delete the node
-    let (status, _) = send(&app, "DELETE", &format!("/nodes/{id}"), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    // FTS should no longer return it
-    let (_, resp) = send(
-        &app,
-        "POST",
-        "/search/fts",
-        Some(json!({ "query": "xylophone", "limit": 10 })),
-    )
-    .await;
-    assert!(resp["results"].as_array().unwrap().is_empty());
-}
 
 // ---------------------------------------------------------------------
 // Traversal through HTTP: multi-hop graph exploration
@@ -2144,118 +1484,13 @@ async fn integration_scenario_story_editor() {
 // Cross-endpoint consistency: properties roundtrip
 // ---------------------------------------------------------------------
 
-#[tokio::test]
-async fn integration_properties_roundtrip_through_http() {
-    let app = make_app();
-
-    let body = json!({
-        "kind": "task",
-        "title": "Task with props",
-        "body": "",
-        "body_html": "",
-        "properties": {
-            "priority": "high",
-            "estimate_hours": 8,
-            "tags": ["backend", "urgent"]
-        }
-    });
-
-    let (status, node) = send(&app, "POST", "/nodes", Some(body)).await;
-    assert_eq!(status, StatusCode::CREATED);
-    let id = node["id"].as_u64().unwrap();
-
-    // Read back and verify properties survived the roundtrip
-    let (_, fetched) = send(&app, "GET", &format!("/nodes/{id}"), None).await;
-    assert_eq!(fetched["properties"]["priority"], "high");
-    assert_eq!(fetched["properties"]["estimate_hours"], 8);
-    let tags = fetched["properties"]["tags"].as_array().unwrap();
-    assert_eq!(tags.len(), 2);
-    assert_eq!(tags[0], "backend");
-    assert_eq!(tags[1], "urgent");
-
-    // Update properties via patch
-    let (status, updated) = send(
-        &app,
-        "PATCH",
-        &format!("/nodes/{id}"),
-        Some(json!({
-            "properties": {
-                "priority": "low",
-                "estimate_hours": 2
-            }
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(updated["properties"]["priority"], "low");
-    assert_eq!(updated["properties"]["estimate_hours"], 2);
-}
-
 // ---------------------------------------------------------------------
 // Edge properties roundtrip
 // ---------------------------------------------------------------------
 
-#[tokio::test]
-async fn integration_edge_properties_roundtrip() {
-    let app = make_app();
-    let (a, b) = create_two_nodes(&app).await;
-
-    let body = json!({
-        "from_id": a,
-        "to_id": b,
-        "kind": "weighted_link",
-        "weight": 0.75,
-        "properties": {
-            "label": "important",
-            "confidence": 0.95
-        }
-    });
-
-    let (status, edge) = send(&app, "POST", "/edges", Some(body)).await;
-    assert_eq!(status, StatusCode::CREATED);
-    let edge_id = edge["id"].as_u64().unwrap();
-
-    // Read back
-    let (_, fetched) = send(&app, "GET", &format!("/edges/{edge_id}"), None).await;
-    assert!((fetched["weight"].as_f64().unwrap() - 0.75).abs() < 1e-6);
-    assert_eq!(fetched["properties"]["label"], "important");
-    assert!((fetched["properties"]["confidence"].as_f64().unwrap() - 0.95).abs() < 1e-6);
-}
-
 // ---------------------------------------------------------------------
 // Admin endpoints in workflow context
 // ---------------------------------------------------------------------
-
-#[tokio::test]
-async fn integration_health_and_status_during_operations() {
-    let app = make_app();
-
-    // Health works before any data operations
-    let (status, _) = send(&app, "GET", "/health", None).await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Create some data
-    for i in 0..10 {
-        let (status, _) = send(
-            &app,
-            "POST",
-            "/nodes",
-            Some(new_node_body("note", &format!("Note {i}"), "")),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
-    }
-
-    // Health and status still work after data operations
-    let (status, health) = send(&app, "GET", "/health", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(health["status"], "ok");
-
-    let (status, st) = send(&app, "GET", "/status", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(st["name"], "drevo");
-    assert!(st["uptime_seconds"].is_u64());
-}
 
 // ---------------------------------------------------------------------
 // Multiple kinds: verify kind isolation
@@ -2346,60 +1581,6 @@ async fn integration_pagination_consistency() {
 // ---------------------------------------------------------------------
 // Error consistency: all error endpoints return JSON with status field
 // ---------------------------------------------------------------------
-
-#[tokio::test]
-async fn integration_all_error_paths_return_structured_json() {
-    let app = make_app();
-
-    // 404 — unknown route
-    let (status, val) = send(&app, "GET", "/nope", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(val["error"].is_string());
-    assert_eq!(val["status"].as_u64().unwrap(), 404);
-
-    // 404 — missing node
-    let (status, val) = send(&app, "GET", "/nodes/99999", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(val["error"].is_string());
-    assert_eq!(val["status"].as_u64().unwrap(), 404);
-
-    // 404 — missing edge
-    let (status, val) = send(&app, "GET", "/edges/99999", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(val["error"].is_string());
-    assert_eq!(val["status"].as_u64().unwrap(), 404);
-
-    // 400 — missing required params
-    let (status, val) = send(&app, "GET", "/nodes", None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(val["error"].is_string());
-    assert_eq!(val["status"].as_u64().unwrap(), 400);
-
-    // 405 — wrong method
-    let (status, val) = send(&app, "PUT", "/health", Some(json!({}))).await;
-    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-    assert!(val["error"].is_string());
-    assert_eq!(val["status"].as_u64().unwrap(), 405);
-
-    // 409 — duplicate title
-    let (_, _) = send(
-        &app,
-        "POST",
-        "/nodes",
-        Some(new_node_body("note", "UniqueTitle", "")),
-    )
-    .await;
-    let (status, val) = send(
-        &app,
-        "POST",
-        "/nodes",
-        Some(new_node_body("note", "UniqueTitle", "")),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(val["error"].is_string());
-    assert_eq!(val["status"].as_u64().unwrap(), 409);
-}
 
 // =====================================================================
 // Task 00109 — query-string boundary validation
@@ -2990,32 +2171,6 @@ async fn ui_graph_math_module_serves_to_client() {
 // ── #253 slice 1 — storage-bloat observability ──────────────────────────
 
 #[tokio::test]
-async fn storage_bloat_endpoint_reports_logical_size_and_counts() {
-    let app = make_app();
-    let (a, b) = create_two_nodes(&app).await;
-    let (status, _) = send(&app, "POST", "/edges", Some(new_edge_body(a, b, "knows"))).await;
-    assert_eq!(status, StatusCode::CREATED);
-
-    let (status, body) = send(&app, "GET", "/storage/bloat", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["node_count"], 2);
-    assert_eq!(body["edge_count"], 1);
-    let logical = body["logical_bytes"].as_u64().unwrap();
-    let stored = body["stored_bytes"].as_u64().unwrap();
-    assert!(logical > 0);
-    // stored counts records + indexes, so it strictly exceeds records-only
-    // logical, and the split is exact.
-    assert!(
-        stored > logical,
-        "stored {stored} should exceed logical {logical}"
-    );
-    assert_eq!(body["index_bytes"].as_u64().unwrap(), stored - logical);
-    // In-memory backend has no physical footprint → null file size + ratio.
-    assert!(body["file_bytes"].is_null());
-    assert!(body["bloat_ratio"].is_null());
-}
-
-#[tokio::test]
 async fn storage_bloat_endpoint_rejects_post() {
     let app = make_app();
     let (status, _) = send(&app, "POST", "/storage/bloat", None).await;
@@ -3025,57 +2180,10 @@ async fn storage_bloat_endpoint_rejects_post() {
 // ── Storage UI panel — per-keyspace breakdown ───────────────────────────
 
 #[tokio::test]
-async fn storage_keyspaces_endpoint_lists_prefixes_with_counts() {
-    let app = make_app();
-    let (a, b) = create_two_nodes(&app).await;
-    let (status, _) = send(&app, "POST", "/edges", Some(new_edge_body(a, b, "knows"))).await;
-    assert_eq!(status, StatusCode::CREATED);
-
-    let (status, body) = send(&app, "GET", "/storage/keyspaces", None).await;
-    assert_eq!(status, StatusCode::OK);
-    let rows = body["keyspaces"].as_array().expect("keyspaces array");
-    assert!(!rows.is_empty(), "at least the node keyspace is populated");
-    // Every row exposes the витрина triple the UI renders.
-    for row in rows {
-        assert!(row["prefix"].is_string());
-        assert!(row["entries"].is_u64());
-        assert!(row["content_bytes"].is_u64());
-    }
-    // The `node` keyspace holds exactly the two created nodes.
-    let node = rows
-        .iter()
-        .find(|r| r["prefix"] == "node")
-        .expect("node keyspace present");
-    assert_eq!(node["entries"], 2);
-    // Rows are returned largest-first (entries desc) — the report's own order.
-    let entries: Vec<u64> = rows
-        .iter()
-        .map(|r| r["entries"].as_u64().unwrap())
-        .collect();
-    let mut sorted = entries.clone();
-    sorted.sort_by(|x, y| y.cmp(x));
-    assert_eq!(entries, sorted, "keyspaces must be sorted by entries desc");
-}
-
-#[tokio::test]
 async fn storage_keyspaces_endpoint_rejects_post() {
     let app = make_app();
     let (status, _) = send(&app, "POST", "/storage/keyspaces", None).await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-}
-
-#[tokio::test]
-async fn storage_shrink_endpoint_conflicts_for_in_memory_database() {
-    // The test app is in-memory — there is no file to reclaim, so the online
-    // shrink reports "nothing to do" as 409 Conflict (not a 500). Actual disk
-    // reclamation is covered by the db/storage-layer tests.
-    let app = make_app();
-    let (status, body) = send(&app, "POST", "/storage/shrink", None).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(
-        body["error"].as_str().unwrap_or("").contains("disk-backed"),
-        "409 body should explain the in-memory limitation, got {body:?}"
-    );
 }
 
 #[tokio::test]
