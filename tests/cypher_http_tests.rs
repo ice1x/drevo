@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use drevo::api::{build_router, ApiState};
-use drevo::db::Drevo;
 use drevo::model::{NewEdge, NewNode, Properties};
+use drevo::native_api::{build_native_router, NativeApiState};
+use drevo::native_service::NativeService;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -34,7 +34,7 @@ fn node(kind: &str, title: &str) -> NewNode {
 
 /// App over an in-memory db pre-populated with `(a:Person)-[:KNOWS]->(b:Person)`.
 fn make_populated_app() -> axum::Router {
-    let db = Arc::new(Drevo::open_in_memory().expect("open in-memory db"));
+    let db = Arc::new(NativeService::in_memory());
     let a = db.create_node(node("Person", "Alice")).expect("a");
     let b = db.create_node(node("Person", "Bob")).expect("b");
     db.create_edge(NewEdge {
@@ -45,7 +45,7 @@ fn make_populated_app() -> axum::Router {
         properties: Properties::default(),
     })
     .expect("edge");
-    build_router(ApiState::new(db))
+    build_native_router(NativeApiState::new(db))
 }
 
 async fn post_cypher(app: &axum::Router, query: &str) -> (StatusCode, Value) {
