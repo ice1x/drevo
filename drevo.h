@@ -249,15 +249,6 @@
 typedef struct BoltVersion BoltVersion;
 
 /**
- * The main drevo handle.
- *
- * Created via `Drevo::open` (disk-backed, requires the
- * `redb-backend` Cargo feature) or [`Drevo::open_in_memory`]
- * (ephemeral). All graph operations are methods on this struct.
- */
-typedef struct Drevo Drevo;
-
-/**
  * A log sequence number — a strictly increasing identifier stamped on every
  * [`WalRecord`].
  *
@@ -269,9 +260,15 @@ typedef struct Drevo Drevo;
 typedef struct Lsn Lsn;
 
 /**
+ * A durable native graph serving Cypher with its full index stack. See the
+ * [module docs](self).
+ */
+typedef struct NativeService NativeService;
+
+/**
  * Opaque handle exposed to C consumers.
  */
-typedef struct Drevo drevo_t;
+typedef struct NativeService drevo_t;
 
 /**
  * A monotonically increasing transaction identifier.

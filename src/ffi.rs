@@ -1,8 +1,10 @@
 //! C FFI bindings for drevo.
 //!
-//! Exposes the [`crate::db::Drevo`] API through `extern "C"` functions for
-//! consumption by C, Swift (iOS), Kotlin/JNI (Android), and other FFI-capable
-//! languages.
+//! Exposes the durable-native graph engine ([`crate::native_service::NativeService`])
+//! through `extern "C"` functions for consumption by C, Swift (iOS), Kotlin/JNI
+//! (Android), and other FFI-capable languages. (Through epic #444 this wrapped
+//! the KV `Drevo` store; it now drives the same native engine the server runs,
+//! so an embedded C consumer and the server share one storage engine.)
 //!
 //! ## Design
 //!
@@ -72,11 +74,11 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
-use crate::db::Drevo;
 use crate::model::{Direction, EdgePatch, NewEdge, NewNode, NodePatch, Properties};
+use crate::native_service::NativeService;
 
 /// Opaque handle exposed to C consumers.
-pub type DrevoHandle = Drevo;
+pub type DrevoHandle = NativeService;
 
 // ---------------------------------------------------------------------------
 // Thread-local error
@@ -245,16 +247,20 @@ fn direction_from_int(d: i32) -> Option<Direction> {
 pub unsafe extern "C" fn drevo_open(path: *const c_char) -> *mut DrevoHandle {
     ffi_guard_ptr!("drevo_open", {
         clear_error();
-        let Some(_p) = read_c_str(path, "path") else {
+        let Some(p) = read_c_str(path, "path") else {
             return ptr::null_mut();
         };
-        set_error(
-            "drevo_open is no longer supported (the embedded redb KV store was \
-             removed in epic #444); use drevo_open_in_memory for an ephemeral \
-             database, or the native-durable server for a persistent store"
-                .to_string(),
-        );
-        ptr::null_mut()
+        // Durable native store: the append-only WAL under `path` (created if
+        // absent, recovered if present). This is the same engine the server
+        // runs, so an embedded C consumer and the server share one storage
+        // engine (epic #444 replaced the retired redb KV backend here).
+        match NativeService::open(p) {
+            Ok(db) => Box::into_raw(Box::new(db)),
+            Err(e) => {
+                set_error(format!("{e}"));
+                ptr::null_mut()
+            }
+        }
     })
 }
 
@@ -268,13 +274,8 @@ pub unsafe extern "C" fn drevo_open(path: *const c_char) -> *mut DrevoHandle {
 pub unsafe extern "C" fn drevo_open_in_memory() -> *mut DrevoHandle {
     ffi_guard_ptr!("drevo_open_in_memory", {
         clear_error();
-        match Drevo::open_in_memory() {
-            Ok(db) => Box::into_raw(Box::new(db)),
-            Err(e) => {
-                set_error(format!("{e}"));
-                ptr::null_mut()
-            }
-        }
+        // Ephemeral native store — infallible to construct.
+        Box::into_raw(Box::new(NativeService::in_memory()))
     })
 }
 
@@ -295,14 +296,12 @@ pub unsafe extern "C" fn drevo_close(db: *mut DrevoHandle) -> i32 {
             set_error("null db handle".to_string());
             return -1;
         }
-        let db = Box::from_raw(db);
-        match db.close() {
-            Ok(()) => 0,
-            Err(e) => {
-                set_error(format!("{e}"));
-                -1
-            }
-        }
+        // Dropping the handle releases the store. The durable native engine
+        // persists every write to its WAL as it happens (it is the crash-safe
+        // store of record), so there is nothing to flush on close — unlike the
+        // retired KV backend, close cannot fail.
+        drop(Box::from_raw(db));
+        0
     })
 }
 
@@ -424,12 +423,10 @@ pub unsafe extern "C" fn drevo_get_node(db: *mut DrevoHandle, id: u64) -> *mut c
         }
         let db = &*db;
 
+        // Native `get_node` reports a missing id as `NodeNotFound` rather than
+        // `Ok(None)`, so a not-found is just the error arm here.
         match db.get_node(id) {
-            Ok(Some(node)) => to_json_c_string(&node),
-            Ok(None) => {
-                set_error(format!("node not found: {id}"));
-                ptr::null_mut()
-            }
+            Ok(node) => to_json_c_string(&node),
             Err(e) => {
                 set_error(format!("{e}"));
                 ptr::null_mut()
@@ -725,13 +722,9 @@ pub unsafe extern "C" fn drevo_neighbors(
             Some(k)
         };
 
-        match db.neighbors(node_id, dir, kind_filter) {
-            Ok(nodes) => to_json_c_string(&nodes),
-            Err(e) => {
-                set_error(format!("{e}"));
-                ptr::null_mut()
-            }
-        }
+        // Native `neighbors` is infallible (served from the in-memory
+        // adjacency snapshot); a missing node yields an empty list.
+        to_json_c_string(&db.neighbors(node_id, dir, kind_filter))
     })
 }
 
@@ -912,13 +905,8 @@ pub unsafe extern "C" fn drevo_search_fts(
             return ptr::null_mut();
         };
 
-        match db.search_fts(q, limit as usize) {
-            Ok(results) => to_json_c_string(&results),
-            Err(e) => {
-                set_error(format!("{e}"));
-                ptr::null_mut()
-            }
-        }
+        // Native `search_fts` returns the ranked hits directly.
+        to_json_c_string(&db.search_fts(q, limit as usize))
     })
 }
 
@@ -944,13 +932,7 @@ pub unsafe extern "C" fn drevo_list_nodes_by_kind(
             return ptr::null_mut();
         };
 
-        match db.list_nodes_by_kind(k, limit as usize, offset as usize) {
-            Ok(nodes) => to_json_c_string(&nodes),
-            Err(e) => {
-                set_error(format!("{e}"));
-                ptr::null_mut()
-            }
-        }
+        to_json_c_string(&db.list_nodes_by_kind(k, limit as usize, offset as usize))
     })
 }
 
@@ -968,13 +950,7 @@ pub unsafe extern "C" fn drevo_list_recent(db: *mut DrevoHandle, limit: u64) -> 
         }
         let db = &*db;
 
-        match db.list_recent(limit as usize) {
-            Ok(nodes) => to_json_c_string(&nodes),
-            Err(e) => {
-                set_error(format!("{e}"));
-                ptr::null_mut()
-            }
-        }
+        to_json_c_string(&db.list_recent(limit as usize))
     })
 }
 
