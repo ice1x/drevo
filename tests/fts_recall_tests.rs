@@ -3,11 +3,11 @@
 //! Tests cover: edge-case queries, IDF corner cases, score stability,
 //! special Unicode, recall measurement, and sequential-update consistency.
 
-use drevo::db::Drevo;
 use drevo::model::{NewNode, NodePatch, Properties};
+use drevo::native_service::NativeService;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().unwrap()
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -29,7 +29,7 @@ fn search_fts_punctuation_only_query() {
     let db = db();
     db.create_node(node("note", "Hello World", "Some body text"))
         .unwrap();
-    let results = db.search_fts("!@#$%^&*()", 10).unwrap();
+    let results = db.search_fts("!@#$%^&*()", 10);
     assert!(
         results.is_empty(),
         "punctuation-only query should match nothing"
@@ -41,7 +41,7 @@ fn search_fts_whitespace_only_query() {
     let db = db();
     db.create_node(node("note", "Hello World", "Some body text"))
         .unwrap();
-    let results = db.search_fts("   \t\n  ", 10).unwrap();
+    let results = db.search_fts("   \t\n  ", 10);
     assert!(
         results.is_empty(),
         "whitespace-only query should match nothing"
@@ -54,7 +54,7 @@ fn search_fts_two_char_query() {
     db.create_node(node("note", "Go language", "fast compiler"))
         .unwrap();
     // "go" is 2 chars -> no trigrams -> empty
-    let results = db.search_fts("go", 10).unwrap();
+    let results = db.search_fts("go", 10);
     assert!(results.is_empty(), "2-char query produces no trigrams");
 }
 
@@ -64,7 +64,7 @@ fn search_fts_three_char_query() {
     db.create_node(node("note", "Rust programming", "systems language"))
         .unwrap();
     // "rus" is exactly 3 chars -> one trigram
-    let results = db.search_fts("rus", 10).unwrap();
+    let results = db.search_fts("rus", 10);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].node.title, "Rust programming");
 }
@@ -78,8 +78,8 @@ fn search_fts_duplicate_terms_in_query() {
     // extract_trigrams deduplicates, but the extra space trigrams may not appear in
     // the node's trigram set, causing intersection to return empty.
     // This test verifies the system handles duplicate terms without panicking.
-    let results_once = db.search_fts("rust", 10).unwrap();
-    let results_dup = db.search_fts("rust rust rust", 10).unwrap();
+    let results_once = db.search_fts("rust", 10);
+    let results_dup = db.search_fts("rust rust rust", 10);
     // The repeated query may produce additional trigrams (from spaces) that narrow results
     assert!(results_once.len() >= results_dup.len());
 }
@@ -93,7 +93,7 @@ fn search_fts_very_long_query() {
     // These extra trigrams may not appear in the node content, causing AND
     // intersection to return empty. This test verifies no panic on long input.
     let long_query = "benchmark ".repeat(500);
-    let results = db.search_fts(&long_query, 10).unwrap();
+    let results = db.search_fts(&long_query, 10);
     // May return 0 or 1 depending on trigram intersection
     assert!(results.len() <= 1);
 }
@@ -104,7 +104,7 @@ fn search_fts_query_with_special_chars_mixed() {
     db.create_node(node("note", "Authentication module", "handles JWT tokens"))
         .unwrap();
     // Query with punctuation mixed in — should still match after normalization
-    let results = db.search_fts("auth!!!enti...cation", 10).unwrap();
+    let results = db.search_fts("auth!!!enti...cation", 10);
     // After normalization: "auth enti cation" — separate tokens, trigrams may differ
     // The word "authentication" produces trigrams like "aut", "uth", "the", "hen", "ent", etc.
     // "auth enti cation" produces "aut", "uth", "th ", "ent", "nti", etc.
@@ -125,7 +125,7 @@ fn search_fts_all_nodes_share_trigram() {
         db.create_node(node("note", &format!("Hello item {}", i), ""))
             .unwrap();
     }
-    let results = db.search_fts("hello", 20).unwrap();
+    let results = db.search_fts("hello", 20);
     assert_eq!(results.len(), 10, "all nodes should match");
     // IDF = ln(1 + N/df) = ln(1 + 10/10) = ln(2) ≈ 0.693 (not zero due to smoothing)
     for r in &results {
@@ -138,7 +138,7 @@ fn search_fts_single_node_db() {
     let db = db();
     db.create_node(node("note", "Unique document", "only one node exists"))
         .unwrap();
-    let results = db.search_fts("unique", 10).unwrap();
+    let results = db.search_fts("unique", 10);
     assert_eq!(results.len(), 1);
     // N=1, df=1 -> IDF = ln(1 + 1/1) = ln(2)
     assert!(results[0].score > 0.0);
@@ -166,12 +166,12 @@ fn search_fts_rare_vs_common_trigram_ranking() {
         .unwrap();
 
     // Search for "rare" — only 1 match
-    let results = db.search_fts("rare", 5).unwrap();
+    let results = db.search_fts("rare", 5);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].node.id, special.id);
 
     // Search for "common" — all 21 match
-    let results = db.search_fts("common", 30).unwrap();
+    let results = db.search_fts("common", 30);
     assert_eq!(results.len(), 21);
 }
 
@@ -192,7 +192,7 @@ fn search_fts_identical_scores_sorted_by_id() {
         .create_node(node("note", "Testing alpha three", ""))
         .unwrap();
 
-    let results = db.search_fts("testing alpha", 10).unwrap();
+    let results = db.search_fts("testing alpha", 10);
     assert!(results.len() >= 2);
     // For results with equal scores, lower node ID should come first
     for pair in results.windows(2) {
@@ -213,7 +213,7 @@ fn search_fts_scores_are_finite() {
     let db = db();
     db.create_node(node("note", "Finite score test", "body content here"))
         .unwrap();
-    let results = db.search_fts("finite score", 10).unwrap();
+    let results = db.search_fts("finite score", 10);
     for r in &results {
         assert!(r.score.is_finite(), "score must be finite (no NaN/Inf)");
         assert!(r.score > 0.0, "score must be positive");
@@ -229,7 +229,7 @@ fn search_fts_arabic_text() {
     let db = db();
     db.create_node(node("note", "مرحبا بالعالم", "نص عربي للاختبار"))
         .unwrap();
-    let results = db.search_fts("مرحبا", 10).unwrap();
+    let results = db.search_fts("مرحبا", 10);
     // Arabic is alphanumeric (passes is_alphanumeric check), so trigrams should work
     assert_eq!(results.len(), 1);
 }
@@ -242,7 +242,7 @@ fn search_fts_combining_diacritics() {
     db.create_node(node("note", title_combining, "")).unwrap();
     // Search with precomposed é (U+00E9) — may not match combining form
     // This tests that the system doesn't panic and handles it gracefully
-    let results = db.search_fts("résumé", 10).unwrap();
+    let results = db.search_fts("résumé", 10);
     // May or may not match depending on normalization — just verify no crash
     let _ = results;
 }
@@ -253,7 +253,7 @@ fn search_fts_zero_width_chars() {
     // Zero-width joiner and non-joiner
     let title_zwj = "test\u{200D}word\u{200C}here";
     db.create_node(node("note", title_zwj, "")).unwrap();
-    let results = db.search_fts("testword", 10).unwrap();
+    let results = db.search_fts("testword", 10);
     // Zero-width chars are non-alphanumeric, so they become spaces in normalization
     // "test word here" — search for "testword" will normalize to "testword" -> different trigrams
     // This just verifies no crash
@@ -266,7 +266,7 @@ fn search_fts_emoji_query() {
     db.create_node(node("note", "Happy day celebration", "great event"))
         .unwrap();
     // Emoji-only query should produce no trigrams (all stripped)
-    let results = db.search_fts("🎉🎊🎈", 10).unwrap();
+    let results = db.search_fts("🎉🎊🎈", 10);
     assert!(results.is_empty(), "emoji-only query should match nothing");
 }
 
@@ -275,7 +275,7 @@ fn search_fts_mixed_cjk_latin_query() {
     let db = db();
     db.create_node(node("note", "Drevo 数据库", "graph database"))
         .unwrap();
-    let results = db.search_fts("Drevo 数据", 10).unwrap();
+    let results = db.search_fts("Drevo 数据", 10);
     // Mixed query: latin trigrams + CJK bigrams, intersection requires all
     // Likely matches since the node contains both "drevo" and "数据库"
     assert!(results.len() <= 1);
@@ -287,7 +287,7 @@ fn search_fts_cjk_single_char_query() {
     db.create_node(node("note", "数据库设计", "database design"))
         .unwrap();
     // Single CJK char produces no bigrams (need 2)
-    let results = db.search_fts("数", 10).unwrap();
+    let results = db.search_fts("数", 10);
     assert!(results.is_empty(), "single CJK char has no bigrams");
 }
 
@@ -297,7 +297,7 @@ fn search_fts_cjk_two_char_query() {
     db.create_node(node("note", "数据库设计", "database design"))
         .unwrap();
     // Two CJK chars -> one bigram
-    let results = db.search_fts("数据", 10).unwrap();
+    let results = db.search_fts("数据", 10);
     assert_eq!(results.len(), 1);
 }
 
@@ -306,7 +306,7 @@ fn search_fts_korean_query() {
     let db = db();
     db.create_node(node("note", "한국어 테스트", "검색 기능 확인"))
         .unwrap();
-    let results = db.search_fts("한국어", 10).unwrap();
+    let results = db.search_fts("한국어", 10);
     assert_eq!(results.len(), 1);
 }
 
@@ -315,7 +315,7 @@ fn search_fts_japanese_hiragana_query() {
     let db = db();
     db.create_node(node("note", "おはようございます", "朝の挨拶"))
         .unwrap();
-    let results = db.search_fts("おはよう", 10).unwrap();
+    let results = db.search_fts("おはよう", 10);
     assert_eq!(results.len(), 1);
 }
 
@@ -353,17 +353,17 @@ fn search_fts_after_multiple_updates() {
     .unwrap();
 
     // Old terms should not match
-    let results = db.search_fts("original", 10).unwrap();
+    let results = db.search_fts("original", 10);
     assert!(results.is_empty(), "original content should be deindexed");
 
-    let results = db.search_fts("updated first", 10).unwrap();
+    let results = db.search_fts("updated first", 10);
     assert!(
         results.is_empty(),
         "intermediate content should be deindexed"
     );
 
     // Only final content should match
-    let results = db.search_fts("final revised", 10).unwrap();
+    let results = db.search_fts("final revised", 10);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].node.title, "Final revised title");
 }
@@ -381,7 +381,7 @@ fn search_fts_create_delete_create_same_title() {
         .create_node(node("note", "Recyclable title content", "second version"))
         .unwrap();
 
-    let results = db.search_fts("recyclable", 10).unwrap();
+    let results = db.search_fts("recyclable", 10);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].node.id, n2.id);
     assert_eq!(results[0].node.body, "second version");
@@ -406,7 +406,7 @@ fn search_fts_and_semantics_excludes_partial_matches() {
     // The space-crossing trigrams from "rust programming" (single phrase) differ from
     // those in "rust language systems programming" (title + body with different adjacency).
     // So intersection may be empty. This verifies AND semantics don't return false positives.
-    let results = db.search_fts("rust programming", 10).unwrap();
+    let results = db.search_fts("rust programming", 10);
     // All results must contain both "rust" and "programming" content
     for r in &results {
         let combined = format!("{} {}", r.node.title, r.node.body).to_lowercase();
@@ -433,9 +433,9 @@ fn search_fts_longer_query_narrows_results() {
         .unwrap();
 
     // Broad query
-    let broad = db.search_fts("database", 10).unwrap();
+    let broad = db.search_fts("database", 10);
     // Narrow query
-    let narrow = db.search_fts("database design", 10).unwrap();
+    let narrow = db.search_fts("database design", 10);
     assert!(
         narrow.len() <= broad.len(),
         "more specific query should return same or fewer results"
@@ -499,12 +499,12 @@ fn recall_cbt_journal_scenario() {
     }
 
     // Query: "catastrophizing distortion"
-    let results = db.search_fts("catastrophizing", 10).unwrap();
+    let results = db.search_fts("catastrophizing", 10);
     assert!(!results.is_empty(), "should find catastrophizing node");
     assert_eq!(results[0].node.title, "Catastrophizing about work");
 
     // Query: "anxiety feeling"
-    let results = db.search_fts("anxious", 10).unwrap();
+    let results = db.search_fts("anxious", 10);
     assert!(!results.is_empty(), "should find anxiety-related node");
 
     // Verify no unrelated nodes in top results
@@ -545,17 +545,17 @@ fn recall_bug_tracker_scenario() {
     }
 
     // Search for memory-related bugs
-    let results = db.search_fts("memory leak", 10).unwrap();
+    let results = db.search_fts("memory leak", 10);
     assert!(!results.is_empty());
     assert!(results[0].node.title.contains("Memory leak"));
 
     // Search for SQL-related bugs
-    let results = db.search_fts("injection", 10).unwrap();
+    let results = db.search_fts("injection", 10);
     assert!(!results.is_empty());
     assert!(results[0].node.title.contains("injection"));
 
     // Search for NullPointer — should find the right bug
-    let results = db.search_fts("NullPointerException", 10).unwrap();
+    let results = db.search_fts("NullPointerException", 10);
     assert!(!results.is_empty());
     assert!(results[0].node.title.contains("NullPointer"));
 }
@@ -584,15 +584,15 @@ fn recall_story_editor_scenario() {
     }
 
     // Search for dragon — should find chapters 3, 4 and the character
-    let results = db.search_fts("dragon", 10).unwrap();
+    let results = db.search_fts("dragon", 10);
     assert!(results.len() >= 2, "dragon appears in multiple nodes");
 
     // Search for Elena — should find most nodes
-    let results = db.search_fts("elena", 10).unwrap();
+    let results = db.search_fts("elena", 10);
     assert!(results.len() >= 2, "elena appears in multiple nodes");
 
     // Search for artifact — chapters 2 and 4 + dragon character
-    let results = db.search_fts("artifact", 10).unwrap();
+    let results = db.search_fts("artifact", 10);
     assert!(results.len() >= 2, "artifact appears in multiple nodes");
 }
 
@@ -613,13 +613,13 @@ fn recall_task_manager_scenario() {
     }
 
     // Search for authentication-related tasks
-    let results = db.search_fts("authentication", 10).unwrap();
+    let results = db.search_fts("authentication", 10);
     assert!(!results.is_empty());
     // Both "Implement authentication" and "Review pull request for auth" should match
     // (auth shares trigrams with authentication)
 
     // Search for kubernetes/deploy
-    let results = db.search_fts("kubernetes", 10).unwrap();
+    let results = db.search_fts("kubernetes", 10);
     assert!(!results.is_empty());
     assert!(results[0].node.title.contains("staging"));
 }
@@ -640,12 +640,12 @@ fn recall_erp_scenario() {
     }
 
     // Search for specific customer
-    let results = db.search_fts("acme", 10).unwrap();
+    let results = db.search_fts("acme", 10);
     assert_eq!(results.len(), 1);
     assert!(results[0].node.title.contains("ORD-2024-001"));
 
     // Search for widget
-    let results = db.search_fts("widget", 10).unwrap();
+    let results = db.search_fts("widget", 10);
     assert!(results.len() >= 2, "widget appears in order and warehouse");
 }
 
@@ -658,7 +658,7 @@ fn search_fts_node_with_minimal_content() {
     let db = db();
     // 3-char title, no body — minimal content for trigrams
     db.create_node(node("note", "abc", "")).unwrap();
-    let results = db.search_fts("abc", 10).unwrap();
+    let results = db.search_fts("abc", 10);
     assert_eq!(results.len(), 1);
 }
 
@@ -669,7 +669,7 @@ fn search_fts_node_with_very_long_body() {
     let long_body = "performance optimization benchmark ".repeat(3000);
     db.create_node(node("note", "Large document", &long_body))
         .unwrap();
-    let results = db.search_fts("performance optimization", 10).unwrap();
+    let results = db.search_fts("performance optimization", 10);
     assert_eq!(results.len(), 1);
     assert!(results[0].score > 0.0);
 }
@@ -687,10 +687,10 @@ fn search_fts_many_nodes_with_limit() {
         .unwrap();
     }
 
-    let results = db.search_fts("database", 10).unwrap();
+    let results = db.search_fts("database", 10);
     assert_eq!(results.len(), 10, "limit should cap at 10");
 
-    let results = db.search_fts("database", 200).unwrap();
+    let results = db.search_fts("database", 200);
     assert_eq!(results.len(), 100, "should return all 100 matches");
 }
 
@@ -714,7 +714,7 @@ fn search_fts_numeric_content() {
     ))
     .unwrap();
 
-    let results = db.search_fts("404", 10).unwrap();
+    let results = db.search_fts("404", 10);
     assert_eq!(results.len(), 1);
     assert!(results[0].node.title.contains("404"));
 }
@@ -728,6 +728,6 @@ fn search_fts_alphanumeric_mixed() {
         "auth2 implementation with rs256",
     ))
     .unwrap();
-    let results = db.search_fts("rs256", 10).unwrap();
+    let results = db.search_fts("rs256", 10);
     assert_eq!(results.len(), 1);
 }

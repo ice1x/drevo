@@ -2,21 +2,21 @@
 //! its optimiser (`00086`).
 //!
 //! These exercise the planner end-to-end against statistics collected from a
-//! *real* [`Drevo`] graph: ingest a domain graph (bug tracker, task manager,
+//! *real* [`NativeService`] graph: ingest a domain graph (bug tracker, task manager,
 //! CBT journal) while tallying a [`StatisticsCollector`] in the same pass, then
 //! plan representative Cypher queries and assert the cardinality estimates,
 //! `EXPLAIN` rendering, plan-cache behaviour, and — for `00086` — that the
 //! optimiser anchors at the rarer label, seeks property indexes, and orders
 //! disconnected components cheapest-first. The planner itself stays decoupled
-//! from the executor — here it is fed through the public `Drevo` API exactly as
+//! from the executor — here it is fed through the public `NativeService` API exactly as
 //! the executor-wiring task will.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::model::{NewEdge, NewNode, Properties};
+use drevo::native_service::NativeService;
 use drevo::planner::{
     optimize_query, plan_query, GraphStatistics, Operator, PlanCache, PlanNode, PlanOptimizer,
     StatisticsCollector,
@@ -39,7 +39,7 @@ struct NodeSpec {
 
 /// Create a node in `db`, record it in `collector` (label + optional status
 /// distinct value), and return its id.
-fn add_node(db: &Drevo, collector: &mut StatisticsCollector, spec: NodeSpec) -> u64 {
+fn add_node(db: &NativeService, collector: &mut StatisticsCollector, spec: NodeSpec) -> u64 {
     let mut properties = Properties::default();
     if let Some(status) = spec.status {
         properties
@@ -63,7 +63,13 @@ fn add_node(db: &Drevo, collector: &mut StatisticsCollector, spec: NodeSpec) -> 
 }
 
 /// Create an edge in `db` and record its type in `collector`.
-fn add_edge(db: &Drevo, collector: &mut StatisticsCollector, from: u64, to: u64, kind: &str) {
+fn add_edge(
+    db: &NativeService,
+    collector: &mut StatisticsCollector,
+    from: u64,
+    to: u64,
+    kind: &str,
+) {
     db.create_edge(NewEdge {
         from_id: from,
         to_id: to,
@@ -78,8 +84,8 @@ fn add_edge(db: &Drevo, collector: &mut StatisticsCollector, from: u64, to: u64,
 /// Build a small bug-tracker graph: 5 engineers, 12 bugs (statuses drawn from
 /// open/in_progress/closed), each bug ASSIGNED_TO an engineer; a few BLOCKS
 /// edges between bugs. Returns the live db and the collected statistics.
-fn bug_tracker() -> (Drevo, GraphStatistics) {
-    let db = Drevo::open_in_memory().expect("open db");
+fn bug_tracker() -> (NativeService, GraphStatistics) {
+    let db = NativeService::in_memory();
     let mut collector = StatisticsCollector::new();
 
     let engineers: Vec<u64> = (0..5)
@@ -281,7 +287,7 @@ fn empty_graph_estimates_zero_rows() {
 
 #[test]
 fn single_node_graph_plans_cleanly() {
-    let db = Drevo::open_in_memory().expect("open db");
+    let db = NativeService::in_memory();
     let mut collector = StatisticsCollector::new();
     add_node(
         &db,
@@ -298,7 +304,7 @@ fn single_node_graph_plans_cleanly() {
 
 #[test]
 fn unicode_labels_and_properties_are_tracked() {
-    let db = Drevo::open_in_memory().expect("open db");
+    let db = NativeService::in_memory();
     let mut collector = StatisticsCollector::new();
     // Cyrillic label, emoji + CJK status values.
     for status in ["открыто", "完了", "🚧"] {
@@ -389,13 +395,13 @@ fn optimizer_orders_disconnected_components_cheapest_first() {
 /// connected to 50 Posts, 50 Comments and 50 Users (degree 150); every other
 /// node has degree 1, so the average is ≈ 1 but the maximum is 150 — a
 /// supernode under the derived threshold.
-fn tag_hub_graph() -> (Drevo, GraphStatistics) {
-    let db = Drevo::open_in_memory().expect("open db");
+fn tag_hub_graph() -> (NativeService, GraphStatistics) {
+    let db = NativeService::in_memory();
     let mut collector = StatisticsCollector::new();
 
     // Create a node in `db` without recording it (degree is recorded later via
     // `record_node_degree`, which would otherwise double-count it).
-    let create = |db: &Drevo, kind: &str, seq: u64| -> u64 {
+    let create = |db: &NativeService, kind: &str, seq: u64| -> u64 {
         db.create_node(NewNode {
             kind: kind.to_string(),
             title: format!("{kind} {seq}"),
@@ -476,7 +482,7 @@ fn supernode_handling_does_not_change_the_hub_free_plan() {
 
 #[test]
 fn self_loop_relationship_is_counted() {
-    let db = Drevo::open_in_memory().expect("open db");
+    let db = NativeService::in_memory();
     let mut collector = StatisticsCollector::new();
     let n = add_node(
         &db,
