@@ -6,7 +6,7 @@
 //!
 //! The executor consumes the [`crate::cypher::ast::Query`] produced by
 //! [`crate::cypher::parser::parse`] and runs it against the underlying
-//! [`crate::db::Drevo`] handle. The current cut covers the README
+//! `Drevo` handle. The current cut covers the README
 //! "critical path" prefix — `CREATE`, `MATCH`, `RETURN`, the full
 //! mutation surface, `WHERE` predicates on `MATCH`, and aggregation
 //! functions in `RETURN` — with enough expression evaluation to make
@@ -129,7 +129,7 @@
 //! * **`DELETE`** of a node with connected relationships errors with
 //!   [`ExecError::InvalidMutation`](crate::cypher::executor::ExecError::InvalidMutation) unless the user wrote
 //!   `DETACH DELETE`. `DETACH DELETE` reuses the cascade behaviour of
-//!   [`crate::db::Drevo::delete_node`] (which removes every adjacency
+//!   `Drevo::delete_node` (which removes every adjacency
 //!   for the node).
 //! * **`MERGE`** runs as MATCH-or-CREATE: the pattern is matched
 //!   against existing data first; if no row matches, the pattern is
@@ -692,7 +692,7 @@ fn extend_path_multi(
 // ===== Public entry point ===================================================
 
 /// Execute a Cypher query over **any** [`GraphEngine`] — the native
-/// `drevo-core` engine or the KV [`crate::db::Drevo`] — without a KV secondary
+/// `drevo-core` engine or the KV `Drevo` — without a KV secondary
 /// store (RFC `docs/rfc-native-core.md`, #307, Phase 6).
 ///
 /// Core graph work (node/edge/adjacency CRUD, MATCH, MERGE, SET, DELETE,
@@ -2147,7 +2147,7 @@ type SortableRows = Vec<(Vec<(Value, OrderDirection)>, (Vec<Value>, Bindings))>;
 
 struct Executor<'a> {
     /// The graph store viewed through the [`GraphEngine`] seam — the KV-backed
-    /// [`crate::db::Drevo`] or the native `drevo-core`. All node/edge/adjacency
+    /// `Drevo` or the native `drevo-core`. All node/edge/adjacency
     /// work goes through this.
     engine: &'a dyn GraphEngine,
     /// A native full-text index tailing the engine's change-feed, when running
@@ -4673,7 +4673,7 @@ impl<'a> Executor<'a> {
     /// step folded into the server: instead of a numeric list, the third
     /// argument is a plain string, so a Bolt/Cypher client can run semantic
     /// retrieval without hosting an embedder. The text is embedded via
-    /// [`Drevo::embed_text`](crate::db::Drevo::embed_text) (which blocks on the
+    /// `Drevo::embed_text` (which blocks on the
     /// dedicated-thread embedder, never nesting tokio runtimes), then the same
     /// brute-force cosine scan as [`Self::proc_vector_query`] runs.
     ///
@@ -5148,7 +5148,7 @@ impl<'a> Executor<'a> {
             })?
         } else {
             // Manual target — never server-embedded; report zeros.
-            crate::db::SemanticReindexReport::default()
+            crate::report::SemanticReindexReport::default()
         };
 
         let as_int = |n: usize| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
@@ -5305,7 +5305,7 @@ impl<'a> Executor<'a> {
                 span,
             })?
         } else {
-            crate::db::SemanticReindexReport::default()
+            crate::report::SemanticReindexReport::default()
         };
 
         let as_int = |n: usize| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
@@ -6752,7 +6752,7 @@ impl<'a> Executor<'a> {
     /// target node of a relationship.
     ///
     /// A [`RelationshipValue`] carries only the endpoint *ids*, so the node is
-    /// resolved through the graph ([`crate::db::Drevo::get_node`]); this is why
+    /// resolved through the graph (`Drevo::get_node`); this is why
     /// the two functions live here (DB access) rather than in the pure
     /// [`call_scalar`] library. Semantics mirror Neo4j:
     ///
@@ -7138,7 +7138,7 @@ fn semantic_index_row(target: &SemanticIndex) -> Vec<Value> {
 ///
 /// The `state` column shows `"degraded"` when the target has a pending backlog
 /// (writes landed with embeddings missing); otherwise the control-plane state.
-fn semantic_status_row(status: &crate::db::SemanticTargetStatus) -> Vec<Value> {
+fn semantic_status_row(status: &crate::report::SemanticTargetStatus) -> Vec<Value> {
     let target = &status.index;
     let state = if status.degraded {
         "degraded".to_string()

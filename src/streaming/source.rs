@@ -23,10 +23,8 @@
 ///
 /// [`Offset::ZERO`] is the sentinel for "before any message": a fresh source
 /// has [`committed`](StreamSource::committed) equal to `ZERO`, and the first
-/// message produced is [`Offset`]`(1)`. This mirrors the [`Lsn`] convention in
-/// the replication engine.
-///
-/// [`Lsn`]: crate::replication::Lsn
+/// message produced is [`Offset`]`(1)`. This mirrors the `Lsn` convention used
+/// by log-shipping replication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Offset(pub u64);
 

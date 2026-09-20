@@ -5,7 +5,7 @@
 //! (CREATE / MATCH / RETURN), `00064` mutations (SET / DELETE / MERGE),
 //! `00065` WHERE, `00066` aggregations, `00067` OPTIONAL MATCH, `00068`
 //! WITH, `00069` variable-length paths. Each layer plugs into the next
-//! and reuses the existing [`crate::db::Drevo`] storage API — Cypher is
+//! and reuses the existing `Drevo` storage API — Cypher is
 //! a thin query layer, not a new storage engine.
 //!
 //! The lexer (task `00061`) produces the `Token` stream that the parser
@@ -22,7 +22,7 @@
 pub mod admin;
 pub mod ast;
 /// Executor — walks the [`ast::Query`] produced by [`parser::parse`]
-/// and runs it against a [`crate::db::Drevo`] handle. Task `00063`.
+/// and runs it against a `Drevo` handle. Task `00063`.
 pub mod executor;
 /// Lexical analyser — turns a Cypher source string into a stream of
 /// [`lexer::Token`]s for the parser.

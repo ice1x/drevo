@@ -1,11 +1,11 @@
 //! JSON import / export — Phase 9 hardening task `00055`. Phase 9 task
 //! `00056` extends this module with read-only GraphML export
-//! ([`crate::db::Drevo::export_graphml`] / `Drevo::export_graphml_to_path`
+//! (`Drevo::export_graphml` / `Drevo::export_graphml_to_path`
 //! — the filesystem variant is gated off WASM).
 //!
 //! Provides a human-readable, schema-versioned dump format that captures the
 //! entire graph (every node and every edge) and can be reloaded into any
-//! [`crate::db::Drevo`] handle, regardless of which backend (memory or redb)
+//! `Drevo` handle, regardless of which backend (memory or redb)
 //! produced it or now receives it.
 //!
 //! ## Format
@@ -54,7 +54,7 @@
 //!
 //! ## WASM
 //!
-//! [`crate::db::Drevo::export_json`] and [`crate::db::Drevo::import_json`] are
+//! `Drevo::export_json` and `Drevo::import_json` are
 //! available on every target — they operate on `String` only and do not
 //! touch the filesystem. `Drevo::export_json_to_path` /
 //! `Drevo::import_json_from_path` are gated behind
@@ -63,10 +63,10 @@
 //!
 //! ## GraphML export / import (tasks `00056` / `00057`)
 //!
-//! [`crate::db::Drevo::export_graphml`] emits the graph as a GraphML 1.0
+//! `Drevo::export_graphml` emits the graph as a GraphML 1.0
 //! document — the ubiquitous XML interchange format consumed by yEd, Gephi,
 //! NetworkX, Cytoscape, igraph, and a long tail of network-analysis tooling.
-//! [`crate::db::Drevo::import_graphml`] is its inverse: it parses a GraphML
+//! `Drevo::import_graphml` is its inverse: it parses a GraphML
 //! document (drevo's own output, or any GraphML that follows the same
 //! `<key>` / `<data>` conventions) back into a live database. The project's
 //! authoritative wire format remains [`crate::dump::FORMAT_V1`]; GraphML is
@@ -81,7 +81,7 @@
 //!   document is idempotent (rows are skipped, counted in
 //!   [`crate::dump::ImportReport::nodes_skipped`] /
 //!   [`crate::dump::ImportReport::edges_skipped`]), exactly like
-//!   [`crate::db::Drevo::import_json`].
+//!   `Drevo::import_json`.
 //! * **Interop tolerance.** GraphML from foreign tools rarely carries drevo's
 //!   `d_*` keys. Data elements are therefore resolved by the `attr.name` of
 //!   their `<key>` declaration, not the raw key id, so a foreign
@@ -128,7 +128,6 @@
 
 use std::collections::HashMap;
 
-use crate::db::Drevo;
 use crate::error::{DrevoError, Result};
 use crate::model::{new_uuid_v7, now_ms, Edge, NewEdge, Node, Properties};
 
@@ -152,301 +151,8 @@ impl From<DumpError> for DrevoError {
     }
 }
 
-impl Drevo {
-    /// Serialize the entire graph (every node, every edge) into a
-    /// pretty-printed JSON string.
-    ///
-    /// Output is deterministic for a given graph because
-    /// [`crate::model::Properties`] sorts its keys before
-    /// serialising — two databases with the same logical content produce the
-    /// same dump byte-for-byte.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DrevoError::Storage`] on backend scan failures and
-    /// [`DrevoError::Io`] if `serde_json` cannot serialise (e.g. a property
-    /// contains a non-finite float).
-    pub fn export_json(&self) -> Result<String> {
-        let dump = self.build_dump()?;
-        serde_json::to_string_pretty(&dump)
-            .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))
-    }
-
-    /// Serialize the graph and write the result to `path` (filesystem write,
-    /// not available on WASM).
-    ///
-    /// Overwrites the target file. Errors from the filesystem or the
-    /// underlying scan propagate as [`DrevoError`].
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_json_to_path(&self, path: &std::path::Path) -> Result<()> {
-        let dump = self.export_json()?;
-        std::fs::write(path, dump).map_err(DrevoError::Io)
-    }
-
-    /// Import a JSON dump produced by [`export_json`](Self::export_json) (or
-    /// any equivalent producer) into this database.
-    ///
-    /// Behavior:
-    ///
-    /// * Nodes with an `id` that already exists in this database and matches
-    ///   byte-for-byte are skipped (counted in [`ImportReport::nodes_skipped`]).
-    ///   Same for edges.
-    /// * Nodes with the same `id` but different content yield
-    ///   [`DrevoError::Io`] (wrapping [`DumpError::IdCollision`]).
-    /// * Title or UUID collisions against *different* existing nodes yield
-    ///   [`DrevoError::DuplicateTitle`] / [`DrevoError::Storage`].
-    /// * After all rows are applied, the auto-increment counters are clamped
-    ///   above every imported id so subsequent `alloc_node_id` /
-    ///   `alloc_edge_id` calls never collide.
-    ///
-    /// # Errors
-    ///
-    /// * [`DrevoError::Io`] — malformed JSON, unknown format, id collision.
-    /// * [`DrevoError::DuplicateTitle`] — imported title clashes with a
-    ///   different existing node.
-    /// * [`DrevoError::Storage`] / [`DrevoError::Encode`] — backend failure.
-    pub fn import_json(&self, raw: &str) -> Result<ImportReport> {
-        let dump: Dump = serde_json::from_str(raw).map_err(DumpError::from)?;
-        if dump.format != FORMAT_V1 {
-            return Err(DumpError::UnsupportedFormat(dump.format).into());
-        }
-        self.apply_dump_records(dump)
-    }
-
-    /// Read a JSON dump from `path` (filesystem read, not available on WASM)
-    /// and import it into this database. See [`import_json`](Self::import_json).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn import_json_from_path(&self, path: &std::path::Path) -> Result<ImportReport> {
-        let raw = std::fs::read_to_string(path).map_err(DrevoError::Io)?;
-        self.import_json(&raw)
-    }
-
-    /// Serialize the entire graph as a GraphML 1.0 document.
-    ///
-    /// GraphML is the standard XML interchange format for network data; the
-    /// output is loadable by yEd, Gephi, NetworkX, Cytoscape, igraph, and
-    /// every other tool that speaks the spec. The graph is emitted with
-    /// `edgedefault="directed"` to match drevo's directional edge model.
-    ///
-    /// Output is deterministic: nodes are listed in id order, edges in id
-    /// order, and [`Properties`] sort their keys before serialising as a JSON
-    /// string. Two databases with identical logical content produce
-    /// byte-identical GraphML.
-    ///
-    /// Node ids are emitted as `n<id>`, edge ids as `e<id>`, so they remain
-    /// valid XML `xs:NMTOKEN` values regardless of the numeric range.
-    /// Property maps are encoded as a single JSON-string `<data key="d_props">`
-    /// value so external readers can re-hydrate the full structure.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DrevoError::Storage`] on backend scan failures and
-    /// [`DrevoError::Io`] if any [`Properties`] value cannot be serialised to
-    /// JSON (e.g. a non-finite float).
-    pub fn export_graphml(&self) -> Result<String> {
-        let nodes = self.collect_all_nodes()?;
-        let edges = self.collect_all_edges()?;
-        render_graphml(&nodes, &edges)
-    }
-
-    /// Serialize the graph as GraphML and write the result to `path`
-    /// (filesystem write, not available on WASM).
-    ///
-    /// Overwrites the target file. Errors from the filesystem or the
-    /// underlying scan propagate as [`DrevoError`].
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_graphml_to_path(&self, path: &std::path::Path) -> Result<()> {
-        let xml = self.export_graphml()?;
-        std::fs::write(path, xml).map_err(DrevoError::Io)
-    }
-
-    /// Import a GraphML document produced by
-    /// [`export_graphml`](Self::export_graphml) (or any GraphML that follows
-    /// the same `<key>` / `<data>` conventions) into this database.
-    ///
-    /// The returned [`ImportReport`] separates newly-inserted rows from rows
-    /// skipped because an identical id + content already exists — re-importing
-    /// drevo's own export is therefore idempotent. See the module docs for the
-    /// full round-trip / interop / constraint semantics.
-    ///
-    /// # Errors
-    ///
-    /// * [`DrevoError::Io`] — malformed XML, a missing `<graphml>`/`<graph>`
-    ///   element, an `<edge>` referencing an undeclared node, or an id
-    ///   collision against different existing content (all via
-    ///   [`DumpError::MalformedGraphml`] / [`DumpError::IdCollision`]).
-    /// * [`DrevoError::DuplicateTitle`] — an imported title clashes with a
-    ///   different existing node.
-    /// * [`DrevoError::Storage`] / [`DrevoError::Encode`] — backend failure.
-    pub fn import_graphml(&self, xml: &str) -> Result<ImportReport> {
-        let (nodes, edges) = self.graphml_to_records(xml)?;
-        let next_node_id = nodes.iter().map(|n| n.id).max().map_or(1, |m| m + 1);
-        let next_edge_id = edges.iter().map(|e| e.id).max().map_or(1, |m| m + 1);
-        self.apply_dump_records(Dump {
-            format: FORMAT_V1.to_string(),
-            exported_at: now_ms(),
-            next_node_id,
-            next_edge_id,
-            nodes,
-            edges,
-        })
-    }
-
-    /// Read a GraphML document from `path` (filesystem read, not available on
-    /// WASM) and import it into this database. See
-    /// [`import_graphml`](Self::import_graphml).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn import_graphml_from_path(&self, path: &std::path::Path) -> Result<ImportReport> {
-        let raw = std::fs::read_to_string(path).map_err(DrevoError::Io)?;
-        self.import_graphml(&raw)
-    }
-
-    // --- internals ---------------------------------------------------
-
-    /// Parse a GraphML document into verbatim [`Node`] / [`Edge`] records
-    /// ready to hand to [`apply_dump`](Self::apply_dump).
-    ///
-    /// Node ids of the form `n<u64>` (and edge ids `e<u64>`) are preserved;
-    /// any other id is remapped onto a freshly-allocated id above both the
-    /// preserved range and the ids already present in `self`, so a mixed
-    /// document can never allocate over a preserved id. Edge `source`/`target`
-    /// are resolved through the same node-id map.
-    fn graphml_to_records(&self, xml: &str) -> Result<(Vec<Node>, Vec<Edge>)> {
-        let db_max_node = self
-            .collect_all_nodes()?
-            .iter()
-            .map(|n| n.id)
-            .max()
-            .unwrap_or(0);
-        let db_max_edge = self
-            .collect_all_edges()?
-            .iter()
-            .map(|e| e.id)
-            .max()
-            .unwrap_or(0);
-        graphml_records(xml, db_max_node, db_max_edge)
-    }
-
-    pub(crate) fn build_dump(&self) -> Result<Dump> {
-        let nodes = self.collect_all_nodes()?;
-        let edges = self.collect_all_edges()?;
-        let next_node_id = nodes.iter().map(|n| n.id).max().map_or(1, |m| m + 1);
-        let next_edge_id = edges.iter().map(|e| e.id).max().map_or(1, |m| m + 1);
-        Ok(Dump {
-            format: FORMAT_V1.to_string(),
-            exported_at: now_ms(),
-            next_node_id,
-            next_edge_id,
-            nodes,
-            edges,
-        })
-    }
-
-    pub(crate) fn apply_dump_records(&self, dump: Dump) -> Result<ImportReport> {
-        let mut report = ImportReport::default();
-
-        // --- Nodes ---
-        // Collect every node's storage writes and commit them in ONE
-        // `put_batch` transaction. The per-record path used to `put` each of a
-        // node's index entries individually — and FTS emits one entry per
-        // trigram — so a text-heavy graph took hundreds of thousands of
-        // per-record commits (one fsync each). Batching folds that into a
-        // single fsync, turning a multi-minute restore/shrink into seconds.
-        let mut node_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        let mut imported_nodes: Vec<&Node> = Vec::new();
-        for node in &dump.nodes {
-            match self.get_node(node.id)? {
-                Some(existing) if &existing == node => {
-                    report.nodes_skipped += 1;
-                    continue;
-                }
-                Some(_) => {
-                    return Err(DumpError::IdCollision(format!(
-                        "node id {} already exists with different content",
-                        node.id
-                    ))
-                    .into());
-                }
-                None => {}
-            }
-            node_writes.extend(self.node_raw_entries(node)?);
-            imported_nodes.push(node);
-            report.nodes_imported += 1;
-        }
-        if !node_writes.is_empty() {
-            self.backend().put_batch(&node_writes)?;
-        }
-        // #275: `node_raw_entries` no longer emits FTS entries (posting lists
-        // need read-modify-write), so index the imported nodes' FTS in one
-        // grouped, lock-guarded pass after their records are committed.
-        if !imported_nodes.is_empty() {
-            let docs: Vec<(u64, &str, &str, &crate::model::Properties)> = imported_nodes
-                .iter()
-                .map(|n| (n.id, n.title.as_str(), n.body.as_str(), &n.properties))
-                .collect();
-            self.fts_index_nodes(&docs)?;
-        }
-
-        // --- Edges ---
-        // Nodes are already committed above, so the endpoint-existence checks
-        // below see them. Edge writes are likewise batched into one commit.
-        let mut edge_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        let mut imported_edges: Vec<&Edge> = Vec::new();
-        for edge in &dump.edges {
-            match self.get_edge(edge.id)? {
-                Some(existing) if &existing == edge => {
-                    report.edges_skipped += 1;
-                    continue;
-                }
-                Some(_) => {
-                    return Err(DumpError::IdCollision(format!(
-                        "edge id {} already exists with different content",
-                        edge.id
-                    ))
-                    .into());
-                }
-                None => {}
-            }
-            // Both endpoints must exist (edges are inserted verbatim, bypassing
-            // the allocating create path that would otherwise validate this).
-            if self.get_node(edge.from_id)?.is_none() {
-                return Err(DrevoError::NodeNotFound(edge.from_id));
-            }
-            if self.get_node(edge.to_id)?.is_none() {
-                return Err(DrevoError::NodeNotFound(edge.to_id));
-            }
-            edge_writes.extend(self.edge_raw_entries(edge)?);
-            imported_edges.push(edge);
-            report.edges_imported += 1;
-        }
-        if !edge_writes.is_empty() {
-            self.backend().put_batch(&edge_writes)?;
-        }
-        // #275: index the imported edges' `efts:` posting lists in one grouped,
-        // lock-guarded pass (edge_raw_entries doesn't emit FTS — posting lists
-        // need read-modify-write). This also gives shrunk/restored files their
-        // relationship FTS, which the record-only import path omitted.
-        if !imported_edges.is_empty() {
-            let docs: Vec<(u64, &crate::model::Properties)> = imported_edges
-                .iter()
-                .map(|e| (e.id, &e.properties))
-                .collect();
-            self.efts_index_edges(&docs)?;
-        }
-
-        // --- ID counters ---
-        // Clamp our counters so future allocations never collide with the
-        // imported range. `bump_node_counter` is idempotent — if our counter
-        // is already higher, it is a no-op.
-        self.bump_node_counter_to_at_least(dump.next_node_id);
-        self.bump_edge_counter_to_at_least(dump.next_edge_id);
-
-        Ok(report)
-    }
-}
-
 /// Parse a GraphML document into node/edge records — the engine-independent
-/// half of [`crate::db::Drevo::import_graphml`], shared with the
+/// half of `Drevo::import_graphml`, shared with the
 /// durable-native import (`crate::native_service`). `db_max_node` /
 /// `db_max_edge` are the target store's current maximum ids, used to
 /// allocate ids for records whose GraphML ids do not follow the `n<id>` /
@@ -1183,24 +889,6 @@ fn edge_to_new_edge(edge: &Edge) -> NewEdge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{NewNode, Properties};
-    use serde_json::json;
-    use std::collections::HashMap;
-
-    fn props(pairs: &[(&str, serde_json::Value)]) -> Properties {
-        let mut m = HashMap::new();
-        for (k, v) in pairs {
-            m.insert((*k).to_string(), v.clone());
-        }
-        Properties::from(m)
-    }
-
-    #[test]
-    fn dump_serialises_format_field() {
-        let db = Drevo::open_in_memory().unwrap();
-        let dump = db.build_dump().unwrap();
-        assert_eq!(dump.format, FORMAT_V1);
-    }
 
     #[test]
     fn import_report_default_is_all_zero() {
@@ -1209,31 +897,6 @@ mod tests {
         assert_eq!(r.edges_imported, 0);
         assert_eq!(r.nodes_skipped, 0);
         assert_eq!(r.edges_skipped, 0);
-    }
-
-    #[test]
-    fn round_trip_single_node() {
-        let db = Drevo::open_in_memory().unwrap();
-        db.create_node(NewNode {
-            kind: "note".into(),
-            title: "Round trip".into(),
-            body: "body".into(),
-            body_html: "".into(),
-            properties: props(&[("x", json!(1))]),
-        })
-        .unwrap();
-        let dump = db.export_json().unwrap();
-        let other = Drevo::open_in_memory().unwrap();
-        let r = other.import_json(&dump).unwrap();
-        assert_eq!(r.nodes_imported, 1);
-    }
-
-    #[test]
-    fn unsupported_format_is_typed() {
-        let bad = r#"{"format":"v999","exported_at":0,"next_node_id":1,"next_edge_id":1,"nodes":[],"edges":[]}"#;
-        let db = Drevo::open_in_memory().unwrap();
-        let err = db.import_json(bad).unwrap_err();
-        assert!(matches!(err, DrevoError::Io(_)));
     }
 
     #[test]
@@ -1246,175 +909,6 @@ mod tests {
     // -----------------------------------------------------------------
     // GraphML export (task 00056) — unit tests
     // -----------------------------------------------------------------
-
-    #[test]
-    fn graphml_empty_graph_has_xml_declaration() {
-        let db = Drevo::open_in_memory().unwrap();
-        let xml = db.export_graphml().unwrap();
-        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"));
-    }
-
-    #[test]
-    fn graphml_empty_graph_has_root_element_with_namespace() {
-        let db = Drevo::open_in_memory().unwrap();
-        let xml = db.export_graphml().unwrap();
-        assert!(xml.contains("<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\""));
-        assert!(xml.trim_end().ends_with("</graphml>"));
-    }
-
-    #[test]
-    fn graphml_empty_graph_declares_keys_and_directed_graph() {
-        let db = Drevo::open_in_memory().unwrap();
-        let xml = db.export_graphml().unwrap();
-        for (id, name) in NODE_KEYS {
-            assert!(
-                xml.contains(&format!("id=\"{id}\""))
-                    && xml.contains(&format!("attr.name=\"{name}\"")),
-                "missing node key {id}/{name}",
-            );
-        }
-        for (id, name) in EDGE_KEYS {
-            assert!(
-                xml.contains(&format!("id=\"{id}\""))
-                    && xml.contains(&format!("attr.name=\"{name}\"")),
-                "missing edge key {id}/{name}",
-            );
-        }
-        assert!(xml.contains("<graph id=\"drevo\" edgedefault=\"directed\">"));
-    }
-
-    #[test]
-    fn graphml_single_node_emits_data_elements() {
-        let db = Drevo::open_in_memory().unwrap();
-        db.create_node(NewNode {
-            kind: "note".into(),
-            title: "Hello".into(),
-            body: "World".into(),
-            body_html: "<p>World</p>".into(),
-            properties: props(&[("priority", json!(1))]),
-        })
-        .unwrap();
-        let xml = db.export_graphml().unwrap();
-        assert!(xml.contains("<node id=\"n1\">"));
-        assert!(xml.contains("<data key=\"d_kind\">note</data>"));
-        assert!(xml.contains("<data key=\"d_title\">Hello</data>"));
-        // body_html contains XML and must be escaped
-        assert!(xml.contains("<data key=\"d_body_html\">&lt;p&gt;World&lt;/p&gt;</data>"));
-        // properties serialised as a JSON literal — JSON quotes are XML-escaped
-        // because `<data>` text must be well-formed XML.
-        assert!(xml.contains("<data key=\"d_props\">{&quot;priority&quot;:1}</data>"));
-    }
-
-    #[test]
-    fn graphml_escapes_xml_special_chars_in_title_and_body() {
-        let db = Drevo::open_in_memory().unwrap();
-        db.create_node(NewNode {
-            kind: "note".into(),
-            title: "a < b & c > d \" '".into(),
-            body: "body & <tag>".into(),
-            body_html: String::new(),
-            properties: Properties::default(),
-        })
-        .unwrap();
-        let xml = db.export_graphml().unwrap();
-        assert!(xml.contains("a &lt; b &amp; c &gt; d &quot; &apos;"));
-        assert!(xml.contains("body &amp; &lt;tag&gt;"));
-        // No raw special chars escaped into the text body — sanity: no
-        // unescaped `<tag>` slipping into the document outside legitimate
-        // markup.
-        assert!(!xml.contains(">a < b"));
-    }
-
-    #[test]
-    fn graphml_emits_edge_with_source_and_target() {
-        let db = Drevo::open_in_memory().unwrap();
-        let a = db
-            .create_node(NewNode {
-                kind: "note".into(),
-                title: "A".into(),
-                body: String::new(),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .unwrap();
-        let b = db
-            .create_node(NewNode {
-                kind: "note".into(),
-                title: "B".into(),
-                body: String::new(),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .unwrap();
-        db.create_edge(NewEdge {
-            from_id: a.id,
-            to_id: b.id,
-            kind: "links_to".into(),
-            weight: 1.5,
-            properties: props(&[("color", json!("red"))]),
-        })
-        .unwrap();
-
-        let xml = db.export_graphml().unwrap();
-        assert!(xml.contains(&format!(
-            "<edge id=\"e1\" source=\"n{}\" target=\"n{}\">",
-            a.id, b.id
-        )));
-        assert!(xml.contains("<data key=\"d_e_kind\">links_to</data>"));
-        assert!(xml.contains("<data key=\"d_e_weight\">1.5</data>"));
-        assert!(xml.contains("<data key=\"d_e_props\">{&quot;color&quot;:&quot;red&quot;}</data>"));
-    }
-
-    #[test]
-    fn graphml_is_deterministic_for_identical_graphs() {
-        let build = || {
-            let db = Drevo::open_in_memory().unwrap();
-            db.create_node(NewNode {
-                kind: "note".into(),
-                title: "Alpha".into(),
-                body: "a".into(),
-                body_html: String::new(),
-                properties: props(&[("z", json!(1)), ("a", json!(2)), ("m", json!(3))]),
-            })
-            .unwrap();
-            db.create_node(NewNode {
-                kind: "note".into(),
-                title: "Beta".into(),
-                body: "b".into(),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .unwrap();
-            db
-        };
-        let a_db = build();
-        let b_db = build();
-        // The two databases will differ in uuid / created_at / updated_at,
-        // so we compare the GraphML *minus* those volatile fields by stripping
-        // entire `<data key="d_uuid">…</data>` etc. blocks and confirming the
-        // rest matches.
-        let strip = |s: String| {
-            let mut s = s;
-            for key in [
-                "d_uuid",
-                "d_created_at",
-                "d_updated_at",
-                "d_e_uuid",
-                "d_e_created_at",
-            ] {
-                let needle_open = format!("<data key=\"{key}\">");
-                while let Some(start) = s.find(&needle_open) {
-                    let end = s[start..].find("</data>\n").unwrap() + start + "</data>\n".len();
-                    s.replace_range(start..end, "");
-                }
-            }
-            s
-        };
-        assert_eq!(
-            strip(a_db.export_graphml().unwrap()),
-            strip(b_db.export_graphml().unwrap())
-        );
-    }
 
     #[test]
     fn graphml_weight_handles_nonfinite_values() {
@@ -1513,148 +1007,5 @@ mod tests {
         assert!(parse_xml("<a></b>").is_err());
         assert!(parse_xml("<a><b></a>").is_err());
         assert!(parse_xml("<a>").is_err());
-    }
-
-    #[test]
-    fn graphml_round_trips_through_export_import() {
-        let src = Drevo::open_in_memory().unwrap();
-        let a = src
-            .create_node(NewNode {
-                kind: "note".into(),
-                title: "Alpha".into(),
-                body: "first".into(),
-                body_html: "<p>first</p>".into(),
-                properties: props(&[("n", json!(1)), ("s", json!("x"))]),
-            })
-            .unwrap();
-        let b = src
-            .create_node(NewNode {
-                kind: "tag".into(),
-                title: "Beta < & >".into(),
-                body: String::new(),
-                body_html: String::new(),
-                properties: Properties::default(),
-            })
-            .unwrap();
-        src.create_edge(NewEdge {
-            from_id: a.id,
-            to_id: b.id,
-            kind: "links_to".into(),
-            weight: 2.5,
-            properties: props(&[("color", json!("red"))]),
-        })
-        .unwrap();
-
-        let xml = src.export_graphml().unwrap();
-        let dst = Drevo::open_in_memory().unwrap();
-        let report = dst.import_graphml(&xml).unwrap();
-        assert_eq!(report.nodes_imported, 2);
-        assert_eq!(report.edges_imported, 1);
-
-        // Re-exporting the destination yields byte-identical GraphML.
-        assert_eq!(dst.export_graphml().unwrap(), xml);
-    }
-
-    #[test]
-    fn graphml_import_preserves_ids_uuid_and_timestamps() {
-        let src = Drevo::open_in_memory().unwrap();
-        let n = src
-            .create_node(NewNode {
-                kind: "note".into(),
-                title: "Keep Me".into(),
-                body: "body".into(),
-                body_html: String::new(),
-                properties: props(&[("k", json!(9))]),
-            })
-            .unwrap();
-        let original = src.get_node(n.id).unwrap().unwrap();
-
-        let xml = src.export_graphml().unwrap();
-        let dst = Drevo::open_in_memory().unwrap();
-        dst.import_graphml(&xml).unwrap();
-
-        let restored = dst.get_node(n.id).unwrap().unwrap();
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn graphml_import_is_idempotent() {
-        let src = Drevo::open_in_memory().unwrap();
-        src.create_node(NewNode {
-            kind: "note".into(),
-            title: "Once".into(),
-            body: String::new(),
-            body_html: String::new(),
-            properties: Properties::default(),
-        })
-        .unwrap();
-        let xml = src.export_graphml().unwrap();
-
-        let dst = Drevo::open_in_memory().unwrap();
-        let first = dst.import_graphml(&xml).unwrap();
-        assert_eq!(first.nodes_imported, 1);
-        let second = dst.import_graphml(&xml).unwrap();
-        assert_eq!(second.nodes_imported, 0);
-        assert_eq!(second.nodes_skipped, 1);
-    }
-
-    #[test]
-    fn graphml_import_rejects_malformed_xml() {
-        let db = Drevo::open_in_memory().unwrap();
-        let err = db.import_graphml("<graphml><graph><node id=").unwrap_err();
-        assert!(matches!(err, DrevoError::Io(_)));
-    }
-
-    #[test]
-    fn graphml_import_rejects_missing_graphml_root() {
-        let db = Drevo::open_in_memory().unwrap();
-        let err = db.import_graphml("<not-graphml/>").unwrap_err();
-        assert!(matches!(err, DrevoError::Io(_)));
-    }
-
-    #[test]
-    fn graphml_import_rejects_edge_to_undeclared_node() {
-        let db = Drevo::open_in_memory().unwrap();
-        let xml = "<graphml><graph>\
-             <node id=\"n1\"><data key=\"kind\">note</data><data key=\"title\">A</data></node>\
-             <edge id=\"e1\" source=\"n1\" target=\"n999\"/>\
-             </graph></graphml>";
-        let err = db.import_graphml(xml).unwrap_err();
-        assert!(matches!(err, DrevoError::Io(_)));
-    }
-
-    #[test]
-    fn graphml_import_foreign_document_allocates_ids_and_maps_attr_names() {
-        // A foreign GraphML: string node ids, keys referenced by declared
-        // `attr.name`, no uuids/timestamps. drevo must allocate ids, remap the
-        // edge endpoints, and interpret data by attr.name.
-        let db = Drevo::open_in_memory().unwrap();
-        let xml = "<?xml version=\"1.0\"?>\
-             <graphml>\
-             <key id=\"k0\" for=\"node\" attr.name=\"title\" attr.type=\"string\"/>\
-             <key id=\"k1\" for=\"node\" attr.name=\"kind\" attr.type=\"string\"/>\
-             <key id=\"k2\" for=\"node\" attr.name=\"weight_of_life\" attr.type=\"string\"/>\
-             <graph edgedefault=\"directed\">\
-             <node id=\"alice\"><data key=\"k0\">Alice</data><data key=\"k1\">person</data><data key=\"k2\">42</data></node>\
-             <node id=\"bob\"><data key=\"k0\">Bob</data><data key=\"k1\">person</data></node>\
-             <edge source=\"alice\" target=\"bob\"><data key=\"k1\">knows</data></edge>\
-             </graph></graphml>";
-        let report = db.import_graphml(xml).unwrap();
-        assert_eq!(report.nodes_imported, 2);
-        assert_eq!(report.edges_imported, 1);
-
-        // Ids were allocated 1,2; title/kind mapped via attr.name; the
-        // unrecognised `weight_of_life` key folded into properties.
-        let alice = db.get_node(1).unwrap().unwrap();
-        assert_eq!(alice.title, "Alice");
-        assert_eq!(alice.kind, "person");
-        assert_eq!(alice.properties.get("weight_of_life"), Some(&json!(42)));
-
-        let edges = db.collect_all_edges().unwrap();
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].from_id, 1);
-        assert_eq!(edges[0].to_id, 2);
-        assert_eq!(edges[0].kind, "knows");
-        assert_eq!(edges[0].weight, 1.0); // default weight
     }
 }

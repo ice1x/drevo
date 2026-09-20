@@ -21,7 +21,7 @@
 //!   plus their `New*` / `*Patch` companions and the shared
 //!   [`model::Properties`] map. Audited in `audit/AUDIT-model.md` (task
 //!   `00105`).
-//! - [`db`] — the [`db::Drevo`] handle: node / edge CRUD, kind index, FTS
+//! - `Drevo` — the `Drevo` handle: node / edge CRUD, kind index, FTS
 //!   index maintenance, transactional list operations. Audited in
 //!   `audit/AUDIT-db.md` (task `00106`).
 //! - [`traversal`] — BFS / DFS / shortest-path / weighted-shortest-path /
@@ -30,7 +30,7 @@
 //! - [`fts`] — trigram tokenizer + inverted index for full-text search.
 //!   Audited in `audit/AUDIT-fts.md` (task `00108`).
 //! - `api` (cfg `http`) — axum router translating REST requests into
-//!   [`db::Drevo`] calls. Audited in `audit/AUDIT-http-api.md` (task
+//!   `Drevo` calls. Audited in `audit/AUDIT-http-api.md` (task
 //!   `00109`).
 //! - `ffi` (non-WASM) — `extern "C"` surface for desktop / mobile
 //!   embedders. Every entry is wrapped in [`std::panic::catch_unwind`].
@@ -83,13 +83,13 @@ pub const INFO_PROTOCOL: i64 = 1;
 /// power iteration) and [`algorithms::louvain`] (Louvain community detection by
 /// multi-level modularity optimisation). Both run over an in-memory
 /// [`algorithms::AdjacencyList`] snapshot and are exposed on the database facade
-/// as [`db::Drevo::pagerank`] / [`db::Drevo::louvain_communities`] (mirroring
-/// the existing [`db::Drevo::shortest_path`] Dijkstra wiring). Dependency-free,
+/// as `Drevo::pagerank` / `Drevo::louvain_communities` (mirroring
+/// the existing `Drevo::shortest_path` Dijkstra wiring). Dependency-free,
 /// always compiled, and WASM-safe; keeps its own [`algorithms::AlgorithmError`]
 /// channel for config validation rather than widening `DrevoError`.
 pub mod algorithms;
 /// HTTP API surface — axum router translating JSON requests into
-/// [`db::Drevo`] calls. Compiled only with the `http` feature.
+/// `Drevo` calls. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
 pub mod api;
 /// Authorization & role-based access control — Phase 15 task `00094`. A
@@ -105,21 +105,14 @@ pub mod authz;
 /// Bolt wire protocol — Phase 11. Task `00070` ships the bytes-on-the-
 /// wire layer (PackStream codec, chunked framing, handshake + async
 /// TCP listener). The session layer (HELLO / RUN / PULL / DISCARD /
-/// RESET / GOODBYE on top of [`db::Drevo`]) lands in task `00071`.
+/// RESET / GOODBYE on top of `Drevo`) lands in task `00071`.
 /// Not built on `wasm32-unknown-unknown`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bolt;
-/// Named-database catalog — manage multiple [`db::Drevo`] databases (one
-/// redb file each) in a single process, with create / list / switch. Gated
-/// on `http`: its only consumers are the HTTP API and the server binary, so
-/// it is absent from the `wasm` build (which has neither).
-#[cfg(feature = "http")]
-pub mod catalog;
 /// Cypher query language — Phase 10. Today only the lexer (task `00061`)
 /// is implemented; the parser, executor, and downstream clause handlers
 /// will land in tasks `00062` onwards.
 pub mod cypher;
-pub mod db;
 /// JSON import / export — Phase 9 task `00055`. Defines the schema-versioned
 /// `drevo-json-v1` wire format plus the `Drevo::export_json` / `import_json`
 /// methods. Filesystem-bound `*_to_path` / `*_from_path` variants are gated
@@ -133,7 +126,7 @@ pub mod embeddings;
 /// The `GraphEngine` seam (RFC `docs/rfc-native-core.md`, issue #307) — the
 /// graph-level abstraction (nodes / edges / adjacency) the query layers will
 /// depend on instead of a concrete store's KV-encoded internals. Introduced
-/// additively: [`db::Drevo`] implements it by delegating to its inherent
+/// additively: `Drevo` implements it by delegating to its inherent
 /// methods, so a future native `drevo-core` engine can be a drop-in
 /// alternative.
 pub mod engine;
@@ -145,7 +138,7 @@ pub mod ffi;
 pub mod fts;
 /// Cross-engine data migration (RFC `docs/rfc-native-core.md`, #307). Moves a
 /// live graph between any two [`engine::GraphEngine`] implementations
-/// (KV-backed [`db::Drevo`] ⇄ native [`native::NativeGraph`]) over the shared
+/// (KV-backed `Drevo` ⇄ native [`native::NativeGraph`]) over the shared
 /// `drevo-json-v1` dump interchange, preserving every node/edge id.
 pub mod migrate;
 /// Engine-independent storage & semantic report DTOs (`CompactReport`,
@@ -193,7 +186,7 @@ pub mod mvcc;
 /// Phase 2) — an implementation of [`engine::GraphEngine`] that holds nodes and
 /// edges directly with maintained adjacency, instead of encoding them as
 /// byte-keyed rows over a [`storage::StorageBackend`]. Correctness-first seed of
-/// the arena/CSR core; pinned against [`db::Drevo`] by differential test.
+/// the arena/CSR core; pinned against `Drevo` by differential test.
 /// Extracted to the [`drevo-core`](drevo_core) crate (Phase 7 slice 6) and
 /// re-exported so `crate::native::…` / `drevo::native::…` paths keep resolving.
 pub use drevo_core::native;
@@ -219,7 +212,7 @@ pub mod native_api;
 /// Cypher from a [`native::NativeGraph`] snapshot with the native indexes and
 /// value cache synced; routes every write (and any stale or non-mirrorable
 /// read) to the durable KV engine, detecting staleness via
-/// [`db::Drevo::mutation_epoch`].
+/// `Drevo::mutation_epoch`.
 /// Durable-native serving layer (RFC `docs/rfc-native-core.md`, #307,
 /// Phase 4/7) — a WAL-backed [`native::NativeGraph`] as the store of
 /// record, serving Cypher with the full native index stack (label,
@@ -228,7 +221,7 @@ pub mod native_api;
 pub mod native_service;
 /// In-memory property-value index that tails a [`native::NativeGraph`]'s
 /// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.7) — the native
-/// counterpart of the KV [`property_index`], so a `MATCH (n {key: value})`
+/// counterpart of the KV `property_index`, so a `MATCH (n {key: value})`
 /// equality pattern resolves through an index instead of a full node scan.
 /// Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
 pub use drevo_core::native_property_index;
@@ -259,21 +252,6 @@ pub mod observability;
 /// guard for memory-limited query execution. Dependency-free, always compiled,
 /// WASM-safe; not yet wired into the executor.
 pub mod planner;
-/// Phase 14 task `00088` — persistent property index. A durable
-/// `(property key, value) -> node ids` map maintained on every node
-/// mutation alongside the kind and FTS indexes, turning equality lookups
-/// (`MATCH (n {prop: value})`) into an `O(matches)` prefix scan instead of
-/// an `O(N)` full-node scan. Queried via [`db::Drevo::nodes_by_property`].
-pub mod property_index;
-/// Phase 15 task `00095` — WAL-based MAIN / REPLICA replication. A
-/// [`replication::Primary`] tees every write into a
-/// [`replication::WriteAheadLog`] of [`replication::WalRecord`]s (each stamped
-/// with a monotonic [`replication::Lsn`]); read-only
-/// [`replication::Replica`] followers replay that log in order to serve scaled
-/// reads. Dependency-free, always compiled, WASM-safe; keeps its own
-/// [`replication::ReplicationError`] channel and is not yet wired into the
-/// executor / HTTP / Bolt request path.
-pub mod replication;
 /// Semantic-index state machine (Phase 21) — the pure, dependency-free control
 /// plane that governs whether and how a `(label, property)` is auto-embedded
 /// for semantic search. Off by default; serialisable for redb persistence and

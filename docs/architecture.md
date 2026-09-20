@@ -294,7 +294,7 @@ The native graph engine ([RFC #307](rfc-native-core.md)) measured on a **copy of
 | 2026-08-28 | + count pushdown (run 7) | drevo **wins 6/6**, **1.4–5.8×** ahead through the identical Bolt client — "surpass Memgraph" met on this scoreboard |
 | 2026-09-01 | `DREVO_ENGINE=native-durable`, zero redb (run 8) | WAL-backed store of record **wins 6/6, 1.2–6.8×**; durability is free on reads (matches the in-memory mirror within noise) |
 
-> Numbers are drevo vs Memgraph on identical Cypher over the same Bolt client (runs 5–8) or native vs the KV engine in-process (runs 1–4). Reproduce with `scripts/memgraph_baseline_bench.py` (cross-DB) or `DREVO_BASELINE_GRAPHML=<graphml> cargo bench --bench real_data_baseline_bench` (KV-vs-native); the harness asserts both engines return identical rows before timing, so a wrong-answer speedup never counts.
+> Numbers are drevo vs Memgraph on identical Cypher over the same Bolt client (runs 5–8) or native vs the KV engine in-process (runs 1–4). The cross-DB side reproduces with `scripts/memgraph_baseline_bench.py`; the in-process KV-vs-native `real_data_baseline_bench` that produced runs 1–4 was removed with the KV engine (epic #444), so those rows are a historical record. Each harness asserted both engines returned identical rows before timing, so a wrong-answer speedup never counted.
 
 ### Native-core load & concurrency — measured
 
@@ -313,8 +313,9 @@ engine, same real-data snapshot, Apple M1 Max). Full numbers + p50/p95/p99 in
 > Reads win 3–700× and scale. The write path is the honest caveat: autocommit
 > fsyncs every edge (~174/s), so **write-heavy callers must batch into a
 > transaction** — one fsync per commit lifts it to ~172 k/s (~1 000×), ~20×
-> above KV. Reproduce with `DREVO_BASELINE_GRAPHML=<graphml> cargo run --release
-> --example native_load`.
+> above KV. (The `native_load` / `real_data_baseline_bench` harnesses that
+> produced these KV-vs-native numbers were removed with the KV engine in epic
+> #444; the figures are retained here as a record.)
 
 ---
 

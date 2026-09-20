@@ -6,11 +6,10 @@
 //!   strips punctuation, and emits 3-character sliding windows. CJK
 //!   characters additionally emit 2-character bigrams between consecutive
 //!   CJK glyphs.
-//! - [`index`] — `trigram → Vec<node_id>` inverted index backed by the
-//!   [`crate::storage::StorageBackend`]. Each posting is stored as
-//!   `fts:{trigram}:{node_id_le} -> empty bytes` so that
-//!   [`crate::storage::StorageBackend::scan_prefix`] can retrieve a full
-//!   posting list in one call.
+//! - keyword extraction (`keywords`) and faceting ([`facet`]) — the salience
+//!   and grouping layers built on the tokenizer. The trigram inverted index
+//!   itself now lives in the native engine (`drevo_core::native_fts`); the KV
+//!   `fts:` keyspace index was removed with the KV engine (epic #444).
 //!
 //! See [`audit/AUDIT-fts.md`](https://github.com/ice1x/drevo/blob/main/audit/AUDIT-fts.md)
 //! for the rules verified against the `drevo-database` and
@@ -18,15 +17,9 @@
 //! strategy trait, broad-query performance mitigations, NFC
 //! normalization).
 
-/// Edge (relationship) trigram index (#227-B) — the `efts:` keyspace companion
-/// of [`index`], powering `fts.searchRelationships`.
-pub(crate) mod edge_index;
 /// Keyword-similarity grouping & faceting: collapse near-duplicate
 /// keywords (lexical or semantic) into facets (task `00133`).
 pub mod facet;
-/// Trigram inverted-index storage operations
-/// (build / extend / remove / intersect posting lists).
-pub mod index;
 /// Keyword extraction: top-`k` salient terms via word tokenization,
 /// stopword removal, and BM25 IDF salience (task `00132`).
 pub(crate) mod keywords;

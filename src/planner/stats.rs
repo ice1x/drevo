@@ -10,7 +10,7 @@
 //! a graph, then calling [`StatisticsCollector::finish`].
 //!
 //! The module is deliberately source-agnostic: nothing here reaches into
-//! [`crate::db::Drevo`]. Wiring a live scan into the collector is left to the
+//! `Drevo`. Wiring a live scan into the collector is left to the
 //! task that makes the executor consume the planner (`00086`), exactly as the
 //! MVCC engine stayed standalone until it was wired in.
 

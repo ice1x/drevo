@@ -40,7 +40,7 @@
 //! budget, peak-memory admission, and backpressure. Estimates remain coarse
 //! (documented `DEFAULT_*` constants stand in for missing statistics).
 //! Consuming the optimised plan to actually drive execution — and feeding the
-//! collector from a live [`crate::db::Drevo`] scan — is later-task work.
+//! collector from a live `Drevo` scan — is later-task work.
 //!
 //! Dependency-free, always compiled, and WASM-safe (`std::sync` only, no
 //! spawned threads).

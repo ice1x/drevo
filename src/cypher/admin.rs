@@ -2,14 +2,14 @@
 //! `CREATE DATABASE`.
 //!
 //! These are *not* graph queries: they list, select, and create the named
-//! databases the process serves (see [`crate::catalog`]). The graph executor
+//! databases the process serves (see `catalog`). The graph executor
 //! operates on a single database and knows nothing about the catalog, so
 //! these commands are recognised here, at the string level, and handled by
 //! the catalog-aware HTTP layer *before* the query reaches the parser.
 //!
 //! This module is pure syntax — it classifies a query string and extracts
 //! the operands. Name validation and the actual create/list/select happen in
-//! the caller against the live [`crate::catalog::Catalog`].
+//! the caller against the live `Catalog`.
 //!
 //! Grammar (keywords case-insensitive, a single optional trailing `;`):
 //!

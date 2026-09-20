@@ -16,7 +16,7 @@
 //! in-memory snapshot of the whole graph. Unlike the per-node closures the local
 //! traversals use, a global algorithm needs the entire node set and adjacency at
 //! once, so the caller materialises the snapshot first (see
-//! [`crate::db::Drevo::pagerank`] / [`crate::db::Drevo::louvain_communities`],
+//! `Drevo::pagerank` / `Drevo::louvain_communities`,
 //! which build it from the storage backend).
 //!
 //! The pure algorithm functions are **infallible** once given a valid config:

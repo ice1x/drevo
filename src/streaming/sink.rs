@@ -2,7 +2,7 @@
 //!
 //! The consumer decodes broker messages into [`IngestEvent`]s and hands each to
 //! a [`IngestSink`]. The trait is the seam between the transport-agnostic engine
-//! and whatever actually mutates state: a live [`crate::db::Drevo`] handle, a
+//! and whatever actually mutates state: a live `Drevo` handle, a
 //! staging buffer, a metrics tap, or — in tests and lightweight embedders — the
 //! reference [`MemoryGraphSink`] in this module.
 //!
@@ -76,7 +76,7 @@ pub struct EdgeRecord {
 /// It is the canonical, dependency-free sink: it demonstrates the idempotency
 /// contract (upsert = replace, delete = remove), lets tests assert the
 /// materialized graph state after a run, and serves as a staging buffer an
-/// embedder can flush into a real [`crate::db::Drevo`] in one batch.
+/// embedder can flush into a real `Drevo` in one batch.
 ///
 /// By default it accepts every event. To exercise the consumer's error
 /// handling, [`reject_keys`](Self::reject_keys) marks specific keys to fail on.

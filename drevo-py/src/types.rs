@@ -556,11 +556,11 @@ impl SubGraph {
 #[pyclass(frozen, name = "CompactReport")]
 #[derive(Clone)]
 pub struct CompactReport {
-    inner: drevo::db::CompactReport,
+    inner: drevo::report::CompactReport,
 }
 
 impl CompactReport {
-    pub(crate) fn new(inner: drevo::db::CompactReport) -> Self {
+    pub(crate) fn new(inner: drevo::report::CompactReport) -> Self {
         Self { inner }
     }
 }
@@ -687,11 +687,11 @@ impl ImportReport {
 #[pyclass(frozen, name = "BloatReport")]
 #[derive(Clone)]
 pub struct BloatReport {
-    inner: drevo::db::BloatReport,
+    inner: drevo::report::BloatReport,
 }
 
 impl BloatReport {
-    pub(crate) fn new(inner: drevo::db::BloatReport) -> Self {
+    pub(crate) fn new(inner: drevo::report::BloatReport) -> Self {
         Self { inner }
     }
 }

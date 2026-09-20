@@ -4,11 +4,11 @@
 //!
 //! - [`memory::MemoryBackend`] — a `BTreeMap`-backed in-process backend.
 //!   Usable everywhere, including `wasm32-unknown-unknown` where filesystem
-//!   access is unavailable. It also backs the in-memory KV [`crate::db::Drevo`]
+//!   access is unavailable. It also backs the in-memory KV `Drevo`
 //!   handle that survives as the native engine's differential-test oracle.
 //!
 //! It implements [`backend::StorageBackend`], the trait every higher-level
-//! component ([`crate::db::Drevo`], [`crate::fts`], [`crate::traversal`])
+//! component (`Drevo`, [`crate::fts`], [`crate::traversal`])
 //! takes a reference to. Errors funnel through [`error::StorageError`].
 //!
 //! The durable serving path is the native engine (WAL), not this KV layer;

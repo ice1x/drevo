@@ -31,7 +31,7 @@
 //!   ([`install`](crate::text2cypher::install) /
 //!   [`installed`](crate::text2cypher::installed)) is set once at server
 //!   startup: text-to-Cypher is stateless and process-wide, so no
-//!   per-[`Drevo`](crate::db::Drevo)-handle threading is needed.
+//!   per-`Drevo`-handle threading is needed.
 
 use std::sync::Arc;
 

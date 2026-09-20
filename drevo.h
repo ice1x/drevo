@@ -144,11 +144,6 @@
 #define FAILURE 127
 
 /**
- * Maximum database-name length in bytes.
- */
-#define MAX_NAME_LEN 64
-
-/**
  * Default trigram-set Jaccard threshold for [`FacetCollapse::Lexical`].
  *
  * `0.34` means two keywords merge on the trigram signal when about a third
@@ -249,21 +244,20 @@
 typedef struct BoltVersion BoltVersion;
 
 /**
- * A log sequence number — a strictly increasing identifier stamped on every
- * [`WalRecord`].
- *
- * [`Lsn::ZERO`] is the sentinel for "no record yet": a freshly created log
- * has [`WriteAheadLog::last_lsn`] equal to `ZERO`, and a freshly created
- * replica has applied up to `ZERO`. The first appended record is
- * [`Lsn`]`(1)`.
- */
-typedef struct Lsn Lsn;
-
-/**
  * A durable native graph serving Cypher with its full index stack. See the
  * [module docs](self).
  */
 typedef struct NativeService NativeService;
+
+/**
+ * A monotonically increasing position within a stream partition.
+ *
+ * [`Offset::ZERO`] is the sentinel for "before any message": a fresh source
+ * has [`committed`](StreamSource::committed) equal to `ZERO`, and the first
+ * message produced is [`Offset`]`(1)`. This mirrors the `Lsn` convention used
+ * by log-shipping replication.
+ */
+typedef struct Offset Offset;
 
 /**
  * Opaque handle exposed to C consumers.

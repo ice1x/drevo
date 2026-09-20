@@ -1,5 +1,12 @@
 # Native engine — load & concurrency
 
+> **Note (epic #444):** the `examples/native_load.rs` harness described below
+> compared the native engine against the now-removed KV `Drevo` engine over the
+> `GraphEngine` seam, and was retired together with the KV engine. This page is
+> kept as a record of the methodology and the numbers it produced; the commands
+> below no longer resolve. A native-only successor can be rebuilt on
+> `NativeService` if the concurrency/throughput measurement is needed again.
+
 The [native-core baseline](native-core-baseline.md) is a single-threaded
 micro-latency scoreboard: it says nothing about **concurrency**, **deep
 traversal**, or **write throughput**. This page fills those gaps with

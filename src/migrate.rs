@@ -1,10 +1,9 @@
 //! Cross-engine data migration over the [`GraphEngine`](crate::engine::GraphEngine)
 //! seam (RFC `docs/rfc-native-core.md`, #307).
 //!
-//! Moving a live graph between the KV-backed [`crate::db::Drevo`] and the
-//! native [`crate::native::NativeGraph`] is the prerequisite for adopting (or
-//! rolling back from) the native engine in a running deployment: the topology
-//! has to carry over with every node/edge **id** intact, or the edges would
+//! Moving a live graph between two [`crate::native::NativeGraph`] instances
+//! (for example seeding a fresh durable store from an in-memory one) carries
+//! the topology over with every node/edge **id** intact, or the edges would
 //! point at nothing.
 //!
 //! Both engines already speak the `drevo-json-v1` [`crate::dump::Dump`]
@@ -20,15 +19,14 @@
 //! migration to/from every existing one for free.
 //!
 //! ```no_run
-//! use drevo::db::Drevo;
 //! use drevo::native::NativeGraph;
 //! use drevo::migrate::migrate;
 //!
 //! # fn main() -> drevo::error::Result<()> {
-//! let kv = Drevo::open_in_memory()?;
-//! // … populate `kv` …
-//! let native = NativeGraph::new();
-//! let report = migrate(&kv, &native)?; // KV → native, ids preserved
+//! let source = NativeGraph::new();
+//! // … populate `source` …
+//! let dest = NativeGraph::new();
+//! let report = migrate(&source, &dest)?; // ids preserved
 //! println!("moved {} nodes, {} edges", report.nodes_imported, report.edges_imported);
 //! # Ok(())
 //! # }

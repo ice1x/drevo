@@ -352,10 +352,11 @@ fn cargo_manifest_target_dirs() -> Vec<String> {
 
 #[test]
 fn cargo_manifest_target_dirs_collector_finds_benches() {
-    // Sanity check on the helper itself: the project ships four
-    // benches under `benches/` and one bin under `src/bin/`. If the
-    // helper silently regresses, every downstream test below
-    // becomes a tautology.
+    // Sanity check on the helper itself: the project ships at least one
+    // bench under `benches/` and one bin under `src/bin/`. If the helper
+    // silently regresses, every downstream test below becomes a tautology.
+    // (The `examples/` targets were removed with the KV load harnesses in
+    // epic #444, so there is no longer an `[[example]]` declaration to find.)
     let dirs = cargo_manifest_target_dirs();
     assert!(
         dirs.iter().any(|d| d == "benches"),
@@ -365,11 +366,6 @@ fn cargo_manifest_target_dirs_collector_finds_benches() {
     assert!(
         dirs.iter().any(|d| d == "src/bin"),
         "helper failed to discover the `src/bin/` directory from `[[bin]]` declarations. Got: {dirs:?}"
-    );
-    assert!(
-        dirs.iter().any(|d| d == "examples"),
-        "helper failed to discover the `examples/` directory from `[[example]]` declarations \
-         (the #241 load-harness targets) — the gap that broke `make release-image`. Got: {dirs:?}"
     );
 }
 

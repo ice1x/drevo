@@ -82,7 +82,7 @@ pub enum DrevoError {
     /// A second explicit transaction (`Drevo::tx_begin`) was requested
     /// while one is already active or being rolled back. The MVP
     /// undo-log layer (Phase 11 task `00072`) allows only a single
-    /// in-flight transaction per [`crate::db::Drevo`] handle —
+    /// in-flight transaction per `Drevo` handle —
     /// concurrent isolation lands with MVCC (`00080`–`00084`). Maps to
     /// the Bolt status code `Neo.TransientError.Transaction.Outdated`.
     #[error("transaction already active")]

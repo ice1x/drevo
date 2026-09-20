@@ -603,7 +603,7 @@ pub fn embedding_vec_from_response(resp: &Value) -> Result<Vec<f32>, EmbeddingsE
 /// [`SyncEmbedder`], which owns a dedicated OS thread with its own
 /// current-thread runtime — and expose a plain blocking `embed_query`.
 ///
-/// Installed on a [`Drevo`](crate::db::Drevo) handle via
+/// Installed on a `Drevo` handle via
 /// `set_embedder`; the `drevo.semantic.query` procedure calls `embed_text`,
 /// which delegates here. Feature-gated on `http` (the module itself is).
 pub trait TextEmbedder: Send + Sync {

@@ -36,13 +36,17 @@ use crate::api::{
     ShortestPathResponse, SubgraphQuery, DEFAULT_FACET_KEYWORDS, DEFAULT_LIST_LIMIT,
     DEFAULT_NEIGHBORS_DEPTH, DEFAULT_SUBGRAPH_DEPTH, MAX_FACET_KEYWORDS, MAX_LIST_LIMIT,
 };
-use crate::catalog::DEFAULT_DB;
 use crate::cypher::parser;
 use crate::embeddings::{EmbeddingBackend, EmbeddingsRequest};
 use crate::fts::facet::{FacetCollapse, DEFAULT_TRIGRAM_THRESHOLD};
 use crate::model::Direction;
 use crate::native_service::NativeService;
 use crate::observability::DrevoMetrics;
+
+/// The name of the single database this server serves. Historically the
+/// multi-database catalog's always-present default; the native server serves
+/// exactly this one durable graph, and `/databases` advertises it by this name.
+pub const DEFAULT_DB: &str = "drevo";
 
 /// Shared state of the durable-native HTTP surface.
 #[derive(Clone)]

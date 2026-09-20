@@ -268,11 +268,6 @@ pub enum RunError {
     /// Configuration was invalid.
     #[error(transparent)]
     Config(#[from] ConfigError),
-    /// Failed to open the multi-database catalog rooted at the data
-    /// directory (scan failure or the default database could not be
-    /// opened).
-    #[error("failed to open database catalog: {0}")]
-    CatalogOpen(#[from] crate::catalog::CatalogError),
     /// The durable native store could not be opened (WAL recovery,
     /// compaction, or index build failed) in `DREVO_ENGINE=native-durable`
     /// mode.

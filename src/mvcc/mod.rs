@@ -96,7 +96,7 @@
 //!
 //! # What lands later in Phase 13
 //!
-//! * Wiring the standalone MVCC engine into the [`Drevo`](crate::db::Drevo)
+//! * Wiring the standalone MVCC engine into the `Drevo`
 //!   redb-backed mutation paths — the module remains a self-contained engine,
 //!   as it has since `00081`.
 //!
