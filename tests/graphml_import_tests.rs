@@ -1,8 +1,9 @@
 //! Phase 9 task `00057` — GraphML import integration tests.
 //!
-//! Cover the `Drevo::import_graphml` / `Drevo::import_graphml_from_path`
-//! surface that ships under the `dump` module — the inverse of the task
-//! `00056` GraphML exporter. The assertions focus on:
+//! Cover the native engine's `import_graphml` surface (the string codec on
+//! `NativeService`) — the inverse of the task `00056` GraphML exporter. The
+//! filesystem round-trip is exercised with `std::fs` over that codec. The
+//! assertions focus on:
 //!
 //! 1. **Round-trip fidelity** — a graph exported with `export_graphml` and
 //!    re-imported into a fresh database reproduces every node/edge verbatim
@@ -20,14 +21,12 @@
 //!    survive the parse.
 //! 6. **Error handling** — malformed XML, a missing `<graphml>`/`<graph>`
 //!    element, and edges referencing undeclared nodes are rejected.
-//! 7. **Cross-backend parity** — a redb-backed database imports the same
-//!    document as an in-memory one.
-//! 8. **Filesystem variant** — `import_graphml_from_path` reads and loads a
-//!    document written to a `tempfile::TempDir` path.
+//! 7. **Filesystem round-trip** — a document written to a `tempfile::TempDir`
+//!    path with `std::fs` is read back and loaded via `import_graphml`.
 
-use drevo::db::Drevo;
 use drevo::dump::Dump;
 use drevo::model::{Edge, NewEdge, NewNode, Node, Properties};
+use drevo::native_service::NativeService;
 use serde_json::json;
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -64,7 +63,7 @@ fn new_edge(from: u64, to: u64, kind: &str, weight: f32) -> NewEdge {
     }
 }
 
-fn populate_sample_graph(db: &Drevo) -> (Vec<u64>, Vec<u64>) {
+fn populate_sample_graph(db: &NativeService) -> (Vec<u64>, Vec<u64>) {
     let n1 = db.create_node(new_node("note", "Alpha")).unwrap();
     let n2 = db.create_node(new_node("note", "Beta")).unwrap();
     let n3 = db.create_node(new_node("tag", "Gamma")).unwrap();
@@ -93,22 +92,22 @@ fn populate_sample_graph(db: &Drevo) -> (Vec<u64>, Vec<u64>) {
 /// Deserialize a database's full contents via its deterministic JSON dump —
 /// the only public surface that enumerates every node and edge. `collect_all_*`
 /// is crate-private, so integration tests read the graph through `export_json`.
-fn dump_of(db: &Drevo) -> Dump {
+fn dump_of(db: &NativeService) -> Dump {
     serde_json::from_str(&db.export_json().unwrap()).unwrap()
 }
 
-fn all_nodes(db: &Drevo) -> Vec<Node> {
+fn all_nodes(db: &NativeService) -> Vec<Node> {
     dump_of(db).nodes
 }
 
-fn all_edges(db: &Drevo) -> Vec<Edge> {
+fn all_edges(db: &NativeService) -> Vec<Edge> {
     dump_of(db).edges
 }
 
 /// Assert that two databases hold the same set of nodes and edges (by id and
 /// full content) — the strong notion of a lossless import. Compares the
 /// deterministic JSON dumps with the volatile `exported_at` timestamp zeroed.
-fn assert_same_graph(a: &Drevo, b: &Drevo) {
+fn assert_same_graph(a: &NativeService, b: &NativeService) {
     let mut da = dump_of(a);
     let mut db_ = dump_of(b);
     da.exported_at = 0;
@@ -125,11 +124,11 @@ fn assert_same_graph(a: &Drevo, b: &Drevo) {
 
 #[test]
 fn import_graphml_round_trips_full_graph() {
-    let src = Drevo::open_in_memory().unwrap();
+    let src = NativeService::in_memory();
     populate_sample_graph(&src);
     let xml = src.export_graphml().unwrap();
 
-    let dst = Drevo::open_in_memory().unwrap();
+    let dst = NativeService::in_memory();
     let report = dst.import_graphml(&xml).unwrap();
     assert_eq!(report.nodes_imported, 5);
     assert_eq!(report.edges_imported, 4);
@@ -147,11 +146,11 @@ fn import_graphml_round_trips_full_graph() {
 
 #[test]
 fn import_graphml_second_pass_skips_everything() {
-    let src = Drevo::open_in_memory().unwrap();
+    let src = NativeService::in_memory();
     populate_sample_graph(&src);
     let xml = src.export_graphml().unwrap();
 
-    let dst = Drevo::open_in_memory().unwrap();
+    let dst = NativeService::in_memory();
     dst.import_graphml(&xml).unwrap();
     let second = dst.import_graphml(&xml).unwrap();
     assert_eq!(second.nodes_imported, 0);
@@ -167,7 +166,7 @@ fn import_graphml_second_pass_skips_everything() {
 #[test]
 fn import_graphml_merges_disjoint_graph_into_populated_db() {
     // Destination already has one node (id 1, "Existing").
-    let dst = Drevo::open_in_memory().unwrap();
+    let dst = NativeService::in_memory();
     dst.create_node(new_node("note", "Existing")).unwrap();
 
     // A foreign document with string ids so the importer allocates fresh ids
@@ -185,7 +184,7 @@ fn import_graphml_merges_disjoint_graph_into_populated_db() {
     assert_eq!(report.edges_imported, 1);
 
     // Original node untouched; imported nodes got ids 2 and 3.
-    assert_eq!(dst.get_node(1).unwrap().unwrap().title, "Existing");
+    assert_eq!(dst.get_node(1).unwrap().title, "Existing");
     let titles: Vec<String> = all_nodes(&dst).into_iter().map(|n| n.title).collect();
     assert_eq!(titles.len(), 3);
     assert!(titles.contains(&"Imported One".to_string()));
@@ -198,7 +197,7 @@ fn import_graphml_merges_disjoint_graph_into_populated_db() {
 
 #[test]
 fn import_graphml_foreign_folds_unknown_keys_into_properties() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
          <graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\">\
          <key id=\"d0\" for=\"node\" attr.name=\"title\" attr.type=\"string\"/>\
@@ -210,7 +209,7 @@ fn import_graphml_foreign_folds_unknown_keys_into_properties() {
     let report = db.import_graphml(xml).unwrap();
     assert_eq!(report.nodes_imported, 1);
 
-    let node = db.get_node(1).unwrap().unwrap();
+    let node = db.get_node(1).unwrap();
     assert_eq!(node.title, "Solo");
     // `color` is a string that is not valid JSON on its own → stored as a
     // JSON string; `score` parses as a JSON number.
@@ -220,14 +219,14 @@ fn import_graphml_foreign_folds_unknown_keys_into_properties() {
 
 #[test]
 fn import_graphml_preserves_edge_weight_and_direction() {
-    let src = Drevo::open_in_memory().unwrap();
+    let src = NativeService::in_memory();
     let a = src.create_node(new_node("note", "Head")).unwrap();
     let b = src.create_node(new_node("note", "Tail")).unwrap();
     src.create_edge(new_edge(a.id, b.id, "points_to", 4.25))
         .unwrap();
     let xml = src.export_graphml().unwrap();
 
-    let dst = Drevo::open_in_memory().unwrap();
+    let dst = NativeService::in_memory();
     dst.import_graphml(&xml).unwrap();
     let edges = all_edges(&dst);
     assert_eq!(edges.len(), 1);
@@ -243,7 +242,7 @@ fn import_graphml_preserves_edge_weight_and_direction() {
 
 #[test]
 fn import_graphml_decodes_entities_and_unicode() {
-    let src = Drevo::open_in_memory().unwrap();
+    let src = NativeService::in_memory();
     src.create_node(NewNode {
         kind: "заметка".into(),
         title: "a < b & c > d \" ' 知识 🌳".into(),
@@ -254,9 +253,9 @@ fn import_graphml_decodes_entities_and_unicode() {
     .unwrap();
     let xml = src.export_graphml().unwrap();
 
-    let dst = Drevo::open_in_memory().unwrap();
+    let dst = NativeService::in_memory();
     dst.import_graphml(&xml).unwrap();
-    let node = dst.get_node(1).unwrap().unwrap();
+    let node = dst.get_node(1).unwrap();
     assert_eq!(node.kind, "заметка");
     assert_eq!(node.title, "a < b & c > d \" ' 知识 🌳");
     assert_eq!(node.body, "<tag> & more — Привет");
@@ -270,7 +269,7 @@ fn import_graphml_decodes_entities_and_unicode() {
 
 #[test]
 fn import_graphml_rejects_malformed_xml() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     assert!(db.import_graphml("<graphml><graph><node>").is_err());
     assert!(db.import_graphml("not xml at all").is_err());
     assert!(db.import_graphml("<a><b></a></b>").is_err());
@@ -278,7 +277,7 @@ fn import_graphml_rejects_malformed_xml() {
 
 #[test]
 fn import_graphml_rejects_missing_structural_elements() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     // No <graphml> root.
     assert!(db.import_graphml("<foo><graph/></foo>").is_err());
     // <graphml> but no <graph>.
@@ -289,7 +288,7 @@ fn import_graphml_rejects_missing_structural_elements() {
 
 #[test]
 fn import_graphml_rejects_edge_referencing_undeclared_node() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let xml = "<graphml><graph>\
          <node id=\"n1\"><data key=\"title\">A</data></node>\
          <edge source=\"n1\" target=\"ghost\"/>\
@@ -311,14 +310,18 @@ fn import_graphml_rejects_edge_referencing_undeclared_node() {
 
 #[test]
 fn import_graphml_from_path_reads_and_loads_document() {
-    let src = Drevo::open_in_memory().unwrap();
+    let src = NativeService::in_memory();
     populate_sample_graph(&src);
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("graph.graphml");
-    src.export_graphml_to_path(&path).unwrap();
+    // NativeService exposes the in-memory string codecs; the KV `*_to_path` /
+    // `*_from_path` convenience wrappers are done here with std::fs.
+    std::fs::write(&path, src.export_graphml().unwrap()).unwrap();
 
-    let dst = Drevo::open_in_memory().unwrap();
-    let report = dst.import_graphml_from_path(&path).unwrap();
+    let dst = NativeService::in_memory();
+    let report = dst
+        .import_graphml(&std::fs::read_to_string(&path).unwrap())
+        .unwrap();
     assert_eq!(report.nodes_imported, 5);
     assert_eq!(report.edges_imported, 4);
     assert_same_graph(&src, &dst);

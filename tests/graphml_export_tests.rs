@@ -1,8 +1,8 @@
 //! Phase 9 task `00056` — GraphML export integration tests.
 //!
-//! Cover the `Drevo::export_graphml` / `Drevo::export_graphml_to_path`
-//! surface that ships under the `dump` module. The exporter has no inverse
-//! (no `import_graphml`); the assertions below therefore focus on:
+//! Cover the native engine's `export_graphml` surface (the string codec on
+//! `NativeService`); the filesystem round-trip is exercised with `std::fs`
+//! over that codec. The assertions below focus on:
 //!
 //! 1. **Well-formedness** — output starts with `<?xml`, declares the GraphML
 //!    namespace, opens `<graph id="drevo" edgedefault="directed">`, and
@@ -22,18 +22,18 @@
 //!    yields byte-identical output; two databases with identical logical
 //!    content (modulo uuids / timestamps) yield identical output once those
 //!    volatile fields are stripped.
-//! 6. **Cross-backend parity** — `MemoryBackend` and `RedbBackend` produce
-//!    the same GraphML for the same logical graph (again modulo volatile
-//!    fields).
-//! 7. **Filesystem variant** — `export_graphml_to_path` writes the exact
-//!    bytes that `export_graphml` returns to a `tempfile::TempDir` path.
+//! 6. **Determinism across instances** — two databases with identical logical
+//!    content yield identical GraphML (modulo volatile fields).
+//! 7. **Filesystem round-trip** — writing `export_graphml`'s output to a
+//!    `tempfile::TempDir` path with `std::fs` and reading it back yields the
+//!    exact bytes.
 //! 8. **Unicode** — CJK, emoji, and Cyrillic content in titles / bodies /
 //!    property keys survives a JSON-string round-trip inside the GraphML.
 //! 9. **Empty graph** — exporting a freshly-opened database still yields a
 //!    valid GraphML document with zero `<node>` / `<edge>` elements.
 
-use drevo::db::Drevo;
 use drevo::model::{NewEdge, NewNode, Properties};
+use drevo::native_service::NativeService;
 use serde_json::json;
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -70,7 +70,7 @@ fn new_edge(from: u64, to: u64, kind: &str, weight: f32) -> NewEdge {
     }
 }
 
-fn populate_sample_graph(db: &Drevo) -> (Vec<u64>, Vec<u64>) {
+fn populate_sample_graph(db: &NativeService) -> (Vec<u64>, Vec<u64>) {
     let n1 = db.create_node(new_node("note", "Alpha")).unwrap();
     let n2 = db.create_node(new_node("note", "Beta")).unwrap();
     let n3 = db.create_node(new_node("tag", "Gamma")).unwrap();
@@ -123,14 +123,14 @@ fn strip_volatile(mut s: String) -> String {
 
 #[test]
 fn export_graphml_starts_with_xml_declaration() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let xml = db.export_graphml().unwrap();
     assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
 }
 
 #[test]
 fn export_graphml_declares_namespace_and_schema() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let xml = db.export_graphml().unwrap();
     assert!(xml.contains("xmlns=\"http://graphml.graphdrawing.org/xmlns\""));
     assert!(xml.contains("xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""));
@@ -139,7 +139,7 @@ fn export_graphml_declares_namespace_and_schema() {
 
 #[test]
 fn export_graphml_opens_and_closes_root_elements() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let xml = db.export_graphml().unwrap();
     assert_eq!(xml.matches("<graphml ").count(), 1);
     assert_eq!(xml.matches("</graphml>").count(), 1);
@@ -154,7 +154,7 @@ fn export_graphml_opens_and_closes_root_elements() {
 
 #[test]
 fn export_graphml_empty_graph_has_no_node_or_edge_elements() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let xml = db.export_graphml().unwrap();
     assert_eq!(xml.matches("<node ").count(), 0);
     assert_eq!(xml.matches("<edge ").count(), 0);
@@ -166,7 +166,7 @@ fn export_graphml_empty_graph_has_no_node_or_edge_elements() {
 
 #[test]
 fn export_graphml_emits_every_node_id() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let (node_ids, _) = populate_sample_graph(&db);
     let xml = db.export_graphml().unwrap();
     for id in &node_ids {
@@ -180,7 +180,7 @@ fn export_graphml_emits_every_node_id() {
 
 #[test]
 fn export_graphml_emits_every_edge_with_source_and_target() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let (_, edge_ids) = populate_sample_graph(&db);
     let xml = db.export_graphml().unwrap();
     for eid in &edge_ids {
@@ -196,7 +196,7 @@ fn export_graphml_emits_every_edge_with_source_and_target() {
 
 #[test]
 fn export_graphml_declares_all_node_and_edge_keys() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let xml = db.export_graphml().unwrap();
     for id in [
         "d_uuid",
@@ -233,7 +233,7 @@ fn export_graphml_declares_all_node_and_edge_keys() {
 
 #[test]
 fn export_graphml_escapes_special_chars_in_node_text() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     db.create_node(NewNode {
         kind: "note".into(),
         title: "tricky < & > \" '".into(),
@@ -278,7 +278,7 @@ fn xml_unescape(s: &str) -> String {
 
 #[test]
 fn export_graphml_node_properties_are_json_parseable() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let props = props_with(&[
         ("answer", json!(42)),
         ("tags", json!(["a", "b", "c"])),
@@ -306,7 +306,7 @@ fn export_graphml_node_properties_are_json_parseable() {
 
 #[test]
 fn export_graphml_edge_weight_and_props_are_emitted() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(new_node("note", "A")).unwrap();
     let b = db.create_node(new_node("note", "B")).unwrap();
     db.create_edge(new_edge(a.id, b.id, "links_to", 2.75))
@@ -325,7 +325,7 @@ fn export_graphml_edge_weight_and_props_are_emitted() {
 
 #[test]
 fn export_graphml_edge_records_correct_source_and_target() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(new_node("note", "Source")).unwrap();
     let b = db.create_node(new_node("note", "Target")).unwrap();
     let e = db
@@ -344,7 +344,7 @@ fn export_graphml_edge_records_correct_source_and_target() {
 
 #[test]
 fn export_graphml_is_byte_identical_when_called_twice() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     populate_sample_graph(&db);
     let first = db.export_graphml().unwrap();
     let second = db.export_graphml().unwrap();
@@ -357,7 +357,7 @@ fn export_graphml_normalises_property_order_across_databases() {
     // different orders must produce identical GraphML (modulo uuids /
     // timestamps that differ at creation time). `Properties::Serialize`
     // already sorts keys via BTreeMap.
-    let a = Drevo::open_in_memory().unwrap();
+    let a = NativeService::in_memory();
     a.create_node(NewNode {
         kind: "note".into(),
         title: "X".into(),
@@ -367,7 +367,7 @@ fn export_graphml_normalises_property_order_across_databases() {
     })
     .unwrap();
 
-    let b = Drevo::open_in_memory().unwrap();
+    let b = NativeService::in_memory();
     b.create_node(NewNode {
         kind: "note".into(),
         title: "X".into(),
@@ -393,11 +393,13 @@ fn export_graphml_normalises_property_order_across_databases() {
 
 #[test]
 fn export_graphml_to_path_writes_same_bytes_as_in_memory_export() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     populate_sample_graph(&db);
     let dir = TempDir::new().unwrap();
     let target = dir.path().join("graph.graphml");
-    db.export_graphml_to_path(&target).unwrap();
+    // NativeService exposes the in-memory string codec; the KV
+    // `export_graphml_to_path` wrapper is done here with std::fs.
+    std::fs::write(&target, db.export_graphml().unwrap()).unwrap();
     let on_disk = std::fs::read_to_string(&target).unwrap();
     assert_eq!(on_disk, db.export_graphml().unwrap());
 }
@@ -408,7 +410,7 @@ fn export_graphml_to_path_writes_same_bytes_as_in_memory_export() {
 
 #[test]
 fn export_graphml_preserves_unicode_in_node_text() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     db.create_node(NewNode {
         kind: "заметка".into(),
         title: "知识图谱 🌳 Привет".into(),
@@ -435,7 +437,7 @@ fn export_graphml_preserves_unicode_in_node_text() {
 
 #[test]
 fn export_graphml_lists_nodes_and_edges_in_id_order() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let (node_ids, edge_ids) = populate_sample_graph(&db);
     let xml = db.export_graphml().unwrap();
 
