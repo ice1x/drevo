@@ -765,19 +765,54 @@ async fn graphml_round_trip_through_the_native_router() {
 
 #[tokio::test]
 async fn a_kv_backup_restores_into_the_durable_engine() {
-    use drevo::cypher::executor::execute_on_engine;
-    use drevo::cypher::parser::parse;
-    use std::collections::HashMap;
-
-    // A backup taken from the KV engine (the live deployment's format)…
-    let kv = drevo::db::Drevo::open_in_memory().expect("open kv");
-    for stmt in [
-        "CREATE (:Entity {title: 'kg-node', type: 'Trait'})",
-        "CREATE (:Entity {title: 'kg-other'})",
-    ] {
-        execute_on_engine(&parse(stmt).unwrap(), &kv, HashMap::new()).expect("seed");
-    }
-    let backup = kv.export_graphml().expect("kv export");
+    // A backup produced by the retired KV engine (`Drevo::export_graphml`),
+    // captured verbatim as a fixture — the exact on-disk format of the
+    // pre-native live deployment's `/export/graphml`. Historical backups in
+    // this shape must still restore into a zero-redb native server even after
+    // the KV engine is deleted from the tree, so the format is pinned here as
+    // a literal rather than regenerated from an engine that no longer exists.
+    // Two nodes; `kg-node` carries a `type: Trait` property in `d_props`.
+    let backup = r#"<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d_uuid" for="node" attr.name="uuid" attr.type="string"/>
+  <key id="d_kind" for="node" attr.name="kind" attr.type="string"/>
+  <key id="d_title" for="node" attr.name="title" attr.type="string"/>
+  <key id="d_body" for="node" attr.name="body" attr.type="string"/>
+  <key id="d_body_html" for="node" attr.name="body_html" attr.type="string"/>
+  <key id="d_created_at" for="node" attr.name="created_at" attr.type="long"/>
+  <key id="d_updated_at" for="node" attr.name="updated_at" attr.type="long"/>
+  <key id="d_props" for="node" attr.name="properties" attr.type="string"/>
+  <key id="d_e_uuid" for="edge" attr.name="uuid" attr.type="string"/>
+  <key id="d_e_kind" for="edge" attr.name="kind" attr.type="string"/>
+  <key id="d_e_weight" for="edge" attr.name="weight" attr.type="double"/>
+  <key id="d_e_created_at" for="edge" attr.name="created_at" attr.type="long"/>
+  <key id="d_e_props" for="edge" attr.name="properties" attr.type="string"/>
+  <graph id="drevo" edgedefault="directed">
+    <node id="n1">
+      <data key="d_uuid">01a0bf98-53f7-77b2-9d2f-4ea86b581dcf</data>
+      <data key="d_kind">Entity</data>
+      <data key="d_title">kg-node</data>
+      <data key="d_body"></data>
+      <data key="d_body_html"></data>
+      <data key="d_created_at">1789920826359</data>
+      <data key="d_updated_at">1789920826359</data>
+      <data key="d_props">{&quot;type&quot;:&quot;Trait&quot;}</data>
+    </node>
+    <node id="n2">
+      <data key="d_uuid">01a0bf98-53f8-77b3-b7b0-65b3939e9f59</data>
+      <data key="d_kind">Entity</data>
+      <data key="d_title">kg-other</data>
+      <data key="d_body"></data>
+      <data key="d_body_html"></data>
+      <data key="d_created_at">1789920826360</data>
+      <data key="d_updated_at">1789920826360</data>
+      <data key="d_props">{}</data>
+    </node>
+  </graph>
+</graphml>
+"#;
 
     // …restores into a zero-redb server.
     let app = build_native_router(NativeApiState::new(Arc::new(NativeService::in_memory())));
