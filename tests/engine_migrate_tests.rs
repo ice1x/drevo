@@ -1,22 +1,22 @@
-//! Cross-engine data migration (RFC `docs/rfc-native-core.md`, #307, Phase 6
-//! prerequisite).
+//! Graph migration via the `drevo-json-v1` [`drevo::dump::Dump`] interchange
+//! (RFC `docs/rfc-native-core.md`, #307).
 //!
-//! A live graph must be movable between the KV-backed [`drevo::db::Drevo`] and
-//! the native [`drevo::native::NativeGraph`] without losing a byte — same node
-//! and edge **ids**, same content, same adjacency, and with the id-allocation
-//! counters clamped so a post-migration create never reuses an imported id.
-//! That is what lets a deployment adopt (or roll back from) the native engine.
+//! [`drevo::migrate::migrate`] copies a live graph from one
+//! [`drevo::engine::GraphEngine`] into another without losing a byte — same
+//! node and edge **ids**, same content, same adjacency, and with the
+//! id-allocation counters clamped so a post-migration create never reuses an
+//! imported id. It rides the same [`drevo::dump::Dump`] format that
+//! round-trips through JSON / GraphML.
 //!
-//! Migration rides the proven `drevo-json-v1` [`drevo::dump::Dump`] interchange
-//! that already round-trips through JSON / GraphML, so both engines speak the
-//! same dialect and [`drevo::migrate::migrate`] is a one-liner over the
-//! [`drevo::engine::GraphEngine`] seam.
+//! These tests exercise the native engine ([`drevo::native::NativeGraph`]) as
+//! both source and destination — the KV engine has been retired (epic #444),
+//! so `migrate` and `apply_dump` are validated engine-to-engine on native
+//! alone.
 //!
 //! uuid / timestamp fields are non-deterministic and excluded from comparison;
 //! everything else (id, kind, title, body, properties, endpoints, weight) must
 //! survive the trip exactly.
 
-use drevo::db::Drevo;
 use drevo::engine::GraphEngine;
 use drevo::migrate::migrate;
 use drevo::model::{Direction, Edge, NewEdge, NewNode, Node};
@@ -106,76 +106,61 @@ fn seed(g: &dyn GraphEngine) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn migrate_kv_to_native_preserves_graph() {
-    let kv = Drevo::open_in_memory().unwrap();
-    seed(&kv);
+fn migrate_preserves_graph() {
+    let src = NativeGraph::new();
+    seed(&src);
 
-    let native = NativeGraph::new();
-    let report = migrate(&kv, &native).unwrap();
+    let dst = NativeGraph::new();
+    let report = migrate(&src, &dst).unwrap();
 
     assert_eq!(report.nodes_imported, 3);
     assert_eq!(report.edges_imported, 3);
     assert_eq!(report.nodes_skipped, 0);
     assert_eq!(report.edges_skipped, 0);
-    assert_same_graph(&kv, &native);
+    assert_same_graph(&src, &dst);
 }
 
 #[test]
-fn migrate_native_to_kv_preserves_graph() {
-    let native = NativeGraph::new();
-    seed(&native);
+fn migrate_round_trips_through_a_second_engine() {
+    let g1 = NativeGraph::new();
+    seed(&g1);
 
-    let kv = Drevo::open_in_memory().unwrap();
-    let report = migrate(&native, &kv).unwrap();
+    let g2 = NativeGraph::new();
+    migrate(&g1, &g2).unwrap();
 
-    assert_eq!(report.nodes_imported, 3);
-    assert_eq!(report.edges_imported, 3);
-    assert_same_graph(&native, &kv);
-}
+    let g3 = NativeGraph::new();
+    migrate(&g2, &g3).unwrap();
 
-#[test]
-fn migrate_round_trips_kv_to_native_to_kv() {
-    let kv1 = Drevo::open_in_memory().unwrap();
-    seed(&kv1);
-
-    let native = NativeGraph::new();
-    migrate(&kv1, &native).unwrap();
-
-    let kv2 = Drevo::open_in_memory().unwrap();
-    migrate(&native, &kv2).unwrap();
-
-    assert_same_graph(&kv1, &kv2);
+    assert_same_graph(&g1, &g3);
 }
 
 #[test]
 fn migration_preserves_ids_and_edge_endpoints() {
-    let kv = Drevo::open_in_memory().unwrap();
-    let a = kv.create_node(new_node("Person", "alice")).unwrap();
-    let b = kv.create_node(new_node("Person", "bob")).unwrap();
-    let e = kv.create_edge(new_edge(a.id, b.id, "KNOWS")).unwrap();
+    let src = NativeGraph::new();
+    let a = src.create_node(new_node("Person", "alice")).unwrap();
+    let b = src.create_node(new_node("Person", "bob")).unwrap();
+    let e = src.create_edge(new_edge(a.id, b.id, "KNOWS")).unwrap();
 
-    let native = NativeGraph::new();
-    migrate(&kv, &native).unwrap();
+    let dst = NativeGraph::new();
+    migrate(&src, &dst).unwrap();
 
-    // Same ids resolve to the same records on the native side.
-    assert_eq!(native.get_node(a.id).unwrap().unwrap().title, "alice");
-    assert_eq!(native.get_node(b.id).unwrap().unwrap().title, "bob");
-    let ne = native.get_edge(e.id).unwrap().unwrap();
+    // Same ids resolve to the same records on the destination side.
+    assert_eq!(dst.get_node(a.id).unwrap().unwrap().title, "alice");
+    assert_eq!(dst.get_node(b.id).unwrap().unwrap().title, "bob");
+    let ne = dst.get_edge(e.id).unwrap().unwrap();
     assert_eq!((ne.from_id, ne.to_id), (a.id, b.id));
     // Adjacency is rebuilt: a KNOWS b.
     assert_eq!(
-        native
-            .neighbor_ids(a.id, Direction::Outgoing, None)
-            .unwrap(),
+        dst.neighbor_ids(a.id, Direction::Outgoing, None).unwrap(),
         vec![b.id]
     );
 }
 
 #[test]
 fn migration_clamps_counters_so_new_ids_never_collide() {
-    let kv = Drevo::open_in_memory().unwrap();
-    seed(&kv);
-    let max_node = kv
+    let src = NativeGraph::new();
+    seed(&src);
+    let max_node = src
         .export_dump()
         .unwrap()
         .nodes
@@ -184,11 +169,11 @@ fn migration_clamps_counters_so_new_ids_never_collide() {
         .max()
         .unwrap();
 
-    let native = NativeGraph::new();
-    migrate(&kv, &native).unwrap();
+    let dst = NativeGraph::new();
+    migrate(&src, &dst).unwrap();
 
     // A create after migration must allocate strictly above every imported id.
-    let fresh = native.create_node(new_node("Person", "dave")).unwrap();
+    let fresh = dst.create_node(new_node("Person", "dave")).unwrap();
     assert!(
         fresh.id > max_node,
         "fresh id {} must be above imported max {}",
@@ -196,26 +181,26 @@ fn migration_clamps_counters_so_new_ids_never_collide() {
         max_node
     );
     // And it must not clobber an imported node.
-    assert_eq!(native.get_node(fresh.id).unwrap().unwrap().title, "dave");
+    assert_eq!(dst.get_node(fresh.id).unwrap().unwrap().title, "dave");
 }
 
 #[test]
 fn apply_dump_is_idempotent_on_native() {
-    let kv = Drevo::open_in_memory().unwrap();
-    seed(&kv);
-    let dump = kv.export_dump().unwrap();
+    let src = NativeGraph::new();
+    seed(&src);
+    let dump = src.export_dump().unwrap();
 
-    let native = NativeGraph::new();
-    let first = native.apply_dump(dump.clone()).unwrap();
+    let dst = NativeGraph::new();
+    let first = dst.apply_dump(dump.clone()).unwrap();
     assert_eq!(first.nodes_imported, 3);
 
     // Re-applying the identical dump inserts nothing new.
-    let second = native.apply_dump(dump).unwrap();
+    let second = dst.apply_dump(dump).unwrap();
     assert_eq!(second.nodes_imported, 0);
     assert_eq!(second.edges_imported, 0);
     assert_eq!(second.nodes_skipped, 3);
     assert_eq!(second.edges_skipped, 3);
-    assert_same_graph(&kv, &native);
+    assert_same_graph(&src, &dst);
 }
 
 #[test]
@@ -267,21 +252,21 @@ fn migration_into_durable_native_survives_reopen() {
     // Migrating into a durable engine must journal the imported records, so the
     // moved graph is still there after a crash/reopen — the whole point of
     // adopting the native engine on disk.
-    let kv = Drevo::open_in_memory().unwrap();
-    seed(&kv);
+    let src = NativeGraph::new();
+    seed(&src);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph.wal");
 
     {
         let native = NativeGraph::open_durable(&path).unwrap();
-        migrate(&kv, &native).unwrap();
+        migrate(&src, &native).unwrap();
     } // dropped == crash; every imported record was fsynced by apply_dump
 
     let reopened = NativeGraph::open_durable(&path).unwrap();
-    assert_same_graph(&kv, &reopened);
+    assert_same_graph(&src, &reopened);
     // And an allocation after reopen still clears every imported id.
-    let max_node = kv
+    let max_node = src
         .export_dump()
         .unwrap()
         .nodes
