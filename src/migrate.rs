@@ -1,7 +1,7 @@
 //! Cross-engine data migration over the [`GraphEngine`](crate::engine::GraphEngine)
 //! seam (RFC `docs/rfc-native-core.md`, #307).
 //!
-//! Moving a live graph between the KV-backed [`crate::db::Drevo`] and the
+//! Moving a live graph between the KV-backed `Drevo` and the
 //! native [`crate::native::NativeGraph`] is the prerequisite for adopting (or
 //! rolling back from) the native engine in a running deployment: the topology
 //! has to carry over with every node/edge **id** intact, or the edges would

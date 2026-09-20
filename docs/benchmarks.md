@@ -47,9 +47,11 @@ The operations measured, and what each is meant to expose:
 
 ## Running drevo's side
 
-```sh
-cargo bench --bench comparison_bench
-```
+> **Note (epic #444):** the `comparison_bench` criterion harness drove the KV
+> `Drevo` engine and was removed with it. The cross-database methodology below
+> is retained for reference; re-run the drevo side through the server's Bolt
+> endpoint (the same path the Memgraph comparison uses) rather than an
+> in-process KV bench.
 
 Criterion prints a confidence interval per operation and writes HTML reports to
 `target/criterion/`. This bench is **not** in the per-PR test path — criterion

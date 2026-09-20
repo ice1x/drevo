@@ -4,7 +4,7 @@
 //! their own error channel rather than reaching straight for
 //! [`crate::error::DrevoError`]. The MVCC engine is still a standalone module
 //! — task `00083` adds the optimistic-concurrency-control conflict and retry
-//! variants here, and full wiring into the [`crate::db::Drevo`] mutation
+//! variants here, and full wiring into the `Drevo` mutation
 //! paths lands with the isolation levels of `00084`. A self-contained
 //! [`MvccError`] keeps each task's blast radius to the new module and leaves
 //! the crate-wide error enum untouched.

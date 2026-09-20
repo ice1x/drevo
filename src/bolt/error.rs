@@ -4,7 +4,7 @@
 //! [`crate::error::DrevoError`]) because the Bolt module is layered
 //! *above* the database — it negotiates protocol versions, frames
 //! messages, and serialises [`crate::bolt::packstream::Value`] before
-//! ever touching [`crate::db::Drevo`]. Bubbling these failures through
+//! ever touching `Drevo`. Bubbling these failures through
 //! `DrevoError` would force unrelated layers (FFI, WASM, HTTP) to
 //! match against variants they can never produce.
 //!

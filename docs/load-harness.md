@@ -1,5 +1,9 @@
 # Load / throughput harness
 
+> **Note (epic #444):** `examples/load_harness.rs` drove the KV `Drevo` engine
+> and was removed with it. This page is retained for historical context; the
+> `cargo run --example load_harness` commands below no longer resolve.
+
 > First slice of [#241]. A repeatable driver that runs a **mixed read/write
 > workload** over the public `Drevo` API across a **concurrency sweep** and
 > reports **p50/p95/p99** latency and **throughput**. It is a measurement tool,

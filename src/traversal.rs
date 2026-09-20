@@ -2,7 +2,7 @@
 //!
 //! Provides BFS (breadth-first search), DFS (depth-first search) with
 //! depth limit and optional edge kind filtering, and shortest path
-//! (Dijkstra) weighted by edge weight. Used by [`crate::db::Drevo`]
+//! (Dijkstra) weighted by edge weight. Used by `Drevo`
 //! traversal methods.
 
 use std::cmp::Ordering;

@@ -232,42 +232,6 @@ required-features = ["http"]
 # (https://github.com/ice1x/drevo-mcp) and talks to a running
 # `drevo-server` over HTTP / Bolt, so it never contends for the file.
 
-# The in-memory load harness (#241) drives `Drevo::open_in_memory` (the KV
-# oracle), always available — no feature gate. (The redb `churn_compact`
-# example was removed with the redb backend in epic #444 P8.)
-[[example]]
-name = "load_harness"
-
-# Native-engine load harness (#307): concurrency sweep + deep (3-hop) traversal
-# + durable-write throughput, native-durable vs the in-memory KV oracle over
-# the GraphEngine seam.
-[[example]]
-name = "native_load"
-
-[[bench]]
-name = "storage_bench"
-harness = false
-
-[[bench]]
-name = "graph_bench"
-harness = false
-
-[[bench]]
-name = "fts_bench"
-harness = false
-
-[[bench]]
-name = "traversal_bench"
-harness = false
-
-[[bench]]
-name = "comparison_bench"
-harness = false
-
-[[bench]]
-name = "native_vs_kv_bench"
-harness = false
-
 # `getrandom` has no direct `use getrandom::...` site in this crate — it is
 # declared as an optional dependency solely so that the `wasm` feature can
 # write `getrandom/wasm_js` and surface the browser-RNG feature flag on the
@@ -282,10 +246,6 @@ harness = false
 # it has no direct `use` site, so cargo-machete would otherwise flag it.
 [package.metadata.cargo-machete]
 ignored = ["getrandom", "idna_adapter"]
-
-[[bench]]
-name = "real_data_baseline_bench"
-harness = false
 
 [[bench]]
 name = "pagerank_bench"

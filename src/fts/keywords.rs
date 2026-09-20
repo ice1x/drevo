@@ -7,7 +7,7 @@
 //!    word tokens, distinct from the character-trigram index tokenizer.
 //! 2. **Stopword removal** ([`crate::fts::stopwords`]) — drop English
 //!    function words so grammatical glue never ranks.
-//! 3. **BM25 IDF salience** ([`crate::fts::index::bm25_idf`], task `00131`) —
+//! 3. **BM25 IDF salience** (`bm25_idf`, task `00131`) —
 //!    weight each surviving term by how *rare* it is across the indexed
 //!    corpus. A term's document frequency is estimated from the existing
 //!    trigram posting lists (the docs containing all of the term's trigrams),
@@ -31,42 +31,17 @@
 use std::collections::HashMap;
 
 use crate::error::Result;
-use crate::fts::index::{bm25_idf, corpus_stats, intersect_trigrams};
 use crate::fts::stemmer::stem;
 use crate::fts::stopwords::is_stopword;
 use crate::fts::tokenizer::{trigrams, words};
-use crate::storage::StorageBackend;
-
-/// Extract the top-`k` salient keywords from `text`.
-///
-/// * `k` — maximum number of keywords to return; `0` yields an empty list.
-/// * `stem_terms` — when `true`, collapse morphological variants onto their
-///   Porter stem before counting and ranking (so "running"/"runs" merge).
-///
-/// Returns an empty list (never an error) when `text` has no rankable terms,
-/// mirroring the `similar(...)` precedent (`00077`): a missing or
-/// content-free property simply yields no keywords. Genuine storage failures
-/// while reading corpus statistics propagate as errors.
-pub(crate) fn extract_keywords(
-    backend: &dyn StorageBackend,
-    text: &str,
-    k: usize,
-    stem_terms: bool,
-) -> Result<Vec<String>> {
-    // The KV engine supplies the two corpus statistics — document count and
-    // per-term document frequency — from its trigram FTS index.
-    let n = corpus_stats(backend)?.doc_count;
-    extract_keywords_scored(text, k, stem_terms, n, &|term_trigrams| {
-        Ok(intersect_trigrams(backend, term_trigrams)?.len() as u64)
-    })
-}
+use drevo_core::bm25::bm25_idf;
 
 /// Engine-agnostic keyword extraction (#447 native port): the tokenize →
 /// stopword → stem → BM25 tf·idf ranking, parameterised by the two corpus
 /// statistics an engine must supply — `n` (indexed document count) and `df`
-/// (documents containing all of a term's trigrams). The KV path (above) and the
-/// native path (`NativeFtsIndex::doc_count` / `trigram_df`) both feed this, so
-/// the ranking is identical on either engine.
+/// (documents containing all of a term's trigrams). The native path
+/// (`NativeFtsIndex::doc_count` / `trigram_df`) feeds these, so the ranking is
+/// engine-independent.
 ///
 /// # Errors
 /// Propagates a `df` lookup failure.
@@ -130,44 +105,43 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fts::index::index_node;
-    use crate::storage::MemoryBackend;
+    use std::collections::HashSet;
 
-    /// Index `count` filler documents whose bodies contain the trigrams of
-    /// `common` so that term's document frequency (and thus low salience) is
-    /// established, plus one document containing `rare`.
-    fn corpus_with(common: &str, common_docs: usize, rare: &str) -> MemoryBackend {
-        let backend = MemoryBackend::new();
-        let mut id = 1u64;
-        for _ in 0..common_docs {
-            index_node(&backend, id, &format!("doc{id}"), common).unwrap();
-            id += 1;
-        }
-        index_node(&backend, id, "rare-doc", rare).unwrap();
-        backend
+    /// Run keyword extraction against an explicit corpus, computing the two
+    /// statistics `extract_keywords_scored` needs from `docs`: `n` (document
+    /// count) and, per term, the number of documents whose body contains *all*
+    /// of the term's trigrams. This exercises exactly the ranking logic the
+    /// engines feed (the native path supplies the same two stats from
+    /// `NativeFtsIndex`), with no storage backend involved.
+    fn keywords(docs: &[&str], text: &str, k: usize, stem_terms: bool) -> Vec<String> {
+        let n = docs.len() as u64;
+        let doc_trigrams: Vec<HashSet<String>> = docs
+            .iter()
+            .map(|d| trigrams(d).into_iter().collect())
+            .collect();
+        extract_keywords_scored(text, k, stem_terms, n, &|term_trigrams| {
+            Ok(doc_trigrams
+                .iter()
+                .filter(|dt| term_trigrams.iter().all(|t| dt.contains(t)))
+                .count() as u64)
+        })
+        .unwrap()
     }
 
     #[test]
     fn k_zero_returns_empty() {
-        let backend = MemoryBackend::new();
-        assert!(extract_keywords(&backend, "graph database", 0, false)
-            .unwrap()
-            .is_empty());
+        assert!(keywords(&[], "graph database", 0, false).is_empty());
     }
 
     #[test]
     fn empty_and_stopword_only_text_returns_empty() {
-        let backend = MemoryBackend::new();
-        assert!(extract_keywords(&backend, "", 5, false).unwrap().is_empty());
-        assert!(extract_keywords(&backend, "the and of to is", 5, false)
-            .unwrap()
-            .is_empty());
+        assert!(keywords(&[], "", 5, false).is_empty());
+        assert!(keywords(&[], "the and of to is", 5, false).is_empty());
     }
 
     #[test]
     fn stopwords_are_dropped() {
-        let backend = MemoryBackend::new();
-        let kws = extract_keywords(&backend, "the graph and the database", 5, false).unwrap();
+        let kws = keywords(&[], "the graph and the database", 5, false);
         assert!(kws.contains(&"graph".to_string()));
         assert!(kws.contains(&"database".to_string()));
         assert!(!kws.iter().any(|w| w == "the" || w == "and"));
@@ -177,8 +151,9 @@ mod tests {
     fn rarer_term_outranks_common_term() {
         // "database" appears in many docs (low IDF); "photosynthesis" in one
         // (high IDF). Both occur once in the query text, so IDF decides.
-        let backend = corpus_with("database systems", 8, "photosynthesis chloroplast");
-        let kws = extract_keywords(&backend, "database photosynthesis", 2, false).unwrap();
+        let mut docs: Vec<&str> = vec!["database systems"; 8];
+        docs.push("photosynthesis chloroplast");
+        let kws = keywords(&docs, "database photosynthesis", 2, false);
         assert_eq!(
             kws.first().map(String::as_str),
             Some("photosynthesis"),
@@ -190,16 +165,13 @@ mod tests {
     fn term_frequency_breaks_toward_repeated_terms() {
         // With an empty corpus every term shares the same IDF, so the more
         // frequent term wins — tf·idf degrades to tf ranking.
-        let backend = MemoryBackend::new();
-        let kws =
-            extract_keywords(&backend, "anxiety anxiety anxiety journaling", 1, false).unwrap();
+        let kws = keywords(&[], "anxiety anxiety anxiety journaling", 1, false);
         assert_eq!(kws, vec!["anxiety"]);
     }
 
     #[test]
     fn respects_k_limit() {
-        let backend = MemoryBackend::new();
-        let kws = extract_keywords(&backend, "alpha beta gamma delta epsilon", 3, false).unwrap();
+        let kws = keywords(&[], "alpha beta gamma delta epsilon", 3, false);
         assert_eq!(kws.len(), 3);
     }
 
@@ -207,9 +179,8 @@ mod tests {
     fn deterministic_tie_break_is_alphabetical() {
         // Empty corpus + all-distinct single-occurrence terms => equal score;
         // alphabetical order must decide, stably.
-        let backend = MemoryBackend::new();
-        let first = extract_keywords(&backend, "zebra apple mango", 3, false).unwrap();
-        let second = extract_keywords(&backend, "mango zebra apple", 3, false).unwrap();
+        let first = keywords(&[], "zebra apple mango", 3, false);
+        let second = keywords(&[], "mango zebra apple", 3, false);
         assert_eq!(first, second);
         assert_eq!(first, vec!["apple", "mango", "zebra"]);
     }
@@ -218,20 +189,18 @@ mod tests {
     fn stemming_collapses_variants() {
         // Without stemming "running"/"runs" are distinct; with stemming they
         // merge into one term whose tf is the sum.
-        let backend = MemoryBackend::new();
-        let unstemmed = extract_keywords(&backend, "running runs running", 5, false).unwrap();
+        let unstemmed = keywords(&[], "running runs running", 5, false);
         assert!(unstemmed.contains(&"running".to_string()));
         assert!(unstemmed.contains(&"runs".to_string()));
 
-        let stemmed = extract_keywords(&backend, "running runs running", 1, true).unwrap();
+        let stemmed = keywords(&[], "running runs running", 1, true);
         assert_eq!(stemmed, vec![stem("running")]);
     }
 
     #[test]
     fn duplicate_keywords_are_collapsed() {
         // A term repeated in the text appears once in the output.
-        let backend = MemoryBackend::new();
-        let kws = extract_keywords(&backend, "graph graph graph", 5, false).unwrap();
+        let kws = keywords(&[], "graph graph graph", 5, false);
         assert_eq!(kws, vec!["graph"]);
     }
 }

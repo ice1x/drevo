@@ -18,7 +18,7 @@
 //!
 //! Each embedding is keyed by the `u64` node id it belongs to, encoded
 //! little-endian under the `vec:` prefix — the same convention the node /
-//! edge tables use in [`crate::db`]. The payload is the `bincode`
+//! edge tables use in `Drevo`. The payload is the `bincode`
 //! serialization of the [`Vector`] (a transparent `Vec<f32>`). Keying by
 //! node id means an embedding is a sidecar column on the node, looked up
 //! in O(log N) and scanned as a contiguous prefix range.
@@ -34,7 +34,7 @@
 //!
 //! ## Free-function API
 //!
-//! Following [`crate::fts::index`], the store is a set of free functions
+//! Following `fts::index`, the store is a set of free functions
 //! over `&dyn StorageBackend` rather than a struct — it owns no state
 //! beyond the keys it writes, so there is nothing to construct.
 
@@ -46,7 +46,7 @@ use crate::vector::{HnswConfig, HnswIndex, Vector};
 const PREFIX_VECTOR: &[u8] = b"vec:";
 
 /// Bincode configuration — must match the rest of the codebase
-/// ([`crate::db`]) so payloads are wire-compatible.
+/// (`Drevo`) so payloads are wire-compatible.
 const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
 /// Build the storage key for a node's embedding: `vec:{id_le8}`.
@@ -54,13 +54,6 @@ fn vector_key(node_id: u64) -> Vec<u8> {
     let mut key = PREFIX_VECTOR.to_vec();
     key.extend_from_slice(&node_id.to_le_bytes());
     key
-}
-
-/// The storage key holding `node_id`'s embedding — exposed so a caller
-/// batching many removals (`Drevo::delete_nodes`, #441) can fold the embedding
-/// delete into its own `delete_batch` instead of a separate [`delete`] commit.
-pub(crate) fn delete_key(node_id: u64) -> Vec<u8> {
-    vector_key(node_id)
 }
 
 /// Decode the node id from a `vec:` key, or `None` if it is malformed.

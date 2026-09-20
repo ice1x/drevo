@@ -216,7 +216,7 @@ impl NativeService {
 
     /// Install the server-side query embedder (once; later calls return
     /// `false` and change nothing) — the durable-engine counterpart of
-    /// [`crate::db::Drevo::set_embedder`].
+    /// `Drevo::set_embedder`.
     #[cfg(feature = "http")]
     pub fn set_embedder(
         &self,
@@ -271,14 +271,14 @@ impl NativeService {
     }
 
     /// The storage-panel bloat report for the WAL store — the engine-agnostic
-    /// counterpart of [`crate::db::Drevo::bloat_report`]. `file_bytes` is the
+    /// counterpart of `Drevo::bloat_report`. `file_bytes` is the
     /// physical WAL size, `logical_bytes`/`stored_bytes` the size a compacted
     /// log would occupy (the append-only WAL accumulates superseded upserts,
     /// tombstones and old versions); `bloat_ratio = file / logical` is the
     /// reclaimable fraction. Secondary indexes are in-memory (rebuilt from the
     /// WAL) so they add no on-disk footprint (`index_bytes = 0`).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn storage_bloat(&self) -> crate::db::BloatReport {
+    pub fn storage_bloat(&self) -> crate::report::BloatReport {
         let g = &self.graph;
         let file_bytes = g.wal_bytes();
         let logical = g.wal_compacted_bytes();
@@ -286,7 +286,7 @@ impl NativeService {
             Some(f) if logical > 0 => Some(f as f64 / logical as f64),
             _ => None,
         };
-        crate::db::BloatReport {
+        crate::report::BloatReport {
             file_bytes,
             stored_bytes: logical,
             logical_bytes: logical,
@@ -298,39 +298,41 @@ impl NativeService {
     }
 
     /// Per-keyspace storage breakdown for the panel — the WAL engine's
-    /// counterpart of [`crate::db::Drevo::keyspace_stats`]. The durable WAL
+    /// counterpart of `Drevo::keyspace_stats`. The durable WAL
     /// stores only records on disk; these rows are the live in-memory index
     /// structures (records, adjacency, title, kind), so the panel's Keyspaces
     /// table is populated on both engines. FTS/vector keyspaces are
     /// KV-secondary-only and absent here.
     #[must_use]
-    pub fn keyspace_stats(&self) -> Vec<crate::db::KeyspaceStat> {
+    pub fn keyspace_stats(&self) -> Vec<crate::report::KeyspaceStat> {
         self.graph
             .keyspace_stats()
             .into_iter()
-            .map(|(prefix, entries, content_bytes)| crate::db::KeyspaceStat {
-                prefix,
-                entries,
-                content_bytes,
-            })
+            .map(
+                |(prefix, entries, content_bytes)| crate::report::KeyspaceStat {
+                    prefix,
+                    entries,
+                    content_bytes,
+                },
+            )
             .collect()
     }
 
     /// Compact the WAL — rewrite it as the current state (atomic temp + fsync +
     /// rename) — and report the reclaimed bytes: the engine-agnostic counterpart
-    /// of [`crate::db::Drevo::shrink_online`] (the storage panel's `shrink`).
+    /// of `Drevo::shrink_online` (the storage panel's `shrink`).
     /// Writes are quiesced for the rewrite's duration.
     ///
     /// # Errors
     /// Propagates [`DrevoError`] on a filesystem or encode failure.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn compact(&self) -> Result<crate::db::CompactReport, DrevoError> {
+    pub fn compact(&self) -> Result<crate::report::CompactReport, DrevoError> {
         let stats = self.graph.compact_wal()?;
         // The log now equals the current state, so restart the runtime
         // auto-compaction threshold from here.
         self.last_compact_head
             .store(self.graph.change_head(), Ordering::SeqCst);
-        Ok(crate::db::CompactReport {
+        Ok(crate::report::CompactReport {
             bytes_before: stats.bytes_before,
             bytes_after: stats.bytes_after,
             bytes_reclaimed: stats.reclaimed(),
@@ -699,7 +701,7 @@ impl NativeService {
     }
 
     /// Keyword facets over nodes of `kind` — the engine of `GET /facets` and the
-    /// engine-agnostic counterpart of [`crate::db::Drevo::facets`]. Keywords are
+    /// engine-agnostic counterpart of `Drevo::facets`. Keywords are
     /// scored with the native FTS corpus statistics (`doc_count` / `trigram_df`)
     /// rather than the KV backend, so the facet counts match what `fts.search`
     /// would rank; `build_facets`/`node_property_text` are shared with the KV
@@ -877,7 +879,7 @@ impl NativeService {
     /// client can tell "fully embedded" from "writes landed, embeddings
     /// missing". Manual targets have no drevo-managed backlog, so they always
     /// read clean.
-    pub fn semantic_status_detailed(&self) -> Vec<crate::db::SemanticTargetStatus> {
+    pub fn semantic_status_detailed(&self) -> Vec<crate::report::SemanticTargetStatus> {
         let mut out = Vec::new();
         for index in self.semantic_status() {
             out.push(self.status_for("node", index));
@@ -895,7 +897,7 @@ impl NativeService {
         &self,
         kind: &'static str,
         index: crate::semantic_index::SemanticIndex,
-    ) -> crate::db::SemanticTargetStatus {
+    ) -> crate::report::SemanticTargetStatus {
         let pending = if matches!(index.mode, crate::semantic_index::IndexMode::Auto) {
             match kind {
                 "relationship" => self.semantic_pending_count_rel(
@@ -914,7 +916,7 @@ impl NativeService {
         };
         let (failed, last_error) =
             self.embed_failure_stat(kind, &index.label, &index.embedding_property);
-        crate::db::SemanticTargetStatus {
+        crate::report::SemanticTargetStatus {
             target_kind: kind,
             index,
             pending,
@@ -1225,9 +1227,9 @@ impl NativeService {
         text_property: &str,
         embedding_property: &str,
         batch_size: usize,
-    ) -> Result<crate::db::SemanticReindexReport, DrevoError> {
+    ) -> Result<crate::report::SemanticReindexReport, DrevoError> {
         use crate::engine::GraphEngine;
-        let mut report = crate::db::SemanticReindexReport::default();
+        let mut report = crate::report::SemanticReindexReport::default();
         let mut budget = batch_size;
         // One consistent snapshot to scan; writes below mutate the live graph.
         for node in self.graph.snapshot().all_nodes() {
@@ -1302,9 +1304,9 @@ impl NativeService {
         text_property: &str,
         embedding_property: &str,
         batch_size: usize,
-    ) -> Result<crate::db::SemanticReindexReport, DrevoError> {
+    ) -> Result<crate::report::SemanticReindexReport, DrevoError> {
         use crate::engine::GraphEngine;
-        let mut report = crate::db::SemanticReindexReport::default();
+        let mut report = crate::report::SemanticReindexReport::default();
         let mut budget = batch_size;
         for edge in self.graph.snapshot().all_edges() {
             if edge.kind != rel_type {

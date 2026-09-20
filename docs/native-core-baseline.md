@@ -317,13 +317,12 @@ value-cache indexes synced.
 The 2-hop seam row is the sensitive measurement and the reason it was added:
 98 first-hop nodes, each expanded through its own adjacency slice (~8× the
 1-hop cost), so it exposes the per-edge iteration a CSR rewrite reshapes
-rather than a single lookup a HashMap already serves well. Reproduce
-exactly with
+rather than a single lookup a HashMap already serves well.
 
-```sh
-DREVO_BASELINE_GRAPHML=$HOME/drevo_backups/drevo_kg_20260805_195240.graphml \
-    cargo bench --bench real_data_baseline_bench
-```
+> **Note (epic #444):** the `real_data_baseline_bench` harness that produced
+> these figures compared the native engine against the now-removed KV `Drevo`
+> engine and was retired with it, so the `cargo bench` command it used no
+> longer resolves. The numbers below remain as a documentary anchor.
 
 This is a documentary anchor, not an enforced CI gate: criterion timings
 are machine-specific, and gating on them is the trap that produced the

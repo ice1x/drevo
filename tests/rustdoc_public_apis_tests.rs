@@ -215,7 +215,6 @@ fn module_level_docs_qualify_top_level_symbols() {
         // against is the bare `[`audit/AUDIT-fts.md`]` intra-doc form.
         // Detected by looking for the backtick-closing `]` *without* a
         // following `(`. Matched as `]` not followed by `(` below.
-        ("src/db.rs", "[`bfs`]"),
         // NOTE: `model` moved to the `drevo-core` crate (Phase 7 slice 1); its
         // former `[`Drevo::search_fts`]` doc references are now plain code spans
         // there, and this test only guards the `drevo` crate's own source files.

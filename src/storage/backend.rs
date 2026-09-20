@@ -164,7 +164,7 @@ pub trait StorageBackend: Send + Sync {
     /// footprint (the default for ephemeral in-memory backends). Disk-backed
     /// backends return the size of the underlying file. Used by Phase 9
     /// task `00054` (compaction) to populate the `bytes_before` /
-    /// `bytes_after` fields of [`crate::db::CompactReport`].
+    /// `bytes_after` fields of [`crate::report::CompactReport`].
     ///
     /// The default implementation returns `Ok(None)` so existing
     /// non-disk backends do not need to be updated.

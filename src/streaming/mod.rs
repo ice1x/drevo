@@ -25,7 +25,7 @@
 //! * [`IngestSink`](crate::streaming::IngestSink) — where decoded events land.
 //!   The reference [`MemoryGraphSink`](crate::streaming::MemoryGraphSink)
 //!   materializes the stream into a key-addressed node/edge map; a deployment
-//!   implements the trait over a live [`Drevo`](crate::db::Drevo) handle.
+//!   implements the trait over a live `Drevo` handle.
 //! * [`IngestConsumer`](crate::streaming::IngestConsumer) — the engine that
 //!   drives a source into a sink under an
 //!   [`ErrorPolicy`](crate::streaming::ErrorPolicy), tracking offsets for
@@ -92,8 +92,7 @@ pub use source::{MemorySource, Offset, StreamMessage, StreamSource};
 /// drevo's engine is transport-agnostic — it consumes any [`StreamSource`] — so
 /// this enum carries no behaviour of its own. It exists to label a source for
 /// logs, metrics, and a status endpoint ("which broker is this partition
-/// from?"), the way [`Role`](crate::replication::Role) labels a replication
-/// node.
+/// from?"), the way a `Role` label distinguishes a replication node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Transport {
     /// Apache Kafka (or an API-compatible broker: Redpanda, Confluent).
