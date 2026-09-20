@@ -14,16 +14,16 @@
 //! - FTS: searching for recurring distortion patterns
 //! - Subgraph: extracting the full context of a single CBT entry
 
-use drevo::db::Drevo;
 use drevo::model::*;
+use drevo::native_service::NativeService;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn make_node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -96,7 +96,7 @@ struct CbtEntry {
     calm: u64,
 }
 
-fn build_cbt_entry(db: &Drevo) -> CbtEntry {
+fn build_cbt_entry(db: &NativeService) -> CbtEntry {
     // Situation
     let situation = db
         .create_node(make_node(
@@ -221,14 +221,14 @@ macro_rules! cbt_tests {
                 let entry = build_cbt_entry(&db);
 
                 // All 8 nodes should exist
-                assert!(db.get_node(entry.situation).unwrap().is_some());
-                assert!(db.get_node(entry.thought).unwrap().is_some());
-                assert!(db.get_node(entry.anxiety).unwrap().is_some());
-                assert!(db.get_node(entry.fear).unwrap().is_some());
-                assert!(db.get_node(entry.fortune_telling).unwrap().is_some());
-                assert!(db.get_node(entry.catastrophizing).unwrap().is_some());
-                assert!(db.get_node(entry.rational_response).unwrap().is_some());
-                assert!(db.get_node(entry.calm).unwrap().is_some());
+                assert!(db.get_node(entry.situation).is_ok());
+                assert!(db.get_node(entry.thought).is_ok());
+                assert!(db.get_node(entry.anxiety).is_ok());
+                assert!(db.get_node(entry.fear).is_ok());
+                assert!(db.get_node(entry.fortune_telling).is_ok());
+                assert!(db.get_node(entry.catastrophizing).is_ok());
+                assert!(db.get_node(entry.rational_response).is_ok());
+                assert!(db.get_node(entry.calm).is_ok());
             }
 
             #[test]
@@ -236,18 +236,15 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
+                assert_eq!(db.get_node(entry.situation).unwrap().kind, "situation");
+                assert_eq!(db.get_node(entry.thought).unwrap().kind, "thought");
+                assert_eq!(db.get_node(entry.anxiety).unwrap().kind, "emotion");
                 assert_eq!(
-                    db.get_node(entry.situation).unwrap().unwrap().kind,
-                    "situation"
-                );
-                assert_eq!(db.get_node(entry.thought).unwrap().unwrap().kind, "thought");
-                assert_eq!(db.get_node(entry.anxiety).unwrap().unwrap().kind, "emotion");
-                assert_eq!(
-                    db.get_node(entry.fortune_telling).unwrap().unwrap().kind,
+                    db.get_node(entry.fortune_telling).unwrap().kind,
                     "cognitive_distortion"
                 );
                 assert_eq!(
-                    db.get_node(entry.rational_response).unwrap().unwrap().kind,
+                    db.get_node(entry.rational_response).unwrap().kind,
                     "rational_response"
                 );
             }
@@ -262,9 +259,8 @@ macro_rules! cbt_tests {
                 let entry = build_cbt_entry(&db);
 
                 // Situation triggers thoughts (outgoing triggered_by edges)
-                let triggered = db
-                    .neighbors(entry.situation, Direction::Outgoing, Some("triggered_by"))
-                    .unwrap();
+                let triggered =
+                    db.neighbors(entry.situation, Direction::Outgoing, Some("triggered_by"));
                 assert_eq!(triggered.len(), 1);
                 assert_eq!(triggered[0].id, entry.thought);
             }
@@ -274,9 +270,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let emotions = db
-                    .neighbors(entry.thought, Direction::Outgoing, Some("leads_to"))
-                    .unwrap();
+                let emotions = db.neighbors(entry.thought, Direction::Outgoing, Some("leads_to"));
                 assert_eq!(emotions.len(), 2);
                 let emotion_ids: Vec<u64> = emotions.iter().map(|n| n.id).collect();
                 assert!(emotion_ids.contains(&entry.anxiety));
@@ -288,9 +282,8 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let distortions = db
-                    .neighbors(entry.thought, Direction::Outgoing, Some("challenges"))
-                    .unwrap();
+                let distortions =
+                    db.neighbors(entry.thought, Direction::Outgoing, Some("challenges"));
                 assert_eq!(distortions.len(), 2);
                 let ids: Vec<u64> = distortions.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&entry.fortune_telling));
@@ -302,9 +295,8 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let reframed = db
-                    .neighbors(entry.thought, Direction::Outgoing, Some("reframed_as"))
-                    .unwrap();
+                let reframed =
+                    db.neighbors(entry.thought, Direction::Outgoing, Some("reframed_as"));
                 assert_eq!(reframed.len(), 1);
                 assert_eq!(reframed[0].id, entry.rational_response);
             }
@@ -314,13 +306,11 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let new_emotions = db
-                    .neighbors(
-                        entry.rational_response,
-                        Direction::Outgoing,
-                        Some("leads_to"),
-                    )
-                    .unwrap();
+                let new_emotions = db.neighbors(
+                    entry.rational_response,
+                    Direction::Outgoing,
+                    Some("leads_to"),
+                );
                 assert_eq!(new_emotions.len(), 1);
                 assert_eq!(new_emotions[0].id, entry.calm);
             }
@@ -334,9 +324,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let causes = db
-                    .neighbors(entry.anxiety, Direction::Incoming, Some("leads_to"))
-                    .unwrap();
+                let causes = db.neighbors(entry.anxiety, Direction::Incoming, Some("leads_to"));
                 assert_eq!(causes.len(), 1);
                 assert_eq!(causes[0].id, entry.thought);
             }
@@ -346,9 +334,8 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let situations = db
-                    .neighbors(entry.thought, Direction::Incoming, Some("triggered_by"))
-                    .unwrap();
+                let situations =
+                    db.neighbors(entry.thought, Direction::Incoming, Some("triggered_by"));
                 assert_eq!(situations.len(), 1);
                 assert_eq!(situations[0].id, entry.situation);
             }
@@ -499,7 +486,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let emotions = db.list_nodes_by_kind("emotion", 100, 0).unwrap();
+                let emotions = db.list_nodes_by_kind("emotion", 100, 0);
                 assert_eq!(emotions.len(), 3); // anxiety, fear, calm
                 let ids: Vec<u64> = emotions.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&entry.anxiety));
@@ -512,9 +499,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let distortions = db
-                    .list_nodes_by_kind("cognitive_distortion", 100, 0)
-                    .unwrap();
+                let distortions = db.list_nodes_by_kind("cognitive_distortion", 100, 0);
                 assert_eq!(distortions.len(), 2);
                 let ids: Vec<u64> = distortions.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&entry.fortune_telling));
@@ -526,7 +511,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let responses = db.list_nodes_by_kind("rational_response", 100, 0).unwrap();
+                let responses = db.list_nodes_by_kind("rational_response", 100, 0);
                 assert_eq!(responses.len(), 1);
                 assert_eq!(responses[0].id, entry.rational_response);
             }
@@ -540,7 +525,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 build_cbt_entry(&db);
 
-                let results = db.search_fts("fortune telling", 10).unwrap();
+                let results = db.search_fts("fortune telling", 10);
                 assert!(!results.is_empty(), "should find 'fortune telling'");
                 assert_eq!(results[0].node.kind, "cognitive_distortion");
                 assert!(results[0].node.title.contains("Fortune telling"));
@@ -551,7 +536,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 build_cbt_entry(&db);
 
-                let results = db.search_fts("predicting negative outcomes", 10).unwrap();
+                let results = db.search_fts("predicting negative outcomes", 10);
                 assert!(!results.is_empty(), "should find by body content");
             }
 
@@ -560,7 +545,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 build_cbt_entry(&db);
 
-                let results = db.search_fts("prepared well", 10).unwrap();
+                let results = db.search_fts("prepared well", 10);
                 assert!(!results.is_empty());
                 let found_rational = results.iter().any(|r| r.node.kind == "rational_response");
                 assert!(found_rational, "should find rational response");
@@ -571,7 +556,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 build_cbt_entry(&db);
 
-                let results = db.search_fts("anxiety", 10).unwrap();
+                let results = db.search_fts("anxiety", 10);
                 assert!(!results.is_empty());
                 // At least one result should be about anxiety/emotions
                 let has_emotion = results.iter().any(|r| {
@@ -589,11 +574,11 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                let anxiety = db.get_node(entry.anxiety).unwrap().unwrap();
+                let anxiety = db.get_node(entry.anxiety).unwrap();
                 let intensity = anxiety.properties.get("intensity").unwrap();
                 assert_eq!(intensity, &serde_json::json!(8));
 
-                let calm = db.get_node(entry.calm).unwrap().unwrap();
+                let calm = db.get_node(entry.calm).unwrap();
                 let calm_intensity = calm.properties.get("intensity").unwrap();
                 assert_eq!(calm_intensity, &serde_json::json!(5));
             }
@@ -631,13 +616,11 @@ macro_rules! cbt_tests {
                     .unwrap();
 
                 // Now "fortune telling" should be reachable from both thoughts
-                let ft_incoming = db
-                    .neighbors(
-                        entry1.fortune_telling,
-                        Direction::Incoming,
-                        Some("challenges"),
-                    )
-                    .unwrap();
+                let ft_incoming = db.neighbors(
+                    entry1.fortune_telling,
+                    Direction::Incoming,
+                    Some("challenges"),
+                );
                 assert_eq!(
                     ft_incoming.len(),
                     2,
@@ -667,23 +650,19 @@ macro_rules! cbt_tests {
                 }
 
                 // Catastrophizing now has 4 incoming "challenges" edges (1 original + 3 new)
-                let cat_incoming = db
-                    .neighbors(
-                        entry1.catastrophizing,
-                        Direction::Incoming,
-                        Some("challenges"),
-                    )
-                    .unwrap();
+                let cat_incoming = db.neighbors(
+                    entry1.catastrophizing,
+                    Direction::Incoming,
+                    Some("challenges"),
+                );
                 assert_eq!(cat_incoming.len(), 4);
 
                 // Fortune telling still has 1
-                let ft_incoming = db
-                    .neighbors(
-                        entry1.fortune_telling,
-                        Direction::Incoming,
-                        Some("challenges"),
-                    )
-                    .unwrap();
+                let ft_incoming = db.neighbors(
+                    entry1.fortune_telling,
+                    Direction::Incoming,
+                    Some("challenges"),
+                );
                 assert_eq!(ft_incoming.len(), 1);
 
                 // This demonstrates: counting incoming "challenges" edges reveals the
@@ -713,7 +692,7 @@ macro_rules! cbt_tests {
                 )
                 .unwrap();
 
-                let updated = db.get_node(entry.anxiety).unwrap().unwrap();
+                let updated = db.get_node(entry.anxiety).unwrap();
                 assert_eq!(
                     updated.properties.get("intensity").unwrap(),
                     &serde_json::json!(3)
@@ -737,17 +716,16 @@ macro_rules! cbt_tests {
                 db.delete_node(entry.thought).unwrap();
 
                 // Thought should be gone
-                assert!(db.get_node(entry.thought).unwrap().is_none());
+                assert!(db.get_node(entry.thought).is_err());
 
                 // Situation should still exist but have no outgoing triggered_by
-                let triggered = db
-                    .neighbors(entry.situation, Direction::Outgoing, Some("triggered_by"))
-                    .unwrap();
+                let triggered =
+                    db.neighbors(entry.situation, Direction::Outgoing, Some("triggered_by"));
                 assert!(triggered.is_empty());
 
                 // Emotions and distortions should still exist as nodes (no cascade to connected nodes)
-                assert!(db.get_node(entry.anxiety).unwrap().is_some());
-                assert!(db.get_node(entry.fortune_telling).unwrap().is_some());
+                assert!(db.get_node(entry.anxiety).is_ok());
+                assert!(db.get_node(entry.fortune_telling).is_ok());
             }
 
             // -----------------------------------------------------------------
@@ -787,7 +765,7 @@ macro_rules! cbt_tests {
                 db.create_edge(make_weighted_edge(thought.id, d2.id, "challenges", 0.4))
                     .unwrap();
 
-                let edges = db.edges_of(thought.id, Direction::Outgoing).unwrap();
+                let edges = db.edges_of(thought.id, Direction::Outgoing);
                 let challenge_edges: Vec<&Edge> =
                     edges.iter().filter(|e| e.kind == "challenges").collect();
                 assert_eq!(challenge_edges.len(), 2);
@@ -840,7 +818,7 @@ macro_rules! cbt_tests {
                     ))
                     .unwrap();
 
-                let recent = db.list_recent(3).unwrap();
+                let recent = db.list_recent(3);
                 assert!(!recent.is_empty());
                 assert_eq!(recent[0].id, newest.id, "newest entry should be first");
             }

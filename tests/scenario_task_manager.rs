@@ -18,16 +18,16 @@
 //! - Shortest path: find the critical dependency path between two tasks
 //! - Edge weight priorities and task status via properties
 
-use drevo::db::Drevo;
 use drevo::model::*;
+use drevo::native_service::NativeService;
 use std::collections::HashMap;
 
 // =========================================================================
 // Test helpers
 // =========================================================================
 
-fn memory_db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory DB")
+fn memory_db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn make_node(kind: &str, title: &str, body: &str) -> NewNode {
@@ -161,7 +161,7 @@ fn task_props(
     props
 }
 
-fn build_sprint_board(db: &Drevo) -> SprintBoard {
+fn build_sprint_board(db: &NativeService) -> SprintBoard {
     // --- Sprints ---
     let sprint_1 = db
         .create_node(make_node(
@@ -511,22 +511,22 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // All nodes should exist
-                assert!(db.get_node(board.epic_auth).unwrap().is_some());
-                assert!(db.get_node(board.epic_dashboard).unwrap().is_some());
-                assert!(db.get_node(board.task_design_login).unwrap().is_some());
-                assert!(db.get_node(board.task_oauth_backend).unwrap().is_some());
-                assert!(db.get_node(board.task_auth_tests).unwrap().is_some());
-                assert!(db.get_node(board.task_deploy_auth).unwrap().is_some());
-                assert!(db.get_node(board.task_design_dashboard).unwrap().is_some());
-                assert!(db.get_node(board.task_analytics_api).unwrap().is_some());
-                assert!(db.get_node(board.task_integrate_charts).unwrap().is_some());
-                assert!(db.get_node(board.dev_alice).unwrap().is_some());
-                assert!(db.get_node(board.dev_bob).unwrap().is_some());
-                assert!(db.get_node(board.dev_charlie).unwrap().is_some());
-                assert!(db.get_node(board.comp_frontend).unwrap().is_some());
-                assert!(db.get_node(board.comp_backend).unwrap().is_some());
-                assert!(db.get_node(board.sprint_1).unwrap().is_some());
-                assert!(db.get_node(board.sprint_2).unwrap().is_some());
+                assert!(db.get_node(board.epic_auth).is_ok());
+                assert!(db.get_node(board.epic_dashboard).is_ok());
+                assert!(db.get_node(board.task_design_login).is_ok());
+                assert!(db.get_node(board.task_oauth_backend).is_ok());
+                assert!(db.get_node(board.task_auth_tests).is_ok());
+                assert!(db.get_node(board.task_deploy_auth).is_ok());
+                assert!(db.get_node(board.task_design_dashboard).is_ok());
+                assert!(db.get_node(board.task_analytics_api).is_ok());
+                assert!(db.get_node(board.task_integrate_charts).is_ok());
+                assert!(db.get_node(board.dev_alice).is_ok());
+                assert!(db.get_node(board.dev_bob).is_ok());
+                assert!(db.get_node(board.dev_charlie).is_ok());
+                assert!(db.get_node(board.comp_frontend).is_ok());
+                assert!(db.get_node(board.comp_backend).is_ok());
+                assert!(db.get_node(board.sprint_1).is_ok());
+                assert!(db.get_node(board.sprint_2).is_ok());
             }
 
             #[test]
@@ -534,20 +534,11 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                assert_eq!(db.get_node(board.epic_auth).unwrap().unwrap().kind, "epic");
-                assert_eq!(
-                    db.get_node(board.task_design_login).unwrap().unwrap().kind,
-                    "task"
-                );
-                assert_eq!(
-                    db.get_node(board.dev_alice).unwrap().unwrap().kind,
-                    "developer"
-                );
-                assert_eq!(
-                    db.get_node(board.comp_frontend).unwrap().unwrap().kind,
-                    "component"
-                );
-                assert_eq!(db.get_node(board.sprint_1).unwrap().unwrap().kind, "sprint");
+                assert_eq!(db.get_node(board.epic_auth).unwrap().kind, "epic");
+                assert_eq!(db.get_node(board.task_design_login).unwrap().kind, "task");
+                assert_eq!(db.get_node(board.dev_alice).unwrap().kind, "developer");
+                assert_eq!(db.get_node(board.comp_frontend).unwrap().kind, "component");
+                assert_eq!(db.get_node(board.sprint_1).unwrap().kind, "sprint");
             }
 
             #[test]
@@ -555,7 +546,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let task = db.get_node(board.task_oauth_backend).unwrap().unwrap();
+                let task = db.get_node(board.task_oauth_backend).unwrap();
                 assert_eq!(
                     task.properties.get("status").unwrap(),
                     &serde_json::json!("in_progress")
@@ -579,9 +570,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let auth_tasks = db
-                    .neighbors(board.epic_auth, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let auth_tasks =
+                    db.neighbors(board.epic_auth, Direction::Outgoing, Some("contains"));
                 assert_eq!(auth_tasks.len(), 4);
                 let auth_task_ids: Vec<u64> = auth_tasks.iter().map(|n| n.id).collect();
                 assert!(auth_task_ids.contains(&board.task_design_login));
@@ -595,9 +585,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let dash_tasks = db
-                    .neighbors(board.epic_dashboard, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let dash_tasks =
+                    db.neighbors(board.epic_dashboard, Direction::Outgoing, Some("contains"));
                 assert_eq!(dash_tasks.len(), 3);
                 let dash_task_ids: Vec<u64> = dash_tasks.iter().map(|n| n.id).collect();
                 assert!(dash_task_ids.contains(&board.task_design_dashboard));
@@ -611,13 +600,11 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // From a task, look back to find its epic
-                let parent_epics = db
-                    .neighbors(
-                        board.task_oauth_backend,
-                        Direction::Incoming,
-                        Some("contains"),
-                    )
-                    .unwrap();
+                let parent_epics = db.neighbors(
+                    board.task_oauth_backend,
+                    Direction::Incoming,
+                    Some("contains"),
+                );
                 assert_eq!(parent_epics.len(), 1);
                 assert_eq!(parent_epics[0].id, board.epic_auth);
             }
@@ -632,13 +619,11 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // OAuth backend blocks auth tests
-                let blocked_by_oauth = db
-                    .neighbors(
-                        board.task_oauth_backend,
-                        Direction::Outgoing,
-                        Some("blocks"),
-                    )
-                    .unwrap();
+                let blocked_by_oauth = db.neighbors(
+                    board.task_oauth_backend,
+                    Direction::Outgoing,
+                    Some("blocks"),
+                );
                 assert_eq!(blocked_by_oauth.len(), 1);
                 assert_eq!(blocked_by_oauth[0].id, board.task_auth_tests);
             }
@@ -693,13 +678,11 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // Login page depends on OAuth backend
-                let deps = db
-                    .neighbors(
-                        board.task_design_login,
-                        Direction::Outgoing,
-                        Some("depends_on"),
-                    )
-                    .unwrap();
+                let deps = db.neighbors(
+                    board.task_design_login,
+                    Direction::Outgoing,
+                    Some("depends_on"),
+                );
                 assert_eq!(deps.len(), 1);
                 assert_eq!(deps[0].id, board.task_oauth_backend);
             }
@@ -771,7 +754,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let tasks = db.list_nodes_by_kind("task", 100, 0).unwrap();
+                let tasks = db.list_nodes_by_kind("task", 100, 0);
                 assert_eq!(tasks.len(), 7); // 4 auth + 3 dashboard
             }
 
@@ -780,7 +763,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let devs = db.list_nodes_by_kind("developer", 100, 0).unwrap();
+                let devs = db.list_nodes_by_kind("developer", 100, 0);
                 assert_eq!(devs.len(), 3);
             }
 
@@ -789,7 +772,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let epics = db.list_nodes_by_kind("epic", 100, 0).unwrap();
+                let epics = db.list_nodes_by_kind("epic", 100, 0);
                 assert_eq!(epics.len(), 2);
             }
 
@@ -798,7 +781,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let sprints = db.list_nodes_by_kind("sprint", 100, 0).unwrap();
+                let sprints = db.list_nodes_by_kind("sprint", 100, 0);
                 assert_eq!(sprints.len(), 2);
             }
 
@@ -807,7 +790,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let components = db.list_nodes_by_kind("component", 100, 0).unwrap();
+                let components = db.list_nodes_by_kind("component", 100, 0);
                 assert_eq!(components.len(), 4);
             }
 
@@ -816,13 +799,13 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let page1 = db.list_nodes_by_kind("task", 3, 0).unwrap();
+                let page1 = db.list_nodes_by_kind("task", 3, 0);
                 assert_eq!(page1.len(), 3);
 
-                let page2 = db.list_nodes_by_kind("task", 3, 3).unwrap();
+                let page2 = db.list_nodes_by_kind("task", 3, 3);
                 assert_eq!(page2.len(), 3);
 
-                let page3 = db.list_nodes_by_kind("task", 3, 6).unwrap();
+                let page3 = db.list_nodes_by_kind("task", 3, 6);
                 assert_eq!(page3.len(), 1);
             }
 
@@ -836,9 +819,8 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // Sprint 1 has incoming part_of edges from tasks
-                let sprint1_tasks = db
-                    .neighbors(board.sprint_1, Direction::Incoming, Some("part_of"))
-                    .unwrap();
+                let sprint1_tasks =
+                    db.neighbors(board.sprint_1, Direction::Incoming, Some("part_of"));
                 // Sprint 1: design_login, oauth_backend, auth_tests, design_dashboard
                 assert_eq!(sprint1_tasks.len(), 4);
                 let ids: Vec<u64> = sprint1_tasks.iter().map(|n| n.id).collect();
@@ -853,9 +835,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let sprint2_tasks = db
-                    .neighbors(board.sprint_2, Direction::Incoming, Some("part_of"))
-                    .unwrap();
+                let sprint2_tasks =
+                    db.neighbors(board.sprint_2, Direction::Incoming, Some("part_of"));
                 // Sprint 2: deploy_auth, analytics_api, integrate_charts
                 assert_eq!(sprint2_tasks.len(), 3);
                 let ids: Vec<u64> = sprint2_tasks.iter().map(|n| n.id).collect();
@@ -873,9 +854,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let alice_tasks = db
-                    .neighbors(board.dev_alice, Direction::Incoming, Some("assigned_to"))
-                    .unwrap();
+                let alice_tasks =
+                    db.neighbors(board.dev_alice, Direction::Incoming, Some("assigned_to"));
                 assert_eq!(alice_tasks.len(), 3);
                 let ids: Vec<u64> = alice_tasks.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&board.task_design_login));
@@ -888,9 +868,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let bob_tasks = db
-                    .neighbors(board.dev_bob, Direction::Incoming, Some("assigned_to"))
-                    .unwrap();
+                let bob_tasks =
+                    db.neighbors(board.dev_bob, Direction::Incoming, Some("assigned_to"));
                 assert_eq!(bob_tasks.len(), 2);
                 let ids: Vec<u64> = bob_tasks.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&board.task_oauth_backend));
@@ -902,9 +881,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let charlie_tasks = db
-                    .neighbors(board.dev_charlie, Direction::Incoming, Some("assigned_to"))
-                    .unwrap();
+                let charlie_tasks =
+                    db.neighbors(board.dev_charlie, Direction::Incoming, Some("assigned_to"));
                 assert_eq!(charlie_tasks.len(), 2);
                 let ids: Vec<u64> = charlie_tasks.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&board.task_deploy_auth));
@@ -917,13 +895,11 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // From task, find who it's assigned to
-                let assignee = db
-                    .neighbors(
-                        board.task_oauth_backend,
-                        Direction::Outgoing,
-                        Some("assigned_to"),
-                    )
-                    .unwrap();
+                let assignee = db.neighbors(
+                    board.task_oauth_backend,
+                    Direction::Outgoing,
+                    Some("assigned_to"),
+                );
                 assert_eq!(assignee.len(), 1);
                 assert_eq!(assignee[0].id, board.dev_bob);
             }
@@ -937,9 +913,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let frontend_tasks = db
-                    .neighbors(board.comp_frontend, Direction::Incoming, Some("part_of"))
-                    .unwrap();
+                let frontend_tasks =
+                    db.neighbors(board.comp_frontend, Direction::Incoming, Some("part_of"));
                 assert_eq!(frontend_tasks.len(), 3);
                 let ids: Vec<u64> = frontend_tasks.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&board.task_design_login));
@@ -952,9 +927,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let backend_tasks = db
-                    .neighbors(board.comp_backend, Direction::Incoming, Some("part_of"))
-                    .unwrap();
+                let backend_tasks =
+                    db.neighbors(board.comp_backend, Direction::Incoming, Some("part_of"));
                 assert_eq!(backend_tasks.len(), 2);
                 let ids: Vec<u64> = backend_tasks.iter().map(|n| n.id).collect();
                 assert!(ids.contains(&board.task_oauth_backend));
@@ -970,7 +944,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let results = db.search_fts("OAuth", 10).unwrap();
+                let results = db.search_fts("OAuth", 10);
                 assert!(!results.is_empty());
                 let titles: Vec<&str> = results.iter().map(|r| r.node.title.as_str()).collect();
                 assert!(titles.contains(&"Implement OAuth backend"));
@@ -981,7 +955,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let results = db.search_fts("Kubernetes", 10).unwrap();
+                let results = db.search_fts("Kubernetes", 10);
                 assert!(!results.is_empty());
                 let found_deploy = results
                     .iter()
@@ -994,7 +968,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let results = db.search_fts("authentication", 10).unwrap();
+                let results = db.search_fts("authentication", 10);
                 assert!(!results.is_empty());
                 // Should find Bob (specializes in auth) and/or OAuth task
                 let titles: Vec<&str> = results.iter().map(|r| r.node.title.as_str()).collect();
@@ -1009,7 +983,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let results = db.search_fts("dashboard", 10).unwrap();
+                let results = db.search_fts("dashboard", 10);
                 assert!(!results.is_empty());
                 let titles: Vec<&str> = results.iter().map(|r| r.node.title.as_str()).collect();
                 // Should find dashboard-related nodes
@@ -1077,7 +1051,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let blocks_edges = db.list_edges_by_kind("blocks", 100, 0).unwrap();
+                let blocks_edges = db.list_edges_by_kind("blocks", 100, 0);
                 // oauth→auth_tests, auth_tests→deploy, analytics→charts
                 assert_eq!(blocks_edges.len(), 3);
             }
@@ -1087,7 +1061,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let assigned = db.list_edges_by_kind("assigned_to", 100, 0).unwrap();
+                let assigned = db.list_edges_by_kind("assigned_to", 100, 0);
                 assert_eq!(assigned.len(), 7); // 7 tasks, each assigned to one developer
             }
 
@@ -1096,7 +1070,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let contains = db.list_edges_by_kind("contains", 100, 0).unwrap();
+                let contains = db.list_edges_by_kind("contains", 100, 0);
                 assert_eq!(contains.len(), 7); // 4 auth + 3 dashboard
             }
 
@@ -1105,7 +1079,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let deps = db.list_edges_by_kind("depends_on", 100, 0).unwrap();
+                let deps = db.list_edges_by_kind("depends_on", 100, 0);
                 assert_eq!(deps.len(), 2); // login→oauth, dashboard→analytics
             }
 
@@ -1173,14 +1147,12 @@ macro_rules! task_manager_tests {
                     .unwrap();
 
                 // Verify
-                let auth_tasks = db
-                    .neighbors(board.epic_auth, Direction::Outgoing, Some("contains"))
-                    .unwrap();
+                let auth_tasks =
+                    db.neighbors(board.epic_auth, Direction::Outgoing, Some("contains"));
                 assert_eq!(auth_tasks.len(), 5);
 
-                let bob_tasks = db
-                    .neighbors(board.dev_bob, Direction::Incoming, Some("assigned_to"))
-                    .unwrap();
+                let bob_tasks =
+                    db.neighbors(board.dev_bob, Direction::Incoming, Some("assigned_to"));
                 assert_eq!(bob_tasks.len(), 3);
             }
 
@@ -1193,28 +1165,24 @@ macro_rules! task_manager_tests {
                 db.delete_node(board.task_auth_tests).unwrap();
 
                 // Node gone
-                assert!(db.get_node(board.task_auth_tests).unwrap().is_none());
+                assert!(db.get_node(board.task_auth_tests).is_err());
 
                 // OAuth backend no longer blocks auth_tests
-                let blocked = db
-                    .neighbors(
-                        board.task_oauth_backend,
-                        Direction::Outgoing,
-                        Some("blocks"),
-                    )
-                    .unwrap();
+                let blocked = db.neighbors(
+                    board.task_oauth_backend,
+                    Direction::Outgoing,
+                    Some("blocks"),
+                );
                 assert!(!blocked.iter().any(|n| n.id == board.task_auth_tests));
 
                 // Deploy auth no longer blocked by auth_tests
-                let blockers = db
-                    .neighbors(board.task_deploy_auth, Direction::Incoming, Some("blocks"))
-                    .unwrap();
+                let blockers =
+                    db.neighbors(board.task_deploy_auth, Direction::Incoming, Some("blocks"));
                 assert!(!blockers.iter().any(|n| n.id == board.task_auth_tests));
 
                 // Alice's workload reduced
-                let alice_tasks = db
-                    .neighbors(board.dev_alice, Direction::Incoming, Some("assigned_to"))
-                    .unwrap();
+                let alice_tasks =
+                    db.neighbors(board.dev_alice, Direction::Incoming, Some("assigned_to"));
                 assert_eq!(alice_tasks.len(), 2);
             }
 
@@ -1224,9 +1192,7 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // Remove current assignment
-                let edges = db
-                    .edges_of(board.task_integrate_charts, Direction::Outgoing)
-                    .unwrap();
+                let edges = db.edges_of(board.task_integrate_charts, Direction::Outgoing);
                 let assignment_edge = edges
                     .iter()
                     .find(|e| e.kind == "assigned_to" && e.to_id == board.dev_charlie)
@@ -1242,19 +1208,16 @@ macro_rules! task_manager_tests {
                 .unwrap();
 
                 // Verify
-                let new_assignee = db
-                    .neighbors(
-                        board.task_integrate_charts,
-                        Direction::Outgoing,
-                        Some("assigned_to"),
-                    )
-                    .unwrap();
+                let new_assignee = db.neighbors(
+                    board.task_integrate_charts,
+                    Direction::Outgoing,
+                    Some("assigned_to"),
+                );
                 assert_eq!(new_assignee.len(), 1);
                 assert_eq!(new_assignee[0].id, board.dev_alice);
 
-                let alice_tasks = db
-                    .neighbors(board.dev_alice, Direction::Incoming, Some("assigned_to"))
-                    .unwrap();
+                let alice_tasks =
+                    db.neighbors(board.dev_alice, Direction::Incoming, Some("assigned_to"));
                 assert_eq!(alice_tasks.len(), 4);
             }
 
@@ -1268,11 +1231,11 @@ macro_rules! task_manager_tests {
                 let _board = build_sprint_board(&db);
 
                 // Find tasks that have incoming "blocks" edges
-                let blocks_edges = db.list_edges_by_kind("blocks", 100, 0).unwrap();
+                let blocks_edges = db.list_edges_by_kind("blocks", 100, 0);
                 let blocked_task_ids: Vec<u64> = blocks_edges.iter().map(|e| e.to_id).collect();
 
                 // auth_tests, deploy_auth, integrate_charts are blocked
-                let tasks = db.list_nodes_by_kind("task", 100, 0).unwrap();
+                let tasks = db.list_nodes_by_kind("task", 100, 0);
                 let blocked_tasks: Vec<&Node> = tasks
                     .iter()
                     .filter(|t| blocked_task_ids.contains(&t.id))
@@ -1286,10 +1249,10 @@ macro_rules! task_manager_tests {
                 let _board = build_sprint_board(&db);
 
                 // Tasks with no incoming "blocks" edges
-                let blocks_edges = db.list_edges_by_kind("blocks", 100, 0).unwrap();
+                let blocks_edges = db.list_edges_by_kind("blocks", 100, 0);
                 let blocked_ids: Vec<u64> = blocks_edges.iter().map(|e| e.to_id).collect();
 
-                let all_tasks = db.list_nodes_by_kind("task", 100, 0).unwrap();
+                let all_tasks = db.list_nodes_by_kind("task", 100, 0);
                 let unblocked: Vec<&Node> = all_tasks
                     .iter()
                     .filter(|t| !blocked_ids.contains(&t.id))
@@ -1303,7 +1266,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let alice = db.get_node(board.dev_alice).unwrap().unwrap();
+                let alice = db.get_node(board.dev_alice).unwrap();
                 assert_eq!(
                     alice.properties.get("team").unwrap(),
                     &serde_json::json!("frontend")
@@ -1319,7 +1282,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let _board = build_sprint_board(&db);
 
-                let recent = db.list_recent(5).unwrap();
+                let recent = db.list_recent(5);
                 assert_eq!(recent.len(), 5);
                 // Most recent should be later-created nodes
             }
@@ -1375,9 +1338,7 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // Find the blocks edge from oauth → auth_tests
-                let edges = db
-                    .edges_of(board.task_oauth_backend, Direction::Outgoing)
-                    .unwrap();
+                let edges = db.edges_of(board.task_oauth_backend, Direction::Outgoing);
                 let blocks_edge = edges.iter().find(|e| e.kind == "blocks").unwrap();
 
                 // Increase priority weight
@@ -1415,9 +1376,7 @@ macro_rules! task_manager_tests {
                 ))
                 .unwrap();
 
-                let edges = db
-                    .edges_of(board.task_analytics_api, Direction::Outgoing)
-                    .unwrap();
+                let edges = db.edges_of(board.task_analytics_api, Direction::Outgoing);
                 let new_block = edges
                     .iter()
                     .find(|e| e.kind == "blocks" && e.to_id == board.task_design_dashboard)
@@ -1437,7 +1396,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let node = db.get_node_by_title("Implement OAuth backend").unwrap();
+                let node = db.get_node_by_title("Implement OAuth backend");
                 assert!(node.is_some());
                 assert_eq!(node.unwrap().id, board.task_oauth_backend);
             }
@@ -1447,8 +1406,8 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let original = db.get_node(board.task_deploy_auth).unwrap().unwrap();
-                let by_uuid = db.get_node_by_uuid(&original.uuid).unwrap();
+                let original = db.get_node(board.task_deploy_auth).unwrap();
+                let by_uuid = db.get_node_by_uuid(original.uuid);
                 assert!(by_uuid.is_some());
                 assert_eq!(by_uuid.unwrap().id, board.task_deploy_auth);
             }
@@ -1463,7 +1422,7 @@ macro_rules! task_manager_tests {
                 let board = build_sprint_board(&db);
 
                 // auth_tests has edges in both directions
-                let all_edges = db.edges_of(board.task_auth_tests, Direction::Both).unwrap();
+                let all_edges = db.edges_of(board.task_auth_tests, Direction::Both);
                 // incoming: blocks from oauth, contains from epic
                 // outgoing: blocks to deploy, assigned_to alice, part_of testing, part_of sprint1
                 assert!(all_edges.len() >= 6);
@@ -1474,9 +1433,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let outgoing = db
-                    .edges_of(board.task_auth_tests, Direction::Outgoing)
-                    .unwrap();
+                let outgoing = db.edges_of(board.task_auth_tests, Direction::Outgoing);
                 // blocks deploy, assigned_to alice, part_of testing, part_of sprint1
                 assert_eq!(outgoing.len(), 4);
                 assert!(outgoing.iter().all(|e| e.from_id == board.task_auth_tests));
@@ -1487,9 +1444,7 @@ macro_rules! task_manager_tests {
                 let db = $db_expr;
                 let board = build_sprint_board(&db);
 
-                let incoming = db
-                    .edges_of(board.task_auth_tests, Direction::Incoming)
-                    .unwrap();
+                let incoming = db.edges_of(board.task_auth_tests, Direction::Incoming);
                 // blocks from oauth, contains from epic
                 assert_eq!(incoming.len(), 2);
                 assert!(incoming.iter().all(|e| e.to_id == board.task_auth_tests));
