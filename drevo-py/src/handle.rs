@@ -6,7 +6,7 @@
 //!
 //! ## Concurrency model
 //!
-//! The Rust `drevo::db::Drevo` is `Send + Sync`. The Python wrapper
+//! The Rust `Drevo` is `Send + Sync`. The Python wrapper
 //! stores it inside `Mutex<Option<Arc<...>>>`:
 //!
 //! 1. The `Mutex` is held **only** to take a fresh `Arc<Drevo>` clone
@@ -57,8 +57,6 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-#[cfg(test)]
-use drevo::db as ddb;
 use drevo::model as dmodel;
 use drevo::vector::{HnswConfig, Vector};
 
@@ -363,7 +361,7 @@ impl Drevo {
 
     /// Batch-create many nodes in a single storage transaction.
     ///
-    /// Bridges [`drevo::db::Drevo::create_nodes`]: folds every node's record
+    /// Bridges `Drevo::create_nodes`: folds every node's record
     /// and secondary-index writes into one redb transaction, so a bulk import
     /// costs one fsync instead of N. Title uniqueness is enforced against the
     /// store and within the batch; the first collision aborts the whole call
@@ -462,7 +460,7 @@ impl Drevo {
 
     /// Batch-create many edges in a single storage transaction.
     ///
-    /// Bridges [`drevo::db::Drevo::create_edges`]: the edge sibling of
+    /// Bridges `Drevo::create_edges`: the edge sibling of
     /// [`Self::create_nodes`]. Every edge's endpoints must already exist
     /// (create the nodes first); the first invalid edge aborts the call
     /// (`NodeNotFoundError` / `InvalidWeightError`) before any write.
@@ -716,7 +714,7 @@ impl Drevo {
 
     /// Persist an embedding for a node (overwriting any prior value).
     ///
-    /// Bridges [`drevo::db::Drevo::set_embedding`] — the node must exist
+    /// Bridges `Drevo::set_embedding` — the node must exist
     /// (`NodeNotFoundError` otherwise). Embeddings live in the durable
     /// `00078` vector store, separate from node properties.
     fn set_embedding(&self, py: Python<'_>, node_id: u64, embedding: Vec<f32>) -> PyResult<()> {
@@ -730,7 +728,7 @@ impl Drevo {
 
     /// Persist embeddings for many nodes in one batched write.
     ///
-    /// Bridges [`drevo::db::Drevo::set_embeddings_batch`]: on the redb
+    /// Bridges `Drevo::set_embeddings_batch`: on the redb
     /// backend the whole slice commits in a single transaction. Every
     /// target node is validated to exist first, so the batch is
     /// all-or-nothing (`NodeNotFoundError` aborts before any write).
@@ -753,7 +751,7 @@ impl Drevo {
 
     /// Fetch the embedding stored for a node, or `None` if it has none.
     ///
-    /// Bridges [`drevo::db::Drevo::get_embedding`].
+    /// Bridges `Drevo::get_embedding`.
     fn get_embedding(&self, py: Python<'_>, node_id: u64) -> PyResult<Option<Vec<f32>>> {
         guarded(|| {
             with_db(&self.inner, |db| {
@@ -767,7 +765,7 @@ impl Drevo {
 
     /// Remove the embedding stored for a node (a no-op if it has none).
     ///
-    /// Bridges [`drevo::db::Drevo::delete_embedding`].
+    /// Bridges `Drevo::delete_embedding`.
     fn delete_embedding(&self, py: Python<'_>, node_id: u64) -> PyResult<()> {
         guarded(|| {
             with_db(&self.inner, |db| {
@@ -779,7 +777,7 @@ impl Drevo {
 
     /// Count the embeddings currently persisted.
     ///
-    /// Bridges [`drevo::db::Drevo::embedding_count`].
+    /// Bridges `Drevo::embedding_count`.
     fn embedding_count(&self, py: Python<'_>) -> PyResult<usize> {
         guarded(|| {
             with_db(&self.inner, |db| {
@@ -793,7 +791,7 @@ impl Drevo {
     /// first.
     ///
     /// Rebuilds the `00076` HNSW index from the durable store (via
-    /// [`drevo::db::Drevo::build_vector_index`]) and runs an
+    /// `Drevo::build_vector_index`) and runs an
     /// approximate-nearest-neighbour search. `distance` is the index
     /// metric (cosine distance by default — smaller is nearer). A
     /// dimension mismatch between a stored vector and `query`, or between
@@ -835,15 +833,16 @@ fn extract_path(_py: Python<'_>, obj: PyObject) -> PyResult<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_backend::NativeBackend;
     use drevo::model::{NewEdge, NewNode, Properties};
 
     /// Sanity-check the wrapper at the Rust level — open an in-memory
-    /// db, create a node, fetch it back, close. This exercises the
+    /// native store, create a node, fetch it back, close. This exercises the
     /// `Arc<Mutex<Option<...>>>` slot life-cycle without needing a
     /// live Python interpreter.
     #[test]
     fn smoke_round_trip_in_memory() {
-        let db = ddb::Drevo::open_in_memory().expect("open_in_memory");
+        let db = NativeBackend::in_memory();
         let node = db
             .create_node(NewNode {
                 kind: "note".into(),

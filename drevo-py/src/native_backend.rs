@@ -15,7 +15,6 @@
 
 use std::path::Path;
 
-use drevo::db::{BloatReport, CompactReport};
 use drevo::dump::ImportReport;
 use drevo::engine::GraphEngine;
 use drevo::error::DrevoError;
@@ -23,6 +22,7 @@ use drevo::model::{
     Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch, ScoredNode, SubGraph,
 };
 use drevo::native_service::NativeService;
+use drevo::report::{BloatReport, CompactReport};
 use drevo::vector::{HnswConfig, HnswIndex, Vector};
 
 type Result<T> = std::result::Result<T, DrevoError>;
