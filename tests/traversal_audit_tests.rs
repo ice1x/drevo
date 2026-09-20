@@ -15,8 +15,8 @@
 //!   random graph (mirrors the 00106 invariant fuzzer style;
 //!   manual xorshift32 seed, no `proptest` dep).
 
-use drevo::db::Drevo;
 use drevo::model::{Direction, NewEdge, NewNode, Properties};
+use drevo::native_service::NativeService;
 use std::collections::HashSet;
 
 fn make_node(kind: &str, title: &str) -> NewNode {
@@ -60,7 +60,7 @@ fn node_ids(nodes: &[drevo::model::Node]) -> HashSet<u64> {
 #[test]
 fn shortest_path_filtered_passes_through_when_kind_none() {
     // sanity: None must match the legacy `shortest_path` exactly.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -86,7 +86,7 @@ fn shortest_path_filtered_excludes_wrong_kind() {
     // Filtered by "ref" : must follow A--[ref] -->B with cost 0.1.
     // The point: the kind selector must change the result even when
     // both candidates terminate at the target.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_weighted_edge(a.id, b.id, "link", 1.0))
@@ -104,7 +104,7 @@ fn shortest_path_filtered_excludes_wrong_kind() {
 #[test]
 fn shortest_path_filtered_unreachable_when_only_other_kind_exists() {
     // A --[ref]--> B; query with kind="link" must return None.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_weighted_edge(a.id, b.id, "ref", 1.0))
@@ -117,7 +117,7 @@ fn shortest_path_filtered_unreachable_when_only_other_kind_exists() {
 #[test]
 fn shortest_path_filtered_self_target_returns_just_self() {
     // The from == to short-circuit is independent of the filter.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let p = db.shortest_path_filtered(a.id, a.id, Some("link")).unwrap();
     assert_eq!(p, Some(vec![a.id]));
@@ -131,7 +131,7 @@ fn shortest_path_filtered_routes_through_filter_consistent_path() {
     //
     // kind=link must route A -> B -> D.
     // kind=ref  must route A -> C -> D.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -164,7 +164,7 @@ fn shortest_path_filtered_routes_through_filter_consistent_path() {
 
 #[test]
 fn subgraph_filtered_pass_through_when_kind_none() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "link")).unwrap();
@@ -180,7 +180,7 @@ fn subgraph_filtered_excludes_other_kind_edges() {
     // A --[link]--> B; A --[ref]--> C
     // Filtered "link": {A, B} + 1 edge.
     // Filtered "ref" : {A, C} + 1 edge.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -203,7 +203,7 @@ fn subgraph_filtered_does_not_discover_via_filtered_out_edges() {
     // A --[link]--> B --[ref]--> C
     // Filtered "link" from A: only reaches B (not C — the only edge
     // B->C is "ref" which is filtered out).
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -225,7 +225,7 @@ fn subgraph_filtered_edge_collection_phase_respects_kind() {
     // subgraph from A, depth 2, kind="link" must include A, B, C
     // (B and C are both reachable via link edges only); the
     // edge-collection phase must NOT include the A-->C "ref" chord.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -245,7 +245,7 @@ fn subgraph_filtered_edge_collection_phase_respects_kind() {
 fn subgraph_filtered_nonexistent_kind_returns_root_only() {
     // No edge matches; the discovery BFS yields nothing; the result
     // is just the root node with zero edges.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_edge(a.id, b.id, "link")).unwrap();
@@ -258,7 +258,7 @@ fn subgraph_filtered_nonexistent_kind_returns_root_only() {
 
 #[test]
 fn subgraph_filtered_root_missing_returns_node_not_found() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let result = db.subgraph_filtered(9999, 2, Some("link"));
     assert!(result.is_err());
 }
@@ -282,7 +282,7 @@ fn subgraph_filtered_root_missing_returns_node_not_found() {
 fn dijkstra_negative_weight_no_panic_and_does_not_infinite_loop() {
     // Smoke: any graph with a finite negative edge terminates and
     // returns a value rather than panicking or hanging.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     db.create_edge(make_weighted_edge(a.id, b.id, "link", -1.0))
@@ -306,7 +306,7 @@ fn dijkstra_negative_weight_can_return_non_optimal_path() {
     // (NOT the truly-optimal 3-vertex path). If a future refactor
     // routes via the negative edge, this test must be revisited
     // alongside a documentation update on the new algorithm.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -329,7 +329,7 @@ fn dijkstra_negative_weight_can_return_non_optimal_path() {
 fn dijkstra_zero_weight_edges_treated_as_neutral() {
     // Documenting that 0.0 weights are admitted (not a Dijkstra
     // precondition violation) and behave as a no-cost hop.
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();
     let c = db.create_node(make_node("note", "C")).unwrap();
@@ -376,8 +376,8 @@ fn random_in_range(state: &mut u32, lo: usize, hi: usize) -> usize {
     }
 }
 
-fn build_random_graph(seed: u32, n_nodes: usize, edge_density: usize) -> (Drevo, Vec<u64>) {
-    let db = Drevo::open_in_memory().unwrap();
+fn build_random_graph(seed: u32, n_nodes: usize, edge_density: usize) -> (NativeService, Vec<u64>) {
+    let db = NativeService::in_memory();
     let mut state = seed;
     let mut ids = Vec::with_capacity(n_nodes);
     for i in 0..n_nodes {
