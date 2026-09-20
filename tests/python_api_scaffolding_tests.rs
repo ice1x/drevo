@@ -207,8 +207,34 @@ fn every_rust_drevo_error_variant_has_a_python_arm() {
     let rust_err = read(&repo_root().join("src").join("error.rs"));
     let py_err = read(&repo_root().join("drevo-py").join("src").join("errors.rs"));
 
+    // src/error.rs also defines the `StorageError` enum (the payload of
+    // `DrevoError::Storage`), so scope the scan to the `pub enum DrevoError { … }`
+    // block — otherwise its variants would be mistaken for DrevoError variants.
+    let enum_body = {
+        let start = rust_err
+            .find("pub enum DrevoError {")
+            .expect("src/error.rs must declare `pub enum DrevoError`");
+        let after = &rust_err[start..];
+        let mut depth = 0i32;
+        let mut end = after.len();
+        for (idx, ch) in after.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = idx;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        &after[..end]
+    };
+
     // Extract every `Variant` line from the DrevoError enum.
-    let variants: Vec<&str> = rust_err
+    let variants: Vec<&str> = enum_body
         .lines()
         .filter_map(|l| {
             let trimmed = l.trim_start();

@@ -8,7 +8,7 @@
 //!
 //! Keeping the sink behind a trait is what lets the engine stay dependency-free
 //! and WASM-safe (the same reasoning the replication engine applies by writing
-//! through a [`StorageBackend`](crate::storage::StorageBackend)): the engine
+//! through a `StorageBackend`): the engine
 //! never names a concrete database type.
 //!
 //! # Idempotency contract

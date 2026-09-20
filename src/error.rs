@@ -1,6 +1,5 @@
 //! Top-level error types for drevo.
 
-use crate::storage::StorageError;
 use crate::vector::VectorError;
 
 /// Errors that can occur during drevo operations.
@@ -120,6 +119,83 @@ pub enum DrevoError {
 
 /// Convenience type alias for drevo operations.
 pub type Result<T> = std::result::Result<T, DrevoError>;
+
+/// Errors from the persistence layer, wrapped by [`DrevoError::Storage`].
+///
+/// Retained as the payload of the `Storage` variant after the KV storage
+/// backend was removed (epic #444): the enum kept the HTTP layer able to
+/// distinguish backend, encode, decode, and lock failures, and the mapping is
+/// preserved so the error surface is unchanged for clients.
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+    /// The requested key was not found.
+    #[error("key not found: {}", DisplayBytes(.0))]
+    NotFound(Vec<u8>),
+
+    /// An I/O error occurred in the underlying backend.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// A bincode encode (serialization) error occurred while writing a
+    /// snapshot or producing on-the-wire bytes.
+    #[error("encode error: {0}")]
+    Encode(#[from] bincode::error::EncodeError),
+
+    /// A bincode decode (deserialization) error occurred while loading a
+    /// snapshot or parsing on-the-wire bytes.
+    #[error("decode error: {0}")]
+    Decode(#[from] bincode::error::DecodeError),
+
+    /// A `Mutex` or `RwLock` protecting backend state was poisoned by a
+    /// previous panic.
+    #[error("lock poisoned")]
+    LockPoisoned,
+
+    /// Compaction was requested on a backend whose handle is shared, so the
+    /// exclusive `&mut` access it needs could not be obtained.
+    #[error("compact requires exclusive backend access")]
+    CompactNotExclusive,
+
+    /// An on-disk file reported a newer, layout-incompatible major format
+    /// version (or an unparseable format marker), so opening it was refused.
+    #[error(
+        "incompatible on-disk format: file reports version {found:?}, \
+         this build supports major format version {supported_major}"
+    )]
+    IncompatibleFormat {
+        /// Raw `MAJOR.MINOR` version string read from the file.
+        found: String,
+        /// Highest on-disk major version this build can read.
+        supported_major: u32,
+    },
+
+    /// An online shrink/rebuild produced a compacted copy that failed its
+    /// self-diagnostic (row counts did not match the source), so the rebuild
+    /// was discarded and the live database left untouched. `expected` / `got`
+    /// are `(data_rows, meta_rows)`.
+    #[error(
+        "shrink verification failed: rebuilt file has {got:?} rows, expected {expected:?}; \
+         the live database was left untouched"
+    )]
+    ShrinkVerificationFailed {
+        /// `(data_rows, meta_rows)` streamed from the source into the rebuild.
+        expected: (u64, u64),
+        /// `(data_rows, meta_rows)` actually found in the rebuilt file.
+        got: (u64, u64),
+    },
+}
+
+/// Helper to display byte slices in error messages.
+struct DisplayBytes<'a>(&'a [u8]);
+
+impl std::fmt::Display for DisplayBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match std::str::from_utf8(self.0) {
+            Ok(s) => write!(f, "{s}"),
+            Err(_) => write!(f, "{:?}", self.0),
+        }
+    }
+}
 
 /// Lift a storage-agnostic [`drevo_core::error::CoreError`] into the main
 /// crate's richer [`DrevoError`].
