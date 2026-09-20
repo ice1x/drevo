@@ -132,9 +132,30 @@ struct Inner {
     constraints: Vec<Constraint>,
     next_node_id: u64,
     next_edge_id: u64,
+    /// High-water mark of every `updated_at` timestamp the graph has issued.
+    /// `update_node` draws a strictly-greater value from it so a touched node
+    /// always sorts ahead in `list_recent`, even when several in-memory writes
+    /// land in the same wall-clock millisecond.
+    last_updated_at: i64,
 }
 
 impl Inner {
+    /// Record that a timestamp has been observed, advancing the recency
+    /// high-water mark. Called on every create and every WAL-replayed upsert so
+    /// a later `update_node` is guaranteed to out-rank it.
+    fn observe_updated_at(&mut self, ts: i64) {
+        self.last_updated_at = self.last_updated_at.max(ts);
+    }
+
+    /// Issue the next `updated_at` for a mutation: the wall clock, but never
+    /// less than one past the high-water mark, so recency ordering stays strict
+    /// under sub-millisecond writes.
+    fn next_updated_at(&mut self) -> i64 {
+        let ts = now_ms().max(self.last_updated_at + 1);
+        self.last_updated_at = ts;
+        ts
+    }
+
     /// Intern an edge kind, assigning a fresh id on first sight.
     fn intern_kind(&mut self, kind: &str) -> u32 {
         if let Some(&id) = self.kind_ids.get(kind) {
@@ -423,6 +444,7 @@ impl Inner {
         self.next_node_id += 1;
         let id = self.next_node_id;
         let node = new_node.into_node(id);
+        self.observe_updated_at(node.updated_at);
         self.titles.insert(node.title.clone(), id);
         self.index_node_kind(id, &node.kind);
         self.nodes.insert(id, Arc::new(node.clone()));
@@ -464,6 +486,12 @@ impl Inner {
             self.unindex_node_kind(id, &old_kind);
             self.index_node_kind(id, &node.kind);
         }
+        // Bump the recency timestamp so `list_recent` surfaces the touched node
+        // as most-recent — parity with the KV engine's `Node::apply_patch`
+        // (and the documented `updated_at > created_at`-after-update contract).
+        // A per-graph monotonic clock keeps the ordering strict even when two
+        // in-memory writes land in the same wall-clock millisecond.
+        node.updated_at = self.next_updated_at();
         self.nodes.insert(id, Arc::new(node.clone()));
         Ok(node)
     }
@@ -623,6 +651,7 @@ impl Inner {
                 self.titles.insert(node.title.clone(), node.id);
                 self.index_node_kind(node.id, &node.kind);
                 self.next_node_id = self.next_node_id.max(node.id);
+                self.observe_updated_at(node.updated_at);
                 self.nodes.insert(node.id, Arc::new(node));
             }
             WalOp::DeleteNode(id) => {

@@ -4,8 +4,8 @@
 //! create, update, and delete operations, and that `list_recent`
 //! returns nodes ordered by most recently updated first.
 
-use drevo::db::Drevo;
 use drevo::model::{NewNode, NodePatch, Properties};
+use drevo::native_service::NativeService;
 
 fn make_node(title: &str) -> NewNode {
     NewNode {
@@ -31,30 +31,30 @@ fn make_typed_node(kind: &str, title: &str) -> NewNode {
 
 #[test]
 fn list_recent_empty_db_returns_empty() {
-    let db = Drevo::open_in_memory().unwrap();
-    let nodes = db.list_recent(10).unwrap();
+    let db = NativeService::in_memory();
+    let nodes = db.list_recent(10);
     assert!(nodes.is_empty());
 }
 
 #[test]
 fn list_recent_single_node() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let n = db.create_node(make_node("Only")).unwrap();
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].id, n.id);
 }
 
 #[test]
 fn list_recent_newest_first_ordering() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let n1 = db.create_node(make_node("First")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let n2 = db.create_node(make_node("Second")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let n3 = db.create_node(make_node("Third")).unwrap();
 
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     assert_eq!(nodes.len(), 3);
     assert_eq!(nodes[0].id, n3.id);
     assert_eq!(nodes[1].id, n2.id);
@@ -65,13 +65,13 @@ fn list_recent_newest_first_ordering() {
 
 #[test]
 fn list_recent_limit_truncates_results() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     for i in 0..10 {
         db.create_node(make_node(&format!("Node {}", i))).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
-    let nodes = db.list_recent(5).unwrap();
+    let nodes = db.list_recent(5);
     assert_eq!(nodes.len(), 5);
     // Most recently created should be first
     assert_eq!(nodes[0].title, "Node 9");
@@ -79,19 +79,19 @@ fn list_recent_limit_truncates_results() {
 
 #[test]
 fn list_recent_limit_larger_than_count() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     db.create_node(make_node("A")).unwrap();
     db.create_node(make_node("B")).unwrap();
 
-    let nodes = db.list_recent(100).unwrap();
+    let nodes = db.list_recent(100);
     assert_eq!(nodes.len(), 2);
 }
 
 #[test]
 fn list_recent_zero_limit_returns_empty() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     db.create_node(make_node("A")).unwrap();
-    let nodes = db.list_recent(0).unwrap();
+    let nodes = db.list_recent(0);
     assert!(nodes.is_empty());
 }
 
@@ -99,13 +99,13 @@ fn list_recent_zero_limit_returns_empty() {
 
 #[test]
 fn list_recent_update_node_moves_to_top() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let n1 = db.create_node(make_node("Old")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let n2 = db.create_node(make_node("New")).unwrap();
 
     // n2 is on top initially
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     assert_eq!(nodes[0].id, n2.id);
 
     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -120,14 +120,14 @@ fn list_recent_update_node_moves_to_top() {
     )
     .unwrap();
 
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     assert_eq!(nodes[0].id, n1.id);
     assert_eq!(nodes[1].id, n2.id);
 }
 
 #[test]
 fn list_recent_multiple_updates_same_node() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let n1 = db.create_node(make_node("Target")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let _n2 = db.create_node(make_node("Other")).unwrap();
@@ -145,7 +145,7 @@ fn list_recent_multiple_updates_same_node() {
         .unwrap();
     }
 
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     // Should still have exactly 2 nodes, not duplicates
     assert_eq!(nodes.len(), 2);
     assert_eq!(nodes[0].id, n1.id);
@@ -155,7 +155,7 @@ fn list_recent_multiple_updates_same_node() {
 
 #[test]
 fn list_recent_delete_node_removes_from_index() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let n1 = db.create_node(make_node("Keeper")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     let n2 = db.create_node(make_node("Deleted")).unwrap();
@@ -164,7 +164,7 @@ fn list_recent_delete_node_removes_from_index() {
 
     db.delete_node(n2.id).unwrap();
 
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     assert_eq!(nodes.len(), 2);
     assert_eq!(nodes[0].id, n3.id);
     assert_eq!(nodes[1].id, n1.id);
@@ -172,14 +172,14 @@ fn list_recent_delete_node_removes_from_index() {
 
 #[test]
 fn list_recent_delete_all_nodes_returns_empty() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let n1 = db.create_node(make_node("A")).unwrap();
     let n2 = db.create_node(make_node("B")).unwrap();
 
     db.delete_node(n1.id).unwrap();
     db.delete_node(n2.id).unwrap();
 
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     assert!(nodes.is_empty());
 }
 
@@ -187,7 +187,7 @@ fn list_recent_delete_all_nodes_returns_empty() {
 
 #[test]
 fn list_recent_returns_all_kinds() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     db.create_node(make_typed_node("note", "Note A")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     db.create_node(make_typed_node("task", "Task B")).unwrap();
@@ -195,7 +195,7 @@ fn list_recent_returns_all_kinds() {
     db.create_node(make_typed_node("thought", "Thought C"))
         .unwrap();
 
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     assert_eq!(nodes.len(), 3);
     assert_eq!(nodes[0].kind, "thought");
     assert_eq!(nodes[1].kind, "task");
@@ -206,7 +206,7 @@ fn list_recent_returns_all_kinds() {
 
 #[test]
 fn list_recent_cascade_delete_cleans_index() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
     let n1 = db.create_node(make_node("Parent")).unwrap();
     let n2 = db.create_node(make_node("Child")).unwrap();
 
@@ -223,7 +223,7 @@ fn list_recent_cascade_delete_cleans_index() {
     // Delete parent — should cascade edges but only remove parent from recent
     db.delete_node(n1.id).unwrap();
 
-    let nodes = db.list_recent(10).unwrap();
+    let nodes = db.list_recent(10);
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].id, n2.id);
 }
@@ -232,7 +232,7 @@ fn list_recent_cascade_delete_cleans_index() {
 
 #[test]
 fn list_recent_cbt_journal_scenario() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
 
     // Patient creates several thoughts over time
     let t1 = db
@@ -251,7 +251,7 @@ fn list_recent_cbt_journal_scenario() {
         .unwrap();
 
     // Most recent entry shows up first
-    let recent = db.list_recent(2).unwrap();
+    let recent = db.list_recent(2);
     assert_eq!(recent.len(), 2);
     assert_eq!(recent[0].id, t3.id);
 
@@ -268,7 +268,7 @@ fn list_recent_cbt_journal_scenario() {
     .unwrap();
 
     // Updated thought is now most recent
-    let recent = db.list_recent(1).unwrap();
+    let recent = db.list_recent(1);
     assert_eq!(recent[0].id, t1.id);
 }
 
@@ -276,7 +276,7 @@ fn list_recent_cbt_journal_scenario() {
 
 #[test]
 fn list_recent_task_manager_scenario() {
-    let db = Drevo::open_in_memory().unwrap();
+    let db = NativeService::in_memory();
 
     let task1 = db
         .create_node(make_typed_node("task", "Fix login bug"))
@@ -291,7 +291,7 @@ fn list_recent_task_manager_scenario() {
         .unwrap();
 
     // Dashboard shows 2 most recently touched tasks
-    let recent = db.list_recent(2).unwrap();
+    let recent = db.list_recent(2);
     assert_eq!(recent.len(), 2);
     assert_eq!(recent[0].title, "Update dependencies");
     assert_eq!(recent[1].title, "Add dark mode");
@@ -308,14 +308,14 @@ fn list_recent_task_manager_scenario() {
     )
     .unwrap();
 
-    let recent = db.list_recent(2).unwrap();
+    let recent = db.list_recent(2);
     assert_eq!(recent[0].title, "Fix login bug");
     assert_eq!(recent[1].title, "Update dependencies");
 
     // Complete and archive task3
     db.delete_node(task3.id).unwrap();
 
-    let recent = db.list_recent(10).unwrap();
+    let recent = db.list_recent(10);
     assert_eq!(recent.len(), 2);
     assert_eq!(recent[0].title, "Fix login bug");
     assert_eq!(recent[1].title, "Add dark mode");
