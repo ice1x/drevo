@@ -10,11 +10,6 @@
 //! The crate is organised into a small number of layered modules, each with
 //! its own audit report under `audit/AUDIT-<domain>.md`:
 //!
-//! - [`storage`] — pluggable [`storage::StorageBackend`] trait plus the two
-//!   shipping implementations: [`storage::MemoryBackend`] (ephemeral, the
-//!   only backend on WASM) and `storage::RedbBackend` (ACID + B-tree, the
-//!   default on native targets, gated behind the `redb-backend` Cargo
-//!   feature). Audited in `audit/AUDIT-storage.md` (task `00103`).
 //! - [`error`] — the crate-wide [`error::DrevoError`] hierarchy. Audited in
 //!   `audit/AUDIT-error.md` (task `00104`).
 //! - [`model`] — public data types ([`model::Node`], [`model::Edge`], …)
@@ -185,8 +180,8 @@ pub mod mvcc;
 /// The native in-memory graph engine (RFC `docs/rfc-native-core.md`, #307,
 /// Phase 2) — an implementation of [`engine::GraphEngine`] that holds nodes and
 /// edges directly with maintained adjacency, instead of encoding them as
-/// byte-keyed rows over a [`storage::StorageBackend`]. Correctness-first seed of
-/// the arena/CSR core; pinned against `Drevo` by differential test.
+/// byte-keyed rows over a pluggable storage backend. The sole engine since the
+/// KV store was removed (epic #444).
 /// Extracted to the [`drevo-core`](drevo_core) crate (Phase 7 slice 6) and
 /// re-exported so `crate::native::…` / `drevo::native::…` paths keep resolving.
 pub use drevo_core::native;
@@ -259,7 +254,6 @@ pub mod planner;
 pub mod semantic_index;
 #[cfg(feature = "http")]
 pub mod server;
-pub mod storage;
 /// Phase 15 task `00096` — streaming ingestion. A transport-agnostic engine
 /// that turns a broker firehose of change events into graph mutations: an
 /// [`streaming::IngestConsumer`] polls a [`streaming::StreamSource`] (Kafka /

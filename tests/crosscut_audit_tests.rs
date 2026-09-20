@@ -137,23 +137,6 @@ fn lib_rs_has_crate_level_doc_and_missing_docs_warn() {
     );
 }
 
-#[test]
-fn storage_mod_documents_every_submodule() {
-    let m = read("src/storage/mod.rs");
-    let body = m.replace('\r', "");
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("pub mod ") || trimmed.starts_with("pub use ") {
-            // Each `pub mod` / `pub use` must be preceded by a `///` line.
-        }
-    }
-    // Quick smoke: the file must carry a `//!` module-level doc.
-    assert!(
-        body.lines().any(|l| l.trim_start().starts_with("//!")),
-        "src/storage/mod.rs must have a `//!` module-level rustdoc."
-    );
-}
-
 // ---------------------------------------------------------------------------
 // cargo-machete metadata
 // ---------------------------------------------------------------------------

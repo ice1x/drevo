@@ -652,7 +652,7 @@ pub(crate) fn embeddings_config_apply(
 #[cfg(test)]
 mod error_mapping_tests {
     use super::*;
-    use crate::storage::StorageError;
+    use crate::error::StorageError;
 
     fn status_of(err: DrevoError) -> StatusCode {
         let response = ApiError::Db(err).into_response();
