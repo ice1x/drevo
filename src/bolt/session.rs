@@ -487,6 +487,19 @@ impl<'a> Session<'a> {
         Self::build_engine(SessionEngine::Durable(service), None)
     }
 
+    /// Create an authenticating session over the durable native store of record
+    /// — the [`Session::new_durable`] counterpart of [`Session::with_auth`].
+    /// Every `HELLO` is checked against `authenticator` before the connection
+    /// reaches [`State::Ready`]; the authentication machinery is independent of
+    /// the engine, so the durable path enforces credentials exactly as the KV
+    /// path does.
+    pub fn with_auth_durable(
+        service: std::sync::Arc<crate::native_service::NativeService>,
+        authenticator: &'a dyn Authenticator,
+    ) -> Self {
+        Self::build_engine(SessionEngine::Durable(service), Some(authenticator))
+    }
+
     /// The KV handle, when this session runs on the KV engine. `None` on the
     /// durable native engine — whose sessions never own a KV transaction, so
     /// every `self.tx`-guarded path is KV-only by construction.
@@ -1104,6 +1117,42 @@ pub fn run_session_sync_with_auth<R: Read, W: Write>(
     authenticator: &dyn Authenticator,
 ) -> BoltResult<()> {
     run_session_sync_inner(reader, writer, Session::with_auth(drevo, authenticator))
+}
+
+/// Durable-native counterpart of [`run_session_sync`] — drives the synchronous
+/// session loop over the native store of record instead of the KV engine. The
+/// loop itself is engine-agnostic; only the backend the session executes
+/// against differs.
+///
+/// # Errors
+///
+/// Same as [`run_session_sync`].
+pub fn run_session_sync_durable<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    service: std::sync::Arc<crate::native_service::NativeService>,
+) -> BoltResult<()> {
+    run_session_sync_inner(reader, writer, Session::new_durable(service))
+}
+
+/// Authenticating durable-native counterpart of [`run_session_sync_with_auth`].
+/// Enforces credentials on every `HELLO` exactly as the KV path does, over the
+/// native store of record.
+///
+/// # Errors
+///
+/// Same as [`run_session_sync`].
+pub fn run_session_sync_with_auth_durable<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    service: std::sync::Arc<crate::native_service::NativeService>,
+    authenticator: &dyn Authenticator,
+) -> BoltResult<()> {
+    run_session_sync_inner(
+        reader,
+        writer,
+        Session::with_auth_durable(service, authenticator),
+    )
 }
 
 fn run_session_sync_inner<R: Read, W: Write>(
