@@ -16,20 +16,24 @@
 //!    even on update.
 //!
 //! Strategy:
-//! * `Op` is an enum representing a single mutation against `Drevo`.
+//! * `Op` is an enum representing a single mutation against a `NativeService`.
 //! * `op_strategy()` generates `Op` values with a meaningful distribution
 //!   (more creates than deletes, so the graph actually grows before it's
 //!   torn down).
 //! * `prop::collection::vec(op_strategy(), 1..MAX_OPS)` produces a sequence.
-//! * For each sequence we open a fresh in-memory `Drevo`, apply ops, and
-//!   call `verify_invariants()` after every successful or failed op.
+//! * For each sequence we open a fresh in-memory `NativeService`, apply ops,
+//!   and re-check the invariants after every successful or failed op. The
+//!   native engine has no KV-style `verify_invariants` (which scanned the redb
+//!   key layout), so #1/#2 are asserted through the public API
+//!   (`adjacency_violations`), #4 inline on each update, and #3 is covered by
+//!   `native_fts_tests`.
 //!
 //! `proptest` shrinks any failing case to a minimal reproducer
 //! automatically — the `.proptest-regressions/` cache then locks the
 //! reproducer in so a future contributor cannot accidentally regress it.
 
-use drevo::db::Drevo;
 use drevo::model::{Direction, EdgePatch, NewEdge, NewNode, NodePatch, Properties};
+use drevo::native_service::NativeService;
 
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -197,15 +201,78 @@ fn new_edge(from_id: u64, to_id: u64, kind: &str, weight: f32) -> NewEdge {
     }
 }
 
-/// Apply an op-sequence to a fresh in-memory `Drevo` and assert that
-/// `verify_invariants()` returns empty after every step.
+/// Observable form of the KV engine's `verify_invariants` for the native
+/// engine (which has no redb key layout to scan): assert invariants #1
+/// (adjacency consistency) and #2 (no dangling edge / cascade) through the
+/// public API, over the ids the harness is tracking as live. Returns a list of
+/// human-readable violations, empty when the graph is consistent.
+fn adjacency_violations(db: &NativeService, node_ids: &[u64], edge_ids: &[u64]) -> Vec<String> {
+    let mut v = Vec::new();
+    // #1 — every tracked (live) edge resolves, its endpoints exist, and it is
+    // mirrored in both endpoints' adjacency lists.
+    for &eid in edge_ids {
+        let edge = match db.get_edge(eid) {
+            Ok(Some(e)) => e,
+            Ok(None) => {
+                v.push(format!("edge {eid} missing"));
+                continue;
+            }
+            Err(e) => {
+                v.push(format!("get_edge({eid}) errored: {e}"));
+                continue;
+            }
+        };
+        if db.get_node(edge.from_id).is_err() {
+            v.push(format!("edge {eid} dangles: from_id {} gone", edge.from_id));
+        }
+        if db.get_node(edge.to_id).is_err() {
+            v.push(format!("edge {eid} dangles: to_id {} gone", edge.to_id));
+        }
+        if !db
+            .edges_of(edge.from_id, Direction::Outgoing)
+            .iter()
+            .any(|e| e.id == eid)
+        {
+            v.push(format!(
+                "edge {eid} missing from out-adjacency of {}",
+                edge.from_id
+            ));
+        }
+        if !db
+            .edges_of(edge.to_id, Direction::Incoming)
+            .iter()
+            .any(|e| e.id == eid)
+        {
+            v.push(format!(
+                "edge {eid} missing from in-adjacency of {}",
+                edge.to_id
+            ));
+        }
+    }
+    // #2 — no live node's adjacency references a node that no longer exists
+    // (a cascade delete must remove every incident edge).
+    for &nid in node_ids {
+        for e in db.edges_of(nid, Direction::Both) {
+            if db.get_node(e.from_id).is_err() || db.get_node(e.to_id).is_err() {
+                v.push(format!(
+                    "node {nid} retains edge {} referencing a deleted endpoint",
+                    e.id
+                ));
+            }
+        }
+    }
+    v
+}
+
+/// Apply an op-sequence to a fresh in-memory `NativeService` and assert that
+/// the graph stays internally consistent after every step.
 ///
 /// Per-op errors (e.g. `DuplicateTitle`, `NodeNotFound`) are tolerated —
 /// the harness's job is *not* to construct a perfectly-coherent sequence,
 /// it's to ensure the database stays internally consistent **regardless**
 /// of which ops succeeded.
 fn invariants_hold_under_ops(ops: &[Op]) -> Result<(), TestCaseError> {
-    let db = Drevo::open_in_memory().map_err(|e| TestCaseError::reject(format!("open: {e}")))?;
+    let db = NativeService::in_memory();
 
     let mut node_ids: Vec<u64> = Vec::new();
     let mut edge_ids: Vec<u64> = Vec::new();
@@ -364,11 +431,12 @@ fn invariants_hold_under_ops(ops: &[Op]) -> Result<(), TestCaseError> {
             }
         }
 
-        // The contract: after EVERY op (succeeded or not), the four
-        // invariants from drevo-database must hold.
-        let violations = db
-            .verify_invariants()
-            .map_err(|e| TestCaseError::fail(format!("verify_invariants: {e}")))?;
+        // The contract: after EVERY op (succeeded or not), adjacency
+        // consistency and cascade-delete (invariants #1 and #2) must hold.
+        // Invariant #4 (UUID immutability) is asserted inline on each update
+        // and cross-checked below; invariant #3 (FTS reindex on update) is
+        // covered by `native_fts_tests`.
+        let violations = adjacency_violations(&db, &node_ids, &edge_ids);
         prop_assert!(
             violations.is_empty(),
             "op_idx={} op={:?} violations={:?}",
@@ -382,10 +450,9 @@ fn invariants_hold_under_ops(ops: &[Op]) -> Result<(), TestCaseError> {
     // edge that exists, and the UUID must match (invariant #4 on the
     // storage round-trip as well as the in-memory return value).
     for (id, expected_uuid) in &node_uuids {
-        if let Some(n) = db
-            .get_node(*id)
-            .map_err(|e| TestCaseError::fail(format!("get_node: {e}")))?
-        {
+        // Native `get_node` returns `Result<Node>` (NodeNotFound on a miss);
+        // a tracked (live) id must resolve.
+        if let Ok(n) = db.get_node(*id) {
             prop_assert_eq!(
                 n.uuid,
                 *expected_uuid,
@@ -433,7 +500,7 @@ proptest! {
     fn fts_never_returns_deleted_node(
         ops in vec(op_strategy(), 1..64)
     ) {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let mut alive_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
         for op in &ops {
@@ -458,12 +525,11 @@ proptest! {
 
         // Search by every alive node's title — must hit only alive nodes.
         for id in &alive_ids {
-            let n = db.get_node(*id).unwrap();
-            if let Some(node) = n {
+            if let Ok(node) = db.get_node(*id) {
                 if node.title.is_empty() {
                     continue;
                 }
-                let hits = db.search_fts(&node.title, 100).unwrap();
+                let hits = db.search_fts(&node.title, 100);
                 for hit in hits {
                     prop_assert!(
                         alive_ids.contains(&hit.node.id),
@@ -482,7 +548,7 @@ proptest! {
     fn edges_of_is_symmetric(
         ops in vec(op_strategy(), 1..64)
     ) {
-        let db = Drevo::open_in_memory().unwrap();
+        let db = NativeService::in_memory();
         let mut node_ids: Vec<u64> = Vec::new();
 
         for op in &ops {
@@ -509,9 +575,9 @@ proptest! {
         // For every node, the outgoing edges into B match the incoming
         // edges on B's side.
         for id in &node_ids {
-            let out = db.edges_of(*id, Direction::Outgoing).unwrap();
+            let out = db.edges_of(*id, Direction::Outgoing);
             for e in out {
-                let in_to = db.edges_of(e.to_id, Direction::Incoming).unwrap();
+                let in_to = db.edges_of(e.to_id, Direction::Incoming);
                 prop_assert!(
                     in_to.iter().any(|x| x.id == e.id),
                     "edge {} outgoing from {} not found in incoming of {}",
