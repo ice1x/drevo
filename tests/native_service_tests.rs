@@ -564,3 +564,51 @@ fn keywords_are_extracted_on_native() {
         other => panic!("expected a list of keywords, got {other:?}"),
     }
 }
+
+#[test]
+fn update_bumps_recency_and_survives_a_restart() {
+    // `update_node` must advance `updated_at` so the touched node leads
+    // `list_recent` (parity with the KV engine's `apply_patch`), and the bumped
+    // timestamp must be durable — the WAL records the full node record, so a
+    // cold reopen recovers the same recency order rather than the create order.
+    use drevo::model::{NewNode, NodePatch, Properties};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("recency.wal");
+    let (first_id, second_id) = {
+        let service = NativeService::open(&path).expect("open");
+        let mk = |title: &str| NewNode {
+            kind: "note".into(),
+            title: title.into(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: Properties::default(),
+        };
+        let first = service.create_node(mk("first")).expect("create first");
+        let second = service.create_node(mk("second")).expect("create second");
+        // Freshly created, `second` (higher id) leads on the create-order tie.
+        assert_eq!(service.list_recent(2)[0].id, second.id);
+
+        // Touch `first`; it must now lead, with a strictly newer timestamp.
+        let updated = service
+            .update_node(
+                first.id,
+                NodePatch {
+                    body: Some("edited".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("update first");
+        assert!(updated.updated_at > updated.created_at);
+        assert_eq!(service.list_recent(2)[0].id, first.id);
+        (first.id, second.id)
+    };
+
+    // Cold reopen: the recency order (updated `first` ahead of `second`) and the
+    // bumped timestamp both recover from the WAL.
+    let service = NativeService::open(&path).expect("reopen");
+    let recent = service.list_recent(2);
+    assert_eq!(recent[0].id, first_id, "updated node leads after reopen");
+    assert_eq!(recent[1].id, second_id);
+    assert!(recent[0].updated_at > recent[0].created_at);
+}

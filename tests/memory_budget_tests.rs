@@ -2,7 +2,7 @@
 //!
 //! These exercise the budget end-to-end the way the executor-wiring task will:
 //! plan representative Cypher queries against statistics collected from a *real*
-//! [`Drevo`] graph, then (a) admit or refuse the plan up front against a byte
+//! [`NativeService`] graph, then (a) admit or refuse the plan up front against a byte
 //! ceiling (memory-limited query execution), (b) drive a runtime row-buffering
 //! loop through [`MemoryBudget::try_reserve`] and watch the OOM guard refuse the
 //! row that would blow the cap, and (c) throttle a streaming producer through
@@ -16,8 +16,8 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use drevo::cypher::parser::parse;
-use drevo::db::Drevo;
 use drevo::model::{NewEdge, NewNode, Properties};
+use drevo::native_service::NativeService;
 use drevo::planner::{
     estimate_peak_memory, plan_query, Backpressure, BackpressureSignal, BudgetError,
     GraphStatistics, MemoryBudget, PlanNode, StatisticsCollector,
@@ -30,7 +30,7 @@ struct NodeSpec {
     status: Option<&'static str>,
 }
 
-fn add_node(db: &Drevo, collector: &mut StatisticsCollector, spec: NodeSpec) -> u64 {
+fn add_node(db: &NativeService, collector: &mut StatisticsCollector, spec: NodeSpec) -> u64 {
     let mut properties = Properties::default();
     if let Some(status) = spec.status {
         properties
@@ -53,7 +53,13 @@ fn add_node(db: &Drevo, collector: &mut StatisticsCollector, spec: NodeSpec) -> 
     node.id
 }
 
-fn add_edge(db: &Drevo, collector: &mut StatisticsCollector, from: u64, to: u64, kind: &str) {
+fn add_edge(
+    db: &NativeService,
+    collector: &mut StatisticsCollector,
+    from: u64,
+    to: u64,
+    kind: &str,
+) {
     db.create_edge(NewEdge {
         from_id: from,
         to_id: to,
@@ -66,8 +72,8 @@ fn add_edge(db: &Drevo, collector: &mut StatisticsCollector, from: u64, to: u64,
 }
 
 /// A bug tracker: 5 engineers, 12 bugs across 3 statuses, ASSIGNED_TO + BLOCKS.
-fn bug_tracker() -> (Drevo, GraphStatistics) {
-    let db = Drevo::open_in_memory().expect("open db");
+fn bug_tracker() -> (NativeService, GraphStatistics) {
+    let db = NativeService::in_memory();
     let mut collector = StatisticsCollector::new();
 
     let engineers: Vec<u64> = (0..5)
