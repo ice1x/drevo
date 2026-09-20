@@ -1,6 +1,6 @@
 //! Integration tests for keyword faceting — Phase 17 task `00133`.
 //!
-//! [`Drevo::facets`] groups every node of a `kind` by the keywords
+//! [`NativeService::facets`] groups every node of a `kind` by the keywords
 //! extracted from one of its text fields ([`keywords()`](../src/fts/keywords.rs),
 //! task `00132`), optionally collapsing near-duplicate keywords along one
 //! of two axes:
@@ -10,22 +10,22 @@
 //! * **semantic** — cosine similarity of caller-supplied embeddings;
 //!   meaning-based, opt-in.
 //!
-//! These tests run against a real (in-memory) `Drevo` graph across the five
+//! These tests run against a real (in-memory) `NativeService` graph across the five
 //! drevo target scenario domains — CBT journal, story editor, IT task
 //! manager, ERP, bug tracker — plus the property-source and edge-case
 //! behaviours.
 
 use std::collections::HashMap;
 
-use drevo::db::Drevo;
 use drevo::fts::facet::{
     Facet, FacetCollapse, DEFAULT_COSINE_THRESHOLD, DEFAULT_TRIGRAM_THRESHOLD,
 };
 use drevo::model::{NewNode, Properties};
+use drevo::native_service::NativeService;
 use drevo::vector::Vector;
 
-fn db() -> Drevo {
-    Drevo::open_in_memory().expect("open in-memory drevo")
+fn db() -> NativeService {
+    NativeService::in_memory()
 }
 
 fn note(kind: &str, title: &str, body: &str) -> NewNode {
