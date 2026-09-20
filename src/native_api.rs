@@ -517,18 +517,18 @@ async fn track_metrics(
 }
 
 /// `GET /storage/bloat` — physical WAL size vs compacted (logical) size, in the
-/// same [`BloatReport`](crate::db::BloatReport) contract as the KV router, so the
+/// same [`BloatReport`](crate::report::BloatReport) contract as the KV router, so the
 /// Web UI's storage panel is engine-agnostic.
-async fn storage_bloat(State(state): State<NativeApiState>) -> Json<crate::db::BloatReport> {
+async fn storage_bloat(State(state): State<NativeApiState>) -> Json<crate::report::BloatReport> {
     Json(state.service.storage_bloat())
 }
 
 /// `POST /storage/shrink` — compact the append-only WAL to its current state and
-/// report reclaimed bytes (same [`CompactReport`](crate::db::CompactReport)
+/// report reclaimed bytes (same [`CompactReport`](crate::report::CompactReport)
 /// contract as the KV router).
 async fn storage_shrink(
     State(state): State<NativeApiState>,
-) -> Result<Json<crate::db::CompactReport>, ApiError> {
+) -> Result<Json<crate::report::CompactReport>, ApiError> {
     Ok(Json(state.service.compact()?))
 }
 
@@ -562,15 +562,15 @@ async fn storage_benchmark(
         properties: Properties::default(),
     };
 
-    // Write throughput on throwaway in-memory databases — never the live graph.
-    let scratch = crate::db::Drevo::open_in_memory()?;
+    // Write throughput on throwaway in-memory native stores — never the live graph.
+    let scratch = crate::native_service::NativeService::in_memory();
     let t0 = Instant::now();
     for i in 0..incr_n {
         scratch.create_node(mk("bench-incr", i))?;
     }
     let incr_secs = t0.elapsed().as_secs_f64();
 
-    let scratch2 = crate::db::Drevo::open_in_memory()?;
+    let scratch2 = crate::native_service::NativeService::in_memory();
     let batch: Vec<NewNode> = (0..batch_n).map(|i| mk("bench-batch", i)).collect();
     let t1 = Instant::now();
     scratch2.create_nodes(batch)?;
