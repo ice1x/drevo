@@ -1175,7 +1175,7 @@ fn run_returning_a_node_emits_bolt_node_structure_tag_0x4e() {
     }
 }
 
-// --- run_session_sync end-to-end driver ------------------------------------
+// --- run_session_sync_durable end-to-end driver ------------------------------------
 
 #[test]
 fn run_session_sync_drives_full_hello_run_pull_goodbye_flow() {
