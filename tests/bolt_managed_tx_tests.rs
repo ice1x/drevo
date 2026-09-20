@@ -18,6 +18,9 @@
 //! mutations. The `rollback_undoes_*` battery covers every one of the 11
 //! mutation sites the Cypher executor can reach inside a transaction, so the
 //! journaling refactor cannot silently drop a site.
+//!
+//! These run on the durable native engine (`NativeService`, per-session
+//! `NativeTx`); the same per-connection contract holds there.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -25,14 +28,15 @@ use std::collections::BTreeMap;
 
 use drevo::bolt::packstream::Value;
 use drevo::bolt::session::{ClientMessage, ServerMessage, Session, State};
-use drevo::db::Drevo;
+use drevo::native_service::NativeService;
+use std::sync::Arc;
 
-fn open() -> Drevo {
-    Drevo::open_in_memory().expect("open_in_memory")
+fn open() -> Arc<NativeService> {
+    Arc::new(NativeService::in_memory())
 }
 
-fn ready(d: &Drevo) -> Session<'_> {
-    let mut s = Session::new(d);
+fn ready(d: &Arc<NativeService>) -> Session<'static> {
+    let mut s = Session::new_durable(Arc::clone(d));
     s.handle(ClientMessage::Hello {
         extra: BTreeMap::new(),
     });
@@ -215,7 +219,7 @@ fn transient_error_is_still_returned_for_nested_begin_on_one_session() {
 
 /// Begin a tx on a fresh session, run `mutation` (drained), roll back, and
 /// return a probe session for assertions.
-fn seed(d: &Drevo, statements: &[&str]) {
+fn seed(d: &Arc<NativeService>, statements: &[&str]) {
     let mut s = ready(d);
     for q in statements {
         run_pull(&mut s, q);

@@ -22,11 +22,14 @@ use std::io::Cursor;
 use drevo::bolt::auth::UserStore;
 use drevo::bolt::chunked::{read_message, write_message};
 use drevo::bolt::packstream::{decode, encode, Value};
-use drevo::bolt::session::{run_session_sync_with_auth, ClientMessage, FAILURE, RECORD, SUCCESS};
-use drevo::db::Drevo;
+use drevo::bolt::session::{
+    run_session_sync_with_auth_durable, ClientMessage, FAILURE, RECORD, SUCCESS,
+};
+use drevo::native_service::NativeService;
+use std::sync::Arc;
 
-fn open() -> Drevo {
-    Drevo::open_in_memory().expect("open_in_memory")
+fn open() -> Arc<NativeService> {
+    Arc::new(NativeService::in_memory())
 }
 
 fn dict<I: IntoIterator<Item = (&'static str, Value)>>(entries: I) -> BTreeMap<String, Value> {
@@ -136,7 +139,8 @@ fn valid_basic_auth_runs_query_end_to_end() {
 
     let mut reader = Cursor::new(client);
     let mut writer: Vec<u8> = Vec::new();
-    run_session_sync_with_auth(&mut reader, &mut writer, &drevo, &store).expect("session loop");
+    run_session_sync_with_auth_durable(&mut reader, &mut writer, Arc::clone(&drevo), &store)
+        .expect("session loop");
 
     let replies = decode_server_stream(writer);
     let tags: Vec<u8> = replies.iter().map(|(t, _)| *t).collect();
@@ -163,7 +167,8 @@ fn wrong_password_fails_and_blocks_queued_run() {
 
     let mut reader = Cursor::new(client);
     let mut writer: Vec<u8> = Vec::new();
-    run_session_sync_with_auth(&mut reader, &mut writer, &drevo, &store).expect("session loop");
+    run_session_sync_with_auth_durable(&mut reader, &mut writer, Arc::clone(&drevo), &store)
+        .expect("session loop");
 
     let replies = decode_server_stream(writer);
     assert_eq!(replies.len(), 1, "only the auth FAILURE; RUN never ran");
@@ -180,7 +185,7 @@ fn wrong_password_fails_and_blocks_queued_run() {
         ))
     );
     assert!(
-        drevo.list_recent(10).unwrap().is_empty(),
+        drevo.list_recent(10).is_empty(),
         "CREATE must not have executed"
     );
 }
@@ -193,7 +198,8 @@ fn unknown_user_is_denied() {
     let client = encode_client_stream(&[hello_basic("ghost", "whatever")]);
     let mut reader = Cursor::new(client);
     let mut writer: Vec<u8> = Vec::new();
-    run_session_sync_with_auth(&mut reader, &mut writer, &drevo, &store).expect("session loop");
+    run_session_sync_with_auth_durable(&mut reader, &mut writer, Arc::clone(&drevo), &store)
+        .expect("session loop");
 
     let replies = decode_server_stream(writer);
     assert_eq!(replies.len(), 1);
@@ -227,7 +233,8 @@ fn issued_bearer_token_authenticates() {
 
     let mut reader = Cursor::new(client);
     let mut writer: Vec<u8> = Vec::new();
-    run_session_sync_with_auth(&mut reader, &mut writer, &drevo, &store).expect("session loop");
+    run_session_sync_with_auth_durable(&mut reader, &mut writer, Arc::clone(&drevo), &store)
+        .expect("session loop");
 
     let tags: Vec<u8> = decode_server_stream(writer)
         .iter()
