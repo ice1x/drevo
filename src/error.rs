@@ -4,9 +4,8 @@ use crate::vector::VectorError;
 
 /// Errors that can occur during drevo operations.
 ///
-/// Two-layer architecture (per `drevo-architecture` §"Error Propagation"):
-/// `StorageError → DrevoError → ApiError → HTTP 5xx`. Each variant either
-/// wraps a lower-layer error (`Storage`, `Encode`, `Decode`, `Io`) or
+/// `DrevoError → ApiError → HTTP 5xx`. Each variant either wraps a
+/// lower-layer error (`Encode`, `Decode`, `Io`, `Json`, `Vector`) or
 /// describes a database-level semantic failure (`NodeNotFound`,
 /// `EdgeNotFound`, `DuplicateTitle`, `Locked`).
 ///
@@ -16,10 +15,6 @@ use crate::vector::VectorError;
 /// decode failures (corrupt persisted bytes) programmatically.
 #[derive(Debug, thiserror::Error)]
 pub enum DrevoError {
-    /// An error from the underlying storage layer.
-    #[error("storage error: {0}")]
-    Storage(#[from] StorageError),
-
     /// A bincode encode (serialization) error occurred while writing a
     /// node or edge to the backend.
     #[error("encode error: {0}")]
@@ -120,83 +115,6 @@ pub enum DrevoError {
 /// Convenience type alias for drevo operations.
 pub type Result<T> = std::result::Result<T, DrevoError>;
 
-/// Errors from the persistence layer, wrapped by [`DrevoError::Storage`].
-///
-/// Retained as the payload of the `Storage` variant after the KV storage
-/// backend was removed (epic #444): the enum kept the HTTP layer able to
-/// distinguish backend, encode, decode, and lock failures, and the mapping is
-/// preserved so the error surface is unchanged for clients.
-#[derive(Debug, thiserror::Error)]
-pub enum StorageError {
-    /// The requested key was not found.
-    #[error("key not found: {}", DisplayBytes(.0))]
-    NotFound(Vec<u8>),
-
-    /// An I/O error occurred in the underlying backend.
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// A bincode encode (serialization) error occurred while writing a
-    /// snapshot or producing on-the-wire bytes.
-    #[error("encode error: {0}")]
-    Encode(#[from] bincode::error::EncodeError),
-
-    /// A bincode decode (deserialization) error occurred while loading a
-    /// snapshot or parsing on-the-wire bytes.
-    #[error("decode error: {0}")]
-    Decode(#[from] bincode::error::DecodeError),
-
-    /// A `Mutex` or `RwLock` protecting backend state was poisoned by a
-    /// previous panic.
-    #[error("lock poisoned")]
-    LockPoisoned,
-
-    /// Compaction was requested on a backend whose handle is shared, so the
-    /// exclusive `&mut` access it needs could not be obtained.
-    #[error("compact requires exclusive backend access")]
-    CompactNotExclusive,
-
-    /// An on-disk file reported a newer, layout-incompatible major format
-    /// version (or an unparseable format marker), so opening it was refused.
-    #[error(
-        "incompatible on-disk format: file reports version {found:?}, \
-         this build supports major format version {supported_major}"
-    )]
-    IncompatibleFormat {
-        /// Raw `MAJOR.MINOR` version string read from the file.
-        found: String,
-        /// Highest on-disk major version this build can read.
-        supported_major: u32,
-    },
-
-    /// An online shrink/rebuild produced a compacted copy that failed its
-    /// self-diagnostic (row counts did not match the source), so the rebuild
-    /// was discarded and the live database left untouched. `expected` / `got`
-    /// are `(data_rows, meta_rows)`.
-    #[error(
-        "shrink verification failed: rebuilt file has {got:?} rows, expected {expected:?}; \
-         the live database was left untouched"
-    )]
-    ShrinkVerificationFailed {
-        /// `(data_rows, meta_rows)` streamed from the source into the rebuild.
-        expected: (u64, u64),
-        /// `(data_rows, meta_rows)` actually found in the rebuilt file.
-        got: (u64, u64),
-    },
-}
-
-/// Helper to display byte slices in error messages.
-struct DisplayBytes<'a>(&'a [u8]);
-
-impl std::fmt::Display for DisplayBytes<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match std::str::from_utf8(self.0) {
-            Ok(s) => write!(f, "{s}"),
-            Err(_) => write!(f, "{:?}", self.0),
-        }
-    }
-}
-
 /// Lift a storage-agnostic [`drevo_core::error::CoreError`] into the main
 /// crate's richer [`DrevoError`].
 ///
@@ -227,17 +145,15 @@ impl From<drevo_core::error::CoreError> for DrevoError {
 /// Lower a [`DrevoError`] into the storage-agnostic
 /// [`drevo_core::error::CoreError`].
 ///
-/// This is the direction a concrete backend (the KV-backed `Drevo`) uses when it
-/// implements a `drevo-core` seam whose signature speaks `CoreError`: the six
-/// shared variants map one-to-one, and every backend-specific variant
-/// (`Storage`, `Encode`, `Decode`, `Vector`, the transaction states,
-/// `NeedsMigration`) — which has no structured home in the core — collapses into
+/// This is the direction a `drevo-core` seam whose signature speaks `CoreError`
+/// uses: the six shared variants map one-to-one, and every variant with no
+/// structured home in the core (`Encode`, `Decode`, `Vector`, the transaction
+/// states, `NeedsMigration`) collapses into
 /// [`CoreError::Backend`](drevo_core::error::CoreError::Backend), preserving the
 /// rendered message. Round-tripping a *shared* variant through both impls is
-/// lossless; a backend-specific one degrades to `Backend` then to
-/// `DrevoError::Io`, which is acceptable because those never flow *up* through
-/// the seam in a variant-matched path (they are matched only on the inherent KV
-/// API, which never crosses the trait).
+/// lossless; a non-shared one degrades to `Backend` then to `DrevoError::Io`,
+/// which is acceptable because those never flow *up* through the seam in a
+/// variant-matched path.
 impl From<DrevoError> for drevo_core::error::CoreError {
     fn from(err: DrevoError) -> Self {
         use drevo_core::error::CoreError as C;

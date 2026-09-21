@@ -110,8 +110,7 @@ impl IntoResponse for ApiError {
                     (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
                 }
                 DrevoError::NoActiveTransaction => (StatusCode::CONFLICT, err.to_string()),
-                DrevoError::Storage(_)
-                | DrevoError::Encode(_)
+                DrevoError::Encode(_)
                 | DrevoError::Decode(_)
                 | DrevoError::Json(_)
                 | DrevoError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -652,7 +651,6 @@ pub(crate) fn embeddings_config_apply(
 #[cfg(test)]
 mod error_mapping_tests {
     use super::*;
-    use crate::error::StorageError;
 
     fn status_of(err: DrevoError) -> StatusCode {
         let response = ApiError::Db(err).into_response();
@@ -687,18 +685,13 @@ mod error_mapping_tests {
             "Locked → 503",
         );
         assert_eq!(
-            status_of(DrevoError::Storage(StorageError::NotFound(b"k".to_vec()))),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Storage → 500",
-        );
-        assert_eq!(
             status_of(DrevoError::Io(std::io::Error::other("boom"))),
             StatusCode::INTERNAL_SERVER_ERROR,
             "Io → 500",
         );
         // The `Encode` and `Decode` variants of `DrevoError` wrap bincode
         // error types that cannot be constructed outside the bincode
-        // crate. They share the `Storage / Io` 500 arm in `api.rs`, so
+        // crate. They share the `Io` 500 arm in `api.rs`, so
         // the regression coverage above already exercises that arm — but
         // we still need a compile-time fence that fails when those
         // variants are removed or renamed. The `#[allow(dead_code)]`
@@ -713,7 +706,6 @@ mod error_mapping_tests {
                 DrevoError::DuplicateTitle(_) => "DuplicateTitle",
                 DrevoError::InvalidWeight(_) => "InvalidWeight",
                 DrevoError::Locked => "Locked",
-                DrevoError::Storage(_) => "Storage",
                 DrevoError::Encode(_) => "Encode",
                 DrevoError::Decode(_) => "Decode",
                 DrevoError::Io(_) => "Io",

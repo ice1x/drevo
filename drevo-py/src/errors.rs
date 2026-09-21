@@ -76,7 +76,6 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
             "invalid edge weight: {w} — weight must be a finite f32"
         )),
         D::Locked => LockedError::new_err(()),
-        D::Storage(s) => StorageError::new_err(s.to_string()),
         D::Encode(err) => SerializationError::new_err(("encode", err.to_string())),
         D::Decode(err) => SerializationError::new_err(("decode", err.to_string())),
         D::Json(err) => SerializationError::new_err(("json", err.to_string())),

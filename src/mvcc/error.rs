@@ -15,10 +15,9 @@ pub enum MvccError {
     /// A lock guarding MVCC state was poisoned by a panic in another
     /// thread while it held the lock in write mode.
     ///
-    /// Mirrors `StorageError::LockPoisoned`: the engine
-    /// surfaces the poison as a recoverable error instead of propagating
-    /// the panic, so a single panicking writer cannot wedge the whole
-    /// store.
+    /// The engine surfaces the poison as a recoverable error instead of
+    /// propagating the panic, so a single panicking writer cannot wedge
+    /// the whole store.
     #[error("mvcc lock poisoned")]
     LockPoisoned,
 
