@@ -598,6 +598,15 @@ pub struct DatabaseListResponse {
     pub default: &'static str,
 }
 
+/// Request body for `POST /databases` — create a new named database.
+#[derive(Debug, Deserialize)]
+pub struct CreateDatabaseRequest {
+    /// The name of the database to create. Validated by the registry: 1–63
+    /// characters of `[A-Za-z0-9_-]`, beginning with a letter, digit, or
+    /// underscore.
+    pub name: String,
+}
+
 /// The engine-independent body of `POST /v1/embeddings`, shared by the KV
 /// router and the durable-native one (`crate::native_api`): validate, then
 /// proxy to the operator-configured backend — or answer the deterministic

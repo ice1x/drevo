@@ -108,6 +108,14 @@ pub mod bolt;
 /// is implemented; the parser, executor, and downstream clause handlers
 /// will land in tasks `00062` onwards.
 pub mod cypher;
+/// In-process registry of named native databases — the multi-database catalog
+/// (issue #523). Holds several isolated [`native_service::NativeService`]
+/// instances behind an always-present default, with a create / list / drop
+/// lifecycle served over `/databases`. Gated on `http`: its only consumer is
+/// the durable-native HTTP surface ([`native_api`]), and it shares that
+/// module's `DEFAULT_DB`.
+#[cfg(feature = "http")]
+pub mod database_registry;
 /// JSON import / export — Phase 9 task `00055`. Defines the schema-versioned
 /// `drevo-json-v1` wire format plus the `Drevo::export_json` / `import_json`
 /// methods. Filesystem-bound `*_to_path` / `*_from_path` variants are gated
