@@ -11,9 +11,13 @@
 //! **same routes and contracts as the KV router** ([`crate::api`]), so a
 //! non-Cypher client migrates from KV to native-durable unchanged.
 //!
-//! Multi-database catalogs are the one remaining KV-router feature out of scope
-//! for this mode — it serves the single durable graph the process was pointed
-//! at.
+//! The multi-database catalog (`GET`/`POST /databases`, `DELETE
+//! /databases/{name}`, issue #523) is served here over a
+//! [`crate::database_registry::DatabaseRegistry`]: the always-present default
+//! is the durable graph the process was pointed at, and additional named
+//! databases can be created, listed, and dropped. Routing a query to a chosen
+//! non-default database is a follow-up slice, so a client that names no
+//! database still sees exactly the single-graph behaviour.
 
 #![cfg(feature = "http")]
 
@@ -25,18 +29,20 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 
 use crate::api::{
-    embeddings_response, exec_result_to_response, json_to_cypher_value, ApiError, CypherRequest,
-    CypherResponse, DatabaseListResponse, EdgeListResponse, FacetsQuery, FacetsResponse,
-    ImportGraphmlRequest, ImportJsonRequest, ListEdgesQuery, ListNodesQuery, NeighborsQuery,
-    NodeEdgesQuery, NodeListResponse, SearchFtsRequest, SearchFtsResponse, ShortestPathQuery,
-    ShortestPathResponse, SubgraphQuery, DEFAULT_FACET_KEYWORDS, DEFAULT_LIST_LIMIT,
-    DEFAULT_NEIGHBORS_DEPTH, DEFAULT_SUBGRAPH_DEPTH, MAX_FACET_KEYWORDS, MAX_LIST_LIMIT,
+    embeddings_response, exec_result_to_response, json_to_cypher_value, ApiError,
+    CreateDatabaseRequest, CypherRequest, CypherResponse, DatabaseListResponse, EdgeListResponse,
+    FacetsQuery, FacetsResponse, ImportGraphmlRequest, ImportJsonRequest, ListEdgesQuery,
+    ListNodesQuery, NeighborsQuery, NodeEdgesQuery, NodeListResponse, SearchFtsRequest,
+    SearchFtsResponse, ShortestPathQuery, ShortestPathResponse, SubgraphQuery,
+    DEFAULT_FACET_KEYWORDS, DEFAULT_LIST_LIMIT, DEFAULT_NEIGHBORS_DEPTH, DEFAULT_SUBGRAPH_DEPTH,
+    MAX_FACET_KEYWORDS, MAX_LIST_LIMIT,
 };
 use crate::cypher::parser;
+use crate::database_registry::{DatabaseRegistry, RegistryError};
 use crate::embeddings::{EmbeddingBackend, EmbeddingsRequest};
 use crate::fts::facet::{FacetCollapse, DEFAULT_TRIGRAM_THRESHOLD};
 use crate::model::Direction;
@@ -51,8 +57,13 @@ pub const DEFAULT_DB: &str = "drevo";
 /// Shared state of the durable-native HTTP surface.
 #[derive(Clone)]
 pub struct NativeApiState {
-    /// The store of record.
+    /// The store of record — the default database's service.
     pub service: Arc<NativeService>,
+    /// The multi-database catalog (issue #523). Its default entry is the same
+    /// [`Arc`] as [`service`](Self::service), so existing single-database
+    /// handlers are unaffected; `/databases` enumerates this registry and the
+    /// create / drop lifecycle mutates it.
+    registry: Arc<DatabaseRegistry>,
     /// Construction instant, for `/status` uptime.
     started_at: Instant,
     /// Graceful-shutdown flag: flipped once on SIGTERM/Ctrl+C so `/health`
@@ -74,8 +85,10 @@ pub struct NativeApiState {
 impl NativeApiState {
     /// Wrap a service for serving.
     pub fn new(service: Arc<NativeService>) -> Self {
+        let registry = Arc::new(DatabaseRegistry::new(Arc::clone(&service)));
         Self {
             service,
+            registry,
             started_at: Instant::now(),
             shutting_down: Arc::new(AtomicBool::new(false)),
             embeddings: None,
@@ -132,7 +145,8 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         )
         .route("/search/fts", post(search_fts))
         .route("/export/json", get(export_json))
-        .route("/databases", get(list_databases))
+        .route("/databases", get(list_databases).post(create_database))
+        .route("/databases/{name}", delete(drop_database))
         .route("/nodes/{id}", get(get_node))
         // Raw-REST graph CRUD + traversal + faceting — the same routes/contracts
         // as the KV router (src/api.rs), served over the native engine so a
@@ -255,13 +269,65 @@ async fn export_json(State(state): State<NativeApiState>) -> Result<Response, Ap
     Ok((StatusCode::OK, [("content-type", "application/json")], dump).into_response())
 }
 
-/// `GET /databases` — this mode serves the single durable graph, reported in
-/// the KV route's response shape so the Web UI's selector keeps working.
-async fn list_databases() -> Json<DatabaseListResponse> {
+/// Lift a [`RegistryError`] into the HTTP error envelope: invalid name → 400,
+/// already-exists → 409, not-found → 404, protected-default → 409.
+impl From<RegistryError> for ApiError {
+    fn from(err: RegistryError) -> Self {
+        match err {
+            RegistryError::InvalidName(_) => ApiError::BadRequest(err.to_string()),
+            RegistryError::AlreadyExists(_) | RegistryError::ProtectedDefault(_) => {
+                ApiError::Conflict(err.to_string())
+            }
+            RegistryError::NotFound(_) => ApiError::NotFound(err.to_string()),
+        }
+    }
+}
+
+/// `GET /databases` — every database in the catalog (issue #523), in the KV
+/// route's response shape so the Web UI's selector keeps working. With only the
+/// default database present this is `{ "databases": ["drevo"], "default":
+/// "drevo" }`, exactly as before.
+async fn list_databases(State(state): State<NativeApiState>) -> Json<DatabaseListResponse> {
     Json(DatabaseListResponse {
-        databases: vec![DEFAULT_DB.to_string()],
-        default: DEFAULT_DB,
+        databases: state.registry.list(),
+        default: state.registry.default_name(),
     })
+}
+
+/// `POST /databases` — create a new named database (issue #523). The body is
+/// `{ "name": "<db>" }`; the name is validated (400 on a bad name, 409 if it
+/// already exists). Returns `201 Created` with the updated database list.
+///
+/// The new database is created in-memory and is not yet a query target — query
+/// routing to a chosen database is a follow-up slice — but it is listable and
+/// droppable immediately.
+async fn create_database(
+    State(state): State<NativeApiState>,
+    body: Result<Json<CreateDatabaseRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<DatabaseListResponse>), ApiError> {
+    let Json(CreateDatabaseRequest { name }) = body?;
+    state.registry.create_in_memory(&name)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DatabaseListResponse {
+            databases: state.registry.list(),
+            default: state.registry.default_name(),
+        }),
+    ))
+}
+
+/// `DELETE /databases/{name}` — drop a named database (issue #523). Dropping the
+/// default database is a 409; an unknown name is a 404. Returns `200 OK` with
+/// the updated database list.
+async fn drop_database(
+    State(state): State<NativeApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Result<Json<DatabaseListResponse>, ApiError> {
+    state.registry.remove(&name)?;
+    Ok(Json(DatabaseListResponse {
+        databases: state.registry.list(),
+        default: state.registry.default_name(),
+    }))
 }
 
 /// `GET /nodes/{id}` — one node, the KV route's shape (the Web UI's detail

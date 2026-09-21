@@ -2233,3 +2233,86 @@ async fn metrics_endpoint_exposes_storage_file_bytes_gauge() {
         "metrics output missing storage gauge:\n{body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-database catalog lifecycle (issue #523) — `GET`/`POST /databases`,
+// `DELETE /databases/{name}`. Query routing to a non-default database is a
+// follow-up slice; here we exercise create / list / drop and their errors.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn databases_lifecycle_create_list_drop() {
+    let app = make_app();
+
+    // A fresh server lists only the default database.
+    let (status, dbs) = send(&app, "GET", "/databases", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dbs["databases"], json!(["drevo"]));
+    assert_eq!(dbs["default"], "drevo");
+
+    // Create a second database — 201 with the updated, sorted list.
+    let (status, created) = send(
+        &app,
+        "POST",
+        "/databases",
+        Some(json!({ "name": "analytics" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["databases"], json!(["analytics", "drevo"]));
+
+    // It shows up in a subsequent listing.
+    let (status, dbs) = send(&app, "GET", "/databases", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dbs["databases"], json!(["analytics", "drevo"]));
+
+    // Drop it — 200 with the list back to just the default.
+    let (status, after) = send(&app, "DELETE", "/databases/analytics", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(after["databases"], json!(["drevo"]));
+}
+
+#[tokio::test]
+async fn create_database_rejects_invalid_name() {
+    let app = make_app();
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/databases",
+        Some(json!({ "name": "has space" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Nothing was added.
+    let (_, dbs) = send(&app, "GET", "/databases", None).await;
+    assert_eq!(dbs["databases"], json!(["drevo"]));
+}
+
+#[tokio::test]
+async fn create_duplicate_database_is_conflict() {
+    let app = make_app();
+    let (status, _) = send(&app, "POST", "/databases", Some(json!({ "name": "dup" }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = send(&app, "POST", "/databases", Some(json!({ "name": "dup" }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // Re-creating the default name conflicts too.
+    let (status, _) = send(&app, "POST", "/databases", Some(json!({ "name": "drevo" }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn drop_default_database_is_conflict() {
+    let app = make_app();
+    let (status, _) = send(&app, "DELETE", "/databases/drevo", None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // The default survives.
+    let (_, dbs) = send(&app, "GET", "/databases", None).await;
+    assert_eq!(dbs["databases"], json!(["drevo"]));
+}
+
+#[tokio::test]
+async fn drop_unknown_database_is_not_found() {
+    let app = make_app();
+    let (status, _) = send(&app, "DELETE", "/databases/ghost", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
