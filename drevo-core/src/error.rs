@@ -15,8 +15,8 @@
 //! # Relationship to `drevo::DrevoError`
 //!
 //! The main `drevo` crate keeps its richer [`DrevoError`] (which additionally
-//! wraps `StorageError`, `VectorError`, the bincode codecs, and the
-//! transaction / migration states). The two convert **structurally** in both
+//! wraps `VectorError`, the bincode codecs, and the transaction / migration
+//! states). The two convert **structurally** in both
 //! directions — the six shared variants map one-to-one, and everything with no
 //! counterpart degrades to [`crate::error::CoreError::Backend`]
 //! (going down) or `DrevoError::Io` (coming back up). Those `From` impls live in the main crate

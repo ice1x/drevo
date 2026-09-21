@@ -207,9 +207,9 @@ fn every_rust_drevo_error_variant_has_a_python_arm() {
     let rust_err = read(&repo_root().join("src").join("error.rs"));
     let py_err = read(&repo_root().join("drevo-py").join("src").join("errors.rs"));
 
-    // src/error.rs also defines the `StorageError` enum (the payload of
-    // `DrevoError::Storage`), so scope the scan to the `pub enum DrevoError { … }`
-    // block — otherwise its variants would be mistaken for DrevoError variants.
+    // src/error.rs may define sibling enums, so scope the scan to the
+    // `pub enum DrevoError { … }` block — otherwise a sibling's variants
+    // could be mistaken for DrevoError variants.
     let enum_body = {
         let start = rust_err
             .find("pub enum DrevoError {")
