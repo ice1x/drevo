@@ -720,7 +720,14 @@ async fn status(State(state): State<NativeApiState>) -> Json<serde_json::Value> 
     }))
 }
 
-/// `POST /cypher` — parse and execute on the durable service.
+/// `POST /cypher` — parse and execute on the durable service, with catalog
+/// admin and per-database routing (issue #523).
+///
+/// A leading `SHOW DATABASES`, `CREATE DATABASE <name> [IF NOT EXISTS]`, or
+/// `USE <name> [<query>]` (recognised by [`crate::cypher::admin`]) is handled
+/// against the [`DatabaseRegistry`]; `USE <name> <query>` runs the trailing
+/// query against the named database. Everything else runs on the default
+/// database, exactly as before.
 async fn cypher(
     State(state): State<NativeApiState>,
     body: Result<Json<CypherRequest>, JsonRejection>,
@@ -728,16 +735,93 @@ async fn cypher(
     let Json(CypherRequest { query, params }) = body?;
     let query =
         query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
+    let params = params.unwrap_or_default();
+
+    if let Some(command) = crate::cypher::admin::parse(&query) {
+        return handle_admin_cypher(&state, command, params).map(Json);
+    }
+
+    Ok(Json(run_cypher_on(&state.service, &query, params)?))
+}
+
+/// Parse and execute `query` (with JSON `params`) against `service`, projecting
+/// the result into the HTTP [`CypherResponse`]. The single execution path for
+/// both the default database and a `USE`-selected one.
+fn run_cypher_on(
+    service: &NativeService,
+    query: &str,
+    params: serde_json::Map<String, serde_json::Value>,
+) -> Result<CypherResponse, ApiError> {
     let params = params
-        .unwrap_or_default()
         .into_iter()
         .map(|(k, v)| (k, json_to_cypher_value(v)))
         .collect();
-    let ast = parser::parse(&query)
+    let ast = parser::parse(query)
         .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
-    let result = state
-        .service
+    let result = service
         .execute(&ast, params)
         .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
-    Ok(Json(exec_result_to_response(result)))
+    Ok(exec_result_to_response(result))
+}
+
+/// Handle a catalog admin command (issue #523): `SHOW DATABASES` lists the
+/// registry, `CREATE DATABASE` registers a new in-memory database, and `USE`
+/// routes a trailing query to the named database. A bare `USE` (no trailing
+/// query) only validates that the database exists — an HTTP request carries no
+/// session to hold the selection across requests.
+fn handle_admin_cypher(
+    state: &NativeApiState,
+    command: crate::cypher::admin::AdminCommand,
+    params: serde_json::Map<String, serde_json::Value>,
+) -> Result<CypherResponse, ApiError> {
+    use crate::cypher::admin::AdminCommand;
+    match command {
+        AdminCommand::ShowDatabases => Ok(show_databases_response(state)),
+        AdminCommand::CreateDatabase {
+            name,
+            if_not_exists,
+        } => match state.registry.create_in_memory(&name) {
+            Ok(_) => Ok(empty_cypher_response()),
+            // `IF NOT EXISTS` makes a pre-existing name a no-op, not a 409.
+            Err(RegistryError::AlreadyExists(_)) if if_not_exists => Ok(empty_cypher_response()),
+            Err(e) => Err(e.into()),
+        },
+        AdminCommand::Use { name, query } => {
+            let service = state
+                .registry
+                .get(&name)
+                .ok_or_else(|| ApiError::NotFound(format!("database '{name}' not found")))?;
+            match query {
+                Some(inner) => run_cypher_on(&service, &inner, params),
+                None => Ok(empty_cypher_response()),
+            }
+        }
+    }
+}
+
+/// A `SHOW DATABASES` result: one `name` column, one row per database.
+fn show_databases_response(state: &NativeApiState) -> CypherResponse {
+    let rows = state
+        .registry
+        .list()
+        .into_iter()
+        .map(|name| vec![serde_json::Value::String(name)])
+        .collect();
+    CypherResponse {
+        columns: vec!["name".to_string()],
+        rows,
+        stats: crate::api::CypherStats::default(),
+        graph: crate::api::CypherGraph::default(),
+    }
+}
+
+/// An empty successful Cypher result (no columns, no rows) — the acknowledgement
+/// for a `CREATE DATABASE` or a bare `USE`.
+fn empty_cypher_response() -> CypherResponse {
+    CypherResponse {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        stats: crate::api::CypherStats::default(),
+        graph: crate::api::CypherGraph::default(),
+    }
 }
