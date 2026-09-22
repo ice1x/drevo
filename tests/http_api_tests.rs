@@ -2316,3 +2316,115 @@ async fn drop_unknown_database_is_not_found() {
     let (status, _) = send(&app, "DELETE", "/databases/ghost", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------------------
+// Per-database query routing over `/cypher` (issue #523 slice 2) — `USE`,
+// `SHOW DATABASES`, and `CREATE DATABASE` handled against the registry.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cypher_use_routes_query_to_named_database() {
+    let app = make_app();
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/databases",
+        Some(json!({ "name": "analytics" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Write into the named database via `USE` routing.
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "USE analytics CREATE (:Note {title: 'hello'})" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    // The default database is untouched — isolation.
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "MATCH (n) RETURN count(n) AS c" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["rows"], json!([[0]]));
+
+    // The named database sees its own node.
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "USE analytics MATCH (n) RETURN count(n) AS c" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["rows"], json!([[1]]));
+}
+
+#[tokio::test]
+async fn cypher_use_unknown_database_is_404() {
+    let app = make_app();
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "USE ghost RETURN 1" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn cypher_show_databases_lists_the_registry() {
+    let app = make_app();
+    let _ = send(&app, "POST", "/databases", Some(json!({ "name": "b" }))).await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "SHOW DATABASES" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["columns"], json!(["name"]));
+    assert_eq!(body["rows"], json!([["b"], ["drevo"]]));
+}
+
+#[tokio::test]
+async fn cypher_create_database_registers_it() {
+    let app = make_app();
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "CREATE DATABASE viacypher" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, dbs) = send(&app, "GET", "/databases", None).await;
+    assert_eq!(dbs["databases"], json!(["drevo", "viacypher"]));
+
+    // A duplicate is a 409; `IF NOT EXISTS` is a no-op success.
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "CREATE DATABASE viacypher" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "CREATE DATABASE viacypher IF NOT EXISTS" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
