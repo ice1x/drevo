@@ -147,6 +147,37 @@ pub async fn accept_and_run_session_durable(
     .await
 }
 
+/// Catalog-backed counterpart of [`accept_and_run_session_durable`]: handshake
+/// plus session loop, but the session routes each statement's `db` selector
+/// through the shared multi-database
+/// [`DatabaseRegistry`](crate::database_registry::DatabaseRegistry) (issue
+/// #523). Autocommit statements run on the named database (default when
+/// unspecified); an explicit transaction fixes its database at `BEGIN`. A `db`
+/// naming a database the catalog does not hold fails the `RUN` / `BEGIN` with
+/// `Neo.ClientError.Database.DatabaseNotFound`.
+///
+/// The registry is shared with the HTTP surface, so a `CREATE DATABASE` over
+/// either protocol is immediately visible to the other.
+///
+/// # Errors
+///
+/// Same as [`accept_and_run_session_durable`].
+pub async fn accept_and_run_session_durable_with_registry(
+    socket: TcpStream,
+    registry: &std::sync::Arc<crate::database_registry::DatabaseRegistry>,
+) -> BoltResult<()> {
+    let accepted = accept_handshake_on(socket).await?;
+    if accepted.negotiated.is_none() {
+        return Ok(());
+    }
+    let mut stream = accepted.stream;
+    run_session_on_inner(
+        &mut stream,
+        Session::new_durable_with_registry(std::sync::Arc::clone(registry)),
+    )
+    .await
+}
+
 /// Post-handshake session loop over the durable native store of record. Drives
 /// a [`Session`] over any `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS,
 /// etc. The stream must already be past the 20-byte handshake (call

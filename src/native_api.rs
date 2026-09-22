@@ -83,9 +83,21 @@ pub struct NativeApiState {
 }
 
 impl NativeApiState {
-    /// Wrap a service for serving.
+    /// Wrap a service for serving. Builds a fresh single-entry catalog whose
+    /// default is `service`.
     pub fn new(service: Arc<NativeService>) -> Self {
         let registry = Arc::new(DatabaseRegistry::new(Arc::clone(&service)));
+        Self::with_registry(service, registry)
+    }
+
+    /// Wrap a service for serving atop an existing multi-database catalog.
+    ///
+    /// Used when the catalog must be shared with another surface — the Bolt
+    /// listener threads the same [`DatabaseRegistry`] so a `CREATE DATABASE`
+    /// over HTTP is visible to Bolt sessions and vice versa (issue #523). The
+    /// registry's default service and `service` are expected to be the same
+    /// handle.
+    pub fn with_registry(service: Arc<NativeService>, registry: Arc<DatabaseRegistry>) -> Self {
         Self {
             service,
             registry,
@@ -95,6 +107,15 @@ impl NativeApiState {
             embeddings_config: None,
             metrics: Arc::new(DrevoMetrics::new()),
         }
+    }
+
+    /// The shared multi-database catalog backing `/databases` and Cypher `USE`.
+    ///
+    /// Exposed so the serving layer can hand the *same* registry to the Bolt
+    /// listener, keeping the two protocols' database views in lock-step
+    /// (issue #523).
+    pub fn registry(&self) -> Arc<DatabaseRegistry> {
+        Arc::clone(&self.registry)
     }
 
     /// Attach an embeddings backend, enabling `POST /v1/embeddings`.

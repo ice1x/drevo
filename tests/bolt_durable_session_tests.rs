@@ -308,3 +308,79 @@ mod auth {
         assert!(svc.list_nodes_by_kind("Secret", 10, 0).is_empty());
     }
 }
+
+// --- Multi-database routing over the durable engine (issue #523) ------------
+
+/// A Neo4j driver opening `session(database="b")` sends `db="b"` in the RUN
+/// extra; the write must land in database `b` and leave the default database
+/// untouched. Drives the full HELLO → RUN → PULL state machine through the
+/// catalog-backed session, then inspects each catalog entry's own service to
+/// prove the isolation is real and not just a per-query view.
+#[cfg(feature = "http")]
+#[test]
+fn catalog_session_routes_autocommit_writes_to_the_named_database() {
+    use drevo::database_registry::DatabaseRegistry;
+
+    let default = service();
+    let registry = Arc::new(DatabaseRegistry::new(Arc::clone(&default)));
+    let b = registry.create_in_memory("b").expect("valid db name");
+
+    let mut s = Session::new_durable_with_registry(Arc::clone(&registry));
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+    assert_eq!(s.state(), State::Ready);
+
+    // A real driver's `session(database="b").run("CREATE …")`.
+    let run = s.handle(ClientMessage::Run {
+        query: "CREATE (n:Note {title: 'in-b'})".to_string(),
+        parameters: dict([]),
+        extra: dict([("db", Value::String("b".to_string()))]),
+    });
+    assert!(matches!(run.last(), Some(ServerMessage::Success { .. })));
+    s.handle(ClientMessage::Pull {
+        extra: dict([("n", Value::Integer(-1))]),
+    });
+    assert_eq!(s.state(), State::Ready);
+
+    // The row physically lives in database `b`, not the default — proving the
+    // Bolt `db` selector routed through the shared catalog.
+    let in_b = b.list_nodes_by_kind("Note", 10, 0);
+    assert_eq!(in_b.len(), 1, "the write must land in database `b`");
+    assert_eq!(in_b[0].title, "in-b");
+    assert!(
+        default.list_nodes_by_kind("Note", 10, 0).is_empty(),
+        "the default database must stay untouched"
+    );
+}
+
+/// A RUN naming a database the catalog does not hold fails with Neo4j's
+/// unknown-database code and never touches the store.
+#[cfg(feature = "http")]
+#[test]
+fn catalog_session_run_on_unknown_database_fails_with_database_not_found() {
+    use drevo::database_registry::DatabaseRegistry;
+
+    let default = service();
+    let registry = Arc::new(DatabaseRegistry::new(Arc::clone(&default)));
+
+    let mut s = Session::new_durable_with_registry(Arc::clone(&registry));
+    s.handle(ClientMessage::Hello { extra: dict([]) });
+
+    let run = s.handle(ClientMessage::Run {
+        query: "CREATE (n:Note) RETURN n".to_string(),
+        parameters: dict([]),
+        extra: dict([("db", Value::String("ghost".to_string()))]),
+    });
+    match run.last() {
+        Some(ServerMessage::Failure { metadata }) => assert_eq!(
+            metadata.get("code"),
+            Some(&Value::String(
+                "Neo.ClientError.Database.DatabaseNotFound".to_string()
+            )),
+        ),
+        other => panic!("expected a DatabaseNotFound FAILURE, got {other:?}"),
+    }
+    assert!(
+        default.list_nodes_by_kind("Note", 10, 0).is_empty(),
+        "a routed RUN to a missing database must not touch any store"
+    );
+}

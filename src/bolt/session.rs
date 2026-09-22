@@ -398,6 +398,10 @@ mod codes {
     pub const TRANSIENT_OUTDATED: &str = "Neo.TransientError.Transaction.Outdated";
     /// A commit violated a declared schema constraint.
     pub const CONSTRAINT_FAILED: &str = "Neo.ClientError.Schema.ConstraintValidationFailed";
+    /// A `RUN` / `BEGIN` selected a `db` that the catalog does not hold. Matches
+    /// the code the official Neo4j drivers raise for an unknown database so a
+    /// `session(database="…")` against a missing name fails the same way here.
+    pub const DATABASE_NOT_FOUND: &str = "Neo.ClientError.Database.DatabaseNotFound";
 }
 
 // -------------------------------------------------------------------------
@@ -438,7 +442,40 @@ pub struct Session<'a> {
     /// roll back only *this* session's transaction — a pooled driver's `RESET`
     /// on one connection can never disturb a managed transaction in flight on
     /// another (issue #236).
-    native_tx: Option<crate::native::NativeTxId>,
+    ///
+    /// The transaction is bound to the [`NativeService`] it was opened on: an
+    /// explicit transaction fixes its target database at `BEGIN` (issue #523),
+    /// so the handle is carried here and every in-transaction `RUN` / `COMMIT` /
+    /// `ROLLBACK` runs on *that* service, never on the session default.
+    native_tx: Option<ActiveTx>,
+    /// How a `db` selector on `RUN` / `BEGIN` maps to a concrete service — a
+    /// single-database session ignores it (embedded / sync entry points), a
+    /// catalog-backed one resolves it against the shared registry (issue #523).
+    resolver: DbResolver,
+}
+
+/// An explicit transaction and the [`NativeService`] it was opened on. Bundled
+/// so the whole `COMMIT` / `ROLLBACK` / in-transaction `RUN` lifecycle targets
+/// the database selected at `BEGIN`, not whatever the session default is.
+struct ActiveTx {
+    service: std::sync::Arc<crate::native_service::NativeService>,
+    id: crate::native::NativeTxId,
+}
+
+/// Maps the optional `db` selector carried on `RUN` / `BEGIN` to the concrete
+/// [`NativeService`](crate::native_service::NativeService) a statement runs on.
+enum DbResolver {
+    /// No catalog wired: every statement runs on the one service the session was
+    /// built with and any `db` selector is ignored. This is the embedded / sync
+    /// path (and every build without the `http` feature), where named databases
+    /// do not exist — behaviour is byte-for-byte what it was before issue #523.
+    Single,
+    /// Catalog-backed routing (feature `http`): a `db` selector is resolved
+    /// against the shared [`DatabaseRegistry`](crate::database_registry::DatabaseRegistry),
+    /// so the Bolt surface honours the same named databases as `USE` over HTTP
+    /// and a `CREATE DATABASE` on either protocol is visible to the other.
+    #[cfg(feature = "http")]
+    Registry(std::sync::Arc<crate::database_registry::DatabaseRegistry>),
 }
 
 struct PendingResult {
@@ -453,7 +490,35 @@ impl<'a> Session<'a> {
     /// [`Session::with_auth_durable`](crate::bolt::session::Session::with_auth_durable)
     /// to require credentials.
     pub fn new_durable(service: std::sync::Arc<crate::native_service::NativeService>) -> Self {
-        Self::build(service, None)
+        Self::build(service, None, DbResolver::Single)
+    }
+
+    /// Create a catalog-backed session over the shared multi-database registry.
+    ///
+    /// Statements with no `db` selector (or `db` = the default) run on the
+    /// registry's default service; a `RUN` / `BEGIN` naming another database
+    /// routes to it, and an unknown name fails with
+    /// `Neo.ClientError.Database.DatabaseNotFound`. This is the constructor the
+    /// async Bolt listener uses so a `session(database="…")` from an official
+    /// driver hits the same named databases as `USE` over HTTP (issue #523).
+    #[cfg(feature = "http")]
+    pub fn new_durable_with_registry(
+        registry: std::sync::Arc<crate::database_registry::DatabaseRegistry>,
+    ) -> Self {
+        let service = registry.default_service();
+        Self::build(service, None, DbResolver::Registry(registry))
+    }
+
+    /// Authenticating counterpart of [`Session::new_durable_with_registry`] —
+    /// catalog-backed routing plus credential enforcement on every `HELLO`
+    /// (issue #523, Phase 11 task `00074`).
+    #[cfg(feature = "http")]
+    pub fn with_auth_durable_with_registry(
+        registry: std::sync::Arc<crate::database_registry::DatabaseRegistry>,
+        authenticator: &'a dyn Authenticator,
+    ) -> Self {
+        let service = registry.default_service();
+        Self::build(service, Some(authenticator), DbResolver::Registry(registry))
     }
 
     /// Create an authenticating session over the durable native store of record
@@ -467,12 +532,13 @@ impl<'a> Session<'a> {
         service: std::sync::Arc<crate::native_service::NativeService>,
         authenticator: &'a dyn Authenticator,
     ) -> Self {
-        Self::build(service, Some(authenticator))
+        Self::build(service, Some(authenticator), DbResolver::Single)
     }
 
     fn build(
         service: std::sync::Arc<crate::native_service::NativeService>,
         authenticator: Option<&'a dyn Authenticator>,
+        resolver: DbResolver,
     ) -> Self {
         let id = CONNECTION_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
@@ -488,6 +554,33 @@ impl<'a> Session<'a> {
             pending: None,
             authenticator,
             native_tx: None,
+            resolver,
+        }
+    }
+
+    /// Resolve a `db` selector to the concrete service a statement runs on.
+    ///
+    /// `None` / empty / the default name all map to the session default; any
+    /// other name is looked up in the catalog. Returns the unknown-database
+    /// error message (paired with [`codes::DATABASE_NOT_FOUND`] by the caller)
+    /// when a catalog-backed session names a database that does not exist. A
+    /// single-database session ignores the selector entirely.
+    fn resolve_service(
+        &self,
+        db: Option<&str>,
+    ) -> Result<std::sync::Arc<crate::native_service::NativeService>, String> {
+        match &self.resolver {
+            DbResolver::Single => Ok(std::sync::Arc::clone(&self.service)),
+            #[cfg(feature = "http")]
+            DbResolver::Registry(registry) => match db {
+                None => Ok(registry.default_service()),
+                Some(name) if name.is_empty() || name == registry.default_name() => {
+                    Ok(registry.default_service())
+                }
+                Some(name) => registry
+                    .get(name)
+                    .ok_or_else(|| format!("database `{name}` does not exist")),
+            },
         }
     }
 
@@ -581,8 +674,8 @@ impl<'a> Session<'a> {
     /// no-reply teardown paths (`GOODBYE`, connection drop) where there is
     /// no client left to receive a `FAILURE`.
     fn roll_back_own_tx(&mut self) {
-        if let Some(id) = self.native_tx.take() {
-            let _ = self.service.rollback_tx(id);
+        if let Some(ActiveTx { service, id }) = self.native_tx.take() {
+            let _ = service.rollback_tx(id);
         }
     }
 
@@ -615,7 +708,7 @@ impl<'a> Session<'a> {
         }]
     }
 
-    fn handle_begin(&mut self, _extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
+    fn handle_begin(&mut self, extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
         if self.state != State::Ready {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
@@ -625,13 +718,27 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
+        // An explicit transaction fixes its database at BEGIN (issue #523): the
+        // `db` selector chooses the service the whole transaction runs on, and
+        // that handle is carried in `ActiveTx` so COMMIT / ROLLBACK and every
+        // in-transaction RUN target it rather than the session default.
+        let service = match self.resolve_service(extract_db(&extra)) {
+            Ok(service) => service,
+            Err(msg) => {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::DATABASE_NOT_FOUND, &msg),
+                }];
+            }
+        };
         // Per-connection transactions (issue #298): `begin_tx` allocates a
         // fresh id and never collides with another connection's in-flight
         // transaction, so a pooled driver's concurrent `execute_write` calls
         // each open their own instead of one getting `transaction already
         // active`. Nesting on a *single* connection is still rejected above by
         // the `state != Ready` guard.
-        self.native_tx = Some(self.service.begin_tx());
+        let id = service.begin_tx();
+        self.native_tx = Some(ActiveTx { service, id });
         self.state = State::TxReady;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
@@ -652,13 +759,13 @@ impl<'a> Session<'a> {
         // defensively rather than panicking. Commit the registered
         // transaction, mapping the conflict outcome to the transient class
         // official drivers retry.
-        let Some(id) = self.native_tx.take() else {
+        let Some(ActiveTx { service, id }) = self.native_tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
                 metadata: failure_metadata(codes::STORAGE, "COMMIT without an active transaction"),
             }];
         };
-        match self.service.commit_tx(id) {
+        match service.commit_tx(id) {
             Ok(()) => {
                 self.state = State::Ready;
                 vec![ServerMessage::Success {
@@ -690,7 +797,7 @@ impl<'a> Session<'a> {
             }];
         }
         // Whatever the outcome, the slot is no longer ours to clean up.
-        let Some(id) = self.native_tx.take() else {
+        let Some(ActiveTx { service, id }) = self.native_tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
                 metadata: failure_metadata(
@@ -699,7 +806,7 @@ impl<'a> Session<'a> {
                 ),
             }];
         };
-        self.service.rollback_tx(id);
+        service.rollback_tx(id);
         self.state = State::Ready;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
@@ -710,7 +817,7 @@ impl<'a> Session<'a> {
         &mut self,
         query: String,
         parameters: BTreeMap<String, Value>,
-        _extra: BTreeMap<String, Value>,
+        extra: BTreeMap<String, Value>,
     ) -> Vec<ServerMessage> {
         // RUN is legal both in autocommit mode (`Ready`) and inside an
         // explicit transaction (`TxReady`); the resulting stream lands
@@ -749,22 +856,37 @@ impl<'a> Session<'a> {
                 }];
             }
         };
-        // Execute (already returns a fully-materialised ExecResult). Autocommit
-        // statements execute on the service; inside an explicit transaction the
-        // statement runs on this connection's registered transaction working
-        // copy (issue #298).
-        let exec = match (in_tx, self.native_tx) {
-            (true, Some(tx)) => self.service.execute_in_tx(tx, &ast, cypher_params),
-            (true, None) => {
-                self.state = State::Failed;
-                return vec![ServerMessage::Failure {
-                    metadata: failure_metadata(
-                        codes::STORAGE,
-                        "RUN in transaction state without an open transaction",
-                    ),
-                }];
+        // Execute (already returns a fully-materialised ExecResult). Inside an
+        // explicit transaction the statement runs on this connection's
+        // registered transaction working copy, on the service the transaction
+        // was opened on (issues #298 / #523) — the transaction's database was
+        // fixed at BEGIN, so a `db` on this RUN is ignored. An autocommit RUN
+        // routes to the database named by its own `db` selector (issue #523),
+        // falling back to the session default.
+        let exec = if in_tx {
+            match &self.native_tx {
+                Some(ActiveTx { service, id }) => service.execute_in_tx(*id, &ast, cypher_params),
+                None => {
+                    self.state = State::Failed;
+                    return vec![ServerMessage::Failure {
+                        metadata: failure_metadata(
+                            codes::STORAGE,
+                            "RUN in transaction state without an open transaction",
+                        ),
+                    }];
+                }
             }
-            (false, _) => self.service.execute(&ast, cypher_params),
+        } else {
+            let service = match self.resolve_service(extract_db(&extra)) {
+                Ok(service) => service,
+                Err(msg) => {
+                    self.state = State::Failed;
+                    return vec![ServerMessage::Failure {
+                        metadata: failure_metadata(codes::DATABASE_NOT_FOUND, &msg),
+                    }];
+                }
+            };
+            service.execute(&ast, cypher_params)
         };
         let result = match exec {
             Ok(r) => r,
@@ -1323,6 +1445,19 @@ fn extract_n(extra: &BTreeMap<String, Value>) -> i64 {
     }
 }
 
+/// Read the `db` database selector from a `RUN` / `BEGIN` extra map.
+///
+/// Official Neo4j drivers put the target database in `extra["db"]` (a string)
+/// when the caller passes `session(database="…")`. An absent, empty, or
+/// non-string value means "the session default database" — returned as `None`
+/// so the resolver falls back to the default.
+fn extract_db(extra: &BTreeMap<String, Value>) -> Option<&str> {
+    match extra.get("db") {
+        Some(Value::String(s)) if !s.is_empty() => Some(s.as_str()),
+        _ => None,
+    }
+}
+
 // -------------------------------------------------------------------------
 // Inline tests.
 // -------------------------------------------------------------------------
@@ -1648,5 +1783,217 @@ mod tests {
         } else {
             panic!("expected structure");
         }
+    }
+
+    #[test]
+    fn extract_db_reads_string_and_ignores_empty_or_absent() {
+        let mut with = BTreeMap::new();
+        with.insert("db".to_string(), Value::String("analytics".to_string()));
+        assert_eq!(extract_db(&with), Some("analytics"));
+
+        let mut empty = BTreeMap::new();
+        empty.insert("db".to_string(), Value::String(String::new()));
+        assert_eq!(extract_db(&empty), None, "empty db means the default");
+
+        assert_eq!(
+            extract_db(&BTreeMap::new()),
+            None,
+            "absent db is the default"
+        );
+    }
+
+    #[test]
+    fn single_session_ignores_db_selector() {
+        // Back-compat: a session with no catalog wired runs every statement on
+        // its one service regardless of the `db` selector — exactly the pre-#523
+        // behaviour (the selector was silently dropped).
+        let mut session = Session::new_durable(std::sync::Arc::new(
+            crate::native_service::NativeService::in_memory(),
+        ));
+        session.state = State::Ready;
+        let run = session.handle_run(
+            "CREATE (:X)".to_string(),
+            BTreeMap::new(),
+            db_extra("does-not-exist"),
+        );
+        assert!(
+            matches!(run.last(), Some(ServerMessage::Success { .. })),
+            "single-database session must ignore the db selector, got {run:?}"
+        );
+    }
+
+    /// A `RUN` / `BEGIN` extra map carrying a `db` database selector.
+    fn db_extra(db: &str) -> BTreeMap<String, Value> {
+        let mut m = BTreeMap::new();
+        m.insert("db".to_string(), Value::String(db.to_string()));
+        m
+    }
+
+    /// Run an autocommit `MATCH (n) RETURN count(n)` on `session`, routed by
+    /// `extra`, and return the count — draining the stream so the session
+    /// returns to `Ready`.
+    #[cfg(feature = "http")]
+    fn count_nodes(session: &mut Session, extra: BTreeMap<String, Value>) -> i64 {
+        let run = session.handle_run(
+            "MATCH (n) RETURN count(n)".to_string(),
+            BTreeMap::new(),
+            extra,
+        );
+        assert!(
+            matches!(run.last(), Some(ServerMessage::Success { .. })),
+            "count RUN should succeed, got {run:?}"
+        );
+        let mut pull_all = BTreeMap::new();
+        pull_all.insert("n".to_string(), Value::Integer(-1));
+        for msg in session.handle_pull(pull_all) {
+            if let ServerMessage::Record { fields } = msg {
+                if let Some(Value::Integer(i)) = fields.first() {
+                    return *i;
+                }
+            }
+        }
+        panic!("count query returned no record");
+    }
+
+    #[cfg(feature = "http")]
+    fn registry_with(names: &[&str]) -> std::sync::Arc<crate::database_registry::DatabaseRegistry> {
+        let registry = std::sync::Arc::new(crate::database_registry::DatabaseRegistry::new(
+            std::sync::Arc::new(crate::native_service::NativeService::in_memory()),
+        ));
+        for name in names {
+            registry
+                .create_in_memory(name)
+                .expect("test database name is valid");
+        }
+        registry
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn autocommit_run_routes_db_selector_to_named_database() {
+        // A write with `db="b"` lands only in database `b`; the default database
+        // stays empty and `b`'s own count sees the row — proving the autocommit
+        // RUN routed to the named catalog entry, not the session default.
+        let registry = registry_with(&["b"]);
+        let mut session = Session::new_durable_with_registry(registry);
+        session.state = State::Ready;
+
+        let created = session.handle_run("CREATE (:X)".to_string(), BTreeMap::new(), db_extra("b"));
+        assert!(
+            matches!(created.last(), Some(ServerMessage::Success { .. })),
+            "routed CREATE should succeed, got {created:?}"
+        );
+        // Drain the autocommit RUN's (empty) result stream so the session
+        // returns to Ready before the follow-up count queries.
+        let mut pull_all = BTreeMap::new();
+        pull_all.insert("n".to_string(), Value::Integer(-1));
+        session.handle_pull(pull_all);
+
+        assert_eq!(
+            count_nodes(&mut session, db_extra("b")),
+            1,
+            "the write must be visible in database `b`"
+        );
+        assert_eq!(
+            count_nodes(&mut session, BTreeMap::new()),
+            0,
+            "the default database must stay untouched — routing kept the write in `b`"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn autocommit_run_unknown_db_is_database_not_found() {
+        let registry = registry_with(&[]);
+        let mut session = Session::new_durable_with_registry(registry);
+        session.state = State::Ready;
+
+        let run = session.handle_run(
+            "CREATE (:X)".to_string(),
+            BTreeMap::new(),
+            db_extra("ghost"),
+        );
+        match run.last() {
+            Some(ServerMessage::Failure { metadata }) => {
+                assert_eq!(
+                    metadata.get("code"),
+                    Some(&Value::String(codes::DATABASE_NOT_FOUND.to_string())),
+                    "unknown db must fail with DatabaseNotFound, got {metadata:?}"
+                );
+            }
+            other => panic!("expected a FAILURE for an unknown database, got {other:?}"),
+        }
+        assert_eq!(session.state(), State::Failed);
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn explicit_transaction_routes_db_and_commit_persists_to_named_db() {
+        // BEGIN fixes the database; the in-transaction CREATE and its COMMIT run
+        // on `b`, so after commit only `b` holds the row.
+        let registry = registry_with(&["b"]);
+        let mut session = Session::new_durable_with_registry(registry);
+        session.state = State::Ready;
+
+        let begin = session.handle_begin(db_extra("b"));
+        assert!(
+            matches!(begin.last(), Some(ServerMessage::Success { .. })),
+            "BEGIN on `b` should succeed, got {begin:?}"
+        );
+        assert_eq!(session.state(), State::TxReady);
+
+        // RUN inside the transaction: db is fixed at BEGIN, so no selector here.
+        let run = session.handle_run("CREATE (:X)".to_string(), BTreeMap::new(), BTreeMap::new());
+        assert!(
+            matches!(run.last(), Some(ServerMessage::Success { .. })),
+            "in-tx CREATE should succeed, got {run:?}"
+        );
+        // Drain the RUN's result stream so COMMIT is legal from TxReady.
+        let mut pull_all = BTreeMap::new();
+        pull_all.insert("n".to_string(), Value::Integer(-1));
+        session.handle_pull(pull_all);
+
+        let commit = session.handle_commit();
+        assert!(
+            matches!(commit.last(), Some(ServerMessage::Success { .. })),
+            "COMMIT should succeed, got {commit:?}"
+        );
+        assert_eq!(session.state(), State::Ready);
+
+        assert_eq!(
+            count_nodes(&mut session, db_extra("b")),
+            1,
+            "the committed write must be visible in `b`"
+        );
+        assert_eq!(
+            count_nodes(&mut session, BTreeMap::new()),
+            0,
+            "the default database must stay empty after a routed transaction"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn begin_unknown_db_is_database_not_found() {
+        let registry = registry_with(&[]);
+        let mut session = Session::new_durable_with_registry(registry);
+        session.state = State::Ready;
+
+        let begin = session.handle_begin(db_extra("ghost"));
+        match begin.last() {
+            Some(ServerMessage::Failure { metadata }) => {
+                assert_eq!(
+                    metadata.get("code"),
+                    Some(&Value::String(codes::DATABASE_NOT_FOUND.to_string())),
+                    "BEGIN on an unknown db must fail with DatabaseNotFound, got {metadata:?}"
+                );
+            }
+            other => panic!("expected a FAILURE for an unknown database, got {other:?}"),
+        }
+        assert_eq!(session.state(), State::Failed);
+        assert!(
+            session.native_tx.is_none(),
+            "a rejected BEGIN must not leave a dangling transaction"
+        );
     }
 }
