@@ -7,6 +7,14 @@ production data**, because synthetic shapes have repeatedly misestimated
 real-world wins (the FTS posting-list rewrite measured 2× off until validated
 on a live copy).
 
+> **Status (epic #444 → #522):** the KV `Drevo` engine has since been removed —
+> the native engine is the sole engine. Runs 1–8 below are a **timestamped
+> historical record** of the KV-vs-native scoreboard through the engine flip and
+> are kept as-is; the KV columns describe an engine that no longer ships. For
+> the **current** measurement stick, see [_Bench restored native-only_](#bench-restored-native-only--reproduced-anchor-2026-09-22-522)
+> at the end — native-only, KV column dropped, and it reproduces the Phase-2
+> anchor.
+
 ## Method
 
 - **Harness:** `benches/real_data_baseline_bench.rs`
@@ -319,10 +327,12 @@ The 2-hop seam row is the sensitive measurement and the reason it was added:
 1-hop cost), so it exposes the per-edge iteration a CSR rewrite reshapes
 rather than a single lookup a HashMap already serves well.
 
-> **Note (epic #444):** the `real_data_baseline_bench` harness that produced
-> these figures compared the native engine against the now-removed KV `Drevo`
-> engine and was retired with it, so the `cargo bench` command it used no
-> longer resolves. The numbers below remain as a documentary anchor.
+> **Note (epic #444 → #522):** the figures above were produced by a
+> `real_data_baseline_bench` that compared the native engine against the
+> now-removed KV `Drevo` engine, and it was retired with the KV engine. It has
+> since been **restored native-only** (#522, measurement-first) — the KV column
+> is gone (there is no second engine to compare against), the command resolves
+> again, and it reproduces this anchor within noise. See the run below.
 
 This is a documentary anchor, not an enforced CI gate: criterion timings
 are machine-specific, and gating on them is the trap that produced the
@@ -356,3 +366,52 @@ surface on high-degree nodes with many relationship types (deep type-diverse
 hubs), which this particular KG does not have. The value banked now is the
 correctness invariant and the algorithmic complexity change; the wall-clock
 payoff is workload-dependent and honestly latent here.
+
+### Bench restored native-only — reproduced anchor (2026-09-22, #522)
+
+The `real_data_baseline_bench` harness is back, rewritten native-only after the
+KV engine's removal (epic #444): it loads a GraphML copy straight into an
+in-memory `NativeService` (`import_graphml`), derives its workload parameters
+from the data (densest first-label, highest out-degree hub), and times the
+shipping engine only — there is no second engine to compare against, so the KV
+column is gone. Run it with:
+
+```sh
+DREVO_BASELINE_GRAPHML=$HOME/drevo_backups/<snapshot>.graphml \
+    cargo bench --bench real_data_baseline_bench
+```
+
+Without the env var it prints how to enable itself and exits 0, so
+`clippy --all-targets` compile-checks it and CI (no real data) stays green.
+
+Measured on `pre_0021_20260904_212831.graphml` (2 704 nodes / 3 885 edges;
+densest label `Entity`; hub id 1454, out-degree ~98). Apple M1 Max, criterion
+midpoints, native in-process:
+
+| Workload | native (2026-09-22) | vs the Phase-2 anchor above |
+|---|---:|---|
+| `count(*)` all nodes | **208 ns** | 192 ns — same class |
+| label scan count (`Entity`) | **58.6 µs** | 57.4 µs |
+| 1-hop from hub, Cypher | **63.3 µs** | 60.4 µs |
+| 1-hop from hub, seam (`neighbor_ids`) | **4.42 µs** | 4.35 µs |
+| **2-hop from hub, seam (frontier expand)** | **23.9 µs** | 36.7 µs (older 2 596-node snapshot) |
+| full-graph PageRank (3 864 edges) | **557 µs** | new row |
+
+The anchor reproduces within noise, confirming the restored harness measures
+the same paths. Two deliberate choices matter for future arena/CSR work:
+
+- **The seam rows measure `GraphEngine::neighbor_ids` (ids only), not
+  `NativeService::neighbors` (owned `Vec<Node>`).** The id-only fan-out reads
+  straight from the adjacency index — the layer a CSR rewrite reshapes — while
+  the node-materialising path folds in `Node`-clone cost (bodies included) and
+  measured ~150× slower (663 µs vs 4.4 µs for the same 1-hop). A CSR change
+  moves the former, not the latter, so the former is the honest anchor.
+- **A `pagerank_full_graph` row was added:** an `AdjacencyList` built once from
+  the live topology, timing only the power iteration — the traversal-heavy
+  algorithm whose per-edge cost arena/CSR targets, over real rather than
+  synthetic structure.
+
+As before, this is a documentary anchor, not a CI gate (criterion timings are
+machine-specific; gating on them is the trap that produced the multi-hour CI
+stall, #76/#77). Phase 2's before/after is a manual re-run of this exact
+command on the same snapshot and machine.

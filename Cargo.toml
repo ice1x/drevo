@@ -250,3 +250,10 @@ ignored = ["getrandom", "idna_adapter"]
 [[bench]]
 name = "pagerank_bench"
 harness = false
+
+# Real-data native baseline (#522, RFC #307 Phase 2 measurement-first). Custom
+# `main` (no criterion harness); env-gated on `DREVO_BASELINE_GRAPHML`, so it
+# compiles under `clippy --all-targets` and no-ops without real data.
+[[bench]]
+name = "real_data_baseline_bench"
+harness = false
