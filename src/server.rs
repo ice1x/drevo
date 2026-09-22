@@ -468,8 +468,17 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // is built.
     configure_native_query_embedder(&service, embeddings_store.clone())?;
 
+    // Shared multi-database catalog (issue #523): built once and handed to both
+    // the HTTP state and the Bolt listener so `CREATE DATABASE` / `USE` and a
+    // Bolt `session(database="…")` see the same named databases regardless of
+    // which protocol created them.
+    let registry = std::sync::Arc::new(crate::database_registry::DatabaseRegistry::new(
+        std::sync::Arc::clone(&service),
+    ));
+
     // Optional Bolt listener — same opt-in as the KV path, served by the
-    // durable-native session (autocommit only; BEGIN is refused).
+    // durable-native session; statements route to the database named by their
+    // `db` selector via the shared catalog (issue #523).
     if let Some(bolt_port) = std::env::var("DREVO_BOLT_PORT")
         .ok()
         .and_then(|raw| raw.parse::<u16>().ok())
@@ -482,18 +491,19 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                 source,
             })?;
         tracing::info!(%bolt_addr, "bolt listening (native-durable)");
-        let bolt_service = std::sync::Arc::clone(&service);
+        let bolt_registry = std::sync::Arc::clone(&registry);
         tokio::spawn(async move {
             loop {
                 match bolt_listener.accept().await {
                     Ok((socket, _peer)) => {
-                        let conn_service = std::sync::Arc::clone(&bolt_service);
+                        let conn_registry = std::sync::Arc::clone(&bolt_registry);
                         tokio::spawn(async move {
-                            if let Err(err) = crate::bolt::listener::accept_and_run_session_durable(
-                                socket,
-                                &conn_service,
-                            )
-                            .await
+                            if let Err(err) =
+                                crate::bolt::listener::accept_and_run_session_durable_with_registry(
+                                    socket,
+                                    &conn_registry,
+                                )
+                                .await
                             {
                                 tracing::warn!(error = %err, "bolt session ended with error");
                             }
@@ -505,7 +515,7 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
         });
     }
 
-    let state = crate::native_api::NativeApiState::new(service);
+    let state = crate::native_api::NativeApiState::with_registry(service, registry);
     // Opt-in embeddings proxy, exactly like the KV path — the restart
     // tooling probes POST /v1/embeddings after boot. Store-backed so the key is
     // Web-UI-settable.
