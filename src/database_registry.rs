@@ -9,22 +9,39 @@
 //! pointed at, so a client that never names a database sees exactly the old
 //! single-database behaviour.
 //!
-//! # Scope of this slice
+//! # Durability
 //!
-//! This is the catalog *foundation* plus its HTTP lifecycle (`GET`/`POST`
-//! `/databases`, `DELETE /databases/{name}`): create, list, and drop named
-//! databases, with the default protected from removal. **Routing a query to a
-//! chosen database** — the HTTP path selector and the Bolt `db` field / Cypher
-//! `USE` — is a follow-up slice; a freshly created database therefore exists in
-//! the catalog and accepts lifecycle operations, but is not yet a query target
-//! (mirroring Neo4j's split between `CREATE DATABASE` and `USE`). Non-default
-//! databases are in-memory for now; per-database durable WAL directories land
-//! with the routing slice.
+//! A registry can be **in-memory** ([`new`](crate::database_registry::DatabaseRegistry::new) — used by
+//! tests and the in-memory server) or **durable**
+//! ([`with_durable_dir`](crate::database_registry::DatabaseRegistry::with_durable_dir) — used by the
+//! shipping WAL-backed server). In durable mode each non-default database lives
+//! in its own WAL directory `<data_dir>/databases/<name>/native.wal`, so a
+//! `CREATE DATABASE` survives a restart: `with_durable_dir` re-opens every such
+//! directory on startup, and [`remove`](crate::database_registry::DatabaseRegistry::remove) deletes the
+//! directory so a dropped database does not resurrect. The default database is
+//! whatever store the process was pointed at (`<data_dir>/native.wal`), one
+//! level up from the per-database subtree, so the two never collide.
+//!
+//! [`create`](crate::database_registry::DatabaseRegistry::create) picks the mode from the registry:
+//! durable registries open a WAL, in-memory registries stay in memory. Query
+//! routing to a chosen database — the HTTP selector, the Bolt `db` field, and
+//! Cypher `USE` — landed in the routing slices; this closes the persistence gap
+//! that made non-default databases ephemeral.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::native_service::NativeService;
+
+/// Subdirectory under a durable registry's data dir that holds one child
+/// directory per non-default database. Kept one level below the default
+/// database's own `native.wal` so the two never collide.
+const DATABASES_SUBDIR: &str = "databases";
+
+/// WAL filename inside each per-database directory — the same basename the
+/// default store uses under the data dir, so the layout is uniform.
+const DB_WAL_FILE: &str = "native.wal";
 
 /// Longest permitted database name, in bytes. Matches the conservative bound a
 /// per-database on-disk directory (a later slice) can carry on every target
@@ -58,6 +75,18 @@ pub enum RegistryError {
     /// pointed at and the fallback for un-named requests.
     #[error("the default database '{0}' cannot be dropped")]
     ProtectedDefault(String),
+
+    /// A durable-storage operation failed — opening a per-database WAL on
+    /// create / restore, or deleting a dropped database's directory. The
+    /// `String` is the underlying error rendered for the log / HTTP body (kept
+    /// as a `String` so the variant stays `Clone`/`Eq` like its siblings).
+    #[error("storage error for database '{name}': {detail}")]
+    Storage {
+        /// The database whose durable directory the operation targeted.
+        name: String,
+        /// The underlying I/O / WAL error, rendered.
+        detail: String,
+    },
 }
 
 /// Validate a database name.
@@ -103,6 +132,11 @@ pub struct DatabaseRegistry {
     default: Arc<NativeService>,
     /// The catalog: database name → service. Sorted by name.
     dbs: RwLock<BTreeMap<String, Arc<NativeService>>>,
+    /// Base data directory for durable per-database WAL directories, or `None`
+    /// for an in-memory registry. When `Some`, [`create`](Self::create) opens a
+    /// WAL under `<data_dir>/databases/<name>/` and [`remove`](Self::remove)
+    /// deletes it.
+    data_dir: Option<PathBuf>,
 }
 
 // `NativeService` is not `Debug`, so derive would not apply; print the catalog
@@ -121,14 +155,86 @@ impl DatabaseRegistry {
     /// [`crate::native_api::DEFAULT_DB`].
     #[must_use]
     pub fn new(default: Arc<NativeService>) -> Self {
+        Self::build(default, BTreeMap::new(), None)
+    }
+
+    /// Build a **durable** registry whose non-default databases persist under
+    /// `data_dir`, re-opening every database already on disk from a previous run.
+    ///
+    /// The default database is `default` (the store the process was pointed at,
+    /// `<data_dir>/native.wal`); every child directory of
+    /// `<data_dir>/databases/` is re-opened as a durable [`NativeService`] and
+    /// registered under its directory name, so a `CREATE DATABASE` from an
+    /// earlier run comes back. Directory names that are not legal database names
+    /// (or that collide with the default) are skipped defensively rather than
+    /// aborting startup.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::Storage`] if the databases directory cannot be read or a
+    /// per-database WAL fails to open (a corrupt/locked store is a hard startup
+    /// failure, not a silently-dropped database).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_durable_dir(
+        default: Arc<NativeService>,
+        data_dir: impl Into<PathBuf>,
+    ) -> Result<Self, RegistryError> {
+        let data_dir = data_dir.into();
         let default_name = crate::native_api::DEFAULT_DB;
-        let mut dbs = BTreeMap::new();
+        let mut restored = BTreeMap::new();
+        let root = data_dir.join(DATABASES_SUBDIR);
+        if root.is_dir() {
+            let entries = std::fs::read_dir(&root).map_err(|e| RegistryError::Storage {
+                name: DATABASES_SUBDIR.to_string(),
+                detail: e.to_string(),
+            })?;
+            for entry in entries {
+                let entry = entry.map_err(|e| RegistryError::Storage {
+                    name: DATABASES_SUBDIR.to_string(),
+                    detail: e.to_string(),
+                })?;
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                // Skip anything that could not have been created through the
+                // registry, and never shadow the default entry.
+                if name == default_name || validate_db_name(&name).is_err() {
+                    continue;
+                }
+                let wal = entry.path().join(DB_WAL_FILE);
+                let service = NativeService::open(&wal).map_err(|e| RegistryError::Storage {
+                    name: name.clone(),
+                    detail: e.to_string(),
+                })?;
+                restored.insert(name, Arc::new(service));
+            }
+        }
+        Ok(Self::build(default, restored, Some(data_dir)))
+    }
+
+    /// Shared constructor: seed the catalog with the default plus any
+    /// already-restored databases, and record the durability mode.
+    fn build(
+        default: Arc<NativeService>,
+        mut dbs: BTreeMap<String, Arc<NativeService>>,
+        data_dir: Option<PathBuf>,
+    ) -> Self {
+        let default_name = crate::native_api::DEFAULT_DB;
         dbs.insert(default_name.to_string(), Arc::clone(&default));
         Self {
             default_name,
             default,
             dbs: RwLock::new(dbs),
+            data_dir,
         }
+    }
+
+    /// The on-disk directory for the database named `name` in a durable
+    /// registry: `<data_dir>/databases/<name>`. `name` is assumed already
+    /// validated (a legal name has no path separators or `..`).
+    fn db_dir(data_dir: &Path, name: &str) -> PathBuf {
+        data_dir.join(DATABASES_SUBDIR).join(name)
     }
 
     /// The reserved default database name.
@@ -195,23 +301,103 @@ impl DatabaseRegistry {
         Ok(service)
     }
 
+    /// Create a new database named `name`, durable or in-memory per the
+    /// registry's mode, and register it.
+    ///
+    /// A durable registry ([`with_durable_dir`](Self::with_durable_dir)) opens a
+    /// WAL at `<data_dir>/databases/<name>/native.wal` — so the database
+    /// survives a restart; an in-memory registry ([`new`](Self::new)) creates an
+    /// ephemeral service. This is the entry point the HTTP `POST /databases` and
+    /// Cypher `CREATE DATABASE` handlers call so behaviour follows the server's
+    /// own durability.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistryError::InvalidName`] if `name` is not a legal database name.
+    /// - [`RegistryError::AlreadyExists`] if a database named `name` (including
+    ///   the default) is already registered.
+    /// - [`RegistryError::Storage`] if a durable WAL cannot be created / opened.
+    pub fn create(&self, name: &str) -> Result<Arc<NativeService>, RegistryError> {
+        validate_db_name(name)?;
+        let mut dbs = self.write();
+        if dbs.contains_key(name) {
+            return Err(RegistryError::AlreadyExists(name.to_string()));
+        }
+        let service = match &self.data_dir {
+            Some(data_dir) => Arc::new(Self::open_durable(data_dir, name)?),
+            None => Arc::new(NativeService::in_memory()),
+        };
+        dbs.insert(name.to_string(), Arc::clone(&service));
+        Ok(service)
+    }
+
+    /// Open (creating its directory) the durable WAL for `name`. Split out so
+    /// the wasm build — which has no `NativeService::open` — never references it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_durable(data_dir: &Path, name: &str) -> Result<NativeService, RegistryError> {
+        let dir = Self::db_dir(data_dir, name);
+        std::fs::create_dir_all(&dir).map_err(|e| RegistryError::Storage {
+            name: name.to_string(),
+            detail: e.to_string(),
+        })?;
+        NativeService::open(dir.join(DB_WAL_FILE)).map_err(|e| RegistryError::Storage {
+            name: name.to_string(),
+            detail: e.to_string(),
+        })
+    }
+
+    /// The wasm counterpart: a durable registry cannot exist on wasm
+    /// (`with_durable_dir` is not compiled there), so `create` never reaches a
+    /// `Some(data_dir)` arm — this stub keeps the non-wasm call site typed
+    /// without pulling in the (absent) durable engine.
+    #[cfg(target_arch = "wasm32")]
+    fn open_durable(_data_dir: &Path, name: &str) -> Result<NativeService, RegistryError> {
+        Err(RegistryError::Storage {
+            name: name.to_string(),
+            detail: "durable databases are not available on wasm".to_string(),
+        })
+    }
+
     /// Remove (drop) the database named `name`, discarding its service.
     ///
     /// Named `remove` rather than `drop` so it does not shadow the destructor
     /// method name on `Arc<DatabaseRegistry>` (which the compiler rejects as an
     /// explicit destructor call).
     ///
+    /// In a durable registry the database's WAL directory is deleted so a
+    /// dropped database does not come back on the next restart; the in-catalog
+    /// service handle is dropped first so its WAL file is closed before the
+    /// directory is removed.
+    ///
     /// # Errors
     ///
     /// - [`RegistryError::ProtectedDefault`] if `name` is the default database.
     /// - [`RegistryError::NotFound`] if no database named `name` is registered.
+    /// - [`RegistryError::Storage`] if the database's directory cannot be
+    ///   deleted (the catalog entry is already gone at that point — the database
+    ///   is unreachable, but its files lingered).
     pub fn remove(&self, name: &str) -> Result<(), RegistryError> {
         if name == self.default_name {
             return Err(RegistryError::ProtectedDefault(name.to_string()));
         }
         let mut dbs = self.write();
-        if dbs.remove(name).is_none() {
+        let Some(service) = dbs.remove(name) else {
             return Err(RegistryError::NotFound(name.to_string()));
+        };
+        // Close this handle before touching the files. Other threads may still
+        // hold an `Arc` (an in-flight routed query); on Unix that keeps the
+        // now-unlinked WAL readable until they finish, which is the intended
+        // drop semantics.
+        drop(service);
+        drop(dbs);
+        if let Some(data_dir) = &self.data_dir {
+            let dir = Self::db_dir(data_dir, name);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).map_err(|e| RegistryError::Storage {
+                    name: name.to_string(),
+                    detail: e.to_string(),
+                })?;
+            }
         }
         Ok(())
     }
@@ -375,6 +561,102 @@ mod tests {
                 .list_nodes_by_kind("note", 10, 0)
                 .len(),
             0
+        );
+    }
+
+    #[test]
+    fn create_on_in_memory_registry_stays_in_memory() {
+        // `create` on a `new()` registry (no data dir) is the in-memory path —
+        // no filesystem, same result as `create_in_memory`.
+        let reg = default_registry();
+        reg.create("mem").expect("create in-memory via create()");
+        assert!(reg.contains("mem"));
+        assert_eq!(
+            reg.list(),
+            vec!["drevo".to_string(), "mem".to_string()] // DEFAULT_DB sorts before "mem"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn durable_registry_at(data_dir: &std::path::Path) -> (Arc<NativeService>, DatabaseRegistry) {
+        let default =
+            Arc::new(NativeService::open(data_dir.join("native.wal")).expect("open default store"));
+        let reg = DatabaseRegistry::with_durable_dir(Arc::clone(&default), data_dir)
+            .expect("build durable registry");
+        (default, reg)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn durable_create_persists_across_a_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path();
+
+        // Create a durable database and write a node into it.
+        let (default, reg) = durable_registry_at(data_dir);
+        let foo = reg.create("foo").expect("create foo");
+        assert!(
+            data_dir
+                .join("databases")
+                .join("foo")
+                .join("native.wal")
+                .exists(),
+            "durable create must open a per-database WAL on disk"
+        );
+        foo.create_node(NewNode {
+            kind: "note".to_string(),
+            title: "persisted".to_string(),
+            body: String::new(),
+            body_html: String::new(),
+            properties: crate::model::Properties::default(),
+        })
+        .expect("write node into foo");
+
+        // Close everything (drop the WAL handles).
+        drop(foo);
+        drop(reg);
+        drop(default);
+
+        // A fresh registry over the same data dir re-opens `foo` with its data —
+        // the restart-recovery contract.
+        let (_default2, reg2) = durable_registry_at(data_dir);
+        assert!(
+            reg2.contains("foo"),
+            "a durable database must survive a registry re-open"
+        );
+        let foo2 = reg2.get("foo").expect("foo present after reopen");
+        assert_eq!(
+            foo2.list_nodes_by_kind("note", 10, 0).len(),
+            1,
+            "the node written before the reopen must persist"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn durable_drop_deletes_the_directory_and_does_not_resurrect() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path();
+
+        let (default, reg) = durable_registry_at(data_dir);
+        reg.create("scratch").expect("create scratch");
+        let scratch_dir = data_dir.join("databases").join("scratch");
+        assert!(scratch_dir.exists(), "create made the directory");
+
+        reg.remove("scratch").expect("drop scratch");
+        assert!(
+            !scratch_dir.exists(),
+            "drop must delete the database's WAL directory"
+        );
+        assert!(!reg.contains("scratch"));
+
+        // A re-open does not bring the dropped database back.
+        drop(reg);
+        drop(default);
+        let (_default2, reg2) = durable_registry_at(data_dir);
+        assert!(
+            !reg2.contains("scratch"),
+            "a dropped durable database must not resurrect on reopen"
         );
     }
 }

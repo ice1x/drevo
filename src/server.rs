@@ -471,10 +471,20 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // Shared multi-database catalog (issue #523): built once and handed to both
     // the HTTP state and the Bolt listener so `CREATE DATABASE` / `USE` and a
     // Bolt `session(database="…")` see the same named databases regardless of
-    // which protocol created them.
-    let registry = std::sync::Arc::new(crate::database_registry::DatabaseRegistry::new(
-        std::sync::Arc::clone(&service),
-    ));
+    // which protocol created them. Durable: non-default databases persist in
+    // `<data_dir>/databases/<name>/`, and every one from a previous run is
+    // re-opened here on startup.
+    let registry = std::sync::Arc::new(
+        crate::database_registry::DatabaseRegistry::with_durable_dir(
+            std::sync::Arc::clone(&service),
+            cfg.data_dir.clone(),
+        )
+        .map_err(|e| {
+            RunError::NativeOpen(crate::error::DrevoError::Io(std::io::Error::other(
+                e.to_string(),
+            )))
+        })?,
+    );
 
     // Optional Bolt listener — same opt-in as the KV path, served by the
     // durable-native session; statements route to the database named by their

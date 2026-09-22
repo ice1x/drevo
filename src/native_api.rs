@@ -15,9 +15,10 @@
 //! /databases/{name}`, issue #523) is served here over a
 //! [`crate::database_registry::DatabaseRegistry`]: the always-present default
 //! is the durable graph the process was pointed at, and additional named
-//! databases can be created, listed, and dropped. Routing a query to a chosen
-//! non-default database is a follow-up slice, so a client that names no
-//! database still sees exactly the single-graph behaviour.
+//! databases can be created, listed, dropped, and — via Cypher `USE` over
+//! `POST /cypher` and the Bolt `db` selector — queried; in the durable server
+//! they persist across restarts (issue #523). A client that names no database
+//! still sees exactly the single-graph behaviour.
 
 #![cfg(feature = "http")]
 
@@ -300,6 +301,12 @@ impl From<RegistryError> for ApiError {
                 ApiError::Conflict(err.to_string())
             }
             RegistryError::NotFound(_) => ApiError::NotFound(err.to_string()),
+            // A durable-WAL open/delete failure is a server-side I/O fault —
+            // route it through the existing `Db(Io)` arm so it surfaces as 500
+            // without adding an `ApiError` variant.
+            RegistryError::Storage { .. } => ApiError::Db(crate::error::DrevoError::Io(
+                std::io::Error::other(err.to_string()),
+            )),
         }
     }
 }
@@ -319,15 +326,16 @@ async fn list_databases(State(state): State<NativeApiState>) -> Json<DatabaseLis
 /// `{ "name": "<db>" }`; the name is validated (400 on a bad name, 409 if it
 /// already exists). Returns `201 Created` with the updated database list.
 ///
-/// The new database is created in-memory and is not yet a query target — query
-/// routing to a chosen database is a follow-up slice — but it is listable and
-/// droppable immediately.
+/// The new database is durable when the server is durable (its WAL directory is
+/// created under the data dir, so it survives a restart) and in-memory
+/// otherwise, per the registry's mode. It is immediately listable, droppable,
+/// and a query target via `USE` / the Bolt `db` selector.
 async fn create_database(
     State(state): State<NativeApiState>,
     body: Result<Json<CreateDatabaseRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<DatabaseListResponse>), ApiError> {
     let Json(CreateDatabaseRequest { name }) = body?;
-    state.registry.create_in_memory(&name)?;
+    state.registry.create(&name)?;
     Ok((
         StatusCode::CREATED,
         Json(DatabaseListResponse {
@@ -801,7 +809,7 @@ fn handle_admin_cypher(
         AdminCommand::CreateDatabase {
             name,
             if_not_exists,
-        } => match state.registry.create_in_memory(&name) {
+        } => match state.registry.create(&name) {
             Ok(_) => Ok(empty_cypher_response()),
             // `IF NOT EXISTS` makes a pre-existing name a no-op, not a 409.
             Err(RegistryError::AlreadyExists(_)) if if_not_exists => Ok(empty_cypher_response()),
