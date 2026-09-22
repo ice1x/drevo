@@ -45,6 +45,7 @@ mod betweenness;
 mod closeness;
 mod louvain;
 mod pagerank;
+mod ricci;
 mod scc;
 mod triangles;
 mod wcc;
@@ -53,6 +54,7 @@ pub use betweenness::{betweenness, BetweennessResult};
 pub use closeness::{closeness, ClosenessResult};
 pub use louvain::{louvain, LouvainConfig, LouvainResult};
 pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
+pub use ricci::{ricci_curvature, RicciConfig, RicciEdge, RicciResult};
 pub use scc::{scc, SccResult};
 pub use triangles::{triangles, TriangleResult};
 pub use wcc::{wcc, WccResult};
@@ -135,6 +137,16 @@ pub fn closeness_native(engine: &crate::native::NativeGraph) -> ClosenessResult 
     closeness(&native_adjacency(engine))
 }
 
+/// Ollivier–Ricci edge curvature over the **native engine**, over a consistent
+/// MVCC snapshot (RFC #307 Phase 8). One optimal-transport (Wasserstein-1)
+/// solve per undirected edge, serial. See [`ricci_curvature`].
+pub fn ricci_curvature_native(
+    engine: &crate::native::NativeGraph,
+    config: &RicciConfig,
+) -> RicciResult {
+    ricci_curvature(&native_adjacency(engine), config)
+}
+
 /// A failure raised while configuring a graph algorithm.
 ///
 /// Algorithm *execution* is infallible; only invalid configuration (a damping
@@ -157,6 +169,11 @@ pub enum AlgorithmError {
     /// The Louvain resolution parameter was negative or not finite.
     #[error("resolution must be a finite, non-negative number, got {0}")]
     InvalidResolution(f64),
+
+    /// The Ollivier–Ricci idleness parameter `alpha` was outside `[0, 1]` or
+    /// not finite.
+    #[error("alpha must be a finite number in the closed interval [0, 1], got {0}")]
+    InvalidAlpha(f64),
 }
 
 /// An in-memory, directed, weighted adjacency snapshot over a set of node IDs.

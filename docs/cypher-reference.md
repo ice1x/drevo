@@ -514,6 +514,7 @@ procedures.
 | `drevo.triangles()` | `node, triangles, coefficient` | Triangle count and local clustering coefficient per node over the undirected projection; `coefficient` is `2·triangles / (degree·(degree−1))` in `[0,1]`, `0` for degree `< 2` (RFC #307 Phase 8) |
 | `drevo.betweenness()` | `node, score` | Betweenness centrality (Brandes' algorithm) over the directed, unweighted graph; each node's `score` is the number of shortest paths through it, rows most-central first (RFC #307 Phase 8) |
 | `drevo.closeness()` | `node, score` | Harmonic closeness centrality over the directed, unweighted graph; `score` is `Σ 1/d` over all nodes reachable along edge direction (stays finite when disconnected), rows most-central first (RFC #307 Phase 8) |
+| `drevo.ricciCurvature()` | `from, to, curvature` | Ollivier–Ricci curvature of every undirected edge over the unweighted projection (edge direction and weight ignored): `curvature ≤ 1` is negative on bridge-like edges between communities (good cut candidates) and positive inside dense clusters; each edge returned once with `from` the smaller-id endpoint, ascending by `(from, to)` (issue #526) |
 
 ### CALL
 
