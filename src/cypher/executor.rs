@@ -5069,6 +5069,43 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// `CALL drevo.ricciCurvature() YIELD from, to, curvature` (issue #526) —
+    /// Ollivier–Ricci curvature of every undirected edge. `curvature` is
+    /// negative on bridge-like edges that lie between communities (good cut
+    /// candidates) and positive on edges inside dense clusters. Computed over
+    /// the undirected, unweighted projection (edge direction and weight are
+    /// ignored, like betweenness / closeness); each edge is returned once with
+    /// `from` the smaller-id endpoint node and `to` the larger, ascending by
+    /// `(from, to)`. Uses the canonical idleness `alpha = 0.5`.
+    fn proc_ricci_curvature(&self) -> ExecResultT<Vec<Vec<Value>>> {
+        let node_ids: Vec<u64> = self.engine().all_nodes()?.iter().map(|n| n.id).collect();
+        let edges: Vec<(u64, u64, f32)> = self
+            .engine()
+            .all_edges()?
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, e.weight))
+            .collect();
+        let graph = crate::algorithms::AdjacencyList::from_parts(node_ids, edges);
+        let result =
+            crate::algorithms::ricci_curvature(&graph, &crate::algorithms::RicciConfig::default());
+
+        let mut rows = Vec::with_capacity(result.per_edge.len());
+        for edge in result.per_edge {
+            let (Some(from), Some(to)) = (
+                self.engine().get_node(edge.from_id)?,
+                self.engine().get_node(edge.to_id)?,
+            ) else {
+                continue;
+            };
+            rows.push(vec![
+                Value::Node(node_to_value(&from)),
+                Value::Node(node_to_value(&to)),
+                Value::Float(edge.curvature),
+            ]);
+        }
+        Ok(rows)
+    }
+
     /// `CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits,
     /// kv_fallbacks, kv_routed, rebuild_errors` — engine-flip observability
     /// (RFC #307): which engine serves this database's Cypher, and how the
@@ -5432,6 +5469,7 @@ impl<'a> Executor<'a> {
             "drevo.triangles" => self.proc_triangles(),
             "drevo.betweenness" => self.proc_betweenness(),
             "drevo.closeness" => self.proc_closeness(),
+            "drevo.ricciCurvature" => self.proc_ricci_curvature(),
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
@@ -7039,6 +7077,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.triangles" => Some(&["node", "triangles", "coefficient"]),
         "drevo.betweenness" => Some(&["node", "score"]),
         "drevo.closeness" => Some(&["node", "score"]),
+        // Ollivier–Ricci edge curvature (issue #526): endpoints + curvature.
+        "drevo.ricciCurvature" => Some(&["from", "to", "curvature"]),
         // Engine-flip observability: engine mode + mirror routing counters.
         "drevo.engine.status" => Some(&[
             "engine",
@@ -7106,6 +7146,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.betweenness" => 0,
         // drevo.closeness() — no arguments.
         "drevo.closeness" => 0,
+        // drevo.ricciCurvature() — no arguments (default idleness alpha = 0.5).
+        "drevo.ricciCurvature" => 0,
         // drevo.engine.status() — no arguments.
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
