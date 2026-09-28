@@ -1250,6 +1250,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
                           drevo.semantic.reindexRel, drevo.cypher.fromText, \
                           db.index.vector.queryNodes, db.index.fulltext.queryNodes, \
+                          drevo.memory.recall, drevo.memory.getConversation, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
@@ -4757,6 +4758,100 @@ impl<'a> Executor<'a> {
         Err(Self::engine_capability("db.index.fulltext.queryNodes"))
     }
 
+    /// `CALL drevo.memory.recall(session, query, k) YIELD node, score` (issue
+    /// #533) — session-scoped agent-memory recall.
+    ///
+    /// The top-`k` `:Message` nodes of `session` whose text best matches `query`
+    /// by BM25, ranked best-first. Reuses the full-text index (`fts.search`),
+    /// then keeps only messages in `session` — so an agent recalls what *this*
+    /// conversation said about something, server-side in one call. Read-only;
+    /// the short-term memory chain it reads is written via `add_message`
+    /// (drevo-mcp) / Cypher today, and a native `drevo.memory.addMessage` write
+    /// procedure is a follow-up. `:Message { session, seq, role, text, body }`
+    /// is the schema the agent-memory MCP writes (`body = text`, so FTS reaches
+    /// it).
+    fn proc_memory_recall(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (3) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let session = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let query = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[2], &empty)?;
+
+        // Over-fetch FTS candidates (the index is graph-wide, not per-session),
+        // then keep this session's messages in BM25 order until we have `k`.
+        let candidates = k.saturating_mul(8).max(50);
+        let Some(fts) = self.native_fts.filter(|_| !self.statement_has_written()) else {
+            return Err(Self::engine_capability("drevo.memory.recall"));
+        };
+        let mut rows = Vec::new();
+        for (id, score) in fts.search(&query, candidates) {
+            if rows.len() >= k {
+                break;
+            }
+            let Some(node) = self.engine().get_node(id)? else {
+                continue;
+            };
+            if !node_labels_from_storage(&node)
+                .iter()
+                .any(|l| l == "Message")
+            {
+                continue;
+            }
+            let nv = node_to_value(&node);
+            let in_session =
+                matches!(nv.properties.get("session"), Some(Value::String(s)) if *s == session);
+            if !in_session {
+                continue;
+            }
+            rows.push(vec![Value::Node(nv), Value::Float(f64::from(score))]);
+        }
+        Ok(rows)
+    }
+
+    /// `CALL drevo.memory.getConversation(session, limit) YIELD node` (issue
+    /// #533) — replay a session's short-term memory in chronological order.
+    ///
+    /// The most recent `limit` `:Message` nodes of `session`, oldest-first (by
+    /// `seq`) — the running transcript to reload as context. Read-only.
+    fn proc_memory_get_conversation(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (2) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let session = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let limit = self.eval_usize(&args[1], &empty)?;
+
+        let mut messages: Vec<(i64, Arc<NodeValue>)> = Vec::new();
+        for node in self.engine().all_nodes()? {
+            if !node_labels_from_storage(&node)
+                .iter()
+                .any(|l| l == "Message")
+            {
+                continue;
+            }
+            let nv = node_to_value(&node);
+            if !matches!(nv.properties.get("session"), Some(Value::String(s)) if *s == session) {
+                continue;
+            }
+            let seq = match nv.properties.get("seq") {
+                Some(Value::Integer(i)) => *i,
+                _ => 0,
+            };
+            messages.push((seq, nv));
+        }
+        // Chronological (seq ascending); keep the most recent `limit`.
+        messages.sort_by_key(|(seq, _)| *seq);
+        if messages.len() > limit {
+            messages = messages.split_off(messages.len() - limit);
+        }
+        Ok(messages
+            .into_iter()
+            .map(|(_, nv)| vec![Value::Node(nv)])
+            .collect())
+    }
+
     /// `CALL drevo.semantic.query(label, property, text, k) YIELD node, score`
     /// (#251 slice 3) — the top-`k` nodes of `label` ranked by cosine
     /// similarity between their `property` embedding and the **query text**,
@@ -5569,6 +5664,8 @@ impl<'a> Executor<'a> {
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
             "db.index.vector.queryNodes" => self.proc_db_index_vector_query_nodes(args, span),
             "db.index.fulltext.queryNodes" => self.proc_db_index_fulltext_query_nodes(args, span),
+            "drevo.memory.recall" => self.proc_memory_recall(args, span),
+            "drevo.memory.getConversation" => self.proc_memory_get_conversation(args, span),
             #[cfg(feature = "http")]
             "drevo.cypher.fromText" => self.proc_cypher_from_text(args, span),
             "db.labels" => {
@@ -7191,6 +7288,10 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // Neo4j-compatible index procedures (issue #532): same (node, score)
         // contract as their drevo-native counterparts.
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
+        // Agent-memory recall (issue #533): session-scoped BM25 over :Message.
+        "drevo.memory.recall" => Some(&["node", "score"]),
+        // Agent-memory transcript replay (issue #533).
+        "drevo.memory.getConversation" => Some(&["node"]),
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => Some(&["cypher"]),
@@ -7255,6 +7356,10 @@ fn procedure_arity(name: &str) -> usize {
         "db.index.vector.queryNodes" => 3,
         // db.index.fulltext.queryNodes(indexName, queryString) (issue #532).
         "db.index.fulltext.queryNodes" => 2,
+        // drevo.memory.recall(session, query, k) (issue #533).
+        "drevo.memory.recall" => 3,
+        // drevo.memory.getConversation(session, limit) (issue #533).
+        "drevo.memory.getConversation" => 2,
         // drevo.cypher.fromText(prompt) — one NL prompt.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => 1,
