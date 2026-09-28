@@ -1,6 +1,9 @@
 //! Native agent-memory recall over the native engine (issue #533):
-//! `CALL drevo.memory.recall(session, query, k)` and
-//! `CALL drevo.memory.getConversation(session, limit)`.
+//! `CALL drevo.memory.recall(session, query, k)` (BM25),
+//! `CALL drevo.memory.recallVector(session, vector, k)` (cosine) and
+//! `CALL drevo.memory.getConversation(session, limit)`. The server-side
+//! text-embedding variant, `drevo.memory.recallSemantic`, needs an embedder and
+//! lives in `tests/semantic_memory_tests.rs` (feature `embeddings-proxy`).
 //!
 //! These read the `:Message { session, seq, role, text, body }` short-term
 //! memory chain the agent-memory MCP (drevo-mcp #15/#16) writes — here seeded
@@ -113,6 +116,80 @@ fn get_conversation_returns_messages_in_chronological_order() {
             .collect::<Vec<_>>(),
         vec!["first", "second", "third"]
     );
+}
+
+/// Add a message carrying an embedding in `prop` (as the auto-embed write path
+/// or a client-side embedder would leave it).
+fn add_embedded(svc: &NativeService, session: &str, seq: i64, text: &str, prop: &str, v: [f64; 2]) {
+    run_ok(
+        svc,
+        &format!(
+            "CREATE (:Message {{session: '{session}', seq: {seq}, role: 'user', \
+             text: '{text}', body: '{text}', {prop}: [{}, {}]}})",
+            v[0], v[1]
+        ),
+    );
+}
+
+#[test]
+fn recall_vector_ranks_this_sessions_messages_by_cosine() {
+    let svc = NativeService::in_memory();
+    add_embedded(&svc, "s1", 1, "orthogonal", "embedding", [0.0, 1.0]);
+    add_embedded(&svc, "s1", 2, "exact", "embedding", [1.0, 0.0]);
+    add_embedded(&svc, "s1", 3, "close", "embedding", [0.8, 0.6]);
+    // Identical to the query, but another session — must NOT be recalled.
+    add_embedded(&svc, "s2", 1, "foreign", "embedding", [1.0, 0.0]);
+
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.recallVector('s1', [1.0, 0.0], 5) YIELD node, score \
+         RETURN node.text AS text, score",
+    );
+    // Best-first by cosine similarity, only session s1.
+    assert_eq!(texts(&res), vec!["exact", "close", "orthogonal"]);
+    match res.rows[0][1] {
+        Value::Float(s) => assert!((s - 1.0).abs() < 1e-6, "exact match scores 1.0, got {s}"),
+        ref other => panic!("expected a float score, got {other:?}"),
+    }
+}
+
+#[test]
+fn recall_vector_respects_k_and_skips_unembedded_messages() {
+    let svc = NativeService::in_memory();
+    add_embedded(&svc, "s", 1, "a", "embedding", [1.0, 0.0]);
+    add_embedded(&svc, "s", 2, "b", "embedding", [0.8, 0.6]);
+    add_embedded(&svc, "s", 3, "c", "embedding", [0.0, 1.0]);
+    // No embedding at all — skipped, never an error.
+    add(&svc, "s", 4, "user", "plain");
+
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.recallVector('s', [1.0, 0.0], 2) YIELD node RETURN node.text AS text",
+    );
+    assert_eq!(texts(&res), vec!["a", "b"]);
+
+    let all = run_ok(
+        &svc,
+        "CALL drevo.memory.recallVector('s', [1.0, 0.0], 10) YIELD node RETURN node.text AS text",
+    );
+    assert_eq!(all.rows.len(), 3, "the un-embedded message is skipped");
+}
+
+#[test]
+fn recall_vector_uses_the_registered_message_embedding_property() {
+    let svc = NativeService::in_memory();
+    // A semantic target for :Message stores vectors in `vec`, not `embedding`.
+    run_ok(
+        &svc,
+        "CALL drevo.semantic.register('Message', 'body', 'vec', 'manual') YIELD label RETURN label",
+    );
+    add_embedded(&svc, "s", 1, "via-registered-prop", "vec", [1.0, 0.0]);
+
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.recallVector('s', [1.0, 0.0], 5) YIELD node RETURN node.text AS text",
+    );
+    assert_eq!(texts(&res), vec!["via-registered-prop"]);
 }
 
 #[test]

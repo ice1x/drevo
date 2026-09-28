@@ -940,9 +940,43 @@ CALL drevo.memory.getConversation('session-1', 50) YIELD node
 RETURN node.seq, node.role, node.text ORDER BY node.seq
 ```
 
-Both are read-only. Writing the memory chain (`add_message`) goes through the
-agent-memory MCP / Cypher today; a native `drevo.memory.addMessage` write
-procedure is a follow-up.
+BM25 only finds messages that share a token with the query. To recall by
+**meaning** — a paraphrase like "what did we deploy?" finding "we shipped the
+release" — rank the session's messages by cosine similarity instead.
+`CALL drevo.memory.recallVector(session, vector, k) YIELD node, score` takes a
+query vector you embedded yourself:
+
+```cypher
+CALL drevo.memory.recallVector('session-1', [0.1, 0.9, 0.2], 5)
+YIELD node, score
+RETURN node.text, score ORDER BY score DESC
+```
+
+`CALL drevo.memory.recallSemantic(session, text, k) YIELD node, score` embeds the
+query text on the server (the same embedder as `drevo.semantic.query`), so a
+client needs no embedder of its own. Without one configured it fails with an
+engine-capability error — fall back to `drevo.memory.recall`.
+
+```cypher
+CALL drevo.memory.recallSemantic('session-1', 'what did we deploy?', 5)
+YIELD node, score
+RETURN node.text, score ORDER BY score DESC
+```
+
+Both read each message's vector from the `embedding_property` of a registered
+`Message` semantic target, else from `embedding`; messages without one are
+skipped. Registering the target in `'auto'` mode on the `text` property embeds
+every new message as it is written, so the memory chain becomes semantically
+searchable with no client work:
+
+```cypher
+CALL drevo.semantic.register('Message', 'text', 'embedding', 'auto')
+YIELD label, state RETURN label, state
+```
+
+All of these are read-only. Writing the memory chain (`add_message`) goes
+through the agent-memory MCP / Cypher today; a native `drevo.memory.addMessage`
+write procedure is a follow-up.
 
 ### Semantic-index control plane (#251, Phase 21)
 
