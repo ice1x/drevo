@@ -157,10 +157,17 @@ fn needs_runtime_config(source: &str) -> bool {
     // server) runs. The construct still parses and stays documented, but it
     // cannot execute against the native in-memory database, so it is skipped
     // exactly like the config-dependent semantic procedures above.
+    // `db.index.vector.queryNodes` (issue #532) resolves a *named* index created
+    // by a prior `CREATE VECTOR INDEX`; each doc example runs on its own pristine
+    // database, so the name is unregistered here and the call errors "no vector
+    // index named …". The syntax is still validated by `parse`; end-to-end
+    // coverage (create-then-query, including persistence) lives in
+    // `tests/native_vector_index_tests.rs`.
     source.contains("drevo.semantic.query")
         || source.contains("drevo.semantic.reindex")
         || source.contains("drevo.semantic.embed")
         || source.contains("drevo.engine.status")
+        || source.contains("db.index.vector.queryNodes")
 }
 
 #[test]

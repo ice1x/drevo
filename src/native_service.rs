@@ -108,7 +108,11 @@ pub struct NativeService {
     /// Relationship-side registry — the edge mirror of [`Self::semantic`],
     /// the native home of `Drevo::rel_semantic`.
     rel_semantic: RwLock<crate::semantic_index::SemanticIndexRegistry>,
-    /// Sidecar path for the two registries (`<wal dir>/semantic.json`), or
+    /// Named vector-index registry (issue #532) — binds a Neo4j-style index name
+    /// to the `(label, property)` it targets, so `CREATE VECTOR INDEX` /
+    /// `db.index.vector.queryNodes` round-trip. Persisted in the same sidecar.
+    vector_indexes: RwLock<crate::vector_index_registry::VectorIndexRegistry>,
+    /// Sidecar path for the registries (`<wal dir>/semantic.json`), or
     /// `None` for an in-memory service (nothing to persist).
     semantic_sidecar: Option<std::path::PathBuf>,
     /// Cumulative auto-embed failures per target (issue #447; native mirror of
@@ -141,6 +145,10 @@ struct EmbedFailureStat {
 struct SemanticSidecar {
     node: crate::semantic_index::SemanticIndexRegistry,
     rel: crate::semantic_index::SemanticIndexRegistry,
+    /// Named vector-index registrations (issue #532). `#[serde(default)]` keeps
+    /// sidecars written before #532 (which had only `node`/`rel`) loadable.
+    #[serde(default)]
+    vector: crate::vector_index_registry::VectorIndexRegistry,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -197,7 +205,7 @@ impl NativeService {
         let indexes = RwLock::new(ServiceIndexes::synced_over(&graph));
         let last_compact_head = AtomicU64::new(graph.change_head());
         let sidecar = semantic_sidecar_path(path);
-        let SemanticSidecar { node, rel } = load_semantic_sidecar(&sidecar);
+        let SemanticSidecar { node, rel, vector } = load_semantic_sidecar(&sidecar);
         Ok(Self {
             graph,
             indexes,
@@ -208,6 +216,7 @@ impl NativeService {
             compacting: AtomicBool::new(false),
             semantic: RwLock::new(node),
             rel_semantic: RwLock::new(rel),
+            vector_indexes: RwLock::new(vector),
             semantic_sidecar: Some(sidecar),
             #[cfg(feature = "http")]
             embed_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -240,6 +249,7 @@ impl NativeService {
             compacting: AtomicBool::new(false),
             semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             rel_semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
+            vector_indexes: RwLock::new(crate::vector_index_registry::VectorIndexRegistry::new()),
             semantic_sidecar: None,
             #[cfg(feature = "http")]
             embed_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -851,6 +861,87 @@ impl NativeService {
         Ok(target)
     }
 
+    // ----- named vector indexes (issue #532) ---------------------------------
+
+    /// Register a named vector index (`CREATE VECTOR INDEX <name> FOR (n:label)
+    /// ON (n.property)`), persisting it to the sidecar. `if_not_exists` makes a
+    /// name clash a no-op (the `IF NOT EXISTS` form).
+    ///
+    /// # Errors
+    /// [`crate::vector_index_registry::VectorIndexError::AlreadyExists`] if the
+    /// name is taken and `if_not_exists` is false.
+    pub fn vector_index_create(
+        &self,
+        name: &str,
+        label: &str,
+        property: &str,
+        if_not_exists: bool,
+    ) -> Result<
+        crate::vector_index_registry::VectorIndex,
+        crate::vector_index_registry::VectorIndexError,
+    > {
+        let index = {
+            let mut reg = self
+                .vector_indexes
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.create(
+                name.to_string(),
+                label.to_string(),
+                property.to_string(),
+                if_not_exists,
+            )?
+        };
+        self.persist_semantic();
+        Ok(index)
+    }
+
+    /// Drop a named vector index (`DROP INDEX <name>`), persisting the change.
+    /// `if_exists` makes a missing name a no-op.
+    ///
+    /// # Errors
+    /// [`crate::vector_index_registry::VectorIndexError::NotFound`] if the name
+    /// is unknown and `if_exists` is false.
+    pub fn vector_index_drop(
+        &self,
+        name: &str,
+        if_exists: bool,
+    ) -> Result<(), crate::vector_index_registry::VectorIndexError> {
+        {
+            let mut reg = self
+                .vector_indexes
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            reg.remove(name, if_exists)?;
+        }
+        self.persist_semantic();
+        Ok(())
+    }
+
+    /// The `(label, property)` a named vector index targets, if registered —
+    /// how `db.index.vector.queryNodes(<name>, …)` resolves its scan.
+    #[must_use]
+    pub fn vector_index_get(
+        &self,
+        name: &str,
+    ) -> Option<crate::vector_index_registry::VectorIndex> {
+        self.vector_indexes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned()
+    }
+
+    /// Every registered vector index, in creation order (for `SHOW INDEXES`).
+    #[must_use]
+    pub fn vector_index_list(&self) -> Vec<crate::vector_index_registry::VectorIndex> {
+        self.vector_indexes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+            .to_vec()
+    }
+
     /// The registered node-side targets — parity with `Drevo::semantic_status`.
     pub fn semantic_status(&self) -> Vec<crate::semantic_index::SemanticIndex> {
         self.semantic
@@ -1376,6 +1467,11 @@ impl NativeService {
                     .clone(),
                 rel: self
                     .rel_semantic
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                vector: self
+                    .vector_indexes
                     .read()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone(),

@@ -451,7 +451,10 @@ impl PlanBuilder<'_> {
                 | Clause::Delete(_)
                 | Clause::Foreach(_)
                 | Clause::Search(_)
-                | Clause::Call(_) => {}
+                | Clause::Call(_)
+                // Schema DDL (issue #532) produces no rows — pass through.
+                | Clause::CreateVectorIndex(_)
+                | Clause::SchemaNoop(_) => {}
             }
         }
         current.unwrap_or_else(PlanNode::empty_result)

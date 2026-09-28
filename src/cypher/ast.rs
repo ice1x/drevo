@@ -83,6 +83,15 @@ pub enum Clause {
     /// LIMIT k) [SCORE AS alias]` — declarative vector search (issue #430),
     /// lowered to the cosine `vector_scan`.
     Search(SearchClause),
+    /// `CREATE VECTOR INDEX <name> [IF NOT EXISTS] FOR (n:Label) ON (n.property)
+    /// [OPTIONS {…}]` — register a named vector index (issue #532). The Neo4j
+    /// DDL that binds an index name to a `(label, property)` pair.
+    CreateVectorIndex(CreateVectorIndex),
+    /// `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT] INDEX …` and
+    /// `CREATE CONSTRAINT …` — accepted for Neo4j-client compatibility but a
+    /// **no-op**: drevo auto-indexes and has no schema DDL (issue #532). Parsed
+    /// and ignored so a driver's schema bootstrap does not fail.
+    SchemaNoop(SchemaNoop),
 }
 
 /// `MATCH` / `OPTIONAL MATCH` clause.
@@ -354,6 +363,39 @@ pub struct SearchClause {
     /// `alias`, otherwise it is discarded (the caller can still `SCORE AS score`).
     pub score_alias: Option<String>,
     /// Source span of the `SEARCH` keyword.
+    pub span: Span,
+}
+
+/// `CREATE VECTOR INDEX` DDL (issue #532).
+///
+/// `CREATE VECTOR INDEX <name> [IF NOT EXISTS] FOR (n:Label) ON (n.property)
+/// [OPTIONS {…}]`. Registers `name` as an alias for the `(label, property)`
+/// embedding pair so `db.index.vector.queryNodes(<name>, k, q)` resolves. The
+/// `OPTIONS` map (dimensions / similarity function) is parsed but not retained:
+/// drevo's cosine `vector_scan` infers the dimension from the stored vectors and
+/// always scores by cosine, so the options carry no behaviour here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateVectorIndex {
+    /// The index name (`CREATE VECTOR INDEX <name>`). Case-sensitive, like Neo4j.
+    pub name: String,
+    /// Node label the index covers (`FOR (n:Label)`).
+    pub label: String,
+    /// Embedding property the index targets (`ON (n.property)`).
+    pub property: String,
+    /// `IF NOT EXISTS` was given — a name clash is a no-op rather than an error.
+    pub if_not_exists: bool,
+    /// Source span of the `CREATE` keyword.
+    pub span: Span,
+}
+
+/// A no-op schema DDL accepted for Neo4j compatibility (issue #532): a
+/// non-vector `CREATE … INDEX` or a `CREATE CONSTRAINT`. drevo auto-indexes and
+/// enforces no constraints, so this parses and does nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchemaNoop {
+    /// What was accepted — `"index"` or `"constraint"` — for a clear no-op note.
+    pub kind: &'static str,
+    /// Source span of the `CREATE` keyword.
     pub span: Span,
 }
 

@@ -182,6 +182,8 @@ fn clause_keyword(clause: &Clause) -> &'static str {
         Clause::Search(_) => "SEARCH",
         Clause::Foreach(_) => "FOREACH",
         Clause::Call(_) => "CALL",
+        Clause::CreateVectorIndex(_) => "CREATE VECTOR INDEX",
+        Clause::SchemaNoop(_) => "CREATE",
     }
 }
 
@@ -543,9 +545,114 @@ impl Parser {
 
     fn parse_create(&mut self) -> ParseResult<Clause> {
         let span = self.peek_span();
-        self.consume();
+        self.consume(); // CREATE
+                        // Neo4j schema DDL (issue #532): `CREATE [type] INDEX …` /
+                        // `CREATE CONSTRAINT …`. `INDEX`/`CONSTRAINT`/`VECTOR`/… are soft
+                        // keywords (identifiers), so a normal `CREATE (pattern)` — which always
+                        // begins with `(` or a `var =` path binding — is never mistaken for DDL.
+        if self.is_soft_keyword("CONSTRAINT") {
+            // No constraints in drevo: accept and ignore the whole statement.
+            self.consume_to_statement_end();
+            return Ok(Clause::SchemaNoop(SchemaNoop {
+                kind: "constraint",
+                span,
+            }));
+        }
+        // `CREATE VECTOR INDEX …` — the one DDL drevo acts on (#532).
+        if self.is_soft_keyword("VECTOR") && self.is_soft_keyword_at(1, "INDEX") {
+            self.consume(); // VECTOR
+            return self.parse_create_vector_index(span);
+        }
+        // Any other index (`CREATE INDEX …`, `CREATE RANGE|TEXT|POINT|LOOKUP|
+        // FULLTEXT|BTREE INDEX …`) — accepted but a no-op (drevo auto-indexes).
+        if self.is_soft_keyword("INDEX")
+            || (self.is_index_type_keyword() && self.is_soft_keyword_at(1, "INDEX"))
+        {
+            self.consume_to_statement_end();
+            return Ok(Clause::SchemaNoop(SchemaNoop {
+                kind: "index",
+                span,
+            }));
+        }
         let patterns = self.parse_pattern_list()?;
         Ok(Clause::Create(CreateClause { patterns, span }))
+    }
+
+    /// Is the next token one of the non-vector index-type soft keywords that can
+    /// precede `INDEX` (so `CREATE <type> INDEX …` is recognised as no-op DDL)?
+    fn is_index_type_keyword(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            TokenKind::Identifier(s)
+                if ["RANGE", "TEXT", "POINT", "LOOKUP", "FULLTEXT", "BTREE"]
+                    .iter()
+                    .any(|w| s.eq_ignore_ascii_case(w))
+        )
+    }
+
+    /// Like [`Self::is_soft_keyword`] but at a lookahead `offset`.
+    fn is_soft_keyword_at(&self, offset: usize, word: &str) -> bool {
+        matches!(self.peek_at(offset), TokenKind::Identifier(s) if s.eq_ignore_ascii_case(word))
+    }
+
+    /// Consume tokens up to the end of the current statement (EOF, `;`, or
+    /// `UNION`). Schema DDL stands alone, so this safely swallows the tail of a
+    /// no-op `CREATE INDEX`/`CONSTRAINT`, or the trailing `OPTIONS {…}` of a
+    /// vector-index create, without modelling the full Neo4j DDL grammar.
+    fn consume_to_statement_end(&mut self) {
+        while !self.at_eof() && !matches!(self.peek_kind(), TokenKind::Semicolon | TokenKind::Union)
+        {
+            self.consume();
+        }
+    }
+
+    /// Parse the tail of `CREATE VECTOR INDEX <name> [IF NOT EXISTS]
+    /// FOR (n:Label) ON (n.property) [OPTIONS {…}]` (issue #532); `VECTOR` has
+    /// already been consumed. `OPTIONS` (dimensions / similarity) is swallowed:
+    /// drevo's cosine scan needs neither.
+    fn parse_create_vector_index(&mut self, span: Span) -> ParseResult<Clause> {
+        self.expect_soft_keyword("INDEX")?;
+        // The index name is required — `db.index.vector.queryNodes` addresses it.
+        if self.is_soft_keyword("IF") || self.is_soft_keyword("FOR") {
+            return Err(ParseError::Expected {
+                expected: "a name after CREATE VECTOR INDEX".to_string(),
+                found: format!("{}", self.peek_kind()),
+                span: self.peek_span(),
+            });
+        }
+        let (name, _) = self.consume_name()?;
+        let if_not_exists = if self.is_soft_keyword("IF") {
+            self.consume(); // IF
+                            // Skip `NOT EXISTS` (whatever token kinds they lex as) up to `FOR`.
+            while !self.is_soft_keyword("FOR") && !self.at_eof() {
+                self.consume();
+            }
+            true
+        } else {
+            false
+        };
+        self.expect_soft_keyword("FOR")?;
+        self.eat(&TokenKind::LParen, "`(` after FOR")?;
+        let _ = self.consume_strict_identifier()?; // pattern variable (n)
+        self.eat(&TokenKind::Colon, "`:` before the index label")?;
+        let (label, _) = self.consume_name()?;
+        self.eat(&TokenKind::RParen, "`)` after the index label")?;
+        self.eat(&TokenKind::On, "ON after the FOR pattern")?;
+        self.eat(&TokenKind::LParen, "`(` after ON")?;
+        let _ = self.consume_strict_identifier()?; // property owner variable (n)
+        self.eat(&TokenKind::Dot, "`.` before the index property")?;
+        let (property, _) = self.consume_name()?;
+        self.eat(&TokenKind::RParen, "`)` after the index property")?;
+        // Swallow an optional trailing `OPTIONS {…}` (and anything else) — the
+        // statement ends here for drevo's purposes.
+        self.consume_to_statement_end();
+        Ok(Clause::CreateVectorIndex(CreateVectorIndex {
+            name,
+            label,
+            property,
+            if_not_exists,
+            span,
+        }))
     }
 
     fn parse_merge(&mut self) -> ParseResult<Clause> {

@@ -813,9 +813,9 @@ similar) to `score_alias`. The optional inner `WHERE` post-filters the results
 variable is overwritten by the results, `MATCH (m:Movie) SEARCH m IN (… LIMIT k)`
 returns `k` rows, not `k × |Movie|`.
 
-In this first slice the index is addressed as a dotted `Label.property`; a named
-`CREATE VECTOR INDEX` registry (so `VECTOR INDEX moviePlots` resolves to a
-declared `(:Movie).plotEmbedding`) is a planned follow-up. `SEARCH`, `VECTOR`,
+The `SEARCH` clause addresses the index as a dotted `Label.property`. A named
+`CREATE VECTOR INDEX` registry — so a Neo4j-style *name* resolves to a declared
+`(label, property)` — is documented just below (issue #532). `SEARCH`, `VECTOR`,
 `INDEX`, `FOR`, and `SCORE` are soft keywords — a property or variable named,
 say, `score` keeps working.
 
@@ -828,6 +828,41 @@ SEARCH m IN (
 ) SCORE AS score
 RETURN m.title, score
 ```
+
+### Neo4j-compatible index surface (#532)
+
+drevo also accepts the Neo4j spelling, so the Neo4j GenAI stack
+(`neo4j-graphrag`, `neo4j-agent-memory`, LangChain `Neo4jVector`, …) runs
+against drevo unmodified. `CREATE VECTOR INDEX <name> FOR (n:Label) ON
+(n.property)` registers `<name>` as an alias for that `(label, property)` pair —
+the binding the dotted `SEARCH` form lacks. The `OPTIONS { … }` clause
+(dimensions / similarity function) is accepted but ignored: the cosine scan
+infers the dimension from the stored vectors and always scores by cosine.
+
+```cypher
+CREATE VECTOR INDEX moviePlots IF NOT EXISTS
+FOR (m:Movie) ON (m.plotEmbedding)
+```
+
+`CALL db.index.vector.queryNodes(indexName, k, queryVector) YIELD node, score`
+then resolves the name to its `(label, property)` and runs the same cosine scan
+as `drevo.vector.query` — identical rows, Neo4j-compatible spelling:
+
+```cypher
+CALL db.index.vector.queryNodes('moviePlots', 5, [0.1, 0.2, 0.3])
+YIELD node, score
+RETURN node, score ORDER BY score DESC
+```
+
+`CALL db.index.fulltext.queryNodes(indexName, queryString) YIELD node, score` is
+the full-text counterpart, aliasing `fts.search`. drevo keeps one global
+full-text index over node title/body, so `indexName` is accepted but does not
+select an index.
+
+Schema DDL that drevo does not need is **accepted but a no-op**, so a driver's
+bootstrap does not fail: a non-vector `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT]
+INDEX …` and `CREATE CONSTRAINT …` parse and do nothing (drevo auto-indexes and
+enforces no constraints). Only `CREATE VECTOR INDEX` has an effect.
 
 `CALL fts.search(query, k) YIELD node, score` returns the top-`k` nodes
 matching `query` in the BM25 full-text index (task `00131`), ranked by
