@@ -153,11 +153,11 @@ use std::sync::Arc;
 const VARLEN_DEFAULT_UPPER: usize = 25;
 
 use crate::cypher::ast::{
-    BinaryOp, CallClause, Clause, CreateClause, Direction as AstDirection, Expression,
-    ForeachClause, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause, NamedPattern,
-    NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query, RelLength,
-    RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery, UnaryOp, UnionKind,
-    UnwindClause,
+    BinaryOp, CallClause, Clause, CreateClause, CreateVectorIndex, Direction as AstDirection,
+    Expression, ForeachClause, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause,
+    NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query,
+    RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery, UnaryOp,
+    UnionKind, UnwindClause,
 };
 use crate::cypher::lexer::Span;
 use crate::engine::GraphEngine;
@@ -1249,6 +1249,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.info, \
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
                           drevo.semantic.reindexRel, drevo.cypher.fromText, \
+                          db.index.vector.queryNodes, db.index.fulltext.queryNodes, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
@@ -1288,6 +1289,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
             }
             validate_expr_supported(&s.limit)?;
         }
+        // Schema DDL (issue #532) carries no expressions to validate.
+        Clause::CreateVectorIndex(_) | Clause::SchemaNoop(_) => {}
     }
     Ok(())
 }
@@ -2120,6 +2123,8 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
             Clause::Foreach(f) => f.span,
             Clause::Call(c) => c.span,
             Clause::Search(s) => s.span,
+            Clause::CreateVectorIndex(c) => c.span,
+            Clause::SchemaNoop(s) => s.span,
         }
     } else {
         Span {
@@ -2273,7 +2278,22 @@ impl<'a> Executor<'a> {
             Clause::Foreach(f) => self.run_foreach(f),
             Clause::Call(c) => self.run_call(c),
             Clause::Search(s) => self.run_search(s),
+            Clause::CreateVectorIndex(c) => self.run_create_vector_index(c),
+            Clause::SchemaNoop(_) => Ok(()), // accepted, no-op (drevo auto-indexes)
         }
+    }
+
+    /// `CREATE VECTOR INDEX` (issue #532): register the name→(label, property)
+    /// binding in the native service's durable registry, so
+    /// `db.index.vector.queryNodes(<name>, …)` can later resolve it. Produces no
+    /// rows (Neo4j schema commands return an empty result), only a registration.
+    fn run_create_vector_index(&mut self, c: &CreateVectorIndex) -> ExecResultT<()> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("CREATE VECTOR INDEX"))?;
+        svc.vector_index_create(&c.name, &c.label, &c.property, c.if_not_exists)
+            .map_err(|e| ExecError::InvalidMutation(e.to_string()))?;
+        Ok(())
     }
 
     // ----- MATCH -----------------------------------------------------------
@@ -4663,6 +4683,80 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// `CALL db.index.vector.queryNodes(indexName, k, queryVector) YIELD node,
+    /// score` (issue #532) — the Neo4j-compatible spelling of `drevo.vector.query`.
+    ///
+    /// Resolves the **named** index to the `(label, property)` it was created for
+    /// (`CREATE VECTOR INDEX`), then runs the same cosine [`Self::vector_scan`].
+    /// This is the surface the Neo4j GenAI stack (neo4j-graphrag,
+    /// neo4j-agent-memory, LangChain `Neo4jVector`, …) calls, so those clients
+    /// run against drevo unmodified. Errors if no index of that name exists.
+    fn proc_db_index_vector_query_nodes(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (3) is already enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[1], &empty)?;
+        let query_val = self.eval(&args[2], &empty)?;
+        let query = similar_operand(&query_val, "db.index.vector.queryNodes", "query", span)?;
+
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("db.index.vector.queryNodes"))?;
+        let index = svc
+            .vector_index_get(&name)
+            .ok_or_else(|| ExecError::InvalidProcedureCall {
+                name: "db.index.vector.queryNodes".to_string(),
+                message: format!(
+                    "no vector index named `{name}` — create it with \
+                     `CREATE VECTOR INDEX {name} FOR (n:Label) ON (n.property)`"
+                ),
+                span,
+            })?;
+        self.vector_scan(&index.label, &index.property, &query, k, span)
+    }
+
+    /// `CALL db.index.fulltext.queryNodes(indexName, queryString) YIELD node,
+    /// score` (issue #532) — the Neo4j-compatible spelling over drevo's
+    /// full-text index.
+    ///
+    /// drevo maintains a single global full-text index over node title/body
+    /// (`fts.search`), not per-name indexes, so `indexName` is accepted for
+    /// compatibility but not used to select an index; the query runs against the
+    /// one FTS index and returns the top matches by BM25 score. Mirrors
+    /// [`Self::proc_fts_search`] (same "index absent after a write in this
+    /// statement" guard), with a fixed result cap since the Neo4j signature
+    /// takes no `k`.
+    fn proc_db_index_fulltext_query_nodes(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (2) is already enforced by the upfront validation sweep.
+        const DEFAULT_FULLTEXT_LIMIT: usize = 100;
+        let empty = Bindings::new();
+        // Index name accepted but unused — drevo's FTS is a single global index.
+        let _index_name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let query = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+
+        if let Some(fts) = self.native_fts.filter(|_| !self.statement_has_written()) {
+            let mut rows = Vec::new();
+            for (id, score) in fts.search(&query, DEFAULT_FULLTEXT_LIMIT) {
+                if let Some(node) = self.engine().get_node(id)? {
+                    rows.push(vec![
+                        Value::Node(node_to_value(&node)),
+                        Value::Float(f64::from(score)),
+                    ]);
+                }
+            }
+            return Ok(rows);
+        }
+        Err(Self::engine_capability("db.index.fulltext.queryNodes"))
+    }
+
     /// `CALL drevo.semantic.query(label, property, text, k) YIELD node, score`
     /// (#251 slice 3) — the top-`k` nodes of `label` ranked by cosine
     /// similarity between their `property` embedding and the **query text**,
@@ -5473,6 +5567,8 @@ impl<'a> Executor<'a> {
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
+            "db.index.vector.queryNodes" => self.proc_db_index_vector_query_nodes(args, span),
+            "db.index.fulltext.queryNodes" => self.proc_db_index_fulltext_query_nodes(args, span),
             #[cfg(feature = "http")]
             "drevo.cypher.fromText" => self.proc_cypher_from_text(args, span),
             "db.labels" => {
@@ -7092,6 +7188,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "fts.search" => Some(&["node", "score"]),
         // Relationship full-text search (issue #227-B): BM25-ranked edges.
         "fts.searchRelationships" => Some(&["rel", "score"]),
+        // Neo4j-compatible index procedures (issue #532): same (node, score)
+        // contract as their drevo-native counterparts.
+        "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => Some(&["cypher"]),
@@ -7152,6 +7251,10 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
         "fts.search" | "fts.searchRelationships" => 2,
+        // db.index.vector.queryNodes(indexName, k, queryVector) (issue #532).
+        "db.index.vector.queryNodes" => 3,
+        // db.index.fulltext.queryNodes(indexName, queryString) (issue #532).
+        "db.index.fulltext.queryNodes" => 2,
         // drevo.cypher.fromText(prompt) — one NL prompt.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => 1,

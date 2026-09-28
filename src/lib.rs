@@ -281,6 +281,12 @@ pub mod traversal;
 /// index (`00076`) and joint graph+vector Cypher queries (`00077`) sit
 /// on top of.
 pub mod vector;
+/// Issue #532 — named vector-index registry. Binds a Neo4j-style index name
+/// (`CREATE VECTOR INDEX <name>` / `db.index.vector.queryNodes(<name>, …)`) to
+/// the `(label, property)` whose embeddings it targets, so the Neo4j GenAI stack
+/// round-trips against drevo unmodified. Persisted in the `semantic.json` sidecar
+/// beside the WAL (see [`native_service`]).
+pub mod vector_index_registry;
 /// `wasm-bindgen` exports for the browser / Tauri-WASM build. Compiled
 /// only with the `wasm` feature.
 #[cfg(feature = "wasm")]
