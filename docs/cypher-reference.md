@@ -912,6 +912,38 @@ CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits
 RETURN engine, mirror_fresh, native_hits
 ```
 
+### Agent memory (#533)
+
+Server-side recall over an agent's short-term memory: a session's turns stored
+as `:Message { session, seq, role, text, body }` nodes (the schema the
+agent-memory MCP writes, with `body = text` so the full-text index reaches
+them). These read procedures put memory recall one Bolt/HTTP call away for any
+client, not just the MCP.
+
+`CALL drevo.memory.recall(session, query, k) YIELD node, score` returns the
+top-`k` messages of `session` whose text best matches `query` by BM25,
+best-first — "what did *this* conversation say about X?". It reuses the
+full-text index, then keeps only messages in `session`.
+
+```cypher
+CALL drevo.memory.recall('session-1', 'deploy port', 5)
+YIELD node, score
+RETURN node.text, score ORDER BY score DESC
+```
+
+`CALL drevo.memory.getConversation(session, limit) YIELD node` replays the most
+recent `limit` messages of `session` oldest-first (by `seq`) — the transcript to
+reload as context.
+
+```cypher
+CALL drevo.memory.getConversation('session-1', 50) YIELD node
+RETURN node.seq, node.role, node.text ORDER BY node.seq
+```
+
+Both are read-only. Writing the memory chain (`add_message`) goes through the
+agent-memory MCP / Cypher today; a native `drevo.memory.addMessage` write
+procedure is a follow-up.
+
 ### Semantic-index control plane (#251, Phase 21)
 
 `CALL drevo.semantic.register(label, text_property, embedding_property, mode)`
