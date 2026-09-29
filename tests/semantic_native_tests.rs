@@ -538,3 +538,125 @@ fn preexisting_unembedded_nodes_show_as_pending() {
     assert_eq!(row["pending_count"], Value::Integer(0));
     assert_eq!(row["state"], Value::String("enabled".to_string()));
 }
+
+// ----- #536: targets on the node's dedicated `body` / `title` fields ----------
+//
+// Cypher `CREATE` / `SET` keep `title` and `body` in the node's own fields, not
+// in its property map, so a target naming either used to be silently ignored:
+// no embed on write, no re-embed on SET, no backlog, no backfill.
+
+fn calls_now(calls: &Arc<AtomicUsize>) -> usize {
+    calls.load(Ordering::SeqCst)
+}
+
+fn embedded_docs(svc: &NativeService) -> Value {
+    run(
+        svc,
+        "MATCH (d:Doc) WHERE d.embedding IS NOT NULL RETURN count(d) AS n",
+    )[0][0]
+        .clone()
+}
+
+#[test]
+fn a_body_target_auto_embeds_on_create() {
+    let rt = Runtime::new().expect("runtime");
+    let (addr, calls) = spawn_counting_stub(&rt);
+    let svc = service_with_embedder(addr);
+    run(
+        &svc,
+        "CALL drevo.semantic.register('Doc', 'body', 'embedding', 'auto') YIELD label RETURN label",
+    );
+    run(&svc, "CREATE (:Doc {title: 'd1', body: 'hello world'})");
+    assert!(
+        embedding_of(&svc, "d1").is_some(),
+        "body text embedded on CREATE"
+    );
+    assert_eq!(calls_now(&calls), 1);
+
+    // No body text → nothing to embed.
+    run(&svc, "CREATE (:Doc {title: 'd2'})");
+    assert!(embedding_of(&svc, "d2").is_none());
+    assert_eq!(calls_now(&calls), 1);
+
+    // The direct (REST) create path reads the body field too.
+    svc.create_node(NewNode {
+        kind: "Doc".to_string(),
+        title: "d3".to_string(),
+        body: "via the API".to_string(),
+        body_html: String::new(),
+        properties: Properties(HashMap::new()),
+    })
+    .expect("create");
+    assert!(
+        embedding_of(&svc, "d3").is_some(),
+        "body embedded on create_node"
+    );
+}
+
+#[test]
+fn a_title_target_embeds_real_titles_but_not_synthetic_ones() {
+    let rt = Runtime::new().expect("runtime");
+    let (addr, calls) = spawn_counting_stub(&rt);
+    let svc = service_with_embedder(addr);
+    run(
+        &svc,
+        "CALL drevo.semantic.register('Doc', 'title', 'embedding', 'auto') YIELD label RETURN label",
+    );
+    run(&svc, "CREATE (:Doc {title: 'Quarterly plan'})");
+    assert!(embedding_of(&svc, "Quarterly plan").is_some());
+    // No title given → drevo synthesises a unique placeholder, which is not
+    // text worth embedding.
+    run(&svc, "CREATE (:Doc {x: 1})");
+    assert_eq!(embedded_docs(&svc), Value::Integer(1));
+    assert_eq!(calls_now(&calls), 1);
+}
+
+#[test]
+fn set_body_re_embeds_and_skips_an_unchanged_body() {
+    let rt = Runtime::new().expect("runtime");
+    let (addr, calls) = spawn_counting_stub(&rt);
+    let svc = service_with_embedder(addr);
+    run(
+        &svc,
+        "CALL drevo.semantic.register('Doc', 'body', 'embedding', 'auto') YIELD label RETURN label",
+    );
+    run(&svc, "CREATE (:Doc {title: 'd', body: 'v1'})");
+    assert_eq!(embedding_of(&svc, "d"), Some(json!([0.0, 0.0])));
+
+    run(&svc, "MATCH (n:Doc {title: 'd'}) SET n.body = 'v2'");
+    assert_eq!(calls_now(&calls), 2, "a new body is re-embedded");
+    assert_eq!(embedding_of(&svc, "d"), Some(json!([1.0, 0.0])));
+
+    run(&svc, "MATCH (n:Doc {title: 'd'}) SET n.body = 'v2'");
+    assert_eq!(calls_now(&calls), 2, "an unchanged body is not re-embedded");
+
+    // The map-merge SET path.
+    run(&svc, "MATCH (n:Doc {title: 'd'}) SET n += {body: 'v3'}");
+    assert_eq!(calls_now(&calls), 3);
+    assert_eq!(embedding_of(&svc, "d"), Some(json!([2.0, 0.0])));
+}
+
+#[test]
+fn a_body_backlog_is_reported_and_backfilled() {
+    let rt = Runtime::new().expect("runtime");
+    let (addr, _calls) = spawn_counting_stub(&rt);
+    let svc = service_with_embedder(addr);
+    // Written before the target exists → not embedded yet.
+    run(
+        &svc,
+        "CREATE (:Doc {title: 'a', body: 'first'}), (:Doc {title: 'b', body: 'second'})",
+    );
+    run(
+        &svc,
+        "CALL drevo.semantic.register('Doc', 'body', 'embedding', 'auto') YIELD label RETURN label",
+    );
+    assert_eq!(status_row(&svc, "Doc")["pending_count"], Value::Integer(2));
+
+    let embedded = run(
+        &svc,
+        "CALL drevo.semantic.reindex('Doc', 'embedding', 10) YIELD embedded RETURN embedded",
+    );
+    assert_eq!(embedded, vec![vec![Value::Integer(2)]]);
+    assert_eq!(status_row(&svc, "Doc")["pending_count"], Value::Integer(0));
+    assert_eq!(embedded_docs(&svc), Value::Integer(2));
+}

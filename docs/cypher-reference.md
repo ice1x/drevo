@@ -1102,7 +1102,9 @@ get real answers.
 `CALL drevo.semantic.register(label, text_property, embedding_property, mode)`
 registers a **server-side auto-embedding** target: nodes of `label` have the
 text in `text_property` embedded into `embedding_property`. `mode` is `'auto'`
-or `'manual'`. It yields the target's control-plane record — `label`,
+or `'manual'`. `text_property` may be any string property or the node's own
+`title` / `body` field; a placeholder title drevo generated for an untitled
+node is never embedded. It yields the target's control-plane record — `label`,
 `text_property`, `embedding_property`, `state`, `mode`:
 
 ```cypher
