@@ -191,6 +191,49 @@ fn auto_embedded_messages_are_recalled_semantically() {
     assert_eq!(texts(&res), vec!["first turn", "second turn"]);
 }
 
+/// The whole loop server-side, no client Cypher: turns written with the native
+/// `drevo.memory.addMessage` are auto-embedded on write (the procedure goes
+/// through the regular CREATE path) and recalled by meaning.
+#[test]
+fn native_add_message_turns_are_auto_embedded_and_recalled() {
+    let rt = Runtime::new().expect("runtime");
+    let db = db_with_stub(&rt, Captured::default());
+    run_ok(
+        &db,
+        "CALL drevo.semantic.register('Message', 'text', 'embedding', 'auto') \
+         YIELD label RETURN label",
+    );
+    for (session, text) in [
+        ("s1", "deploy went fine"),
+        ("s1", "ok thanks"),
+        ("s2", "other"),
+    ] {
+        run_ok(
+            &db,
+            &format!(
+                "CALL drevo.memory.addMessage('{session}', 'user', '{text}') YIELD node \
+                 RETURN node"
+            ),
+        );
+    }
+    let embedded = run_ok(
+        &db,
+        "MATCH (m:Message {session: 's1'}) WHERE m.embedding IS NOT NULL RETURN count(m) AS n",
+    );
+    assert_eq!(
+        embedded.rows[0][0],
+        Value::Integer(2),
+        "both turns embedded on write"
+    );
+
+    let res = run_ok(
+        &db,
+        "CALL drevo.memory.recallSemantic('s1', 'how was the release?', 10) YIELD node \
+         RETURN node.text AS text ORDER BY text",
+    );
+    assert_eq!(texts(&res), vec!["deploy went fine", "ok thanks"]);
+}
+
 #[test]
 fn recall_semantic_without_embedder_reports_a_capability_error() {
     let db = NativeService::in_memory();

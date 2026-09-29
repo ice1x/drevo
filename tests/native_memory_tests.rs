@@ -1,15 +1,20 @@
-//! Native agent-memory recall over the native engine (issue #533):
-//! `CALL drevo.memory.recall(session, query, k)` (BM25),
+//! Native agent memory over the native engine (issue #533).
+//!
+//! Reads: `CALL drevo.memory.recall(session, query, k)` (BM25),
 //! `CALL drevo.memory.recallVector(session, vector, k)` (cosine) and
 //! `CALL drevo.memory.getConversation(session, limit)`. The server-side
 //! text-embedding variant, `drevo.memory.recallSemantic`, needs an embedder and
 //! lives in `tests/semantic_memory_tests.rs` (feature `embeddings-proxy`).
 //!
-//! These read the `:Message { session, seq, role, text, body }` short-term
-//! memory chain the agent-memory MCP (drevo-mcp #15/#16) writes — here seeded
-//! with Cypher `CREATE` (with `body = text`, so the full-text index reaches it).
-//! Runs through [`NativeService::execute`], which wires the FTS index the recall
-//! procedure reuses.
+//! Writes: `CALL drevo.memory.addMessage(session, role, text)` and
+//! `CALL drevo.memory.recordReasoning(session, step, tool, outcome)` build the
+//! same graph the agent-memory MCP (drevo-mcp #15/#16) writes with Cypher — a
+//! `:Message { id, session, seq, role, text, body, created_at }` chain linked by
+//! `:NEXT`, and `:ReasoningTrace` nodes `:INITIATED_BY` the latest message.
+//!
+//! The read tests seed with Cypher `CREATE` (with `body = text`, so the
+//! full-text index reaches it). Runs through [`NativeService::execute`], which
+//! wires the FTS index the recall procedure reuses.
 
 use std::collections::HashMap;
 
@@ -213,4 +218,225 @@ fn get_conversation_keeps_the_most_recent_limit() {
         })
         .collect();
     assert_eq!(got, vec!["m3", "m4"]);
+}
+
+// ----- writes: drevo.memory.addMessage / drevo.memory.recordReasoning -------
+
+fn add_msg(svc: &NativeService, session: &str, role: &str, text: &str) -> ExecResult {
+    run_ok(
+        svc,
+        &format!(
+            "CALL drevo.memory.addMessage('{session}', '{role}', '{text}') YIELD node \
+             RETURN node.seq AS seq, node.role AS role, node.text AS text, node.body AS body, \
+             node.id IS NOT NULL AS has_id, node.created_at IS NOT NULL AS has_ts"
+        ),
+    )
+}
+
+fn ints(res: &ExecResult, col: usize) -> Vec<i64> {
+    res.rows
+        .iter()
+        .map(|r| match &r[col] {
+            Value::Integer(i) => *i,
+            other => panic!("expected an integer, got {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn add_message_yields_the_stored_message() {
+    let svc = NativeService::in_memory();
+    let res = add_msg(&svc, "s", "user", "hello there");
+    assert_eq!(res.rows.len(), 1);
+    let row = &res.rows[0];
+    assert_eq!(
+        row[0],
+        Value::Integer(1),
+        "first message of a session is seq 1"
+    );
+    assert_eq!(row[1], Value::String("user".into()));
+    assert_eq!(row[2], Value::String("hello there".into()));
+    // `text` is mirrored into `body` so the full-text index reaches it.
+    assert_eq!(row[3], Value::String("hello there".into()));
+    assert_eq!(row[4], Value::Bool(true), "has an id");
+    assert_eq!(row[5], Value::Bool(true), "has a created_at timestamp");
+    assert_eq!(res.stats.nodes_created, 1);
+    assert_eq!(
+        res.stats.relationships_created, 0,
+        "no predecessor, no :NEXT"
+    );
+}
+
+#[test]
+fn add_message_chains_the_session_with_seq_and_next() {
+    let svc = NativeService::in_memory();
+    add_msg(&svc, "s", "user", "one");
+    let second = add_msg(&svc, "s", "assistant", "two");
+    assert_eq!(second.stats.nodes_created, 1);
+    assert_eq!(
+        second.stats.relationships_created, 1,
+        "linked to its predecessor"
+    );
+    add_msg(&svc, "s", "user", "three");
+
+    let chain = run_ok(
+        &svc,
+        "MATCH (a:Message {session: 's'})-[:NEXT]->(b:Message) \
+         RETURN a.seq AS from, b.seq AS to ORDER BY from",
+    );
+    assert_eq!(ints(&chain, 0), vec![1, 2]);
+    assert_eq!(ints(&chain, 1), vec![2, 3]);
+
+    let convo = run_ok(
+        &svc,
+        "CALL drevo.memory.getConversation('s', 10) YIELD node RETURN node.text AS text",
+    );
+    assert_eq!(texts(&convo), vec!["one", "two", "three"]);
+}
+
+#[test]
+fn add_message_sessions_are_independent() {
+    let svc = NativeService::in_memory();
+    add_msg(&svc, "a", "user", "a1");
+    add_msg(&svc, "a", "user", "a2");
+    let b1 = add_msg(&svc, "b", "user", "b1");
+    assert_eq!(ints(&b1, 0), vec![1], "a new session restarts at seq 1");
+    assert_eq!(
+        b1.stats.relationships_created, 0,
+        "never linked across sessions"
+    );
+}
+
+#[test]
+fn added_messages_are_recallable() {
+    let svc = NativeService::in_memory();
+    add_msg(&svc, "s", "user", "the zqxdelta rollout");
+    add_msg(&svc, "s", "assistant", "noted");
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.recall('s', 'zqxdelta', 5) YIELD node RETURN node.text AS text",
+    );
+    assert_eq!(texts(&res), vec!["the zqxdelta rollout"]);
+}
+
+#[test]
+fn record_reasoning_links_the_trace_to_the_latest_message() {
+    let svc = NativeService::in_memory();
+    add_msg(&svc, "s", "user", "first");
+    add_msg(&svc, "s", "user", "please deploy");
+
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.recordReasoning('s', 'decided to deploy', 'shell', 'ok') YIELD node \
+         RETURN node.step AS step, node.tool AS tool, node.outcome AS outcome, \
+         node.session AS session, node.id IS NOT NULL AS has_id",
+    );
+    assert_eq!(
+        res.rows[0],
+        vec![
+            Value::String("decided to deploy".into()),
+            Value::String("shell".into()),
+            Value::String("ok".into()),
+            Value::String("s".into()),
+            Value::Bool(true),
+        ]
+    );
+    assert_eq!(res.stats.nodes_created, 1);
+    assert_eq!(res.stats.relationships_created, 1);
+
+    let link = run_ok(
+        &svc,
+        "MATCH (t:ReasoningTrace)-[:INITIATED_BY]->(m:Message) RETURN m.text AS text",
+    );
+    assert_eq!(texts(&link), vec!["please deploy"]);
+}
+
+#[test]
+fn record_reasoning_without_messages_or_optional_fields() {
+    let svc = NativeService::in_memory();
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.recordReasoning('empty', 'thinking', null, null) YIELD node \
+         RETURN node.step AS step, node.tool AS tool, node.outcome AS outcome",
+    );
+    assert_eq!(
+        res.rows[0],
+        vec![Value::String("thinking".into()), Value::Null, Value::Null]
+    );
+    assert_eq!(res.stats.nodes_created, 1);
+    assert_eq!(
+        res.stats.relationships_created, 0,
+        "no message to anchor to"
+    );
+}
+
+#[test]
+fn standalone_add_message_call_returns_the_node_column() {
+    let svc = NativeService::in_memory();
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.addMessage('s', 'user', 'bare call')",
+    );
+    assert_eq!(res.columns, vec!["node".to_string()]);
+    assert!(matches!(res.rows[0][0], Value::Node(_)));
+}
+
+// ----- durability: the memory chain survives a reopen -----------------------
+
+static NEXT_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn tmp_wal() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "drevo_memory_{}_{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("native.wal")
+}
+
+/// An agent session that spans a server restart: the turns and the reasoning
+/// written before the restart are replayed after it, and the next turn
+/// continues the same chain (seq and `:NEXT`) instead of starting over.
+#[test]
+fn memory_chain_survives_a_reopen_and_keeps_growing() {
+    let wal = tmp_wal();
+    {
+        let svc = NativeService::open(&wal).unwrap();
+        add_msg(&svc, "agent", "user", "remember the zqxepsilon port");
+        add_msg(&svc, "agent", "assistant", "stored");
+        run_ok(
+            &svc,
+            "CALL drevo.memory.recordReasoning('agent', 'saved port to memory', null, 'ok') \
+             YIELD node RETURN node",
+        );
+    }
+    let svc = NativeService::open(&wal).unwrap();
+    let third = add_msg(&svc, "agent", "user", "what port?");
+    assert_eq!(ints(&third, 0), vec![3], "seq continues after the reopen");
+    assert_eq!(
+        third.stats.relationships_created, 1,
+        ":NEXT from the pre-restart turn"
+    );
+
+    let convo = run_ok(
+        &svc,
+        "CALL drevo.memory.getConversation('agent', 10) YIELD node RETURN node.text AS text",
+    );
+    assert_eq!(
+        texts(&convo),
+        vec!["remember the zqxepsilon port", "stored", "what port?"]
+    );
+    let recalled = run_ok(
+        &svc,
+        "CALL drevo.memory.recall('agent', 'zqxepsilon', 3) YIELD node RETURN node.text AS text",
+    );
+    assert_eq!(texts(&recalled), vec!["remember the zqxepsilon port"]);
+    let trace = run_ok(
+        &svc,
+        "MATCH (t:ReasoningTrace {session: 'agent'})-[:INITIATED_BY]->(m:Message) \
+         RETURN m.text AS text",
+    );
+    assert_eq!(texts(&trace), vec!["stored"]);
+    let _ = std::fs::remove_dir_all(wal.parent().unwrap());
 }
