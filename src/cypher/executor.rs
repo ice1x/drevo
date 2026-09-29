@@ -157,7 +157,7 @@ use crate::cypher::ast::{
     Expression, ForeachClause, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause,
     NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query,
     RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery, UnaryOp,
-    UnionKind, UnwindClause,
+    UnionKind, UnwindClause, YieldItem,
 };
 use crate::cypher::lexer::Span;
 use crate::engine::GraphEngine;
@@ -1105,6 +1105,12 @@ fn execute_single(
         executor.run_clause(clause)?;
     }
 
+    // A query that ends in `CALL … YIELD …` (or `SHOW … [YIELD …] [WHERE …]`)
+    // returns the yielded columns, as in Neo4j.
+    if let Some(Clause::Call(c)) = single.clauses.last() {
+        executor.project_trailing_yield(c);
+    }
+
     // The trailing RETURN (if any) populated `result_rows`; if no
     // RETURN was present, we hand back an empty rowset with the stats.
     Ok(executor.take_result())
@@ -1250,6 +1256,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
                           drevo.semantic.reindexRel, drevo.cypher.fromText, \
                           db.index.vector.queryNodes, db.index.fulltext.queryNodes, \
+                          db.index.vector.queryRelationships, \
+                          db.showIndexes (SHOW INDEXES), db.showConstraints (SHOW CONSTRAINTS), \
                           drevo.memory.recall, drevo.memory.recallVector, \
                           drevo.memory.recallSemantic, drevo.memory.getConversation, \
                           drevo.memory.addMessage, drevo.memory.recordReasoning, \
@@ -2261,6 +2269,38 @@ impl<'a> Executor<'a> {
         Err(Self::engine_capability("semantic embedding"))
     }
 
+    /// Project the rows of a query whose last clause is `CALL … YIELD …`: the
+    /// yielded columns (by alias, else name), one row per binding. A `CALL`
+    /// without `YIELD` already set the result itself.
+    fn project_trailing_yield(&mut self, c: &CallClause) {
+        let Some(items) = &c.yields else {
+            return;
+        };
+        let names: Vec<String> = if items.is_empty() {
+            procedure_columns(&c.name.join("."))
+                .unwrap_or(&[])
+                .iter()
+                .map(|col| (*col).to_string())
+                .collect()
+        } else {
+            items
+                .iter()
+                .map(|i| i.alias.clone().unwrap_or_else(|| i.name.clone()))
+                .collect()
+        };
+        self.result_rows = self
+            .bindings
+            .iter()
+            .map(|row| {
+                names
+                    .iter()
+                    .map(|n| row.get(n).cloned().unwrap_or(Value::Null))
+                    .collect()
+            })
+            .collect();
+        self.result_columns = names;
+    }
+
     fn take_result(self) -> ExecResult {
         ExecResult {
             columns: self.result_columns,
@@ -2296,7 +2336,12 @@ impl<'a> Executor<'a> {
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE VECTOR INDEX"))?;
-        svc.vector_index_create(&c.name, &c.label, &c.property, c.if_not_exists)
+        let entity = if c.relationship {
+            crate::vector_index_registry::VectorIndexEntity::Relationship
+        } else {
+            crate::vector_index_registry::VectorIndexEntity::Node
+        };
+        svc.vector_index_create(&c.name, &c.label, &c.property, entity, c.if_not_exists)
             .map_err(|e| ExecError::InvalidMutation(e.to_string()))?;
         Ok(())
     }
@@ -4434,6 +4479,15 @@ impl<'a> Executor<'a> {
 
         match &c.yields {
             Some(items) => {
+                // An empty list is `YIELD *` / a bare `SHOW … WHERE` (the
+                // grammar produces it for nothing else): every column.
+                let all_columns;
+                let items = if items.is_empty() {
+                    all_columns = yield_all(columns, c.span);
+                    &all_columns
+                } else {
+                    items
+                };
                 // Map each yielded column name to its position in the
                 // procedure's output signature.
                 let prior = std::mem::take(&mut self.bindings);
@@ -4737,20 +4791,152 @@ impl<'a> Executor<'a> {
         let query_val = self.eval(&args[2], &empty)?;
         let query = similar_operand(&query_val, "db.index.vector.queryNodes", "query", span)?;
 
+        let index = self.named_vector_index(
+            "db.index.vector.queryNodes",
+            &name,
+            crate::vector_index_registry::VectorIndexEntity::Node,
+            span,
+        )?;
+        self.vector_scan(&index.label, &index.property, &query, k, span)
+    }
+
+    /// Resolve a named vector index for `proc_name`, which serves `entity`
+    /// indexes. Errors when no index has that name, or when it indexes the
+    /// other kind of entity (naming the procedure that serves it).
+    fn named_vector_index(
+        &self,
+        proc_name: &str,
+        name: &str,
+        entity: crate::vector_index_registry::VectorIndexEntity,
+        span: Span,
+    ) -> ExecResultT<crate::vector_index_registry::VectorIndex> {
+        use crate::vector_index_registry::VectorIndexEntity;
         let svc = self
             .native_semantic
-            .ok_or_else(|| Self::engine_capability("db.index.vector.queryNodes"))?;
-        let index = svc
-            .vector_index_get(&name)
-            .ok_or_else(|| ExecError::InvalidProcedureCall {
-                name: "db.index.vector.queryNodes".to_string(),
-                message: format!(
-                    "no vector index named `{name}` — create it with \
-                     `CREATE VECTOR INDEX {name} FOR (n:Label) ON (n.property)`"
+            .ok_or_else(|| Self::engine_capability(proc_name))?;
+        let err = |message: String| ExecError::InvalidProcedureCall {
+            name: proc_name.to_string(),
+            message,
+            span,
+        };
+        let index = svc.vector_index_get(name).ok_or_else(|| {
+            err(format!(
+                "no vector index named `{name}` — create it with \
+                 `CREATE VECTOR INDEX {name} FOR (n:Label) ON (n.property)`"
+            ))
+        })?;
+        if index.entity != entity {
+            let (kind, other) = match index.entity {
+                VectorIndexEntity::Node => ("node", "db.index.vector.queryNodes"),
+                VectorIndexEntity::Relationship => {
+                    ("relationship", "db.index.vector.queryRelationships")
+                }
+            };
+            return Err(err(format!(
+                "`{name}` is a {kind} vector index — query it with {other}"
+            )));
+        }
+        Ok(index)
+    }
+
+    /// `CALL db.index.vector.queryRelationships(indexName, k, queryVector)
+    /// YIELD relationship, score` (issue #532) — the relationship counterpart
+    /// of `queryNodes`: resolves a relationship vector index (`CREATE VECTOR
+    /// INDEX … FOR ()-[r:TYPE]-() ON (r.property)`) and cosine-ranks the edges
+    /// of that type. What neo4j-graphrag calls for relationship embeddings.
+    fn proc_db_index_vector_query_relationships(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        const PROC: &str = "db.index.vector.queryRelationships";
+        // Arity (3) is already enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[1], &empty)?;
+        let query_val = self.eval(&args[2], &empty)?;
+        let query = similar_operand(&query_val, PROC, "query", span)?;
+        let index = self.named_vector_index(
+            PROC,
+            &name,
+            crate::vector_index_registry::VectorIndexEntity::Relationship,
+            span,
+        )?;
+        self.rel_vector_scan(&index.label, &index.property, &query, k, span)
+    }
+
+    /// `SHOW [type] INDEXES [YIELD …] [WHERE …]` (issue #532), run as
+    /// `CALL db.showIndexes(type)`: one row per named vector index, in Neo4j's
+    /// `SHOW INDEXES` column layout (see [`procedure_columns`]). `type` is the
+    /// optional type word (`VECTOR`, `RANGE`, …) or `ALL`; every index drevo
+    /// names is a `VECTOR` index, so any other type lists nothing. drevo's
+    /// automatic property / label / full-text indexes have no names and are not
+    /// listed, and the no-op `CREATE INDEX` DDL registers nothing.
+    fn proc_show_indexes(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        use crate::vector_index_registry::VectorIndexEntity;
+        let empty = Bindings::new();
+        let filter = self.eval(&args[0], &empty)?.as_string(span)?.to_uppercase();
+        if filter != "ALL" && filter != "VECTOR" {
+            return Ok(Vec::new());
+        }
+        let Some(svc) = self.native_semantic else {
+            return Ok(Vec::new());
+        };
+        let strings = |items: &[&str]| {
+            Value::List(
+                items
+                    .iter()
+                    .map(|s| Value::String((*s).to_string()))
+                    .collect(),
+            )
+        };
+        let mut rows = Vec::new();
+        for (i, index) in svc.vector_index_list().into_iter().enumerate() {
+            let entity = match index.entity {
+                VectorIndexEntity::Node => "NODE",
+                VectorIndexEntity::Relationship => "RELATIONSHIP",
+            };
+            let options = Value::Map(BTreeMap::from([
+                (
+                    "indexProvider".to_string(),
+                    Value::String("vector-2.0".to_string()),
                 ),
-                span,
-            })?;
-        self.vector_scan(&index.label, &index.property, &query, k, span)
+                (
+                    "indexConfig".to_string(),
+                    Value::Map(BTreeMap::from([(
+                        "vector.similarity_function".to_string(),
+                        Value::String("COSINE".to_string()),
+                    )])),
+                ),
+            ]));
+            rows.push(vec![
+                Value::Integer(i64::try_from(i).unwrap_or(i64::MAX) + 1),
+                Value::String(index.name.clone()),
+                Value::String("ONLINE".to_string()),
+                Value::Float(100.0),
+                Value::String("VECTOR".to_string()),
+                Value::String(entity.to_string()),
+                strings(&[index.label.as_str()]),
+                strings(&[index.property.as_str()]),
+                Value::String("vector-2.0".to_string()),
+                Value::Null,
+                options,
+            ]);
+        }
+        Ok(rows)
+    }
+
+    /// `SHOW [type] CONSTRAINTS [YIELD …] [WHERE …]` (issue #532), run as
+    /// `CALL db.showConstraints(type)`. drevo enforces no constraints — `CREATE
+    /// CONSTRAINT` is accepted as a no-op — so this lists none, which is what
+    /// lets a client's check-then-create schema bootstrap proceed.
+    fn proc_show_constraints(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let _filter = self.eval(&args[0], &Bindings::new())?.as_string(span)?;
+        Ok(Vec::new())
     }
 
     /// `CALL db.index.fulltext.queryNodes(indexName, queryString) YIELD node,
@@ -6090,9 +6276,8 @@ impl<'a> Executor<'a> {
     }
 
     /// Brute-force cosine scan over **edges** of `rel_type` (#266) — the edge
-    /// analogue of [`Self::vector_scan`]. Emits `(rel, score)` rows. Only the
-    /// `http`-gated `queryRel` calls it, so it is gated too.
-    #[cfg(feature = "http")]
+    /// analogue of [`Self::vector_scan`]. Emits `(rel, score)` rows. Serves
+    /// `drevo.semantic.queryRel` and `db.index.vector.queryRelationships`.
     fn rel_vector_scan(
         &self,
         rel_type: &str,
@@ -6312,6 +6497,11 @@ impl<'a> Executor<'a> {
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
             "db.index.vector.queryNodes" => self.proc_db_index_vector_query_nodes(args, span),
+            "db.index.vector.queryRelationships" => {
+                self.proc_db_index_vector_query_relationships(args, span)
+            }
+            "db.showIndexes" => self.proc_show_indexes(args, span),
+            "db.showConstraints" => self.proc_show_constraints(args, span),
             "db.index.fulltext.queryNodes" => self.proc_db_index_fulltext_query_nodes(args, span),
             "drevo.memory.recall" => self.proc_memory_recall(args, span),
             "drevo.memory.recallVector" => self.proc_memory_recall_vector(args, span),
@@ -7858,6 +8048,19 @@ impl<'a> Executor<'a> {
 
 // ===== Pure helpers =========================================================
 
+/// `YIELD` items for every output column of a procedure — what `YIELD *` / a
+/// bare `SHOW … WHERE` means.
+fn yield_all(columns: &[&str], span: Span) -> Vec<YieldItem> {
+    columns
+        .iter()
+        .map(|col| YieldItem {
+            name: (*col).to_string(),
+            alias: None,
+            span,
+        })
+        .collect()
+}
+
 /// The POLE+O long-term memory entity types (issue #533) — neo4j-agent-memory's
 /// `type` values — each with the PascalCase label an entity carries next to
 /// `:Entity`.
@@ -7952,6 +8155,31 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // Neo4j-compatible index procedures (issue #532): same (node, score)
         // contract as their drevo-native counterparts.
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
+        "db.index.vector.queryRelationships" => Some(&["relationship", "score"]),
+        // `SHOW INDEXES` / `SHOW CONSTRAINTS` (issue #532), in Neo4j's layout.
+        "db.showIndexes" => Some(&[
+            "id",
+            "name",
+            "state",
+            "populationPercent",
+            "type",
+            "entityType",
+            "labelsOrTypes",
+            "properties",
+            "indexProvider",
+            "owningConstraint",
+            "options",
+        ]),
+        "db.showConstraints" => Some(&[
+            "id",
+            "name",
+            "type",
+            "entityType",
+            "labelsOrTypes",
+            "properties",
+            "ownedIndex",
+            "propertyType",
+        ]),
         // Agent-memory recall (issue #533): session-scoped BM25 over :Message.
         "drevo.memory.recall" => Some(&["node", "score"]),
         // Agent-memory recall by meaning (issue #533): session-scoped cosine
@@ -8033,6 +8261,10 @@ fn procedure_arity(name: &str) -> usize {
         "db.index.vector.queryNodes" => 3,
         // db.index.fulltext.queryNodes(indexName, queryString) (issue #532).
         "db.index.fulltext.queryNodes" => 2,
+        // db.index.vector.queryRelationships(indexName, k, queryVector) (issue #532).
+        "db.index.vector.queryRelationships" => 3,
+        // SHOW [type] INDEXES / CONSTRAINTS → db.showIndexes(type) (issue #532).
+        "db.showIndexes" | "db.showConstraints" => 1,
         // drevo.memory.recall(session, query, k) (issue #533).
         "drevo.memory.recall" => 3,
         // drevo.memory.recallVector(session, vector, k) (issue #533).

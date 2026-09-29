@@ -378,10 +378,14 @@ pub struct SearchClause {
 pub struct CreateVectorIndex {
     /// The index name (`CREATE VECTOR INDEX <name>`). Case-sensitive, like Neo4j.
     pub name: String,
-    /// Node label the index covers (`FOR (n:Label)`).
+    /// Node label the index covers (`FOR (n:Label)`), or the relationship type
+    /// for a relationship index (`FOR ()-[r:TYPE]-()`).
     pub label: String,
     /// Embedding property the index targets (`ON (n.property)`).
     pub property: String,
+    /// `true` for a relationship index (`FOR ()-[r:TYPE]-()`), queried with
+    /// `db.index.vector.queryRelationships`.
+    pub relationship: bool,
     /// `IF NOT EXISTS` was given — a name clash is a no-op rather than an error.
     pub if_not_exists: bool,
     /// Source span of the `CREATE` keyword.

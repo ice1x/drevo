@@ -175,6 +175,9 @@ fn needs_runtime_config(source: &str) -> bool {
         || source.contains("drevo.semantic.embed")
         || source.contains("drevo.engine.status")
         || source.contains("db.index.vector.queryNodes")
+        // Same for `db.index.vector.queryRelationships` (#532): covered in
+        // `tests/neo4j_show_indexes_tests.rs`.
+        || source.contains("db.index.vector.queryRelationships")
 }
 
 #[test]

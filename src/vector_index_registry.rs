@@ -17,6 +17,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// What a vector index covers: node embeddings (`FOR (n:Label)`) or
+/// relationship embeddings (`FOR ()-[r:TYPE]-()`). Neo4j's `entityType`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VectorIndexEntity {
+    /// A node index, queried with `db.index.vector.queryNodes`.
+    #[default]
+    Node,
+    /// A relationship index, queried with `db.index.vector.queryRelationships`.
+    Relationship,
+}
+
 /// One named vector index: a Neo4j-compatible `name` bound to the
 /// `(label, property)` whose embeddings it targets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,10 +36,15 @@ pub struct VectorIndex {
     /// The index name, as given to `CREATE VECTOR INDEX <name>` and looked up by
     /// `db.index.vector.queryNodes(<name>, …)`. Case-sensitive, like Neo4j.
     pub name: String,
-    /// Node label the index covers (the `FOR (n:Label)` label).
+    /// Node label (the `FOR (n:Label)` label) or, for a relationship index,
+    /// relationship type (the `FOR ()-[r:TYPE]-()` type) the index covers.
     pub label: String,
     /// Embedding property the index targets (the `ON (n.property)` property).
     pub property: String,
+    /// Node or relationship index. Absent in sidecars written before
+    /// relationship indexes existed, which were all node indexes.
+    #[serde(default)]
+    pub entity: VectorIndexEntity,
 }
 
 /// Errors from vector-index registry operations.
@@ -72,10 +89,11 @@ impl VectorIndexRegistry {
 
     /// Register a new vector index.
     ///
-    /// `CREATE VECTOR INDEX <name> FOR (n:label) ON (n:property)`. When
-    /// `if_not_exists` is set (the `IF NOT EXISTS` form) a name clash is a no-op;
-    /// otherwise it is [`VectorIndexError::AlreadyExists`]. Matches Neo4j, where a
-    /// name is unique across all index types.
+    /// `CREATE VECTOR INDEX <name> FOR (n:label) ON (n.property)` (or, with
+    /// [`VectorIndexEntity::Relationship`], `FOR ()-[r:label]-() ON
+    /// (r.property)`). When `if_not_exists` is set (the `IF NOT EXISTS` form) a
+    /// name clash is a no-op; otherwise it is [`VectorIndexError::AlreadyExists`].
+    /// Matches Neo4j, where a name is unique across all index types.
     ///
     /// # Errors
     /// [`VectorIndexError::AlreadyExists`] if `name` is taken and `if_not_exists`
@@ -85,6 +103,7 @@ impl VectorIndexRegistry {
         name: String,
         label: String,
         property: String,
+        entity: VectorIndexEntity,
         if_not_exists: bool,
     ) -> Result<VectorIndex, VectorIndexError> {
         if let Some(existing) = self.get(&name) {
@@ -97,6 +116,7 @@ impl VectorIndexRegistry {
             name,
             label,
             property,
+            entity,
         };
         self.indexes.push(index.clone());
         Ok(index)
@@ -134,6 +154,7 @@ mod tests {
                 "moviePlots".into(),
                 "Movie".into(),
                 "plotEmbedding".into(),
+                VectorIndexEntity::Node,
                 false,
             )
             .unwrap();
@@ -149,8 +170,14 @@ mod tests {
     #[test]
     fn get_is_case_sensitive_like_neo4j() {
         let mut reg = VectorIndexRegistry::new();
-        reg.create("MoviePlots".into(), "Movie".into(), "e".into(), false)
-            .unwrap();
+        reg.create(
+            "MoviePlots".into(),
+            "Movie".into(),
+            "e".into(),
+            VectorIndexEntity::Node,
+            false,
+        )
+        .unwrap();
         assert!(reg.get("movieplots").is_none());
         assert!(reg.get("MoviePlots").is_some());
     }
@@ -158,10 +185,22 @@ mod tests {
     #[test]
     fn duplicate_name_without_if_not_exists_errors() {
         let mut reg = VectorIndexRegistry::new();
-        reg.create("i".into(), "A".into(), "e".into(), false)
-            .unwrap();
+        reg.create(
+            "i".into(),
+            "A".into(),
+            "e".into(),
+            VectorIndexEntity::Node,
+            false,
+        )
+        .unwrap();
         let err = reg
-            .create("i".into(), "B".into(), "other".into(), false)
+            .create(
+                "i".into(),
+                "B".into(),
+                "other".into(),
+                VectorIndexEntity::Node,
+                false,
+            )
             .unwrap_err();
         assert_eq!(err, VectorIndexError::AlreadyExists("i".into()));
         // The original binding is untouched.
@@ -172,11 +211,23 @@ mod tests {
     #[test]
     fn if_not_exists_is_idempotent_and_keeps_the_original() {
         let mut reg = VectorIndexRegistry::new();
-        reg.create("i".into(), "A".into(), "e".into(), false)
-            .unwrap();
+        reg.create(
+            "i".into(),
+            "A".into(),
+            "e".into(),
+            VectorIndexEntity::Node,
+            false,
+        )
+        .unwrap();
         // Same name, different target, IF NOT EXISTS → no-op, returns the original.
         let got = reg
-            .create("i".into(), "B".into(), "other".into(), true)
+            .create(
+                "i".into(),
+                "B".into(),
+                "other".into(),
+                VectorIndexEntity::Node,
+                true,
+            )
             .unwrap();
         assert_eq!(got.label, "A");
         assert_eq!(got.property, "e");
@@ -186,8 +237,14 @@ mod tests {
     #[test]
     fn drop_removes_and_reports_missing() {
         let mut reg = VectorIndexRegistry::new();
-        reg.create("i".into(), "A".into(), "e".into(), false)
-            .unwrap();
+        reg.create(
+            "i".into(),
+            "A".into(),
+            "e".into(),
+            VectorIndexEntity::Node,
+            false,
+        )
+        .unwrap();
         reg.remove("i", false).unwrap();
         assert!(reg.get("i").is_none());
         // Dropping again without IF EXISTS errors.
@@ -202,10 +259,22 @@ mod tests {
     #[test]
     fn serde_round_trips_as_a_json_array() {
         let mut reg = VectorIndexRegistry::new();
-        reg.create("a".into(), "A".into(), "e".into(), false)
-            .unwrap();
-        reg.create("b".into(), "B".into(), "f".into(), false)
-            .unwrap();
+        reg.create(
+            "a".into(),
+            "A".into(),
+            "e".into(),
+            VectorIndexEntity::Node,
+            false,
+        )
+        .unwrap();
+        reg.create(
+            "b".into(),
+            "B".into(),
+            "f".into(),
+            VectorIndexEntity::Node,
+            false,
+        )
+        .unwrap();
         let json = serde_json::to_string(&reg).unwrap();
         let back: VectorIndexRegistry = serde_json::from_str(&json).unwrap();
         assert_eq!(back, reg);
@@ -216,6 +285,34 @@ mod tests {
                 .map(|i| i.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn sidecar_without_entity_loads_as_node_indexes() {
+        // A semantic.json written before relationship indexes existed.
+        let json = r#"{"indexes":[{"name":"i","label":"A","property":"e"}]}"#;
+        let reg: VectorIndexRegistry = serde_json::from_str(json).unwrap();
+        assert_eq!(reg.get("i").unwrap().entity, VectorIndexEntity::Node);
+    }
+
+    #[test]
+    fn relationship_entity_round_trips() {
+        let mut reg = VectorIndexRegistry::new();
+        reg.create(
+            "r".into(),
+            "SIMILAR".into(),
+            "e".into(),
+            VectorIndexEntity::Relationship,
+            false,
+        )
+        .unwrap();
+        let json = serde_json::to_string(&reg).unwrap();
+        assert!(json.contains(r#""entity":"relationship""#), "{json}");
+        let back: VectorIndexRegistry = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.get("r").unwrap().entity,
+            VectorIndexEntity::Relationship
         );
     }
 }

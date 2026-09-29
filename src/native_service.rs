@@ -864,8 +864,10 @@ impl NativeService {
     // ----- named vector indexes (issue #532) ---------------------------------
 
     /// Register a named vector index (`CREATE VECTOR INDEX <name> FOR (n:label)
-    /// ON (n.property)`), persisting it to the sidecar. `if_not_exists` makes a
-    /// name clash a no-op (the `IF NOT EXISTS` form).
+    /// ON (n.property)`, or over relationships of type `label` for
+    /// [`crate::vector_index_registry::VectorIndexEntity::Relationship`]),
+    /// persisting it to the sidecar. `if_not_exists` makes a name clash a no-op
+    /// (the `IF NOT EXISTS` form).
     ///
     /// # Errors
     /// [`crate::vector_index_registry::VectorIndexError::AlreadyExists`] if the
@@ -875,6 +877,7 @@ impl NativeService {
         name: &str,
         label: &str,
         property: &str,
+        entity: crate::vector_index_registry::VectorIndexEntity,
         if_not_exists: bool,
     ) -> Result<
         crate::vector_index_registry::VectorIndex,
@@ -889,6 +892,7 @@ impl NativeService {
                 name.to_string(),
                 label.to_string(),
                 property.to_string(),
+                entity,
                 if_not_exists,
             )?
         };

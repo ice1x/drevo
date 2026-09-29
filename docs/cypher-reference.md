@@ -859,10 +859,51 @@ the full-text counterpart, aliasing `fts.search`. drevo keeps one global
 full-text index over node title/body, so `indexName` is accepted but does not
 select an index.
 
+Relationship embeddings get the same treatment. `CREATE VECTOR INDEX <name> FOR
+()-[r:TYPE]-() ON (r.property)` (either arrow direction) names a relationship
+index, and `CALL db.index.vector.queryRelationships(indexName, k, queryVector)
+YIELD relationship, score` cosine-ranks the edges of that type. A node index
+cannot be queried with `queryRelationships` or the reverse; the error names the
+right procedure.
+
+```cypher
+CREATE VECTOR INDEX similarEmbedding IF NOT EXISTS
+FOR ()-[r:SIMILAR]-() ON (r.embedding)
+```
+
+```cypher
+CALL db.index.vector.queryRelationships('similarEmbedding', 5, [0.1, 0.2, 0.3])
+YIELD relationship, score
+RETURN relationship, score ORDER BY score DESC
+```
+
 Schema DDL that drevo does not need is **accepted but a no-op**, so a driver's
 bootstrap does not fail: a non-vector `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT]
 INDEX …` and `CREATE CONSTRAINT …` parse and do nothing (drevo auto-indexes and
 enforces no constraints). Only `CREATE VECTOR INDEX` has an effect.
+
+`SHOW [type] INDEXES` lists the named vector indexes in Neo4j's column layout
+(`id`, `name`, `state`, `populationPercent`, `type`, `entityType`,
+`labelsOrTypes`, `properties`, `indexProvider`, `owningConstraint`, `options`),
+with the usual `YIELD …` / `WHERE …` / `RETURN …`, a bare `WHERE`, and
+`YIELD *`. Every named index is a `VECTOR` index, so `SHOW VECTOR INDEXES` and
+`SHOW ALL INDEXES` list them all and another type lists none; drevo's automatic
+indexes have no names and the no-op DDL registers nothing. `SHOW CONSTRAINTS`
+lists nothing, since drevo enforces none. That is exactly what a client's
+check-then-create bootstrap expects, e.g. neo4j-agent-memory's:
+
+```cypher
+SHOW INDEXES YIELD name WHERE name = $name RETURN count(*) AS count
+```
+
+```cypher
+SHOW INDEXES YIELD name, type, entityType, labelsOrTypes, properties
+WHERE type = 'VECTOR'
+RETURN name, entityType, labelsOrTypes, properties
+```
+
+As in Neo4j, a query that ends in `CALL … YIELD …` (or `SHOW …`) returns the
+yielded columns without a `RETURN`.
 
 `CALL fts.search(query, k) YIELD node, score` returns the top-`k` nodes
 matching `query` in the BM25 full-text index (task `00131`), ranked by
