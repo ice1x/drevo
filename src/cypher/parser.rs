@@ -446,8 +446,10 @@ impl Parser {
             // position, so an existing property/variable named `search` still
             // lexes as an identifier and keeps working.
             _ if self.is_soft_keyword("SEARCH") => self.parse_search(),
+            // `SHOW INDEXES` / `SHOW CONSTRAINTS` (issue #532), also a soft keyword.
+            _ if self.is_soft_keyword("SHOW") => self.parse_show(),
             _ => Err(ParseError::Expected {
-                expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, FOREACH, CALL, SEARCH, OPTIONAL, DETACH)".to_string(),
+                expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, FOREACH, CALL, SEARCH, SHOW, OPTIONAL, DETACH)".to_string(),
                 found: format!("{}", self.peek_kind()),
                 span: self.peek_span(),
             }),
@@ -633,10 +635,49 @@ impl Parser {
         };
         self.expect_soft_keyword("FOR")?;
         self.eat(&TokenKind::LParen, "`(` after FOR")?;
-        let _ = self.consume_strict_identifier()?; // pattern variable (n)
-        self.eat(&TokenKind::Colon, "`:` before the index label")?;
-        let (label, _) = self.consume_name()?;
-        self.eat(&TokenKind::RParen, "`)` after the index label")?;
+        let (label, relationship) = if matches!(self.peek_kind(), TokenKind::RParen) {
+            // Relationship index: `FOR ()-[r:TYPE]-()` (either arrow direction).
+            self.consume(); // )
+            if !matches!(self.peek_kind(), TokenKind::Minus | TokenKind::LArrow) {
+                return Err(ParseError::Expected {
+                    expected: "`-[` after `()` in a relationship index pattern".to_string(),
+                    found: format!("{}", self.peek_kind()),
+                    span: self.peek_span(),
+                });
+            }
+            self.consume(); // - or <-
+            self.eat(
+                &TokenKind::LBracket,
+                "`[` in the relationship index pattern",
+            )?;
+            let _ = self.consume_strict_identifier()?; // relationship variable (r)
+            self.eat(&TokenKind::Colon, "`:` before the relationship type")?;
+            let (rel_type, _) = self.consume_name()?;
+            self.eat(&TokenKind::RBracket, "`]` after the relationship type")?;
+            if !matches!(self.peek_kind(), TokenKind::Minus | TokenKind::Arrow) {
+                return Err(ParseError::Expected {
+                    expected: "`-` or `->` after `]` in a relationship index pattern".to_string(),
+                    found: format!("{}", self.peek_kind()),
+                    span: self.peek_span(),
+                });
+            }
+            self.consume(); // - or ->
+            self.eat(
+                &TokenKind::LParen,
+                "`(` closing the relationship index pattern",
+            )?;
+            self.eat(
+                &TokenKind::RParen,
+                "`)` closing the relationship index pattern",
+            )?;
+            (rel_type, true)
+        } else {
+            let _ = self.consume_strict_identifier()?; // pattern variable (n)
+            self.eat(&TokenKind::Colon, "`:` before the index label")?;
+            let (label, _) = self.consume_name()?;
+            self.eat(&TokenKind::RParen, "`)` after the index label")?;
+            (label, false)
+        };
         self.eat(&TokenKind::On, "ON after the FOR pattern")?;
         self.eat(&TokenKind::LParen, "`(` after ON")?;
         let _ = self.consume_strict_identifier()?; // property owner variable (n)
@@ -650,7 +691,75 @@ impl Parser {
             name,
             label,
             property,
+            relationship,
             if_not_exists,
+            span,
+        }))
+    }
+
+    /// Parse `SHOW [<type>] INDEX[ES]` / `SHOW [<type>] CONSTRAINT[S]` with an
+    /// optional `YIELD items | *` and `WHERE pred` (issue #532). It is sugar for
+    /// the built-in `CALL db.showIndexes(type)` / `db.showConstraints(type)`,
+    /// where `type` is the optional type word (`VECTOR`, `RANGE`, …) or `ALL`.
+    /// A bare `WHERE` and `YIELD *` yield every column, encoded as an empty
+    /// `YIELD` list (which the grammar cannot otherwise produce).
+    fn parse_show(&mut self) -> ParseResult<Clause> {
+        let span = self.peek_span();
+        self.consume(); // SHOW
+        let mut filter = "ALL".to_string();
+        let procedure = loop {
+            let word = match self.peek_kind() {
+                TokenKind::Identifier(s) => s.to_uppercase(),
+                // `ALL` lexes as a keyword (`UNION ALL`); `SHOW ALL INDEXES`.
+                TokenKind::All => "ALL".to_string(),
+                other => {
+                    return Err(ParseError::Expected {
+                        expected: "INDEXES or CONSTRAINTS after SHOW".to_string(),
+                        found: format!("{other}"),
+                        span: self.peek_span(),
+                    });
+                }
+            };
+            self.consume();
+            match word.as_str() {
+                "INDEX" | "INDEXES" => break "showIndexes",
+                "CONSTRAINT" | "CONSTRAINTS" => break "showConstraints",
+                _ => filter = word,
+            }
+        };
+
+        let (yields, where_clause) = if matches!(self.peek_kind(), TokenKind::Yield) {
+            self.consume(); // YIELD
+            let items = if matches!(self.peek_kind(), TokenKind::Star) {
+                self.consume(); // *
+                Vec::new()
+            } else {
+                let mut items = vec![self.parse_yield_item()?];
+                while matches!(self.peek_kind(), TokenKind::Comma) {
+                    self.consume();
+                    items.push(self.parse_yield_item()?);
+                }
+                items
+            };
+            let where_clause = if matches!(self.peek_kind(), TokenKind::Where) {
+                self.consume();
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            (Some(items), where_clause)
+        } else if matches!(self.peek_kind(), TokenKind::Where) {
+            self.consume();
+            (Some(Vec::new()), Some(self.parse_expression()?))
+        } else {
+            (None, None)
+        };
+
+        Ok(Clause::Call(CallClause {
+            name: vec!["db".to_string(), procedure.to_string()],
+            args: vec![Expression::String(filter, span)],
+            yields,
+            where_clause,
             span,
         }))
     }
