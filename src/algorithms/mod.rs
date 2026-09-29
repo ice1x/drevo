@@ -47,6 +47,7 @@ mod louvain;
 mod pagerank;
 mod ricci;
 mod scc;
+mod stable_matching;
 mod triangles;
 mod wcc;
 
@@ -56,6 +57,7 @@ pub use louvain::{louvain, LouvainConfig, LouvainResult};
 pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
 pub use ricci::{ricci_curvature, RicciConfig, RicciEdge, RicciResult};
 pub use scc::{scc, SccResult};
+pub use stable_matching::{stable_matching, Preferences};
 pub use triangles::{triangles, TriangleResult};
 pub use wcc::{wcc, WccResult};
 

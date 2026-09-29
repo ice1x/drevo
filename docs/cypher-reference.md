@@ -515,6 +515,31 @@ procedures.
 | `drevo.betweenness()` | `node, score` | Betweenness centrality (Brandes' algorithm) over the directed, unweighted graph; each node's `score` is the number of shortest paths through it, rows most-central first (RFC #307 Phase 8) |
 | `drevo.closeness()` | `node, score` | Harmonic closeness centrality over the directed, unweighted graph; `score` is `Σ 1/d` over all nodes reachable along edge direction (stays finite when disconnected), rows most-central first (RFC #307 Phase 8) |
 | `drevo.ricciCurvature()` | `from, to, curvature` | Ollivier–Ricci curvature of every undirected edge over the unweighted projection (edge direction and weight ignored): `curvature ≤ 1` is negative on bridge-like edges between communities (good cut candidates) and positive inside dense clusters; each edge returned once with `from` the smaller-id endpoint, ascending by `(from, to)` (issue #526) |
+| `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale–Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
+
+### Stable matching (#541)
+
+`drevo.stableMatching` pairs two sides of the graph — mentees and mentors,
+reviewers and papers, candidates and openings — so that no two would both
+rather be with each other than with their assigned partners (a **stable**
+matching, found by Gale–Shapley deferred acceptance). Preferences are ordinary
+edges: each node ranks members of the other side with an outgoing `relType`
+edge carrying a numeric `rankProperty`, lower meaning more preferred. The
+proposing side gets the best partners it can have in any stable matching.
+
+A pair can match only when each side ranks the other; an edge without a numeric
+rank comes after every ranked one (ties by node id). Sides may differ in size —
+unmatched nodes are simply absent. `proposerRank` / `acceptorRank` are the
+ranks each side gave the other, as stored.
+
+```cypher
+CREATE (ann:Mentee {name: 'ann'}), (xia:Mentor {name: 'xia'}),
+       (ann)-[:PREFERS {rank: 1}]->(xia), (xia)-[:PREFERS {rank: 1}]->(ann)
+WITH ann
+CALL drevo.stableMatching('Mentee', 'Mentor', 'PREFERS', 'rank')
+YIELD proposer, acceptor, proposerRank, acceptorRank
+RETURN proposer.name, acceptor.name, proposerRank, acceptorRank
+```
 
 ### CALL
 
