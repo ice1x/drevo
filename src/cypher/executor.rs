@@ -1253,6 +1253,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.memory.recall, drevo.memory.recallVector, \
                           drevo.memory.recallSemantic, drevo.memory.getConversation, \
                           drevo.memory.addMessage, drevo.memory.recordReasoning, \
+                          drevo.memory.rememberEntity, drevo.memory.assertFact, \
+                          drevo.memory.retractFact, drevo.memory.factsAt, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
@@ -4424,6 +4426,9 @@ impl<'a> Executor<'a> {
         let output = match name.as_str() {
             "drevo.memory.addMessage" => self.proc_memory_add_message(&c.args, c.span)?,
             "drevo.memory.recordReasoning" => self.proc_memory_record_reasoning(&c.args, c.span)?,
+            "drevo.memory.rememberEntity" => self.proc_memory_remember_entity(&c.args, c.span)?,
+            "drevo.memory.assertFact" => self.proc_memory_assert_fact(&c.args, c.span)?,
+            "drevo.memory.retractFact" => self.proc_memory_retract_fact(&c.args, c.span)?,
             _ => self.invoke_procedure(&name, &c.args, c.span)?,
         };
 
@@ -4941,52 +4946,63 @@ impl<'a> Executor<'a> {
         Ok(latest)
     }
 
-    /// Create one `label` node with `props` through the regular `CREATE` path
-    /// ([`Self::ensure_node_for_create`]), so a write procedure gets exactly
-    /// what a Cypher `CREATE` gets: `title`/`body` handling, native auto-embed,
-    /// and mutation stats. The values are bound to scratch variables that the
-    /// pattern's property map references.
-    fn memory_create_node(
-        &mut self,
-        label: &str,
-        props: Vec<(&str, Value)>,
-        span: Span,
-    ) -> ExecResultT<Arc<NodeValue>> {
-        let mut row = Bindings::new();
+    /// A pattern property map for `props`: each value is bound to a scratch
+    /// variable in `row`, which the map references, so the regular `CREATE`
+    /// evaluation reads it back unchanged.
+    fn memory_scratch_map(props: Vec<(&str, Value)>, row: &mut Bindings, span: Span) -> MapLiteral {
         let mut entries = Vec::with_capacity(props.len());
         for (key, value) in props {
             let var = format!("__drevo_memory_{key}");
             row.insert(var.clone(), value);
             entries.push((key.to_string(), Expression::Variable(var, span)));
         }
+        MapLiteral { entries, span }
+    }
+
+    /// Create a node with `labels` (the first is its primary label) and
+    /// `props` through the regular `CREATE` path
+    /// ([`Self::ensure_node_for_create`]), so a write procedure gets exactly
+    /// what a Cypher `CREATE` gets: `title`/`body` handling, native auto-embed,
+    /// and mutation stats.
+    fn memory_create_node(
+        &mut self,
+        labels: &[&str],
+        props: Vec<(&str, Value)>,
+        span: Span,
+    ) -> ExecResultT<Arc<NodeValue>> {
+        let mut row = Bindings::new();
+        let properties = Self::memory_scratch_map(props, &mut row, span);
         let pattern = NodePattern {
             variable: None,
-            labels: vec![label.to_string()],
-            properties: Some(MapLiteral { entries, span }),
+            labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            properties: Some(properties),
             span,
         };
         self.ensure_node_for_create(&pattern, &mut row)
     }
 
-    /// Create a `(from)-[:rel_type]->(to)` edge through the regular `CREATE`
-    /// path ([`Self::create_relationship`]).
+    /// Create a `(from)-[:rel_type {props}]->(to)` edge through the regular
+    /// `CREATE` path ([`Self::create_relationship`]).
     fn memory_link(
         &mut self,
         from: &Arc<NodeValue>,
         rel_type: &str,
         to: &Arc<NodeValue>,
+        props: Vec<(&str, Value)>,
         span: Span,
-    ) -> ExecResultT<()> {
+    ) -> ExecResultT<Arc<RelationshipValue>> {
+        let mut row = Bindings::new();
+        let properties =
+            (!props.is_empty()).then(|| Self::memory_scratch_map(props, &mut row, span));
         let rel = RelationshipPattern {
             direction: AstDirection::Outgoing,
             variable: None,
             types: vec![rel_type.to_string()],
             length: None,
-            properties: None,
+            properties,
             span,
         };
-        self.create_relationship(from, &rel, to, &mut Bindings::new())?;
-        Ok(())
+        self.create_relationship(from, &rel, to, &mut row)
     }
 
     /// `CALL drevo.memory.addMessage(session, role, text) YIELD node` (issue
@@ -5013,7 +5029,7 @@ impl<'a> Executor<'a> {
         let prev = self.memory_latest_message(&session)?;
         let seq = prev.as_ref().map_or(0, |(seq, _)| *seq) + 1;
         let message = self.memory_create_node(
-            "Message",
+            &["Message"],
             vec![
                 ("id", scalar_random_uuid(Vec::new(), span)?),
                 ("session", Value::String(session)),
@@ -5026,7 +5042,7 @@ impl<'a> Executor<'a> {
             span,
         )?;
         if let Some((_, prev)) = prev {
-            self.memory_link(&prev, "NEXT", &message, span)?;
+            self.memory_link(&prev, "NEXT", &message, Vec::new(), span)?;
         }
         Ok(vec![vec![Value::Node(message)]])
     }
@@ -5053,7 +5069,7 @@ impl<'a> Executor<'a> {
 
         let anchor = self.memory_latest_message(&session)?;
         let trace = self.memory_create_node(
-            "ReasoningTrace",
+            &["ReasoningTrace"],
             vec![
                 ("id", scalar_random_uuid(Vec::new(), span)?),
                 ("session", Value::String(session)),
@@ -5065,9 +5081,380 @@ impl<'a> Executor<'a> {
             span,
         )?;
         if let Some((_, message)) = anchor {
-            self.memory_link(&trace, "INITIATED_BY", &message, span)?;
+            self.memory_link(&trace, "INITIATED_BY", &message, Vec::new(), span)?;
         }
         Ok(vec![vec![Value::Node(trace)]])
+    }
+
+    /// Every node carrying `label` (primary or secondary) whose `name` is
+    /// `name`.
+    fn memory_nodes_named(&self, label: &str, name: &str) -> ExecResultT<Vec<Arc<NodeValue>>> {
+        let mut out = Vec::new();
+        for node in self.engine().all_nodes()? {
+            if !node_labels_from_storage(&node).iter().any(|l| l == label) {
+                continue;
+            }
+            let nv = node_to_value(&node);
+            if matches!(nv.properties.get("name"), Some(Value::String(n)) if n == name) {
+                out.push(nv);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The one long-term memory `:Entity` called `name`, for a fact endpoint.
+    /// Errors when there is none, or when the name is shared by entities of
+    /// several types (the caller must disambiguate by renaming).
+    fn memory_entity(
+        &self,
+        proc_name: &str,
+        name: &str,
+        span: Span,
+    ) -> ExecResultT<Arc<NodeValue>> {
+        let mut found = self.memory_nodes_named("Entity", name)?;
+        match found.len() {
+            1 => Ok(found.remove(0)),
+            0 => Err(ExecError::InvalidProcedureCall {
+                name: proc_name.to_string(),
+                message: format!(
+                    "no memory entity named `{name}` — create it first with \
+                     drevo.memory.rememberEntity"
+                ),
+                span,
+            }),
+            _ => Err(ExecError::InvalidProcedureCall {
+                name: proc_name.to_string(),
+                message: format!(
+                    "{} entities are named `{name}` (one per type); facts need an \
+                     unambiguous name",
+                    found.len()
+                ),
+                span,
+            }),
+        }
+    }
+
+    /// Current wall-clock time as the ISO-8601 UTC string `datetime()` returns.
+    /// Temporal validity compares these strings, whose fixed format orders
+    /// lexicographically in time.
+    fn memory_now(span: Span) -> ExecResultT<Value> {
+        scalar_datetime(Vec::new(), span)
+    }
+
+    /// The relation name of a `RELATED_TO` fact edge: its `type` property, or
+    /// `relation_type` as written by neo4j-agent-memory's extraction path.
+    fn memory_fact_relation(rel: &RelationshipValue) -> Option<&str> {
+        ["type", "relation_type"]
+            .iter()
+            .find_map(|key| match rel.properties.get(*key) {
+                Some(Value::String(s)) => Some(s.as_str()),
+                _ => None,
+            })
+    }
+
+    /// Whether a fact edge is still open (no `valid_until`).
+    fn memory_fact_is_current(rel: &RelationshipValue) -> bool {
+        matches!(rel.properties.get("valid_until"), None | Some(Value::Null))
+    }
+
+    /// The currently-valid `RELATED_TO` facts leaving `subject` with relation
+    /// `relation`.
+    fn memory_current_facts(
+        &self,
+        subject: &NodeValue,
+        relation: &str,
+    ) -> ExecResultT<Vec<Arc<RelationshipValue>>> {
+        Ok(self
+            .engine()
+            .edges_of(subject.id, ModelDirection::Outgoing)?
+            .iter()
+            .filter(|e| e.kind == "RELATED_TO")
+            .map(edge_to_value)
+            .filter(|rv| {
+                Self::memory_fact_relation(rv) == Some(relation) && Self::memory_fact_is_current(rv)
+            })
+            .collect())
+    }
+
+    /// End a fact: set its `valid_until` to `at` (the regular `SET` path).
+    /// Returns the updated edge.
+    fn memory_close_fact(
+        &mut self,
+        rel: &Arc<RelationshipValue>,
+        at: Value,
+    ) -> ExecResultT<Arc<RelationshipValue>> {
+        let mut row = Bindings::new();
+        self.write_edge_property(rel, "valid_until", at, &mut row, "__drevo_memory_rel")?;
+        self.stats.properties_set += 1;
+        match row.remove("__drevo_memory_rel") {
+            Some(Value::Relationship(updated)) => Ok(updated),
+            _ => Ok(rel.clone()),
+        }
+    }
+
+    /// `CALL drevo.memory.rememberEntity(session, name, type, description)
+    /// YIELD node` (issue #533) — long-term memory: upsert a POLE+O entity.
+    ///
+    /// `type` is one of `PERSON`, `OBJECT`, `LOCATION`, `EVENT`,
+    /// `ORGANIZATION` (case-insensitive). The entity is
+    /// `:Entity:<Type> { id, name, type, description, created_at }`, keyed on
+    /// `(name, type)` like neo4j-agent-memory's `MERGE`: a known entity is
+    /// reused, its `description` refreshed when a new non-null one is given
+    /// (with `updated_at`). When `session` has messages, the newest one gets a
+    /// `:MENTIONS` edge to the entity (once). `session` may be `null`.
+    fn proc_memory_remember_entity(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (4) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let session = match self.eval(&args[0], &empty)? {
+            Value::Null => None,
+            v => Some(v.as_string(span)?.to_string()),
+        };
+        let name = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let raw_type = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+        let description = match self.eval(&args[3], &empty)? {
+            Value::Null => None,
+            v => Some(v.as_string(span)?.to_string()),
+        };
+        let entity_type = raw_type.to_uppercase();
+        let label = MEMORY_ENTITY_TYPES
+            .iter()
+            .find(|(t, _)| *t == entity_type)
+            .map(|(_, label)| *label)
+            .ok_or_else(|| ExecError::InvalidProcedureCall {
+                name: "drevo.memory.rememberEntity".to_string(),
+                message: format!(
+                    "`{raw_type}` is not a POLE+O entity type — use one of PERSON, \
+                     OBJECT, LOCATION, EVENT, ORGANIZATION"
+                ),
+                span,
+            })?;
+
+        let existing = self.memory_nodes_named("Entity", &name)?.into_iter().find(
+            |e| matches!(e.properties.get("type"), Some(Value::String(t)) if *t == entity_type),
+        );
+        let entity = match existing {
+            Some(entity) => {
+                let stale = description.as_ref().is_some_and(|d| {
+                    !matches!(entity.properties.get("description"), Some(Value::String(old)) if old == d)
+                });
+                if let (true, Some(d)) = (stale, description) {
+                    let mut row = Bindings::new();
+                    let var = "__drevo_memory_entity";
+                    self.write_node_property(
+                        &entity,
+                        "description",
+                        Value::String(d),
+                        &mut row,
+                        var,
+                    )?;
+                    self.write_node_property(
+                        &entity,
+                        "updated_at",
+                        Self::memory_now(span)?,
+                        &mut row,
+                        var,
+                    )?;
+                    self.stats.properties_set += 2;
+                    match row.remove(var) {
+                        Some(Value::Node(updated)) => updated,
+                        _ => entity,
+                    }
+                } else {
+                    entity
+                }
+            }
+            None => self.memory_create_node(
+                &["Entity", label],
+                vec![
+                    ("id", scalar_random_uuid(Vec::new(), span)?),
+                    ("name", Value::String(name)),
+                    ("type", Value::String(entity_type)),
+                    (
+                        "description",
+                        description.map_or(Value::Null, Value::String),
+                    ),
+                    ("created_at", Self::memory_now(span)?),
+                ],
+                span,
+            )?,
+        };
+
+        if let Some(session) = session {
+            if let Some((_, message)) = self.memory_latest_message(&session)? {
+                let already = self
+                    .engine()
+                    .edges_of(message.id, ModelDirection::Outgoing)?
+                    .iter()
+                    .any(|e| e.kind == "MENTIONS" && e.to_id == entity.id);
+                if !already {
+                    self.memory_link(&message, "MENTIONS", &entity, Vec::new(), span)?;
+                }
+            }
+        }
+        Ok(vec![vec![Value::Node(entity)]])
+    }
+
+    /// `CALL drevo.memory.assertFact(subject, relation, object, exclusive)
+    /// YIELD rel` (issue #533) — long-term memory: a fact that holds from now.
+    ///
+    /// `subject` / `object` name existing memory entities. The fact is
+    /// `(subject)-[:RELATED_TO { id, type: relation, valid_from, created_at }]->(object)`,
+    /// neo4j-agent-memory's schema. Asserting a fact that currently holds is a
+    /// no-op that yields it. With `exclusive = true` the subject's other
+    /// currently-valid facts of the same `relation` are closed
+    /// (`valid_until = now`) first — a supersession ("works at Globex" ends
+    /// "works at Acme") that keeps the old fact as history for
+    /// `drevo.memory.factsAt`.
+    fn proc_memory_assert_fact(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        const PROC: &str = "drevo.memory.assertFact";
+        // Arity (4) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let subject = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let relation = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let object = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+        let exclusive = match self.eval(&args[3], &empty)? {
+            Value::Bool(b) => b,
+            Value::Null => false,
+            other => {
+                return Err(ExecError::TypeMismatch {
+                    expected: "Boolean".into(),
+                    got: other.type_name().into(),
+                    span,
+                });
+            }
+        };
+        let subject = self.memory_entity(PROC, &subject, span)?;
+        let object = self.memory_entity(PROC, &object, span)?;
+
+        let now = Self::memory_now(span)?;
+        let current = self.memory_current_facts(&subject, &relation)?;
+        if exclusive {
+            for rel in current.iter().filter(|r| r.to_id != object.id) {
+                self.memory_close_fact(rel, now.clone())?;
+            }
+        }
+        if let Some(same) = current.into_iter().find(|r| r.to_id == object.id) {
+            return Ok(vec![vec![Value::Relationship(same)]]);
+        }
+        let rel = self.memory_link(
+            &subject,
+            "RELATED_TO",
+            &object,
+            vec![
+                ("id", scalar_random_uuid(Vec::new(), span)?),
+                ("type", Value::String(relation)),
+                ("valid_from", now.clone()),
+                ("created_at", now),
+            ],
+            span,
+        )?;
+        Ok(vec![vec![Value::Relationship(rel)]])
+    }
+
+    /// `CALL drevo.memory.retractFact(subject, relation, object) YIELD rel`
+    /// (issue #533) — end a fact: every currently-valid `subject -relation->
+    /// object` fact gets `valid_until = now`. Yields the closed facts (none if
+    /// nothing held). The facts stay as history for `drevo.memory.factsAt`.
+    fn proc_memory_retract_fact(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        const PROC: &str = "drevo.memory.retractFact";
+        // Arity (3) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let subject = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let relation = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let object = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+        let subject = self.memory_entity(PROC, &subject, span)?;
+        let object = self.memory_entity(PROC, &object, span)?;
+
+        let now = Self::memory_now(span)?;
+        let mut rows = Vec::new();
+        for rel in self.memory_current_facts(&subject, &relation)? {
+            if rel.to_id == object.id {
+                let closed = self.memory_close_fact(&rel, now.clone())?;
+                rows.push(vec![Value::Relationship(closed)]);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// `CALL drevo.memory.factsAt(name, asOf) YIELD subject, relation, object,
+    /// valid_from, valid_until` (issue #533) — what long-term memory held about
+    /// an entity at a point in time.
+    ///
+    /// Every `RELATED_TO` fact touching the entity `name` (either direction)
+    /// valid at `asOf`: `valid_from <= asOf` and `valid_until` unset or
+    /// `> asOf`. `asOf` is an ISO-8601 UTC timestamp as `datetime()` returns;
+    /// `null` means now. Facts without `valid_from` count as always held.
+    /// Ordered by `valid_from`. Read-only.
+    fn proc_memory_facts_at(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (2) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let as_of = match self.eval(&args[1], &empty)? {
+            Value::Null => Self::memory_now(span)?.as_string(span)?.to_string(),
+            v => v.as_string(span)?.to_string(),
+        };
+        let entity = self.memory_entity("drevo.memory.factsAt", &name, span)?;
+
+        let mut facts: Vec<Arc<RelationshipValue>> = Vec::new();
+        for edge in self.engine().edges_of(entity.id, ModelDirection::Both)? {
+            if edge.kind != "RELATED_TO" || facts.iter().any(|f| f.id == edge.id) {
+                continue;
+            }
+            let rel = edge_to_value(&edge);
+            let started = match rel.properties.get("valid_from") {
+                Some(Value::String(from)) => from.as_str() <= as_of.as_str(),
+                _ => true,
+            };
+            let still = match rel.properties.get("valid_until") {
+                Some(Value::String(until)) => until.as_str() > as_of.as_str(),
+                _ => true,
+            };
+            if started && still {
+                facts.push(rel);
+            }
+        }
+        let valid_from = |rel: &RelationshipValue| match rel.properties.get("valid_from") {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        };
+        facts.sort_by(|a, b| valid_from(a).cmp(&valid_from(b)).then(a.id.cmp(&b.id)));
+
+        let mut rows = Vec::with_capacity(facts.len());
+        for rel in facts {
+            let (Some(subject), Some(object)) = (
+                self.engine().get_node(rel.from_id)?,
+                self.engine().get_node(rel.to_id)?,
+            ) else {
+                continue;
+            };
+            let relation = Self::memory_fact_relation(&rel)
+                .map_or(Value::Null, |r| Value::String(r.to_string()));
+            let prop = |key: &str| rel.properties.get(key).cloned().unwrap_or(Value::Null);
+            rows.push(vec![
+                Value::Node(node_to_value(&subject)),
+                relation,
+                Value::Node(node_to_value(&object)),
+                prop("valid_from"),
+                prop("valid_until"),
+            ]);
+        }
+        Ok(rows)
     }
 
     /// `CALL drevo.memory.getConversation(session, limit) YIELD node` (issue
@@ -5931,6 +6318,7 @@ impl<'a> Executor<'a> {
             #[cfg(feature = "http")]
             "drevo.memory.recallSemantic" => self.proc_memory_recall_semantic(args, span),
             "drevo.memory.getConversation" => self.proc_memory_get_conversation(args, span),
+            "drevo.memory.factsAt" => self.proc_memory_facts_at(args, span),
             #[cfg(feature = "http")]
             "drevo.cypher.fromText" => self.proc_cypher_from_text(args, span),
             "db.labels" => {
@@ -7470,6 +7858,17 @@ impl<'a> Executor<'a> {
 
 // ===== Pure helpers =========================================================
 
+/// The POLE+O long-term memory entity types (issue #533) — neo4j-agent-memory's
+/// `type` values — each with the PascalCase label an entity carries next to
+/// `:Entity`.
+const MEMORY_ENTITY_TYPES: [(&str, &str); 5] = [
+    ("PERSON", "Person"),
+    ("OBJECT", "Object"),
+    ("LOCATION", "Location"),
+    ("EVENT", "Event"),
+    ("ORGANIZATION", "Organization"),
+];
+
 /// The output column signature of a built-in `CALL` procedure, or `None`
 /// if `name` is not a known procedure.
 ///
@@ -7564,6 +7963,12 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.memory.getConversation" => Some(&["node"]),
         // Agent-memory writes (issue #533): the created message / trace node.
         "drevo.memory.addMessage" | "drevo.memory.recordReasoning" => Some(&["node"]),
+        // Long-term memory (issue #533): POLE+O entities and temporal facts.
+        "drevo.memory.rememberEntity" => Some(&["node"]),
+        "drevo.memory.assertFact" | "drevo.memory.retractFact" => Some(&["rel"]),
+        "drevo.memory.factsAt" => {
+            Some(&["subject", "relation", "object", "valid_from", "valid_until"])
+        }
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => Some(&["cypher"]),
@@ -7641,6 +8046,14 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.memory.addMessage" => 3,
         // drevo.memory.recordReasoning(session, step, tool, outcome) (issue #533).
         "drevo.memory.recordReasoning" => 4,
+        // drevo.memory.rememberEntity(session, name, type, description) (issue #533).
+        "drevo.memory.rememberEntity" => 4,
+        // drevo.memory.assertFact(subject, relation, object, exclusive) (issue #533).
+        "drevo.memory.assertFact" => 4,
+        // drevo.memory.retractFact(subject, relation, object) (issue #533).
+        "drevo.memory.retractFact" => 3,
+        // drevo.memory.factsAt(name, asOf) (issue #533).
+        "drevo.memory.factsAt" => 2,
         // drevo.cypher.fromText(prompt) — one NL prompt.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => 1,

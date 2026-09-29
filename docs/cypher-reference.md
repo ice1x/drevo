@@ -1003,6 +1003,59 @@ YIELD label, state RETURN label, state
 The recall and replay procedures are read-only; only `addMessage` and
 `recordReasoning` write.
 
+#### Long-term memory: entities and facts over time
+
+The long-term layer holds what the agent knows about the world, in the schema
+neo4j-agent-memory uses: POLE+O entities (`PERSON`, `OBJECT`, `LOCATION`,
+`EVENT`, `ORGANIZATION`) and facts between them that carry a validity window.
+
+`CALL drevo.memory.rememberEntity(session, name, type, description) YIELD node`
+upserts `:Entity:<Type> { id, name, type, description, created_at }` keyed on
+`(name, type)`: a known entity is reused and its description refreshed when a
+new one is given (a `null` description never erases one). When `session` has
+messages, its newest one gets a `:MENTIONS` edge to the entity (never twice), so
+a conversation's context is `MATCH (:Message {session: $s})-[:MENTIONS]->(e)`.
+`session` may be `null`; `type` is case-insensitive and must be one of the five.
+
+```cypher
+CALL drevo.memory.rememberEntity('session-1', 'Dana', 'person', 'platform engineer')
+YIELD node
+RETURN node.name, node.type, labels(node)
+```
+
+`CALL drevo.memory.assertFact(subject, relation, object, exclusive) YIELD rel`
+records that a fact holds from now, as
+`(subject)-[:RELATED_TO { id, type: relation, valid_from, created_at }]->(object)`
+between two remembered entities (by name). Re-asserting a fact that holds is a
+no-op. With `exclusive = true` the subject's other current facts of the same
+relation are closed first (`valid_until = now`) — "works at Globex" ends "works
+at Acme" but keeps it as history. `CALL drevo.memory.retractFact(subject,
+relation, object) YIELD rel` ends a fact the same way.
+
+```cypher
+CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null) YIELD node AS dana
+CALL drevo.memory.rememberEntity(null, 'Acme', 'ORGANIZATION', null) YIELD node AS acme
+CALL drevo.memory.assertFact('Dana', 'WORKS_AT', 'Acme', true) YIELD rel
+RETURN rel.type, rel.valid_from, rel.valid_until
+```
+
+`CALL drevo.memory.factsAt(name, asOf) YIELD subject, relation, object,
+valid_from, valid_until` answers "what did memory hold about this entity at
+that time?": every fact touching the entity, either direction, with
+`valid_from <= asOf` and `valid_until` unset or later. `asOf` is an ISO-8601
+UTC timestamp in the form `datetime()` returns, or `null` for now.
+
+```cypher
+CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null) YIELD node
+CALL drevo.memory.factsAt('Dana', null)
+YIELD subject, relation, object, valid_from, valid_until
+RETURN subject.name, relation, object.name, valid_from, valid_until
+```
+
+Unlike the reference library, where `valid_until` is written but never set,
+drevo closes superseded facts and filters on the window, so "as of" questions
+get real answers.
+
 ### Semantic-index control plane (#251, Phase 21)
 
 `CALL drevo.semantic.register(label, text_property, embedding_property, mode)`
