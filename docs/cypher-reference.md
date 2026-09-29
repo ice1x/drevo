@@ -914,11 +914,37 @@ RETURN engine, mirror_fresh, native_hits
 
 ### Agent memory (#533)
 
-Server-side recall over an agent's short-term memory: a session's turns stored
-as `:Message { session, seq, role, text, body }` nodes (the schema the
-agent-memory MCP writes, with `body = text` so the full-text index reaches
-them). These read procedures put memory recall one Bolt/HTTP call away for any
-client, not just the MCP.
+Server-side agent memory: a session's turns stored as
+`:Message { id, session, seq, role, text, body, created_at }` nodes chained by
+`:NEXT` (the schema the agent-memory MCP writes, with `body = text` so the
+full-text index reaches them), plus `:ReasoningTrace` nodes recording why the
+agent did something. These procedures put writing and recalling memory one
+Bolt/HTTP call away for any client, not just the MCP.
+
+`CALL drevo.memory.addMessage(session, role, text) YIELD node` appends a turn:
+it gets `seq = latest + 1` (1 for a new session), `body = text`, an `id` and a
+`created_at`, and a `:NEXT` edge from the session's previous newest message.
+
+```cypher
+CALL drevo.memory.addMessage('session-1', 'user', 'the deploy port is 7688')
+YIELD node
+RETURN node.seq, node.text
+```
+
+`CALL drevo.memory.recordReasoning(session, step, tool, outcome) YIELD node`
+records a decision as `:ReasoningTrace { id, session, step, tool, outcome,
+created_at }` linked `:INITIATED_BY` to the session's newest message (no edge
+when the session has none). `tool` and `outcome` may be `null`.
+
+```cypher
+CALL drevo.memory.recordReasoning('session-1', 'chose port 7688 for Bolt', null, 'ok')
+YIELD node
+RETURN node.step
+```
+
+Both write through the regular `CREATE` path, so the usual mutation counters
+are reported, and a registered `'auto'` `Message` semantic target (see below)
+embeds each turn as it is written.
 
 `CALL drevo.memory.recall(session, query, k) YIELD node, score` returns the
 top-`k` messages of `session` whose text best matches `query` by BM25,
@@ -974,9 +1000,8 @@ CALL drevo.semantic.register('Message', 'text', 'embedding', 'auto')
 YIELD label, state RETURN label, state
 ```
 
-All of these are read-only. Writing the memory chain (`add_message`) goes
-through the agent-memory MCP / Cypher today; a native `drevo.memory.addMessage`
-write procedure is a follow-up.
+The recall and replay procedures are read-only; only `addMessage` and
+`recordReasoning` write.
 
 ### Semantic-index control plane (#251, Phase 21)
 

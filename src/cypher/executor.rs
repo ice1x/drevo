@@ -1252,6 +1252,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           db.index.vector.queryNodes, db.index.fulltext.queryNodes, \
                           drevo.memory.recall, drevo.memory.recallVector, \
                           drevo.memory.recallSemantic, drevo.memory.getConversation, \
+                          drevo.memory.addMessage, drevo.memory.recordReasoning, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
@@ -4417,7 +4418,14 @@ impl<'a> Executor<'a> {
             message: "no such procedure".into(),
             span: c.span,
         })?;
-        let output = self.invoke_procedure(&name, &c.args, c.span)?;
+        // Write procedures mutate the graph, so they run here with `&mut self`
+        // (through the regular CREATE path) rather than in the read-only
+        // `invoke_procedure`.
+        let output = match name.as_str() {
+            "drevo.memory.addMessage" => self.proc_memory_add_message(&c.args, c.span)?,
+            "drevo.memory.recordReasoning" => self.proc_memory_record_reasoning(&c.args, c.span)?,
+            _ => self.invoke_procedure(&name, &c.args, c.span)?,
+        };
 
         match &c.yields {
             Some(items) => {
@@ -4905,6 +4913,161 @@ impl<'a> Executor<'a> {
         let k = self.eval_usize(&args[2], &empty)?;
         let query = self.embed_query_text("drevo.memory.recallSemantic", &text, span)?;
         self.memory_vector_recall(&session, &query, k, span)
+    }
+
+    /// The newest `:Message` of `session` (highest `seq`) with its `seq`, if the
+    /// session has any messages.
+    fn memory_latest_message(&self, session: &str) -> ExecResultT<Option<(i64, Arc<NodeValue>)>> {
+        let mut latest: Option<(i64, Arc<NodeValue>)> = None;
+        for node in self.engine().all_nodes()? {
+            if !node_labels_from_storage(&node)
+                .iter()
+                .any(|l| l == "Message")
+            {
+                continue;
+            }
+            let nv = node_to_value(&node);
+            if !matches!(nv.properties.get("session"), Some(Value::String(s)) if s == session) {
+                continue;
+            }
+            let seq = match nv.properties.get("seq") {
+                Some(Value::Integer(i)) => *i,
+                _ => 0,
+            };
+            if latest.as_ref().is_none_or(|(best, _)| seq > *best) {
+                latest = Some((seq, nv));
+            }
+        }
+        Ok(latest)
+    }
+
+    /// Create one `label` node with `props` through the regular `CREATE` path
+    /// ([`Self::ensure_node_for_create`]), so a write procedure gets exactly
+    /// what a Cypher `CREATE` gets: `title`/`body` handling, native auto-embed,
+    /// and mutation stats. The values are bound to scratch variables that the
+    /// pattern's property map references.
+    fn memory_create_node(
+        &mut self,
+        label: &str,
+        props: Vec<(&str, Value)>,
+        span: Span,
+    ) -> ExecResultT<Arc<NodeValue>> {
+        let mut row = Bindings::new();
+        let mut entries = Vec::with_capacity(props.len());
+        for (key, value) in props {
+            let var = format!("__drevo_memory_{key}");
+            row.insert(var.clone(), value);
+            entries.push((key.to_string(), Expression::Variable(var, span)));
+        }
+        let pattern = NodePattern {
+            variable: None,
+            labels: vec![label.to_string()],
+            properties: Some(MapLiteral { entries, span }),
+            span,
+        };
+        self.ensure_node_for_create(&pattern, &mut row)
+    }
+
+    /// Create a `(from)-[:rel_type]->(to)` edge through the regular `CREATE`
+    /// path ([`Self::create_relationship`]).
+    fn memory_link(
+        &mut self,
+        from: &Arc<NodeValue>,
+        rel_type: &str,
+        to: &Arc<NodeValue>,
+        span: Span,
+    ) -> ExecResultT<()> {
+        let rel = RelationshipPattern {
+            direction: AstDirection::Outgoing,
+            variable: None,
+            types: vec![rel_type.to_string()],
+            length: None,
+            properties: None,
+            span,
+        };
+        self.create_relationship(from, &rel, to, &mut Bindings::new())?;
+        Ok(())
+    }
+
+    /// `CALL drevo.memory.addMessage(session, role, text) YIELD node` (issue
+    /// #533) — append a turn to a session's short-term memory chain.
+    ///
+    /// Creates `:Message { id, session, seq, role, text, body, created_at }`
+    /// with `seq = latest + 1` (1 for a new session) and `body = text` (so the
+    /// full-text index and `drevo.memory.recall` reach it), plus a `:NEXT` edge
+    /// from the session's previous newest message. The same graph the
+    /// agent-memory MCP's `add_message` writes, in one server-side call. It goes
+    /// through the regular `CREATE` path, so a registered `'auto'` `Message`
+    /// semantic target embeds the turn on write.
+    fn proc_memory_add_message(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (3) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let session = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let role = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let text = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+
+        let prev = self.memory_latest_message(&session)?;
+        let seq = prev.as_ref().map_or(0, |(seq, _)| *seq) + 1;
+        let message = self.memory_create_node(
+            "Message",
+            vec![
+                ("id", scalar_random_uuid(Vec::new(), span)?),
+                ("session", Value::String(session)),
+                ("seq", Value::Integer(seq)),
+                ("role", Value::String(role)),
+                ("text", Value::String(text.clone())),
+                ("body", Value::String(text)),
+                ("created_at", scalar_datetime(Vec::new(), span)?),
+            ],
+            span,
+        )?;
+        if let Some((_, prev)) = prev {
+            self.memory_link(&prev, "NEXT", &message, span)?;
+        }
+        Ok(vec![vec![Value::Node(message)]])
+    }
+
+    /// `CALL drevo.memory.recordReasoning(session, step, tool, outcome) YIELD
+    /// node` (issue #533) — persist a reasoning/decision trace.
+    ///
+    /// Creates `:ReasoningTrace { id, session, step, tool, outcome, created_at }`
+    /// (`tool` / `outcome` may be `null`) linked `:INITIATED_BY` to the
+    /// session's newest message, so the decision stays anchored to the turn that
+    /// prompted it; no edge when the session has no messages yet. Mirrors the
+    /// agent-memory MCP's `record_reasoning`.
+    fn proc_memory_record_reasoning(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (4) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let session = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let step = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let tool = self.eval(&args[2], &empty)?;
+        let outcome = self.eval(&args[3], &empty)?;
+
+        let anchor = self.memory_latest_message(&session)?;
+        let trace = self.memory_create_node(
+            "ReasoningTrace",
+            vec![
+                ("id", scalar_random_uuid(Vec::new(), span)?),
+                ("session", Value::String(session)),
+                ("step", Value::String(step)),
+                ("tool", tool),
+                ("outcome", outcome),
+                ("created_at", scalar_datetime(Vec::new(), span)?),
+            ],
+            span,
+        )?;
+        if let Some((_, message)) = anchor {
+            self.memory_link(&trace, "INITIATED_BY", &message, span)?;
+        }
+        Ok(vec![vec![Value::Node(trace)]])
     }
 
     /// `CALL drevo.memory.getConversation(session, limit) YIELD node` (issue
@@ -7399,6 +7562,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.memory.recallSemantic" => Some(&["node", "score"]),
         // Agent-memory transcript replay (issue #533).
         "drevo.memory.getConversation" => Some(&["node"]),
+        // Agent-memory writes (issue #533): the created message / trace node.
+        "drevo.memory.addMessage" | "drevo.memory.recordReasoning" => Some(&["node"]),
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => Some(&["cypher"]),
@@ -7472,6 +7637,10 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.memory.recallSemantic" => 3,
         // drevo.memory.getConversation(session, limit) (issue #533).
         "drevo.memory.getConversation" => 2,
+        // drevo.memory.addMessage(session, role, text) (issue #533).
+        "drevo.memory.addMessage" => 3,
+        // drevo.memory.recordReasoning(session, step, tool, outcome) (issue #533).
+        "drevo.memory.recordReasoning" => 4,
         // drevo.cypher.fromText(prompt) — one NL prompt.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => 1,
