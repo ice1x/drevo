@@ -3482,7 +3482,11 @@ impl<'a> Executor<'a> {
         // not, so apply it here through the native serving layer before the
         // write. Gated on `native_semantic`, so the KV path never double-embeds.
         if let Some(svc) = self.native_semantic {
-            svc.apply_auto_embeddings(&new_node.kind, &mut new_node.properties, None);
+            let fields = crate::native_service::NodeTextFields {
+                title: &new_node.title,
+                body: &new_node.body,
+            };
+            svc.apply_auto_embeddings(&new_node.kind, &mut new_node.properties, fields, None);
         }
         let stored = self.engine().create_node(new_node)?;
         self.stats.nodes_created += 1;
@@ -3976,6 +3980,7 @@ impl<'a> Executor<'a> {
             .get_node(nv.id)?
             .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
         let mut patch = crate::model::NodePatch::default();
+        let mut props = stored.properties.clone();
         match prop_name {
             "title" => {
                 patch.title = Some(value_as_string_for_alias(&new_value, "title")?);
@@ -3984,7 +3989,6 @@ impl<'a> Executor<'a> {
                 patch.body = Some(value_as_string_for_alias(&new_value, "body")?);
             }
             _ => {
-                let mut props = stored.properties.clone();
                 if matches!(new_value, Value::Null) {
                     props.remove(prop_name);
                 } else {
@@ -3997,13 +4001,27 @@ impl<'a> Executor<'a> {
                     })?;
                     props.insert(prop_name.to_string(), json);
                 }
-                // Native re-embed on update (#447), mirroring `Drevo::update_node`;
-                // passing the pre-image skips when the source text is unchanged.
-                if let Some(svc) = self.native_semantic {
-                    svc.apply_auto_embeddings(&stored.kind, &mut props, Some(&stored.properties));
-                }
-                patch.properties = Some(props);
             }
+        }
+        // Native re-embed on update (#447), mirroring `Drevo::update_node`;
+        // passing the pre-image skips when the source text is unchanged. It
+        // runs for a `title` / `body` SET too, since a target may read those
+        // fields (#536).
+        if let Some(svc) = self.native_semantic {
+            let fields = crate::native_service::NodeTextFields {
+                title: patch.title.as_deref().unwrap_or(&stored.title),
+                body: patch.body.as_deref().unwrap_or(&stored.body),
+            };
+            let old = (
+                &stored.properties,
+                crate::native_service::NodeTextFields::of(&stored),
+            );
+            svc.apply_auto_embeddings(&stored.kind, &mut props, fields, Some(old));
+        }
+        // A title / body SET leaves the property map alone unless it gained an
+        // embedding.
+        if !matches!(prop_name, "title" | "body") || props != stored.properties {
+            patch.properties = Some(props);
         }
         self.engine().update_node(nv.id, patch)?;
         if let Some(refreshed) = self.engine().get_node(nv.id)? {
@@ -4112,10 +4130,19 @@ impl<'a> Executor<'a> {
                 patch.body = Some(String::new());
             }
         }
-        // Native re-embed on update (#447): the merged/replaced map is the new
-        // source of truth, so embed it against the pre-image (skip-unchanged).
+        // Native re-embed on update (#447): the merged/replaced map (and the
+        // resulting title / body, #536) is the new source of truth, so embed it
+        // against the pre-image (skip-unchanged).
         if let Some(svc) = self.native_semantic {
-            svc.apply_auto_embeddings(&stored.kind, &mut next_props, Some(&stored.properties));
+            let fields = crate::native_service::NodeTextFields {
+                title: patch.title.as_deref().unwrap_or(&stored.title),
+                body: patch.body.as_deref().unwrap_or(&stored.body),
+            };
+            let old = (
+                &stored.properties,
+                crate::native_service::NodeTextFields::of(&stored),
+            );
+            svc.apply_auto_embeddings(&stored.kind, &mut next_props, fields, Some(old));
         }
         patch.properties = Some(next_props);
         self.engine().update_node(nv.id, patch)?;
@@ -8364,7 +8391,12 @@ fn synth_title(label: &str) -> String {
     // UUID-based suffix keeps drevo's title uniqueness invariant while
     // staying deterministic for the storage layer's title index.
     let uuid = uuid::Uuid::from_bytes(new_uuid_v7());
-    format!("__cypher__:{}:{}", label, uuid.as_simple())
+    format!(
+        "{}{}:{}",
+        crate::native_service::SYNTHETIC_TITLE_PREFIX,
+        label,
+        uuid.as_simple()
+    )
 }
 
 /// Intersect two node candidate sets by id, preserving `a`'s order. Both inputs

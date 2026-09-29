@@ -79,6 +79,52 @@ impl ServiceIndexes {
     }
 }
 
+/// Prefix of the placeholder title drevo synthesises for a node created without
+/// one (Cypher `CREATE` needs unique titles). Such a title is an identifier, not
+/// text, so semantic auto-embedding never reads it.
+pub(crate) const SYNTHETIC_TITLE_PREFIX: &str = "__cypher__:";
+
+/// A node's dedicated text fields. A node keeps `title` and `body` outside its
+/// property map (Cypher `CREATE` / `SET` route them there), yet a semantic
+/// target may name either as its `text_property` (#536).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NodeTextFields<'a> {
+    /// The node's title.
+    pub title: &'a str,
+    /// The node's body text.
+    pub body: &'a str,
+}
+
+impl<'a> NodeTextFields<'a> {
+    /// The text fields of a stored node.
+    #[must_use]
+    pub fn of(node: &'a crate::model::Node) -> Self {
+        Self {
+            title: &node.title,
+            body: &node.body,
+        }
+    }
+}
+
+/// The non-empty text a semantic target with `text_property` reads from a node:
+/// the string property of that name, else — for `title` / `body` — the node's
+/// own field. A synthesised placeholder title is not text and reads as `None`.
+pub(crate) fn node_text<'a>(
+    properties: &'a crate::model::Properties,
+    fields: NodeTextFields<'a>,
+    text_property: &str,
+) -> Option<&'a str> {
+    let text = match properties.0.get(text_property) {
+        Some(value) => value.as_str(),
+        None => match text_property {
+            "title" if !fields.title.starts_with(SYNTHETIC_TITLE_PREFIX) => Some(fields.title),
+            "body" => Some(fields.body),
+            _ => None,
+        },
+    };
+    text.filter(|s| !s.is_empty())
+}
+
 /// A durable native graph serving Cypher with its full index stack. See the
 /// [module docs](self).
 pub struct NativeService {
@@ -583,7 +629,11 @@ impl NativeService {
         // Server-side auto-embed on ingest (#447): embed the configured text
         // property before the write, so `drevo.semantic.query` retrieves the
         // node with no client round-trip. Fail-open, no-op without an embedder.
-        self.apply_auto_embeddings(&new_node.kind, &mut new_node.properties, None);
+        let fields = NodeTextFields {
+            title: &new_node.title,
+            body: &new_node.body,
+        };
+        self.apply_auto_embeddings(&new_node.kind, &mut new_node.properties, fields, None);
         Ok(self.graph.create_node(new_node)?)
     }
 
@@ -603,7 +653,11 @@ impl NativeService {
         mut new_nodes: Vec<crate::model::NewNode>,
     ) -> Result<Vec<crate::model::Node>, DrevoError> {
         for nn in &mut new_nodes {
-            self.apply_auto_embeddings(&nn.kind, &mut nn.properties, None);
+            let fields = NodeTextFields {
+                title: &nn.title,
+                body: &nn.body,
+            };
+            self.apply_auto_embeddings(&nn.kind, &mut nn.properties, fields, None);
         }
         Ok(self.graph.create_nodes(new_nodes)?)
     }
@@ -1041,12 +1095,8 @@ impl NativeService {
             if !matches_label {
                 continue;
             }
-            let has_text = node
-                .properties
-                .0
-                .get(text_property)
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|s| !s.is_empty());
+            let has_text =
+                node_text(&node.properties, NodeTextFields::of(&node), text_property).is_some();
             let has_embedding = node.properties.0.contains_key(embedding_property);
             if has_text && !has_embedding {
                 pending += 1;
@@ -1138,19 +1188,22 @@ impl NativeService {
     ///
     /// For every registered [`crate::semantic_index::IndexMode::Auto`] target
     /// whose label matches this node (primary `kind` or a `_labels` secondary
-    /// label), embed the text in the target's `text_property` and write the
-    /// vector into its `embedding_property`. A double no-op keeps the common
-    /// path free: it returns immediately when no embedder is installed and when
-    /// no Auto target matches. `old` is the pre-patch property map on update; a
-    /// target whose source text is unchanged and whose embedding is already
-    /// present is skipped. An upstream failure is logged, tallied, and swallowed
-    /// — a transient embedder outage must never fail a write.
+    /// label), embed the text in the target's `text_property` (see
+    /// `node_text`, which also reads the node's `title` / `body` fields) and
+    /// write the vector into its `embedding_property`. A double no-op keeps the
+    /// common path free: it returns immediately when no embedder is installed
+    /// and when no Auto target matches. `old` is the pre-patch property map and
+    /// text fields on update; a target whose source text is unchanged and whose
+    /// embedding is already present is skipped. An upstream failure is logged,
+    /// tallied, and swallowed — a transient embedder outage must never fail a
+    /// write.
     #[cfg(feature = "http")]
     pub fn apply_auto_embeddings(
         &self,
         kind: &str,
         properties: &mut crate::model::Properties,
-        old: Option<&crate::model::Properties>,
+        fields: NodeTextFields<'_>,
+        old: Option<(&crate::model::Properties, NodeTextFields<'_>)>,
     ) {
         let Some(embedder) = self.embedder.get() else {
             return;
@@ -1186,20 +1239,11 @@ impl NativeService {
             if !labels.iter().any(|l| l == &label) {
                 continue;
             }
-            let Some(text) = properties
-                .0
-                .get(&text_prop)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-            else {
+            let Some(text) = node_text(properties, fields, &text_prop).map(str::to_string) else {
                 continue;
             };
-            if text.is_empty() {
-                continue;
-            }
-            if let Some(old) = old {
-                let unchanged = old.0.get(&text_prop).and_then(serde_json::Value::as_str)
-                    == Some(text.as_str());
+            if let Some((old_props, old_fields)) = old {
+                let unchanged = node_text(old_props, old_fields, &text_prop) == Some(text.as_str());
                 if unchanged && properties.0.contains_key(&emb_prop) {
                     continue;
                 }
@@ -1225,9 +1269,10 @@ impl NativeService {
         &self,
         kind: &str,
         properties: &mut crate::model::Properties,
-        old: Option<&crate::model::Properties>,
+        fields: NodeTextFields<'_>,
+        old: Option<(&crate::model::Properties, NodeTextFields<'_>)>,
     ) {
-        let _ = (kind, properties, old);
+        let _ = (kind, properties, fields, old);
     }
 
     /// Relationship mirror of [`Self::apply_auto_embeddings`] (#447): apply
@@ -1339,12 +1384,7 @@ impl NativeService {
                 continue;
             }
             report.scanned += 1;
-            let text = node
-                .properties
-                .0
-                .get(text_property)
-                .and_then(serde_json::Value::as_str)
-                .filter(|s| !s.is_empty())
+            let text = node_text(&node.properties, NodeTextFields::of(&node), text_property)
                 .map(str::to_string);
             let already_embedded = node.properties.0.contains_key(embedding_property);
             let Some(text) = text.filter(|_| !already_embedded) else {
@@ -2097,5 +2137,61 @@ mod semantic_registry_tests {
         assert_eq!(targets[0].label, "Doc");
         assert_eq!(targets[0].mode, IndexMode::Auto);
         let _ = std::fs::remove_dir_all(wal.parent().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod node_text_tests {
+    //! [`super::node_text`] (#536): the text a semantic target reads from a node.
+    use super::{node_text, NodeTextFields, SYNTHETIC_TITLE_PREFIX};
+    use crate::model::Properties;
+    use std::collections::HashMap;
+
+    fn props(pairs: &[(&str, serde_json::Value)]) -> Properties {
+        Properties(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect::<HashMap<_, _>>(),
+        )
+    }
+
+    const FIELDS: NodeTextFields<'static> = NodeTextFields {
+        title: "A title",
+        body: "Some body",
+    };
+
+    #[test]
+    fn reads_a_string_property() {
+        let p = props(&[("summary", serde_json::json!("hello"))]);
+        assert_eq!(node_text(&p, FIELDS, "summary"), Some("hello"));
+        assert_eq!(node_text(&p, FIELDS, "missing"), None);
+    }
+
+    #[test]
+    fn falls_back_to_the_title_and_body_fields() {
+        let p = props(&[]);
+        assert_eq!(node_text(&p, FIELDS, "title"), Some("A title"));
+        assert_eq!(node_text(&p, FIELDS, "body"), Some("Some body"));
+    }
+
+    #[test]
+    fn a_property_of_the_same_name_wins_over_the_field() {
+        let p = props(&[("body", serde_json::json!("from props"))]);
+        assert_eq!(node_text(&p, FIELDS, "body"), Some("from props"));
+    }
+
+    #[test]
+    fn empty_non_string_and_synthetic_text_reads_as_none() {
+        let p = props(&[("n", serde_json::json!(3)), ("e", serde_json::json!(""))]);
+        assert_eq!(node_text(&p, FIELDS, "n"), None);
+        assert_eq!(node_text(&p, FIELDS, "e"), None);
+        let synthetic = format!("{SYNTHETIC_TITLE_PREFIX}Doc:0190");
+        let fields = NodeTextFields {
+            title: &synthetic,
+            body: "",
+        };
+        assert_eq!(node_text(&props(&[]), fields, "title"), None);
+        assert_eq!(node_text(&props(&[]), fields, "body"), None);
     }
 }

@@ -157,9 +157,8 @@ fn recall_semantic_respects_k() {
 /// write turns *without* vectors (as the MCP `add_message` does) — the write
 /// path embeds them, and semantic recall finds them with no client-side work.
 ///
-/// The target reads `text`, not `body`: `CREATE` lifts `body`/`title` out of
-/// the property map into the node's dedicated fields, which auto-embed does not
-/// see, so a `body` target would never fire.
+/// The target reads `text`; a `body` target works equally since #536 (the
+/// message mirrors its text into `body`).
 #[test]
 fn auto_embedded_messages_are_recalled_semantically() {
     let rt = Runtime::new().expect("runtime");
