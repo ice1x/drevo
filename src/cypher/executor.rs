@@ -6157,6 +6157,100 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// `CALL drevo.stableMatching(proposerLabel, acceptorLabel, relType,
+    /// rankProperty) YIELD proposer, acceptor, proposerRank, acceptorRank`
+    /// (issue #541) — Gale–Shapley stable matching over preferences stored as
+    /// edges.
+    ///
+    /// Proposers are the `proposerLabel` nodes, acceptors the `acceptorLabel`
+    /// nodes (primary or secondary label). Each ranks the other side through
+    /// its outgoing `relType` edges: a lower numeric `rankProperty` is
+    /// preferred; an edge without a numeric rank comes after every ranked one,
+    /// ties by node id. Only mutually listed pairs can match (see
+    /// [`crate::algorithms::stable_matching`]). Each row is a matched pair,
+    /// proposer-optimal, with the rank each side gave the other as stored
+    /// (`null` when absent). Read-only.
+    fn proc_stable_matching(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (4) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let proposer_label = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let acceptor_label = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let rel_type = self.eval(&args[2], &empty)?.as_string(span)?.to_string();
+        let rank_property = self.eval(&args[3], &empty)?.as_string(span)?.to_string();
+
+        let mut nodes: HashMap<u64, Arc<NodeValue>> = HashMap::new();
+        let mut proposers: Vec<u64> = Vec::new();
+        let mut acceptors: Vec<u64> = Vec::new();
+        for node in self.engine().all_nodes()? {
+            let labels = node_labels_from_storage(&node);
+            let is_proposer = labels.contains(&proposer_label);
+            let is_acceptor = labels.contains(&acceptor_label);
+            if is_proposer {
+                proposers.push(node.id);
+            }
+            if is_acceptor {
+                acceptors.push(node.id);
+            }
+            if is_proposer || is_acceptor {
+                nodes.insert(node.id, node_to_value(&node));
+            }
+        }
+
+        // Preference lists over the other side, plus the stored rank of every
+        // (from, to) preference for the output.
+        let mut stored_rank: HashMap<(u64, u64), Value> = HashMap::new();
+        let mut preferences =
+            |side: &[u64], other: &[u64]| -> ExecResultT<Vec<crate::algorithms::Preferences>> {
+                let other: std::collections::HashSet<u64> = other.iter().copied().collect();
+                let mut out = Vec::with_capacity(side.len());
+                for &id in side {
+                    let mut ranked: Vec<(f64, u64)> = Vec::new();
+                    for edge in self.engine().edges_of(id, ModelDirection::Outgoing)? {
+                        if edge.kind != rel_type || !other.contains(&edge.to_id) {
+                            continue;
+                        }
+                        let rank = edge_to_value(&edge)
+                            .properties
+                            .get(&rank_property)
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let key = match rank {
+                            Value::Integer(i) => i as f64,
+                            Value::Float(f) if !f.is_nan() => f,
+                            _ => f64::INFINITY,
+                        };
+                        ranked.push((key, edge.to_id));
+                        stored_rank.entry((id, edge.to_id)).or_insert(rank);
+                    }
+                    ranked.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+                    out.push((id, ranked.into_iter().map(|(_, to)| to).collect()));
+                }
+                Ok(out)
+            };
+        let proposer_prefs = preferences(&proposers, &acceptors)?;
+        let acceptor_prefs = preferences(&acceptors, &proposers)?;
+
+        let rank_of =
+            |from: u64, to: u64| stored_rank.get(&(from, to)).cloned().unwrap_or(Value::Null);
+        let mut rows = Vec::new();
+        for (p, a) in crate::algorithms::stable_matching(&proposer_prefs, &acceptor_prefs) {
+            let (Some(proposer), Some(acceptor)) = (nodes.get(&p), nodes.get(&a)) else {
+                continue;
+            };
+            rows.push(vec![
+                Value::Node(proposer.clone()),
+                Value::Node(acceptor.clone()),
+                rank_of(p, a),
+                rank_of(a, p),
+            ]);
+        }
+        Ok(rows)
+    }
+
     /// `CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits,
     /// kv_fallbacks, kv_routed, rebuild_errors` — engine-flip observability
     /// (RFC #307): which engine serves this database's Cypher, and how the
@@ -6520,6 +6614,7 @@ impl<'a> Executor<'a> {
             "drevo.betweenness" => self.proc_betweenness(),
             "drevo.closeness" => self.proc_closeness(),
             "drevo.ricciCurvature" => self.proc_ricci_curvature(),
+            "drevo.stableMatching" => self.proc_stable_matching(args, span),
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
@@ -8166,6 +8261,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.closeness" => Some(&["node", "score"]),
         // Ollivier–Ricci edge curvature (issue #526): endpoints + curvature.
         "drevo.ricciCurvature" => Some(&["from", "to", "curvature"]),
+        // Gale–Shapley stable matching (issue #541): matched pairs + mutual ranks.
+        "drevo.stableMatching" => Some(&["proposer", "acceptor", "proposerRank", "acceptorRank"]),
         // Engine-flip observability: engine mode + mirror routing counters.
         "drevo.engine.status" => Some(&[
             "engine",
@@ -8280,6 +8377,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.closeness" => 0,
         // drevo.ricciCurvature() — no arguments (default idleness alpha = 0.5).
         "drevo.ricciCurvature" => 0,
+        // drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty).
+        "drevo.stableMatching" => 4,
         // drevo.engine.status() — no arguments.
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
