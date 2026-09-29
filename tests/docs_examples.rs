@@ -163,7 +163,14 @@ fn needs_runtime_config(source: &str) -> bool {
     // index named …". The syntax is still validated by `parse`; end-to-end
     // coverage (create-then-query, including persistence) lives in
     // `tests/native_vector_index_tests.rs`.
+    //
+    // `drevo.memory.recallSemantic` (issue #533) embeds its query text through
+    // the same server-side embedder as `drevo.semantic.query`, so a bare
+    // in-memory DB reports the "semantic embedding" capability error. End-to-end
+    // coverage lives in `tests/semantic_memory_tests.rs` (feature
+    // `embeddings-proxy`).
     source.contains("drevo.semantic.query")
+        || source.contains("drevo.memory.recallSemantic")
         || source.contains("drevo.semantic.reindex")
         || source.contains("drevo.semantic.embed")
         || source.contains("drevo.engine.status")

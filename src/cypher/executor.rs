@@ -1250,7 +1250,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
                           drevo.semantic.reindexRel, drevo.cypher.fromText, \
                           db.index.vector.queryNodes, db.index.fulltext.queryNodes, \
-                          drevo.memory.recall, drevo.memory.getConversation, \
+                          drevo.memory.recall, drevo.memory.recallVector, \
+                          drevo.memory.recallSemantic, drevo.memory.getConversation, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
@@ -4650,12 +4651,31 @@ impl<'a> Executor<'a> {
         k: usize,
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        self.vector_scan_where(label, property, query, k, span, |_| true)
+    }
+
+    /// [`Self::vector_scan`] restricted to the `label` nodes for which `keep`
+    /// holds — the predicate runs before scoring, so a scoped scan (e.g. one
+    /// agent-memory session) ranks only its own candidates and `k` counts only
+    /// kept nodes.
+    fn vector_scan_where(
+        &self,
+        label: &str,
+        property: &str,
+        query: &[f32],
+        k: usize,
+        span: Span,
+        keep: impl Fn(&NodeValue) -> bool,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
         let mut scored: Vec<(f32, Arc<NodeValue>)> = Vec::new();
         for node in self.engine().all_nodes()? {
             if !node_labels_from_storage(&node).iter().any(|l| l == label) {
                 continue;
             }
             let nv = node_to_value(&node);
+            if !keep(&nv) {
+                continue;
+            }
             let Some(embedding_val) = nv.properties.get(property) else {
                 continue; // no embedding on this node — skip
             };
@@ -4806,6 +4826,85 @@ impl<'a> Executor<'a> {
             rows.push(vec![Value::Node(nv), Value::Float(f64::from(score))]);
         }
         Ok(rows)
+    }
+
+    /// The property `:Message` embeddings live in: the `embedding_property` of a
+    /// registered `Message` semantic target (`drevo.semantic.register('Message',
+    /// …)`, which is also what auto-embed writes), else `embedding`.
+    fn message_embedding_property(&self) -> String {
+        self.native_semantic
+            .and_then(|svc| {
+                svc.semantic_status()
+                    .into_iter()
+                    .find(|t| t.label == "Message")
+                    .map(|t| t.embedding_property)
+            })
+            .unwrap_or_else(|| "embedding".to_string())
+    }
+
+    /// Cosine-rank `session`'s `:Message` nodes against `query` — the shared
+    /// core of `recallVector` / `recallSemantic`.
+    fn memory_vector_recall(
+        &self,
+        session: &str,
+        query: &[f32],
+        k: usize,
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let property = self.message_embedding_property();
+        self.vector_scan_where(
+            "Message",
+            &property,
+            query,
+            k,
+            span,
+            |nv| matches!(nv.properties.get("session"), Some(Value::String(s)) if s == session),
+        )
+    }
+
+    /// `CALL drevo.memory.recallVector(session, vector, k) YIELD node, score`
+    /// (issue #533) — session-scoped agent-memory recall by **meaning**, with a
+    /// caller-supplied query vector.
+    ///
+    /// The top-`k` `:Message` nodes of `session` by cosine similarity between
+    /// their embedding and `vector`, best-first. Unlike the BM25
+    /// [`Self::proc_memory_recall`] it finds paraphrases that share no token
+    /// with the query. Messages without an embedding are skipped. Needs no
+    /// server-side embedder; see `drevo.memory.recallSemantic` for the variant
+    /// that embeds query text on the server.
+    fn proc_memory_recall_vector(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (3) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let session = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let query_val = self.eval(&args[1], &empty)?;
+        let query = similar_operand(&query_val, "drevo.memory.recallVector", "vector", span)?;
+        let k = self.eval_usize(&args[2], &empty)?;
+        self.memory_vector_recall(&session, &query, k, span)
+    }
+
+    /// `CALL drevo.memory.recallSemantic(session, text, k) YIELD node, score`
+    /// (issue #533) — [`Self::proc_memory_recall_vector`] with the query
+    /// **text** embedded server-side (the same embedder as
+    /// `drevo.semantic.query`), so an agent recalls by meaning without hosting
+    /// an embedder. Errors with the engine-capability "semantic embedding"
+    /// error when no embedder is installed; fall back to `drevo.memory.recall`.
+    #[cfg(feature = "http")]
+    fn proc_memory_recall_semantic(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (3) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let session = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let text = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[2], &empty)?;
+        let query = self.embed_query_text("drevo.memory.recallSemantic", &text, span)?;
+        self.memory_vector_recall(&session, &query, k, span)
     }
 
     /// `CALL drevo.memory.getConversation(session, limit) YIELD node` (issue
@@ -5665,6 +5764,9 @@ impl<'a> Executor<'a> {
             "db.index.vector.queryNodes" => self.proc_db_index_vector_query_nodes(args, span),
             "db.index.fulltext.queryNodes" => self.proc_db_index_fulltext_query_nodes(args, span),
             "drevo.memory.recall" => self.proc_memory_recall(args, span),
+            "drevo.memory.recallVector" => self.proc_memory_recall_vector(args, span),
+            #[cfg(feature = "http")]
+            "drevo.memory.recallSemantic" => self.proc_memory_recall_semantic(args, span),
             "drevo.memory.getConversation" => self.proc_memory_get_conversation(args, span),
             #[cfg(feature = "http")]
             "drevo.cypher.fromText" => self.proc_cypher_from_text(args, span),
@@ -7290,6 +7392,11 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
         // Agent-memory recall (issue #533): session-scoped BM25 over :Message.
         "drevo.memory.recall" => Some(&["node", "score"]),
+        // Agent-memory recall by meaning (issue #533): session-scoped cosine
+        // over :Message, with a caller vector or server-embedded text.
+        "drevo.memory.recallVector" => Some(&["node", "score"]),
+        #[cfg(feature = "http")]
+        "drevo.memory.recallSemantic" => Some(&["node", "score"]),
         // Agent-memory transcript replay (issue #533).
         "drevo.memory.getConversation" => Some(&["node"]),
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
@@ -7358,6 +7465,11 @@ fn procedure_arity(name: &str) -> usize {
         "db.index.fulltext.queryNodes" => 2,
         // drevo.memory.recall(session, query, k) (issue #533).
         "drevo.memory.recall" => 3,
+        // drevo.memory.recallVector(session, vector, k) (issue #533).
+        "drevo.memory.recallVector" => 3,
+        // drevo.memory.recallSemantic(session, text, k) (issue #533).
+        #[cfg(feature = "http")]
+        "drevo.memory.recallSemantic" => 3,
         // drevo.memory.getConversation(session, limit) (issue #533).
         "drevo.memory.getConversation" => 2,
         // drevo.cypher.fromText(prompt) — one NL prompt.
