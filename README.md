@@ -37,7 +37,7 @@ drevo is a standalone embedded graph database: link it into an app as a library,
 
 A persistent, queryable **memory backend for agent orchestrators** (LangGraph, Temporal, Claude Code, Cursor, CrewAI, multi-agent swarms) that survives across sessions, agents, and machines. Nodes: `agent`, `session`, `observation`, `decision`, `task`, `artifact`, `fact`, `preference`, `tool_call`. Edges: `observed_by`, `decided_by`, `performed_in_session`, `derived_from`, `contradicts`, `supersedes`, `references_artifact`, `belongs_to_task`, `honours_preference`, `produced_by_tool`.
 
-The orchestrator hot path maps directly onto drevo's existing surface — no new engine features needed:
+The orchestrator hot path maps directly onto drevo's existing surface:
 
 - **record_observation** → `create_node` + `create_edge`
 - **recall** (FTS + kind filter, or `CALL fts.search(query, k)` over Bolt) → BM25 ranking
@@ -46,6 +46,23 @@ The orchestrator hot path maps directly onto drevo's existing surface — no new
 - **compact** (prune low-confidence observations) → scan by kind + `delete_node`
 
 The full flow is pinned by [`tests/scenario_agent_memory.rs`](tests/scenario_agent_memory.rs).
+
+**Native context graph (`drevo.memory.*`).** The three memory layers of the
+Neo4j GenAI "context graph" are also built-in procedures, so any Bolt/HTTP
+client gets agent memory in one call each — no pipeline to write
+([reference](docs/cypher-reference.md#agent-memory-533)):
+
+| Layer | Procedures |
+|---|---|
+| Short-term (a session's turns, `:Message` chained by `:NEXT`) | `addMessage`, `getConversation`, `recall` (BM25), `recallVector` / `recallSemantic` (by meaning) |
+| Long-term (POLE+O entities, facts with a validity window) | `rememberEntity`, `assertFact` (with supersession), `retractFact`, `factsAt(name, asOf)` |
+| Reasoning (why the agent did something) | `recordReasoning` |
+
+Superseded facts are closed rather than deleted, so memory answers "what did we
+know then?". The schema is the one `neo4j-agent-memory` writes, and the
+Neo4j-compatible index surface (`CREATE VECTOR INDEX`, `db.index.vector.queryNodes`
+/ `queryRelationships`, `SHOW INDEXES`) lets the Neo4j GenAI Python stack run
+against drevo unmodified.
 
 **Why drevo over the usual options** — its differentiator is hitting all five at once:
 
