@@ -587,8 +587,15 @@ pub(crate) fn node_to_value(node: &Node) -> Arc<NodeValue> {
     // Surface `title` and `body` as ordinary properties so Cypher code
     // sees a homogeneous map. The user can override either via the
     // inline map; the executor uses these names as aliases when
-    // creating nodes.
-    if !node.title.is_empty() {
+    // creating nodes. A placeholder title the executor synthesised for an
+    // untitled node is storage plumbing, not a property: hiding it keeps
+    // `keys(n)` Neo4j-shaped and stops `SET b = properties(a)` from copying
+    // a's unique placeholder onto b.
+    if !node.title.is_empty()
+        && !node
+            .title
+            .starts_with(crate::native_service::SYNTHETIC_TITLE_PREFIX)
+    {
         properties.insert("title".to_string(), Value::String(node.title.clone()));
     }
     if !node.body.is_empty() {
@@ -12804,12 +12811,12 @@ mod tests {
         );
         let res = run("CALL db.propertyKeys()", &db);
         assert_eq!(res.columns, vec!["propertyKey"]);
-        // Sorted, distinct across nodes + edges. drevo auto-assigns a
-        // unique `title` to every node (to keep the title-uniqueness
-        // invariant), so `title` is always a real, queryable property key.
-        // The reserved `_labels` key is never surfaced.
+        // Sorted, distinct across nodes + edges. The placeholder `title`
+        // drevo synthesises for untitled nodes is storage plumbing and is
+        // not a property key (#545); the reserved `_labels` key is never
+        // surfaced either.
         let keys = string_column(&res);
-        assert_eq!(keys, vec!["age", "name", "since", "title"]);
+        assert_eq!(keys, vec!["age", "name", "since"]);
         assert!(!keys.contains(&"_labels".to_string()));
     }
 
@@ -13982,16 +13989,14 @@ mod tests {
             "CREATE (:Person {name: 'Ada', age: 36})-[:KNOWS {since: 2020}]->(:Person {name: 'Bo'})",
             &db,
         );
-        // keys() over a node — sorted property names. Every node carries the
-        // synthesised `title` alias (see `node_to_value`), so `keys()`
-        // surfaces it alongside the user-supplied `name` / `age`, exactly the
-        // property set `n.<prop>` access would see.
+        // keys() over a node — sorted property names. The placeholder title
+        // synthesised for an untitled node is hidden (see `node_to_value`),
+        // so only the user-supplied `name` / `age` appear, as in Neo4j.
         assert_eq!(
             scalar("MATCH (n:Person {name: 'Ada'}) RETURN keys(n) AS v", &db),
             Value::List(vec![
                 Value::String("age".into()),
-                Value::String("name".into()),
-                Value::String("title".into())
+                Value::String("name".into())
             ])
         );
         // labels() over a node.

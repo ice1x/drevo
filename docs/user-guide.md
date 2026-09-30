@@ -28,7 +28,9 @@ A node is an entity. Every node has:
 
 > **The unique-title rule matters.** It is what lets you address a node by name and what keeps
 > imports idempotent. When you don't have a natural unique name (e.g. anonymous nodes created
-> in Cypher), drevo synthesises a unique placeholder title for you.
+> in Cypher), drevo synthesises a unique placeholder title for you. The placeholder is
+> invisible to Cypher: `CREATE (n:X {x: 1})` yields a node whose `n.title` is `null` and whose
+> `keys(n)` is `["x"]`, exactly as in Neo4j — and `SET b = properties(a)` never copies it.
 
 ### Edges
 
