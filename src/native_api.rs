@@ -770,7 +770,31 @@ async fn cypher(
         return handle_admin_cypher(&state, command, params).map(Json);
     }
 
-    Ok(Json(run_cypher_on(&state.service, &query, params)?))
+    Ok(Json(run_blocking(|| {
+        run_cypher_on(&state.service, &query, params)
+    })?))
+}
+
+/// Run a synchronous, possibly long statement (Cypher execution) from async
+/// server code without parking a tokio worker (#547).
+///
+/// The executor is synchronous and holds the service's index lock for the
+/// whole statement. Called straight from an `async fn`, a slow statement pins
+/// its worker thread, and a few of them in flight starve the runtime: on the
+/// live server even `GET /health`, which takes no lock, stopped answering.
+/// On a multi-thread runtime [`tokio::task::block_in_place`] first hands the
+/// worker's other tasks to a fresh worker, so liveness, `/status` and new
+/// connections keep being served however long the statement runs. It cannot
+/// be used on a current-thread runtime, where it panics (that is the flavour
+/// `#[tokio::test]` uses by default). There the work runs inline, exactly as
+/// before.
+pub(crate) fn run_blocking<R>(work: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
 }
 
 /// Parse and execute `query` (with JSON `params`) against `service`, projecting
@@ -821,7 +845,7 @@ fn handle_admin_cypher(
                 .get(&name)
                 .ok_or_else(|| ApiError::NotFound(format!("database '{name}' not found")))?;
             match query {
-                Some(inner) => run_cypher_on(&service, &inner, params),
+                Some(inner) => run_blocking(|| run_cypher_on(&service, &inner, params)),
                 None => Ok(empty_cypher_response()),
             }
         }
