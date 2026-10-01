@@ -39,6 +39,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PORT` | `8080` | TCP port (1–65535; `0` is rejected). |
 | `DREVO_DATA_DIR` | `/data` | Directory holding the single `drevo.redb` file. |
 | `RUST_LOG` | `info` | `tracing` env-filter (e.g. `drevo=debug,info`). |
+| `DREVO_QUERY_TIMEOUT_MS` | `0` (off) | Per-statement wall-clock limit in milliseconds, for HTTP `/cypher` and Bolt, applied to every database. A statement over it fails with `statement exceeded the N ms statement timeout` (Bolt: `Neo.ClientError.Transaction.TransactionTimedOut`) and releases its locks. An autocommit statement keeps the writes it made before the limit hit, as with any other runtime error; inside an explicit transaction, roll back as usual. Non-integer values are rejected. |
 | `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
 | `DREVO_AUTO_COMPACT_RATIO` | `2.0` | Minimum bloat ratio to trigger auto-compaction. |
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |

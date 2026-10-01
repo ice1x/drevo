@@ -387,6 +387,9 @@ mod codes {
     pub const PARAMETER_MISSING: &str = "Neo.ClientError.Statement.ParameterMissing";
     pub const UNSUPPORTED: &str = "Neo.DatabaseError.General.UnknownError";
     pub const STORAGE: &str = "Neo.DatabaseError.Statement.ExecutionFailed";
+    /// A statement ran past the configured statement timeout (#547) — the
+    /// code Neo4j drivers already recognise for a timed-out transaction.
+    pub const TIMED_OUT: &str = "Neo.ClientError.Transaction.TransactionTimedOut";
     /// Returned when a `HELLO` carries missing / wrong / unsupported
     /// authentication credentials and the session is bound to an
     /// [`Authenticator`](crate::bolt::auth::Authenticator). Phase 11
@@ -1434,6 +1437,7 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         | ExecError::InvalidRegex { .. } => codes::SEMANTIC_ERROR,
         ExecError::MissingParameter(_) => codes::PARAMETER_MISSING,
         ExecError::Storage(_) => codes::STORAGE,
+        ExecError::Timeout { .. } => codes::TIMED_OUT,
     };
     failure_metadata(code, &format!("{e}"))
 }

@@ -82,6 +82,9 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Which engine serves Cypher queries (engine flip, RFC #307 Phase 6).
     pub engine: EngineMode,
+    /// Per-statement wall-clock limit from `DREVO_QUERY_TIMEOUT_MS` (#547);
+    /// `None` (unset or `0`) means no limit.
+    pub query_timeout: Option<std::time::Duration>,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -137,6 +140,14 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_QUERY_TIMEOUT_MS` was not a non-negative integer.
+    #[error(
+        "invalid DREVO_QUERY_TIMEOUT_MS value `{value}`: expected milliseconds (0 = no limit)"
+    )]
+    InvalidQueryTimeout {
+        /// The raw env-var value.
+        value: String,
+    },
 }
 
 impl Config {
@@ -184,11 +195,21 @@ impl Config {
             },
         };
 
+        let query_timeout = match getter("DREVO_QUERY_TIMEOUT_MS") {
+            None => None,
+            Some(raw) => match raw.trim().parse::<u64>() {
+                Ok(0) => None,
+                Ok(ms) => Some(std::time::Duration::from_millis(ms)),
+                Err(_) => return Err(ConfigError::InvalidQueryTimeout { value: raw }),
+            },
+        };
+
         Ok(Self {
             host,
             port,
             data_dir: PathBuf::from(data_dir_raw),
             engine,
+            query_timeout,
         })
     }
 
@@ -485,6 +506,15 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
             )))
         })?,
     );
+    // Opt-in statement timeout (#547): every database, including ones created
+    // later through the catalog, stops a statement past this limit.
+    registry.set_statement_timeout(cfg.query_timeout);
+    if let Some(limit) = cfg.query_timeout {
+        tracing::info!(
+            timeout_ms = limit.as_millis() as u64,
+            "statement timeout enabled"
+        );
+    }
 
     // Optional Bolt listener — same opt-in as the KV path, served by the
     // durable-native session; statements route to the database named by their
