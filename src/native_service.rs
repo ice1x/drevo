@@ -147,6 +147,8 @@ pub struct NativeService {
     last_compact_head: AtomicU64,
     /// Guards against overlapping compactions.
     compacting: AtomicBool,
+    /// Opt-in statement timeout in milliseconds (#547); `0` = no limit.
+    statement_timeout_ms: AtomicU64,
     /// Node-side auto-embedding registry — the native home of what the KV
     /// handle keeps in `Drevo::semantic` (issue #447). Authoritative
     /// control-plane state, persisted to the `semantic.json` sidecar.
@@ -260,6 +262,7 @@ impl NativeService {
             compact_every_ops,
             last_compact_head,
             compacting: AtomicBool::new(false),
+            statement_timeout_ms: AtomicU64::new(0),
             semantic: RwLock::new(node),
             rel_semantic: RwLock::new(rel),
             vector_indexes: RwLock::new(vector),
@@ -293,6 +296,7 @@ impl NativeService {
             compact_every_ops: Self::DEFAULT_COMPACT_EVERY_OPS,
             last_compact_head: AtomicU64::new(0),
             compacting: AtomicBool::new(false),
+            statement_timeout_ms: AtomicU64::new(0),
             semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             rel_semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             vector_indexes: RwLock::new(crate::vector_index_registry::VectorIndexRegistry::new()),
@@ -411,9 +415,35 @@ impl NativeService {
         query: &Query,
         params: HashMap<String, Value>,
     ) -> Result<ExecResult, ExecError> {
-        let result = self.with_fresh_indexes(|idx| self.execute_with(idx, query, params));
+        let result = crate::cypher::executor::deadline::with_statement_timeout(
+            self.statement_timeout(),
+            || self.with_fresh_indexes(|idx| self.execute_with(idx, query, params)),
+        );
         self.maybe_compact();
         result
+    }
+
+    /// Limit every statement [`execute`](Self::execute) runs to `limit` of
+    /// wall-clock time (#547); `None` (the default) means no limit. A
+    /// statement over the limit fails with
+    /// [`ExecError::Timeout`] and
+    /// releases the index lock it held. The clock starts when the statement
+    /// starts, so time spent waiting for the lock behind a writer counts.
+    /// Sub-millisecond limits round up to 1 ms.
+    pub fn set_statement_timeout(&self, limit: Option<std::time::Duration>) {
+        let ms = limit.map_or(0, |d| {
+            u64::try_from(d.as_millis()).unwrap_or(u64::MAX).max(1)
+        });
+        self.statement_timeout_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// The statement timeout set by
+    /// [`set_statement_timeout`](Self::set_statement_timeout), if any.
+    pub fn statement_timeout(&self) -> Option<std::time::Duration> {
+        match self.statement_timeout_ms.load(Ordering::Relaxed) {
+            0 => None,
+            ms => Some(std::time::Duration::from_millis(ms)),
+        }
     }
 
     /// Compact the WAL and trim the consumed change-feed once enough ops
@@ -545,7 +575,9 @@ impl NativeService {
                 "the transaction has already been closed",
             ))));
         };
-        crate::cypher::executor::execute_on_engine(query, &engine, params)
+        crate::cypher::executor::deadline::with_statement_timeout(self.statement_timeout(), || {
+            crate::cypher::executor::execute_on_engine(query, &engine, params)
+        })
     }
 
     /// Commit a registered transaction (one fsynced WAL batch, atomic swap),

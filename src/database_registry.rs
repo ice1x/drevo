@@ -249,6 +249,16 @@ impl DatabaseRegistry {
         Arc::clone(&self.default)
     }
 
+    /// Apply a statement timeout (#547) to every registered database, the
+    /// default included; databases created afterwards inherit it from the
+    /// default. `None` removes the limit.
+    pub fn set_statement_timeout(&self, limit: Option<std::time::Duration>) {
+        self.default.set_statement_timeout(limit);
+        for service in self.read().values() {
+            service.set_statement_timeout(limit);
+        }
+    }
+
     /// The service for `name`, or `None` if no such database is registered.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<NativeService>> {
@@ -297,6 +307,7 @@ impl DatabaseRegistry {
             return Err(RegistryError::AlreadyExists(name.to_string()));
         }
         let service = Arc::new(NativeService::in_memory());
+        service.set_statement_timeout(self.default_service().statement_timeout());
         dbs.insert(name.to_string(), Arc::clone(&service));
         Ok(service)
     }
@@ -327,6 +338,8 @@ impl DatabaseRegistry {
             Some(data_dir) => Arc::new(Self::open_durable(data_dir, name)?),
             None => Arc::new(NativeService::in_memory()),
         };
+        // New databases inherit the server-wide statement timeout (#547).
+        service.set_statement_timeout(self.default_service().statement_timeout());
         dbs.insert(name.to_string(), Arc::clone(&service));
         Ok(service)
     }

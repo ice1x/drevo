@@ -408,6 +408,14 @@ pub enum ExecError {
         /// Short label of the unavailable subsystem (`"fts.search"`).
         feature: String,
     },
+    /// The statement ran past the configured statement timeout (#547) and was
+    /// stopped. Writes an autocommit statement made before the limit hit are
+    /// kept, as with any other runtime error mid-statement.
+    #[error("statement exceeded the {limit_ms} ms statement timeout")]
+    Timeout {
+        /// The configured limit, in milliseconds.
+        limit_ms: u64,
+    },
 }
 
 /// A [`GraphEngine`] method returns the storage-agnostic
@@ -439,6 +447,7 @@ impl ExecError {
             | Self::InvalidCreate(_)
             | Self::InvalidMutation(_)
             | Self::EngineCapability { .. }
+            | Self::Timeout { .. }
             | Self::Storage(_) => None,
         }
     }
@@ -446,6 +455,112 @@ impl ExecError {
 
 /// Convenience alias for executor results.
 pub type ExecResultT<T> = Result<T, ExecError>;
+
+/// The per-statement deadline behind the opt-in statement timeout (#547).
+///
+/// A statement executes synchronously on one thread, so the deadline lives in
+/// a thread-local that [`with_statement_timeout`] sets for exactly one call
+/// and restores afterwards. The executor's hot paths (expression evaluation,
+/// node enumeration, pattern expansion, path searches) call [`tick`], which
+/// costs a counter bump and only reads the clock every [`TICK_STRIDE`] calls.
+/// With no deadline set, `tick` is a single thread-local read.
+pub(crate) mod deadline {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    use super::{ExecError, ExecResultT};
+
+    /// Clock reads are amortised over this many ticks.
+    const TICK_STRIDE: u32 = 1024;
+
+    thread_local! {
+        /// `(deadline, limit in ms)` of the statement running on this thread.
+        static DEADLINE: Cell<Option<(Instant, u64)>> = const { Cell::new(None) };
+        static TICKS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Run `work` with a deadline `limit` from now (none when `limit` is
+    /// `None`), restoring whatever deadline was active before — so a nested
+    /// statement cannot clear or extend its caller's.
+    pub(crate) fn with_statement_timeout<R>(
+        limit: Option<Duration>,
+        work: impl FnOnce() -> R,
+    ) -> R {
+        let Some(limit) = limit else {
+            return work();
+        };
+        let mut deadline = Instant::now() + limit;
+        let limit_ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX);
+        let previous = DEADLINE.with(|d| d.get());
+        if let Some((outer, _)) = previous {
+            deadline = deadline.min(outer);
+        }
+        DEADLINE.with(|d| d.set(Some((deadline, limit_ms))));
+        struct Restore(Option<(Instant, u64)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                DEADLINE.with(|d| d.set(self.0));
+            }
+        }
+        let _restore = Restore(previous);
+        work()
+    }
+
+    /// Fail with [`ExecError::Timeout`] once the running statement is past
+    /// its deadline.
+    pub(crate) fn tick() -> ExecResultT<()> {
+        let Some((deadline, limit_ms)) = DEADLINE.with(|d| d.get()) else {
+            return Ok(());
+        };
+        let ticks = TICKS.with(|t| {
+            let n = t.get().wrapping_add(1);
+            t.set(n);
+            n
+        });
+        if ticks % TICK_STRIDE == 0 && Instant::now() >= deadline {
+            return Err(ExecError::Timeout { limit_ms });
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn spin_until_timeout() -> u64 {
+            loop {
+                if let Err(ExecError::Timeout { limit_ms }) = tick() {
+                    return limit_ms;
+                }
+            }
+        }
+
+        #[test]
+        fn tick_is_free_without_a_deadline() {
+            for _ in 0..10 * TICK_STRIDE {
+                assert!(tick().is_ok());
+            }
+        }
+
+        #[test]
+        fn tick_fails_after_the_deadline_and_the_scope_restores() {
+            let limit = with_statement_timeout(Some(Duration::from_millis(5)), spin_until_timeout);
+            assert_eq!(limit, 5);
+            for _ in 0..10 * TICK_STRIDE {
+                assert!(tick().is_ok(), "deadline leaked out of its scope");
+            }
+        }
+
+        #[test]
+        fn a_nested_scope_never_extends_the_outer_deadline() {
+            let started = Instant::now();
+            with_statement_timeout(Some(Duration::from_millis(5)), || {
+                with_statement_timeout(Some(Duration::from_secs(60)), spin_until_timeout)
+            });
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+    }
+}
 
 /// One discovered path as `(relationships, nodes-after-source)`, both in
 /// traversal order — the shape [`Executor::bfs_shortest_paths`] returns.
@@ -2626,6 +2741,7 @@ impl<'a> Executor<'a> {
             let mut next = Vec::new();
             for &from in &frontier {
                 for edge in self.engine().edges_of(from, model_dir)? {
+                    deadline::tick()?;
                     match dir {
                         AstDirection::Outgoing if edge.from_id != from => continue,
                         AstDirection::Incoming if edge.to_id != from => continue,
@@ -2779,6 +2895,7 @@ impl<'a> Executor<'a> {
                         .edges_of(state.node.id, ModelDirection::Both)?,
                 };
                 for edge in edges {
+                    deadline::tick()?;
                     if state.used_ids.contains(&edge.id) {
                         continue;
                     }
@@ -2968,6 +3085,7 @@ impl<'a> Executor<'a> {
         };
         let mut out = Vec::with_capacity(nodes.len());
         for node in &nodes {
+            deadline::tick()?;
             let nv = self.project_node(node);
             if !node_matches_pattern(&nv, pattern, row, self)? {
                 continue;
@@ -3269,6 +3387,7 @@ impl<'a> Executor<'a> {
             }
         };
         for edge in edges {
+            deadline::tick()?;
             if !edge_matches_pattern(&edge, rel_pattern, existing, self)? {
                 continue;
             }
@@ -3457,6 +3576,7 @@ impl<'a> Executor<'a> {
                         .edges_of(state.node.id, ModelDirection::Both)?,
                 };
                 for edge in edges {
+                    deadline::tick()?;
                     if state.used_ids.contains(&edge.id) {
                         continue;
                     }
@@ -7333,6 +7453,7 @@ impl<'a> Executor<'a> {
     // ----- Expression evaluation ------------------------------------------
 
     fn eval(&self, expr: &Expression, row: &Bindings) -> ExecResultT<Value> {
+        deadline::tick()?;
         match expr {
             Expression::Integer(i, _) => Ok(Value::Integer(*i)),
             Expression::Float(f, _) => Ok(Value::Float(*f)),
