@@ -136,7 +136,7 @@
 //!   created exactly once. `ON CREATE SET` runs only on the create
 //!   branch, `ON MATCH SET` only on the match branch.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 /// Safety cap for `[*]` / `[*N..]` unbounded variable-length paths.
@@ -2527,9 +2527,28 @@ impl<'a> Executor<'a> {
                 None => self.enumerate_nodes(&segment.node, &row)?,
             };
 
+            // One breadth-first pass per source answers every target (#546);
+            // the per-pair trail search remains for the shapes it cannot
+            // cover (see `bfs_shortest_from`).
+            let shared = if lower <= 1 {
+                let wanted: HashSet<u64> = targets
+                    .iter()
+                    .map(|t| t.id)
+                    .filter(|id| *id != source.id)
+                    .collect();
+                Some(self.bfs_shortest_from(&source, &wanted, rel, &row, upper, kind)?)
+            } else {
+                None
+            };
             for target in targets {
-                let found =
-                    self.bfs_shortest_paths(&source, &target, rel, &row, lower, upper, kind)?;
+                let found = match &shared {
+                    Some(by_target) if target.id != source.id => {
+                        by_target.get(&target.id).cloned().unwrap_or_default()
+                    }
+                    _ => {
+                        self.bfs_shortest_paths(&source, &target, rel, &row, lower, upper, kind)?
+                    }
+                };
                 for (rels, nodes) in found {
                     let mut bindings = row.clone();
                     if let Some(name) = &segment.node.variable {
@@ -2561,6 +2580,129 @@ impl<'a> Executor<'a> {
         Ok(out)
     }
 
+    /// One breadth-first pass from `source` answering **every** target in
+    /// `wanted` at once (#546) — the fast path of
+    /// [`match_shortest_pattern`](Self::match_shortest_pattern).
+    ///
+    /// A node-visited BFS is exact here: a minimum-length connecting path
+    /// never repeats a node, so the trail enumeration of
+    /// [`bfs_shortest_paths`](Self::bfs_shortest_paths) (`O(deg^depth)` per
+    /// pair) finds nothing a layered BFS (`O(V + E)` per source) does not.
+    /// Every node records its predecessors one layer closer to the source —
+    /// all of them for [`ShortestKind::All`] (parallel relationships are
+    /// distinct paths), the first for [`ShortestKind::Single`] — and paths are
+    /// rebuilt backwards from each reached target. The search stops early
+    /// once every wanted target is reached (after finishing that layer, so
+    /// `All` sees every tie).
+    ///
+    /// Callers keep the trail search for the shapes this does not cover: a
+    /// lower bound above 1 (the minimum *admissible* path need not be a
+    /// shortest one) and `source == target`.
+    #[allow(clippy::too_many_arguments)]
+    fn bfs_shortest_from(
+        &self,
+        source: &Arc<NodeValue>,
+        wanted: &HashSet<u64>,
+        rel: &RelationshipPattern,
+        existing: &Bindings,
+        upper: usize,
+        kind: ShortestKind,
+    ) -> ExecResultT<HashMap<u64, Vec<ShortestPath>>> {
+        let dir = rel.direction;
+        let model_dir = match dir {
+            AstDirection::Outgoing => ModelDirection::Outgoing,
+            AstDirection::Incoming => ModelDirection::Incoming,
+            AstDirection::Undirected => ModelDirection::Both,
+        };
+        // node id → (BFS depth, projected node, predecessors one layer up).
+        type Pred = (u64, Arc<RelationshipValue>);
+        let mut seen: HashMap<u64, (usize, Arc<NodeValue>, Vec<Pred>)> = HashMap::new();
+        seen.insert(source.id, (0, source.clone(), Vec::new()));
+        let mut remaining = wanted.len();
+        let mut frontier = vec![source.id];
+        let mut depth = 0;
+        while !frontier.is_empty() && depth < upper && remaining > 0 {
+            depth += 1;
+            let mut next = Vec::new();
+            for &from in &frontier {
+                for edge in self.engine().edges_of(from, model_dir)? {
+                    match dir {
+                        AstDirection::Outgoing if edge.from_id != from => continue,
+                        AstDirection::Incoming if edge.to_id != from => continue,
+                        _ => {}
+                    }
+                    let to = if edge.from_id == from {
+                        edge.to_id
+                    } else {
+                        edge.from_id
+                    };
+                    let reached_at = seen.get(&to).map(|(d, _, _)| *d);
+                    // Already settled closer to the source (incl. self-loops).
+                    if reached_at.is_some_and(|d| d < depth) {
+                        continue;
+                    }
+                    // A second shortest route to a node of this layer only
+                    // matters when every tie is wanted.
+                    if reached_at.is_some() && matches!(kind, ShortestKind::Single) {
+                        continue;
+                    }
+                    if !edge_matches_pattern(&edge, rel, existing, self)? {
+                        continue;
+                    }
+                    let pred = (from, edge_to_value(&edge));
+                    if let Some((_, _, preds)) = seen.get_mut(&to) {
+                        preds.push(pred);
+                        continue;
+                    }
+                    let Some(node) = self.engine().get_node(to)? else {
+                        continue;
+                    };
+                    seen.insert(to, (depth, self.project_node(&node), vec![pred]));
+                    if wanted.contains(&to) {
+                        remaining -= 1;
+                    }
+                    next.push(to);
+                }
+            }
+            frontier = next;
+        }
+
+        let mut out = HashMap::new();
+        for &target in wanted {
+            if !seen.contains_key(&target) {
+                continue;
+            }
+            // Walk predecessors back to the source; each stack entry is the
+            // node reached so far plus the partial path from it to the
+            // target, stored target-first.
+            let mut paths: Vec<ShortestPath> = Vec::new();
+            let mut stack: Vec<(u64, ShortestPath)> = vec![(target, (Vec::new(), Vec::new()))];
+            while let Some((node, (rels, nodes))) = stack.pop() {
+                if node == source.id {
+                    let mut rels = rels;
+                    let mut nodes = nodes;
+                    rels.reverse();
+                    nodes.reverse();
+                    paths.push((rels, nodes));
+                    if matches!(kind, ShortestKind::Single) {
+                        break;
+                    }
+                    continue;
+                }
+                let (_, value, preds) = &seen[&node];
+                for (prev, edge) in preds.iter().rev() {
+                    let mut rels = rels.clone();
+                    let mut nodes = nodes.clone();
+                    rels.push(edge.clone());
+                    nodes.push(value.clone());
+                    stack.push((*prev, (rels, nodes)));
+                }
+            }
+            out.insert(target, paths);
+        }
+        Ok(out)
+    }
+
     /// Breadth-first search for the shortest path(s) from `source` to
     /// `target` over a variable-length relationship pattern `rel`.
     ///
@@ -2571,6 +2713,11 @@ impl<'a> Executor<'a> {
     /// level, so the first level (at or above `lower`) that reaches `target`
     /// is the minimum length: [`ShortestKind::Single`] returns the first such
     /// path, [`ShortestKind::All`] every path at that level.
+    ///
+    /// This enumerates trails (`O(deg^depth)`) for one `(source, target)`
+    /// pair, so it is only the fallback for the shapes
+    /// [`bfs_shortest_from`](Self::bfs_shortest_from) does not cover: a lower
+    /// length bound above 1, and a path from a node back to itself.
     #[allow(clippy::too_many_arguments)]
     fn bfs_shortest_paths(
         &self,
