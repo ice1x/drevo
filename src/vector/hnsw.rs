@@ -1,5 +1,5 @@
 //! Phase 12 task `00076` — an in-memory HNSW approximate-nearest-neighbor
-//! index over [`Vector`](crate::vector::Vector) embeddings.
+//! index over [`Vector`] embeddings.
 //!
 //! HNSW (Hierarchical Navigable Small World, Malkov & Yashunin 2016) is the
 //! index the joint graph+vector Cypher predicate (`00077`) will query when a
@@ -38,9 +38,9 @@
 //! *similarity* runs the other way, so [`Metric::Cosine`] is stored as
 //! `1 - cosine_similarity` to turn "most similar" into "least distant". All
 //! measures reuse the validated kernels in
-//! [`distance`](crate::vector::distance), so a dimension mismatch or a
+//! [`distance`], so a dimension mismatch or a
 //! zero-magnitude vector surfaces as a recoverable
-//! [`VectorError`](crate::vector::VectorError) exactly as it does there.
+//! [`VectorError`] exactly as it does there.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};

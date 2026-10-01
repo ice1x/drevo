@@ -53,7 +53,7 @@
 //! it, so a transaction can never linger in-progress and wedge conflict
 //! detection for others. [`run_transaction`] wraps the begin → body →
 //! validate-and-commit → retry loop, the isolation-aware sibling of
-//! [`run_with_retry`](crate::mvcc::run_with_retry).
+//! [`run_with_retry`].
 //!
 //! [`Snapshot`]: crate::mvcc::Snapshot
 //! [`VersionedStore::get`]: crate::mvcc::VersionedStore::get
