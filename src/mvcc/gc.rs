@@ -1,6 +1,6 @@
 //! Background garbage collection — the vacuum thread (Phase 13 task `00082`).
 //!
-//! [`VersionedStore::vacuum`](crate::mvcc::VersionedStore::vacuum) is the
+//! [`VersionedStore::vacuum`] is the
 //! *mechanism* that reclaims dead tuple versions; [`GcWorker`] is the
 //! *policy* that runs it on a cadence so dead versions do not accumulate
 //! unbounded between writes. It owns a dedicated thread that, every
@@ -22,7 +22,7 @@
 //!
 //! This worker spawns an OS thread and is therefore compiled only off
 //! `wasm32` (where `std::thread` has no real threads). The pure vacuum
-//! mechanism on [`VersionedStore`](crate::mvcc::VersionedStore) stays
+//! mechanism on [`VersionedStore`] stays
 //! available everywhere, so a WASM host can still drive collection manually.
 
 #![cfg(not(target_arch = "wasm32"))]

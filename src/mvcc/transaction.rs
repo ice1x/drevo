@@ -11,8 +11,8 @@
 //!   tuple versions a reader is allowed to see.
 //!
 //! Tuple storage and the visibility predicate live in the sibling
-//! [`Version`](crate::mvcc::Version) and
-//! [`VersionedStore`](crate::mvcc::VersionedStore) types; this module owns
+//! [`Version`] and
+//! [`VersionedStore`] types; this module owns
 //! only *who ran when and whether they committed*.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
