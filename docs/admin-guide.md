@@ -202,12 +202,25 @@ bundle (dependency-free, always compiled — see [`src/observability/`](https://
 | `drevo_query_duration_seconds` | histogram | — |
 | `drevo_process_uptime_seconds` | gauge | — |
 | `drevo_storage_file_bytes` | gauge | — |
+| `drevo_statement_timeouts_total` | counter | — |
 | `drevo_build_info` | gauge | `version` |
 
 `drevo_storage_file_bytes` (#253 slice 1) is the physical on-disk size of the backend file,
 refreshed on every scrape from an O(1) file stat (`0` for the ephemeral in-memory backend).
 Pair it with the **logical** size from `GET /storage/bloat` (below) to alert on reclaimable
 copy-on-write bloat.
+
+`drevo_statement_timeouts_total` (#552) counts statements stopped by `DREVO_QUERY_TIMEOUT_MS`,
+over HTTP and Bolt. Each one is also logged at **ERROR** (target `drevo::query`) with the
+protocol, database, limit and query text (truncated to 2 000 characters). A timeout almost
+always means a slow path in drevo worth fixing, so alert on any increase.
+
+**Problem feed.** `GET /problems?since=<seq>` returns the server's recent WARN/ERROR log events
+(at most 200 kept in memory, oldest dropped first) as
+`{"problems": [{seq, at, level, target, message, fields}], "next": <seq>}`; pass `next` back
+as `since` to fetch only newer ones. Credential-looking fields (`*key*`, `*token*`,
+`*secret*`, `*password*`, `authorization`) and `sk-…` API keys are redacted before they are
+stored. A Bolt client dropping its connection is logged at debug, not as a problem.
 
 Scrape config:
 

@@ -9548,7 +9548,7 @@ fn unix_millis_now() -> i64 {
 /// Format a Unix-epoch millisecond instant as an ISO-8601 UTC string
 /// (`YYYY-MM-DDThh:mm:ss.sssZ`) with no external date dependency — Howard
 /// Hinnant's `civil_from_days` algorithm over the proleptic Gregorian calendar.
-fn iso8601_utc(epoch_ms: i64) -> String {
+pub(crate) fn iso8601_utc(epoch_ms: i64) -> String {
     let secs = epoch_ms.div_euclid(1000);
     let millis = epoch_ms.rem_euclid(1000);
     let days = secs.div_euclid(86_400);

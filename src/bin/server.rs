@@ -46,7 +46,17 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Log to stdout under `RUST_LOG` (default `info`) and, independently of that
+/// filter, copy every WARN/ERROR event into the Web UI's problem feed (#552).
 fn init_tracing() {
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer;
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter))
+        .with(drevo::problems::ProblemLayer::global().with_filter(LevelFilter::WARN))
+        .init();
 }

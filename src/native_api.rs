@@ -185,6 +185,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         // Prometheus scrape — same exposition format and gauges as the KV
         // router, refreshed from the WAL store's physical size + uptime.
         .route("/metrics", get(metrics))
+        .route("/problems", get(problems))
         // The storage panel is engine-agnostic: the same endpoints/contracts as
         // the KV router, implemented over the WAL store — bloat = physical WAL
         // vs compacted size, shrink = WAL compaction, benchmark = the same
@@ -587,6 +588,9 @@ async fn metrics(State(state): State<NativeApiState>) -> Response {
     if let Some(bytes) = state.service.graph().wal_bytes() {
         state.metrics.storage_file_bytes.set(bytes as i64);
     }
+    state
+        .metrics
+        .sync_statement_timeouts(crate::problems::statement_timeouts());
     let body = state.metrics.render_prometheus();
     (
         StatusCode::OK,
@@ -771,7 +775,12 @@ async fn cypher(
     }
 
     Ok(Json(run_blocking(|| {
-        run_cypher_on(&state.service, &query, params)
+        run_cypher_on(
+            &state.service,
+            state.registry.default_name(),
+            &query,
+            params,
+        )
     })?))
 }
 
@@ -802,6 +811,7 @@ pub(crate) fn run_blocking<R>(work: impl FnOnce() -> R) -> R {
 /// both the default database and a `USE`-selected one.
 fn run_cypher_on(
     service: &NativeService,
+    database: &str,
     query: &str,
     params: serde_json::Map<String, serde_json::Value>,
 ) -> Result<CypherResponse, ApiError> {
@@ -811,10 +821,28 @@ fn run_cypher_on(
         .collect();
     let ast = parser::parse(query)
         .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
-    let result = service
-        .execute(&ast, params)
-        .map_err(|e| ApiError::BadRequest(format!("Cypher execution error: {e}")))?;
+    let result = service.execute(&ast, params).map_err(|e| {
+        crate::problems::note_exec_error("http", database, query, &e);
+        ApiError::BadRequest(format!("Cypher execution error: {e}"))
+    })?;
     Ok(exec_result_to_response(result))
+}
+
+/// Query string of `GET /problems`.
+#[derive(Debug, serde::Deserialize)]
+struct ProblemsQuery {
+    /// Return problems with `seq >= since` (default 0: everything retained).
+    #[serde(default)]
+    since: u64,
+}
+
+/// `GET /problems?since=<seq>` — the server's recent WARN/ERROR events (#552),
+/// oldest first, plus the `next` cursor for incremental polling by the Web UI.
+async fn problems(
+    axum::extract::Query(q): axum::extract::Query<ProblemsQuery>,
+) -> Json<serde_json::Value> {
+    let (problems, next) = crate::problems::ProblemLog::global().since(q.since);
+    Json(serde_json::json!({ "problems": problems, "next": next }))
 }
 
 /// Handle a catalog admin command (issue #523): `SHOW DATABASES` lists the
@@ -845,7 +873,7 @@ fn handle_admin_cypher(
                 .get(&name)
                 .ok_or_else(|| ApiError::NotFound(format!("database '{name}' not found")))?;
             match query {
-                Some(inner) => run_blocking(|| run_cypher_on(&service, &inner, params)),
+                Some(inner) => run_blocking(|| run_cypher_on(&service, &name, &inner, params)),
                 None => Ok(empty_cypher_response()),
             }
         }
