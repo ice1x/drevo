@@ -228,7 +228,8 @@ async fn run_session_on_inner<S: AsyncRead + AsyncWrite + Unpin>(
                 continue;
             }
         };
-        let replies = session.handle(msg);
+        // RUN/PULL execute Cypher synchronously; keep the worker free (#547).
+        let replies = crate::native_api::run_blocking(|| session.handle(msg));
         for reply in &replies {
             write_server_async(reply, stream).await?;
         }
