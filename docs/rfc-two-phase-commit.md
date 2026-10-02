@@ -1,6 +1,6 @@
 # RFC: Two-phase commit (#556)
 
-**Status:** proposal. Design first; implementation follows once the decisions in §6 are settled.
+**Status:** accepted 2026-10-02. D1 (fail fast) and D2 (no auto-resolution, alert, opt-in heuristic timeout) were confirmed by the maintainer; D3 and D4 as proposed. Implementation follows this RFC.
 **Motivation:** drevo should be able to take part in a distributed transaction run by an external
 coordinator, for example the [datorium](https://github.com/ice1x/datorium) Unit of Work, next to
 PostgreSQL's `PREPARE TRANSACTION`. That needs the classic resource-manager contract:
@@ -179,7 +179,7 @@ is retryable.
 
 These extend the ACID conformance suites in `drevo-core/tests/acid_*.rs`.
 
-## 6. Decisions for review
+## 6. Decisions (accepted)
 
 - **D1:** while a transaction is prepared, other writers **fail fast** with a retryable error (§2.3).
   The alternative is to block until resolution.
