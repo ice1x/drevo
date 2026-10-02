@@ -88,6 +88,27 @@ class CypherPath:
 
     def __len__(self) -> int: ...
 
+class Transaction:
+    """An explicit transaction from `Drevo.begin()` / `Drevo.transaction()` (#554).
+
+    Statements read their own writes; nothing is visible to others until
+    `commit()`. A failing statement rolls the transaction back. As a context
+    manager it commits on a clean exit and rolls back on an exception.
+    """
+
+    closed: bool
+
+    def execute(self, query: str, params: Optional[dict[str, Any]] = None) -> CypherResult: ...
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
+    def __enter__(self) -> Transaction: ...
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[_types.TracebackType],
+    ) -> bool: ...
+
 class CypherResult:
     """The result of `Drevo.execute`: `columns`, rows as dicts, `stats`."""
 
@@ -279,6 +300,17 @@ class NeedsMigrationError(DrevoError):
 class PanicError(DrevoError):
     """A Rust panic was caught at the FFI boundary."""
 
+class TransactionError(DrevoError):
+    """A transaction was used incorrectly, e.g. after it was closed."""
+
+class TransactionConflict(TransactionError):
+    """The graph changed since the transaction began (optimistic commit).
+    Retryable: begin a new transaction and run it again."""
+
+class ConstraintViolation(ConflictError):
+    """Committing would violate a declared constraint.
+    `.args == (message, kind)`."""
+
 class CypherError(DrevoError):
     """A Cypher statement failed in the executor (#553). Base of the
     Cypher-specific errors below; storage failures inside a statement keep
@@ -393,6 +425,14 @@ class Drevo:
     # ── Cypher (#553) ───────────────────────────────────────────────────
     def execute(self, query: str, params: Optional[dict[str, Any]] = None) -> CypherResult:
         """Run one Cypher statement in autocommit mode with named `$params`."""
+        ...
+    # ── Explicit transactions (#554) ────────────────────────────────────
+    def begin(self) -> Transaction:
+        """Begin an explicit transaction."""
+        ...
+
+    def transaction(self) -> Transaction:
+        """Alias of `begin()` for `with db.transaction() as tx:`."""
         ...
     # ── Vector embeddings (Phase 12 task 00079) ─────────────────────────
     def set_embedding(self, node_id: int, embedding: list[float]) -> None: ...

@@ -46,6 +46,7 @@ from ._drevo import (  # type: ignore[attr-defined]
     CompactReport,
     # Exception hierarchy.
     ConflictError,
+    ConstraintViolation,
     CypherError,
     # Cypher results (#553).
     CypherNode,
@@ -76,6 +77,10 @@ from ._drevo import (  # type: ignore[attr-defined]
     SerializationError,
     StorageError,
     SubGraph,
+    # Explicit transactions (#554).
+    Transaction,
+    TransactionConflict,
+    TransactionError,
 )
 
 # Pure-Python `InvalidWeightError(ValueError)` — see RFC §12.3. The
@@ -107,6 +112,7 @@ __all__ = [
     "NodePatch",
     "ScoredNode",
     "SubGraph",
+    "Transaction",
     # Cypher results (#553).
     "CypherNode",
     "CypherPath",
@@ -129,6 +135,9 @@ __all__ = [
     "QueryTimeoutError",
     "SerializationError",
     "StorageError",
+    "TransactionError",
+    "TransactionConflict",
+    "ConstraintViolation",
     # Version.
     "__version__",
 ]

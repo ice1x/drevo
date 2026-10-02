@@ -196,6 +196,11 @@ fn drevo_package_init_imports_native_extension() {
         "CypherSyntaxError",
         "QueryTimeoutError",
         "ParameterMissingError",
+        // Explicit transactions (#554).
+        "Transaction",
+        "TransactionError",
+        "TransactionConflict",
+        "ConstraintViolation",
     ] {
         assert!(
             init.contains(symbol),
@@ -350,6 +355,10 @@ fn type_stubs_declare_public_surface() {
         "def import_graphml(",
         "def import_graphml_from_path(",
         "def execute(",
+        "def begin(",
+        "def transaction(",
+        "def commit(",
+        "def rollback(",
     ] {
         assert!(
             stub.contains(method),
@@ -376,6 +385,10 @@ fn type_stubs_declare_public_surface() {
         "class CypherSyntaxError",
         "class QueryTimeoutError",
         "class ParameterMissingError",
+        "class TransactionError",
+        "class TransactionConflict",
+        "class ConstraintViolation",
+        "class Transaction:",
     ] {
         assert!(
             stub.contains(exc),

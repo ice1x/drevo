@@ -39,6 +39,10 @@ import drevo
         (drevo.CypherSyntaxError, drevo.CypherError),
         (drevo.QueryTimeoutError, drevo.CypherError),
         (drevo.ParameterMissingError, drevo.CypherError),
+        # Explicit transactions (#554).
+        (drevo.TransactionError, drevo.DrevoError),
+        (drevo.TransactionConflict, drevo.TransactionError),
+        (drevo.ConstraintViolation, drevo.ConflictError),
     ],
 )
 def test_exception_inherits_from_parent(cls: type, parent: type) -> None:

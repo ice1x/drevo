@@ -716,6 +716,21 @@ impl Drevo {
         })
     }
 
+    /// Begin an explicit transaction (#554). Commit or roll it back, or use
+    /// it as a context manager: `with db.transaction() as tx: ...` commits on
+    /// a clean exit and rolls back on an exception.
+    fn begin(&self) -> PyResult<crate::transaction::Transaction> {
+        guarded(|| {
+            let db = borrow_db(&self.inner)?;
+            Ok(crate::transaction::Transaction::begin(&db))
+        })
+    }
+
+    /// Alias of `begin()` that reads naturally in a `with` statement.
+    fn transaction(&self) -> PyResult<crate::transaction::Transaction> {
+        self.begin()
+    }
+
     // ── Full-text search ───────────────────────────────────────────
 
     fn search_fts(

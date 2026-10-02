@@ -65,6 +65,39 @@ impl NativeBackend {
             .map_err(crate::cypher::CypherFailure::Exec)
     }
 
+    /// Begin a registered transaction (#554).
+    pub fn begin_tx(&self) -> drevo::native::NativeTxId {
+        self.svc.begin_tx()
+    }
+
+    /// Parse and execute one Cypher statement inside transaction `tx`.
+    pub fn execute_cypher_in_tx(
+        &self,
+        tx: drevo::native::NativeTxId,
+        query: &str,
+        params: std::collections::HashMap<String, drevo::cypher::executor::Value>,
+    ) -> std::result::Result<drevo::cypher::executor::ExecResult, crate::cypher::CypherFailure>
+    {
+        let ast =
+            drevo::cypher::parser::parse(query).map_err(crate::cypher::CypherFailure::Parse)?;
+        self.svc
+            .execute_in_tx(tx, &ast, params)
+            .map_err(crate::cypher::CypherFailure::Exec)
+    }
+
+    /// Commit transaction `tx` (one fsynced WAL batch).
+    pub fn commit_tx(
+        &self,
+        tx: drevo::native::NativeTxId,
+    ) -> std::result::Result<(), drevo::native::CommitError> {
+        self.svc.commit_tx(tx)
+    }
+
+    /// Discard transaction `tx`; `false` if it was already closed.
+    pub fn rollback_tx(&self, tx: drevo::native::NativeTxId) -> bool {
+        self.svc.rollback_tx(tx)
+    }
+
     /// Flush + release. The durable engine fsyncs every write, so closing is
     /// just dropping the handle; kept for API parity.
     pub fn close(self) -> Result<()> {
