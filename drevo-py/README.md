@@ -154,6 +154,44 @@ Errors: `CypherSyntaxError` (did not parse), `ParameterMissingError`,
 `drevo.CypherError`. Storage failures keep their usual classes, so a duplicate
 title is a `DuplicateTitleError` whether it comes from Cypher or `create_node`.
 
+### Transactions
+
+`db.begin()` (or `db.transaction()` in a `with` block) groups Cypher
+statements atomically. Statements read their own writes, nobody else sees them
+until `commit()`, and the commit is one fsynced write. The `with` form commits
+on a clean exit and rolls back on an exception.
+
+```python
+import drevo
+
+with drevo.Drevo.open_in_memory() as db:
+    with db.transaction() as tx:
+        tx.execute("CREATE (:Account {id: 1, balance: 100})")
+        tx.execute("CREATE (:Account {id: 2, balance: 0})")
+
+    for attempt in range(3):                       # optimistic: retry on conflict
+        try:
+            with db.transaction() as tx:
+                tx.execute("MATCH (a:Account {id: 1}) SET a.balance = a.balance - 30")
+                tx.execute("MATCH (a:Account {id: 2}) SET a.balance = a.balance + 30")
+            break
+        except drevo.TransactionConflict:          # the graph changed since begin()
+            continue
+```
+
+- Commit is **optimistic**. If any other write committed since `begin()`, the
+  commit raises `TransactionConflict` (a `TransactionError`) and nothing is
+  applied. Retry with a fresh transaction.
+- A statement that fails inside the transaction **rolls it back** (as in
+  Neo4j). Any later use of a closed transaction raises `TransactionError`.
+- A violated declared constraint raises `ConstraintViolation` (a
+  `ConflictError`).
+- A transaction that is dropped without commit is rolled back. Closing the
+  database does not wait for open transactions; using one afterwards raises
+  `RuntimeError`.
+- v1 scope: only `tx.execute` runs inside the transaction. The typed CRUD
+  methods (`create_node`, …) stay autocommit on the handle.
+
 ### Migrating from Neo4j
 
 Importing an existing Neo4j graph is **not** part of `drevo-py` — the

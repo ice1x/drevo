@@ -44,6 +44,12 @@ create_exception!(_drevo, CypherError, DrevoError);
 create_exception!(_drevo, CypherSyntaxError, CypherError);
 create_exception!(_drevo, QueryTimeoutError, CypherError);
 create_exception!(_drevo, ParameterMissingError, CypherError);
+// Explicit transactions (#554): an optimistic commit that lost the race is a
+// retryable `TransactionConflict`; a declared constraint the commit would
+// break is a `ConstraintViolation`, alongside `DuplicateTitleError` under
+// `ConflictError`.
+create_exception!(_drevo, TransactionConflict, TransactionError);
+create_exception!(_drevo, ConstraintViolation, ConflictError);
 
 /// Add the exception classes to the `_drevo` Python module so they are
 /// importable as `drevo.<ClassName>` after task `00116` re-exports them.
@@ -67,6 +73,8 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
         "ParameterMissingError",
         py.get_type::<ParameterMissingError>(),
     )?;
+    m.add("TransactionConflict", py.get_type::<TransactionConflict>())?;
+    m.add("ConstraintViolation", py.get_type::<ConstraintViolation>())?;
     Ok(())
 }
 

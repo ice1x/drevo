@@ -31,6 +31,7 @@ mod cypher;
 mod errors;
 mod handle;
 mod native_backend;
+mod transaction;
 mod types;
 
 use pyo3::prelude::*;
@@ -65,6 +66,9 @@ fn _drevo(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<cypher::CypherNode>()?;
     m.add_class::<cypher::CypherRelationship>()?;
     m.add_class::<cypher::CypherPath>()?;
+
+    // Explicit transactions (#554).
+    m.add_class::<transaction::Transaction>()?;
 
     // The handle.
     m.add_class::<handle::Drevo>()?;
