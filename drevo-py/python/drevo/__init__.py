@@ -46,6 +46,13 @@ from ._drevo import (  # type: ignore[attr-defined]
     CompactReport,
     # Exception hierarchy.
     ConflictError,
+    CypherError,
+    # Cypher results (#553).
+    CypherNode,
+    CypherPath,
+    CypherRelationship,
+    CypherResult,
+    CypherSyntaxError,
     Direction,
     Drevo,  # type: ignore[attr-defined]
     DrevoError,
@@ -63,6 +70,8 @@ from ._drevo import (  # type: ignore[attr-defined]
     NodePatch,
     NotFoundError,
     PanicError,
+    ParameterMissingError,
+    QueryTimeoutError,
     ScoredNode,
     SerializationError,
     StorageError,
@@ -98,8 +107,15 @@ __all__ = [
     "NodePatch",
     "ScoredNode",
     "SubGraph",
+    # Cypher results (#553).
+    "CypherNode",
+    "CypherPath",
+    "CypherRelationship",
+    "CypherResult",
     # Exceptions.
     "ConflictError",
+    "CypherError",
+    "CypherSyntaxError",
     "DrevoError",
     "DuplicateTitleError",
     "EdgeNotFoundError",
@@ -109,6 +125,8 @@ __all__ = [
     "NodeNotFoundError",
     "NotFoundError",
     "PanicError",
+    "ParameterMissingError",
+    "QueryTimeoutError",
     "SerializationError",
     "StorageError",
     # Version.
@@ -134,6 +152,8 @@ __all__ = [
 
 _node_uuid_raw = Node.uuid  # type: ignore[attr-defined]
 _edge_uuid_raw = Edge.uuid  # type: ignore[attr-defined]
+_cypher_node_uuid_raw = CypherNode.uuid  # type: ignore[attr-defined]
+_cypher_rel_uuid_raw = CypherRelationship.uuid  # type: ignore[attr-defined]
 
 
 def _wrap_uuid(raw: Any) -> _uuid.UUID:
@@ -163,3 +183,16 @@ def _edge_uuid(self: Edge) -> _uuid.UUID:  # type: ignore[valid-type]
 # underlying Rust storage.
 Node.uuid = property(_node_uuid)  # type: ignore[assignment,misc]
 Edge.uuid = property(_edge_uuid)  # type: ignore[assignment,misc]
+
+
+# Cypher graph values (#553) get the same `uuid.UUID` view.
+def _cypher_node_uuid(self: CypherNode) -> _uuid.UUID:  # type: ignore[valid-type]
+    return _wrap_uuid(_cypher_node_uuid_raw.__get__(self, type(self)))
+
+
+def _cypher_rel_uuid(self: CypherRelationship) -> _uuid.UUID:  # type: ignore[valid-type]
+    return _wrap_uuid(_cypher_rel_uuid_raw.__get__(self, type(self)))
+
+
+CypherNode.uuid = property(_cypher_node_uuid)  # type: ignore[assignment,misc]
+CypherRelationship.uuid = property(_cypher_rel_uuid)  # type: ignore[assignment,misc]

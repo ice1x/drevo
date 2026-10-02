@@ -120,6 +120,40 @@ with drevo.Drevo.open(path) as db:
         print(hit.similarity, hit.node.title)
 ```
 
+### Run Cypher
+
+`Drevo.execute(query, params=None)` runs one Cypher statement in autocommit
+mode: a write is durable when the call returns. Parameters are named (`$name`)
+and passed as a `dict` (None, bool, int, float, str, `uuid.UUID`, lists and
+str-keyed dicts). Rows come back as dicts. Graph values are `CypherNode`,
+`CypherRelationship` and `CypherPath`, with `uuid.UUID` ids.
+
+```python
+import drevo
+
+with drevo.Drevo.open_in_memory() as db:
+    db.execute(
+        "CREATE (:Person {name: $a})-[:KNOWS {since: 2020}]->(:Person {name: $b})",
+        {"a": "Ada", "b": "Bo"},
+    )
+    result = db.execute(
+        "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name AS a, r, b"
+    )
+    result.columns            # ['a', 'r', 'b']
+    for row in result:
+        print(row["a"], row["r"].type, row["b"].properties["name"])
+
+    try:
+        db.execute("RETURN $missing AS v")
+    except drevo.ParameterMissingError as exc:   # a drevo.CypherError
+        print(exc)
+```
+
+Errors: `CypherSyntaxError` (did not parse), `ParameterMissingError`,
+`QueryTimeoutError` and any other executor error derive from
+`drevo.CypherError`. Storage failures keep their usual classes, so a duplicate
+title is a `DuplicateTitleError` whether it comes from Cypher or `create_node`.
+
 ### Migrating from Neo4j
 
 Importing an existing Neo4j graph is **not** part of `drevo-py` — the
@@ -177,5 +211,3 @@ intentionally **not** included here:
   `00120`).
 * Batch APIs (`create_nodes` / `create_edges`) — require a transactional
   batch entry point on the Rust side, tracked separately under Phase 16.
-* `Drevo.query(cypher, params=)` — gated on Phase 10 task `00063`
-  landing the Cypher executor.

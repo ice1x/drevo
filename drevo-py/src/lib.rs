@@ -27,6 +27,7 @@
 
 #![warn(missing_docs)]
 
+mod cypher;
 mod errors;
 mod handle;
 mod native_backend;
@@ -58,6 +59,12 @@ fn _drevo(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<types::CompactReport>()?;
     m.add_class::<types::ImportReport>()?;
     m.add_class::<types::BloatReport>()?;
+
+    // Cypher results (#553).
+    m.add_class::<cypher::CypherResult>()?;
+    m.add_class::<cypher::CypherNode>()?;
+    m.add_class::<cypher::CypherRelationship>()?;
+    m.add_class::<cypher::CypherPath>()?;
 
     // The handle.
     m.add_class::<handle::Drevo>()?;

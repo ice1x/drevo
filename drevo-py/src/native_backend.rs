@@ -50,6 +50,21 @@ impl NativeBackend {
         }
     }
 
+    /// Parse and execute one Cypher statement in autocommit mode (#553): a
+    /// write is committed (one fsynced WAL batch) when this returns.
+    pub fn execute_cypher(
+        &self,
+        query: &str,
+        params: std::collections::HashMap<String, drevo::cypher::executor::Value>,
+    ) -> std::result::Result<drevo::cypher::executor::ExecResult, crate::cypher::CypherFailure>
+    {
+        let ast =
+            drevo::cypher::parser::parse(query).map_err(crate::cypher::CypherFailure::Parse)?;
+        self.svc
+            .execute(&ast, params)
+            .map_err(crate::cypher::CypherFailure::Exec)
+    }
+
     /// Flush + release. The durable engine fsyncs every write, so closing is
     /// just dropping the handle; kept for API parity.
     pub fn close(self) -> Result<()> {

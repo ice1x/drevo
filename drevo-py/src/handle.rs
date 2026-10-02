@@ -692,6 +692,30 @@ impl Drevo {
         })
     }
 
+    // ── Cypher (#553) ──────────────────────────────────────────────
+
+    /// Run one Cypher statement in autocommit mode — a write is committed
+    /// when this returns — with named `$params` from a `dict`. Returns a
+    /// `CypherResult` (`columns`, rows as dicts, `stats`). The statement runs
+    /// without the GIL.
+    #[pyo3(signature = (query, params=None))]
+    fn execute(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        params: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<crate::cypher::CypherResult> {
+        guarded(|| {
+            let params = crate::cypher::params_from_py(params.as_ref())?;
+            with_db(&self.inner, |db| {
+                let result = py
+                    .allow_threads(|| db.execute_cypher(query, params))
+                    .map_err(crate::cypher::map_cypher_err)?;
+                crate::cypher::result_to_py(py, &result)
+            })
+        })
+    }
+
     // ── Full-text search ───────────────────────────────────────────
 
     fn search_fts(
