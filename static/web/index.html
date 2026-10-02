@@ -67,9 +67,56 @@
             title="Storage &amp; maintenance" aria-label="Open storage panel">⛁</button>
     <button type="button" id="settings-toggle" class="settings-toggle"
             title="Settings (embeddings)" aria-label="Open settings panel">⚙</button>
+    <button type="button" id="report-toggle" class="report-toggle"
+            title="Report a problem (opens a prefilled GitHub issue)"
+            aria-label="Report a problem">⚑</button>
     <button type="button" id="theme-toggle" class="theme-toggle"
             title="Toggle light / dark theme" aria-label="Toggle theme">◐</button>
   </header>
+
+  <!-- Problem notifications (#552): server WARN/ERROR events from
+       GET /problems and failed UI requests, newest at the bottom. -->
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <!-- Report a problem (#552): builds a GitHub issue from GET /report plus
+       what only the browser knows (failing query, UI errors, a screenshot of
+       the graph). Nothing is sent anywhere until "Open GitHub issue", which
+       opens github.com in a new tab under the user's own login. -->
+  <div id="report-modal" class="storage-modal" hidden aria-hidden="true"
+       role="dialog" aria-modal="true" aria-labelledby="report-title">
+    <div class="storage-dialog report-dialog" role="document">
+      <header class="storage-head">
+        <h2 id="report-title">Report a problem</h2>
+        <button type="button" id="report-close" class="storage-close"
+                title="Close" aria-label="Close report dialog">✕</button>
+      </header>
+      <div class="storage-body">
+        <p class="report-warning">The issue is <strong>public</strong>. Review the text below:
+          API keys are removed, but your queries and log lines are included.</p>
+        <label class="settings-field">
+          <span>What happened?</span>
+          <textarea id="report-note" rows="3"
+                    placeholder="What were you doing, what did you expect, what happened instead?"></textarea>
+        </label>
+        <label class="settings-field">
+          <span>Issue text (editable)</span>
+          <textarea id="report-body" rows="14" spellcheck="false"></textarea>
+        </label>
+        <div class="report-shot-row">
+          <img id="report-shot" class="report-shot" alt="Screenshot of the graph view" />
+          <p id="report-msg" class="settings-msg" hidden></p>
+        </div>
+      </div>
+      <footer class="storage-foot">
+        <button type="button" id="report-copy-shot" class="storage-refresh"
+                title="Copy the screenshot to the clipboard to paste into the issue">Copy screenshot</button>
+        <button type="button" id="report-download" class="storage-refresh"
+                title="Download the full report (JSON, with the screenshot) to attach to the issue">Download report</button>
+        <button type="button" id="report-open" class="storage-shrink"
+                title="Open a prefilled issue on GitHub in a new tab">Open GitHub issue</button>
+      </footer>
+    </div>
+  </div>
 
   <!-- Storage panel (modal overlay). Opened from the ⛁ topbar button; shows
        the active database's on-disk footprint (from GET /storage/bloat), the
@@ -201,6 +248,9 @@
   <!-- Pure graph-geometry helpers (unit-tested in graph_math.test.js); must
        load before app.js, which reads window.DrevoGraphMath. -->
   <script src="/ui/graph_math.js"></script>
+  <!-- Problem toasts + "Report a problem" helpers (unit-tested in
+       report.test.js); must load before app.js, which reads window.DrevoReport. -->
+  <script src="/ui/report.js"></script>
   <script src="/ui/app.js"></script>
 </body>
 </html>

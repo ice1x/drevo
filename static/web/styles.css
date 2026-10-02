@@ -617,3 +617,98 @@ body {
 .storage-shrink:disabled { opacity: 0.6; cursor: progress; }
 /* Push Refresh to the right so Backup + Shrink group on the left. */
 .storage-refresh { margin-left: auto; }
+
+/* ── Problem notifications + "Report a problem" (#552) ─────────────── */
+.report-toggle {
+  margin-left: 0.4rem;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+.report-toggle:hover { border-color: var(--danger); color: var(--danger); }
+
+.toasts {
+  position: fixed;
+  right: 1rem;
+  bottom: 2.8rem;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--text-muted);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  font-size: 0.85rem;
+}
+.toast-error { border-left-color: var(--danger); }
+.toast-warn { border-left-color: #e0a63a; }
+.toast-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-detail {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+.toast-report,
+.toast-close {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.45rem;
+}
+.toast-report:hover { border-color: var(--accent); }
+.toast-close:hover { border-color: var(--danger); }
+
+.report-dialog { width: min(52rem, calc(100vw - 2rem)); }
+.report-warning {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-left: 3px solid var(--danger);
+  background: var(--bg-panel);
+  font-size: 0.85rem;
+}
+#report-note,
+#report-body {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+}
+#report-body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
+.report-shot-row { display: flex; gap: 0.75rem; align-items: flex-start; margin-top: 0.5rem; }
+.report-shot {
+  max-width: 16rem;
+  max-height: 10rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  object-fit: contain;
+}

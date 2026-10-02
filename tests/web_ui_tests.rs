@@ -234,6 +234,52 @@ async fn ui_serves_graph_math_module_before_app_js() {
     );
 }
 
+// Problem notifications + "Report a problem" (#552): the pure report helpers
+// are served same-origin before app.js, the page has the toast stack, the
+// topbar button and the report dialog, and app.js wires them to the server.
+#[tokio::test]
+async fn ui_serves_report_module_and_wires_problem_reporting() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/report.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/javascript"), "got {ct:?}");
+    let js = String::from_utf8(bytes).expect("utf-8");
+    for needle in ["DrevoReport", "issueUrl", "buildIssue", "toastFromProblem"] {
+        assert!(js.contains(needle), "report.js must define {needle}");
+    }
+
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let report = idx
+        .find("/ui/report.js")
+        .expect("index.html must load report.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(report < appjs, "report.js must load before app.js");
+    for id in [
+        "id=\"toasts\"",
+        "id=\"report-toggle\"",
+        "id=\"report-modal\"",
+        "id=\"report-note\"",
+        "id=\"report-body\"",
+        "id=\"report-shot\"",
+        "id=\"report-open\"",
+    ] {
+        assert!(idx.contains(id), "index.html must contain {id}");
+    }
+
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "/problems?since=",
+        "/report",
+        "DrevoReport",
+        "cy.png(",
+        "ClipboardItem",
+    ] {
+        assert!(app_js.contains(needle), "app.js must use {needle}");
+    }
+}
+
 #[tokio::test]
 async fn ui_styles_css_returns_css_200() {
     let app = make_app();

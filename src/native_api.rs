@@ -186,6 +186,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         // router, refreshed from the WAL store's physical size + uptime.
         .route("/metrics", get(metrics))
         .route("/problems", get(problems))
+        .route("/report", get(problem_report))
         // The storage panel is engine-agnostic: the same endpoints/contracts as
         // the KV router, implemented over the WAL store — bloat = physical WAL
         // vs compacted size, shrink = WAL compaction, benchmark = the same
@@ -201,6 +202,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/ui/", get(crate::web_ui::redirect_ui_slash))
         .route("/ui/app.js", get(crate::web_ui::serve_app_js))
         .route("/ui/graph_math.js", get(crate::web_ui::serve_graph_math_js))
+        .route("/ui/report.js", get(crate::web_ui::serve_report_js))
         .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
         .route(
             "/ui/vendor/cytoscape.min.js",
@@ -834,6 +836,107 @@ struct ProblemsQuery {
     /// Return problems with `seq >= since` (default 0: everything retained).
     #[serde(default)]
     since: u64,
+}
+
+/// Query string of `GET /report`.
+#[derive(Debug, serde::Deserialize)]
+struct ReportQuery {
+    /// The database to describe (default: the default database).
+    db: Option<String>,
+}
+
+/// The `owner/repo` of this crate's GitHub repository, for the Web UI's
+/// prefilled issue link, from `Cargo.toml`'s `repository`.
+fn issue_repo() -> &'static str {
+    env!("CARGO_PKG_REPOSITORY")
+        .trim_end_matches('/')
+        .trim_start_matches("https://github.com/")
+}
+
+/// `GET /report?db=<name>` — the server half of the Web UI's "Report a
+/// problem" (#552): build and engine, effective limits, the secret-free
+/// embeddings status, the database's size and labels, and the recent problem
+/// feed. Everything here may end up in a public GitHub issue, so nothing
+/// secret is included (the embeddings status carries only `api_key_set`).
+async fn problem_report(
+    State(state): State<NativeApiState>,
+    axum::extract::Query(q): axum::extract::Query<ReportQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let (database, service) = match q.db {
+        Some(name) => {
+            let service = state
+                .registry
+                .get(&name)
+                .ok_or_else(|| ApiError::NotFound(format!("database '{name}' not found")))?;
+            (name, service)
+        }
+        None => (
+            state.registry.default_name().to_string(),
+            Arc::clone(&state.service),
+        ),
+    };
+    let (nodes, edges, labels) = run_blocking(|| graph_summary(&service))?;
+    let (problems, _) = crate::problems::ProblemLog::global().since(0);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    Ok(Json(serde_json::json!({
+        "generated_at": crate::cypher::executor::iso8601_utc(now_ms),
+        "server": {
+            "name": "drevo",
+            "version": crate::VERSION,
+            "git_sha": crate::GIT_SHA,
+            "build_date": crate::BUILD_DATE,
+            "engine": "native-durable",
+            "uptime_seconds": state.started_at.elapsed().as_secs(),
+            "origin": state.service.origin_id().0.to_string(),
+        },
+        "config": {
+            "statement_timeout_ms": service
+                .statement_timeout()
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            "embeddings": state.embeddings_config.as_ref().map(|store| store.status()),
+        },
+        "graph": {
+            "database": database,
+            "nodes": nodes,
+            "edges": edges,
+            "labels": labels,
+        },
+        "problems": problems,
+        "issue_repo": issue_repo(),
+    })))
+}
+
+/// `(nodes, edges, labels)` of `service`, through Cypher so the scans are
+/// bounded by the statement timeout like any other read.
+fn graph_summary(service: &NativeService) -> Result<(i64, i64, Vec<String>), ApiError> {
+    let run = |text: &str| -> Result<Vec<Vec<crate::cypher::executor::Value>>, ApiError> {
+        let failed =
+            |e: String| ApiError::Db(crate::error::DrevoError::Io(std::io::Error::other(e)));
+        let ast = parser::parse(text).map_err(|e| failed(e.to_string()))?;
+        Ok(service
+            .execute(&ast, std::collections::HashMap::new())
+            .map_err(|e| failed(e.to_string()))?
+            .rows)
+    };
+    let count = |text: &str| -> Result<i64, ApiError> {
+        Ok(match run(text)?.first().and_then(|row| row.first()) {
+            Some(crate::cypher::executor::Value::Integer(n)) => *n,
+            _ => 0,
+        })
+    };
+    let nodes = count("MATCH (n) RETURN count(n)")?;
+    let edges = count("MATCH ()-[r]->() RETURN count(r)")?;
+    let labels = run("CALL db.labels() YIELD label RETURN label ORDER BY label")?
+        .into_iter()
+        .filter_map(|row| match row.into_iter().next() {
+            Some(crate::cypher::executor::Value::String(s)) => Some(s),
+            _ => None,
+        })
+        .collect();
+    Ok((nodes, edges, labels))
 }
 
 /// `GET /problems?since=<seq>` — the server's recent WARN/ERROR events (#552),
