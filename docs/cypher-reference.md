@@ -1147,6 +1147,15 @@ To find in-doubt transactions:
 CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount
 ```
 
+An operator can override an abandoned transaction without its coordinator. The
+outcome is remembered, so a late `commitPrepared` fails with a message saying
+the transaction was rolled back heuristically, instead of the coordinator
+believing it never existed:
+
+```cypher
+CALL drevo.tx.heuristicRollback($gid)   // YIELD gid
+```
+
 `preparedAt` is ISO-8601 UTC. While any transaction is prepared, **every other
 write fails fast** with a retryable error:
 

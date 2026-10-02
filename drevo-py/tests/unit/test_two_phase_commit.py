@@ -168,3 +168,32 @@ def test_dbapi_tpc_misuse_is_a_programming_error() -> None:
         conn.tpc_rollback()
         with pytest.raises(dbapi.ProgrammingError):
             conn.tpc_commit(conn.xid(1, "unknown", "b"))
+
+
+# ── Heuristic rollback (#556 slice 4) ───────────────────────────────────
+
+
+def test_heuristic_rollback_is_reported_to_a_late_commit(drevo_db: drevo.Drevo) -> None:
+    prepared(drevo_db, "abandoned")
+    drevo_db.heuristic_rollback_prepared("abandoned")
+    assert drevo_db.list_prepared() == []
+    drevo_db.execute("CREATE (:Free)")  # the fence is lifted
+    with pytest.raises(drevo.HeuristicRollbackError) as info:
+        drevo_db.commit_prepared("abandoned")
+    assert isinstance(info.value, drevo.PreparedTransactionError)
+    drevo_db.rollback_prepared("abandoned")  # agrees with the outcome
+
+
+def test_dbapi_late_tpc_commit_after_heuristic_rollback() -> None:
+    db = drevo.Drevo.open_in_memory()
+    conn = dbapi.connect(db)
+    xid = conn.xid(1, "late", "drevo")
+    conn.tpc_begin(xid)
+    conn.cursor().execute("CREATE (:T)")
+    conn.tpc_prepare()
+    (info,) = db.list_prepared()
+    db.heuristic_rollback_prepared(info.gid)
+    with pytest.raises(dbapi.OperationalError, match="heuristically"):
+        conn.tpc_commit()
+    conn.close()
+    db.close()

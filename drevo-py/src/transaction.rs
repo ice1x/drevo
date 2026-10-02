@@ -24,8 +24,8 @@ use pyo3::prelude::*;
 
 use crate::cypher::{map_cypher_err, params_from_py, result_to_py, CypherResult};
 use crate::errors::{
-    panic_to_pyerr, ConstraintViolation, PreparedTransactionError, StorageError,
-    TransactionConflict, TransactionError, UnknownGidError,
+    panic_to_pyerr, ConstraintViolation, HeuristicRollbackError, PreparedTransactionError,
+    StorageError, TransactionConflict, TransactionError, UnknownGidError,
 };
 use crate::native_backend::NativeBackend;
 
@@ -58,6 +58,7 @@ fn map_prepare_err(e: PrepareError) -> PyErr {
 pub(crate) fn map_resolve_err(e: ResolveError) -> PyErr {
     match e {
         ResolveError::UnknownGid(_) => UnknownGidError::new_err(e.to_string()),
+        ResolveError::HeuristicRollback(_) => HeuristicRollbackError::new_err(e.to_string()),
         ResolveError::Io(msg) => StorageError::new_err(msg),
     }
 }

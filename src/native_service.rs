@@ -653,6 +653,23 @@ impl NativeService {
         self.graph.rollback_prepared(gid)
     }
 
+    /// Two-phase commit (#556): roll back the transaction prepared under
+    /// `gid` **heuristically** — an operator or timeout decision rather than
+    /// the coordinator's. A later `commit_prepared(gid)` then reports
+    /// [`crate::native::ResolveError::HeuristicRollback`], so the coordinator
+    /// learns its decision was overridden.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::native::ResolveError`], as for
+    /// [`rollback_prepared`](Self::rollback_prepared).
+    pub fn heuristic_rollback_prepared(
+        &self,
+        gid: &str,
+    ) -> std::result::Result<(), crate::native::ResolveError> {
+        self.graph.heuristic_rollback_prepared(gid)
+    }
+
     /// Every prepared, unresolved transaction (#556), by ascending `gid`.
     pub fn list_prepared(&self) -> Vec<crate::native::PreparedInfo> {
         self.graph.list_prepared()

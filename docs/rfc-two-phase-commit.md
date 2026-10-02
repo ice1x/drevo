@@ -96,7 +96,10 @@ Because the fence blocks writers, an abandoned one is an outage, so:
 - `/metrics` exports `drevo_prepared_transactions` (gauge) and the age of the oldest;
 - an ERROR goes to the problem feed (#552) once a prepared transaction is older than
   `DREVO_PREPARED_TX_WARN_SECS` (default 60);
-- an operator can resolve it manually (`CALL drevo.tx.rollbackPrepared(gid)`);
+- an operator can resolve it manually. `CALL drevo.tx.heuristicRollback(gid)`, the
+  `POST …/heuristic-rollback` route or `Drevo.heuristic_rollback_prepared` record the decision as
+  heuristic, so the coordinator's late commit learns of it. A plain `rollbackPrepared` would make it
+  look as if the transaction never existed;
 - opt-in `DREVO_PREPARED_TX_TIMEOUT_SECS` performs a **heuristic rollback** after the deadline. It
   is logged at ERROR and recorded in the WAL as `RollbackPrepared { gid, heuristic: true }`, so a
   later `commit_prepared` reports `HeuristicRollback` instead of `UnknownGid` (the XA "heuristic

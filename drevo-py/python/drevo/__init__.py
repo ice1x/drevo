@@ -85,6 +85,7 @@ from ._drevo import (  # type: ignore[attr-defined]
     TransactionConflict,
     TransactionError,
     UnknownGidError,
+    HeuristicRollbackError,
 )
 
 # Pure-Python `InvalidWeightError(ValueError)` — see RFC §12.3. The
@@ -145,6 +146,7 @@ __all__ = [
     "ConstraintViolation",
     "PreparedTransactionError",
     "UnknownGidError",
+    "HeuristicRollbackError",
     # Version.
     "__version__",
 ]

@@ -89,6 +89,11 @@ pub struct Config {
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
     /// `0` disables the alert).
     pub prepared_tx_warn: Option<std::time::Duration>,
+    /// Opt-in heuristic rollback of prepared transactions older than this,
+    /// from `DREVO_PREPARED_TX_TIMEOUT_SECS` (#556; unset or `0` = never —
+    /// the default, as resolving behind the coordinator's back can break
+    /// atomicity across stores).
+    pub prepared_tx_timeout: Option<std::time::Duration>,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -141,6 +146,14 @@ pub enum ConfigError {
     /// `DREVO_ENGINE` was set to an unknown engine name.
     #[error("invalid DREVO_ENGINE value `{value}`: expected `kv`, `native`, or `native-durable`")]
     InvalidEngine {
+        /// The raw env-var value.
+        value: String,
+    },
+    /// `DREVO_PREPARED_TX_TIMEOUT_SECS` was not a non-negative integer.
+    #[error(
+        "invalid DREVO_PREPARED_TX_TIMEOUT_SECS value `{value}`: expected seconds (0 = never)"
+    )]
+    InvalidPreparedTxTimeout {
         /// The raw env-var value.
         value: String,
     },
@@ -223,6 +236,15 @@ impl Config {
             },
         };
 
+        let prepared_tx_timeout = match getter("DREVO_PREPARED_TX_TIMEOUT_SECS") {
+            None => None,
+            Some(raw) => match raw.trim().parse::<u64>() {
+                Ok(0) => None,
+                Ok(secs) => Some(std::time::Duration::from_secs(secs)),
+                Err(_) => return Err(ConfigError::InvalidPreparedTxTimeout { value: raw }),
+            },
+        };
+
         Ok(Self {
             host,
             port,
@@ -230,6 +252,7 @@ impl Config {
             engine,
             query_timeout,
             prepared_tx_warn,
+            prepared_tx_timeout,
         })
     }
 
@@ -532,7 +555,9 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // Two-phase commit (#556): a prepared transaction blocks every write, so
     // one left waiting too long is reported at ERROR (and thus in the Web UI's
     // problem feed). Checked every 10 s across every database.
-    if let Some(warn_after) = cfg.prepared_tx_warn {
+    if cfg.prepared_tx_warn.is_some() || cfg.prepared_tx_timeout.is_some() {
+        let warn_after = cfg.prepared_tx_warn;
+        let timeout = cfg.prepared_tx_timeout;
         let watched = std::sync::Arc::clone(&registry);
         tokio::spawn(async move {
             let mut reported: std::collections::HashMap<String, std::collections::HashSet<String>> =
@@ -543,11 +568,18 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                 let now = crate::model::now_ms();
                 for name in watched.list() {
                     if let Some(service) = watched.get(&name) {
-                        let prepared = service.list_prepared();
-                        let seen = reported.entry(name.clone()).or_default();
-                        crate::problems::report_stale_prepared(
-                            &name, &prepared, now, warn_after, seen,
-                        );
+                        if let Some(timeout) = timeout {
+                            crate::problems::heuristic_rollback_expired(
+                                &name, &service, now, timeout,
+                            );
+                        }
+                        if let Some(warn_after) = warn_after {
+                            let prepared = service.list_prepared();
+                            let seen = reported.entry(name.clone()).or_default();
+                            crate::problems::report_stale_prepared(
+                                &name, &prepared, now, warn_after, seen,
+                            );
+                        }
                     }
                 }
             }

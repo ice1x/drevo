@@ -205,6 +205,7 @@ fn drevo_package_init_imports_native_extension() {
         "PreparedTransaction",
         "PreparedTransactionError",
         "UnknownGidError",
+        "HeuristicRollbackError",
     ] {
         assert!(
             init.contains(symbol),
@@ -367,6 +368,7 @@ fn type_stubs_declare_public_surface() {
         "def commit_prepared(",
         "def rollback_prepared(",
         "def list_prepared(",
+        "def heuristic_rollback_prepared(",
     ] {
         assert!(
             stub.contains(method),
@@ -399,6 +401,7 @@ fn type_stubs_declare_public_surface() {
         "class Transaction:",
         "class PreparedTransactionError",
         "class UnknownGidError",
+        "class HeuristicRollbackError",
     ] {
         assert!(
             stub.contains(exc),

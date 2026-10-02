@@ -258,3 +258,48 @@ fn bolt_prepare_failure_closes_the_transaction() {
     assert!(svc.list_prepared().is_empty());
     ok(&svc, "CREATE (:Free)"); // no fence was raised
 }
+
+// ── Heuristic rollback (#556 slice 4) ───────────────────────────────────
+
+#[test]
+fn heuristic_rollback_from_cypher_is_reported_to_a_late_commit() {
+    let svc = NativeService::in_memory();
+    prepare_creating(&svc, "T", 1, "abandoned");
+    let rolled = ok(
+        &svc,
+        "CALL drevo.tx.heuristicRollback('abandoned') YIELD gid RETURN gid",
+    );
+    assert_eq!(rolled.rows, vec![vec![Value::String("abandoned".into())]]);
+    ok(&svc, "CREATE (:Free)"); // fence lifted
+    let err = exec(&svc, "CALL drevo.tx.commitPrepared('abandoned')").expect_err("overridden");
+    assert!(err.to_string().contains("heuristically"), "{err}");
+}
+
+#[test]
+fn expired_prepared_transactions_are_rolled_back_heuristically() {
+    let svc = NativeService::in_memory();
+    prepare_creating(&svc, "T", 1, "old");
+    let now = drevo::model::now_ms();
+    // Not yet past the timeout: nothing happens.
+    let none = drevo::problems::heuristic_rollback_expired(
+        "drevo",
+        &svc,
+        now,
+        std::time::Duration::from_secs(3600),
+    );
+    assert!(none.is_empty());
+    assert_eq!(svc.list_prepared().len(), 1);
+    // Past it: rolled back heuristically, and a late commit is told so.
+    let rolled = drevo::problems::heuristic_rollback_expired(
+        "drevo",
+        &svc,
+        now + 7_200_000,
+        std::time::Duration::from_secs(3600),
+    );
+    assert_eq!(rolled, vec!["old".to_string()]);
+    assert!(svc.list_prepared().is_empty());
+    assert!(matches!(
+        svc.commit_prepared("old"),
+        Err(drevo::native::ResolveError::HeuristicRollback(_))
+    ));
+}

@@ -142,6 +142,9 @@ struct Inner {
     /// WAL-tailing replicas and compaction all carry it; non-empty means the
     /// write fence is up.
     prepared: BTreeMap<String, PreparedEntry>,
+    /// Global transaction ids rolled back heuristically (#556): a late
+    /// `commit_prepared` for one of these reports the overridden outcome.
+    heuristic: BTreeSet<String>,
 }
 
 impl Inner {
@@ -641,6 +644,14 @@ impl Inner {
                 ops: entry.ops.clone(),
             });
         }
+        // Heuristic outcomes too, so a late commit is still told after a
+        // compaction.
+        for gid in &self.heuristic {
+            ops.push(WalOp::RollbackPrepared {
+                gid: gid.clone(),
+                heuristic: true,
+            });
+        }
         ops
     }
 
@@ -722,6 +733,8 @@ impl Inner {
                 prepared_at_ms,
                 ops,
             } => {
+                // A new prepare reusing a gid starts afresh.
+                self.heuristic.remove(&gid);
                 self.prepared.insert(
                     gid,
                     PreparedEntry {
@@ -741,8 +754,11 @@ impl Inner {
                     }
                 }
             }
-            WalOp::RollbackPrepared { gid } => {
+            WalOp::RollbackPrepared { gid, heuristic } => {
                 self.prepared.remove(&gid);
+                if heuristic {
+                    self.heuristic.insert(gid);
+                }
             }
         }
     }
@@ -980,6 +996,10 @@ pub enum ResolveError {
     /// No transaction is prepared under this `gid` (never prepared, or
     /// already resolved).
     UnknownGid(String),
+    /// The server rolled the transaction back heuristically (the opt-in
+    /// prepared-transaction timeout), so it cannot be committed: the
+    /// coordinator's decision was overridden and must be reconciled.
+    HeuristicRollback(String),
     /// Writing the resolution record failed; the transaction stays prepared
     /// and the call can be retried.
     Io(String),
@@ -989,6 +1009,11 @@ impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResolveError::UnknownGid(gid) => write!(f, "no transaction is prepared as {gid:?}"),
+            ResolveError::HeuristicRollback(gid) => write!(
+                f,
+                "transaction {gid:?} was rolled back heuristically after the prepared-transaction \
+                 timeout; it cannot be committed"
+            ),
             ResolveError::Io(e) => write!(f, "write-ahead log write failed: {e}"),
         }
     }
@@ -1057,6 +1082,12 @@ pub enum WalOp {
     RollbackPrepared {
         /// The global transaction id being rolled back.
         gid: String,
+        /// `true` for a heuristic rollback taken by the server after the
+        /// prepared-transaction timeout, not decided by the coordinator. The
+        /// outcome is remembered, so a late `commit_prepared` reports
+        /// [`ResolveError::HeuristicRollback`]. Absent in older records.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        heuristic: bool,
     },
 }
 
@@ -2568,9 +2599,9 @@ impl NativeGraph {
         // Logged under the writer lock; the feed gets nothing (invisible).
         self.record_split(std::slice::from_ref(&record), &[])
             .map_err(|e| PrepareError::Io(e.to_string()))?;
-        Arc::make_mut(&mut live)
-            .prepared
-            .insert(gid.to_string(), entry);
+        let inner = Arc::make_mut(&mut live);
+        inner.heuristic.remove(gid);
+        inner.prepared.insert(gid.to_string(), entry);
         Ok(())
     }
 
@@ -2585,11 +2616,13 @@ impl NativeGraph {
     /// transaction stays prepared — retry).
     pub fn commit_prepared(&self, gid: &str) -> std::result::Result<(), ResolveError> {
         let mut live = write(&self.inner);
-        let ops = live
-            .prepared
-            .get(gid)
-            .map(|entry| entry.ops.clone())
-            .ok_or_else(|| ResolveError::UnknownGid(gid.to_string()))?;
+        let Some(ops) = live.prepared.get(gid).map(|entry| entry.ops.clone()) else {
+            return Err(if live.heuristic.contains(gid) {
+                ResolveError::HeuristicRollback(gid.to_string())
+            } else {
+                ResolveError::UnknownGid(gid.to_string())
+            });
+        };
         let record = WalOp::CommitPrepared {
             gid: gid.to_string(),
         };
@@ -2609,12 +2642,40 @@ impl NativeGraph {
     /// [`ResolveError::UnknownGid`] or [`ResolveError::Io`], as for
     /// [`commit_prepared`](Self::commit_prepared).
     pub fn rollback_prepared(&self, gid: &str) -> std::result::Result<(), ResolveError> {
+        self.rollback_prepared_as(gid, false)
+    }
+
+    /// Two-phase commit (#556): roll back the transaction prepared under
+    /// `gid` **heuristically** — a server decision after the opt-in
+    /// prepared-transaction timeout, not the coordinator's. The outcome is
+    /// logged and remembered, so a later [`commit_prepared`](Self::commit_prepared)
+    /// returns [`ResolveError::HeuristicRollback`] instead of pretending the
+    /// transaction never existed (the XA heuristic-outcome model).
+    ///
+    /// # Errors
+    ///
+    /// As for [`rollback_prepared`](Self::rollback_prepared).
+    pub fn heuristic_rollback_prepared(&self, gid: &str) -> std::result::Result<(), ResolveError> {
+        self.rollback_prepared_as(gid, true)
+    }
+
+    fn rollback_prepared_as(
+        &self,
+        gid: &str,
+        heuristic: bool,
+    ) -> std::result::Result<(), ResolveError> {
         let mut live = write(&self.inner);
         if !live.prepared.contains_key(gid) {
+            // Rolling back what the server already rolled back heuristically
+            // agrees with the outcome.
+            if !heuristic && live.heuristic.contains(gid) {
+                return Ok(());
+            }
             return Err(ResolveError::UnknownGid(gid.to_string()));
         }
         let record = WalOp::RollbackPrepared {
             gid: gid.to_string(),
+            heuristic,
         };
         self.record_split(std::slice::from_ref(&record), &[])
             .map_err(|e| ResolveError::Io(e.to_string()))?;

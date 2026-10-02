@@ -44,6 +44,7 @@ from . import (
     ConflictError,
     CypherError,
     Drevo,
+    HeuristicRollbackError,
     DrevoError,
     LockedError,
     NotFoundError,
@@ -137,7 +138,10 @@ class NotSupportedError(DatabaseError):
 
 def _translate(exc: BaseException) -> Error:
     """The DB-API error for an exception raised by the drevo binding."""
-    if isinstance(exc, (TransactionConflict, QueryTimeoutError, StorageError, LockedError)):
+    if isinstance(
+        exc,
+        (TransactionConflict, QueryTimeoutError, StorageError, LockedError, HeuristicRollbackError),
+    ):
         return OperationalError(str(exc))
     if isinstance(exc, ConflictError):  # DuplicateTitleError, ConstraintViolation
         return IntegrityError(str(exc))

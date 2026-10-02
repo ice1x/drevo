@@ -748,6 +748,19 @@ impl Drevo {
         })
     }
 
+    /// Two-phase commit (#556): roll back an abandoned prepared transaction
+    /// *heuristically* — an operator decision. Unlike `rollback_prepared`,
+    /// the outcome is remembered, so the coordinator's late
+    /// `commit_prepared(gid)` raises `HeuristicRollbackError`.
+    fn heuristic_rollback_prepared(&self, py: Python<'_>, gid: &str) -> PyResult<()> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.heuristic_rollback_prepared(gid))
+                    .map_err(crate::transaction::map_resolve_err)
+            })
+        })
+    }
+
     /// Two-phase commit (#556): every prepared, unresolved transaction, by
     /// ascending gid — for a coordinator recovering in-doubt transactions.
     fn list_prepared(&self) -> PyResult<Vec<crate::transaction::PreparedTransaction>> {

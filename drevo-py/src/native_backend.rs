@@ -118,6 +118,14 @@ impl NativeBackend {
         self.svc.rollback_prepared(gid)
     }
 
+    /// Two-phase commit (#556): roll back `gid` heuristically (operator).
+    pub fn heuristic_rollback_prepared(
+        &self,
+        gid: &str,
+    ) -> std::result::Result<(), drevo::native::ResolveError> {
+        self.svc.heuristic_rollback_prepared(gid)
+    }
+
     /// Two-phase commit (#556): every prepared, unresolved transaction.
     pub fn list_prepared(&self) -> Vec<drevo::native::PreparedInfo> {
         self.svc.list_prepared()

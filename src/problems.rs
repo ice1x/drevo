@@ -268,6 +268,51 @@ pub fn report_stale_prepared(
     newly
 }
 
+/// Roll back, heuristically, every transaction prepared on `service` longer
+/// than `timeout` (#556, the opt-in `DREVO_PREPARED_TX_TIMEOUT_SECS`). Each
+/// one is logged at ERROR (target `drevo::tx`) — it overrides whatever the
+/// coordinator decides — and a late commit is told so. Returns the gids
+/// rolled back.
+pub fn heuristic_rollback_expired(
+    database: &str,
+    service: &crate::native_service::NativeService,
+    now_ms: i64,
+    timeout: std::time::Duration,
+) -> Vec<String> {
+    let timeout_ms = i64::try_from(timeout.as_millis()).unwrap_or(i64::MAX);
+    let mut rolled = Vec::new();
+    for p in service.list_prepared() {
+        let age_ms = now_ms.saturating_sub(p.prepared_at_ms);
+        if age_ms < timeout_ms {
+            continue;
+        }
+        match service.heuristic_rollback_prepared(&p.gid) {
+            Ok(()) => {
+                tracing::error!(
+                    target: "drevo::tx",
+                    database,
+                    gid = %p.gid,
+                    age_secs = age_ms / 1000,
+                    "prepared transaction rolled back heuristically after the prepared-transaction \
+                     timeout; a late commit from its coordinator will be refused"
+                );
+                rolled.push(p.gid);
+            }
+            // Resolved concurrently — nothing to do.
+            Err(crate::native::ResolveError::UnknownGid(_))
+            | Err(crate::native::ResolveError::HeuristicRollback(_)) => {}
+            Err(e) => tracing::error!(
+                target: "drevo::tx",
+                database,
+                gid = %p.gid,
+                error = %e,
+                "heuristic rollback of an expired prepared transaction failed; will retry"
+            ),
+        }
+    }
+    rolled
+}
+
 fn truncate(query: &str) -> String {
     if query.chars().count() <= MAX_QUERY_CHARS {
         return query.to_string();
