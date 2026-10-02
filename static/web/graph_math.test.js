@@ -4,7 +4,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { meanEdgeLength, segmentLength } = require("./graph_math.js");
+const { meanEdgeLength, segmentLength, nodeLabel } = require("./graph_math.js");
 
 test("meanEdgeLength averages the segment lengths", () => {
   // A 3-long and a 4-long segment → mean 3.5.
@@ -75,4 +75,23 @@ test("segmentLength falls back to 90 on a degenerate segment", () => {
 test("segmentLength honours a finite custom fallback, ignores a bad one", () => {
   assert.equal(segmentLength({ x1: 0, y1: 0, x2: 0, y2: 0 }, 42), 42);
   assert.equal(segmentLength(null, Infinity), 90);
+});
+
+test("nodeLabel shows a real title as-is", () => {
+  assert.equal(nodeLabel({ id: 1, kind: "Note", title: "Groceries", properties: { name: "x" } }), "Groceries");
+});
+
+test("nodeLabel hides the synthesised placeholder title (#545)", () => {
+  const synth = "__cypher__:Person:01a0f3aa968d7892884ea14067ed2018";
+  assert.equal(nodeLabel({ id: 7, kind: "Person", title: synth, properties: { name: "Ada" } }), "Ada");
+  assert.equal(nodeLabel({ id: 7, kind: "Person", title: synth, properties: {} }), "Person #7");
+  assert.equal(nodeLabel({ id: 7, kind: "Person", title: synth }), "Person #7");
+});
+
+test("nodeLabel falls back through common naming properties", () => {
+  assert.equal(nodeLabel({ id: 2, kind: "Msg", properties: { text: "hello" } }), "hello");
+  assert.equal(nodeLabel({ id: 3, kind: "Row", properties: { label: "L" } }), "L");
+  assert.equal(nodeLabel({ id: 4, kind: "N", properties: { name: 42 } }), "42");
+  assert.equal(nodeLabel({ id: 5, properties: { title: "__cypher__:N:abc" } }), "node #5");
+  assert.equal(nodeLabel(null), "");
 });

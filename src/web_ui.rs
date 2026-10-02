@@ -253,6 +253,20 @@ mod tests {
     }
 
     #[test]
+    fn embedded_ui_never_labels_nodes_with_placeholder_titles() {
+        // Untitled nodes carry a synthesised `__cypher__:<Label>:<uuid>`
+        // title (#545). The graph, results, inspector and tooltips label
+        // nodes through `nodeLabel`, which falls back to `name` & co.
+        assert!(GRAPH_MATH_JS.contains("function nodeLabel"));
+        assert!(GRAPH_MATH_JS.contains("__cypher__:"));
+        assert!(APP_JS.contains("DrevoGraphMath.nodeLabel("));
+        assert!(
+            !APP_JS.contains("node.title ||") && !APP_JS.contains("n.title ||"),
+            "app.js must not fall back on a raw node title"
+        );
+    }
+
+    #[test]
     fn embedded_app_js_routes_cypher_database_admin() {
         // The Cypher bar must route the catalog admin commands to /cypher
         // (not FTS): SHOW DATABASES and USE are added to the Cypher keyword

@@ -1001,7 +1001,7 @@
   function showTooltip(node) {
     if (!$tooltip) return;
     const raw = node.data("raw") || {};
-    const title = raw.title || node.data("title") || `#${node.id()}`;
+    const title = node.data("title") || DrevoGraphMath.nodeLabel(raw);
     const kind = raw.kind || node.data("kind") || "(no kind)";
     $tooltip.innerHTML = "";
     const t = document.createElement("div");
@@ -1209,7 +1209,7 @@
         if (cell && typeof cell === "object" && typeof cell.id === "number" && "kind" in cell) {
           // A node (or edge) value — show a clickable label.
           td.className = "cell-node";
-          td.textContent = cell.title || `${cell.kind || "node"} #${cell.id}`;
+          td.textContent = DrevoGraphMath.nodeLabel(cell);
           if (!("from_id" in cell)) {
             td.addEventListener("click", () => selectResult(cell.id, null));
           }
@@ -1239,7 +1239,7 @@
       li.dataset.nodeId = String(node.id);
       const title = document.createElement("span");
       title.className = "result-title";
-      title.textContent = node.title || `#${node.id}`;
+      title.textContent = DrevoGraphMath.nodeLabel(node);
       li.appendChild(title);
       const meta = document.createElement("span");
       meta.className = "result-meta";
@@ -1283,7 +1283,7 @@
       group: "nodes",
       data: {
         id: String(n.id),
-        title: n.title || `#${n.id}`,
+        title: DrevoGraphMath.nodeLabel(n),
         kind: n.kind || "",
         raw: n,
       },
@@ -1377,7 +1377,7 @@
     kindBadge.textContent = node.kind || "(no kind)";
     $inspectorBody.appendChild(kindBadge);
     const heading = document.createElement("h3");
-    heading.textContent = node.title || `#${node.id}`;
+    heading.textContent = DrevoGraphMath.nodeLabel(node);
     heading.style.margin = "0.25rem 0 0.6rem";
     $inspectorBody.appendChild(heading);
     addRow("id", String(node.id));
@@ -1423,14 +1423,14 @@
       addTimestampAwareRow(k, props[k], JSON.stringify(props[k]));
     }
   }
-  // Human label for an endpoint id — the node's title if it is currently
+  // Human label for an endpoint id — the node's label if it is currently
   // on the canvas, otherwise `#<id>`.
   function endpointLabel(id) {
     if (cy) {
       const el = cy.getElementById(String(id));
       if (!el.empty()) {
         const raw = el.data("raw");
-        if (raw && raw.title) return raw.title;
+        if (raw) return DrevoGraphMath.nodeLabel(raw);
       }
     }
     return `#${id}`;
