@@ -23,14 +23,22 @@ transaction began makes `commit()` raise `OperationalError`, and the work
 can be retried.
 
 `threadsafety = 1`: threads may share the module but not connections.
+
+Two-phase commit (#556) is available through PEP 249's optional TPC
+extension: `conn.xid(format_id, gtrid, bqual)`, `tpc_begin(xid)`,
+`tpc_prepare()`, `tpc_commit([xid])`, `tpc_rollback([xid])` and
+`tpc_recover()`. A prepared branch is durable, survives its connection and a
+restart, and can be resolved from any connection. While it is prepared,
+every other write raises `OperationalError` (retryable).
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import json as _json
 import time as _time
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Optional, Union
+from typing import Any, NamedTuple, Optional, Union
 
 from . import (
     ConflictError,
@@ -54,6 +62,7 @@ __all__ = [
     "connect",
     "Connection",
     "Cursor",
+    "Xid",
     "Warning",
     "Error",
     "InterfaceError",
@@ -226,6 +235,36 @@ def _type_code(values: Sequence[Any]) -> Optional[type]:
     return None
 
 
+# ── Two-phase commit (PEP 249 TPC extension) ──────────────────────────
+
+
+class Xid(NamedTuple):
+    """A PEP 249 transaction id: `(format_id, global_transaction_id,
+    branch_qualifier)`."""
+
+    format_id: int
+    gtrid: str
+    bqual: str
+
+
+_XID_PREFIX = "dbapi-xid:"
+
+
+def _xid_to_gid(xid: Xid) -> str:
+    return _XID_PREFIX + _json.dumps([xid.format_id, xid.gtrid, xid.bqual])
+
+
+def _gid_to_xid(gid: str) -> Optional[Xid]:
+    """The `Xid` a gid encodes, or `None` for a gid not made by this module."""
+    if not gid.startswith(_XID_PREFIX):
+        return None
+    try:
+        format_id, gtrid, bqual = _json.loads(gid[len(_XID_PREFIX) :])
+        return Xid(int(format_id), str(gtrid), str(bqual))
+    except (ValueError, TypeError):
+        return None
+
+
 # ── Connection ─────────────────────────────────────────────────────────
 
 
@@ -263,6 +302,10 @@ class Connection:
         self._handle: Optional[Drevo] = handle
         self._owns_handle = owns_handle
         self._tx: Optional[Transaction] = None
+        # PEP 249 TPC state: the xid of the current two-phase transaction and
+        # whether it has been prepared.
+        self._tpc_xid: Optional[Xid] = None
+        self._tpc_prepared = False
 
     def _check_open(self) -> Drevo:
         if self._handle is None:
@@ -287,6 +330,10 @@ class Connection:
     def commit(self) -> None:
         """Apply the implicit transaction (a no-op if nothing ran)."""
         self._check_open()
+        if self._tpc_xid is not None:
+            raise ProgrammingError(
+                "commit() is not allowed inside a TPC transaction; use tpc_commit()"
+            )
         tx, self._tx = self._tx, None
         if tx is None or tx.closed:
             return
@@ -298,20 +345,108 @@ class Connection:
     def rollback(self) -> None:
         """Discard the implicit transaction (a no-op if nothing ran)."""
         self._check_open()
+        if self._tpc_xid is not None:
+            raise ProgrammingError(
+                "rollback() is not allowed inside a TPC transaction; use tpc_rollback()"
+            )
         tx, self._tx = self._tx, None
         if tx is not None and not tx.closed:
             tx.rollback()
 
     def close(self) -> None:
-        """Roll back pending work and release the database (idempotent)."""
+        """Roll back pending work and release the database (idempotent). A
+        *prepared* TPC branch is left prepared, for the coordinator."""
         if self._handle is None:
             return
+        self._tpc_xid = None
+        self._tpc_prepared = False
         try:
             self.rollback()
         finally:
             handle, self._handle = self._handle, None
             if self._owns_handle:
                 handle.close()
+
+    # ── PEP 249 two-phase-commit extension ────────────────────────────
+
+    def xid(self, format_id: int, gtrid: str, bqual: str) -> Xid:
+        """A transaction id for `tpc_begin`."""
+        return Xid(format_id, gtrid, bqual)
+
+    def tpc_begin(self, xid: Xid) -> None:
+        """Start a two-phase transaction with id `xid`."""
+        self._check_open()
+        if self._tpc_xid is not None or (self._tx is not None and not self._tx.closed):
+            raise ProgrammingError("a transaction is already in progress")
+        self._tpc_xid = Xid(*xid)
+        self._tpc_prepared = False
+
+    def tpc_prepare(self) -> None:
+        """Phase one: durably prepare the current two-phase transaction."""
+        self._check_open()
+        if self._tpc_xid is None or self._tpc_prepared:
+            raise ProgrammingError("tpc_prepare() needs an unprepared tpc_begin() transaction")
+        tx = self._transaction()
+        self._tx = None
+        try:
+            tx.prepare(_xid_to_gid(self._tpc_xid))
+        except Exception as exc:  # noqa: BLE001
+            self._tpc_xid = None
+            raise _translate(exc) from exc
+        self._tpc_prepared = True
+
+    def _resolve(self, xid: Optional[Xid], commit: bool) -> None:
+        handle = self._check_open()
+        if xid is not None:
+            # Recovery: resolve a prepared branch by id, outside any transaction.
+            if self._tpc_xid is not None:
+                raise ProgrammingError("resolve a recovered xid outside a TPC transaction")
+            gid = _xid_to_gid(Xid(*xid))
+        else:
+            if self._tpc_xid is None:
+                raise ProgrammingError("no TPC transaction in progress")
+            current, prepared = self._tpc_xid, self._tpc_prepared
+            self._tpc_xid, self._tpc_prepared = None, False
+            if not prepared:
+                # One-phase: finish the implicit transaction directly.
+                tx, self._tx = self._tx, None
+                if tx is None or tx.closed:
+                    return
+                try:
+                    if commit:
+                        tx.commit()
+                    else:
+                        tx.rollback()
+                except Exception as exc:  # noqa: BLE001
+                    raise _translate(exc) from exc
+                return
+            gid = _xid_to_gid(current)
+        try:
+            if commit:
+                handle.commit_prepared(gid)
+            else:
+                handle.rollback_prepared(gid)
+        except Exception as exc:  # noqa: BLE001
+            raise _translate(exc) from exc
+
+    def tpc_commit(self, xid: Optional[Xid] = None) -> None:
+        """Phase two: commit the current two-phase transaction (one-phase if it
+        was never prepared), or, given `xid`, a recovered prepared branch."""
+        self._resolve(xid, commit=True)
+
+    def tpc_rollback(self, xid: Optional[Xid] = None) -> None:
+        """Roll back the current two-phase transaction, or, given `xid`, a
+        recovered prepared branch."""
+        self._resolve(xid, commit=False)
+
+    def tpc_recover(self) -> list[Xid]:
+        """Every prepared branch created through this module, pending resolution."""
+        handle = self._check_open()
+        try:
+            gids = [p.gid for p in handle.list_prepared()]
+        except Exception as exc:  # noqa: BLE001
+            raise _translate(exc) from exc
+        return [xid for gid in gids if (xid := _gid_to_xid(gid)) is not None]
 
     def __enter__(self) -> "Connection":
         self._check_open()

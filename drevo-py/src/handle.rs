@@ -726,6 +726,42 @@ impl Drevo {
         })
     }
 
+    /// Two-phase commit (#556): apply the transaction prepared as `gid`.
+    /// Raises `UnknownGidError` if nothing is prepared under it.
+    fn commit_prepared(&self, py: Python<'_>, gid: &str) -> PyResult<()> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.commit_prepared(gid))
+                    .map_err(crate::transaction::map_resolve_err)
+            })
+        })
+    }
+
+    /// Two-phase commit (#556): discard the transaction prepared as `gid`.
+    /// Raises `UnknownGidError` if nothing is prepared under it.
+    fn rollback_prepared(&self, py: Python<'_>, gid: &str) -> PyResult<()> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                py.allow_threads(|| db.rollback_prepared(gid))
+                    .map_err(crate::transaction::map_resolve_err)
+            })
+        })
+    }
+
+    /// Two-phase commit (#556): every prepared, unresolved transaction, by
+    /// ascending gid — for a coordinator recovering in-doubt transactions.
+    fn list_prepared(&self) -> PyResult<Vec<crate::transaction::PreparedTransaction>> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                Ok(db
+                    .list_prepared()
+                    .into_iter()
+                    .map(crate::transaction::PreparedTransaction::new)
+                    .collect())
+            })
+        })
+    }
+
     /// Alias of `begin()` that reads naturally in a `with` statement.
     fn transaction(&self) -> PyResult<crate::transaction::Transaction> {
         self.begin()

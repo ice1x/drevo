@@ -101,6 +101,10 @@ class Transaction:
     def execute(self, query: str, params: Optional[dict[str, Any]] = None) -> CypherResult: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
+    def prepare(self, gid: str) -> None:
+        """Two-phase commit: record the transaction as prepared under `gid` (#556)."""
+        ...
+
     def __enter__(self) -> Transaction: ...
     def __exit__(
         self,
@@ -108,6 +112,13 @@ class Transaction:
         exc_value: Optional[BaseException],
         traceback: Optional[_types.TracebackType],
     ) -> bool: ...
+
+class PreparedTransaction:
+    """A prepared, unresolved two-phase-commit transaction (#556)."""
+
+    gid: str
+    prepared_at_ms: int
+    op_count: int
 
 class CypherResult:
     """The result of `Drevo.execute`: `columns`, rows as dicts, `stats`."""
@@ -307,6 +318,12 @@ class TransactionConflict(TransactionError):
     """The graph changed since the transaction began (optimistic commit).
     Retryable: begin a new transaction and run it again."""
 
+class PreparedTransactionError(TransactionError):
+    """Misuse of two-phase commit, e.g. a gid that is already prepared (#556)."""
+
+class UnknownGidError(PreparedTransactionError):
+    """No transaction is prepared under the given gid."""
+
 class ConstraintViolation(ConflictError):
     """Committing would violate a declared constraint.
     `.args == (message, kind)`."""
@@ -434,6 +451,10 @@ class Drevo:
     def transaction(self) -> Transaction:
         """Alias of `begin()` for `with db.transaction() as tx:`."""
         ...
+    # ── Two-phase commit (#556) ─────────────────────────────────────────
+    def commit_prepared(self, gid: str) -> None: ...
+    def rollback_prepared(self, gid: str) -> None: ...
+    def list_prepared(self) -> list[PreparedTransaction]: ...
     # ── Vector embeddings (Phase 12 task 00079) ─────────────────────────
     def set_embedding(self, node_id: int, embedding: list[float]) -> None: ...
     def set_embeddings_batch(self, embeddings: list[tuple[int, list[float]]]) -> None: ...

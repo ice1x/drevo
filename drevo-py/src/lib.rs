@@ -69,6 +69,7 @@ fn _drevo(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Explicit transactions (#554).
     m.add_class::<transaction::Transaction>()?;
+    m.add_class::<transaction::PreparedTransaction>()?;
 
     // The handle.
     m.add_class::<handle::Drevo>()?;

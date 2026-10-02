@@ -18,13 +18,14 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use drevo::native::{CommitError, NativeTxId};
+use drevo::native::{CommitError, NativeTxId, PrepareError, ResolveError};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::cypher::{map_cypher_err, params_from_py, result_to_py, CypherResult};
 use crate::errors::{
-    panic_to_pyerr, ConstraintViolation, StorageError, TransactionConflict, TransactionError,
+    panic_to_pyerr, ConstraintViolation, PreparedTransactionError, StorageError,
+    TransactionConflict, TransactionError, UnknownGidError,
 };
 use crate::native_backend::NativeBackend;
 
@@ -37,6 +38,75 @@ fn map_commit_err(e: CommitError) -> PyErr {
         // Writes are paused while a two-phase-commit transaction is prepared
         // (#556); retryable once it is resolved, like an optimistic conflict.
         e @ CommitError::PreparedPending(_) => TransactionConflict::new_err(e.to_string()),
+    }
+}
+
+/// Map a failed prepare (#556) onto the Python exception hierarchy.
+fn map_prepare_err(e: PrepareError) -> PyErr {
+    match e {
+        PrepareError::Conflict | PrepareError::PreparedPending(_) => {
+            TransactionConflict::new_err(e.to_string())
+        }
+        PrepareError::Constraint(v) => ConstraintViolation::new_err((v.message.clone(), v.kind)),
+        PrepareError::DuplicateGid(_) => PreparedTransactionError::new_err(e.to_string()),
+        PrepareError::UnknownTransaction => TransactionError::new_err("transaction is closed"),
+        PrepareError::Io(msg) => StorageError::new_err(msg),
+    }
+}
+
+/// Map a failed two-phase-commit resolution (#556) onto Python.
+pub(crate) fn map_resolve_err(e: ResolveError) -> PyErr {
+    match e {
+        ResolveError::UnknownGid(_) => UnknownGidError::new_err(e.to_string()),
+        ResolveError::Io(msg) => StorageError::new_err(msg),
+    }
+}
+
+/// A prepared, unresolved two-phase-commit transaction, as listed by
+/// `Drevo.list_prepared()` (#556).
+#[pyclass(frozen, name = "PreparedTransaction", eq)]
+#[derive(PartialEq)]
+pub struct PreparedTransaction {
+    gid: String,
+    prepared_at_ms: i64,
+    op_count: usize,
+}
+
+impl PreparedTransaction {
+    pub(crate) fn new(info: drevo::native::PreparedInfo) -> Self {
+        Self {
+            gid: info.gid,
+            prepared_at_ms: info.prepared_at_ms,
+            op_count: info.op_count,
+        }
+    }
+}
+
+#[pymethods]
+impl PreparedTransaction {
+    /// The coordinator's global transaction id.
+    #[getter]
+    fn gid(&self) -> &str {
+        &self.gid
+    }
+
+    /// When it was prepared (Unix ms).
+    #[getter]
+    fn prepared_at_ms(&self) -> i64 {
+        self.prepared_at_ms
+    }
+
+    /// Number of write operations in its write set.
+    #[getter]
+    fn op_count(&self) -> usize {
+        self.op_count
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PreparedTransaction(gid={:?}, op_count={})",
+            self.gid, self.op_count
+        )
     }
 }
 
@@ -128,6 +198,20 @@ impl Transaction {
             let id = self.take()?;
             py.allow_threads(|| db.commit_tx(id))
                 .map_err(map_commit_err)
+        })
+    }
+
+    /// Two-phase commit, phase one (#556): validate the transaction and record
+    /// it durably as prepared under `gid`, closing it. Finish it with
+    /// `Drevo.commit_prepared(gid)` or `Drevo.rollback_prepared(gid)` — from
+    /// any handle, also after a restart. While it is prepared, every other
+    /// write raises `TransactionConflict`.
+    fn prepare(&self, py: Python<'_>, gid: &str) -> PyResult<()> {
+        guarded(|| {
+            let db = self.db()?;
+            let id = self.take()?;
+            py.allow_threads(|| db.prepare_tx(id, gid))
+                .map_err(map_prepare_err)
         })
     }
 

@@ -50,6 +50,10 @@ create_exception!(_drevo, ParameterMissingError, CypherError);
 // `ConflictError`.
 create_exception!(_drevo, TransactionConflict, TransactionError);
 create_exception!(_drevo, ConstraintViolation, ConflictError);
+// Two-phase commit (#556): misuse of a prepared transaction, and an unknown
+// global transaction id at resolution.
+create_exception!(_drevo, PreparedTransactionError, TransactionError);
+create_exception!(_drevo, UnknownGidError, PreparedTransactionError);
 
 /// Add the exception classes to the `_drevo` Python module so they are
 /// importable as `drevo.<ClassName>` after task `00116` re-exports them.
@@ -75,6 +79,11 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
     )?;
     m.add("TransactionConflict", py.get_type::<TransactionConflict>())?;
     m.add("ConstraintViolation", py.get_type::<ConstraintViolation>())?;
+    m.add(
+        "PreparedTransactionError",
+        py.get_type::<PreparedTransactionError>(),
+    )?;
+    m.add("UnknownGidError", py.get_type::<UnknownGidError>())?;
     Ok(())
 }
 

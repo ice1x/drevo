@@ -93,6 +93,36 @@ impl NativeBackend {
         self.svc.commit_tx(tx)
     }
 
+    /// Two-phase commit (#556): prepare transaction `tx` under `gid`.
+    pub fn prepare_tx(
+        &self,
+        tx: drevo::native::NativeTxId,
+        gid: &str,
+    ) -> std::result::Result<(), drevo::native::PrepareError> {
+        self.svc.prepare_tx(tx, gid)
+    }
+
+    /// Two-phase commit (#556): apply the transaction prepared as `gid`.
+    pub fn commit_prepared(
+        &self,
+        gid: &str,
+    ) -> std::result::Result<(), drevo::native::ResolveError> {
+        self.svc.commit_prepared(gid)
+    }
+
+    /// Two-phase commit (#556): discard the transaction prepared as `gid`.
+    pub fn rollback_prepared(
+        &self,
+        gid: &str,
+    ) -> std::result::Result<(), drevo::native::ResolveError> {
+        self.svc.rollback_prepared(gid)
+    }
+
+    /// Two-phase commit (#556): every prepared, unresolved transaction.
+    pub fn list_prepared(&self) -> Vec<drevo::native::PreparedInfo> {
+        self.svc.list_prepared()
+    }
+
     /// Discard transaction `tx`; `false` if it was already closed.
     pub fn rollback_tx(&self, tx: drevo::native::NativeTxId) -> bool {
         self.svc.rollback_tx(tx)

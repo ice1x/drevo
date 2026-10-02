@@ -72,6 +72,9 @@ from ._drevo import (  # type: ignore[attr-defined]
     NotFoundError,
     PanicError,
     ParameterMissingError,
+    # Two-phase commit (#556).
+    PreparedTransaction,
+    PreparedTransactionError,
     QueryTimeoutError,
     ScoredNode,
     SerializationError,
@@ -81,6 +84,7 @@ from ._drevo import (  # type: ignore[attr-defined]
     Transaction,
     TransactionConflict,
     TransactionError,
+    UnknownGidError,
 )
 
 # Pure-Python `InvalidWeightError(ValueError)` — see RFC §12.3. The
@@ -113,6 +117,7 @@ __all__ = [
     "ScoredNode",
     "SubGraph",
     "Transaction",
+    "PreparedTransaction",
     # Cypher results (#553).
     "CypherNode",
     "CypherPath",
@@ -138,6 +143,8 @@ __all__ = [
     "TransactionError",
     "TransactionConflict",
     "ConstraintViolation",
+    "PreparedTransactionError",
+    "UnknownGidError",
     # Version.
     "__version__",
 ]

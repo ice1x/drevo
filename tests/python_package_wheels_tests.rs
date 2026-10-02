@@ -201,6 +201,10 @@ fn drevo_package_init_imports_native_extension() {
         "TransactionError",
         "TransactionConflict",
         "ConstraintViolation",
+        // Two-phase commit (#556).
+        "PreparedTransaction",
+        "PreparedTransactionError",
+        "UnknownGidError",
     ] {
         assert!(
             init.contains(symbol),
@@ -359,6 +363,10 @@ fn type_stubs_declare_public_surface() {
         "def transaction(",
         "def commit(",
         "def rollback(",
+        "def prepare(",
+        "def commit_prepared(",
+        "def rollback_prepared(",
+        "def list_prepared(",
     ] {
         assert!(
             stub.contains(method),
@@ -389,6 +397,8 @@ fn type_stubs_declare_public_surface() {
         "class TransactionConflict",
         "class ConstraintViolation",
         "class Transaction:",
+        "class PreparedTransactionError",
+        "class UnknownGidError",
     ] {
         assert!(
             stub.contains(exc),
