@@ -34,6 +34,9 @@ fn map_commit_err(e: CommitError) -> PyErr {
         CommitError::Conflict => TransactionConflict::new_err(e.to_string()),
         CommitError::Constraint(v) => ConstraintViolation::new_err((v.message.clone(), v.kind)),
         CommitError::Io(msg) => StorageError::new_err(msg),
+        // Writes are paused while a two-phase-commit transaction is prepared
+        // (#556); retryable once it is resolved, like an optimistic conflict.
+        e @ CommitError::PreparedPending(_) => TransactionConflict::new_err(e.to_string()),
     }
 }
 

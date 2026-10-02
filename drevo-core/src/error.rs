@@ -80,6 +80,12 @@ pub enum CoreError {
     /// structured variant is not preserved.
     #[error("backend error: {0}")]
     Backend(String),
+
+    /// Two-phase commit (#556): a transaction is prepared and every other
+    /// write is refused until it is resolved (the prepared fence). Retryable;
+    /// carries the pending global transaction ids.
+    #[error("writes are paused while prepared transaction(s) {} await resolution; retry", .0.join(", "))]
+    PreparedTransactionPending(Vec<String>),
 }
 
 /// Convenience alias for fallible core operations.
@@ -109,6 +115,14 @@ mod tests {
             "backend error: scan failed"
         );
         assert_eq!(CoreError::Locked.to_string(), "database locked");
+    }
+
+    #[test]
+    fn prepared_transaction_pending_names_the_gids() {
+        assert_eq!(
+            CoreError::PreparedTransactionPending(vec!["a".into(), "b".into()]).to_string(),
+            "writes are paused while prepared transaction(s) a, b await resolution; retry"
+        );
     }
 
     #[test]

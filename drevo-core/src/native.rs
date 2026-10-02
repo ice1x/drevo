@@ -49,7 +49,7 @@
 //! intentionally **not** part of this engine — the RFC keeps them off the core
 //! graph seam, fed separately via a change-feed.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,11 @@ struct Inner {
     /// always sorts ahead in `list_recent`, even when several in-memory writes
     /// land in the same wall-clock millisecond.
     last_updated_at: i64,
+    /// Two-phase commit (#556): transactions prepared but not yet resolved,
+    /// keyed by global transaction id. Kept with the graph so that replay,
+    /// WAL-tailing replicas and compaction all carry it; non-empty means the
+    /// write fence is up.
+    prepared: BTreeMap<String, PreparedEntry>,
 }
 
 impl Inner {
@@ -627,6 +632,15 @@ impl Inner {
         for (id, vec) in embs {
             ops.push(WalOp::SetEmbedding(*id, vec.clone()));
         }
+        // Unresolved prepared transactions last (#556), so a compaction or a
+        // dump never forgets an in-doubt transaction.
+        for (gid, entry) in &self.prepared {
+            ops.push(WalOp::Prepare {
+                gid: gid.clone(),
+                prepared_at_ms: entry.prepared_at_ms,
+                ops: entry.ops.clone(),
+            });
+        }
         ops
     }
 
@@ -702,6 +716,33 @@ impl Inner {
             }
             WalOp::DeleteEmbedding(id) => {
                 self.embeddings.remove(&id);
+            }
+            WalOp::Prepare {
+                gid,
+                prepared_at_ms,
+                ops,
+            } => {
+                self.prepared.insert(
+                    gid,
+                    PreparedEntry {
+                        prepared_at_ms,
+                        ops,
+                    },
+                );
+            }
+            // Applied at the resolution point, not at `Prepare`: an in-place
+            // writer may log a change that became visible before the
+            // transaction began *after* the `Prepare` line, and applying the
+            // write set here keeps the runtime order (RFC §2.4a).
+            WalOp::CommitPrepared { gid } => {
+                if let Some(entry) = self.prepared.remove(&gid) {
+                    for op in entry.ops {
+                        self.apply_wal_op(op);
+                    }
+                }
+            }
+            WalOp::RollbackPrepared { gid } => {
+                self.prepared.remove(&gid);
             }
         }
     }
@@ -861,6 +902,10 @@ pub enum CommitError {
     /// Writing the transaction to the write-ahead log failed (durable engine
     /// only). The transaction is not applied; the message is the I/O error.
     Io(String),
+    /// Two-phase commit (#556): a transaction is prepared, and every other
+    /// write is refused until it is resolved (the prepared fence). Retryable;
+    /// carries the pending global transaction ids.
+    PreparedPending(Vec<String>),
 }
 
 impl std::fmt::Display for CommitError {
@@ -872,11 +917,102 @@ impl std::fmt::Display for CommitError {
             ),
             CommitError::Constraint(v) => write!(f, "{v}"),
             CommitError::Io(e) => write!(f, "write-ahead log write failed: {e}"),
+            CommitError::PreparedPending(gids) => write!(
+                f,
+                "writes are paused while prepared transaction(s) {} await resolution; retry",
+                gids.join(", ")
+            ),
         }
     }
 }
 
 impl std::error::Error for CommitError {}
+
+/// Why [`NativeGraph::tx_prepare`] failed (#556). Every case closes the
+/// transaction and leaves nothing prepared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareError {
+    /// The id names no open registered transaction (never begun, or already
+    /// committed, rolled back or prepared).
+    UnknownTransaction,
+    /// The graph changed since the transaction began (optimistic conflict).
+    Conflict,
+    /// The transaction's writes would violate a declared [`Constraint`].
+    Constraint(ConstraintViolation),
+    /// A transaction is already prepared under this `gid`.
+    DuplicateGid(String),
+    /// Another transaction is prepared; the fence refuses this one too.
+    PreparedPending(Vec<String>),
+    /// Writing the `Prepare` record failed; nothing was prepared.
+    Io(String),
+}
+
+impl std::fmt::Display for PrepareError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrepareError::UnknownTransaction => {
+                write!(f, "unknown or already-closed transaction")
+            }
+            PrepareError::Conflict => write!(
+                f,
+                "transaction conflict: the graph changed since the transaction began; retry"
+            ),
+            PrepareError::Constraint(v) => write!(f, "{v}"),
+            PrepareError::DuplicateGid(gid) => {
+                write!(f, "a transaction is already prepared as {gid:?}")
+            }
+            PrepareError::PreparedPending(gids) => write!(
+                f,
+                "writes are paused while prepared transaction(s) {} await resolution; retry",
+                gids.join(", ")
+            ),
+            PrepareError::Io(e) => write!(f, "write-ahead log write failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for PrepareError {}
+
+/// Why [`NativeGraph::commit_prepared`] / [`NativeGraph::rollback_prepared`]
+/// failed (#556).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveError {
+    /// No transaction is prepared under this `gid` (never prepared, or
+    /// already resolved).
+    UnknownGid(String),
+    /// Writing the resolution record failed; the transaction stays prepared
+    /// and the call can be retried.
+    Io(String),
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolveError::UnknownGid(gid) => write!(f, "no transaction is prepared as {gid:?}"),
+            ResolveError::Io(e) => write!(f, "write-ahead log write failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ResolveError {}
+
+/// One prepared transaction, as reported by [`NativeGraph::list_prepared`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedInfo {
+    /// The coordinator's global transaction id.
+    pub gid: String,
+    /// When it was prepared (Unix ms).
+    pub prepared_at_ms: i64,
+    /// Number of write operations in its write set.
+    pub op_count: usize,
+}
+
+/// A prepared transaction's durable state inside [`Inner`].
+#[derive(Debug, Clone)]
+struct PreparedEntry {
+    prepared_at_ms: i64,
+    ops: Vec<WalOp>,
+}
 
 /// One entry in the write-ahead log (RFC ACID "D", Phase 3): the durable,
 /// replayable record of a single graph mutation. Upserts carry the **applied**
@@ -900,6 +1036,28 @@ pub enum WalOp {
     SetEmbedding(u64, Vec<f32>),
     /// Delete a node's embedding (idempotent).
     DeleteEmbedding(u64),
+    /// Two-phase commit (#556): a transaction prepared under `gid`, with its
+    /// write set. Applied to the graph only when a matching
+    /// [`WalOp::CommitPrepared`] follows; unresolved at the end of the log, it
+    /// is restored as prepared (and the write fence is raised).
+    Prepare {
+        /// The coordinator's global transaction id.
+        gid: String,
+        /// When it was prepared (Unix ms).
+        prepared_at_ms: i64,
+        /// The transaction's write set, in commit order.
+        ops: Vec<WalOp>,
+    },
+    /// Two-phase commit (#556): apply the write set prepared under `gid`.
+    CommitPrepared {
+        /// The global transaction id being committed.
+        gid: String,
+    },
+    /// Two-phase commit (#556): discard the write set prepared under `gid`.
+    RollbackPrepared {
+        /// The global transaction id being rolled back.
+        gid: String,
+    },
 }
 
 /// An in-memory, native [`GraphEngine`] (RFC Phase 2/3). See the module docs.
@@ -1650,7 +1808,7 @@ impl NativeGraph {
         // to our id space before applying.
         let mut record = node.clone();
         let local_id = {
-            let mut guard = write(&self.inner);
+            let mut guard = self.write_for_commit()?;
             let inner = Arc::make_mut(&mut guard);
             let id = match cur_target {
                 Some(StampTarget::Node(id)) => id,
@@ -1702,7 +1860,7 @@ impl NativeGraph {
         record.from_id = from_local;
         record.to_id = to_local;
         let local_id = {
-            let mut guard = write(&self.inner);
+            let mut guard = self.write_for_commit()?;
             let inner = Arc::make_mut(&mut guard);
             let id = match cur_target {
                 Some(StampTarget::Edge(id)) => id,
@@ -1769,7 +1927,7 @@ impl NativeGraph {
                     } else {
                         WalOp::DeleteEdge(id)
                     };
-                    Arc::make_mut(&mut write(&self.inner)).apply_wal_op(op.clone());
+                    Arc::make_mut(&mut *self.write_for_commit()?).apply_wal_op(op.clone());
                     self.record(&[op])?;
                 }
                 t
@@ -1778,7 +1936,7 @@ impl NativeGraph {
                 // Never seen: mint an anchor id so a later upsert of this uuid
                 // LWW-compares against the tombstone. Nothing to remove.
                 let id = {
-                    let mut guard = write(&self.inner);
+                    let mut guard = self.write_for_commit()?;
                     let inner = Arc::make_mut(&mut guard);
                     if is_node {
                         inner.next_node_id += 1;
@@ -1885,7 +2043,7 @@ impl NativeGraph {
     /// append/fsync failure.
     pub fn set_embedding(&self, node_id: u64, vector: Vec<f32>) -> Result<()> {
         {
-            let mut guard = write(&self.inner);
+            let mut guard = self.write_for_commit()?;
             let inner = Arc::make_mut(&mut guard);
             if !inner.nodes.contains_key(&node_id) {
                 return Err(CoreError::NodeNotFound(node_id));
@@ -1907,7 +2065,7 @@ impl NativeGraph {
             return Ok(());
         }
         let ops: Vec<WalOp> = {
-            let mut guard = write(&self.inner);
+            let mut guard = self.write_for_commit()?;
             let inner = Arc::make_mut(&mut guard);
             for (id, _) in embeddings {
                 if !inner.nodes.contains_key(id) {
@@ -1937,7 +2095,7 @@ impl NativeGraph {
     /// Propagates a WAL append/fsync failure.
     pub fn delete_embedding(&self, node_id: u64) -> Result<()> {
         {
-            let mut guard = write(&self.inner);
+            let mut guard = self.write_for_commit()?;
             Arc::make_mut(&mut guard).apply_wal_op(WalOp::DeleteEmbedding(node_id));
         }
         self.record(&[WalOp::DeleteEmbedding(node_id)])
@@ -1980,7 +2138,7 @@ impl NativeGraph {
         if new_nodes.is_empty() {
             return Ok(Vec::new());
         }
-        let mut live = write(&self.inner);
+        let mut live = self.write_for_commit()?;
         let mut working = Arc::clone(&live);
         let w = Arc::make_mut(&mut working);
         let mut nodes = Vec::with_capacity(new_nodes.len());
@@ -2009,7 +2167,7 @@ impl NativeGraph {
         if new_edges.is_empty() {
             return Ok(Vec::new());
         }
-        let mut live = write(&self.inner);
+        let mut live = self.write_for_commit()?;
         let mut working = Arc::clone(&live);
         let w = Arc::make_mut(&mut working);
         let mut edges = Vec::with_capacity(new_edges.len());
@@ -2119,7 +2277,17 @@ impl NativeGraph {
     /// The WAL append happens **first**: if it fails the feed is left untouched,
     /// so the feed never advertises a change the WAL did not persist.
     fn record(&self, ops: &[WalOp]) -> Result<()> {
-        if ops.is_empty() {
+        self.record_split(ops, ops)
+    }
+
+    /// Persist `wal_ops` as one WAL record and publish `feed_ops` on the
+    /// change-feed, in commit order. Ordinary writes pass the same ops for
+    /// both. Two-phase commit (#556) logs a compact `Prepare` /
+    /// `CommitPrepared` / `RollbackPrepared` record while the feed carries
+    /// nothing (prepared state is invisible) or, on commit, the expanded write
+    /// set, so indexes and in-process replicas see ordinary upserts/deletes.
+    fn record_split(&self, wal_ops: &[WalOp], feed_ops: &[WalOp]) -> Result<()> {
+        if wal_ops.is_empty() && feed_ops.is_empty() {
             return Ok(());
         }
         // Durable: the WAL append + feed extend go through group commit, so
@@ -2129,11 +2297,13 @@ impl NativeGraph {
         // persist.
         #[cfg(not(target_arch = "wasm32"))]
         if self.wal.is_some() {
-            return self.group_commit(ops);
+            return self.group_commit(wal_ops, feed_ops);
         }
         // In-memory (or wasm): no WAL to flush, just the change-feed.
+        #[cfg(target_arch = "wasm32")]
+        let _ = wal_ops;
         let mut feed = self.feed.lock().unwrap_or_else(|e| e.into_inner());
-        feed.ops.extend_from_slice(ops);
+        feed.ops.extend_from_slice(feed_ops);
         Ok(())
     }
 
@@ -2143,15 +2313,18 @@ impl NativeGraph {
     /// once the leader has made their sequence durable. This is what turns N
     /// concurrent autocommit writes into far fewer than N fsyncs.
     #[cfg(not(target_arch = "wasm32"))]
-    fn group_commit(&self, ops: &[WalOp]) -> Result<()> {
+    fn group_commit(&self, wal_ops: &[WalOp], feed_ops: &[WalOp]) -> Result<()> {
         // Serialize the WAL line up front, off the queue lock. A single op is a
         // bare object; a multi-op batch (a transaction) is one JSON array line,
         // so it still recovers all-or-nothing.
-        let mut line = match ops {
+        let mut line = match wal_ops {
+            [] => String::new(),
             [op] => serde_json::to_string(op)?,
             many => serde_json::to_string(many)?,
         };
-        line.push('\n');
+        if !line.is_empty() {
+            line.push('\n');
+        }
 
         let my_seq = {
             let mut q = self.group.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -2162,7 +2335,7 @@ impl NativeGraph {
             q.next_seq += 1;
             q.pending.push(PendingCommit {
                 seq,
-                ops: ops.to_vec(),
+                ops: feed_ops.to_vec(),
                 line,
             });
             seq
@@ -2343,6 +2516,126 @@ impl NativeGraph {
             .is_some()
     }
 
+    /// Two-phase commit, phase one (#556): validate registered transaction
+    /// `id` exactly as a commit would (no change since `begin`, constraints
+    /// hold), durably log its write set as prepared under `gid`, and raise the
+    /// write fence. The transaction is closed either way; on success it can
+    /// only be finished by [`commit_prepared`](Self::commit_prepared) or
+    /// [`rollback_prepared`](Self::rollback_prepared), from any handle and
+    /// across restarts. While the fence is up every other write fails fast
+    /// ([`CoreError::PreparedTransactionPending`] /
+    /// [`CommitError::PreparedPending`]); reads are unaffected.
+    ///
+    /// # Errors
+    ///
+    /// [`PrepareError`]; nothing is prepared and no fence is raised.
+    pub fn tx_prepare(&self, id: NativeTxId, gid: &str) -> std::result::Result<(), PrepareError> {
+        let slot = self
+            .reg_txs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id.0)
+            .ok_or(PrepareError::UnknownTransaction)?;
+        let mut live = write(&self.inner);
+        if live.prepared.contains_key(gid) {
+            return Err(PrepareError::DuplicateGid(gid.to_string()));
+        }
+        if !live.prepared.is_empty() {
+            return Err(PrepareError::PreparedPending(
+                live.prepared.keys().cloned().collect(),
+            ));
+        }
+        if !Arc::ptr_eq(&live, &slot.base) {
+            return Err(PrepareError::Conflict);
+        }
+        slot.working
+            .validate_constraints()
+            .map_err(PrepareError::Constraint)?;
+        let TxSlot { base, working, ops } = slot;
+        // Only the write set is kept: the fence guarantees live stays equal to
+        // `base`, so applying `ops` at resolution reproduces `working`.
+        drop(working);
+        drop(base);
+        let entry = PreparedEntry {
+            prepared_at_ms: crate::model::now_ms(),
+            ops,
+        };
+        let record = WalOp::Prepare {
+            gid: gid.to_string(),
+            prepared_at_ms: entry.prepared_at_ms,
+            ops: entry.ops.clone(),
+        };
+        // Logged under the writer lock; the feed gets nothing (invisible).
+        self.record_split(std::slice::from_ref(&record), &[])
+            .map_err(|e| PrepareError::Io(e.to_string()))?;
+        Arc::make_mut(&mut live)
+            .prepared
+            .insert(gid.to_string(), entry);
+        Ok(())
+    }
+
+    /// Two-phase commit, phase two (#556): apply the write set prepared under
+    /// `gid` and lower the fence once nothing else is prepared. Cannot
+    /// conflict: the fence kept the graph unchanged since the prepare.
+    ///
+    /// # Errors
+    ///
+    /// [`ResolveError::UnknownGid`] if nothing is prepared under `gid`;
+    /// [`ResolveError::Io`] if the commit record could not be written (the
+    /// transaction stays prepared — retry).
+    pub fn commit_prepared(&self, gid: &str) -> std::result::Result<(), ResolveError> {
+        let mut live = write(&self.inner);
+        let ops = live
+            .prepared
+            .get(gid)
+            .map(|entry| entry.ops.clone())
+            .ok_or_else(|| ResolveError::UnknownGid(gid.to_string()))?;
+        let record = WalOp::CommitPrepared {
+            gid: gid.to_string(),
+        };
+        // The WAL gets the small record; the feed the expanded write set, so
+        // indexes and in-process replicas see ordinary upserts and deletes.
+        self.record_split(std::slice::from_ref(&record), &ops)
+            .map_err(|e| ResolveError::Io(e.to_string()))?;
+        Arc::make_mut(&mut live).apply_wal_op(record);
+        Ok(())
+    }
+
+    /// Two-phase commit (#556): discard the write set prepared under `gid`
+    /// and lower the fence once nothing else is prepared.
+    ///
+    /// # Errors
+    ///
+    /// [`ResolveError::UnknownGid`] or [`ResolveError::Io`], as for
+    /// [`commit_prepared`](Self::commit_prepared).
+    pub fn rollback_prepared(&self, gid: &str) -> std::result::Result<(), ResolveError> {
+        let mut live = write(&self.inner);
+        if !live.prepared.contains_key(gid) {
+            return Err(ResolveError::UnknownGid(gid.to_string()));
+        }
+        let record = WalOp::RollbackPrepared {
+            gid: gid.to_string(),
+        };
+        self.record_split(std::slice::from_ref(&record), &[])
+            .map_err(|e| ResolveError::Io(e.to_string()))?;
+        Arc::make_mut(&mut live).apply_wal_op(record);
+        Ok(())
+    }
+
+    /// Every prepared, unresolved transaction (#556), by ascending `gid` — for
+    /// a coordinator resolving in-doubt transactions, and for operators.
+    pub fn list_prepared(&self) -> Vec<PreparedInfo> {
+        read(&self.inner)
+            .prepared
+            .iter()
+            .map(|(gid, entry)| PreparedInfo {
+                gid: gid.clone(),
+                prepared_at_ms: entry.prepared_at_ms,
+                op_count: entry.ops.len(),
+            })
+            .collect()
+    }
+
     /// The shared commit tail of [`NativeTx::commit`] and
     /// [`Self::tx_commit`]: conflict check, constraint validation, one
     /// recorded (WAL + feed) batch, then the atomic swap.
@@ -2353,6 +2646,13 @@ impl NativeGraph {
         ops: &[WalOp],
     ) -> std::result::Result<(), CommitError> {
         let mut live = write(&self.inner);
+        // The two-phase-commit fence (#556): nothing else commits while a
+        // transaction is prepared.
+        if !live.prepared.is_empty() {
+            return Err(CommitError::PreparedPending(
+                live.prepared.keys().cloned().collect(),
+            ));
+        }
         if !Arc::ptr_eq(&live, &base) {
             return Err(CommitError::Conflict);
         }
@@ -2709,8 +3009,14 @@ impl NativeGraph {
                 WalOp::UpsertNode(_) => node_bytes += bytes,
                 WalOp::UpsertEdge(_) => edge_bytes += bytes,
                 WalOp::SetEmbedding(..) => embedding_bytes += bytes,
-                // `to_wal_ops` snapshots only upserts, never deletes.
-                WalOp::DeleteNode(_) | WalOp::DeleteEdge(_) | WalOp::DeleteEmbedding(_) => {}
+                // `to_wal_ops` snapshots only upserts (plus unresolved
+                // prepares, which hold no live rows), never deletes.
+                WalOp::DeleteNode(_)
+                | WalOp::DeleteEdge(_)
+                | WalOp::DeleteEmbedding(_)
+                | WalOp::Prepare { .. }
+                | WalOp::CommitPrepared { .. }
+                | WalOp::RollbackPrepared { .. } => {}
             }
         }
 
@@ -3076,9 +3382,27 @@ fn write(inner: &RwLock<Arc<Inner>>) -> std::sync::RwLockWriteGuard<'_, Arc<Inne
     inner.write().unwrap_or_else(|e| e.into_inner())
 }
 
+impl NativeGraph {
+    /// The writer lock for an ordinary write — refused while a transaction is
+    /// prepared (the two-phase-commit fence, #556). The check runs *after*
+    /// taking the lock, and `tx_prepare` raises the fence under the same lock,
+    /// so no write can slip in between a prepare and its resolution. Reads,
+    /// replica application, constraint declaration, compaction and the 2PC
+    /// resolvers take the plain lock.
+    fn write_for_commit(&self) -> Result<std::sync::RwLockWriteGuard<'_, Arc<Inner>>> {
+        let guard = write(&self.inner);
+        if !guard.prepared.is_empty() {
+            return Err(CoreError::PreparedTransactionPending(
+                guard.prepared.keys().cloned().collect(),
+            ));
+        }
+        Ok(guard)
+    }
+}
+
 impl GraphEngine for NativeGraph {
     fn create_node(&self, new_node: NewNode) -> Result<Node> {
-        let node = Arc::make_mut(&mut write(&self.inner)).create_node(new_node)?;
+        let node = Arc::make_mut(&mut *self.write_for_commit()?).create_node(new_node)?;
         self.record(&[WalOp::UpsertNode(node.clone())])?;
         self.stamp_write(StampTarget::Node(node.id));
         Ok(node)
@@ -3090,7 +3414,7 @@ impl GraphEngine for NativeGraph {
     }
 
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
-        let node = Arc::make_mut(&mut write(&self.inner)).update_node(id, patch)?;
+        let node = Arc::make_mut(&mut *self.write_for_commit()?).update_node(id, patch)?;
         self.record(&[WalOp::UpsertNode(node.clone())])?;
         self.stamp_write(StampTarget::Node(node.id));
         Ok(node)
@@ -3100,7 +3424,7 @@ impl GraphEngine for NativeGraph {
         // Capture the uuid before removal so the tombstone can be remapped by a
         // peer (issue #389).
         let uuid = read(&self.inner).get_node_arc(id).map(|n| n.uuid);
-        Arc::make_mut(&mut write(&self.inner)).delete_node(id)?;
+        Arc::make_mut(&mut *self.write_for_commit()?).delete_node(id)?;
         self.record(&[WalOp::DeleteNode(id)])?;
         if let Some(uuid) = uuid {
             self.stamp_tombstone(StampTarget::Node(id), uuid);
@@ -3121,7 +3445,7 @@ impl GraphEngine for NativeGraph {
         // log and the feed untouched (all-or-nothing), exactly like a committed
         // transaction. One `record` call flushes the whole batch via group
         // commit (one fsync).
-        let mut live = write(&self.inner);
+        let mut live = self.write_for_commit()?;
         let mut working = Arc::clone(&live);
         let w = Arc::make_mut(&mut working);
         let mut ops: Vec<WalOp> = Vec::with_capacity(ids.len());
@@ -3148,7 +3472,7 @@ impl GraphEngine for NativeGraph {
     }
 
     fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
-        let edge = Arc::make_mut(&mut write(&self.inner)).create_edge(new_edge)?;
+        let edge = Arc::make_mut(&mut *self.write_for_commit()?).create_edge(new_edge)?;
         self.record(&[WalOp::UpsertEdge(edge.clone())])?;
         self.stamp_write(StampTarget::Edge(edge.id));
         Ok(edge)
@@ -3159,7 +3483,7 @@ impl GraphEngine for NativeGraph {
     }
 
     fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
-        let edge = Arc::make_mut(&mut write(&self.inner)).update_edge(id, patch)?;
+        let edge = Arc::make_mut(&mut *self.write_for_commit()?).update_edge(id, patch)?;
         self.record(&[WalOp::UpsertEdge(edge.clone())])?;
         self.stamp_write(StampTarget::Edge(edge.id));
         Ok(edge)
@@ -3167,7 +3491,7 @@ impl GraphEngine for NativeGraph {
 
     fn delete_edge(&self, id: u64) -> Result<()> {
         let uuid = read(&self.inner).get_edge_arc(id).map(|e| e.uuid);
-        Arc::make_mut(&mut write(&self.inner)).delete_edge(id)?;
+        Arc::make_mut(&mut *self.write_for_commit()?).delete_edge(id)?;
         self.record(&[WalOp::DeleteEdge(id)])?;
         if let Some(uuid) = uuid {
             self.stamp_tombstone(StampTarget::Edge(id), uuid);
@@ -3246,7 +3570,7 @@ impl GraphEngine for NativeGraph {
         // live write paths).
         let mut applied: Vec<WalOp> = Vec::with_capacity(dump.nodes.len() + dump.edges.len());
         {
-            let mut guard = write(&self.inner);
+            let mut guard = self.write_for_commit()?;
             let g = Arc::make_mut(&mut guard);
 
             // --- Nodes: skip byte-equal, reject id-collision, else upsert ---

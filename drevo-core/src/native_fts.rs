@@ -144,7 +144,14 @@ impl NativeFtsIndex {
                 WalOp::UpsertEdge(_)
                 | WalOp::DeleteEdge(_)
                 | WalOp::SetEmbedding(..)
-                | WalOp::DeleteEmbedding(_) => {}
+                | WalOp::DeleteEmbedding(_)
+                // Two-phase commit records (#556) never reach the feed as
+                // such: a commit publishes its expanded write set, and only
+                // the open-time seed can carry an unresolved `Prepare`, which
+                // is invisible state.
+                | WalOp::Prepare { .. }
+                | WalOp::CommitPrepared { .. }
+                | WalOp::RollbackPrepared { .. } => {}
             }
         }
         self.cursor = batch.cursor;
@@ -355,7 +362,14 @@ impl NativeFtsRelIndex {
                 WalOp::UpsertNode(_)
                 | WalOp::DeleteNode(_)
                 | WalOp::SetEmbedding(..)
-                | WalOp::DeleteEmbedding(_) => {}
+                | WalOp::DeleteEmbedding(_)
+                // Two-phase commit records (#556) never reach the feed as
+                // such: a commit publishes its expanded write set, and only
+                // the open-time seed can carry an unresolved `Prepare`, which
+                // is invisible state.
+                | WalOp::Prepare { .. }
+                | WalOp::CommitPrepared { .. }
+                | WalOp::RollbackPrepared { .. } => {}
             }
         }
         self.cursor = batch.cursor;
