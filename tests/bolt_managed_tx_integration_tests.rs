@@ -306,3 +306,41 @@ fn driver_retry_after_failed_statement_succeeds_concurrently() {
     // A can still recover with RESET.
     assert!(is_success(&a.handle(ClientMessage::Reset)[0]));
 }
+
+/// While a two-phase-commit transaction is prepared (#556), a Bolt COMMIT is
+/// refused with a *transient* code, so drivers back off and retry. After the
+/// prepared transaction is resolved, the retried transaction commits.
+#[test]
+fn commit_while_a_transaction_is_prepared_is_transient_and_retryable() {
+    let db = open();
+    let mut s = hello(&db);
+    assert!(is_success(
+        &s.handle(ClientMessage::Begin {
+            extra: BTreeMap::new(),
+        })[0]
+    ));
+    run_step(&mut s, "CREATE (:Note {title: 'bolt'})").expect("RUN");
+
+    let prepared = db.graph().tx_begin();
+    db.graph()
+        .tx_prepare(prepared, "coordinator-1")
+        .expect("prepare");
+
+    assert_eq!(
+        failure_code(&s.handle(ClientMessage::Commit)).as_deref(),
+        Some("Neo.TransientError.Transaction.LockClientStopped")
+    );
+    assert!(is_success(&s.handle(ClientMessage::Reset)[0]));
+
+    db.graph()
+        .commit_prepared("coordinator-1")
+        .expect("resolve");
+    assert!(is_success(
+        &s.handle(ClientMessage::Begin {
+            extra: BTreeMap::new(),
+        })[0]
+    ));
+    run_step(&mut s, "CREATE (:Note {title: 'bolt'})").expect("RUN");
+    assert_eq!(failure_code(&s.handle(ClientMessage::Commit)), None);
+    assert_eq!(count(&db, "MATCH (n:Note {title: 'bolt'}) RETURN n"), 1);
+}

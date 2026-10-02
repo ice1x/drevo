@@ -138,6 +138,11 @@ impl From<drevo_core::error::CoreError> for DrevoError {
             C::Json(e) => DrevoError::Json(e),
             C::Locked => DrevoError::Locked,
             C::Backend(msg) => DrevoError::Io(std::io::Error::other(msg)),
+            // No structured home in `DrevoError` yet (#556 slice 2 adds one);
+            // keep the rendered, retryable message.
+            e @ C::PreparedTransactionPending(_) => {
+                DrevoError::Io(std::io::Error::other(e.to_string()))
+            }
         }
     }
 }
@@ -219,6 +224,16 @@ mod tests {
             DrevoError::from(CoreError::Locked),
             DrevoError::Locked
         ));
+    }
+
+    #[test]
+    fn prepared_transaction_pending_keeps_its_retryable_message() {
+        // #556 slice 1: no structured `DrevoError` home yet, so the message
+        // (naming the pending gids and "retry") must survive the lift.
+        let drevo: DrevoError =
+            CoreError::PreparedTransactionPending(vec!["g1".into(), "g2".into()]).into();
+        let msg = drevo.to_string();
+        assert!(msg.contains("g1, g2") && msg.contains("retry"), "{msg}");
     }
 
     #[test]
