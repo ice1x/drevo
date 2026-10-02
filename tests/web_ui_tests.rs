@@ -221,6 +221,16 @@ async fn ui_serves_graph_math_module_before_app_js() {
         js.contains("meanEdgeLength") && js.contains("DrevoGraphMath"),
         "graph_math.js must export meanEdgeLength on DrevoGraphMath"
     );
+    assert!(
+        js.contains("nodeLabel") && js.contains("__cypher__:"),
+        "graph_math.js must export nodeLabel, which hides placeholder titles (#545)"
+    );
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    assert!(
+        app_js.contains("DrevoGraphMath.nodeLabel("),
+        "app.js must label nodes through nodeLabel, never the raw title"
+    );
 
     let (_, _, idx) = get(&app, "/ui").await;
     let idx = String::from_utf8(idx).expect("utf-8");

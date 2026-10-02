@@ -54,5 +54,24 @@
     return Number.isFinite(d) && d > 0 ? d : fb;
   }
 
-  return { meanEdgeLength, segmentLength };
+  // A node's display label. drevo stores a unique placeholder title
+  // (`__cypher__:<Label>:<uuid>`) for nodes created without one (#545); that
+  // is storage plumbing, not a name, so a node carrying it is labelled by its
+  // first naming property instead, else `<kind> #<id>`.
+  const SYNTHETIC_TITLE_PREFIX = "__cypher__:";
+  const NAME_KEYS = ["name", "title", "label", "text"];
+  function nodeLabel(n) {
+    if (!n) return "";
+    const isName = (v) =>
+      (typeof v === "string" && v !== "" && !v.startsWith(SYNTHETIC_TITLE_PREFIX)) ||
+      typeof v === "number";
+    if (isName(n.title)) return String(n.title);
+    const props = n.properties || {};
+    for (const key of NAME_KEYS) {
+      if (isName(props[key])) return String(props[key]);
+    }
+    return `${n.kind || "node"} #${n.id}`;
+  }
+
+  return { meanEdgeLength, segmentLength, nodeLabel };
 });
