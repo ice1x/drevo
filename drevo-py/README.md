@@ -192,6 +192,44 @@ with drevo.Drevo.open_in_memory() as db:
 - v1 scope: only `tx.execute` runs inside the transaction. The typed CRUD
   methods (`create_node`, …) stay autocommit on the handle.
 
+### DB-API 2.0 (PEP 249)
+
+`drevo.dbapi` is a PEP 249 module with Cypher as the query language, for
+tools and data layers that speak DB-API.
+
+```python
+import drevo.dbapi as dbapi
+
+conn = dbapi.connect("/path/graph.drevo")      # or ":memory:", or a drevo.Drevo handle
+cur = conn.cursor()
+cur.execute("CREATE (:note {title: $t})", {"t": "x"})
+cur.execute("MATCH (n:note) WHERE n.title = $t RETURN n.title", {"t": "x"})
+cur.fetchall()        # [('x',)]
+cur.description       # (('n.title', <class 'str'>, None, None, None, None, None),)
+conn.commit()         # or conn.rollback()
+conn.close()
+```
+
+- `apilevel = "2.0"`, `threadsafety = 1` (share the module, not connections),
+  `paramstyle = "named"` using **Cypher's `$name`** syntax. PEP 249's `:name`
+  would clash with `:Label`, so queries are passed through untouched. Dates
+  and times are sent as ISO-8601 strings; binary values raise
+  `NotSupportedError`.
+- Each connection runs one implicit transaction on top of `Drevo.begin()`.
+  `commit()` applies it, `rollback()` discards it, and `close()` rolls back
+  pending work. `with dbapi.connect(...) as conn:` commits on a clean exit,
+  rolls back on an exception, then closes. A failing statement rolls the
+  transaction back.
+- Errors follow the PEP 249 hierarchy:
+
+  | DB-API error | Raised for |
+  |---|---|
+  | `ProgrammingError` | Cypher syntax or semantic errors, a missing parameter, misuse |
+  | `IntegrityError` | duplicate title, constraint violation |
+  | `OperationalError` | commit conflict (retry), statement timeout, storage |
+  | `DataError` | value out of range |
+  | `InterfaceError` | closed connection or cursor |
+
 ### Migrating from Neo4j
 
 Importing an existing Neo4j graph is **not** part of `drevo-py` — the
