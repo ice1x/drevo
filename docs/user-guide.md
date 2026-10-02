@@ -61,7 +61,16 @@ drevo is the same engine no matter how you reach it:
 - **Cypher** — over the [Bolt protocol](sdk-reference.md#bolt-protocol) (port `7687`, works with
   official Neo4j drivers) or in-process via `parse` + `execute`.
 - **HTTP API** — a REST surface on port `8080` for CRUD, traversal, search, and import/export.
-- **Web UI** — a Cytoscape.js graph explorer at `/ui` on the HTTP server.
+- **Web UI** — a Cytoscape.js graph explorer at `/ui` on the HTTP server. Server problems (a
+  query stopped by the statement timeout, storage errors, any server WARN/ERROR) and failed UI
+  requests show up as notifications. The ⚑ button (or **Report…** on a notification) builds a
+  bug report: server build and config, graph size, recent problems, your last failing query
+  with a ready-to-run Rust repro test, recent UI errors and a screenshot of the graph. You
+  review and edit the text, then **Open GitHub issue** opens a prefilled issue in a new tab
+  under your own GitHub login, with the screenshot copied to the clipboard for pasting.
+  **Download report** saves the full JSON report for attaching. Nothing leaves your machine
+  until you open the issue. API keys are removed, but queries and log lines are included and
+  the issue is public, so check the text first.
 - **MCP** — a separate [drevo-mcp](https://github.com/ice1x/drevo-mcp) server exposes graph tools to AI agents (Claude Code, Cline), talking to `drevo-server` over HTTP / Bolt.
 
 Pick the smallest one that fits: a notebook app embeds the library; a migration script speaks

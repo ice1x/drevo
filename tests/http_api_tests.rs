@@ -2168,6 +2168,17 @@ async fn ui_graph_math_module_serves_to_client() {
     assert!(body.contains("DrevoGraphMath"));
 }
 
+#[tokio::test]
+async fn ui_report_module_serves_to_client() {
+    // The "Report a problem" helpers (#552), unit-tested by report.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/report.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoReport"));
+    assert!(body.contains("issueUrl"));
+}
+
 // ── #253 slice 1 — storage-bloat observability ──────────────────────────
 
 #[tokio::test]

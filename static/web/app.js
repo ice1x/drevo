@@ -142,8 +142,214 @@
   function status(text, kind) {
     $statusText.textContent = text;
     $statusText.className = "";
-    if (kind === "error") $statusText.classList.add("status-error");
+    if (kind === "error") {
+      $statusText.classList.add("status-error");
+      noteUiError(text);
+    }
     if (kind === "ok") $statusText.classList.add("status-ok");
+  }
+
+  // ── Problem notifications + "Report a problem" (#552) ───────────────
+  // Server problems arrive from GET /problems (polled incrementally); failed
+  // UI requests are noted locally. Both become toasts, and both feed the
+  // report the ⚑ button turns into a prefilled GitHub issue.
+  const Report = window.DrevoReport;
+  const $toasts = document.getElementById("toasts");
+  const $reportToggle = document.getElementById("report-toggle");
+  const $reportModal = document.getElementById("report-modal");
+  const $reportClose = document.getElementById("report-close");
+  const $reportNote = document.getElementById("report-note");
+  const $reportBody = document.getElementById("report-body");
+  const $reportShot = document.getElementById("report-shot");
+  const $reportMsg = document.getElementById("report-msg");
+  const $reportCopyShot = document.getElementById("report-copy-shot");
+  const $reportDownload = document.getElementById("report-download");
+  const $reportOpen = document.getElementById("report-open");
+  const MAX_TOASTS = 5;
+  const PROBLEM_POLL_MS = 5000;
+  const uiErrors = []; // [{at, text}], newest last, at most 20
+  let lastFailure = null; // {query, params, error, at} of the last failed Cypher
+  let problemCursor = null; // `next` from GET /problems; null until the first poll
+  let reportState = null; // {report, title, screenshot} while the dialog is open
+  let reportBodyEdited = false;
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function noteUiError(text) {
+    uiErrors.push({ at: nowIso(), text });
+    if (uiErrors.length > 20) uiErrors.shift();
+    pushToast({ kind: "error", title: text, detail: "" });
+  }
+
+  function pushToast({ kind, title, detail }) {
+    if (!$toasts) return;
+    // The same message twice in a row is one toast.
+    const last = $toasts.lastElementChild;
+    if (last && last.dataset.title === title) return;
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${kind === "error" ? "error" : "warn"}`;
+    toast.dataset.title = title;
+    const text = document.createElement("div");
+    text.className = "toast-text";
+    const strong = document.createElement("strong");
+    strong.textContent = title.length > 160 ? title.slice(0, 159) + "…" : title;
+    text.appendChild(strong);
+    if (detail) {
+      const small = document.createElement("code");
+      small.className = "toast-detail";
+      small.textContent = detail.length > 200 ? detail.slice(0, 199) + "…" : detail;
+      text.appendChild(small);
+    }
+    const report = document.createElement("button");
+    report.type = "button";
+    report.className = "toast-report";
+    report.textContent = "Report…";
+    report.addEventListener("click", () => openReport());
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "toast-close";
+    close.setAttribute("aria-label", "Dismiss");
+    close.textContent = "✕";
+    close.addEventListener("click", () => toast.remove());
+    toast.append(text, report, close);
+    $toasts.appendChild(toast);
+    while ($toasts.children.length > MAX_TOASTS) $toasts.firstElementChild.remove();
+    // Warnings fade on their own; errors stay until dismissed.
+    if (kind !== "error") setTimeout(() => toast.remove(), 15000);
+  }
+
+  async function pollProblems() {
+    try {
+      const since = problemCursor === null ? 0 : problemCursor;
+      const r = await fetch(`/problems?since=${since}`, { headers: { Accept: "application/json" } });
+      if (!r.ok) return;
+      const data = await r.json();
+      // Problems from before this page was opened are in the report, not toasts.
+      if (problemCursor !== null) {
+        for (const p of data.problems || []) pushToast(Report.toastFromProblem(p));
+      }
+      problemCursor = data.next;
+    } catch (_) {
+      // Server unreachable: loadServerInfo already reports that once.
+    }
+  }
+
+  function setReportMsg(text, kind) {
+    if (!$reportMsg) return;
+    $reportMsg.hidden = !text;
+    $reportMsg.textContent = text || "";
+    $reportMsg.className = `settings-msg${kind === "error" ? " status-error" : kind === "ok" ? " status-ok" : ""}`;
+  }
+
+  function screenshotDataUri() {
+    if (!cy) return null;
+    try {
+      const bg = getComputedStyle(document.body).backgroundColor || "#ffffff";
+      return cy.png({ full: false, bg, maxWidth: 1600, maxHeight: 1200 });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function renderReportBody() {
+    if (!reportState || reportBodyEdited) return;
+    const issue = Report.buildIssue({
+      note: $reportNote ? $reportNote.value : "",
+      report: reportState.report,
+      lastFailure,
+      uiErrors,
+      userAgent: navigator.userAgent,
+    });
+    reportState.title = issue.title;
+    $reportBody.value = issue.body;
+  }
+
+  async function openReport() {
+    if (!$reportModal) return;
+    reportBodyEdited = false;
+    setReportMsg("Collecting the report…");
+    $reportModal.hidden = false;
+    $reportModal.setAttribute("aria-hidden", "false");
+    const shot = screenshotDataUri();
+    if ($reportShot) {
+      $reportShot.hidden = !shot;
+      if (shot) $reportShot.src = shot;
+    }
+    let report = {};
+    try {
+      const db = currentDb && currentDb !== "drevo" ? `?db=${encodeURIComponent(currentDb)}` : "";
+      const r = await fetch(`/report${db}`, { headers: { Accept: "application/json" } });
+      report = r.ok ? await r.json() : { error: `GET /report → ${r.status}` };
+    } catch (e) {
+      report = { error: `GET /report failed: ${e.message}` };
+    }
+    reportState = { report, title: "", screenshot: shot };
+    renderReportBody();
+    setReportMsg(
+      shot
+        ? "Click \"Open GitHub issue\": the screenshot is copied to your clipboard, paste it into the issue."
+        : "No graph screenshot available.",
+    );
+    if ($reportNote) $reportNote.focus();
+  }
+
+  function closeReport() {
+    if (!$reportModal) return;
+    $reportModal.hidden = true;
+    $reportModal.setAttribute("aria-hidden", "true");
+  }
+
+  async function copyScreenshot() {
+    if (!reportState || !reportState.screenshot) return false;
+    try {
+      const blob = await (await fetch(reportState.screenshot)).blob();
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function downloadReport() {
+    if (!reportState) return;
+    const full = {
+      generated_at: nowIso(),
+      issue: { title: reportState.title, body: $reportBody.value },
+      server: reportState.report,
+      ui: { last_failure: lastFailure, errors: uiErrors, user_agent: navigator.userAgent, database: currentDb },
+      screenshot_png: reportState.screenshot,
+    };
+    const blob = new Blob([JSON.stringify(full, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `drevo-report-${full.generated_at.replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  async function openIssue() {
+    if (!reportState) return;
+    const repo = (reportState.report && reportState.report.issue_repo) || "ice1x/drevo";
+    let url;
+    try {
+      url = Report.issueUrl(repo, reportState.title || "Problem report", $reportBody.value);
+    } catch (e) {
+      setReportMsg(e.message, "error");
+      return;
+    }
+    // Copy first: the click is the user gesture the clipboard API requires.
+    const copied = await copyScreenshot();
+    window.open(url, "_blank", "noopener");
+    setReportMsg(
+      copied
+        ? "Issue opened in a new tab — paste the screenshot (Cmd/Ctrl+V) into it, and attach the downloaded report if the text was truncated."
+        : "Issue opened in a new tab. The screenshot could not be copied; use \"Download report\" and attach it.",
+      "ok",
+    );
   }
 
   // ── Server info — top-right ────────────────────────────────────────
@@ -912,12 +1118,15 @@
       });
       const text = await r.text();
       if (!r.ok) {
-        status(`Cypher error: ${text}`, "error");
+        const message = Report.errorMessage(text);
+        lastFailure = { query, params: {}, error: message, at: nowIso() };
+        status(`Cypher error: ${message}`, "error");
         return false;
       }
       renderCypherResult(JSON.parse(text));
       return true;
     } catch (e) {
+      lastFailure = { query, params: {}, error: e.message, at: nowIso() };
       status(`Cypher failed: ${e.message}`, "error");
       return false;
     }
@@ -1500,10 +1709,30 @@
       if (e.target === $settingsModal) closeSettings();
     });
   }
+  if ($reportToggle) $reportToggle.addEventListener("click", () => openReport());
+  if ($reportClose) $reportClose.addEventListener("click", closeReport);
+  if ($reportNote) $reportNote.addEventListener("input", renderReportBody);
+  if ($reportBody) $reportBody.addEventListener("input", () => { reportBodyEdited = true; });
+  if ($reportCopyShot) {
+    $reportCopyShot.addEventListener("click", async () => {
+      setReportMsg((await copyScreenshot()) ? "Screenshot copied." : "Could not copy the screenshot.",
+        "ok");
+    });
+  }
+  if ($reportDownload) $reportDownload.addEventListener("click", downloadReport);
+  if ($reportOpen) $reportOpen.addEventListener("click", openIssue);
+  if ($reportModal) {
+    $reportModal.addEventListener("click", (e) => {
+      if (e.target === $reportModal) closeReport();
+    });
+  }
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && $storageModal && !$storageModal.hidden) closeStorage();
     if (e.key === "Escape" && $settingsModal && !$settingsModal.hidden) closeSettings();
+    if (e.key === "Escape" && $reportModal && !$reportModal.hidden) closeReport();
   });
+  pollProblems();
+  setInterval(pollProblems, PROBLEM_POLL_MS);
 
   document.addEventListener("DOMContentLoaded", () => {
     initTheme();

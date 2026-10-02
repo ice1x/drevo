@@ -12,6 +12,7 @@
 //! - `GET /ui` → `index.html` (`text/html; charset=utf-8`)
 //! - `GET /ui/app.js` → `app.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/styles.css` → `styles.css` (`text/css; charset=utf-8`)
 //! - `GET /ui/vendor/cytoscape.min.js` → Cytoscape.js core
 //! - `GET /ui/vendor/layout-base.js` → fcose dep
@@ -61,6 +62,11 @@ const APP_JS: &str = include_str!("../static/web/app.js");
 /// (`node --test`, the `web-assets` CI job).
 const GRAPH_MATH_JS: &str = include_str!("../static/web/graph_math.js");
 
+/// `report.js` body — pure helpers for problem toasts and the "Report a
+/// problem" GitHub issue (#552), used by `app.js`. Unit-tested by
+/// `report.test.js` under `node --test`.
+const REPORT_JS: &str = include_str!("../static/web/report.js");
+
 /// `styles.css` body — embedded at compile time.
 const STYLES_CSS: &str = include_str!("../static/web/styles.css");
 
@@ -98,6 +104,11 @@ pub async fn serve_app_js() -> Response {
 /// `GET /ui/graph_math.js` → serve the pure geometry helpers `app.js` depends on.
 pub async fn serve_graph_math_js() -> Response {
     asset_response(GRAPH_MATH_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/report.js` → serve the problem-report helpers `app.js` depends on.
+pub async fn serve_report_js() -> Response {
+    asset_response(REPORT_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/styles.css` → serve the stylesheet.
@@ -193,6 +204,9 @@ mod tests {
             "id=\"cy\"",
             "id=\"inspector-body\"",
             "id=\"status-text\"",
+            "id=\"toasts\"",
+            "id=\"report-toggle\"",
+            "id=\"report-modal\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),
