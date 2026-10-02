@@ -328,7 +328,7 @@ fn commit_while_a_transaction_is_prepared_is_transient_and_retryable() {
 
     assert_eq!(
         failure_code(&s.handle(ClientMessage::Commit)).as_deref(),
-        Some("Neo.TransientError.Transaction.LockClientStopped")
+        Some("Neo.TransientError.Transaction.LockAcquisitionTimeout")
     );
     assert!(is_success(&s.handle(ClientMessage::Reset)[0]));
 

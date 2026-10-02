@@ -114,7 +114,7 @@ pub enum DrevoError {
     /// Two-phase commit (#556): a transaction is prepared and every other
     /// write is refused until it is resolved (the prepared fence). Retryable;
     /// carries the pending global transaction ids. Maps to HTTP 503, the Bolt
-    /// status `Neo.TransientError.Transaction.LockClientStopped` and Python's
+    /// status `Neo.TransientError.Transaction.LockAcquisitionTimeout` and Python's
     /// `TransactionConflict`.
     #[error(
         "writes are paused while prepared transaction(s) {} await resolution; retry",
