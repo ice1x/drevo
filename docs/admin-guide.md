@@ -40,6 +40,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_DATA_DIR` | `/data` | Directory holding the single `drevo.redb` file. |
 | `RUST_LOG` | `info` | `tracing` env-filter (e.g. `drevo=debug,info`). |
 | `DREVO_QUERY_TIMEOUT_MS` | `0` (off) | Per-statement wall-clock limit in milliseconds, for HTTP `/cypher` and Bolt, applied to every database. A statement over it fails with `statement exceeded the N ms statement timeout` (Bolt: `Neo.ClientError.Transaction.TransactionTimedOut`) and releases its locks. An autocommit statement keeps the writes it made before the limit hit, as with any other runtime error; inside an explicit transaction, roll back as usual. Non-integer values are rejected. |
+| `DREVO_PREPARED_TX_WARN_SECS` | `60` | Log an ERROR (and so raise a Web UI notification) for each two-phase-commit transaction that has stayed prepared longer than this many seconds. While one is prepared, every write is refused. `0` turns the alert off. |
 | `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
 | `DREVO_AUTO_COMPACT_RATIO` | `2.0` | Minimum bloat ratio to trigger auto-compaction. |
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
@@ -203,6 +204,8 @@ bundle (dependency-free, always compiled — see [`src/observability/`](https://
 | `drevo_process_uptime_seconds` | gauge | — |
 | `drevo_storage_file_bytes` | gauge | — |
 | `drevo_statement_timeouts_total` | counter | — |
+| `drevo_prepared_transactions` | gauge | — |
+| `drevo_prepared_transaction_oldest_age_seconds` | gauge | — |
 | `drevo_build_info` | gauge | `version` |
 
 `drevo_storage_file_bytes` (#253 slice 1) is the physical on-disk size of the backend file,
@@ -214,6 +217,28 @@ copy-on-write bloat.
 over HTTP and Bolt. Each one is also logged at **ERROR** (target `drevo::query`) with the
 protocol, database, limit and query text (truncated to 2 000 characters). A timeout almost
 always means a slow path in drevo worth fixing, so alert on any increase.
+
+**Two-phase commit (#556).** A transaction prepared by a distributed-transaction coordinator (see
+the [RFC](rfc-two-phase-commit.md) and the `drevo.tx.*` procedures in the Cypher reference)
+**refuses every other write** until it is resolved. Writes fail fast and are retryable: HTTP 503,
+Bolt `Neo.TransientError.Transaction.LockClientStopped`. Prepared transactions survive restarts
+and compaction, and are never resolved automatically. Operators can:
+
+- watch `drevo_prepared_transactions` and `drevo_prepared_transaction_oldest_age_seconds`, and
+  alert when the latter grows;
+- rely on the ERROR the server logs once a transaction has been prepared longer than
+  `DREVO_PREPARED_TX_WARN_SECS`;
+- list and resolve transactions over HTTP on the default database:
+  - `GET /transactions/prepared` → `{"prepared": [{gid, prepared_at, op_count}]}`;
+  - `POST /transactions/prepared/{gid}/commit` and `POST /transactions/prepared/{gid}/rollback`.
+    An unknown gid returns 404.
+
+Resolve with the coordinator's decision. Rolling back a transaction the coordinator committed
+elsewhere breaks atomicity across stores.
+
+A WAL that contains 2PC records cannot be read by a drevo release older than this one. An older
+binary may even drop a trailing prepare silently. Before downgrading, resolve every prepared
+transaction and compact the WAL.
 
 **Problem feed.** `GET /problems?since=<seq>` returns the server's recent WARN/ERROR log events
 (at most 200 kept in memory, oldest dropped first) as

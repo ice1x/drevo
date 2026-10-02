@@ -605,6 +605,59 @@ impl NativeService {
         self.graph.tx_rollback(tx)
     }
 
+    /// Two-phase commit, phase one (#556): validate registered transaction
+    /// `tx`, durably log its write set as prepared under `gid`, and raise the
+    /// write fence — see [`NativeGraph::tx_prepare`] and
+    /// `docs/rfc-two-phase-commit.md`. The transaction is closed either way.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::native::PrepareError`]; nothing is prepared.
+    pub fn prepare_tx(
+        &self,
+        tx: crate::native::NativeTxId,
+        gid: &str,
+    ) -> std::result::Result<(), crate::native::PrepareError> {
+        self.graph.tx_prepare(tx, gid)
+    }
+
+    /// Two-phase commit, phase two (#556): apply the write set prepared under
+    /// `gid` (cannot conflict), then apply the runtime compaction policy like
+    /// any other commit.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::native::ResolveError`]: unknown `gid`, or an I/O failure that
+    /// leaves the transaction prepared (retry).
+    pub fn commit_prepared(
+        &self,
+        gid: &str,
+    ) -> std::result::Result<(), crate::native::ResolveError> {
+        let result = self.graph.commit_prepared(gid);
+        if result.is_ok() {
+            self.maybe_compact();
+        }
+        result
+    }
+
+    /// Two-phase commit (#556): discard the write set prepared under `gid`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::native::ResolveError`], as for
+    /// [`commit_prepared`](Self::commit_prepared).
+    pub fn rollback_prepared(
+        &self,
+        gid: &str,
+    ) -> std::result::Result<(), crate::native::ResolveError> {
+        self.graph.rollback_prepared(gid)
+    }
+
+    /// Every prepared, unresolved transaction (#556), by ascending `gid`.
+    pub fn list_prepared(&self) -> Vec<crate::native::PreparedInfo> {
+        self.graph.list_prepared()
+    }
+
     /// One node by storage id — the engine of `GET /nodes/{id}`.
     ///
     /// # Errors

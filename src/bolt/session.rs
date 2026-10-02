@@ -454,6 +454,12 @@ pub struct Session<'a> {
     /// so the handle is carried here and every in-transaction `RUN` / `COMMIT` /
     /// `ROLLBACK` runs on *that* service, never on the session default.
     native_tx: Option<ActiveTx>,
+    /// Two-phase commit (#556): the gid this session's explicit transaction
+    /// was prepared under by `CALL drevo.tx.prepare($gid)`. The transaction
+    /// is closed at that point, so the driver's closing `COMMIT` / `ROLLBACK`
+    /// is acknowledged as a no-op; resolution is `drevo.tx.commitPrepared` /
+    /// `rollbackPrepared`, from any session.
+    prepared_gid: Option<String>,
     /// How a `db` selector on `RUN` / `BEGIN` maps to a concrete service — a
     /// single-database session ignores it (embedded / sync entry points), a
     /// catalog-backed one resolves it against the shared registry (issue #523).
@@ -560,6 +566,7 @@ impl<'a> Session<'a> {
             pending: None,
             authenticator,
             native_tx: None,
+            prepared_gid: None,
             resolver,
         }
     }
@@ -761,6 +768,14 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
+        // A transaction already prepared for two-phase commit (#556) is no
+        // longer ours to commit: acknowledge the driver's closing COMMIT.
+        if self.prepared_gid.take().is_some() {
+            self.state = State::Ready;
+            return vec![ServerMessage::Success {
+                metadata: BTreeMap::new(),
+            }];
+        }
         // The TxReady state guarantees an id is present; treat its absence
         // defensively rather than panicking. Commit the registered
         // transaction, mapping the conflict outcome to the transient class
@@ -805,6 +820,15 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
+        // A prepared transaction (#556) stays prepared: only
+        // `drevo.tx.rollbackPrepared` may discard it, so the driver's closing
+        // ROLLBACK is acknowledged without touching it.
+        if self.prepared_gid.take().is_some() {
+            self.state = State::Ready;
+            return vec![ServerMessage::Success {
+                metadata: BTreeMap::new(),
+            }];
+        }
         // Whatever the outcome, the slot is no longer ours to clean up.
         let Some(ActiveTx { service, id }) = self.native_tx.take() else {
             self.state = State::Failed;
@@ -820,6 +844,74 @@ impl<'a> Session<'a> {
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
         }]
+    }
+
+    /// Prepare this session's explicit transaction under the gid that
+    /// `gid_expr` evaluates to (#556). Streams one row, `gid`, on success;
+    /// the transaction is closed either way.
+    fn handle_prepare(
+        &mut self,
+        gid_expr: &crate::cypher::ast::Expression,
+        params: &HashMap<String, CypherValue>,
+        in_tx: bool,
+    ) -> Vec<ServerMessage> {
+        use crate::cypher::ast::Expression;
+        let gid = match gid_expr {
+            Expression::String(s, _) => Some(s.clone()),
+            Expression::Parameter(name, _) => match params.get(name) {
+                Some(CypherValue::String(s)) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(gid) = gid else {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::SEMANTIC_ERROR,
+                    "drevo.tx.prepare takes the global transaction id as a string literal or $parameter",
+                ),
+            }];
+        };
+        let Some(ActiveTx { service, id }) = self.native_tx.take() else {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(codes::STORAGE, "no open transaction to prepare"),
+            }];
+        };
+        match service.prepare_tx(id, &gid) {
+            Ok(()) => {
+                self.prepared_gid = Some(gid.clone());
+                self.pending = Some(PendingResult {
+                    rows: vec![vec![CypherValue::String(gid)]].into_iter(),
+                });
+                self.state = if in_tx {
+                    State::TxStreaming
+                } else {
+                    State::Streaming
+                };
+                let mut md: BTreeMap<String, Value> = BTreeMap::new();
+                md.insert(
+                    "fields".to_string(),
+                    Value::List(vec![Value::String("gid".to_string())]),
+                );
+                vec![ServerMessage::Success { metadata: md }]
+            }
+            Err(e) => {
+                use crate::native::PrepareError as P;
+                let code = match &e {
+                    P::Conflict => codes::TRANSIENT_OUTDATED,
+                    P::PreparedPending(_) => codes::TRANSIENT_PREPARED_PENDING,
+                    P::Constraint(_) => codes::CONSTRAINT_FAILED,
+                    P::DuplicateGid(_) | P::UnknownTransaction => codes::SEMANTIC_ERROR,
+                    P::Io(_) => codes::STORAGE,
+                };
+                self.state = State::Failed;
+                vec![ServerMessage::Failure {
+                    metadata: failure_metadata(code, &format!("{e}")),
+                }]
+            }
+        }
     }
 
     fn handle_run(
@@ -865,6 +957,14 @@ impl<'a> Session<'a> {
                 }];
             }
         };
+        // Two-phase commit (#556): `CALL drevo.tx.prepare($gid)` inside an
+        // explicit transaction prepares *this* transaction — the executor has
+        // no handle on the session's transaction, so it is handled here.
+        if in_tx {
+            if let Some(gid_expr) = prepare_call(&ast) {
+                return self.handle_prepare(gid_expr, &cypher_params, in_tx);
+            }
+        }
         // Execute (already returns a fully-materialised ExecResult). Inside an
         // explicit transaction the statement runs on this connection's
         // registered transaction working copy, on the service the transaction
@@ -1439,6 +1539,26 @@ fn parse_error_metadata(e: &ParseError) -> BTreeMap<String, Value> {
     failure_metadata(codes::SYNTAX_ERROR, &format!("{e}"))
 }
 
+/// The gid argument of a statement that is exactly
+/// `CALL drevo.tx.prepare(<gid>)` (#556), if that is what `query` is.
+fn prepare_call(query: &crate::cypher::ast::Query) -> Option<&crate::cypher::ast::Expression> {
+    use crate::cypher::ast::Clause;
+    let [part] = query.parts.as_slice() else {
+        return None;
+    };
+    let [Clause::Call(call)] = part.query.clauses.as_slice() else {
+        return None;
+    };
+    let is_prepare = call.name.len() == 3
+        && call.name[0] == "drevo"
+        && call.name[1] == "tx"
+        && call.name[2] == "prepare";
+    match call.args.as_slice() {
+        [gid] if is_prepare => Some(gid),
+        _ => None,
+    }
+}
+
 fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
     let code = match e {
         ExecError::Unsupported { .. } | ExecError::EngineCapability { .. } => codes::UNSUPPORTED,
@@ -1451,6 +1571,11 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         | ExecError::UnionMismatch { .. }
         | ExecError::InvalidRegex { .. } => codes::SEMANTIC_ERROR,
         ExecError::MissingParameter(_) => codes::PARAMETER_MISSING,
+        // Writes paused by a prepared two-phase-commit transaction (#556):
+        // transient, so drivers back off and retry.
+        ExecError::Storage(crate::error::DrevoError::PreparedTransactionPending(_)) => {
+            codes::TRANSIENT_PREPARED_PENDING
+        }
         ExecError::Storage(_) => codes::STORAGE,
         ExecError::Timeout { .. } => codes::TIMED_OUT,
     };

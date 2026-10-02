@@ -232,6 +232,42 @@ pub fn note_exec_error(protocol: &str, database: &str, query: &str, err: &ExecEr
     }
 }
 
+/// Report prepared two-phase-commit transactions (#556) that have waited
+/// longer than `warn_after`: one ERROR (target `drevo::tx`) per transaction,
+/// which lands in the problem feed, since a prepared transaction blocks every
+/// write until it is resolved. `reported` remembers what was already reported;
+/// gids no longer prepared are forgotten, so a later transaction reusing the gid
+/// is reported afresh. Returns the gids reported by this call.
+pub fn report_stale_prepared(
+    database: &str,
+    prepared: &[crate::native::PreparedInfo],
+    now_ms: i64,
+    warn_after: std::time::Duration,
+    reported: &mut std::collections::HashSet<String>,
+) -> Vec<String> {
+    reported.retain(|gid| prepared.iter().any(|p| &p.gid == gid));
+    let threshold_ms = i64::try_from(warn_after.as_millis()).unwrap_or(i64::MAX);
+    let mut newly = Vec::new();
+    for p in prepared {
+        let age_ms = now_ms.saturating_sub(p.prepared_at_ms);
+        if age_ms < threshold_ms || reported.contains(&p.gid) {
+            continue;
+        }
+        tracing::error!(
+            target: "drevo::tx",
+            database,
+            gid = %p.gid,
+            age_secs = age_ms / 1000,
+            op_count = p.op_count,
+            "prepared transaction awaiting resolution; writes are refused until it is \
+             committed or rolled back (CALL drevo.tx.commitPrepared / rollbackPrepared)"
+        );
+        reported.insert(p.gid.clone());
+        newly.push(p.gid.clone());
+    }
+    newly
+}
+
 fn truncate(query: &str) -> String {
     if query.chars().count() <= MAX_QUERY_CHARS {
         return query.to_string();

@@ -108,6 +108,9 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
             required_major,
         } => NeedsMigrationError::new_err((found_major, required_major)),
         D::Vector(err) => PyValueError::new_err(err.to_string()),
+        // Writes are paused while a two-phase-commit transaction is prepared
+        // (#556): retryable once it is resolved, like an optimistic conflict.
+        e @ D::PreparedTransactionPending(_) => TransactionConflict::new_err(e.to_string()),
     }
 }
 
