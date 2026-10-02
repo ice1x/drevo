@@ -68,5 +68,25 @@ pub enum BoltError {
     Tls(String),
 }
 
+impl BoltError {
+    /// Whether this is the peer simply going away (an EOF, reset or broken
+    /// pipe mid-session) rather than a fault. Drivers drop pooled
+    /// connections without `GOODBYE` all the time, so the server logs these
+    /// at debug instead of raising a problem (#552).
+    pub fn is_client_disconnect(&self) -> bool {
+        match self {
+            Self::Eof => true,
+            Self::Io(e) => matches!(
+                e.kind(),
+                io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::BrokenPipe
+            ),
+            _ => false,
+        }
+    }
+}
+
 /// Convenience `Result` alias used throughout the Bolt module.
 pub type BoltResult<T> = Result<T, BoltError>;

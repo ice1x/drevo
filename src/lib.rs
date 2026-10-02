@@ -255,6 +255,10 @@ pub mod observability;
 /// guard for memory-limited query execution. Dependency-free, always compiled,
 /// WASM-safe; not yet wired into the executor.
 pub mod planner;
+/// Recent server WARN/ERROR events for the Web UI's notifications and
+/// problem reports (#552). Compiled with the `http` feature.
+#[cfg(feature = "http")]
+pub mod problems;
 /// Semantic-index state machine (Phase 21) — the pure, dependency-free control
 /// plane that governs whether and how a `(label, property)` is auto-embedded
 /// for semantic search. Off by default; serialisable for redb persistence and

@@ -663,6 +663,11 @@ pub struct DrevoMetrics {
     /// the logical size from the on-demand `GET /storage/bloat` report to alert
     /// on reclaimable copy-on-write bloat.
     pub storage_file_bytes: Gauge,
+    /// `drevo_statement_timeouts_total` (#552) — statements stopped by the
+    /// statement timeout (#547), over HTTP and Bolt. Synced from
+    /// [`crate::problems::statement_timeouts`] by the `/metrics` handler via
+    /// [`DrevoMetrics::sync_statement_timeouts`].
+    statement_timeouts: Counter,
 }
 
 impl DrevoMetrics {
@@ -736,6 +741,11 @@ impl DrevoMetrics {
              ephemeral in-memory backend).",
             &[],
         );
+        let statement_timeouts = registry.counter(
+            "drevo_statement_timeouts_total",
+            "Statements stopped by the statement timeout (DREVO_QUERY_TIMEOUT_MS).",
+            &[],
+        );
         // Publish the build version as a `1`-valued info gauge — the idiomatic
         // Prometheus way to expose a constant string dimension.
         registry
@@ -755,6 +765,16 @@ impl DrevoMetrics {
             query_duration,
             uptime_seconds,
             storage_file_bytes,
+            statement_timeouts,
+        }
+    }
+
+    /// Bring `drevo_statement_timeouts_total` up to the process-wide `total`
+    /// (the counter only ever moves forward; a smaller `total` is ignored).
+    pub fn sync_statement_timeouts(&self, total: u64) {
+        let current = self.statement_timeouts.get();
+        if total > current {
+            self.statement_timeouts.inc_by(total - current);
         }
     }
 

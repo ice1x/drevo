@@ -894,6 +894,15 @@ impl<'a> Session<'a> {
         let result = match exec {
             Ok(r) => r,
             Err(e) => {
+                // A timeout or storage failure is the server's problem: log it
+                // for the Web UI's problem feed (#552).
+                #[cfg(feature = "http")]
+                crate::problems::note_exec_error(
+                    "bolt",
+                    extract_db(&extra).unwrap_or("default"),
+                    &query,
+                    &e,
+                );
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
                     metadata: exec_error_metadata(&e),

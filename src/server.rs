@@ -545,7 +545,11 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                                 )
                                 .await
                             {
-                                tracing::warn!(error = %err, "bolt session ended with error");
+                                if err.is_client_disconnect() {
+                                    tracing::debug!(error = %err, "bolt client disconnected");
+                                } else {
+                                    tracing::warn!(error = %err, "bolt session ended with error");
+                                }
                             }
                         });
                     }
