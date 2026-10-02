@@ -110,6 +110,17 @@ pub enum DrevoError {
         /// The adjacency-layout major version this build requires.
         required_major: u32,
     },
+
+    /// Two-phase commit (#556): a transaction is prepared and every other
+    /// write is refused until it is resolved (the prepared fence). Retryable;
+    /// carries the pending global transaction ids. Maps to HTTP 503, the Bolt
+    /// status `Neo.TransientError.Transaction.LockClientStopped` and Python's
+    /// `TransactionConflict`.
+    #[error(
+        "writes are paused while prepared transaction(s) {} await resolution; retry",
+        .0.join(", ")
+    )]
+    PreparedTransactionPending(Vec<String>),
 }
 
 /// Convenience type alias for drevo operations.
@@ -138,11 +149,7 @@ impl From<drevo_core::error::CoreError> for DrevoError {
             C::Json(e) => DrevoError::Json(e),
             C::Locked => DrevoError::Locked,
             C::Backend(msg) => DrevoError::Io(std::io::Error::other(msg)),
-            // No structured home in `DrevoError` yet (#556 slice 2 adds one);
-            // keep the rendered, retryable message.
-            e @ C::PreparedTransactionPending(_) => {
-                DrevoError::Io(std::io::Error::other(e.to_string()))
-            }
+            C::PreparedTransactionPending(gids) => DrevoError::PreparedTransactionPending(gids),
         }
     }
 }
@@ -170,6 +177,7 @@ impl From<DrevoError> for drevo_core::error::CoreError {
             DrevoError::Io(e) => C::Io(e),
             DrevoError::Json(e) => C::Json(e),
             DrevoError::Locked => C::Locked,
+            DrevoError::PreparedTransactionPending(gids) => C::PreparedTransactionPending(gids),
             // No structured counterpart in the core — keep the message.
             other => C::Backend(other.to_string()),
         }
@@ -227,13 +235,15 @@ mod tests {
     }
 
     #[test]
-    fn prepared_transaction_pending_keeps_its_retryable_message() {
-        // #556 slice 1: no structured `DrevoError` home yet, so the message
-        // (naming the pending gids and "retry") must survive the lift.
-        let drevo: DrevoError =
-            CoreError::PreparedTransactionPending(vec!["g1".into(), "g2".into()]).into();
-        let msg = drevo.to_string();
-        assert!(msg.contains("g1, g2") && msg.contains("retry"), "{msg}");
+    fn prepared_transaction_pending_round_trips_structurally() {
+        // #556: the fence error keeps its variant (and the pending gids) in
+        // both directions across the core seam, and its retryable wording.
+        let gids = vec!["g1".to_string(), "g2".to_string()];
+        let drevo: DrevoError = CoreError::PreparedTransactionPending(gids.clone()).into();
+        assert!(matches!(drevo, DrevoError::PreparedTransactionPending(ref g) if *g == gids));
+        assert!(drevo.to_string().contains("g1, g2") && drevo.to_string().contains("retry"));
+        let core: CoreError = drevo.into();
+        assert!(matches!(core, CoreError::PreparedTransactionPending(ref g) if *g == gids));
     }
 
     #[test]

@@ -85,6 +85,10 @@ pub struct Config {
     /// Per-statement wall-clock limit from `DREVO_QUERY_TIMEOUT_MS` (#547);
     /// `None` (unset or `0`) means no limit.
     pub query_timeout: Option<std::time::Duration>,
+    /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
+    /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
+    /// `0` disables the alert).
+    pub prepared_tx_warn: Option<std::time::Duration>,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -137,6 +141,12 @@ pub enum ConfigError {
     /// `DREVO_ENGINE` was set to an unknown engine name.
     #[error("invalid DREVO_ENGINE value `{value}`: expected `kv`, `native`, or `native-durable`")]
     InvalidEngine {
+        /// The raw env-var value.
+        value: String,
+    },
+    /// `DREVO_PREPARED_TX_WARN_SECS` was not a non-negative integer.
+    #[error("invalid DREVO_PREPARED_TX_WARN_SECS value `{value}`: expected seconds (0 = off)")]
+    InvalidPreparedTxWarn {
         /// The raw env-var value.
         value: String,
     },
@@ -204,12 +214,22 @@ impl Config {
             },
         };
 
+        let prepared_tx_warn = match getter("DREVO_PREPARED_TX_WARN_SECS") {
+            None => Some(std::time::Duration::from_secs(60)),
+            Some(raw) => match raw.trim().parse::<u64>() {
+                Ok(0) => None,
+                Ok(secs) => Some(std::time::Duration::from_secs(secs)),
+                Err(_) => return Err(ConfigError::InvalidPreparedTxWarn { value: raw }),
+            },
+        };
+
         Ok(Self {
             host,
             port,
             data_dir: PathBuf::from(data_dir_raw),
             engine,
             query_timeout,
+            prepared_tx_warn,
         })
     }
 
@@ -509,6 +529,30 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // Opt-in statement timeout (#547): every database, including ones created
     // later through the catalog, stops a statement past this limit.
     registry.set_statement_timeout(cfg.query_timeout);
+    // Two-phase commit (#556): a prepared transaction blocks every write, so
+    // one left waiting too long is reported at ERROR (and thus in the Web UI's
+    // problem feed). Checked every 10 s across every database.
+    if let Some(warn_after) = cfg.prepared_tx_warn {
+        let watched = std::sync::Arc::clone(&registry);
+        tokio::spawn(async move {
+            let mut reported: std::collections::HashMap<String, std::collections::HashSet<String>> =
+                std::collections::HashMap::new();
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+            loop {
+                tick.tick().await;
+                let now = crate::model::now_ms();
+                for name in watched.list() {
+                    if let Some(service) = watched.get(&name) {
+                        let prepared = service.list_prepared();
+                        let seen = reported.entry(name.clone()).or_default();
+                        crate::problems::report_stale_prepared(
+                            &name, &prepared, now, warn_after, seen,
+                        );
+                    }
+                }
+            }
+        });
+    }
     if let Some(limit) = cfg.query_timeout {
         tracing::info!(
             timeout_ms = limit.as_millis() as u64,

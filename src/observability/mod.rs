@@ -668,6 +668,13 @@ pub struct DrevoMetrics {
     /// [`crate::problems::statement_timeouts`] by the `/metrics` handler via
     /// [`DrevoMetrics::sync_statement_timeouts`].
     statement_timeouts: Counter,
+    /// `drevo_prepared_transactions` (#556) — prepared, unresolved
+    /// two-phase-commit transactions; while non-zero, writes are refused.
+    /// Refreshed by the `/metrics` handler.
+    pub prepared_transactions: Gauge,
+    /// `drevo_prepared_transaction_oldest_age_seconds` (#556) — age of the
+    /// oldest prepared transaction (`0` when none). Refreshed by `/metrics`.
+    pub prepared_oldest_age_seconds: Gauge,
 }
 
 impl DrevoMetrics {
@@ -741,6 +748,16 @@ impl DrevoMetrics {
              ephemeral in-memory backend).",
             &[],
         );
+        let prepared_transactions = registry.gauge(
+            "drevo_prepared_transactions",
+            "Prepared, unresolved two-phase-commit transactions (writes are refused while > 0).",
+            &[],
+        );
+        let prepared_oldest_age_seconds = registry.gauge(
+            "drevo_prepared_transaction_oldest_age_seconds",
+            "Age of the oldest prepared two-phase-commit transaction (0 when none).",
+            &[],
+        );
         let statement_timeouts = registry.counter(
             "drevo_statement_timeouts_total",
             "Statements stopped by the statement timeout (DREVO_QUERY_TIMEOUT_MS).",
@@ -766,6 +783,8 @@ impl DrevoMetrics {
             uptime_seconds,
             storage_file_bytes,
             statement_timeouts,
+            prepared_transactions,
+            prepared_oldest_age_seconds,
         }
     }
 

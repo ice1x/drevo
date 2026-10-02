@@ -106,7 +106,8 @@ impl IntoResponse for ApiError {
                 }
                 DrevoError::Locked
                 | DrevoError::TransactionAlreadyActive
-                | DrevoError::NeedsMigration { .. } => {
+                | DrevoError::NeedsMigration { .. }
+                | DrevoError::PreparedTransactionPending(_) => {
                     (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
                 }
                 DrevoError::NoActiveTransaction => (StatusCode::CONFLICT, err.to_string()),
@@ -694,6 +695,11 @@ mod error_mapping_tests {
             "Locked → 503",
         );
         assert_eq!(
+            status_of(DrevoError::PreparedTransactionPending(vec!["g".into()])),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PreparedTransactionPending → 503 (retry once resolved, #556)",
+        );
+        assert_eq!(
             status_of(DrevoError::Io(std::io::Error::other("boom"))),
             StatusCode::INTERNAL_SERVER_ERROR,
             "Io → 500",
@@ -723,6 +729,7 @@ mod error_mapping_tests {
                 DrevoError::NoActiveTransaction => "NoActiveTransaction",
                 DrevoError::NeedsMigration { .. } => "NeedsMigration",
                 DrevoError::Vector(_) => "Vector",
+                DrevoError::PreparedTransactionPending(_) => "PreparedTransactionPending",
             }
         }
     }

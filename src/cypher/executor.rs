@@ -1375,6 +1375,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.semantic.reindex, drevo.semantic.register, \
                           drevo.semantic.status, drevo.semantic.info, \
                           drevo.info, \
+                          drevo.tx.prepare, drevo.tx.commitPrepared, \
+                          drevo.tx.rollbackPrepared, drevo.tx.listPrepared, \
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
                           drevo.semantic.reindexRel, drevo.cypher.fromText, \
                           db.index.vector.queryNodes, db.index.fulltext.queryNodes, \
@@ -6128,6 +6130,60 @@ impl<'a> Executor<'a> {
         Ok(statuses.iter().map(semantic_status_row).collect())
     }
 
+    /// `CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount` (#556) —
+    /// the prepared, unresolved two-phase-commit transactions, by ascending
+    /// gid; `preparedAt` is ISO-8601 UTC.
+    fn proc_tx_list_prepared(&self, _span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("drevo.tx.listPrepared"))?;
+        Ok(svc
+            .list_prepared()
+            .into_iter()
+            .map(|p| {
+                vec![
+                    Value::String(p.gid),
+                    Value::String(iso8601_utc(p.prepared_at_ms)),
+                    Value::Integer(i64::try_from(p.op_count).unwrap_or(i64::MAX)),
+                ]
+            })
+            .collect())
+    }
+
+    /// `CALL drevo.tx.commitPrepared($gid)` / `drevo.tx.rollbackPrepared($gid)
+    /// YIELD gid` (#556) — resolve a prepared transaction from any session.
+    fn proc_tx_resolve(
+        &self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+        commit: bool,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability(name))?;
+        let gid = self
+            .eval(&args[0], &Bindings::new())?
+            .as_string(span)?
+            .to_string();
+        let resolved = if commit {
+            svc.commit_prepared(&gid)
+        } else {
+            svc.rollback_prepared(&gid)
+        };
+        match resolved {
+            Ok(()) => Ok(vec![vec![Value::String(gid)]]),
+            Err(crate::native::ResolveError::Io(msg)) => Err(ExecError::Storage(DrevoError::Io(
+                std::io::Error::other(msg),
+            ))),
+            Err(e) => Err(ExecError::InvalidProcedureCall {
+                name: name.to_string(),
+                message: e.to_string(),
+                span,
+            }),
+        }
+    }
+
     /// `CALL drevo.semantic.info() YIELD embedder_present, model, dimension,
     /// upstream` (#267) — capability introspection for the server-side embedder.
     ///
@@ -6879,6 +6935,17 @@ impl<'a> Executor<'a> {
             #[cfg(feature = "http")]
             "drevo.semantic.reindexRel" => self.proc_semantic_reindex_rel(args, span),
             "drevo.semantic.status" => self.proc_semantic_status(args, span),
+            "drevo.tx.listPrepared" => self.proc_tx_list_prepared(span),
+            "drevo.tx.commitPrepared" => self.proc_tx_resolve(name, args, span, true),
+            "drevo.tx.rollbackPrepared" => self.proc_tx_resolve(name, args, span, false),
+            "drevo.tx.prepare" => Err(ExecError::InvalidProcedureCall {
+                name: name.to_string(),
+                message: "drevo.tx.prepare runs inside an explicit transaction (a Bolt \
+                          BEGIN … COMMIT, or drevo-py Transaction.prepare); there is no open \
+                          transaction here"
+                    .to_string(),
+                span,
+            }),
             "drevo.info" => Self::proc_drevo_info(),
             "drevo.pagerank" => self.proc_pagerank(),
             "drevo.louvain" => self.proc_louvain(),
@@ -8511,6 +8578,10 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // #263 — status adds live health columns so a client can tell "fully
         // embedded" from "writes landed, embeddings missing". #266 adds
         // `target_kind` (node|relationship) so rel targets are distinguishable.
+        "drevo.tx.listPrepared" => Some(&["gid", "preparedAt", "opCount"]),
+        "drevo.tx.commitPrepared" | "drevo.tx.rollbackPrepared" | "drevo.tx.prepare" => {
+            Some(&["gid"])
+        }
         "drevo.semantic.status" => Some(&[
             "label",
             "text_property",
@@ -8633,6 +8704,9 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.semantic.register" => 4,
         // drevo.semantic.status() — no arguments.
         "drevo.semantic.status" => 0,
+        // Two-phase commit (#556): listPrepared(); the others take the gid.
+        "drevo.tx.listPrepared" => 0,
+        "drevo.tx.commitPrepared" | "drevo.tx.rollbackPrepared" | "drevo.tx.prepare" => 1,
         // #303: drevo.info() — no arguments (explicit; the `_ => 0` default
         // would also cover it).
         "drevo.info" => 0,

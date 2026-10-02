@@ -186,6 +186,15 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         // router, refreshed from the WAL store's physical size + uptime.
         .route("/metrics", get(metrics))
         .route("/problems", get(problems))
+        .route("/transactions/prepared", get(list_prepared_http))
+        .route(
+            "/transactions/prepared/{gid}/commit",
+            post(commit_prepared_http),
+        )
+        .route(
+            "/transactions/prepared/{gid}/rollback",
+            post(rollback_prepared_http),
+        )
         .route("/report", get(problem_report))
         // The storage panel is engine-agnostic: the same endpoints/contracts as
         // the KV router, implemented over the WAL store — bloat = physical WAL
@@ -593,6 +602,23 @@ async fn metrics(State(state): State<NativeApiState>) -> Response {
     state
         .metrics
         .sync_statement_timeouts(crate::problems::statement_timeouts());
+    // Two-phase commit (#556): a prepared transaction blocks every write, so
+    // its count and age are first-class operational signals.
+    let prepared = state.service.list_prepared();
+    state
+        .metrics
+        .prepared_transactions
+        .set(prepared.len() as i64);
+    let now = crate::model::now_ms();
+    let oldest_age_ms = prepared
+        .iter()
+        .map(|p| now.saturating_sub(p.prepared_at_ms))
+        .max()
+        .unwrap_or(0);
+    state
+        .metrics
+        .prepared_oldest_age_seconds
+        .set(oldest_age_ms / 1000);
     let body = state.metrics.render_prometheus();
     (
         StatusCode::OK,
@@ -825,9 +851,68 @@ fn run_cypher_on(
         .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
     let result = service.execute(&ast, params).map_err(|e| {
         crate::problems::note_exec_error("http", database, query, &e);
-        ApiError::BadRequest(format!("Cypher execution error: {e}"))
+        match e {
+            // Writes paused by a prepared two-phase-commit transaction (#556)
+            // are a retryable 503, not a client error.
+            crate::cypher::executor::ExecError::Storage(
+                err @ crate::error::DrevoError::PreparedTransactionPending(_),
+            ) => ApiError::Db(err),
+            e => ApiError::BadRequest(format!("Cypher execution error: {e}")),
+        }
     })?;
     Ok(exec_result_to_response(result))
+}
+
+/// `GET /transactions/prepared` — the prepared, unresolved two-phase-commit
+/// transactions of the default database (#556), by ascending gid.
+async fn list_prepared_http(State(state): State<NativeApiState>) -> Json<serde_json::Value> {
+    let prepared: Vec<serde_json::Value> = state
+        .service
+        .list_prepared()
+        .into_iter()
+        .map(|p| {
+            serde_json::json!({
+                "gid": p.gid,
+                "prepared_at": crate::cypher::executor::iso8601_utc(p.prepared_at_ms),
+                "op_count": p.op_count,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "prepared": prepared }))
+}
+
+/// Map a failed two-phase-commit resolution onto an HTTP error.
+fn resolve_error(e: crate::native::ResolveError) -> ApiError {
+    match e {
+        crate::native::ResolveError::UnknownGid(_) => ApiError::NotFound(e.to_string()),
+        crate::native::ResolveError::Io(msg) => {
+            ApiError::Db(crate::error::DrevoError::Io(std::io::Error::other(msg)))
+        }
+    }
+}
+
+/// `POST /transactions/prepared/{gid}/commit` — apply a prepared transaction
+/// (#556). 404 for an unknown gid.
+async fn commit_prepared_http(
+    State(state): State<NativeApiState>,
+    axum::extract::Path(gid): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let service = Arc::clone(&state.service);
+    run_blocking(|| service.commit_prepared(&gid)).map_err(resolve_error)?;
+    Ok(Json(serde_json::json!({ "gid": gid, "committed": true })))
+}
+
+/// `POST /transactions/prepared/{gid}/rollback` — discard a prepared
+/// transaction (#556). 404 for an unknown gid.
+async fn rollback_prepared_http(
+    State(state): State<NativeApiState>,
+    axum::extract::Path(gid): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state
+        .service
+        .rollback_prepared(&gid)
+        .map_err(resolve_error)?;
+    Ok(Json(serde_json::json!({ "gid": gid, "rolled_back": true })))
 }
 
 /// Query string of `GET /problems`.

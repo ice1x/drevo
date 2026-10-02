@@ -178,6 +178,13 @@ fn needs_runtime_config(source: &str) -> bool {
         // Same for `db.index.vector.queryRelationships` (#532): covered in
         // `tests/neo4j_show_indexes_tests.rs`.
         || source.contains("db.index.vector.queryRelationships")
+        // Two-phase commit (#556): `drevo.tx.prepare` needs an open explicit
+        // transaction and `commitPrepared` / `rollbackPrepared` a prepared one,
+        // neither of which a pristine doc database has. Covered end to end in
+        // `tests/two_phase_commit_surface_tests.rs` (Cypher + Bolt).
+        || source.contains("drevo.tx.prepare")
+        || source.contains("drevo.tx.commitPrepared")
+        || source.contains("drevo.tx.rollbackPrepared")
 }
 
 #[test]

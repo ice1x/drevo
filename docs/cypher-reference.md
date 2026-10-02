@@ -1122,6 +1122,41 @@ Unlike the reference library, where `valid_until` is written but never set,
 drevo closes superseded facts and filters on the window, so "as of" questions
 get real answers.
 
+### Two-phase commit (#556)
+
+drevo can take part in a distributed transaction run by an external
+coordinator (design: [RFC](rfc-two-phase-commit.md)). Inside an explicit Bolt
+transaction, `drevo.tx.prepare` validates the transaction and durably records
+it as *prepared*. It then has to be resolved by `commitPrepared` or
+`rollbackPrepared`, from any session and even after a restart:
+
+```cypher
+CALL drevo.tx.prepare($gid)          // inside BEGIN … ; YIELD gid
+```
+
+The driver's closing `COMMIT` / `ROLLBACK` after a prepare is acknowledged and
+changes nothing. To resolve the transaction:
+
+```cypher
+CALL drevo.tx.commitPrepared($gid)   // or drevo.tx.rollbackPrepared($gid); YIELD gid
+```
+
+To find in-doubt transactions:
+
+```cypher
+CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount
+```
+
+`preparedAt` is ISO-8601 UTC. While any transaction is prepared, **every other
+write fails fast** with a retryable error:
+
+- Bolt: `Neo.TransientError.Transaction.LockClientStopped`;
+- HTTP: 503;
+- Python: `TransactionConflict`.
+
+Reads keep working. A prepared transaction is never resolved automatically;
+see the [Admin Guide](admin-guide.md) for the alert and HTTP routes.
+
 ### Semantic-index control plane (#251, Phase 21)
 
 `CALL drevo.semantic.register(label, text_property, embedding_property, mode)`
