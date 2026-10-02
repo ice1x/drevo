@@ -102,6 +102,30 @@ Because the fence blocks writers, an abandoned one is an outage, so:
   later `commit_prepared` reports `HeuristicRollback` instead of `UnknownGid` (the XA "heuristic
   outcome" model).
 
+### 2.4a Implementation notes (from mapping the engine)
+
+- **Prepared state lives in `Inner`.** A `prepared: BTreeMap<gid, (prepared_at, Vec<WalOp>)>` sits
+  next to the graph, so that a single mechanism serves runtime, `open_durable` / `replay`, WAL-tailing
+  replicas and compaction. `Inner::apply_wal_op` stores the ops on `Prepare`, applies them on
+  `CommitPrepared` and drops them on `RollbackPrepared`.
+- **Apply at resolution, don't swap a snapshot.** Prepare removes the transaction's slot, keeping only
+  its ops. `commit_prepared` applies those ops to live, which the fence guarantees is still the
+  transaction's base, so the result is exactly the working copy. This matters for recovery. Writers
+  that mutate in place release the lock *before* their WAL line is queued, so an autocommit that
+  became visible before `begin` can be logged after the `Prepare` line. Applying the prepared ops at
+  the `CommitPrepared` position reproduces the runtime order; applying them at `Prepare`, or swapping
+  a snapshot taken there, would let that late line overwrite them.
+- **The fence is checked under the writer lock.** A fallible `write_for_commit()` replaces the bare
+  `write()` at every writer call site (autocommit node/edge/embedding writes, batches, imports,
+  replica apply, `commit_parts`). The writer lock, the resolvers and `compact_wal` keep the bare lock.
+  The fence is simply `!live.prepared.is_empty()`.
+- **WAL line and change-feed may differ.** `Prepare` writes a WAL line but nothing to the feed, since
+  prepared state is invisible. `CommitPrepared{gid}` writes the small record to the WAL but the
+  expanded write set to the feed, so indexes and in-process replicas see ordinary upserts and
+  deletes. Feed subscribers that match `WalOp` exhaustively get no-op arms for the new variants.
+  They only ever see them in the open-time seed from `to_wal_ops()`, which includes unresolved
+  `Prepare` records after the graph snapshot.
+
 ### 2.5 Crash recovery
 
 Replay is extended so that:
@@ -125,6 +149,11 @@ since it serves only committed state.
 The three records are new `WalOp` variants. A binary without them cannot parse a log that contains
 them. That is the safe failure (refuse to open) rather than silently dropping a prepare, but it is a
 format change.
+
+**Caveat (older binaries):** `open_durable` treats an unparseable *last* line as a torn tail and
+truncates it. An older binary opening a log whose final line is an unresolved `Prepare` would
+therefore **drop it silently** rather than refuse to open. Older WAL tailers likewise skip unknown
+lines. This is why the downgrade procedure below is mandatory, not advisory.
 
 The native WAL has no format version marker today. The `FORMAT_MAJOR` stamp from #216 belonged to
 the removed redb store. So a downgrade requires resolving every prepared transaction and compacting
