@@ -400,8 +400,11 @@ mod codes {
     /// transaction function automatically.
     pub const TRANSIENT_OUTDATED: &str = "Neo.TransientError.Transaction.Outdated";
     /// Writes are paused while a two-phase-commit transaction is prepared
-    /// (#556). A transient class, so drivers back off and retry.
-    pub const TRANSIENT_PREPARED_PENDING: &str = "Neo.TransientError.Transaction.LockClientStopped";
+    /// (#556). A transient class, so drivers back off and retry. Not
+    /// `…Transaction.LockClientStopped` / `…Terminated`: official drivers
+    /// reclassify those two as non-retryable client errors.
+    pub const TRANSIENT_PREPARED_PENDING: &str =
+        "Neo.TransientError.Transaction.LockAcquisitionTimeout";
     /// A commit violated a declared schema constraint.
     pub const CONSTRAINT_FAILED: &str = "Neo.ClientError.Schema.ConstraintValidationFailed";
     /// A `RUN` / `BEGIN` selected a `db` that the catalog does not hold. Matches
