@@ -38,6 +38,12 @@ create_exception!(_drevo, LockedError, DrevoError);
 create_exception!(_drevo, PanicError, DrevoError);
 create_exception!(_drevo, TransactionError, DrevoError);
 create_exception!(_drevo, NeedsMigrationError, DrevoError);
+// Cypher (#553): every executor error is a `CypherError`; the parser, the
+// statement timeout and a missing `$param` get their own subclasses.
+create_exception!(_drevo, CypherError, DrevoError);
+create_exception!(_drevo, CypherSyntaxError, CypherError);
+create_exception!(_drevo, QueryTimeoutError, CypherError);
+create_exception!(_drevo, ParameterMissingError, CypherError);
 
 /// Add the exception classes to the `_drevo` Python module so they are
 /// importable as `drevo.<ClassName>` after task `00116` re-exports them.
@@ -54,6 +60,13 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
     m.add("PanicError", py.get_type::<PanicError>())?;
     m.add("TransactionError", py.get_type::<TransactionError>())?;
     m.add("NeedsMigrationError", py.get_type::<NeedsMigrationError>())?;
+    m.add("CypherError", py.get_type::<CypherError>())?;
+    m.add("CypherSyntaxError", py.get_type::<CypherSyntaxError>())?;
+    m.add("QueryTimeoutError", py.get_type::<QueryTimeoutError>())?;
+    m.add(
+        "ParameterMissingError",
+        py.get_type::<ParameterMissingError>(),
+    )?;
     Ok(())
 }
 

@@ -187,6 +187,15 @@ fn drevo_package_init_imports_native_extension() {
         "PanicError",
         "InvalidWeightError",
         "NeedsMigrationError",
+        // Cypher (#553).
+        "CypherResult",
+        "CypherNode",
+        "CypherRelationship",
+        "CypherPath",
+        "CypherError",
+        "CypherSyntaxError",
+        "QueryTimeoutError",
+        "ParameterMissingError",
     ] {
         assert!(
             init.contains(symbol),
@@ -340,6 +349,7 @@ fn type_stubs_declare_public_surface() {
         "def export_graphml_to_path(",
         "def import_graphml(",
         "def import_graphml_from_path(",
+        "def execute(",
     ] {
         assert!(
             stub.contains(method),
@@ -362,6 +372,10 @@ fn type_stubs_declare_public_surface() {
         "class PanicError",
         "class InvalidWeightError",
         "class NeedsMigrationError",
+        "class CypherError",
+        "class CypherSyntaxError",
+        "class QueryTimeoutError",
+        "class ParameterMissingError",
     ] {
         assert!(
             stub.contains(exc),

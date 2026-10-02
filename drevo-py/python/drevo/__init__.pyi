@@ -20,7 +20,7 @@ import enum
 import os
 import types as _types
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, Final, Optional, Union
 
 __version__: str
@@ -61,6 +61,43 @@ class Node:
     def __eq__(self, other: object) -> bool: ...
     def __repr__(self) -> str: ...
     def __hash__(self) -> int: ...
+
+class CypherNode:
+    """A node returned by `Drevo.execute` (#553)."""
+
+    id: int
+    uuid: uuid.UUID
+    labels: list[str]
+    properties: dict[str, Any]
+
+class CypherRelationship:
+    """A relationship returned by `Drevo.execute` (#553)."""
+
+    id: int
+    uuid: uuid.UUID
+    type: str
+    start_id: int
+    end_id: int
+    properties: dict[str, Any]
+
+class CypherPath:
+    """A path returned by `Drevo.execute`; `len(path)` is its length."""
+
+    nodes: list[CypherNode]
+    relationships: list[CypherRelationship]
+
+    def __len__(self) -> int: ...
+
+class CypherResult:
+    """The result of `Drevo.execute`: `columns`, rows as dicts, `stats`."""
+
+    columns: list[str]
+    rows: list[dict[str, Any]]
+    stats: dict[str, int]
+
+    def __len__(self) -> int: ...
+    def __getitem__(self, index: int) -> dict[str, Any]: ...
+    def __iter__(self) -> Iterator[dict[str, Any]]: ...
 
 class Edge:
     """Frozen view onto an edge row."""
@@ -242,6 +279,21 @@ class NeedsMigrationError(DrevoError):
 class PanicError(DrevoError):
     """A Rust panic was caught at the FFI boundary."""
 
+class CypherError(DrevoError):
+    """A Cypher statement failed in the executor (#553). Base of the
+    Cypher-specific errors below; storage failures inside a statement keep
+    their own classes (e.g. `DuplicateTitleError`)."""
+
+class CypherSyntaxError(CypherError):
+    """The statement did not parse."""
+
+class QueryTimeoutError(CypherError):
+    """The statement exceeded the statement timeout.
+    `.args == (message, limit_ms)`."""
+
+class ParameterMissingError(CypherError):
+    """The statement used a `$name` that `params` did not provide."""
+
 class InvalidWeightError(ValueError):
     """An edge weight was non-finite (`NaN` / ±`inf`).
 
@@ -338,6 +390,10 @@ class Drevo:
     # ── Full-text search ───────────────────────────────────────────────
     def search_fts(self, query: str, limit: int) -> list[ScoredNode]: ...
 
+    # ── Cypher (#553) ───────────────────────────────────────────────────
+    def execute(self, query: str, params: Optional[dict[str, Any]] = None) -> CypherResult:
+        """Run one Cypher statement in autocommit mode with named `$params`."""
+        ...
     # ── Vector embeddings (Phase 12 task 00079) ─────────────────────────
     def set_embedding(self, node_id: int, embedding: list[float]) -> None: ...
     def set_embeddings_batch(self, embeddings: list[tuple[int, list[float]]]) -> None: ...

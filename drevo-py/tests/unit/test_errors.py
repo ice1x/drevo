@@ -34,6 +34,11 @@ import drevo
         (drevo.LockedError, drevo.DrevoError),
         (drevo.PanicError, drevo.DrevoError),
         (drevo.InvalidWeightError, ValueError),
+        # Cypher (#553).
+        (drevo.CypherError, drevo.DrevoError),
+        (drevo.CypherSyntaxError, drevo.CypherError),
+        (drevo.QueryTimeoutError, drevo.CypherError),
+        (drevo.ParameterMissingError, drevo.CypherError),
     ],
 )
 def test_exception_inherits_from_parent(cls: type, parent: type) -> None:
