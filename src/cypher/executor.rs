@@ -1377,6 +1377,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.info, \
                           drevo.tx.prepare, drevo.tx.commitPrepared, \
                           drevo.tx.rollbackPrepared, drevo.tx.listPrepared, \
+                          drevo.tx.heuristicRollback, \
                           drevo.semantic.registerRel, drevo.semantic.queryRel, \
                           drevo.semantic.reindexRel, drevo.cypher.fromText, \
                           db.index.vector.queryNodes, db.index.fulltext.queryNodes, \
@@ -6150,6 +6151,36 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// `CALL drevo.tx.heuristicRollback($gid) YIELD gid` (#556) — an operator
+    /// rolls back an abandoned prepared transaction *heuristically*: unlike
+    /// `rollbackPrepared`, the outcome is remembered, so the coordinator's late
+    /// `commitPrepared` is told its decision was overridden.
+    fn proc_tx_heuristic_rollback(
+        &self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability(name))?;
+        let gid = self
+            .eval(&args[0], &Bindings::new())?
+            .as_string(span)?
+            .to_string();
+        match svc.heuristic_rollback_prepared(&gid) {
+            Ok(()) => Ok(vec![vec![Value::String(gid)]]),
+            Err(crate::native::ResolveError::Io(msg)) => Err(ExecError::Storage(DrevoError::Io(
+                std::io::Error::other(msg),
+            ))),
+            Err(e) => Err(ExecError::InvalidProcedureCall {
+                name: name.to_string(),
+                message: e.to_string(),
+                span,
+            }),
+        }
+    }
+
     /// `CALL drevo.tx.commitPrepared($gid)` / `drevo.tx.rollbackPrepared($gid)
     /// YIELD gid` (#556) — resolve a prepared transaction from any session.
     fn proc_tx_resolve(
@@ -6938,6 +6969,7 @@ impl<'a> Executor<'a> {
             "drevo.tx.listPrepared" => self.proc_tx_list_prepared(span),
             "drevo.tx.commitPrepared" => self.proc_tx_resolve(name, args, span, true),
             "drevo.tx.rollbackPrepared" => self.proc_tx_resolve(name, args, span, false),
+            "drevo.tx.heuristicRollback" => self.proc_tx_heuristic_rollback(name, args, span),
             "drevo.tx.prepare" => Err(ExecError::InvalidProcedureCall {
                 name: name.to_string(),
                 message: "drevo.tx.prepare runs inside an explicit transaction (a Bolt \
@@ -8579,9 +8611,10 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // embedded" from "writes landed, embeddings missing". #266 adds
         // `target_kind` (node|relationship) so rel targets are distinguishable.
         "drevo.tx.listPrepared" => Some(&["gid", "preparedAt", "opCount"]),
-        "drevo.tx.commitPrepared" | "drevo.tx.rollbackPrepared" | "drevo.tx.prepare" => {
-            Some(&["gid"])
-        }
+        "drevo.tx.commitPrepared"
+        | "drevo.tx.rollbackPrepared"
+        | "drevo.tx.heuristicRollback"
+        | "drevo.tx.prepare" => Some(&["gid"]),
         "drevo.semantic.status" => Some(&[
             "label",
             "text_property",
@@ -8706,7 +8739,10 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.semantic.status" => 0,
         // Two-phase commit (#556): listPrepared(); the others take the gid.
         "drevo.tx.listPrepared" => 0,
-        "drevo.tx.commitPrepared" | "drevo.tx.rollbackPrepared" | "drevo.tx.prepare" => 1,
+        "drevo.tx.commitPrepared"
+        | "drevo.tx.rollbackPrepared"
+        | "drevo.tx.heuristicRollback"
+        | "drevo.tx.prepare" => 1,
         // #303: drevo.info() — no arguments (explicit; the `_ => 0` default
         // would also cover it).
         "drevo.info" => 0,

@@ -145,3 +145,20 @@ async fn metrics_report_prepared_transactions() {
         .lines()
         .any(|l| l == "drevo_prepared_transactions 0"));
 }
+
+#[tokio::test]
+async fn heuristic_rollback_over_http_then_late_commit_is_409() {
+    let (app, svc) = app_with_prepared("http-5");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/transactions/prepared/http-5/heuristic-rollback",
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(svc.list_prepared().is_empty());
+    let (status, body) = call(&app, "POST", "/transactions/prepared/http-5/commit", "").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("heuristically"), "{body}");
+}

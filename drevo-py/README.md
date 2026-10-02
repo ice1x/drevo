@@ -192,6 +192,34 @@ with drevo.Drevo.open_in_memory() as db:
 - v1 scope: only `tx.execute` runs inside the transaction. The typed CRUD
   methods (`create_node`, …) stay autocommit on the handle.
 
+### Two-phase commit
+
+A transaction can take part in a distributed transaction run by an external
+coordinator. `prepare(gid)` records it durably as *prepared*. It is then
+resolved with `commit_prepared` or `rollback_prepared`, from any handle and
+even after a restart:
+
+```python
+import drevo
+
+with drevo.Drevo.open_in_memory() as db:
+    tx = db.begin()
+    tx.execute("CREATE (:Order {id: 42})")
+    tx.prepare("order-42")            # phase one; the transaction is closed
+    db.list_prepared()                # [PreparedTransaction(gid='order-42', op_count=1)]
+    db.commit_prepared("order-42")    # phase two (or db.rollback_prepared)
+```
+
+While a transaction is prepared, every other write raises
+`TransactionConflict` (retry once it is resolved); reads keep working. An
+unknown gid raises `UnknownGidError`. An operator can unblock writes with
+`db.heuristic_rollback_prepared(gid)`. The coordinator's late
+`commit_prepared` then raises `HeuristicRollbackError`, instead of the
+transaction silently vanishing. `drevo.dbapi` exposes the same through
+PEP 249's TPC extension (`conn.xid(...)`, `tpc_begin`, `tpc_prepare`,
+`tpc_commit`, `tpc_rollback`, `tpc_recover`). Design:
+[RFC](../docs/rfc-two-phase-commit.md).
+
 ### DB-API 2.0 (PEP 249)
 
 `drevo.dbapi` is a PEP 249 module with Cypher as the query language, for

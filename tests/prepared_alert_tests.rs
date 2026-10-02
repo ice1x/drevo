@@ -95,3 +95,24 @@ fn warn_threshold_env_var_parses() {
     );
     assert!(cfg(Some("soon")).is_err());
 }
+
+#[test]
+fn heuristic_timeout_env_var_is_opt_in() {
+    let cfg = |v: Option<&str>| {
+        drevo::server::Config::from_env(|key| match key {
+            "DREVO_PREPARED_TX_TIMEOUT_SECS" => v.map(str::to_string),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        cfg(None).unwrap().prepared_tx_timeout,
+        None,
+        "off by default"
+    );
+    assert_eq!(cfg(Some("0")).unwrap().prepared_tx_timeout, None);
+    assert_eq!(
+        cfg(Some("600")).unwrap().prepared_tx_timeout,
+        Some(Duration::from_secs(600))
+    );
+    assert!(cfg(Some("never")).is_err());
+}

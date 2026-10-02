@@ -195,6 +195,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             "/transactions/prepared/{gid}/rollback",
             post(rollback_prepared_http),
         )
+        .route(
+            "/transactions/prepared/{gid}/heuristic-rollback",
+            post(heuristic_rollback_prepared_http),
+        )
         .route("/report", get(problem_report))
         // The storage panel is engine-agnostic: the same endpoints/contracts as
         // the KV router, implemented over the WAL store — bloat = physical WAL
@@ -885,6 +889,7 @@ async fn list_prepared_http(State(state): State<NativeApiState>) -> Json<serde_j
 fn resolve_error(e: crate::native::ResolveError) -> ApiError {
     match e {
         crate::native::ResolveError::UnknownGid(_) => ApiError::NotFound(e.to_string()),
+        crate::native::ResolveError::HeuristicRollback(_) => ApiError::Conflict(e.to_string()),
         crate::native::ResolveError::Io(msg) => {
             ApiError::Db(crate::error::DrevoError::Io(std::io::Error::other(msg)))
         }
@@ -913,6 +918,22 @@ async fn rollback_prepared_http(
         .rollback_prepared(&gid)
         .map_err(resolve_error)?;
     Ok(Json(serde_json::json!({ "gid": gid, "rolled_back": true })))
+}
+
+/// `POST /transactions/prepared/{gid}/heuristic-rollback` — an operator rolls
+/// back an abandoned prepared transaction heuristically (#556): a later
+/// coordinator commit gets 409 instead of a silent 404.
+async fn heuristic_rollback_prepared_http(
+    State(state): State<NativeApiState>,
+    axum::extract::Path(gid): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state
+        .service
+        .heuristic_rollback_prepared(&gid)
+        .map_err(resolve_error)?;
+    Ok(Json(
+        serde_json::json!({ "gid": gid, "rolled_back": true, "heuristic": true }),
+    ))
 }
 
 /// Query string of `GET /problems`.

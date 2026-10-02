@@ -41,6 +41,7 @@ redb file, so it never contends for redb's single-process lock).
 | `RUST_LOG` | `info` | `tracing` env-filter (e.g. `drevo=debug,info`). |
 | `DREVO_QUERY_TIMEOUT_MS` | `0` (off) | Per-statement wall-clock limit in milliseconds, for HTTP `/cypher` and Bolt, applied to every database. A statement over it fails with `statement exceeded the N ms statement timeout` (Bolt: `Neo.ClientError.Transaction.TransactionTimedOut`) and releases its locks. An autocommit statement keeps the writes it made before the limit hit, as with any other runtime error; inside an explicit transaction, roll back as usual. Non-integer values are rejected. |
 | `DREVO_PREPARED_TX_WARN_SECS` | `60` | Log an ERROR (and so raise a Web UI notification) for each two-phase-commit transaction that has stayed prepared longer than this many seconds. While one is prepared, every write is refused. `0` turns the alert off. |
+| `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
 | `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
 | `DREVO_AUTO_COMPACT_RATIO` | `2.0` | Minimum bloat ratio to trigger auto-compaction. |
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
@@ -232,9 +233,14 @@ and compaction, and are never resolved automatically. Operators can:
   - `GET /transactions/prepared` → `{"prepared": [{gid, prepared_at, op_count}]}`;
   - `POST /transactions/prepared/{gid}/commit` and `POST /transactions/prepared/{gid}/rollback`.
     An unknown gid returns 404.
+  - `POST /transactions/prepared/{gid}/heuristic-rollback`.
 
-Resolve with the coordinator's decision. Rolling back a transaction the coordinator committed
-elsewhere breaks atomicity across stores.
+Resolve with the coordinator's decision. If the coordinator is gone and writes must resume, use the
+**heuristic rollback**: HTTP above, `CALL drevo.tx.heuristicRollback($gid)`, or
+`Drevo.heuristic_rollback_prepared` in Python. Unlike a plain rollback, the outcome is remembered,
+so the coordinator's late commit fails loudly (HTTP 409) instead of silently finding nothing.
+`DREVO_PREPARED_TX_TIMEOUT_SECS` does the same automatically. Any heuristic outcome means atomicity
+across stores may be broken and must be reconciled.
 
 A WAL that contains 2PC records cannot be read by a drevo release older than this one. An older
 binary may even drop a trailing prepare silently. Before downgrading, resolve every prepared

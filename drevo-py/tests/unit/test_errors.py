@@ -43,6 +43,10 @@ import drevo
         (drevo.TransactionError, drevo.DrevoError),
         (drevo.TransactionConflict, drevo.TransactionError),
         (drevo.ConstraintViolation, drevo.ConflictError),
+        # Two-phase commit (#556).
+        (drevo.PreparedTransactionError, drevo.TransactionError),
+        (drevo.UnknownGidError, drevo.PreparedTransactionError),
+        (drevo.HeuristicRollbackError, drevo.PreparedTransactionError),
     ],
 )
 def test_exception_inherits_from_parent(cls: type, parent: type) -> None:

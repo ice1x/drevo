@@ -247,6 +247,9 @@ fn unit_errors_module_mentions_every_drevo_error_variant() {
             "TransactionError",
             "TransactionConflict",
             "ConstraintViolation",
+            "PreparedTransactionError",
+            "UnknownGidError",
+            "HeuristicRollbackError",
         ],
         "drevo-py/tests/unit/test_errors.py must reference every \
          exception variant in RFC §5.1 + §5.3 so each one has at least \

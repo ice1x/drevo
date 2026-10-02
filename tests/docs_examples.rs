@@ -185,6 +185,7 @@ fn needs_runtime_config(source: &str) -> bool {
         || source.contains("drevo.tx.prepare")
         || source.contains("drevo.tx.commitPrepared")
         || source.contains("drevo.tx.rollbackPrepared")
+        || source.contains("drevo.tx.heuristicRollback")
 }
 
 #[test]

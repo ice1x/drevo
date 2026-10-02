@@ -419,3 +419,71 @@ fn a_wal_tailing_replica_applies_the_commit_record() {
     assert_eq!(titles(&tailed), vec!["ada"]);
     assert!(gids(&tailed).is_empty());
 }
+
+// ── 10: opt-in heuristic rollback (RFC §2.4, D2) ────────────────────────
+
+#[test]
+fn a_heuristic_rollback_is_reported_to_a_late_commit() {
+    let dir = TmpDir::new();
+    {
+        let g = NativeGraph::open_durable(dir.wal()).unwrap();
+        let tx = tx_creating(&g, &["ada"]);
+        g.tx_prepare(tx, "abandoned").unwrap();
+        g.heuristic_rollback_prepared("abandoned").unwrap();
+        assert!(gids(&g).is_empty());
+        assert!(titles(&g).is_empty());
+        g.create_node(node("free")).unwrap(); // the fence is lifted
+        assert!(matches!(
+            g.commit_prepared("abandoned"),
+            Err(ResolveError::HeuristicRollback(ref gid)) if gid == "abandoned"
+        ));
+        // Rolling back agrees with the heuristic outcome.
+        g.rollback_prepared("abandoned").unwrap();
+    }
+    // The outcome is durable: a coordinator recovering after a restart still
+    // learns that its commit decision was overridden.
+    let g = NativeGraph::open_durable(dir.wal()).unwrap();
+    assert!(matches!(
+        g.commit_prepared("abandoned"),
+        Err(ResolveError::HeuristicRollback(_))
+    ));
+    assert_eq!(titles(&g), vec!["free"]);
+}
+
+#[test]
+fn a_heuristic_outcome_survives_compaction() {
+    let dir = TmpDir::new();
+    {
+        let g = NativeGraph::open_durable(dir.wal()).unwrap();
+        let tx = tx_creating(&g, &["ada"]);
+        g.tx_prepare(tx, "h").unwrap();
+        g.heuristic_rollback_prepared("h").unwrap();
+        g.compact_wal().unwrap();
+    }
+    let g = NativeGraph::open_durable(dir.wal()).unwrap();
+    assert!(matches!(
+        g.commit_prepared("h"),
+        Err(ResolveError::HeuristicRollback(_))
+    ));
+}
+
+#[test]
+fn heuristic_rollback_of_an_unknown_gid_fails() {
+    let g = NativeGraph::new();
+    assert!(matches!(
+        g.heuristic_rollback_prepared("nope"),
+        Err(ResolveError::UnknownGid(_))
+    ));
+}
+
+#[test]
+fn a_new_prepare_reusing_a_heuristic_gid_starts_fresh() {
+    let g = NativeGraph::new();
+    let tx = tx_creating(&g, &["a"]);
+    g.tx_prepare(tx, "reused").unwrap();
+    g.heuristic_rollback_prepared("reused").unwrap();
+    let tx = tx_creating(&g, &["b"]);
+    g.tx_prepare(tx, "reused").unwrap();
+    g.commit_prepared("reused").unwrap();
+    assert_eq!(titles(&g), vec!["b"]);
+}
