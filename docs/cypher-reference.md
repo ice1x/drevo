@@ -1159,7 +1159,7 @@ CALL drevo.tx.heuristicRollback($gid)   // YIELD gid
 `preparedAt` is ISO-8601 UTC. While any transaction is prepared, **every other
 write fails fast** with a retryable error:
 
-- Bolt: `Neo.TransientError.Transaction.LockClientStopped`;
+- Bolt: `Neo.TransientError.Transaction.LockAcquisitionTimeout`;
 - HTTP: 503;
 - Python: `TransactionConflict`.
 

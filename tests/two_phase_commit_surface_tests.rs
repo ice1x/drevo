@@ -9,7 +9,7 @@
 //!   HTTP), and `drevo.tx.prepare($gid)` inside an explicit Bolt transaction;
 //! - while a transaction is prepared, other writes fail with the structured,
 //!   retryable `DrevoError::PreparedTransactionPending` (HTTP 503, Bolt
-//!   `Neo.TransientError.Transaction.LockClientStopped`).
+//!   `Neo.TransientError.Transaction.LockAcquisitionTimeout`).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -225,7 +225,7 @@ fn bolt_prepare_inside_an_explicit_transaction_then_resolve() {
     let mut other = hello(&svc);
     assert_eq!(
         failure_code(&run(&mut other, "CREATE (:X)")).as_deref(),
-        Some("Neo.TransientError.Transaction.LockClientStopped")
+        Some("Neo.TransientError.Transaction.LockAcquisitionTimeout")
     );
 
     // The coordinator resolves from any session.
@@ -302,4 +302,27 @@ fn expired_prepared_transactions_are_rolled_back_heuristically() {
         svc.commit_prepared("old"),
         Err(drevo::native::ResolveError::HeuristicRollback(_))
     ));
+}
+
+/// The fence's Bolt code must be one official drivers actually *retry*. The
+/// Neo4j drivers reclassify `Neo.TransientError.Transaction.Terminated` and
+/// `…LockClientStopped` as client errors (they mean "stopped by the user"),
+/// so either would make a fenced write fail instead of backing off — found on
+/// the live server with the Python driver (#556).
+#[test]
+fn the_fence_bolt_code_is_retryable_by_official_drivers() {
+    let svc = Arc::new(NativeService::in_memory());
+    prepare_creating(&svc, "T", 1, "g");
+    let mut s = hello(&svc);
+    let code = failure_code(&run(&mut s, "CREATE (:X)")).expect("fenced");
+    assert!(code.starts_with("Neo.TransientError."), "{code}");
+    for remapped in [
+        "Neo.TransientError.Transaction.Terminated",
+        "Neo.TransientError.Transaction.LockClientStopped",
+    ] {
+        assert_ne!(
+            code, remapped,
+            "drivers treat {remapped} as a non-retryable client error"
+        );
+    }
 }

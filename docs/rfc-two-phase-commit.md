@@ -67,7 +67,7 @@ prepared; it writes a `Prepare` record with no ops, so that resolution is idempo
 Proposal (**decision D1**): **fail fast**. While the fence is up, any other commit or autocommit
 write returns a new retryable error `PreparedTransactionPending { gids }`:
 
-- Bolt maps it to `Neo.TransientError.Transaction.LockClientStopped`, a retryable class drivers
+- Bolt maps it to `Neo.TransientError.Transaction.LockAcquisitionTimeout`, a retryable class drivers
   already back off on;
 - HTTP returns `503`;
 - drevo-py raises `TransactionConflict`.

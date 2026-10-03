@@ -222,7 +222,7 @@ always means a slow path in drevo worth fixing, so alert on any increase.
 **Two-phase commit (#556).** A transaction prepared by a distributed-transaction coordinator (see
 the [RFC](rfc-two-phase-commit.md) and the `drevo.tx.*` procedures in the Cypher reference)
 **refuses every other write** until it is resolved. Writes fail fast and are retryable: HTTP 503,
-Bolt `Neo.TransientError.Transaction.LockClientStopped`. Prepared transactions survive restarts
+Bolt `Neo.TransientError.Transaction.LockAcquisitionTimeout`. Prepared transactions survive restarts
 and compaction, and are never resolved automatically. Operators can:
 
 - watch `drevo_prepared_transactions` and `drevo_prepared_transaction_oldest_age_seconds`, and
