@@ -585,6 +585,10 @@ impl<'a> Session<'a> {
         &self,
         db: Option<&str>,
     ) -> Result<std::sync::Arc<crate::native_service::NativeService>, String> {
+        // Without `http` there is no catalog, so only the single-database
+        // resolver exists and the selector is ignored.
+        #[cfg(not(feature = "http"))]
+        let _ = db;
         match &self.resolver {
             DbResolver::Single => Ok(std::sync::Arc::clone(&self.service)),
             #[cfg(feature = "http")]

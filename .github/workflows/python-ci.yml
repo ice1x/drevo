@@ -105,6 +105,22 @@ jobs:
         # download-restored cache is what keeps `maturin develop` fast.
         uses: Swatinem/rust-cache@v2
 
+      - name: clippy — drevo as drevo-py builds it (no default features)
+        # drevo-py depends on `drevo` with `default-features = false`, a
+        # feature set ci.yml never lints. Without this step cfg-gated dead
+        # code (e.g. items only used under `http`) warns in every
+        # `maturin develop` and nobody notices.
+        run: cargo clippy -p drevo --no-default-features --lib -- -D warnings
+
+      - name: clippy — drevo-py (lib + tests)
+        run: cargo clippy -p drevo-py --no-default-features --all-targets -- -D warnings
+
+      - name: cargo test — drevo-py Rust unit tests
+        # `--no-default-features` drops pyo3's `extension-module`, so the
+        # test binary links libpython and hosts its own interpreter.
+        # PYO3_PYTHON pins it to the setup-python 3.13 located above.
+        run: PYO3_PYTHON="$DREVO_PY_BIN" cargo test -p drevo-py --no-default-features
+
       - name: Ensure persistent venv at $DREVO_PY_VENV (create on first run)
         # The previous form `python -m venv .venv` recreated a fresh
         # venv inside the repo every run — every pip install paid the

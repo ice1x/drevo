@@ -501,6 +501,10 @@ jobs:
           targets: wasm32-unknown-unknown
       - run: cargo check --all-features
       - run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown
+        env:
+          # No other job compiles the wasm cfg, so its dead-code warnings
+          # would otherwise go unseen.
+          RUSTFLAGS: -D warnings
         # The wasm sanity check is the cheapest way to catch a future MSRV
         # bump on `getrandom/wasm_js` (audit 00111 / 00113 cross-link).
 
