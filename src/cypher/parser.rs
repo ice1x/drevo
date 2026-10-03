@@ -1494,6 +1494,20 @@ impl Parser {
     fn parse_expression_bp_inner(&mut self, min_bp: u8) -> ParseResult<Expression> {
         let mut lhs = self.parse_prefix()?;
 
+        // `n:Label[:Label…]` — a label predicate binds tighter than any infix
+        // operator, so `n:A OR n:B` is `(n:A) OR (n:B)` and `NOT n:A` is
+        // `NOT (n:A)`. SET / REMOVE parse their `n:Label` items through
+        // `parse_postfix_chain`, which never reaches here.
+        if matches!(self.peek_kind(), TokenKind::Colon) {
+            let span = self.peek_span();
+            let labels = self.parse_label_chain()?;
+            lhs = Expression::HasLabels {
+                expr: Box::new(lhs),
+                labels,
+                span,
+            };
+        }
+
         // Postfix forms with high precedence (`.`, `[`, `(`) are handled
         // inside parse_prefix's call chain. This loop handles binary infix
         // and the trailing `IS NULL` / `IN` / `STARTS WITH` predicates.

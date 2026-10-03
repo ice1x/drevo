@@ -606,6 +606,18 @@ pub enum Expression {
         /// Span of the `IS` keyword.
         span: Span,
     },
+    /// `expr:Label1:Label2` — a label predicate (#568).
+    ///
+    /// `true` when the node carries every listed label (for a relationship:
+    /// when its type is the single listed name), `null` for a `null` operand.
+    HasLabels {
+        /// Operand — usually a variable bound to a node or relationship.
+        expr: Box<Expression>,
+        /// Labels that must all be present.
+        labels: Vec<String>,
+        /// Span of the first `:`.
+        span: Span,
+    },
     /// `expr IN list_expr`.
     In {
         /// Element to test.
@@ -864,6 +876,7 @@ impl Expression {
             | Self::Parameter(_, s)
             | Self::Star(s) => *s,
             Self::Property { span, .. }
+            | Self::HasLabels { span, .. }
             | Self::List { span, .. }
             | Self::FunctionCall { span, .. }
             | Self::Unary { span, .. }
