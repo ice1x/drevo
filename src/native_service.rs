@@ -161,7 +161,9 @@ pub struct NativeService {
     /// `db.index.vector.queryNodes` round-trip. Persisted in the same sidecar.
     vector_indexes: RwLock<crate::vector_index_registry::VectorIndexRegistry>,
     /// Sidecar path for the registries (`<wal dir>/semantic.json`), or
-    /// `None` for an in-memory service (nothing to persist).
+    /// `None` for an in-memory service (nothing to persist). Always `None` on
+    /// wasm, which has no filesystem to persist to.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     semantic_sidecar: Option<std::path::PathBuf>,
     /// Cumulative auto-embed failures per target (issue #447; native mirror of
     /// `Drevo::embed_failures`), keyed by `(target_kind, name, embedding_property)`.

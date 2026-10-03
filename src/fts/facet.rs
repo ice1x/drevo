@@ -147,6 +147,8 @@ pub fn build_facets(
 /// (`crate::db::Drevo::facets`) and native
 /// (`crate::native_service::NativeService::facets`) faceting paths — it lives
 /// here, beside `build_facets`, so it outlives the KV engine.
+/// Not compiled for wasm, whose `NativeService` has no `facets`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn node_property_text(node: &crate::model::Node, property: &str) -> Option<String> {
     let text = match property {
         "title" => node.title.clone(),

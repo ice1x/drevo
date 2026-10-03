@@ -2325,6 +2325,8 @@ struct Executor<'a> {
     /// 4/7): lets `drevo.semantic.embed` / `.query` / `.queryRel` run
     /// without a KV secondary store. `None` on the KV path (which uses the
     /// secondary's installed embedder) or when the serving layer has none.
+    /// Only the `http`-gated semantic procedures read it.
+    #[cfg_attr(not(feature = "http"), allow(dead_code))]
     native_embedder: Option<QueryEmbedder<'a>>,
     /// The native semantic control plane (register/status/reindex), when running
     /// over the durable-native serving layer (issue #447). Lets the

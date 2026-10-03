@@ -920,7 +920,6 @@ fn extract_path(_py: Python<'_>, obj: PyObject) -> PyResult<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::native_backend::NativeBackend;
     use drevo::model::{NewEdge, NewNode, Properties};
 

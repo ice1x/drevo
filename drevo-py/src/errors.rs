@@ -152,14 +152,17 @@ mod tests {
     use drevo::error::DrevoError;
 
     /// Cheap sanity check — make sure every `DrevoError` variant maps
-    /// without panicking and produces a `PyErr` whose type string mentions
-    /// the expected exception name. The full per-variant assertion that
-    /// the *type identity* is `NodeNotFoundError` (and not just a string
-    /// match) requires `Python::with_gil`, which the rust-only test
-    /// harness does not initialise — that side of the contract lives in
-    /// the Python unit suite (`00118` / `tests/unit/test_errors.py`).
+    /// without panicking and produces a `PyErr` with a non-empty message.
+    /// The per-variant assertion that the *type identity* is
+    /// `NodeNotFoundError` (and not just a string match) lives in the Python
+    /// unit suite (`00118` / `tests/unit/test_errors.py`).
+    ///
+    /// Rendering a `PyErr` takes the GIL, and without `extension-module`
+    /// (`cargo test -p drevo-py --no-default-features`) no host Python has
+    /// started an interpreter, so the test starts one itself.
     #[test]
     fn every_drevo_error_variant_maps() {
+        pyo3::prepare_freethreaded_python();
         let variants = vec![
             DrevoError::NodeNotFound(42),
             DrevoError::EdgeNotFound(7),
