@@ -1625,6 +1625,7 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
         }
         Expression::Unary { expr, .. } => validate_expr_supported(expr),
         Expression::IsNull { expr, .. } => validate_expr_supported(expr),
+        Expression::HasLabels { expr, .. } => validate_expr_supported(expr),
         Expression::In { expr, list, .. } => {
             validate_expr_supported(expr)?;
             validate_expr_supported(list)
@@ -1964,6 +1965,7 @@ fn contains_aggregation(expr: &Expression) -> bool {
         }
         Expression::Unary { expr, .. } => contains_aggregation(expr),
         Expression::IsNull { expr, .. } => contains_aggregation(expr),
+        Expression::HasLabels { expr, .. } => contains_aggregation(expr),
         Expression::In { expr, list, .. } => {
             contains_aggregation(expr) || contains_aggregation(list)
         }
@@ -2087,6 +2089,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
         }
         Expression::Unary { expr, .. } => validate_expr_supported_in_projection(expr),
         Expression::IsNull { expr, .. } => validate_expr_supported_in_projection(expr),
+        Expression::HasLabels { expr, .. } => validate_expr_supported_in_projection(expr),
         Expression::In { expr, list, .. } => {
             validate_expr_supported_in_projection(expr)?;
             validate_expr_supported_in_projection(list)
@@ -7277,6 +7280,10 @@ impl<'a> Executor<'a> {
                 let is_null = matches!(v, Value::Null);
                 Ok(Value::Bool(if *negated { !is_null } else { is_null }))
             }
+            Expression::HasLabels { expr, labels, span } => {
+                let v = self.eval_with_agg(expr, group_rows)?;
+                eval_has_labels(v, labels, *span)
+            }
             Expression::In { expr, list, span } => {
                 let needle = self.eval_with_agg(expr, group_rows)?;
                 let haystack = self.eval_with_agg(list, group_rows)?;
@@ -7604,6 +7611,10 @@ impl<'a> Executor<'a> {
                 let inner = self.eval(expr, row)?;
                 let is_null = matches!(inner, Value::Null);
                 Ok(Value::Bool(if *negated { !is_null } else { is_null }))
+            }
+            Expression::HasLabels { expr, labels, span } => {
+                let inner = self.eval(expr, row)?;
+                eval_has_labels(inner, labels, *span)
             }
             Expression::In { expr, list, span } => {
                 let needle = self.eval(expr, row)?;
@@ -10460,6 +10471,25 @@ fn scalar_labels(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
             format!("argument must be a Node, got {}", other.type_name()),
             span,
         )),
+    }
+}
+
+/// `expr:A:B` (#568) — a node has every label; a relationship's type is the
+/// single listed name (Neo4j 5 semantics); `null` propagates.
+fn eval_has_labels(v: Value, labels: &[String], span: Span) -> ExecResultT<Value> {
+    match v {
+        Value::Null => Ok(Value::Null),
+        Value::Node(nv) => Ok(Value::Bool(
+            labels
+                .iter()
+                .all(|l| nv.labels.iter().any(|have| have == l)),
+        )),
+        Value::Relationship(rv) => Ok(Value::Bool(labels.len() == 1 && rv.kind == labels[0])),
+        other => Err(ExecError::TypeMismatch {
+            expected: format!("Node or Relationship for `:{}`", labels.join(":")),
+            got: other.type_name().to_string(),
+            span,
+        }),
     }
 }
 

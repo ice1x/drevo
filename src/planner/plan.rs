@@ -1098,6 +1098,9 @@ fn describe_expression(expr: &Expression) -> String {
             let kw = if *negated { "IS NOT NULL" } else { "IS NULL" };
             format!("{} {kw}", describe_expression(expr))
         }
+        Expression::HasLabels { expr, labels, .. } => {
+            format!("{}:{}", describe_expression(expr), labels.join(":"))
+        }
         Expression::In { expr, list, .. } => {
             format!(
                 "{} IN {}",

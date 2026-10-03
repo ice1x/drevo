@@ -216,6 +216,16 @@ WHERE b.severity IN ['high', 'critical'] AND b.assignee IS NOT NULL
 RETURN b.title AS bug, b.severity AS severity
 ```
 
+**Label predicates:** `n:Label` is a boolean expression, so it combines with `AND` / `OR` /
+`NOT` and can be returned like any other value. `n:A:B` requires every listed label; on a
+relationship, `r:TYPE` tests its type. A `null` operand yields `null`.
+
+```cypher
+MATCH (n)
+WHERE (n:Bug OR n:Feature) AND NOT n:Archived
+RETURN n.title AS item, n:Bug AS is_bug
+```
+
 ---
 
 ## Projecting — RETURN and WITH
