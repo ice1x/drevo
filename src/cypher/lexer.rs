@@ -245,6 +245,10 @@ pub enum TokenKind {
     Percent,
     /// `^`.
     Caret,
+    /// `!` — label-expression negation (#572).
+    Bang,
+    /// `&` — label-expression conjunction (#572).
+    Ampersand,
 
     // ---- Property access / ranges ----------------------------------
     /// `.` — property access.
@@ -409,6 +413,8 @@ impl fmt::Display for TokenKind {
             Self::Slash => f.write_str("/"),
             Self::Percent => f.write_str("%"),
             Self::Caret => f.write_str("^"),
+            Self::Bang => f.write_str("!"),
+            Self::Ampersand => f.write_str("&"),
             Self::Dot => f.write_str("."),
             Self::DotDot => f.write_str(".."),
             Self::Arrow => f.write_str("->"),
@@ -720,6 +726,14 @@ impl<'src> Lexer<'src> {
             '%' => {
                 self.advance();
                 TokenKind::Percent
+            }
+            '!' => {
+                self.advance();
+                TokenKind::Bang
+            }
+            '&' => {
+                self.advance();
+                TokenKind::Ampersand
             }
             '^' => {
                 self.advance();

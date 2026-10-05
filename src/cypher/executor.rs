@@ -154,10 +154,10 @@ const VARLEN_DEFAULT_UPPER: usize = 25;
 
 use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, CreateVectorIndex, Direction as AstDirection,
-    Expression, ForeachClause, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause,
-    NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query,
-    RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery, UnaryOp,
-    UnionKind, UnwindClause, YieldItem,
+    Expression, ForeachClause, LabelExpr, ListPredicateKind, MapLiteral, MapProjectionSelector,
+    MatchClause, NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem,
+    Query, RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery,
+    UnaryOp, UnionKind, UnwindClause, YieldItem,
 };
 use crate::cypher::lexer::Span;
 use crate::engine::GraphEngine;
@@ -1119,7 +1119,8 @@ fn try_count_pushdown(
         return Ok(None);
     }
     let node = &pattern.path.head;
-    if node.properties.is_some() || node.labels.len() > 1 {
+    // A label expression (#572) is not a single label count.
+    if node.properties.is_some() || node.labels.len() > 1 || node.label_expr.is_some() {
         return Ok(None);
     }
     if r.distinct || !r.order_by.is_empty() || r.skip.is_some() || r.limit.is_some() {
@@ -5470,6 +5471,7 @@ impl<'a> Executor<'a> {
         let pattern = NodePattern {
             variable: None,
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            label_expr: None,
             properties: Some(properties),
             span,
         };
@@ -9158,6 +9160,12 @@ fn node_matches_pattern(
             return Ok(false);
         }
     }
+    // The full label expression (`:A|B`, `:!A`, … — #572), when present.
+    if let Some(expr) = &pattern.label_expr {
+        if !expr.matches(&nv.labels) {
+            return Ok(false);
+        }
+    }
     if let Some(map) = &pattern.properties {
         for (k, expr) in &map.entries {
             // Property filters evaluate against the current binding row so a
@@ -10476,19 +10484,15 @@ fn scalar_labels(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `expr:A:B` (#568) — a node has every label; a relationship's type is the
-/// single listed name (Neo4j 5 semantics); `null` propagates.
-fn eval_has_labels(v: Value, labels: &[String], span: Span) -> ExecResultT<Value> {
+/// `expr:<label expression>` (#568, #572) — tested against a node's labels or
+/// a relationship's single type (Neo4j 5 semantics); `null` propagates.
+fn eval_has_labels(v: Value, labels: &LabelExpr, span: Span) -> ExecResultT<Value> {
     match v {
         Value::Null => Ok(Value::Null),
-        Value::Node(nv) => Ok(Value::Bool(
-            labels
-                .iter()
-                .all(|l| nv.labels.iter().any(|have| have == l)),
-        )),
-        Value::Relationship(rv) => Ok(Value::Bool(labels.len() == 1 && rv.kind == labels[0])),
+        Value::Node(nv) => Ok(Value::Bool(labels.matches(&nv.labels))),
+        Value::Relationship(rv) => Ok(Value::Bool(labels.matches(std::slice::from_ref(&rv.kind)))),
         other => Err(ExecError::TypeMismatch {
-            expected: format!("Node or Relationship for `:{}`", labels.join(":")),
+            expected: format!("Node or Relationship for `:{labels}`"),
             got: other.type_name().to_string(),
             span,
         }),

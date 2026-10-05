@@ -226,6 +226,22 @@ WHERE (n:Bug OR n:Feature) AND NOT n:Archived
 RETURN n.title AS item, n:Bug AS is_bug
 ```
 
+**Label expressions** (Neo4j 5) work both in node patterns and in label predicates:
+`|` (or), `&` (and), `!` (not), `%` (any label) and parentheses. Precedence, from loosest:
+`|`, `&`, `!`. The legacy `:A:B` means `:A&B`.
+
+```cypher
+MATCH (n:(Bug|Feature)&!Archived)
+RETURN n.title AS item, n:Bug|Feature AS tracked
+```
+
+- CREATE and MERGE write concrete labels, so they accept only `:A:B` / `:A&B`.
+- Inside a list or pattern comprehension filter, a `|` after a label starts the projection:
+  `[x IN xs WHERE x:Bug | x.title]`. To get a disjunction there, put it in parentheses:
+  `x:(Bug|Feature)`.
+- In relationship patterns, only `[r:A|B]` is supported. For other type expressions, filter
+  with `WHERE r:!A`.
+
 ---
 
 ## Projecting — RETURN and WITH

@@ -464,12 +464,109 @@ pub struct PathSegment {
 pub struct NodePattern {
     /// Optional variable bound to the node.
     pub variable: Option<String>,
-    /// Required labels (any-of for MATCH, all-of for CREATE).
+    /// Labels the node must carry (all of them). For a plain `:A:B` / `:A&B`
+    /// pattern this is the whole label test; for a richer [`LabelExpr`] it is
+    /// the subset every match is guaranteed to have (used to seed scans), and
+    /// [`NodePattern::label_expr`] holds the full test.
     pub labels: Vec<String>,
+    /// The full label expression when it is not a plain conjunction of names
+    /// (`:A|B`, `:!A`, `:%`, grouping — #572). MATCH only; CREATE / MERGE
+    /// reject it at parse time.
+    pub label_expr: Option<LabelExpr>,
     /// Optional inline property map literal.
     pub properties: Option<MapLiteral>,
     /// Span of the leading `(`.
     pub span: Span,
+}
+
+/// A Neo4j 5 label expression (#572): `A`, `%`, `!e`, `e&e`, `e|e`, `(e)`.
+///
+/// Precedence, loosest first: `|`, `&`, `!`. The legacy chain `:A:B` parses
+/// as `A&B`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LabelExpr {
+    /// A single label (or relationship type) name.
+    Name(String),
+    /// `%` — any label at all.
+    Any,
+    /// `!e`.
+    Not(Box<LabelExpr>),
+    /// `a&b`.
+    And(Box<LabelExpr>, Box<LabelExpr>),
+    /// `a|b`.
+    Or(Box<LabelExpr>, Box<LabelExpr>),
+}
+
+impl LabelExpr {
+    /// Whether an entity carrying exactly `have` satisfies the expression.
+    /// For a relationship, `have` is its single type.
+    pub fn matches(&self, have: &[String]) -> bool {
+        match self {
+            Self::Name(n) => have.iter().any(|h| h == n),
+            Self::Any => !have.is_empty(),
+            Self::Not(e) => !e.matches(have),
+            Self::And(a, b) => a.matches(have) && b.matches(have),
+            Self::Or(a, b) => a.matches(have) || b.matches(have),
+        }
+    }
+
+    /// The names joined only by `&`, or `None` when the expression uses
+    /// `|`, `!` or `%` anywhere.
+    pub fn as_conjunction(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Name(n) => Some(vec![n.clone()]),
+            Self::And(a, b) => {
+                let mut v = a.as_conjunction()?;
+                v.extend(b.as_conjunction()?);
+                Some(v)
+            }
+            Self::Any | Self::Not(_) | Self::Or(..) => None,
+        }
+    }
+
+    /// Labels every match must carry: the names reachable through `&` only.
+    pub fn required_labels(&self) -> Vec<String> {
+        match self {
+            Self::Name(n) => vec![n.clone()],
+            Self::And(a, b) => {
+                let mut v = a.required_labels();
+                v.extend(b.required_labels());
+                v
+            }
+            Self::Any | Self::Not(_) | Self::Or(..) => Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Display for LabelExpr {
+    /// Fully parenthesised below the top level, so the output re-parses to
+    /// the same tree.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn operand(e: &LabelExpr, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match e {
+                LabelExpr::Name(_) | LabelExpr::Any | LabelExpr::Not(_) => write!(f, "{e}"),
+                _ => write!(f, "({e})"),
+            }
+        }
+        match self {
+            Self::Name(n) => f.write_str(n),
+            Self::Any => f.write_str("%"),
+            Self::Not(e) => {
+                f.write_str("!")?;
+                operand(e, f)
+            }
+            Self::And(a, b) => {
+                operand(a, f)?;
+                f.write_str("&")?;
+                operand(b, f)
+            }
+            Self::Or(a, b) => {
+                operand(a, f)?;
+                f.write_str("|")?;
+                operand(b, f)
+            }
+        }
+    }
 }
 
 /// A relationship pattern — `-[variable :Type1|Type2 *1..3 {props}]->`.
@@ -606,15 +703,15 @@ pub enum Expression {
         /// Span of the `IS` keyword.
         span: Span,
     },
-    /// `expr:Label1:Label2` — a label predicate (#568).
+    /// `expr:Label1:Label2` / `expr:A|!B` — a label predicate (#568, #572).
     ///
-    /// `true` when the node carries every listed label (for a relationship:
-    /// when its type is the single listed name), `null` for a `null` operand.
+    /// Evaluates the [`LabelExpr`] against a node's labels or a
+    /// relationship's type; `null` for a `null` operand.
     HasLabels {
         /// Operand — usually a variable bound to a node or relationship.
         expr: Box<Expression>,
-        /// Labels that must all be present.
-        labels: Vec<String>,
+        /// The label expression to test.
+        labels: LabelExpr,
         /// Span of the first `:`.
         span: Span,
     },

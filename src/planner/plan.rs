@@ -1099,7 +1099,7 @@ fn describe_expression(expr: &Expression) -> String {
             format!("{} {kw}", describe_expression(expr))
         }
         Expression::HasLabels { expr, labels, .. } => {
-            format!("{}:{}", describe_expression(expr), labels.join(":"))
+            format!("{}:{labels}", describe_expression(expr))
         }
         Expression::In { expr, list, .. } => {
             format!(

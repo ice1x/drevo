@@ -152,6 +152,25 @@ pub fn parse(source: &str) -> ParseResult<Query> {
     Ok(query)
 }
 
+/// CREATE / MERGE write concrete labels, so only `:A:B` / `:A&B` is allowed
+/// there; `|`, `!` and `%` are MATCH-only (Neo4j 5 rule, #572).
+fn reject_label_expressions(pattern: &NamedPattern, clause: &str) -> ParseResult<()> {
+    let path = &pattern.path;
+    let nodes = std::iter::once(&path.head).chain(path.tail.iter().map(|seg| &seg.node));
+    for node in nodes {
+        if let Some(expr) = &node.label_expr {
+            return Err(ParseError::Malformed {
+                message: format!(
+                    "label expression `:{expr}` is not allowed in {clause}; \
+                     only `:A:B` or `:A&B` can be written"
+                ),
+                span: node.span,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// `true` when `clause` is an update clause permitted inside a
 /// `FOREACH` body (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, or a
 /// nested `FOREACH`). Read clauses are excluded.
@@ -225,6 +244,10 @@ struct Parser {
     /// on exit, so it tracks live recursion regardless of the `?` early-return
     /// paths.
     depth: usize,
+    /// Non-zero while parsing a list / pattern comprehension filter, where a
+    /// `|` after `x:Label` is the projection separator, not a label
+    /// disjunction (#572). Write `x:(A|B)` there instead.
+    no_label_pipe: usize,
 }
 
 impl Parser {
@@ -234,6 +257,7 @@ impl Parser {
             tokens,
             pos: 0,
             depth: 0,
+            no_label_pipe: 0,
         }
     }
 
@@ -577,6 +601,9 @@ impl Parser {
             }));
         }
         let patterns = self.parse_pattern_list()?;
+        for p in &patterns {
+            reject_label_expressions(p, "CREATE")?;
+        }
         Ok(Clause::Create(CreateClause { patterns, span }))
     }
 
@@ -768,6 +795,7 @@ impl Parser {
         let span = self.peek_span();
         self.consume();
         let pattern = self.parse_named_pattern()?;
+        reject_label_expressions(&pattern, "MERGE")?;
         let mut on_create = Vec::new();
         let mut on_match = Vec::new();
         while matches!(self.peek_kind(), TokenKind::On) {
@@ -1253,10 +1281,15 @@ impl Parser {
         } else {
             None
         };
-        let labels = if matches!(self.peek_kind(), TokenKind::Colon) {
-            self.parse_label_chain()?
+        let (labels, label_expr) = if matches!(self.peek_kind(), TokenKind::Colon) {
+            // Inside `( … )` a `|` can only be a disjunction.
+            let expr = self.parse_label_expression(true)?;
+            match expr.as_conjunction() {
+                Some(names) => (names, None),
+                None => (expr.required_labels(), Some(expr)),
+            }
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         let properties = if matches!(self.peek_kind(), TokenKind::LBrace) {
             Some(self.parse_map_literal()?)
@@ -1267,6 +1300,7 @@ impl Parser {
         Ok(NodePattern {
             variable,
             labels,
+            label_expr,
             properties,
             span,
         })
@@ -1412,6 +1446,79 @@ impl Parser {
         }
     }
 
+    /// `:expr[:expr…]` — a Neo4j 5 label expression (#572). The caller has
+    /// not consumed the colon. Extra `:` segments (the legacy `:A:B` chain)
+    /// are conjoined. `pipe_ok` is false inside a comprehension filter, where
+    /// a top-level `|` belongs to the comprehension.
+    fn parse_label_expression(&mut self, pipe_ok: bool) -> ParseResult<LabelExpr> {
+        self.eat(&TokenKind::Colon, "`:` before a label")?;
+        let mut expr = self.parse_label_or(pipe_ok)?;
+        while matches!(self.peek_kind(), TokenKind::Colon) {
+            self.consume();
+            let rhs = self.parse_label_or(pipe_ok)?;
+            expr = LabelExpr::And(Box::new(expr), Box::new(rhs));
+        }
+        Ok(expr)
+    }
+
+    fn parse_label_or(&mut self, pipe_ok: bool) -> ParseResult<LabelExpr> {
+        let mut expr = self.parse_label_and()?;
+        while pipe_ok && matches!(self.peek_kind(), TokenKind::Pipe) {
+            self.consume();
+            let rhs = self.parse_label_and()?;
+            expr = LabelExpr::Or(Box::new(expr), Box::new(rhs));
+        }
+        Ok(expr)
+    }
+
+    fn parse_label_and(&mut self) -> ParseResult<LabelExpr> {
+        let mut expr = self.parse_label_not()?;
+        while matches!(self.peek_kind(), TokenKind::Ampersand) {
+            self.consume();
+            let rhs = self.parse_label_not()?;
+            expr = LabelExpr::And(Box::new(expr), Box::new(rhs));
+        }
+        Ok(expr)
+    }
+
+    /// `!e` / `%` / `(e)` / `Name`. Recursion (`!!…`, nested parentheses)
+    /// shares the expression depth budget.
+    fn parse_label_not(&mut self) -> ParseResult<LabelExpr> {
+        self.depth += 1;
+        if self.depth > MAX_EXPRESSION_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::NestingTooDeep {
+                span: self.peek_span(),
+            });
+        }
+        let result = self.parse_label_atom();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_label_atom(&mut self) -> ParseResult<LabelExpr> {
+        match self.peek_kind() {
+            TokenKind::Bang => {
+                self.consume();
+                Ok(LabelExpr::Not(Box::new(self.parse_label_not()?)))
+            }
+            TokenKind::Percent => {
+                self.consume();
+                Ok(LabelExpr::Any)
+            }
+            TokenKind::LParen => {
+                self.consume();
+                let inner = self.parse_label_or(true)?;
+                self.eat(&TokenKind::RParen, "`)` to close a label expression group")?;
+                Ok(inner)
+            }
+            _ => {
+                let (name, _) = self.consume_name()?;
+                Ok(LabelExpr::Name(name))
+            }
+        }
+    }
+
     fn parse_label_chain(&mut self) -> ParseResult<Vec<String>> {
         let mut labels = Vec::new();
         // Caller has *not* consumed the colon yet.
@@ -1462,6 +1569,16 @@ impl Parser {
     /// `[index]`, `[from..to]`) but NO infix operators. Used as the LHS
     /// of `SET` / `REMOVE` items where the trailing `=` / `+=` / `:Label`
     /// must not be consumed.
+    /// The `WHERE` filter of a list / pattern comprehension: an ordinary
+    /// expression, except that a `|` after `x:Label` ends it (the projection
+    /// follows) instead of continuing a label disjunction (#572).
+    fn parse_comprehension_filter(&mut self) -> ParseResult<Expression> {
+        self.no_label_pipe += 1;
+        let result = self.parse_expression();
+        self.no_label_pipe -= 1;
+        result
+    }
+
     fn parse_postfix_chain(&mut self) -> ParseResult<Expression> {
         // parse_prefix already wraps in the postfix loop, but it also
         // bottoms out on identifier-or-call. That's exactly what we want
@@ -1500,7 +1617,7 @@ impl Parser {
         // `parse_postfix_chain`, which never reaches here.
         if matches!(self.peek_kind(), TokenKind::Colon) {
             let span = self.peek_span();
-            let labels = self.parse_label_chain()?;
+            let labels = self.parse_label_expression(self.no_label_pipe == 0)?;
             lhs = Expression::HasLabels {
                 expr: Box::new(lhs),
                 labels,
@@ -1640,7 +1757,12 @@ impl Parser {
                     expr
                 } else {
                     self.consume();
-                    let inner = self.parse_expression()?;
+                    // Inside `( … )` a `|` can no longer end a comprehension
+                    // filter, so label disjunctions are allowed again.
+                    let saved = std::mem::take(&mut self.no_label_pipe);
+                    let inner = self.parse_expression();
+                    self.no_label_pipe = saved;
+                    let inner = inner?;
                     self.eat(&TokenKind::RParen, "`)` to close grouped expression")?;
                     inner
                 }
@@ -1859,7 +1981,7 @@ impl Parser {
         };
         let predicate = if matches!(self.peek_kind(), TokenKind::Where) {
             self.consume();
-            Some(Box::new(self.parse_expression()?))
+            Some(Box::new(self.parse_comprehension_filter()?))
         } else {
             None
         };
@@ -1911,7 +2033,7 @@ impl Parser {
         }
         let predicate = if matches!(self.peek_kind(), TokenKind::Where) {
             self.consume();
-            Some(Box::new(self.parse_expression()?))
+            Some(Box::new(self.parse_comprehension_filter()?))
         } else {
             None
         };
