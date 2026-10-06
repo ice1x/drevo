@@ -209,7 +209,7 @@ jobs:
     # not need a Linux-specific environment. Was previously
     # `ubuntu-latest`; corrected 2026-05-27 in the same change that
     # moved `build_wheels` to self-hosted.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:

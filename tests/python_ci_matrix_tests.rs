@@ -215,7 +215,7 @@ fn python_ci_matrix_declares_platform_axis() {
 fn python_ci_matrix_cells_run_on_native_github_hosted() {
     let wf = read_workflow();
     // Each cell runs on its NATIVE GitHub-hosted runner (macOS wheels on
-    // macos-latest, Linux on ubuntu-latest) via `runs-on: ${{ matrix.os }}`
+    // macos-latest, Linux on ubuntu-24.04) via `runs-on: ${{ matrix.os }}`
     // with a `matrix.include` map. The self-hosted runner is retired — a
     // self-hosted runner on a public repo is a security risk, and public-repo
     // GitHub-hosted minutes are free, so the old "zero billed minutes"
@@ -235,9 +235,9 @@ fn python_ci_matrix_cells_run_on_native_github_hosted() {
         "python.yml matrix job must select its runner via `runs-on: ${{ matrix.os }}`",
     );
     assert!(
-        wf.contains("os: macos-latest") && wf.contains("os: ubuntu-latest"),
+        wf.contains("os: macos-latest") && wf.contains("os: ubuntu-24.04"),
         "python.yml `matrix.include` must map the macOS cell to macos-latest \
-         and the Linux cell to ubuntu-latest",
+         and the Linux cell to ubuntu-24.04",
     );
 }
 
