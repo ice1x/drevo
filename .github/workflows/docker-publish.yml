@@ -13,7 +13,7 @@
 # `linux/amd64` cell of the multi-arch build ran under QEMU (~40 min) and
 # serialised behind / blocked every other job on EVERY merge. The image is
 # a release artifact, not a per-merge one, so it publishes on release tags
-# only. (The workflow now runs GitHub-hosted on `ubuntu-latest` — see the
+# only. (The workflow now runs GitHub-hosted on `ubuntu-24.04` — see the
 # `runs-on:` note below — so `linux/amd64` is NATIVE and only `linux/arm64`
 # is emulated under QEMU; a per-merge multi-arch build is still redundant
 # work, so this stays release-only.) `:latest` tracks the newest release tag.
@@ -67,7 +67,7 @@ name: Docker Publish
 #
 # The image is intentionally NOT built on every push to `main`. The multi-arch
 # build (linux/amd64 native + linux/arm64 under QEMU emulation on the
-# ubuntu-latest runner) is minutes-heavy, so it stays a release artifact rather
+# ubuntu-24.04 runner) is minutes-heavy, so it stays a release artifact rather
 # than a per-merge one: `make release` (which pushes a `vX.Y.Z` tag) is what
 # publishes it. `:latest` tracks the newest release tag (see the metadata step),
 # and ops can rebuild any ref on demand via `workflow_dispatch`. Because there is
@@ -100,14 +100,14 @@ jobs:
     # nobody waits on synchronously; running it on the single self-hosted runner
     # monopolised it for the whole multi-arch build (~40-60 min on a cold run),
     # serialising and stalling every PR's CI behind each release tag. On
-    # ubuntu-latest the build runs on an ephemeral GitHub runner in parallel, so
+    # ubuntu-24.04 the build runs on an ephemeral GitHub runner in parallel, so
     # it NEVER blocks the self-hosted CI/fuzz runner again. Trade-off: a cold
     # multi-arch build (linux/arm64 under QEMU) is slower here than a warm
     # self-hosted run, but the `cache-from/to: type=gha` layer cache below keeps
     # it bounded, and releases are infrequent so the GitHub-minutes cost is
     # small. Locked by
     # `tests/ci_self_hosted_runner_tests.rs::docker_publish_job_must_be_github_hosted`.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -146,7 +146,7 @@ jobs:
       # mattered on the retired self-hosted Apple Silicon Mac, where Docker
       # Desktop re-injected `credsStore: osxkeychain` even into a `{}` config and
       # `docker login` failed headless with `-25308`; on today's GitHub-hosted
-      # ubuntu-latest there is no keychain, but the pre-baked approach stays —
+      # ubuntu-24.04 there is no keychain, but the pre-baked approach stays —
       # it is simpler, needs no extra action, and keeps buildx's config
       # co-located so the post-job `docker buildx rm` finds it.)
       #

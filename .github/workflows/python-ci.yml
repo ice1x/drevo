@@ -72,7 +72,7 @@ jobs:
     # `project_state_2026_05_25`) missed this file and python-wheels.yml;
     # both burned ~2,700 of the 3,000 monthly Actions minutes during the
     # Phase 10 Cypher merge burst before being corrected on 2026-05-27.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Configure the Python venv path
         # A fresh, workspace-local venv each run. (The self-hosted version

@@ -207,8 +207,11 @@ fn workflow_cargo_test_and_bench_targets_all_exist() {
 ///   machinery below keeps compiling; NO workflow uses it anymore (the runner
 ///   is retired). fuzz + Docker Publish run on ubuntu-latest — see
 ///   fuzz_job_in_ci_must_be_github_hosted + docker_publish_job_must_be_github_hosted.
-/// * `ubuntu-latest` — the default GitHub-hosted runner for every stable-Rust
+/// * `ubuntu-24.04` — the GitHub-hosted Linux runner for every stable-Rust
 ///   job (check, test, clippy, fmt, doc, msrv, k8s, fuzz) and Docker Publish.
+///   Pinned, not `ubuntu-latest`: GitHub moves that label to Ubuntu 26 on
+///   2026-10-19, and an OS bump must be a deliberate PR, not a surprise red
+///   main. See `no_workflow_uses_a_floating_ubuntu_label`.
 /// * `macos-latest` + `windows-latest` — Phase 16 tasks `00116` AND
 ///   `00122` only.
 ///   PyO3 wheels are platform-native (every wheel is an `.so` / `.dylib` /
@@ -233,10 +236,29 @@ fn workflow_cargo_test_and_bench_targets_all_exist() {
 ///   for adding a new label.
 const ALLOWED_RUNS_ON: &[&str] = &[
     "self-hosted",
-    "ubuntu-latest",
+    "ubuntu-24.04",
     "macos-latest",
     "windows-latest",
 ];
+
+/// GitHub re-points `ubuntu-latest` at a new release on its own schedule
+/// (Ubuntu 26 from 2026-10-19), which can turn main red with no code change.
+/// The Linux runner is pinned; moving to a newer Ubuntu is a deliberate PR.
+#[test]
+fn no_workflow_uses_a_floating_ubuntu_label() {
+    for path in workflow_files() {
+        let body = fs::read_to_string(&path).expect("read workflow");
+        for (i, line) in body.lines().enumerate() {
+            let code = line.split('#').next().unwrap_or_default();
+            assert!(
+                !code.contains("ubuntu-latest"),
+                "{}:{}: uses the floating `ubuntu-latest` label — pin `ubuntu-24.04`",
+                path.display(),
+                i + 1
+            );
+        }
+    }
+}
 
 #[test]
 fn every_runs_on_uses_an_allow_listed_runner() {
@@ -454,8 +476,8 @@ fn fuzz_job_in_ci_must_be_github_hosted() {
          may, now that the repo targets public + GitHub-hosted runners.",
     );
     assert!(
-        line.contains("ubuntu-latest"),
-        "ci.yml fuzz job must run on ubuntu-latest (found `{line}`).",
+        line.contains("ubuntu-24.04"),
+        "ci.yml fuzz job must run on ubuntu-24.04 (found `{line}`).",
     );
 }
 
@@ -522,11 +544,11 @@ fn docker_publish_job_must_be_github_hosted() {
                 !trimmed.contains("self-hosted"),
                 "docker-publish.yml must NOT run on `self-hosted` — the multi-arch \
                  release build monopolises the single self-hosted runner and stalls \
-                 every PR's CI behind each release tag. Keep it on `ubuntu-latest`.",
+                 every PR's CI behind each release tag. Keep it on `ubuntu-24.04`.",
             );
             assert!(
-                trimmed.contains("ubuntu-latest"),
-                "docker-publish.yml `runs-on:` must be `ubuntu-latest` so the release \
+                trimmed.contains("ubuntu-24.04"),
+                "docker-publish.yml `runs-on:` must be `ubuntu-24.04` so the release \
                  build runs on an ephemeral GitHub runner, never blocking CI. Got: {trimmed}",
             );
         }

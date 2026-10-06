@@ -525,7 +525,7 @@ fn cibuildwheel_workflow_exists_with_full_matrix() {
     }
     // Runner target — GitHub-hosted since the public-repo migration: macOS
     // wheels build on `macos-latest` (free + unlimited on a public repo), the
-    // sdist on `ubuntu-latest`. The self-hosted runner is retired (a self-hosted
+    // sdist on `ubuntu-24.04`. The self-hosted runner is retired (a self-hosted
     // runner on a public repo is a security risk).
     for line in wf
         .lines()
@@ -606,7 +606,7 @@ fn python_ci_workflow_runs_full_lint_and_test_gate() {
         // repo-wide policy (locked by `tests/ci_self_hosted_runner_tests.rs`)
         // is now that every workflow runs on a GitHub-hosted runner; the
         // self-hosted runner is retired.
-        "runs-on: ubuntu-latest",
+        "runs-on: ubuntu-24.04",
     ] {
         assert!(
             wf.contains(needle),

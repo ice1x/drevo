@@ -6,7 +6,7 @@
 //! release artifact (changed 2026-07-30 from per-push-to-`main`, which
 //! back then blocked the single self-hosted runner with a ~40-min QEMU
 //! build every merge; the workflow now runs GitHub-hosted on
-//! `ubuntu-latest`, amd64 native + arm64 under QEMU). Pull requests build
+//! `ubuntu-24.04`, amd64 native + arm64 under QEMU). Pull requests build
 //! the image but never push, so a forked-PR clone cannot publish under
 //! the project's namespace.
 //!
@@ -39,7 +39,7 @@
 //!     and exercise the Dockerfile but never push under the project's
 //!     namespace.
 //! 7.  Multi-arch — `linux/amd64,linux/arm64`. amd64 is native on the
-//!     GitHub-hosted `ubuntu-latest` runner; arm64 is emulated under QEMU
+//!     GitHub-hosted `ubuntu-24.04` runner; arm64 is emulated under QEMU
 //!     and matters because the project's developer baseline is Apple
 //!     Silicon (the README "Performance Targets" section calibrates
 //!     against Apple Silicon) and arm64 K8s nodes (Graviton, Ampere) are
@@ -169,7 +169,7 @@ fn docker_publish_does_not_trigger_on_pull_request() {
     // Inverted from the original "must trigger on pull_request" rule.
     // Reason: the PR-time multi-arch build cumulated to ~19 min per PR
     // (back on the self-hosted Apple Silicon runner the `linux/amd64` half
-    // ran under QEMU; on today's GitHub-hosted `ubuntu-latest` amd64 is
+    // ran under QEMU; on today's GitHub-hosted `ubuntu-24.04` amd64 is
     // native and only `linux/arm64` is emulated). Either way it duplicates
     // ci.yml's compilation + test surface and only adds value when the
     // change touches `Dockerfile` itself (rare). Contributors who
