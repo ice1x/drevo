@@ -1,8 +1,8 @@
 //! Canonical byte encoding of property values for index keyspaces.
 //!
-//! Both the KV persistent property index and the native property-value index key
-//! their postings on the *bytes* of a property value, so they must encode a
-//! value identically. [`crate::value_encoding::encode_value`] is that shared encoder.
+//! Property-value indexes key their postings on the *bytes* of a property
+//! value, so every index must encode a value identically.
+//! [`crate::value_encoding::encode_value`] is that shared encoder.
 //!
 //! The encoding is deterministic: drevo builds `serde_json` without the
 //! `preserve_order` feature, so object keys serialize in sorted (`BTreeMap`)

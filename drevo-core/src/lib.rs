@@ -1,82 +1,78 @@
-//! `drevo-core` — the storage-agnostic core of [drevo](https://github.com/ice1x/drevo).
+//! An embeddable property-graph engine: nodes and edges with JSON properties,
+//! held in memory, with optional write-ahead-log durability, ACID
+//! transactions, and secondary indexes that follow the graph through a change
+//! feed.
 //!
-//! This crate holds the pieces of drevo that do not depend on the KV store,
-//! HTTP, Bolt, or the Python bindings — starting with the domain
-//! [`model`] and growing, in later extraction slices, to include the native
-//! graph engine and its indexes (RFC `docs/rfc-native-core.md`, #307).
+//! This is the engine underneath [drevo](https://github.com/ice1x/drevo), which
+//! adds Cypher, the HTTP and Bolt servers, and the Python bindings on top. Use
+//! `drevo-core` on its own when you want the graph inside your process and
+//! nothing else.
 //!
-//! The main `drevo` crate re-exports everything here (`pub use drevo_core::…`),
-//! so existing `drevo::model::…` / `crate::model::…` paths keep resolving
-//! unchanged; downstream projects that only need the engine can depend on
-//! `drevo-core` directly.
+//! # Example
+//!
+//! ```
+//! use drevo_core::engine::GraphEngine;
+//! use drevo_core::model::{Direction, NewEdge, NewNode, Properties};
+//! use drevo_core::native::NativeGraph;
+//! use drevo_core::native_fts::NativeFtsIndex;
+//!
+//! fn task(title: &str) -> NewNode {
+//!     NewNode {
+//!         kind: "task".into(),
+//!         title: title.into(),
+//!         body: String::new(),
+//!         body_html: String::new(),
+//!         properties: Properties::default(),
+//!     }
+//! }
+//!
+//! let graph = NativeGraph::new(); // or NativeGraph::open_durable("graph.wal")?
+//! let deploy = graph.create_node(task("Deploy release"))?;
+//! let review = graph.create_node(task("Review release notes"))?;
+//! graph.create_edge(NewEdge {
+//!     from_id: deploy.id,
+//!     to_id: review.id,
+//!     kind: "blocked_by".into(),
+//!     weight: 1.0,
+//!     properties: Properties::default(),
+//! })?;
+//!
+//! let blockers = graph.neighbors(deploy.id, Direction::Outgoing, Some("blocked_by"))?;
+//! assert_eq!(blockers[0].title, "Review release notes");
+//!
+//! // Indexes catch up with the graph by reading its change feed.
+//! let mut fts = NativeFtsIndex::new();
+//! fts.sync(&graph);
+//! assert_eq!(fts.search("deploy", 1)[0].0, deploy.id);
+//! # Ok::<(), drevo_core::error::CoreError>(())
+//! ```
+//!
+//! # Where to start
+//!
+//! - [`native::NativeGraph`] — the engine: create, read, update and delete
+//!   nodes and edges, traverse, take snapshots, run transactions
+//!   ([`begin`](native::NativeGraph::begin)) and two-phase commits.
+//! - [`engine::GraphEngine`] — the trait that operations are written against.
+//! - [`model`] — [`Node`](model::Node), [`Edge`](model::Edge) and their
+//!   create/patch inputs.
+//! - Indexes: [`native_fts`] (BM25 full-text search),
+//!   [`native_label_index`], [`native_property_index`].
+//! - Replication: [`replica`], [`delta`], [`hlc`], [`lww`].
 
-/// Okapi BM25 scoring primitives ([`bm25::bm25_idf`]) shared by the KV and
-/// native full-text indexes. Re-exported into the main crate.
 pub mod bm25;
-/// Compressed-Sparse-Row adjacency snapshot ([`crate::csr::CsrAdjacency`]) — the
-/// cache-friendly, lock-free substrate for whole-graph parallel scans and
-/// algorithms (issue #382, Phase 8). Built by flattening a
-/// [`native::GraphSnapshot`]. Re-exported as `drevo::csr`.
 pub mod csr;
-/// Version-vector delta exchange ([`crate::delta::VersionVector`] /
-/// [`crate::delta::Delta`]) — the minimal-diff state-transfer built on the
-/// per-write causal stamp (issue #389, primitive #4). Re-exported as
-/// `drevo::delta`.
 pub mod delta;
-/// The `drevo-json-v1` dump wire-format types ([`crate::dump::Dump`],
-/// [`crate::dump::ImportReport`], [`crate::dump::DumpError`],
-/// [`crate::dump::FORMAT_V1`]) — the storage-agnostic interchange the native
-/// engine produces and consumes, and the cross-engine migration seam moves.
-/// Re-exported from `drevo::dump`.
 pub mod dump;
-/// The [`engine::GraphEngine`] seam — the graph-level trait the query layers
-/// depend on, implemented by both the KV store (main crate) and the native
-/// engine. Re-exported from `drevo::engine`.
 pub mod engine;
-/// The storage-agnostic error type ([`crate::error::CoreError`]) shared by the
-/// native engine, its indexes, and the dump seam. Converts structurally to and
-/// from the main crate's `DrevoError`.
 pub mod error;
-/// Hybrid Logical Clock ([`crate::hlc::Hlc`] / [`crate::hlc::HlcClock`]) — the
-/// causal versioning primitive for multi-writer convergence (issue #389).
-/// Re-exported into the main crate as `drevo::hlc`.
 pub mod hlc;
-/// The `_labels` secondary-label convention
-/// ([`crate::labels::secondary_labels`] / [`crate::labels::SECONDARY_LABELS_KEY`])
-/// — the single source of truth for parsing a node's extra labels, shared by the
-/// Cypher executor and the native label index. Re-exported into the main crate.
 pub mod labels;
-/// Last-Writer-Wins register + map CRDTs ([`crate::lww::LwwRegister`] /
-/// [`crate::lww::LwwMap`]) built on the HLC — the convergence primitive for
-/// multi-writer records (issue #389). Re-exported as `drevo::lww`.
 pub mod lww;
 pub mod model;
-/// The native in-memory graph engine ([`native::NativeGraph`]) — index-free
-/// adjacency, the KV store's observable semantics without key encoding, and a
-/// change-feed of [`native::WalOp`] ops. Re-exported from `drevo::native`.
 pub mod native;
-/// In-memory full-text index ([`native_fts::NativeFtsIndex`]) that tails a
-/// [`native::NativeGraph`] change-feed, matching the KV trigram BM25 semantics.
-/// Re-exported from `drevo::native_fts`.
 pub mod native_fts;
-/// In-memory secondary-label index ([`native_label_index::NativeLabelIndex`])
-/// that tails a [`native::NativeGraph`] change-feed. Re-exported from
-/// `drevo::native_label_index`.
 pub mod native_label_index;
-/// In-memory property-value index
-/// ([`native_property_index::NativePropertyIndex`]) that tails a
-/// [`native::NativeGraph`] change-feed. Re-exported from
-/// `drevo::native_property_index`.
 pub mod native_property_index;
-/// WAL-shipping read replica ([`crate::replica::NativeReplica`]) — an in-memory
-/// mirror of a source [`native::NativeGraph`] kept converged by tailing its
-/// change-feed (issue #383, Phase 9). Re-exported as `drevo::replica`.
 pub mod replica;
-/// Pure text tokenization — normalization plus trigram/word extraction, with no
-/// storage or error dependencies. Shared by the KV full-text index and the
-/// native `NativeFtsIndex`; re-exported from `drevo::fts::tokenizer`.
 pub mod tokenizer;
-/// Canonical byte encoding of property values
-/// ([`crate::value_encoding::encode_value`]) shared by the KV and native property
-/// indexes. Re-exported into the main crate.
 pub mod value_encoding;

@@ -1,10 +1,10 @@
 //! Compressed-Sparse-Row adjacency snapshot for cache-friendly, lock-free
-//! parallel scans and graph algorithms (issue #382, Phase 8).
+//! parallel scans and graph algorithms.
 //!
 //! The live engine stores adjacency as a `HashMap<u64, Vec<AdjEntry>>` keyed by
 //! sparse node id — great for point lookups and incremental writes, poor for a
 //! full-graph sweep (pointer-chasing, no locality). A
-//! [`CsrAdjacency`](crate::csr::CsrAdjacency) flattens one
+//! [`CsrAdjacency`] flattens one
 //! [`GraphSnapshot`](crate::native::GraphSnapshot) into three contiguous arrays:
 //!
 //! * `vertices` — the snapshot's node ids, sorted ascending; a node's **dense
@@ -23,7 +23,7 @@
 //! centralities) live in the main crate's `algorithms` module. The CSR is the
 //! cache-friendly substrate those can run over.
 //!
-//! # This slice
+//! # Scope
 //!
 //! Out-adjacency, **distinct** neighbours per vertex (matching
 //! [`neighbor_ids`](crate::native::GraphSnapshot::neighbor_ids) with no kind

@@ -1,43 +1,72 @@
 # drevo-core
 
-The storage-agnostic core of [drevo](https://github.com/ice1x/drevo): the
-domain model, the storage-agnostic `CoreError`, and the **native in-memory
-graph engine** with its label, property, BM25 full-text, and value-cache
-indexes — everything the engine needs, with none of the KV store, HTTP,
-Bolt, or Python bindings the main `drevo` crate layers on top.
+An embeddable property-graph engine for Rust: nodes and edges with JSON
+properties, held in memory, with optional write-ahead-log durability, ACID
+transactions, and BM25 full-text, label and property indexes.
 
-It is extracted so the engine can be depended on directly by other projects
-without pulling in the server surface. The main `drevo` crate consumes this
-crate by path and re-exports it, so `drevo::model::…`, `drevo::native::…`,
-and friends keep resolving unchanged.
+It is the engine underneath [drevo](https://github.com/ice1x/drevo), which adds
+Cypher, the HTTP and Bolt servers, and the Python bindings on top. Use
+`drevo-core` on its own when you want the graph inside your process and nothing
+else.
+
+## Example
+
+```rust
+use drevo_core::engine::GraphEngine;
+use drevo_core::model::{Direction, NewEdge, NewNode, Properties};
+use drevo_core::native::NativeGraph;
+
+fn task(title: &str) -> NewNode {
+    NewNode {
+        kind: "task".into(),
+        title: title.into(),
+        body: String::new(),
+        body_html: String::new(),
+        properties: Properties::default(),
+    }
+}
+
+let graph = NativeGraph::open_durable("tasks.wal")?; // or NativeGraph::new()
+let deploy = graph.create_node(task("Deploy release"))?;
+let review = graph.create_node(task("Review release notes"))?;
+graph.create_edge(NewEdge {
+    from_id: deploy.id,
+    to_id: review.id,
+    kind: "blocked_by".into(),
+    weight: 1.0,
+    properties: Properties::default(),
+})?;
+
+let blockers = graph.neighbors(deploy.id, Direction::Outgoing, Some("blocked_by"))?;
+assert_eq!(blockers[0].title, "Review release notes");
+```
 
 ## What's inside
 
-- `model` — nodes, edges, properties, directions, the graph domain types.
-- `engine::GraphEngine` — the trait the Cypher executor runs against.
-- `native::NativeGraph` — the in-memory engine implementing it (HashMap
-  vertices/edges with denormalised, index-free adjacency; an arena/CSR
-  representation is the planned Phase 2 of
-  [RFC #307](https://github.com/ice1x/drevo/blob/main/docs/rfc-native-core.md)).
-- `native_label_index`, `native_property_index`, `native_fts`, `bm25`,
-  `value_encoding`, `tokenizer` — the secondary indexes and their support.
-- `error::CoreError` — a `thiserror` enum that converts structurally to and
-  from the main crate's `DrevoError`.
+- `native::NativeGraph` — the engine: CRUD on nodes and edges, traversal,
+  O(1) snapshots, transactions (`begin` / `commit`) and two-phase commit,
+  durable mode via `open_durable`.
+- `engine::GraphEngine` — the trait the operations are written against;
+  implemented by the graph and by each open transaction.
+- `model` — `Node`, `Edge`, and their create/patch inputs.
+- `native_fts` (BM25 full-text search), `native_label_index`,
+  `native_property_index` — secondary indexes that follow the graph through its
+  change feed.
+- `csr` — compressed-sparse-row adjacency for whole-graph parallel scans.
+- `replica`, `delta`, `hlc`, `lww` — WAL-shipping read replicas and
+  multi-writer merge (hybrid logical clocks, last-writer-wins CRDTs).
+- `dump` — the whole graph as one serde value, for backup and transfer.
 
 ## Design notes
 
-- **Dependency-light on purpose.** The only external crates are `serde` /
-  `serde_json` / `bincode` for (de)serialization, `thiserror` for the error
-  type, and `uuid` for identifiers.
-- **`wasm32`-clean.** A `wasm` feature forwards `uuid`'s getrandom backend
-  and swaps the clock source, so a `wasm32-unknown-unknown` build of the
-  model keeps working (mirrors the main crate).
+- **Few dependencies.** `serde` / `serde_json` / `bincode` for
+  (de)serialization, `thiserror` for the error type, `uuid` for identifiers.
+- **Builds for `wasm32-unknown-unknown`.** The clock comes from the browser
+  there; enable the `wasm` feature so uuid generation gets its random source.
 
 ## Status
 
-Pre-1.0. The public API tracks the main crate's needs and may change between
-`0.x` releases. Performance characteristics and the scoreboard against
-Memgraph are recorded in
+Pre-1.0: the API may change between `0.x` releases. Benchmarks are in
 [`docs/native-core-baseline.md`](https://github.com/ice1x/drevo/blob/main/docs/native-core-baseline.md).
 
 ## License

@@ -1,15 +1,17 @@
-//! An in-memory full-text index that tails a
-//! [`NativeGraph`](crate::native::NativeGraph)'s change-feed
-//! (RFC `docs/rfc-native-core.md`, #307, Phase 6.3).
+//! In-memory BM25 full-text search over a
+//! [`NativeGraph`], kept current from its change
+//! feed.
 //!
-//! The native graph engine keeps only the core graph (nodes, edges, adjacency);
+//! The graph engine keeps only the core graph (nodes, edges, adjacency);
 //! secondary indexes live off it and stay current by **tailing the change-feed**
 //! rather than coupling to the write path (see
 //! [`NativeGraph::changes_since`](crate::native::NativeGraph::changes_since)).
-//! This is the first such consumer: a trigram BM25 index, matching the KV
-//! store's full-text semantics (`k1 = 1.2`, `b = 0.75`, IDF
-//! `ln(1 + (N − df + 0.5) / (df + 0.5))`, over each node's title + body + string
-//! properties) so `fts.search` can be answered on the native engine.
+//! [`NativeFtsIndex`] indexes each node's
+//! title, body and string properties as character trigrams and ranks matches
+//! with Okapi BM25 (`k1 = 1.2`, `b = 0.75`, IDF
+//! `ln(1 + (N − df + 0.5) / (df + 0.5))`);
+//! [`NativeFtsRelIndex`] does the same
+//! for edges.
 //!
 //! # Usage
 //!

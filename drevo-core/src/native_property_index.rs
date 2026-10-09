@@ -1,6 +1,6 @@
-//! An in-memory **property-value** index that tails a
-//! [`NativeGraph`](crate::native::NativeGraph)'s change-feed
-//! (RFC `docs/rfc-native-core.md`, #307, Phase 6.7).
+//! An in-memory **property-value** index over a
+//! [`NativeGraph`], kept current from its change
+//! feed.
 //!
 //! Maps every indexable `(property key, property value)` pair a node carries to
 //! the ids that hold it, so a Cypher equality pattern such as
@@ -8,10 +8,8 @@
 //! of an `O(N)` full-node scan. Numeric values are additionally kept in ordered
 //! maps so an inequality (`WHERE n.age > 30`) range-scans through `range_ids`
 //! rather than scanning every node.
-//! It is the native counterpart of the KV store's `property_index`
-//! (`Drevo::nodes_by_property`, in the main crate), kept —
-//! like the trigram FTS and the secondary-label index — off the core graph seam
-//! and current by **tailing the change-feed** (see
+//! Like the full-text and secondary-label indexes, it lives off the core graph
+//! and stays current by **tailing the change-feed** (see
 //! [`NativeGraph::changes_since`](crate::native::NativeGraph::changes_since)).
 //!
 //! # Which values are indexed
