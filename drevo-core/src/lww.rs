@@ -122,9 +122,9 @@ impl<T: Clone> LwwRegister<T> {
 
 /// A Last-Writer-Wins map: per-key [`LwwRegister`]s that converge under
 /// [`merge`](Self::merge). Keys present on either side survive a merge; a key's
-/// value is resolved by its register's LWW rule. (Removal that converges needs
-/// tombstones — issue #389 primitive #3 — and is intentionally out of scope
-/// here.)
+/// value is resolved by its register's LWW rule. There is no per-key remove:
+/// for membership that converges under concurrent add/remove, use
+/// [`LwwSet`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LwwMap<K: Ord, V> {
     entries: BTreeMap<K, LwwRegister<V>>,
@@ -200,8 +200,7 @@ impl<K: Ord + Clone, V: Clone> LwwMap<K, V> {
     }
 }
 
-/// A Last-Writer-Wins element set with **causal tombstones** (issue #389
-/// primitive #3): each element's membership is a [`LwwRegister`]`<bool>`, so an
+/// A Last-Writer-Wins element set with **causal tombstones**: each element's membership is a [`LwwRegister`]`<bool>`, so an
 /// [`add`](Self::add) writes `true` and a [`remove`](Self::remove) writes a
 /// timestamped `false` (the tombstone). A concurrent add and remove of the same
 /// element resolve by stamp order — deterministically the same on every replica

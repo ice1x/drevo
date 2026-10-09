@@ -95,8 +95,8 @@ fn join_fields(fields: &[&str]) -> String {
 }
 
 /// Extract the **set** of distinct trigrams across an arbitrary list of text
-/// fields (title, body, and — since #227 — any string-valued node/edge
-/// properties), joined with a space separator before tokenization.
+/// fields (title, body, and any string-valued node/edge properties), joined
+/// with a space separator before tokenization.
 pub fn extract_trigrams_fields(fields: &[&str]) -> Vec<String> {
     trigrams(&join_fields(fields))
 }
@@ -158,8 +158,8 @@ pub fn extract_raw_trigrams(title: &str, body: &str) -> Vec<String> {
 
 /// Extract **raw** (non-deduplicated) trigrams across an arbitrary list of text
 /// fields — the multi-field companion of [`extract_raw_trigrams`], used to
-/// compute BM25 document length `|d|` over title + body + string properties
-/// (#227).
+/// compute BM25 document length `|d|` over title + body + string
+/// properties.
 pub fn extract_raw_trigrams_fields(fields: &[&str]) -> Vec<String> {
     raw_trigrams(&join_fields(fields))
 }

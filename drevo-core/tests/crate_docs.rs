@@ -22,6 +22,10 @@ const STALE: &[&str] = &[
     "This slice",
     "RFC",
     "Phase ",
+    "Drevo::",
+    "`Drevo`",
+    "main crate",
+    "redb",
 ];
 
 /// `#` followed by three or more digits: an issue/PR number.
@@ -47,14 +51,16 @@ fn root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The doc text docs.rs renders from a source file: module docs (`//!`), plus
-/// item docs (`///`) for `lib.rs`, whose `pub mod` docs fill the module table.
-fn rendered_doc_lines(file: &Path, with_item_docs: bool) -> Vec<String> {
+/// The doc comments of a source file — module docs (`//!`) and item docs
+/// (`///`) — with every other line blanked so line numbers stay true. Private
+/// items are included too: docs.rs hides them, but `--document-private-items`
+/// and readers of the source do not.
+fn doc_lines(file: &Path) -> Vec<String> {
     let src = fs::read_to_string(file).expect("read source");
     src.lines()
         .map(|l| {
             let t = l.trim_start();
-            if t.starts_with("//!") || (with_item_docs && t.starts_with("///")) {
+            if t.starts_with("//!") || t.starts_with("///") {
                 t.to_string()
             } else {
                 String::new()
@@ -64,17 +70,13 @@ fn rendered_doc_lines(file: &Path, with_item_docs: bool) -> Vec<String> {
 }
 
 #[test]
-fn crate_page_and_module_docs_carry_no_internal_history() {
+fn doc_comments_carry_no_internal_history() {
     let mut hits = Vec::new();
     for entry in fs::read_dir(root().join("src")).expect("src dir") {
         let path = entry.expect("entry").path();
         if path.extension().is_some_and(|e| e == "rs") {
-            let is_lib = path.file_name().is_some_and(|n| n == "lib.rs");
             let name = path.display().to_string();
-            hits.extend(stale_lines(
-                &name,
-                rendered_doc_lines(&path, is_lib).into_iter(),
-            ));
+            hits.extend(stale_lines(&name, doc_lines(&path).into_iter()));
         }
     }
     assert!(hits.is_empty(), "stale doc wording:\n{}", hits.join("\n"));
@@ -104,7 +106,11 @@ fn package_description_says_what_the_crate_is() {
 
 #[test]
 fn crate_page_opens_with_a_runnable_example() {
-    let lib = rendered_doc_lines(&root().join("src/lib.rs"), false).join("\n");
+    let lib = doc_lines(&root().join("src/lib.rs"))
+        .into_iter()
+        .filter(|l| l.starts_with("//!"))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         lib.contains("```") && lib.contains("NativeGraph::new()"),
         "the crate page should show NativeGraph in use"

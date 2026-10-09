@@ -72,8 +72,7 @@ struct AdjEntry {
 /// The total order every adjacency list is kept in: interned kind first — so a
 /// relationship-type filter is one contiguous run — then neighbour id, then
 /// edge id as a stable tie-break. Maintaining this lets a kind-filtered fan-out
-/// binary-search its run instead of scanning every incident edge (RFC #307
-/// Phase 2, arena/CSR slice 1).
+/// binary-search its run instead of scanning every incident edge.
 fn adj_sort_key(e: &AdjEntry) -> (u32, u64, u64) {
     (e.kind_id, e.neighbor_id, e.edge_id)
 }
@@ -109,20 +108,19 @@ struct Inner {
     out_adj: HashMap<u64, Vec<AdjEntry>>,
     /// `to_id → entries` (neighbour = the edge's `from_id`), insertion order.
     in_adj: HashMap<u64, Vec<AdjEntry>>,
-    /// `title → node id`, mirroring `Drevo`'s title-uniqueness index.
+    /// `title → node id`: the title-uniqueness index.
     titles: HashMap<String, u64>,
-    /// `node kind → ids of that kind`, mirroring `Drevo`'s primary-kind index
-    /// so `nodes_by_kind` is `O(matches · log)` instead of a full `O(n)` scan.
-    /// The `BTreeSet` keeps ids ascending, which is the order `Drevo` returns
+    /// `node kind → ids of that kind`: the primary-kind index, so
+    /// `nodes_by_kind` is `O(matches · log)` instead of a full `O(n)` scan.
+    /// The `BTreeSet` keeps ids ascending, the order `nodes_by_kind` returns
     /// (and what `offset`/`limit` pagination is defined against).
     kind_index: HashMap<String, BTreeSet<u64>>,
     /// Edge-kind string → interned `u32` id (adjacency stores the id).
     kind_ids: HashMap<String, u32>,
-    /// `node id → embedding vector` — the durable, typed embedding store
-    /// (issue #446), the native counterpart of the KV `vec:` keyspace. Kept
+    /// `node id → embedding vector` — the durable, typed embedding store. Kept
     /// separate from node `properties` (distinct lifecycle; the HNSW index is
-    /// rebuilt from it), but keyed by node id and **cascaded on node deletion**,
-    /// matching the KV handle.
+    /// rebuilt from it), but keyed by node id and **cascaded on node
+    /// deletion**.
     embeddings: HashMap<u64, Vec<f32>>,
     /// Declared schema constraints, validated at transaction commit.
     constraints: Vec<Constraint>,
@@ -133,12 +131,12 @@ struct Inner {
     /// always sorts ahead in `list_recent`, even when several in-memory writes
     /// land in the same wall-clock millisecond.
     last_updated_at: i64,
-    /// Two-phase commit (#556): transactions prepared but not yet resolved,
+    /// Two-phase commit: transactions prepared but not yet resolved,
     /// keyed by global transaction id. Kept with the graph so that replay,
     /// WAL-tailing replicas and compaction all carry it; non-empty means the
     /// write fence is up.
     prepared: BTreeMap<String, PreparedEntry>,
-    /// Global transaction ids rolled back heuristically (#556): a late
+    /// Global transaction ids rolled back heuristically: a late
     /// `commit_prepared` for one of these reports the overridden outcome.
     heuristic: BTreeSet<String>,
 }
@@ -196,12 +194,12 @@ impl Inner {
     }
 
     /// Invoke `f` for each adjacency entry incident to `node_id` in `direction`,
-    /// in `Drevo::edges_of` order (the outgoing pass, then the incoming pass) —
+    /// in `edges_of` order (the outgoing pass, then the incoming pass) —
     /// **without allocating**, so the hot fan-out paths spend no time on a
     /// scratch `Vec`/`HashSet`.
     ///
     /// A **self-loop** under [`Direction::Both`] sits in both the out- and
-    /// in-lists; `Drevo` reports it once, so the incoming pass skips it. That is
+    /// in-lists; it is reported once, so the incoming pass skips it. That is
     /// exact: a self-loop is the *only* way one edge lands in both a node's out-
     /// and in-lists (a non-loop edge `x→y` is in `out[x]` and `in[y]` only), and
     /// a self-loop's entry is exactly the one whose `neighbor_id == node_id`.
@@ -384,9 +382,8 @@ impl Inner {
             .collect()
     }
 
-    /// Look up a node by its unique title via the `titles` index — the native
-    /// counterpart of `Drevo::get_node_by_title` (title uniqueness is enforced
-    /// on write, so at most one match).
+    /// Look up a node by its unique title via the `titles` index (title
+    /// uniqueness is enforced on write, so at most one match).
     fn get_node_by_title(&self, title: &str) -> Option<Node> {
         self.titles
             .get(title)
@@ -394,8 +391,8 @@ impl Inner {
             .map(|a| (**a).clone())
     }
 
-    /// Most-recently-updated nodes first, capped at `limit`. Ordering matches
-    /// `Drevo::list_recent`: `updated_at` descending, ties broken by node id
+    /// Most-recently-updated nodes first, capped at `limit`: `updated_at`
+    /// descending, ties broken by node id
     /// descending (a higher id was allocated later, so it is the newer insert).
     fn list_recent(&self, limit: usize) -> Vec<Node> {
         if limit == 0 {
@@ -412,8 +409,7 @@ impl Inner {
     }
 
     /// Edges of a given `kind`, id-ascending, paginated — the edge counterpart
-    /// of [`Inner::nodes_by_kind`] and the native form of
-    /// `Drevo::list_edges_by_kind`. No edge-kind index exists yet, so this
+    /// of [`Inner::nodes_by_kind`]. No edge-kind index exists yet, so this
     /// scans; `all_edges` is already id-sorted for the pagination contract.
     fn list_edges_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Edge> {
         let mut edges: Vec<Edge> = self
@@ -848,7 +844,7 @@ impl Inner {
 }
 
 /// A schema constraint a [`NativeGraph`] enforces at transaction commit
-/// (RFC ACID "C", Phase 3) — the Neo4j-parity set: UNIQUE, property EXISTS, and
+/// — the Neo4j-parity set: UNIQUE, property EXISTS, and
 /// NODE KEY.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Constraint {
@@ -914,7 +910,7 @@ pub enum CommitError {
     /// Writing the transaction to the write-ahead log failed (durable engine
     /// only). The transaction is not applied; the message is the I/O error.
     Io(String),
-    /// Two-phase commit (#556): a transaction is prepared, and every other
+    /// Two-phase commit: a transaction is prepared, and every other
     /// write is refused until it is resolved (the prepared fence). Retryable;
     /// carries the pending global transaction ids.
     PreparedPending(Vec<String>),
@@ -940,7 +936,7 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
-/// Why [`NativeGraph::tx_prepare`] failed (#556). Every case closes the
+/// Why [`NativeGraph::tx_prepare`] failed. Every case closes the
 /// transaction and leaves nothing prepared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrepareError {
@@ -986,7 +982,7 @@ impl std::fmt::Display for PrepareError {
 impl std::error::Error for PrepareError {}
 
 /// Why [`NativeGraph::commit_prepared`] / [`NativeGraph::rollback_prepared`]
-/// failed (#556).
+/// failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     /// No transaction is prepared under this `gid` (never prepared, or
@@ -1035,7 +1031,7 @@ struct PreparedEntry {
     ops: Vec<WalOp>,
 }
 
-/// One entry in the write-ahead log (RFC ACID "D", Phase 3): the durable,
+/// One entry in the write-ahead log: the durable,
 /// replayable record of a single graph mutation. Upserts carry the **applied**
 /// record (id/uuid/timestamps already assigned) so replay is deterministic and
 /// never regenerates them; deletes carry the id. Appended in commit order and
@@ -1051,13 +1047,13 @@ pub enum WalOp {
     UpsertEdge(Edge),
     /// Delete an edge.
     DeleteEdge(u64),
-    /// Insert or replace a node's embedding vector (issue #446). The durable,
+    /// Insert or replace a node's embedding vector. The durable,
     /// typed embedding store — independent of node `properties`, keyed by node
-    /// id, mirroring the KV engine's `vec:` keyspace.
+    /// id.
     SetEmbedding(u64, Vec<f32>),
     /// Delete a node's embedding (idempotent).
     DeleteEmbedding(u64),
-    /// Two-phase commit (#556): a transaction prepared under `gid`, with its
+    /// Two-phase commit: a transaction prepared under `gid`, with its
     /// write set. Applied to the graph only when a matching
     /// [`WalOp::CommitPrepared`] follows; unresolved at the end of the log, it
     /// is restored as prepared (and the write fence is raised).
@@ -1069,12 +1065,12 @@ pub enum WalOp {
         /// The transaction's write set, in commit order.
         ops: Vec<WalOp>,
     },
-    /// Two-phase commit (#556): apply the write set prepared under `gid`.
+    /// Two-phase commit: apply the write set prepared under `gid`.
     CommitPrepared {
         /// The global transaction id being committed.
         gid: String,
     },
-    /// Two-phase commit (#556): discard the write set prepared under `gid`.
+    /// Two-phase commit: discard the write set prepared under `gid`.
     RollbackPrepared {
         /// The global transaction id being rolled back.
         gid: String,
@@ -1087,7 +1083,9 @@ pub enum WalOp {
     },
 }
 
-/// An in-memory, native [`GraphEngine`] (RFC Phase 2/3). See the module docs.
+/// The graph engine: an in-memory [`GraphEngine`], optionally durable through
+/// a write-ahead log ([`open_durable`](Self::open_durable)). See the
+/// [module docs](self) for the guarantees.
 #[derive(Default)]
 pub struct NativeGraph {
     inner: RwLock<Arc<Inner>>,
@@ -1097,8 +1095,8 @@ pub struct NativeGraph {
     /// returning, so an acknowledged write survives a crash.
     #[cfg(not(target_arch = "wasm32"))]
     wal: Option<std::sync::Mutex<WalSink>>,
-    /// Registered (session-owned) transactions, keyed by [`NativeTxId`]
-    /// (RFC #307 — the executor-facing form of [`Self::begin`]): a Bolt
+    /// Registered (session-owned) transactions, keyed by [`NativeTxId`] —
+    /// the executor-facing form of [`Self::begin`]: a Bolt
     /// session keeps only the id between statements and re-derives an
     /// ephemeral [`NativeTxEngine`] per statement, so no borrow outlives a
     /// statement. Slots are removed by commit / rollback.
@@ -1106,20 +1104,20 @@ pub struct NativeGraph {
     /// Monotonic source of registered-transaction ids (starts at 1).
     next_reg_tx: std::sync::atomic::AtomicU64,
     /// The ordered change-feed: every committed write, in commit order, as a
-    /// [`WalOp`] (RFC `docs/rfc-native-core.md`, #307, Phase 6). Secondary
+    /// [`WalOp`]. Secondary
     /// indexes off the graph seam (FTS, vector) keep themselves current by
     /// **tailing** this feed — snapshot the graph once, then apply each change
     /// since a cursor — instead of coupling to the write path. See
     /// [`changes_since`](Self::changes_since).
     feed: std::sync::Mutex<ChangeFeed>,
-    /// Group-commit coordinator for durable writes (RFC #307): one `fsync`
+    /// Group-commit coordinator for durable writes: one `fsync`
     /// amortized across every write concurrently enqueued, so autocommit write
     /// throughput under concurrency is not one-fsync-per-edge. Idle for an
     /// in-memory engine (nothing to flush).
     #[cfg(not(target_arch = "wasm32"))]
     group: GroupCommit,
-    /// This replica's stable identity (issue #389, the multi-writer/P2P
-    /// substrate). Persisted next to the WAL as `origin.json` for a durable
+    /// This replica's stable identity (the multi-writer/P2P substrate).
+    /// Persisted next to the WAL as `origin.json` for a durable
     /// store ([`open_durable`](Self::open_durable)); a fresh random ephemeral
     /// id for an in-memory one. Paired with [`clock`] it stamps autocommit
     /// writes with a total, causally-ordered [`Stamp`].
@@ -1127,15 +1125,14 @@ pub struct NativeGraph {
     /// The Hybrid Logical Clock issuing causal timestamps for this replica.
     clock: std::sync::Mutex<HlcClock>,
     /// The causal [`Stamp`] of each **live** node/edge's last autocommit write
-    /// (issue #389). A create/update sets it, a delete moves it into
+    ///. A create/update sets it, a delete moves it into
     /// [`tombstones`]; queried via [`stamp_of`]. In-memory only for now (rebuilt
-    /// as writes happen after a restart) — persisting stamps into the WAL touches
-    /// the on-disk format and is a later, explicitly-gated slice.
+    /// as writes happen after a restart); stamps are not written to the WAL.
     ///
     /// [`tombstones`]: Self::tombstones
     stamps: RwLock<HashMap<StampTarget, Stamp>>,
     /// The [`Tomb`] of each **deleted** node/edge — its causal [`Stamp`] plus the
-    /// entity's `uuid` (issue #389). Kept disjoint from [`stamps`]: a target is
+    /// entity's `uuid`. Kept disjoint from [`stamps`]: a target is
     /// either live (in `stamps`) or deleted (here), and the greater stamp wins.
     /// Tombstones let a [`Delta`] carry deletes so a peer converges on removals,
     /// not just upserts; the stored `uuid` lets the receiver remap the deletion
@@ -1143,7 +1140,7 @@ pub struct NativeGraph {
     ///
     /// [`stamps`]: Self::stamps
     tombstones: RwLock<HashMap<StampTarget, Tomb>>,
-    /// The held exclusive-open lock for a durable store (#455): the open
+    /// The held exclusive-open lock for a durable store: the open
     /// lock-sidecar file whose advisory `flock`/`LockFileEx` this handle owns.
     /// Kept for the engine's whole lifetime so a second `open_durable` on the
     /// same path fails with [`CoreError::Locked`](crate::error::CoreError::Locked)
@@ -1161,7 +1158,7 @@ pub struct NativeGraph {
 
 /// A tombstone: the causal [`Stamp`] of a delete plus the deleted entity's
 /// `uuid`, so the deletion can be carried in a [`Delta`] and remapped by `uuid`
-/// on the receiver (issue #389). Serializable so the tombstone table can be
+/// on the receiver. Serializable so the tombstone table can be
 /// checkpointed to a sidecar and survive a restart.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Tomb {
@@ -1170,7 +1167,7 @@ struct Tomb {
 }
 
 /// `uuid → receiver-local-id` resolution for a single [`NativeGraph::apply_delta`]
-/// batch (issue #389). Indexes the receiver's live nodes/edges and its
+/// batch. Indexes the receiver's live nodes/edges and its
 /// tombstones once, then stays current as new ids are minted, so every change in
 /// the delta is remapped from the sender's id space into ours by `uuid`.
 struct Remap {
@@ -1185,7 +1182,7 @@ struct Remap {
 
 /// A node or edge addressed by id, for the per-entity causal stamp table
 /// ([`NativeGraph::stamp_of`]). Serializable so the tombstone table can be
-/// checkpointed to disk (issue #389).
+/// checkpointed to disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StampTarget {
     /// The node with this id.
@@ -1196,7 +1193,7 @@ pub enum StampTarget {
 
 /// Mint a fresh random replica [`OriginId`] from the random bits of a UUIDv7
 /// (its last 8 bytes are host-random). Collision-safe enough to identify a
-/// replica without coordination (issue #389).
+/// replica without coordination.
 fn mint_origin() -> OriginId {
     let uuid = crate::model::new_uuid_v7();
     let mut tail = [0u8; 8];
@@ -1236,14 +1233,14 @@ fn persist_origin(sidecar: &std::path::Path, origin: OriginId) -> std::io::Resul
     std::fs::rename(&tmp, sidecar)
 }
 
-/// The tombstone-checkpoint sidecar path, next to the WAL file (issue #389).
+/// The tombstone-checkpoint sidecar path, next to the WAL file.
 #[cfg(not(target_arch = "wasm32"))]
 fn tombstone_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
     wal_path.with_file_name("tombstones.json")
 }
 
 /// The exclusive-open lock sidecar path: the WAL path with a `.lock` suffix
-/// appended (`native.wal` → `native.wal.lock`) (#455). Derived from the *full*
+/// appended (`native.wal` → `native.wal.lock`). Derived from the *full*
 /// WAL filename — not a fixed name in the directory — so two distinct stores
 /// sharing one directory get distinct locks. A stable companion file that
 /// `compact_wal` never renames, so the advisory lock held on it survives
@@ -1257,7 +1254,7 @@ fn lock_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// Take an exclusive, non-blocking advisory lock on `lock_path`, creating the
-/// sidecar if absent, and return the held file handle (#455). The lock guards a
+/// sidecar if absent, and return the held file handle. The lock guards a
 /// durable store against a second `open_durable` on the same path: a contended
 /// acquisition returns [`CoreError::Locked`], any other failure
 /// [`CoreError::Io`]. The lock is *advisory* and tied to the open file
@@ -1288,7 +1285,7 @@ fn acquire_exclusive_lock(lock_path: &std::path::Path) -> Result<std::fs::File> 
 }
 
 /// Windows counterpart of [`acquire_exclusive_lock`] using `LockFileEx` with
-/// `LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY` (#455). Byte-range lock
+/// `LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY`. Byte-range lock
 /// over the whole file; released when the handle closes or the process exits.
 #[cfg(all(windows, not(target_arch = "wasm32")))]
 fn acquire_exclusive_lock(lock_path: &std::path::Path) -> Result<std::fs::File> {
@@ -1370,9 +1367,8 @@ fn persist_tombstones(
 /// The in-memory tail of committed [`WalOp`]s backing [`NativeGraph`]'s
 /// change-feed. `start_seq` is the sequence number *before* `ops[0]`, so the
 /// change at index `i` carries sequence `start_seq + i + 1` and the current
-/// head is `start_seq + ops.len()`. (Trimming consumed history — advancing
-/// `start_seq` and draining `ops` — is a later slice; for now the tail is
-/// retained in full.)
+/// head is `start_seq + ops.len()`. [`NativeGraph::trim_before`] drops
+/// consumed history by advancing `start_seq` and draining `ops`.
 #[derive(Default)]
 struct ChangeFeed {
     start_seq: u64,
@@ -1479,7 +1475,7 @@ fn wal_broken_err() -> CoreError {
 }
 
 impl NativeGraph {
-    /// Create an empty engine. Ids start at 1, matching `Drevo`.
+    /// Create an empty in-memory engine. Ids start at 1.
     pub fn new() -> Self {
         // `Default` leaves the origin at `0`; mint a fresh ephemeral identity so
         // two in-memory graphs stamp with distinct origins (issue #389).
@@ -1489,7 +1485,7 @@ impl NativeGraph {
         }
     }
 
-    /// This replica's stable [`OriginId`] (issue #389). Persisted next to the
+    /// This replica's stable [`OriginId`]. Persisted next to the
     /// WAL for a durable store, ephemeral for an in-memory one.
     pub fn origin_id(&self) -> OriginId {
         self.origin
@@ -1504,8 +1500,8 @@ impl NativeGraph {
     }
 
     /// The causal [`Stamp`] of `target`'s last autocommit write, or `None` if it
-    /// is absent (never written, or deleted). Rebuilt from empty after a restart
-    /// until stamps are persisted (a later slice).
+    /// is absent (never written, or deleted). Stamps live in memory only, so
+    /// this starts empty after a restart.
     pub fn stamp_of(&self, target: StampTarget) -> Option<Stamp> {
         self.stamps
             .read()
@@ -1579,7 +1575,7 @@ impl NativeGraph {
     }
 
     /// Best-effort checkpoint of the tombstone table to a sidecar next to the WAL
-    /// (issue #389), so deletes converge across a restart: without it, a
+    ///, so deletes converge across a restart: without it, a
     /// restarted replica has neither a deleted entity nor its tombstone, and a
     /// peer still holding the entity would **resurrect** it on the next sync.
     ///
@@ -1628,12 +1624,11 @@ impl NativeGraph {
 
     /// This replica's [`VersionVector`] — the greatest causal
     /// [`Stamp`] seen per origin across every live entity
-    /// (issue #389, primitive #4). A peer hands this to [`delta_since`] to learn
+    ///. A peer hands this to [`delta_since`] to learn
     /// the minimal set of writes it is missing.
     ///
     /// Built from the in-memory stamp table, so (like the table itself) it
-    /// reflects only writes seen since the process started until stamps are
-    /// persisted — an explicitly-gated later slice.
+    /// reflects only writes seen since the process started.
     ///
     /// [`delta_since`]: Self::delta_since
     pub fn version_vector(&self) -> VersionVector {
@@ -1661,7 +1656,7 @@ impl NativeGraph {
 
     /// The minimal [`Delta`] a holder of `remote` is missing: every live upsert
     /// and every tombstone whose stamp `remote` has not already observed
-    /// (issue #389, primitive #4). An empty `remote`
+    ///. An empty `remote`
     /// ([`VersionVector::new`]) returns the entire state — a full bootstrap.
     ///
     /// Deletes are carried as [`StampedChange::DeleteNode`] /
@@ -1731,7 +1726,7 @@ impl NativeGraph {
 
     /// Fold a received [`Delta`] into this replica by Last-Writer-Wins on the
     /// stamp, remapping the sender's ids into our own id space by `uuid`
-    /// (issue #389, primitive #4). Each change is installed only if its stamp
+    ///. Each change is installed only if its stamp
     /// beats the local one for the *same `uuid`*, and the local HLC is advanced
     /// past every stamp seen. Idempotent — re-applying a delta changes nothing.
     ///
@@ -2006,7 +2001,7 @@ impl NativeGraph {
     /// The local id of the node with this globally-unique `uuid`, or `None`.
     /// A linear scan today (the `uuid → id` map is built per merge in
     /// [`apply_delta`](Self::apply_delta), not kept persistently); use it to
-    /// address an entity across replicas by its stable `uuid` (issue #389).
+    /// address an entity across replicas by its stable `uuid`.
     pub fn node_id_of_uuid(&self, uuid: [u8; 16]) -> Option<u64> {
         read(&self.inner)
             .nodes
@@ -2025,8 +2020,7 @@ impl NativeGraph {
             .map(|e| e.id)
     }
 
-    /// Fetch a node by its globally-unique `uuid` — the native counterpart of
-    /// `Drevo::get_node_by_uuid` (embedded-handle parity, issue #445).
+    /// Fetch a node by its globally-unique `uuid`.
     pub fn get_node_by_uuid(&self, uuid: [u8; 16]) -> Option<Node> {
         let inner = read(&self.inner);
         inner
@@ -2036,20 +2030,18 @@ impl NativeGraph {
             .map(|a| (**a).clone())
     }
 
-    /// Fetch a node by its unique `title` via the title index — the native
-    /// counterpart of `Drevo::get_node_by_title`.
+    /// Fetch a node by its unique `title` via the title index.
     pub fn get_node_by_title(&self, title: &str) -> Option<Node> {
         read(&self.inner).get_node_by_title(title)
     }
 
-    /// Most-recently-updated nodes first, capped at `limit` — the native
-    /// counterpart of `Drevo::list_recent` (`updated_at` desc, id desc).
+    /// Most-recently-updated nodes first, capped at `limit` (`updated_at`
+    /// desc, then id desc).
     pub fn list_recent(&self, limit: usize) -> Vec<Node> {
         read(&self.inner).list_recent(limit)
     }
 
-    /// Edges of `kind`, id-ascending, paginated by `limit`/`offset` — the native
-    /// counterpart of `Drevo::list_edges_by_kind`.
+    /// Edges of `kind`, id-ascending, paginated by `limit`/`offset`.
     pub fn list_edges_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Vec<Edge> {
         read(&self.inner).list_edges_by_kind(kind, limit, offset)
     }
@@ -2062,8 +2054,7 @@ impl NativeGraph {
     // like node/edge records); reads are lock-free clones.
 
     /// Store (or replace) `node_id`'s embedding, durably. Errors with
-    /// [`CoreError::NodeNotFound`] if the node does not exist — matching
-    /// `Drevo::set_embedding`.
+    /// [`CoreError::NodeNotFound`] if the node does not exist.
     ///
     /// # Errors
     /// [`CoreError::NodeNotFound`] if `node_id` is absent; propagates a WAL
@@ -2081,8 +2072,7 @@ impl NativeGraph {
     }
 
     /// Store many embeddings in one durable batch (one fsync). Validates every
-    /// node exists **before** applying any, so it is all-or-nothing — matching
-    /// `Drevo::set_embeddings_batch`.
+    /// node exists **before** applying any, so it is all-or-nothing.
     ///
     /// # Errors
     /// [`CoreError::NodeNotFound`] for the first absent node (nothing is
@@ -2109,14 +2099,13 @@ impl NativeGraph {
         self.record(&ops)
     }
 
-    /// Fetch `node_id`'s embedding, or `None` — parity with
-    /// `Drevo::get_embedding`.
+    /// Fetch `node_id`'s embedding, or `None`.
     pub fn get_embedding(&self, node_id: u64) -> Option<Vec<f32>> {
         read(&self.inner).embeddings.get(&node_id).cloned()
     }
 
     /// Delete `node_id`'s embedding, durably. Idempotent (a missing embedding
-    /// is not an error) — parity with `Drevo::delete_embedding`.
+    /// is not an error).
     ///
     /// # Errors
     /// Propagates a WAL append/fsync failure.
@@ -2128,14 +2117,13 @@ impl NativeGraph {
         self.record(&[WalOp::DeleteEmbedding(node_id)])
     }
 
-    /// The number of stored embeddings — parity with `Drevo::embedding_count`.
+    /// The number of stored embeddings.
     pub fn embedding_count(&self) -> usize {
         read(&self.inner).embeddings.len()
     }
 
-    /// Snapshot of all `(node_id, embedding)` pairs, id-ascending — the native
-    /// engine's feed into the shared HNSW builder (`vector_store::build_hnsw_from`,
-    /// issue #446 S2). Deterministic order for a fixed HNSW seed.
+    /// Snapshot of all `(node_id, embedding)` pairs, id-ascending — e.g. to
+    /// build a vector index. The order is deterministic.
     pub fn all_embeddings(&self) -> Vec<(u64, Vec<f32>)> {
         let inner = read(&self.inner);
         let mut out: Vec<(u64, Vec<f32>)> = inner
@@ -2154,8 +2142,7 @@ impl NativeGraph {
     // durable — so an I/O failure or a mid-batch validation error leaves the
     // live graph, log and feed untouched, exactly like `delete_nodes` (#435).
 
-    /// Create many nodes in one durable batch — the native counterpart of
-    /// `Drevo::create_nodes`.
+    /// Create many nodes in one durable batch.
     ///
     /// # Errors
     /// [`CoreError::DuplicateTitle`] if any title collides (within the batch or
@@ -2184,8 +2171,8 @@ impl NativeGraph {
         Ok(nodes)
     }
 
-    /// Create many edges in one durable batch — the native counterpart of
-    /// `Drevo::create_edges`. Every edge's endpoints must already exist.
+    /// Create many edges in one durable batch. Every edge's endpoints must
+    /// already exist.
     ///
     /// # Errors
     /// [`CoreError::NodeNotFound`] if an endpoint is missing (the whole batch
@@ -2233,8 +2220,8 @@ impl NativeGraph {
         feed.start_seq + feed.ops.len() as u64
     }
 
-    /// Read every committed change after `cursor`, in commit order (RFC
-    /// `docs/rfc-native-core.md`, #307, Phase 6 change-feed). The returned
+    /// Read every committed change after `cursor`, in commit order (the
+    /// change feed). The returned
     /// [`ChangeBatch`] carries the resume cursor and, if the cursor had fallen
     /// behind the retained history, a `lagged` flag telling the subscriber to
     /// re-snapshot first.
@@ -2265,7 +2252,7 @@ impl NativeGraph {
     }
 
     /// Drop change-feed history at or before `cursor`, bounding the feed's
-    /// memory (RFC `docs/rfc-native-core.md`, #307, Phase 6).
+    /// memory.
     ///
     /// The caller passes the **minimum cursor across its live subscribers**, so
     /// no subscriber that is still catching up loses a change it has not seen.
@@ -2309,7 +2296,7 @@ impl NativeGraph {
 
     /// Persist `wal_ops` as one WAL record and publish `feed_ops` on the
     /// change-feed, in commit order. Ordinary writes pass the same ops for
-    /// both. Two-phase commit (#556) logs a compact `Prepare` /
+    /// both. Two-phase commit logs a compact `Prepare` /
     /// `CommitPrepared` / `RollbackPrepared` record while the feed carries
     /// nothing (prepared state is invisible) or, on commit, the expanded write
     /// set, so indexes and in-process replicas see ordinary upserts/deletes.
@@ -2446,7 +2433,7 @@ impl NativeGraph {
     ///
     /// O(1): it is an `Arc::clone` of the live state. The returned view is
     /// **frozen** — subsequent writes to this engine copy-on-write and leave the
-    /// snapshot untouched — giving snapshot isolation for reads (RFC ACID "I").
+    /// snapshot untouched — giving snapshot isolation for reads.
     pub fn snapshot(&self) -> GraphSnapshot {
         GraphSnapshot {
             inner: Arc::clone(&read(&self.inner)),
@@ -2455,7 +2442,7 @@ impl NativeGraph {
 
     /// Begin a [`NativeTx`] — a transaction that reads a consistent snapshot of
     /// the graph as of now, buffers its writes privately, and applies them all
-    /// atomically on [`commit`](NativeTx::commit) (RFC ACID "I"/"A", Phase 3).
+    /// atomically on [`commit`](NativeTx::commit).
     ///
     /// Isolation is snapshot: the transaction never sees another writer's
     /// changes made after it began. Concurrency control is optimistic — the
@@ -2543,7 +2530,7 @@ impl NativeGraph {
             .is_some()
     }
 
-    /// Two-phase commit, phase one (#556): validate registered transaction
+    /// Two-phase commit, phase one: validate registered transaction
     /// `id` exactly as a commit would (no change since `begin`, constraints
     /// hold), durably log its write set as prepared under `gid`, and raise the
     /// write fence. The transaction is closed either way; on success it can
@@ -2601,7 +2588,7 @@ impl NativeGraph {
         Ok(())
     }
 
-    /// Two-phase commit, phase two (#556): apply the write set prepared under
+    /// Two-phase commit, phase two: apply the write set prepared under
     /// `gid` and lower the fence once nothing else is prepared. Cannot
     /// conflict: the fence kept the graph unchanged since the prepare.
     ///
@@ -2630,7 +2617,7 @@ impl NativeGraph {
         Ok(())
     }
 
-    /// Two-phase commit (#556): discard the write set prepared under `gid`
+    /// Two-phase commit: discard the write set prepared under `gid`
     /// and lower the fence once nothing else is prepared.
     ///
     /// # Errors
@@ -2641,7 +2628,7 @@ impl NativeGraph {
         self.rollback_prepared_as(gid, false)
     }
 
-    /// Two-phase commit (#556): roll back the transaction prepared under
+    /// Two-phase commit: roll back the transaction prepared under
     /// `gid` **heuristically** — a server decision after the opt-in
     /// prepared-transaction timeout, not the coordinator's. The outcome is
     /// logged and remembered, so a later [`commit_prepared`](Self::commit_prepared)
@@ -2679,7 +2666,7 @@ impl NativeGraph {
         Ok(())
     }
 
-    /// Every prepared, unresolved transaction (#556), by ascending `gid` — for
+    /// Every prepared, unresolved transaction, by ascending `gid` — for
     /// a coordinator resolving in-doubt transactions, and for operators.
     pub fn list_prepared(&self) -> Vec<PreparedInfo> {
         read(&self.inner)
@@ -2723,7 +2710,7 @@ impl NativeGraph {
     }
 
     /// Declare a schema [`Constraint`] the engine enforces at transaction
-    /// commit (RFC ACID "C").
+    /// commit.
     ///
     /// The constraint is validated against the current data first: if existing
     /// nodes already violate it, it is **not** stored and the
@@ -2748,8 +2735,7 @@ impl NativeGraph {
     }
 
     /// Dump the current state as a write-ahead-log op sequence: every node then
-    /// every edge as an `Upsert`, in ascending id order (RFC ACID "D",
-    /// Phase 3). This is the "snapshot" form of the log — replaying it into a
+    /// every edge as an `Upsert`, in ascending id order. This is the "snapshot" form of the log — replaying it into a
     /// fresh engine via [`replay`](Self::replay) reproduces the graph exactly,
     /// which is what lets a periodic snapshot compact/truncate the incremental
     /// WAL. Constraints are schema, not data, and are not part of the dump.
@@ -2759,8 +2745,8 @@ impl NativeGraph {
 
     /// Apply a batch of committed [`WalOp`]s to this engine **verbatim** —
     /// ids/uuids/timestamps preserved, in order — and thread them through this
-    /// engine's own durability and change-feed (RFC #307; the read-replica apply
-    /// path, issue #383). Unlike [`apply_delta`](Self::apply_delta), which
+    /// engine's own durability and change-feed (the read-replica apply path).
+    /// Unlike [`apply_delta`](Self::apply_delta), which
     /// remaps ids for a peer-to-peer CRDT merge, this is faithful single-master
     /// replication: a follower applies its leader's log and becomes an exact
     /// mirror. Each op extends the change-feed (so the follower's own indexes can
@@ -2780,8 +2766,8 @@ impl NativeGraph {
         Ok(())
     }
 
-    /// Rebuild an engine by replaying a [`WalOp`] sequence in order (RFC ACID
-    /// "D", Phase 3) — the recovery path: load a snapshot then replay the WAL
+    /// Rebuild an engine by replaying a [`WalOp`] sequence in order — the
+    /// recovery path: load a snapshot then replay the WAL
     /// tail, or replay a full WAL from empty. Ids/uuids/timestamps come from the
     /// logged records; the id counters advance past every replayed id so a
     /// post-recovery create never collides with a recovered node/edge.
@@ -2817,8 +2803,8 @@ impl NativeGraph {
         }
     }
 
-    /// Open a **durable** engine backed by a write-ahead log at `path` (RFC
-    /// ACID "D", Phase 3). If the file exists its records are replayed to
+    /// Open a **durable** engine backed by a write-ahead log at `path`. If the
+    /// file exists its records are replayed to
     /// reconstruct the graph; then the file is opened for append and every
     /// subsequent direct write is logged and fsynced before it returns, so a
     /// write that has returned survives a crash. Reopening the same path
@@ -2963,7 +2949,7 @@ impl NativeGraph {
     /// Compact the write-ahead log: rewrite it as the current state's snapshot
     /// form (every node/edge as one `Upsert`), discarding the superseded
     /// incremental history that has accumulated from overwrites and deletes
-    /// (RFC ACID "D", Phase 3). Bounds the log's growth without changing the
+    ///. Bounds the log's growth without changing the
     /// recovered graph.
     ///
     /// Atomic and crash-safe: the snapshot is written to a temp file and fsynced,
@@ -3040,14 +3026,13 @@ impl NativeGraph {
     }
 
     /// Per-structure breakdown of the live index stack for the storage panel's
-    /// "Keyspaces" table — the WAL engine's counterpart of the KV engine's
-    /// per-redb-prefix stats. The durable WAL holds only records on disk
+    /// "Keyspaces" table. The durable WAL holds only records on disk
     /// (indexes are rebuilt on load), so this reports the in-memory structures:
     /// node/edge records plus the adjacency (`out`/`in`), `title` and `kind`
     /// indexes. Each tuple is `(label, rows, content_bytes)`, where
     /// `content_bytes` is the structural in-memory footprint, not an on-disk
-    /// size. FTS/vector keyspaces are KV-secondary-only and absent here by
-    /// design.
+    /// size. Full-text and vector indexes live outside the engine and are not
+    /// reported here.
     #[must_use]
     pub fn keyspace_stats(&self) -> Vec<(&'static str, u64, u64)> {
         let inner = read(&self.inner);
@@ -3441,7 +3426,7 @@ fn write(inner: &RwLock<Arc<Inner>>) -> std::sync::RwLockWriteGuard<'_, Arc<Inne
 
 impl NativeGraph {
     /// The writer lock for an ordinary write — refused while a transaction is
-    /// prepared (the two-phase-commit fence, #556). The check runs *after*
+    /// prepared (the two-phase-commit fence). The check runs *after*
     /// taking the lock, and `tx_prepare` raises the fence under the same lock,
     /// so no write can slip in between a prepare and its resolution. Reads,
     /// replica application, constraint declaration, compaction and the 2PC
@@ -3694,7 +3679,7 @@ impl GraphEngine for NativeGraph {
 }
 
 /// A frozen, read-only view of a [`NativeGraph`] at the instant
-/// [`NativeGraph::snapshot`] was called (RFC ACID "I", Phase 3). Reads are
+/// [`NativeGraph::snapshot`] was called. Reads are
 /// served from the captured [`Arc`] and are unaffected by later writes to the
 /// engine, so a whole traversal sees one consistent version of the graph.
 #[derive(Clone)]
@@ -3768,7 +3753,7 @@ impl GraphSnapshot {
 
     /// A Compressed-Sparse-Row view of this snapshot's **out**-adjacency
     /// ([`CsrAdjacency`]) — the cache-friendly, lock-free substrate for
-    /// whole-graph parallel scans and algorithms (issue #382). Vertices are the
+    /// whole-graph parallel scans and algorithms. Vertices are the
     /// snapshot's node ids in ascending order; each vertex's neighbours are its
     /// distinct out-neighbours (as in [`neighbor_ids`](Self::neighbor_ids) with
     /// no kind filter). Built by flattening the frozen snapshot, so it is a
