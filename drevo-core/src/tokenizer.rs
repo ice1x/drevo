@@ -1,3 +1,6 @@
+//! Text tokenization for full-text search: normalization plus character
+//! trigram and word extraction, with CJK-aware handling.
+
 /// Returns `true` if the character is in a CJK Unified Ideographs range.
 const fn is_cjk(c: char) -> bool {
     matches!(c,

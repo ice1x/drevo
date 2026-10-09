@@ -1,13 +1,12 @@
-//! The `GraphEngine` seam — the graph-level abstraction the query layers
-//! (Cypher executor, traversal, planner) depend on instead of reaching into a
-//! concrete store's KV-encoded internals.
+//! [`GraphEngine`] — the graph operations, as a
+//! trait.
 //!
-//! `GraphEngine` expresses storage in **graph terms** — nodes, edges, adjacency
-//! — so the in-memory-first native engine ([`crate::native::NativeGraph`]) and
-//! the main crate's KV-backed store present the *same* contract to the query
-//! layers above them. The trait is **object-safe** (`&dyn GraphEngine` works) so
-//! call sites can be generic over the engine without monomorphising the whole
-//! executor.
+//! It expresses storage in **graph terms** — nodes, edges, adjacency — and is
+//! what drevo's query layers (Cypher executor, traversal, planner) are written
+//! against. [`NativeGraph`](crate::native::NativeGraph) implements it, and so
+//! does each open transaction, so the same code runs inside or outside one.
+//! The trait is **object-safe** (`&dyn GraphEngine` works) so call sites can
+//! be generic over the engine without monomorphising the whole executor.
 //!
 //! The method set mirrors the core of a store's inherent API — node/edge CRUD
 //! plus adjacency expansion, and the [`crate::engine::GraphEngine::export_dump`]
@@ -16,8 +15,6 @@
 //! layered on above the seam.
 //!
 //! Every method returns [`crate::error::Result`] (i.e. [`crate::error::CoreError`]).
-//! The main crate's KV store implements this trait by mapping its richer
-//! `DrevoError` into `CoreError`; the native engine returns `CoreError` natively.
 
 use crate::dump::{Dump, ImportReport};
 use crate::error::Result;

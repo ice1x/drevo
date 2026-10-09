@@ -1,5 +1,5 @@
 //! Hybrid Logical Clock (HLC) — causal versioning primitive for multi-writer
-//! convergence (issue #389, primitive #1).
+//! convergence.
 //!
 //! drevo stamps writes with a wall clock ([`crate::model::now_ms`]) and a
 //! UUID v7. Wall clocks cannot safely order **concurrent** edits made on
@@ -10,11 +10,11 @@
 //! the physical clock jumps, so `(hlc, origin_id)` gives a total, deterministic
 //! ordering key for merge.
 //!
-//! This module is the pure primitive: the [`Hlc`](crate::hlc::Hlc) timestamp
-//! and the [`HlcClock`](crate::hlc::HlcClock) that generates and advances it.
-//! Wiring it into the write path / on-disk format, per-property LWW merge, and
-//! tombstones are the follow-up slices of #389. Dependency-free, infallible,
-//! always compiled, WASM-safe.
+//! This module is the pure primitive: the [`Hlc`] timestamp
+//! and the [`HlcClock`] that generates and advances it.
+//! [`NativeGraph`](crate::native::NativeGraph) stamps every write with it, and
+//! [`lww`](crate::lww) and [`delta`](crate::delta) merge on those stamps.
+//! Dependency-free, infallible, always compiled, WASM-safe.
 //!
 //! # Determinism for tests
 //!

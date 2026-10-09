@@ -1,12 +1,11 @@
-//! `NativeGraph` — the native graph core (RFC `docs/rfc-native-core.md`,
-//! tracking #307, Phase 2/3).
+//! [`NativeGraph`] — the graph engine.
 //!
 //! # What this is
 //!
-//! An **in-memory, native** implementation of the [`GraphEngine`](crate::engine::GraphEngine)
-//! seam — nodes and edges held directly in Rust maps, rather than encoded as
-//! byte-keyed rows over a storage backend the way the main crate's KV-backed
-//! `Drevo` store does.
+//! An **in-memory** implementation of [`GraphEngine`]:
+//! nodes and edges are held directly in Rust maps.
+//! [`open_durable`](crate::native::NativeGraph::open_durable) adds a
+//! write-ahead log, so acknowledged writes survive a restart.
 //!
 //! Adjacency is **denormalized**: each entry carries the neighbour node id and
 //! the edge's kind (interned to a `u32`) inline alongside the edge id, so a
@@ -14,40 +13,37 @@
 //! adjacency vector — no second lookup into the edge map, no per-edge string
 //! compare.
 //!
-//! # Snapshot isolation (ACID "I", Phase 3)
+//! # Snapshot isolation
 //!
 //! The whole store lives behind `RwLock<Arc<Inner>>`. A
-//! [`GraphSnapshot`](crate::native::GraphSnapshot) is a cheap `Arc::clone` of
+//! [`GraphSnapshot`] is a cheap `Arc::clone` of
 //! the current state — an **O(1)**, frozen, consistent view. Writers use
 //! copy-on-write via [`Arc::make_mut`](std::sync::Arc::make_mut): they mutate the state
 //! in place while no snapshot is outstanding, and clone it once on the first
 //! write after a snapshot is taken. So a reader that holds a snapshot always
 //! sees one consistent version of the graph regardless of concurrent writes —
 //! the property a multi-hop retrieval needs (a traversal never observes half of
-//! another writer's in-flight mutation). Per-transaction write buffering and a
-//! `READ COMMITTED` knob build on this in later slices.
+//! another writer's in-flight mutation). Transactions
+//! ([`begin`](crate::native::NativeGraph::begin)) buffer their writes and
+//! commit them atomically on top of this.
 //!
-//! # Behaviour parity
+//! # Guarantees
 //!
-//! `NativeGraph` reproduces `Drevo`'s *observable* graph semantics exactly —
-//! monotonic ids from 1, title uniqueness
-//! ([`CoreError::DuplicateTitle`](crate::error::CoreError::DuplicateTitle)),
+//! Monotonic ids from 1, title uniqueness
+//! ([`CoreError::DuplicateTitle`]),
 //! endpoint existence on edge create
-//! ([`CoreError::NodeNotFound`](crate::error::CoreError::NodeNotFound)), weight
-//! finiteness ([`CoreError::InvalidWeight`](crate::error::CoreError::InvalidWeight)),
+//! ([`CoreError::NodeNotFound`]), weight
+//! finiteness ([`CoreError::InvalidWeight`]),
 //! [`EdgeNotFound`](crate::error::CoreError::EdgeNotFound) on missing edge
 //! update/delete, cascade edge deletion when a node is removed, and the
-//! direction/kind-filtered adjacency contract — and returns the **same**
-//! [`CoreError`](crate::error::CoreError) variants, so
-//! `tests/native_engine_tests.rs` can compare the two engines op-for-op
-//! (including a randomized differential workload). uuid/timestamp fields come
-//! from the shared [`NewNode::into_node`](crate::model::NewNode::into_node) /
-//! [`NewEdge::into_edge`](crate::model::NewEdge::into_edge) and are excluded
-//! from comparison as non-deterministic.
+//! direction/kind-filtered adjacency contract. uuid and timestamp fields are
+//! filled in by [`NewNode::into_node`](crate::model::NewNode::into_node) /
+//! [`NewEdge::into_edge`](crate::model::NewEdge::into_edge).
 //!
-//! Secondary subsystems (FTS, vectors, property/recency indexes) are
-//! intentionally **not** part of this engine — the RFC keeps them off the core
-//! graph seam, fed separately via a change-feed.
+//! Secondary subsystems (full-text, labels, property values) are
+//! intentionally **not** part of this engine: they live in their own modules
+//! and follow the graph through its change-feed
+//! ([`changes_since`](crate::native::NativeGraph::changes_since)).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
@@ -3875,7 +3871,7 @@ mod kind_index_tests {
 mod adjacency_kind_sort_tests {
     //! Adjacency lists are kept sorted by `(kind_id, neighbor_id, edge_id)` so a
     //! kind-filtered fan-out can binary-search the run for a relationship type
-    //! instead of scanning the whole list (RFC #307 Phase 2, arena/CSR slice 1).
+    //! instead of scanning the whole list.
     //! These pin the invariant at every mutation site and prove the kind-run
     //! fast path returns exactly what a full linear filter would.
     use super::*;

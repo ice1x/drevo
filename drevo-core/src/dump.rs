@@ -1,21 +1,16 @@
-//! The `drevo-json-v1` dump wire format — the storage-agnostic interchange
-//! types shared by every engine.
+//! The `drevo-json-v1` dump format: a whole graph as one value.
 //!
 //! A [`crate::dump::Dump`] is the whole graph (every node, every edge,
-//! plus the id-allocation counters) in one serde-serializable value. It is the
-//! read/write unit of the cross-engine migration seam: exporting from one engine
-//! and applying to another moves a live graph between the KV-backed store and
-//! the native engine without losing a byte.
+//! plus the id-allocation counters) in one serde-serializable value.
+//! [`GraphEngine::export_dump`](crate::engine::GraphEngine::export_dump)
+//! produces one and [`GraphEngine::apply_dump`](crate::engine::GraphEngine::apply_dump)
+//! loads one back, losslessly — for backups and for moving a graph between
+//! stores.
 //!
 //! Only the **types** live here — [`crate::dump::Dump`],
-//! [`crate::dump::ImportReport`],
-//! [`crate::dump::DumpError`], and the
-//! [`crate::dump::FORMAT_V1`] identifier — because the native engine
-//! (in this crate) produces and consumes them directly. The KV-specific
-//! machinery that renders
-//! and parses the *file* formats (pretty JSON, GraphML XML) and the
-//! filesystem/HTTP entry points stay in the main crate's `dump` module, which
-//! re-exports these types so `crate::dump::Dump` keeps resolving there.
+//! [`crate::dump::ImportReport`], [`crate::dump::DumpError`], and the
+//! [`crate::dump::FORMAT_V1`] identifier. Rendering and parsing *file* formats
+//! (pretty JSON, GraphML) is drevo's job, not this crate's.
 
 use serde::{Deserialize, Serialize};
 

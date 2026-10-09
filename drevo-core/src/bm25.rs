@@ -1,8 +1,9 @@
-//! Okapi BM25 scoring primitives shared by the KV and native full-text indexes.
+//! Okapi BM25 scoring primitives.
 //!
-//! Only the pure math lives here — no posting lists, no storage — so both the KV
-//! trigram index (and the keyword-extraction ranker built on it) and the native
-//! `NativeFtsIndex` compute an identical inverse-document-frequency weight.
+//! Only the pure math lives here — no posting lists, no storage — so every
+//! ranker built on it ([`NativeFtsIndex`](crate::native_fts::NativeFtsIndex)
+//! and drevo's keyword extraction) computes an identical
+//! inverse-document-frequency weight.
 
 /// Okapi BM25 inverse document frequency for a term.
 ///

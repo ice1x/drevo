@@ -1,19 +1,16 @@
-//! An in-memory **secondary-label** index that tails a
-//! [`NativeGraph`](crate::native::NativeGraph)'s change-feed
-//! (RFC `docs/rfc-native-core.md`, #307, Phase 6.6).
+//! An in-memory **secondary-label** index over a
+//! [`NativeGraph`], kept current from its change
+//! feed.
 //!
-//! drevo storage gives each node a single primary `kind`; Cypher allows any
-//! number of labels, and the extras added via `SET n:Label` live in a reserved
-//! `_labels` property (a JSON array of strings — parsed by the executor's
-//! `secondary_labels`, the single source of truth this index reuses). The native
-//! engine's `nodes_by_kind` already
-//! indexes the primary kind, but nothing indexed the secondary labels — so a
-//! `MATCH (n:Label)` on the native engine had to fall back to a full scan of
-//! every node to catch `_labels` matches.
+//! Each node has a single primary `kind`, which the engine indexes itself
+//! (`nodes_by_kind`). Any further labels live in the reserved `_labels`
+//! property (a JSON array of strings, parsed by
+//! [`secondary_labels`]); this index maps
+//! each such label to the nodes that carry it.
 //!
-//! This index closes that gap. Like the trigram FTS (`NativeFtsIndex`, in the
-//! main crate), it is a secondary index kept off the core graph seam and current
-//! by **tailing the change-feed**
+//! Like [`NativeFtsIndex`](crate::native_fts::NativeFtsIndex), it is a
+//! secondary index kept off the core graph and current by **tailing the
+//! change-feed**
 //! (see [`NativeGraph::changes_since`](crate::native::NativeGraph::changes_since))
 //! rather than coupling to the write path. Combined with the primary-kind index,
 //! it lets the executor gather label candidates as

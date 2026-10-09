@@ -1,19 +1,18 @@
-//! Last-Writer-Wins register + map CRDTs for multi-writer convergence
-//! (issue #389, primitive #2).
+//! Last-Writer-Wins register, map and set CRDTs for multi-writer convergence.
 //!
 //! Built on the [Hybrid Logical Clock](crate::hlc): every write carries a
-//! [`Stamp`](crate::lww::Stamp) `(hlc, origin)`, and [`merge`](crate::lww::LwwRegister::merge)
+//! [`Stamp`] `(hlc, origin)`, and [`merge`](crate::lww::LwwRegister::merge)
 //! keeps the value with the greatest stamp. Because stamps are **totally
 //! ordered** (HLC first, then a unique per-replica origin id to break ties) and
 //! each write's stamp is unique, the merge is commutative, associative, and
 //! idempotent — two peers that see the same set of writes in any order converge
 //! to the same value. This is the minimal viable convergence for offline-first
-//! shared records: a [`LwwMap`](crate::lww::LwwMap) of a node's properties is a
+//! shared records: a [`LwwMap`] of a node's properties is a
 //! register-LWW CRDT over the graph.
 //!
 //! Deletes that converge against a concurrent edit are modelled by
-//! [`LwwSet`](crate::lww::LwwSet) (issue #389 primitive #3): membership is a
-//! per-element [`LwwRegister`](crate::lww::LwwRegister)`<bool>`, so a `remove` is a *causal tombstone* — a
+//! [`LwwSet`]: membership is a
+//! per-element [`LwwRegister`]`<bool>`, so a `remove` is a *causal tombstone* — a
 //! timestamped `false` — that wins or loses against a concurrent `add` purely
 //! by stamp order. This is the add/remove set drevo needs for node/edge
 //! *existence*. (A `LwwMap` deliberately has no per-key remove: property maps

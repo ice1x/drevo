@@ -1,16 +1,14 @@
-//! The storage-agnostic error type for the drevo graph core.
+//! The error type of `drevo-core`.
 //!
-//! [`crate::error::CoreError`] is the error channel of everything that lives (or will live,
-//! in later extraction slices) in `drevo-core`: the native graph engine, its
-//! indexes, and the cross-engine dump/migration seam. It carries only failures
-//! that make sense *without* naming a concrete backend — the graph-semantic
-//! ones (`NodeNotFound`, `EdgeNotFound`, `DuplicateTitle`, `InvalidWeight`) plus
-//! the two ubiquitous serialization boundaries (`Io`, `Json`).
+//! [`crate::error::CoreError`] is returned by the graph engine, its indexes and
+//! the dump format. It names the graph-level failures (`NodeNotFound`,
+//! `EdgeNotFound`, `DuplicateTitle`, `InvalidWeight`) plus the I/O and JSON
+//! boundaries (`Io`, `Json`).
 //!
-//! Backend-specific failures a concrete engine hits — KV storage errors, vector
-//! index errors, transaction-state errors — have no structured home here; a
-//! backend lifts them into the opaque [`crate::error::CoreError::Backend`]
-//! catch-all, carrying the lower layer's rendered message.
+//! Failures from layers built on top — vector indexes, transaction state in a
+//! server — have no structured home here; they travel in the opaque
+//! [`crate::error::CoreError::Backend`] variant, carrying the lower layer's
+//! rendered message.
 //!
 //! # Relationship to `drevo::DrevoError`
 //!
@@ -26,12 +24,9 @@
 
 use thiserror::Error;
 
-/// Errors from the storage-agnostic graph core.
+/// Errors from the graph engine, its indexes and the dump format.
 ///
-/// The variant set is deliberately a *subset* of the main crate's `DrevoError`:
-/// exactly the failures the native engine, its indexes, and the dump seam can
-/// raise without depending on a KV store, a vector index, or the HTTP/Bolt
-/// layers. See the [module docs](self) for how it relates to `DrevoError`.
+/// See the [module docs](self) for how it relates to drevo's `DrevoError`.
 #[derive(Debug, Error)]
 pub enum CoreError {
     /// The requested node was not found.

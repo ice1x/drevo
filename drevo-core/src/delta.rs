@@ -1,9 +1,8 @@
-//! Version-vector delta exchange for multi-writer convergence
-//! (issue #389, primitive #4).
+//! Version-vector delta exchange for multi-writer convergence.
 //!
-//! Once every write carries a causal [`Stamp`](crate::lww::Stamp) `(hlc, origin)`
+//! Once every write carries a causal [`Stamp`] `(hlc, origin)`
 //! (see [`crate::native::NativeGraph::next_stamp`]), a replica can summarise
-//! everything it has seen as a [`VersionVector`](crate::delta::VersionVector): the greatest [`Hlc`](crate::hlc::Hlc)
+//! everything it has seen as a [`VersionVector`]: the greatest [`Hlc`]
 //! observed from each origin. Handing that vector to a peer lets the peer compute
 //! the **minimal** set of writes the holder is missing —
 //! [`delta_since`](crate::native::NativeGraph::delta_since) — and the holder
@@ -56,8 +55,7 @@
 //!   graph once to index `uuid → local id` (plus the in-memory tombstones), so a
 //!   merge is `O(n + delta)`; a persistent uuid index is a later optimisation.
 //! * **Stamps and tombstones live in memory**, rebuilt as writes happen after a
-//!   restart — persisting them into the WAL touches the on-disk format and is a
-//!   separate, explicitly-gated slice.
+//!   restart; they are not persisted in the WAL.
 
 use std::collections::HashMap;
 

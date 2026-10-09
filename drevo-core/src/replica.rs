@@ -1,8 +1,8 @@
-//! WAL-shipping read replica for the native engine (issue #383, Phase 9 —
-//! horizontal scale / HA).
+//! WAL-shipping read replica of a [`NativeGraph`],
+//! for read scaling and failover.
 //!
-//! A [`NativeReplica`](crate::replica::NativeReplica) keeps its own in-memory
-//! [`NativeGraph`](crate::native::NativeGraph) converged with a *source* (the
+//! A [`NativeReplica`] keeps its own in-memory
+//! [`NativeGraph`] converged with a *source* (the
 //! primary) by **tailing the source's change-feed**
 //! ([`changes_since`](crate::native::NativeGraph::changes_since)) and applying
 //! each committed op verbatim — ids, uuids and timestamps preserved — so the
@@ -21,12 +21,12 @@
 //!
 //! # Transports
 //!
-//! [`NativeReplica`](crate::replica::NativeReplica) tails an in-process source
-//! `NativeGraph` handle. [`WalTailer`](crate::replica::WalTailer) tails a
+//! [`NativeReplica`] tails an in-process source
+//! `NativeGraph` handle. [`WalTailer`] tails a
 //! primary's **on-disk WAL file** across a process or machine boundary — the
 //! real cross-process feed transport — yielding the same
-//! [`WalOp`](crate::native::WalOp)s to apply. A streamed network feed is a
-//! later slice of #383; all feed the same verbatim apply path.
+//! [`WalOp`](crate::native::WalOp)s to apply. Both feed the same verbatim
+//! apply path.
 //!
 //! # Failover
 //!
