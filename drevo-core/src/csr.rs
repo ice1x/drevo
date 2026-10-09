@@ -20,7 +20,7 @@
 //!
 //! This module provides the **layout and the parallel-scan primitive**, not the
 //! algorithms: the graph analytics (PageRank, Louvain, connected components,
-//! centralities) live in the main crate's `algorithms` module. The CSR is the
+//! centralities) live in drevo's `algorithms` module. The CSR is the
 //! cache-friendly substrate those can run over.
 //!
 //! # Scope
@@ -130,7 +130,7 @@ impl CsrAdjacency {
         &self.neighbors
     }
 
-    /// Morsel-driven parallel scan (issue #382, Phase 8): evaluate `f(index)` for
+    /// Morsel-driven parallel scan: evaluate `f(index)` for
     /// every dense vertex index across up to `threads` worker threads, returning
     /// the results in vertex order (`out[i] == f(i)`).
     ///

@@ -48,9 +48,9 @@ use crate::model::{Edge, Node, Properties};
 use crate::native::{NativeGraph, WalOp};
 use crate::tokenizer;
 
-/// BM25 term-frequency saturation, matching the KV store's `FtsRanking::default`.
+/// BM25 term-frequency saturation, as in [`FtsRanking::default`](crate::model::FtsRanking::default).
 const K1: f32 = 1.2;
-/// BM25 length-normalisation, matching the KV store's `FtsRanking::default`.
+/// BM25 length-normalisation, as in [`FtsRanking::default`](crate::model::FtsRanking::default).
 const B: f32 = 0.75;
 
 /// A trigram BM25 full-text index maintained by tailing a [`NativeGraph`]'s
@@ -92,14 +92,14 @@ impl NativeFtsIndex {
     }
 
     /// The number of indexed documents (corpus `N`) — the IDF denominator for
-    /// keyword extraction (`drevo.keywords`, #447 native port).
+    /// keyword extraction (`drevo.keywords`).
     pub fn doc_count(&self) -> u64 {
         self.docs.len() as u64
     }
 
     /// Estimate a term's document frequency from its trigrams: the number of
-    /// indexed docs containing **all** of them. Mirrors the KV FTS
-    /// `intersect_trigrams(...).len()` used by keyword extraction. An empty
+    /// indexed docs containing **all** of them, as keyword extraction needs.
+    /// An empty
     /// trigram set, or any trigram absent from the corpus, yields 0.
     pub fn trigram_df(&self, term_trigrams: &[String]) -> u64 {
         if term_trigrams.is_empty() {
@@ -248,7 +248,7 @@ impl NativeFtsIndex {
     }
 
     /// The full-text fields of a node: title, body, and every string property
-    /// value (matching the KV store's property FTS, #227).
+    /// value.
     fn node_trigrams(node: &Node) -> Vec<String> {
         let mut fields: Vec<&str> = vec![node.title.as_str(), node.body.as_str()];
         for value in node.properties.0.values() {
@@ -305,8 +305,8 @@ impl NativeFtsIndex {
 }
 
 /// A trigram BM25 full-text index over **relationships**, maintained by tailing
-/// a [`NativeGraph`]'s change-feed. The edge companion of [`NativeFtsIndex`],
-/// matching the KV store's `efts:` edge index (#227-B / #229): an edge's
+/// a [`NativeGraph`]'s change-feed. The edge companion of [`NativeFtsIndex`]:
+/// an edge's
 /// full-text document is its **string property values** (and the string
 /// elements of any array-valued property), so `fts.searchRelationships` can be
 /// answered on the native engine. Edges carry no title/body, so — unlike nodes
@@ -455,9 +455,8 @@ impl NativeFtsRelIndex {
     }
 
     /// The full-text fields of an edge: its string property values and the
-    /// string elements of any array-valued property, in key order — matching
-    /// the KV store's `collect_property_text` (#227-B). Edges have no
-    /// title/body.
+    /// string elements of any array-valued property, in key order. Edges have
+    /// no title/body.
     fn edge_trigrams(edge: &Edge) -> Vec<String> {
         let text = collect_edge_property_text(&edge.properties);
         let fields: Vec<&str> = text.iter().map(String::as_str).collect();
@@ -509,9 +508,8 @@ impl NativeFtsRelIndex {
 }
 
 /// Gather an edge's full-text source strings: string property values plus the
-/// string elements of array-valued properties, in sorted-key order. Mirrors the
-/// KV store's `collect_property_text` so native and KV edge-FTS index the same
-/// text.
+/// string elements of array-valued properties, in sorted-key order, so the
+/// same edge always yields the same document.
 fn collect_edge_property_text(properties: &Properties) -> Vec<String> {
     let mut keys: Vec<&String> = properties.0.keys().collect();
     keys.sort();

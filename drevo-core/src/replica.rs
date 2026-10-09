@@ -138,8 +138,8 @@ impl NativeReplica {
     ///
     /// This is **coordinated / manual** failover: the caller is responsible for
     /// ensuring the old primary is truly down (stop tailing it, fence it off).
-    /// There is no consensus or split-brain arbitration here — that is automatic
-    /// Raft-based failover, tracked separately (issue #383's follow-up). The
+    /// There is no consensus or split-brain arbitration here; automatic
+    /// (e.g. Raft-based) failover is not provided. The
     /// returned graph is in-memory, as the replica was; use
     /// [`promote_durable`](Self::promote_durable) to take over durably.
     #[must_use]
@@ -162,8 +162,8 @@ impl NativeReplica {
 }
 
 /// Tails a primary's on-disk WAL file — the append-only JSON-Lines op log the
-/// durable engine writes (`native.wal`) — across a process or machine boundary
-/// (issue #383). This is the cross-process feed transport: a replica process
+/// durable engine writes (`native.wal`) — across a process or machine
+/// boundary. This is the cross-process feed transport: a replica process
 /// opens the leader's WAL path and polls for newly-appended records.
 ///
 /// [`poll`](Self::poll) returns the [`WalOp`](crate::native::WalOp)s appended

@@ -44,8 +44,8 @@ pub struct Dump {
     pub edges: Vec<Edge>,
 }
 
-/// Outcome of a successful dump import (`Drevo::import_json` /
-/// `GraphEngine::apply_dump`).
+/// Outcome of a successful dump import
+/// ([`GraphEngine::apply_dump`](crate::engine::GraphEngine::apply_dump)).
 ///
 /// Counts are reported separately so callers can distinguish "newly inserted"
 /// from "already present, skipped". `*_skipped` rows were matched by id AND
@@ -68,7 +68,7 @@ pub struct ImportReport {
 /// Import-time failure modes specific to the dump format.
 ///
 /// Lifted to callers as a backend `Io` error via the `From` impls (this crate's
-/// [`CoreError`] and the main crate's `DrevoError`) so the public error
+/// [`CoreError`] and drevo's `DrevoError`) so the public error
 /// hierarchies stay at their well-known variants. The conversion preserves the
 /// human-readable message — `{err}` includes the original failure mode.
 #[derive(Debug, thiserror::Error)]

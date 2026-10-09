@@ -10,17 +10,13 @@
 //! [`crate::error::CoreError::Backend`] variant, carrying the lower layer's
 //! rendered message.
 //!
-//! # Relationship to `drevo::DrevoError`
+//! # Relationship to drevo's `DrevoError`
 //!
-//! The main `drevo` crate keeps its richer [`DrevoError`] (which additionally
-//! wraps `VectorError`, the bincode codecs, and the transaction / migration
-//! states). The two convert **structurally** in both
-//! directions — the six shared variants map one-to-one, and everything with no
-//! counterpart degrades to [`crate::error::CoreError::Backend`]
-//! (going down) or `DrevoError::Io` (coming back up). Those `From` impls live in the main crate
-//! (`src/error.rs`), next to `DrevoError`, since only it can name both types.
-//!
-//! [`DrevoError`]: https://docs.rs/drevo/latest/drevo/error/enum.DrevoError.html
+//! drevo's own error type, `DrevoError`, also covers vector indexes, codecs
+//! and server-side transaction state. The two convert in both directions: the
+//! shared variants map one-to-one, and anything without a counterpart becomes
+//! [`crate::error::CoreError::Backend`] going down or `DrevoError::Io` coming
+//! back up.
 
 use thiserror::Error;
 
@@ -56,27 +52,26 @@ pub enum CoreError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// The durable store is already open by another handle or process (#455).
+    /// The durable store is already open by another handle or process.
     ///
     /// [`NativeGraph::open_durable`](crate::native::NativeGraph::open_durable)
     /// takes an exclusive advisory lock on the store's lock sidecar; a second
     /// open of the same path fails with this rather than letting two writers
-    /// interleave WAL appends and corrupt the log. The counterpart of the
-    /// KV/redb backend's exclusive file lock, and the structural twin of the
-    /// main crate's `DrevoError::Locked`. The advisory lock is released when the
+    /// interleave WAL appends and corrupt the log. Maps to drevo's
+    /// `DrevoError::Locked`. The advisory lock is released when the
     /// owning process dies, so a crash never leaves a stale lock behind.
     #[error("database locked")]
     Locked,
 
-    /// A backend-specific failure from a concrete engine — a KV storage error,
-    /// a vector-index error, a transaction-state error — that has no structured
-    /// counterpart in the storage-agnostic core. Carries the lower layer's
+    /// A failure from a layer built on top — a vector-index error, a
+    /// transaction-state error — that has no structured variant here. Carries
+    /// the lower layer's
     /// rendered message so nothing is lost on the wire, even though the
     /// structured variant is not preserved.
     #[error("backend error: {0}")]
     Backend(String),
 
-    /// Two-phase commit (#556): a transaction is prepared and every other
+    /// Two-phase commit: a transaction is prepared and every other
     /// write is refused until it is resolved (the prepared fence). Retryable;
     /// carries the pending global transaction ids.
     #[error("writes are paused while prepared transaction(s) {} await resolution; retry", .0.join(", "))]

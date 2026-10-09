@@ -22,12 +22,12 @@ use std::sync::Arc;
 
 use crate::model::{Direction, Edge, EdgePatch, NewEdge, NewNode, Node, NodePatch};
 
-/// Graph-level storage and traversal, expressed in graph terms rather than a
-/// byte-key KV vocabulary.
+/// Graph-level storage and traversal, expressed in graph terms: nodes, edges
+/// and adjacency.
 ///
-/// Implemented by both the KV-backed store (in the main `drevo` crate) and the
-/// native [`crate::native::NativeGraph`], so today's store and the native engine
-/// present the same contract to the query layers above them.
+/// Implemented by [`crate::native::NativeGraph`] and by its open transactions,
+/// so code written against the trait runs the same inside or outside a
+/// transaction.
 pub trait GraphEngine {
     /// Create a node, allocating its id/uuid/timestamps.
     ///
@@ -55,8 +55,8 @@ pub trait GraphEngine {
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
     fn delete_node(&self, id: u64) -> Result<()>;
 
-    /// Delete many nodes in one batch, returning how many were actually removed
-    /// (issue #435). Each node is dropped with its incident edges and index
+    /// Delete many nodes in one batch, returning how many were actually
+    /// removed. Each node is dropped with its incident edges and index
     /// entries exactly as [`delete_node`](Self::delete_node); ids that are
     /// already absent are skipped rather than erroring.
     ///
@@ -151,8 +151,8 @@ pub trait GraphEngine {
     ///
     /// The default counts a full [`crate::engine::GraphEngine::all_nodes`]
     /// scan, which is correct for any engine; implementations with a cheap
-    /// cardinality (the native engine's node map, the KV engine's key
-    /// population) override it.
+    /// cardinality (such as [`crate::native::NativeGraph`]'s node map)
+    /// override it.
     ///
     /// # Errors
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
