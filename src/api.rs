@@ -440,7 +440,7 @@ fn map_to_json(m: &std::collections::BTreeMap<String, CypherValue>) -> serde_jso
 }
 
 /// Convert a Cypher runtime value into JSON for the tabular `rows`.
-fn value_to_json(v: &CypherValue) -> serde_json::Value {
+pub(crate) fn value_to_json(v: &CypherValue) -> serde_json::Value {
     match v {
         CypherValue::Null => serde_json::Value::Null,
         CypherValue::Bool(b) => serde_json::Value::Bool(*b),

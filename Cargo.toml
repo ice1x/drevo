@@ -94,6 +94,11 @@ rmp-serde = { version = "1.3", optional = true }
 # gRPC API (issue #583), behind `grpc`. Held below 0.14 / 0.14 for MSRV 1.85.
 tonic = { version = "0.13", optional = true }
 prost = { version = "0.13", optional = true }
+# Arrow Flight (issue #584), behind `arrow-flight`. Held at 56 for MSRV 1.85.
+arrow-flight = { version = "56.2", optional = true, default-features = false }
+arrow-array = { version = "56.2", optional = true, default-features = false }
+arrow-schema = { version = "56.2", optional = true, default-features = false }
+futures = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 uuid = { version = "1", features = ["v4", "v7", "rng-getrandom"] }
 getrandom = { version = "0.4", optional = true }
 serde_json = { version = "1", features = ["float_roundtrip"] }
@@ -200,6 +205,11 @@ format-msgpack = ["http", "dep:rmp-serde", "drevo-core/wal-msgpack"]
 # build script is needed. tonic is held at 0.13: 0.14 needs Rust >= 1.86,
 # above the MSRV.
 grpc = ["http", "dep:tonic", "dep:prost"]
+
+# Issue #584 — Arrow Flight endpoint (Cypher results as Arrow record batches),
+# served only when `DREVO_FLIGHT_PORT` is set. arrow / arrow-flight are held
+# at 56: 57+ moves to tonic 0.14, which needs Rust >= 1.86.
+arrow-flight = ["http", "dep:tonic", "dep:arrow-flight", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 
 # `js-sys` is the clock source for `now_ms`/`new_uuid_v7` on wasm32, where
 # `std::time::SystemTime::now()` aborts (see `model.rs`, drevo#198). It is

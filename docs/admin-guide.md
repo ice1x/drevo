@@ -45,6 +45,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
 | `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor` or `msgpack`. See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
 | `DREVO_GRPC_PORT` | unset (off) | Serve the gRPC API on this port, same host as HTTP. See [gRPC API](#grpc-api-opt-in). Rejected at startup by a build without the `grpc` feature. |
+| `DREVO_FLIGHT_PORT` | unset (off) | Serve the Arrow Flight endpoint on this port, same host as HTTP. See [Arrow Flight](#arrow-flight-opt-in). Rejected at startup by a build without the `arrow-flight` feature. |
 | `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
 | `DREVO_AUTO_COMPACT_RATIO` | `2.0` | Minimum bloat ratio to trigger auto-compaction. |
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
@@ -136,6 +137,37 @@ trusted network.
 grpcurl -plaintext -import-path proto -proto drevo.proto \
   -d '{"query":"MATCH (n) RETURN n.title LIMIT 3"}' \
   localhost:50051 drevo.v1.Drevo/Execute
+```
+
+### Arrow Flight (opt-in)
+
+For analytics, drevo can return Cypher results as Arrow record batches over
+Arrow Flight, straight into pandas, polars, DuckDB or anything else that speaks
+Flight. It is compiled into the Docker image (Cargo feature `arrow-flight`)
+and served only when `DREVO_FLIGHT_PORT` is set, e.g.
+`DREVO_FLIGHT_PORT=8815`.
+
+Call `DoGet` with the statement as the ticket: either the Cypher text, or a
+JSON object `{"query": …, "params": {…}, "database": …}`. The result comes
+back in record batches of up to 8192 rows. Column types follow the values:
+
+| Values in the column | Arrow type |
+|---|---|
+| integers | `Int64` |
+| floats, or integers and floats | `Float64` |
+| booleans | `Boolean` |
+| strings | `Utf8` |
+| lists of numbers (embeddings) | `List<Float64>` |
+| nodes, relationships, maps, mixed types | `Utf8` holding JSON |
+
+Only `DoGet` is served; other Flight calls answer `UNIMPLEMENTED`. As on
+HTTP there is no authentication: expose the port only on a trusted network.
+
+```python
+import pyarrow.flight as flight
+client = flight.connect("grpc://localhost:8815")
+table = client.do_get(flight.Ticket(b"MATCH (t:Task) RETURN t.title, t.estimate")).read_all()
+df = table.to_pandas()
 ```
 
 ### Embeddings proxy (`/v1/embeddings`, opt-in)
