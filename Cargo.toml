@@ -87,9 +87,13 @@ drevo-core = { path = "drevo-core" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 bincode = { version = "2", features = ["serde"] }
+# Optional HTTP body formats (issue #581), behind `format-cbor` /
+# `format-msgpack`.
+ciborium = { version = "0.2", optional = true }
+rmp-serde = { version = "1.3", optional = true }
 uuid = { version = "1", features = ["v4", "v7", "rng-getrandom"] }
 getrandom = { version = "0.4", optional = true }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 wasm-bindgen = { version = "0.2", optional = true }
 # `js-sys` is needed in two independent situations, so it is declared twice:
 #  * optional + in the `wasm` feature → `src/wasm.rs`'s `js_sys::JSON` bindings
@@ -179,6 +183,12 @@ bolt-auth = ["dep:argon2"]
 # upstream (OpenAI/Ollama/…). Opt-in so the default binary stays lean; implies
 # `http` because the proxy is only reachable through the HTTP endpoint.
 embeddings-proxy = ["http", "dep:reqwest", "dep:idna_adapter"]
+
+# Issue #581 — optional binary bodies for the HTTP API, next to JSON (which
+# stays the default and is always available). Compiling a format in does not
+# turn it on: the operator lists it in `DREVO_HTTP_FORMATS` (default `json`).
+format-cbor = ["http", "dep:ciborium"]
+format-msgpack = ["http", "dep:rmp-serde"]
 
 # `js-sys` is the clock source for `now_ms`/`new_uuid_v7` on wasm32, where
 # `std::time::SystemTime::now()` aborts (see `model.rs`, drevo#198). It is

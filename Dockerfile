@@ -54,12 +54,14 @@ COPY static/ static/
 # runtime-gated (answers 503 until `DREVO_EMBEDDINGS_UPSTREAM` is configured), so
 # nothing is forced on and the "opt-in at runtime" contract holds. The extra
 # HTTP client uses pure-Rust `rustls` on the `ring` provider (no aws-lc-rs / no
-# extra system deps). Override to a lean build via:
+# extra system deps). The optional HTTP body formats (CBOR / MessagePack, issue
+# #581) are compiled in for the same reason and are likewise runtime-gated: they
+# are served only once listed in `DREVO_HTTP_FORMATS`. Override to a lean build via:
 #   docker build --build-arg CARGO_FEATURES="http" .
 # (The Cargo library default stays dependency-free; this opinionated default is
 # the deploy image only.) Locked by
 # `tests/dockerfile_tests.rs::dockerfile_features_are_build_arg_overridable`.
-ARG CARGO_FEATURES="http,embeddings-proxy"
+ARG CARGO_FEATURES="http,embeddings-proxy,format-cbor,format-msgpack"
 # The version the built server reports (`/`, `/status`, Bolt `server` agent,
 # metrics). `.git` is excluded from the build context, so `build.rs` cannot run
 # `git describe` here and would fall back to `CARGO_PKG_VERSION` (0.0.0, since the

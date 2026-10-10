@@ -325,6 +325,11 @@ jobs:
       # full-suite step above; this step adds the argon2 path.
       - name: Run bolt-auth feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features bolt-auth -E 'binary(bolt_auth_tests) | (kind(lib) & test(bolt::auth))'
+      # Issue #581 — the optional HTTP body formats (CBOR / MessagePack) live
+      # behind `format-cbor` / `format-msgpack`, NOT in the default set, so
+      # re-run their test binary and the inline unit tests with both on.
+      - name: Run HTTP body format feature tests (nextest)
+        run: cargo nextest run --no-fail-fast --features format-cbor,format-msgpack -E 'binary(http_wire_format_tests) | (kind(lib) & test(wire_format))'
       - name: Run doctests
         run: cargo test --doc --all-features
 
@@ -364,6 +369,8 @@ jobs:
       # (`src/bolt/auth.rs` UserStore + `tests/bolt_auth_tests.rs`)
       # against clippy regressions the default-feature pass can't see.
       - run: cargo clippy --all-targets --features bolt-auth -- -D warnings
+      # Issue #581 — the CBOR / MessagePack transcoding paths.
+      - run: cargo clippy --all-targets --features format-cbor,format-msgpack -- -D warnings
 
   fmt:
     name: Format

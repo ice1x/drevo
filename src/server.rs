@@ -94,6 +94,9 @@ pub struct Config {
     /// the default, as resolving behind the coordinator's back can break
     /// atomicity across stores).
     pub prepared_tx_timeout: Option<std::time::Duration>,
+    /// Body formats the HTTP API offers next to JSON, from
+    /// `DREVO_HTTP_FORMATS` (issue #581; default `json`).
+    pub http_formats: crate::wire_format::WireFormats,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -171,6 +174,9 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_HTTP_FORMATS` named an unknown format or one not compiled in.
+    #[error("invalid DREVO_HTTP_FORMATS: {0}")]
+    InvalidHttpFormats(#[from] crate::wire_format::FormatsError),
 }
 
 impl Config {
@@ -245,6 +251,11 @@ impl Config {
             },
         };
 
+        let http_formats = match getter("DREVO_HTTP_FORMATS") {
+            None => crate::wire_format::WireFormats::default(),
+            Some(raw) => raw.parse()?,
+        };
+
         Ok(Self {
             host,
             port,
@@ -253,6 +264,7 @@ impl Config {
             query_timeout,
             prepared_tx_warn,
             prepared_tx_timeout,
+            http_formats,
         })
     }
 
@@ -635,7 +647,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
         });
     }
 
-    let state = crate::native_api::NativeApiState::with_registry(service, registry);
+    let state = crate::native_api::NativeApiState::with_registry(service, registry)
+        .with_wire_formats(cfg.http_formats.clone());
     // Opt-in embeddings proxy, exactly like the KV path — the restart
     // tooling probes POST /v1/embeddings after boot. Store-backed so the key is
     // Web-UI-settable.
@@ -648,6 +661,10 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
         .await
         .map_err(|source| RunError::Bind { addr, source })?;
     tracing::info!(%addr, "listening (native-durable)");
+    tracing::info!(
+        formats = ?cfg.http_formats.enabled().iter().map(|f| f.name()).collect::<Vec<_>>(),
+        "http body formats"
+    );
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {

@@ -42,11 +42,48 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_QUERY_TIMEOUT_MS` | `0` (off) | Per-statement wall-clock limit in milliseconds, for HTTP `/cypher` and Bolt, applied to every database. A statement over it fails with `statement exceeded the N ms statement timeout` (Bolt: `Neo.ClientError.Transaction.TransactionTimedOut`) and releases its locks. An autocommit statement keeps the writes it made before the limit hit, as with any other runtime error; inside an explicit transaction, roll back as usual. Non-integer values are rejected. |
 | `DREVO_PREPARED_TX_WARN_SECS` | `60` | Log an ERROR (and so raise a Web UI notification) for each two-phase-commit transaction that has stayed prepared longer than this many seconds. While one is prepared, every write is refused. `0` turns the alert off. |
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
+| `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
 | `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
 | `DREVO_AUTO_COMPACT_RATIO` | `2.0` | Minimum bloat ratio to trigger auto-compaction. |
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
 
 Invalid configuration exits with code `2`; a runtime failure exits with `1`.
+
+### Binary HTTP bodies (CBOR, MessagePack, opt-in)
+
+JSON is the HTTP API's format and is always available. Two binary formats can
+be offered next to it:
+
+| Format | Media type | Cargo feature |
+|--------|------------|---------------|
+| CBOR | `application/cbor` | `format-cbor` |
+| MessagePack | `application/msgpack` (also `application/x-msgpack`, `application/vnd.msgpack`) | `format-msgpack` |
+
+Both are compiled into the Docker image. They are served only once listed in
+`DREVO_HTTP_FORMATS`, e.g. `DREVO_HTTP_FORMATS=json,cbor,msgpack`.
+
+A client then chooses per request:
+
+- **Request body:** send `Content-Type: application/cbor` (or msgpack). A
+  format that is not enabled is answered `415`, a malformed body `400`.
+- **Response body:** send `Accept: application/cbor` (or msgpack); `q`
+  weights are honoured. Without `Accept`, or with `*/*`, the answer is JSON. An
+  `Accept` that names only formats the server does not offer is answered `406`.
+
+Every JSON endpoint takes part, error bodies included. The Web UI, GraphML and
+other non-JSON responses are never transcoded. Bolt is a separate, already
+binary protocol and is not affected.
+
+The gain is largest on embeddings. A float that fits in 32 bits, which is what
+an embedding model returns, takes 5 bytes in CBOR against about 20 characters
+in JSON, so a `/cypher` answer carrying vectors shrinks roughly fourfold.
+MessagePack writes every float in 9 bytes.
+
+```bash
+curl -s localhost:8080/cypher -H 'Accept: application/cbor' \
+  -H 'Content-Type: application/json' -d '{"query":"MATCH (n) RETURN n LIMIT 10"}' \
+  -o result.cbor
+```
 
 ### Embeddings proxy (`/v1/embeddings`, opt-in)
 
