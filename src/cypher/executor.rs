@@ -947,6 +947,8 @@ pub struct NativeQueryContext<'a> {
     pub properties: Option<&'a crate::native_property_index::NativePropertyIndex>,
     /// Opt-in nested-path index (`WHERE n.meta.author = …`, issue #578).
     pub paths: Option<&'a crate::native_path_index::NativePathIndex>,
+    /// Opt-in trigram text index (`WHERE n.title CONTAINS …`, issue #589).
+    pub texts: Option<&'a crate::native_text_index::NativeTextIndex>,
     /// `NodeValue` projection cache.
     pub values: Option<&'a crate::native_value_cache::NativeValueCache>,
     /// Server-side text embedder — lets `drevo.semantic.embed` /
@@ -1169,6 +1171,7 @@ fn execute_single(
         native_labels: ctx.labels,
         native_props: ctx.properties,
         native_paths: ctx.paths,
+        native_texts: ctx.texts,
         native_values: ctx.values,
         native_embedder: ctx.embedder,
         native_semantic: ctx.semantic,
@@ -2286,6 +2289,10 @@ struct Executor<'a> {
     /// pushdown when a declared path index covers the pattern. `None` when
     /// none was supplied.
     native_paths: Option<&'a crate::native_path_index::NativePathIndex>,
+    /// The opt-in trigram text index (issue #589): serves `WHERE n.prop
+    /// CONTAINS / STARTS WITH / ENDS WITH …` pushdown when a declared text
+    /// index covers the pattern. `None` when none was supplied.
+    native_texts: Option<&'a crate::native_text_index::NativeTextIndex>,
     /// Memoised `NodeValue` projections for unchanged native records; hits are
     /// `Arc::ptr_eq`-validated against the live node, so staleness can only
     /// cost speed, never correctness.
@@ -2426,15 +2433,17 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// `CREATE INDEX … ON (n.a.b, …)` (issue #578): register the nested-path
-    /// index definition in the native service; the index is built before the
-    /// next statement. Produces no rows, like Neo4j schema commands.
+    /// `CREATE INDEX … ON (n.a.b, …)` (issue #578) / `CREATE TEXT INDEX … ON
+    /// (n.prop)` (issue #589): register the index definition in the native
+    /// service; the index is built before the next statement. Produces no
+    /// rows, like Neo4j schema commands.
     fn run_create_path_index(&mut self, c: &CreatePathIndex) -> ExecResultT<()> {
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE INDEX"))?;
         svc.path_index_create(
             c.name.as_deref(),
+            c.kind,
             c.label.as_deref(),
             c.paths.clone(),
             c.if_not_exists,
@@ -3252,7 +3261,8 @@ impl<'a> Executor<'a> {
         pattern: &NodePattern,
         row: &Bindings,
     ) -> ExecResultT<Option<Vec<Arc<Node>>>> {
-        if self.native_props.is_none() && self.native_paths.is_none() {
+        if self.native_props.is_none() && self.native_paths.is_none() && self.native_texts.is_none()
+        {
             return Ok(None);
         }
         // The posting store and key serving a property path: the always-on
@@ -3342,6 +3352,20 @@ impl<'a> Executor<'a> {
                                 continue;
                             };
                             match range_allowed(idx, &key, *op, &bound) {
+                                Some(a) => a,
+                                None => continue,
+                            }
+                        }
+                        PushConstraint::Text { path, op, needle } => {
+                            let Some(texts) = self.native_texts else {
+                                continue;
+                            };
+                            // A non-string needle is the exact filter's to
+                            // reject (or to null out).
+                            let Ok(Value::String(needle)) = self.eval(needle, row) else {
+                                continue;
+                            };
+                            match texts.candidates(&pattern.labels, path, *op, &needle) {
                                 Some(a) => a,
                                 None => continue,
                             }
@@ -5198,17 +5222,20 @@ impl<'a> Executor<'a> {
     /// `SHOW [type] INDEXES [YIELD …] [WHERE …]` (issue #532), run as
     /// `CALL db.showIndexes(type)`: one row per named vector index, in Neo4j's
     /// `SHOW INDEXES` column layout (see [`procedure_columns`]). `type` is the
-    /// optional type word (`VECTOR`, `RANGE`, …) or `ALL`. drevo names two
-    /// kinds of index: `VECTOR` indexes and nested-path indexes, listed as
-    /// `RANGE` (issue #578) with their paths as `properties`. The automatic
+    /// optional type word (`VECTOR`, `RANGE`, …) or `ALL`. drevo names three
+    /// kinds of index: `VECTOR` indexes, nested-path indexes listed as
+    /// `RANGE` (issue #578) and trigram text indexes listed as `TEXT` (issue
+    /// #589), the latter two with their paths as `properties`. The automatic
     /// top-level property / label / full-text indexes have no names and are
     /// not listed.
     fn proc_show_indexes(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        use crate::path_index_registry::IndexKind;
         use crate::vector_index_registry::VectorIndexEntity;
         let empty = Bindings::new();
         let filter = self.eval(&args[0], &empty)?.as_string(span)?.to_uppercase();
         let want_vector = filter == "ALL" || filter == "VECTOR";
         let want_range = filter == "ALL" || filter == "RANGE" || filter == "BTREE";
+        let want_text = filter == "ALL" || filter == "TEXT";
         let Some(svc) = self.native_semantic else {
             return Ok(Vec::new());
         };
@@ -5258,19 +5285,19 @@ impl<'a> Executor<'a> {
                 options,
             ]);
         }
-        let paths = if want_range {
-            svc.path_index_list()
-        } else {
-            Vec::new()
-        };
-        for index in paths {
+        for index in svc.path_index_list() {
+            let (kind, provider) = match index.kind {
+                IndexKind::Range if want_range => ("RANGE", "range-1.0"),
+                IndexKind::Text if want_text => ("TEXT", "text-2.0"),
+                _ => continue,
+            };
             let id = i64::try_from(rows.len()).unwrap_or(i64::MAX) + 1;
             rows.push(vec![
                 Value::Integer(id),
                 Value::String(index.name.clone()),
                 Value::String("ONLINE".to_string()),
                 Value::Float(100.0),
-                Value::String("RANGE".to_string()),
+                Value::String(kind.to_string()),
                 Value::String("NODE".to_string()),
                 Value::List(index.label.iter().cloned().map(Value::String).collect()),
                 Value::List(
@@ -5280,11 +5307,11 @@ impl<'a> Executor<'a> {
                         .map(|p| Value::String(p.to_string()))
                         .collect(),
                 ),
-                Value::String("range-1.0".to_string()),
+                Value::String(provider.to_string()),
                 Value::Null,
                 Value::Map(BTreeMap::from([(
                     "indexProvider".to_string(),
-                    Value::String("range-1.0".to_string()),
+                    Value::String(provider.to_string()),
                 )])),
             ]);
         }
@@ -8985,6 +9012,13 @@ enum PushConstraint {
         op: crate::native_property_index::RangeOp,
         bound: Expression,
     },
+    /// `variable.path CONTAINS / STARTS WITH / ENDS WITH needle`, resolved
+    /// through a declared trigram text index (issue #589).
+    Text {
+        path: Vec<String>,
+        op: crate::native_text_index::TextMatch,
+        needle: Expression,
+    },
     /// `id(variable) = value` — a storage-id point seek, resolved through
     /// [`GraphEngine::get_node`] on *any* engine (no index needed).
     IdEq { value: Expression },
@@ -9000,15 +9034,16 @@ impl PushConstraint {
         match self {
             PushConstraint::Eq { path, .. }
             | PushConstraint::In { path, .. }
-            | PushConstraint::Range { path, .. } => path.join("."),
+            | PushConstraint::Range { path, .. }
+            | PushConstraint::Text { path, .. } => path.join("."),
             PushConstraint::IdEq { .. } | PushConstraint::IdIn { .. } => "id()".to_string(),
         }
     }
 }
 
-/// Lift conjunctive `variable.key = value` and `variable.key IN list`
-/// constraints out of a `WHERE` predicate into `out` (`variable →
-/// [constraint]`).
+/// Lift conjunctive `variable.key = value`, `variable.key IN list`, range and
+/// substring (`CONTAINS` / `STARTS WITH` / `ENDS WITH`) constraints out of a
+/// `WHERE` predicate into `out` (`variable → [constraint]`).
 ///
 /// Only top-level `AND` conjuncts are traversed, so a constraint sitting under
 /// an `OR` / `NOT` / any other operator is never treated as required — pushing
@@ -9063,6 +9098,28 @@ fn extract_pushdown_constraints(expr: &Expression, out: &mut HashMap<String, Vec
                 out.entry(var).or_default().push(PushConstraint::In {
                     path,
                     list: (**list).clone(),
+                });
+            }
+        }
+        Expression::Binary {
+            op: op @ (BinaryOp::Contains | BinaryOp::StartsWith | BinaryOp::EndsWith),
+            lhs,
+            rhs,
+            ..
+        } => {
+            // Only `prop <op> needle`: with the property on the right it is
+            // the needle, and no index over haystacks can serve that.
+            if let Some((var, path)) = property_var_path(lhs) {
+                use crate::native_text_index::TextMatch;
+                let op = match op {
+                    BinaryOp::Contains => TextMatch::Contains,
+                    BinaryOp::StartsWith => TextMatch::StartsWith,
+                    _ => TextMatch::EndsWith,
+                };
+                out.entry(var).or_default().push(PushConstraint::Text {
+                    path,
+                    op,
+                    needle: (**rhs).clone(),
                 });
             }
         }

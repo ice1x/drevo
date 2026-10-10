@@ -401,13 +401,19 @@ pub struct CreateVectorIndex {
 /// ON (n.a.b, n.c.*, …) [OPTIONS {…}]` (issue #578): index the values at
 /// nested property paths. Each path is indexed on its own (not as a composite
 /// key). Top-level paths are dropped by the parser — they are always indexed.
+///
+/// `CREATE TEXT INDEX [<name>] [IF NOT EXISTS] FOR (n[:Label]) ON (n.prop)
+/// [OPTIONS {…}]` (issue #589) has the same shape with `kind` = `Text` and
+/// exactly one path, top-level or nested.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreatePathIndex {
     /// The index name, or `None` to generate one from the label and paths.
     pub name: Option<String>,
+    /// Range (`CREATE INDEX`) or text (`CREATE TEXT INDEX`).
+    pub kind: crate::path_index_registry::IndexKind,
     /// Only nodes with this label are indexed; `None` (`FOR (n)`) means all.
     pub label: Option<String>,
-    /// The nested paths, in declaration order.
+    /// The paths, in declaration order.
     pub paths: Vec<crate::native_path_index::PropertyPath>,
     /// `IF NOT EXISTS` was given — a name clash is a no-op rather than an error.
     pub if_not_exists: bool,
@@ -415,7 +421,7 @@ pub struct CreatePathIndex {
     pub span: Span,
 }
 
-/// `DROP INDEX <name> [IF EXISTS]`: drop a path index or a vector index.
+/// `DROP INDEX <name> [IF EXISTS]`: drop a path, text or vector index.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropIndex {
     /// The index name.

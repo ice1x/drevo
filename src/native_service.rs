@@ -37,6 +37,7 @@ use crate::native_fts::{NativeFtsIndex, NativeFtsRelIndex};
 use crate::native_label_index::NativeLabelIndex;
 use crate::native_path_index::{NativePathIndex, PathIndexSpec};
 use crate::native_property_index::NativePropertyIndex;
+use crate::native_text_index::{NativeTextIndex, TextIndexSpec};
 use crate::native_value_cache::NativeValueCache;
 
 /// The index stack plus the change-feed head it is synced to.
@@ -47,7 +48,10 @@ struct ServiceIndexes {
     props: NativePropertyIndex,
     /// Opt-in nested-path index (issue #578), over the registered specs.
     paths: NativePathIndex,
-    /// The [`NativeService::path_specs_version`] `paths` was built for.
+    /// Opt-in trigram text index (issue #589), over the registered specs.
+    texts: NativeTextIndex,
+    /// The [`NativeService::path_specs_version`] `paths` and `texts` were
+    /// built for.
     paths_version: u64,
     /// Executor `NodeValue` projection cache.
     values: NativeValueCache,
@@ -61,11 +65,16 @@ struct ServiceIndexes {
 }
 
 impl ServiceIndexes {
-    fn synced_over(graph: &NativeGraph, path_specs: Vec<PathIndexSpec>) -> Self {
+    fn synced_over(
+        graph: &NativeGraph,
+        path_specs: Vec<PathIndexSpec>,
+        text_specs: Vec<TextIndexSpec>,
+    ) -> Self {
         let mut idx = ServiceIndexes {
             labels: NativeLabelIndex::new(),
             props: NativePropertyIndex::new(),
             paths: NativePathIndex::new(path_specs),
+            texts: NativeTextIndex::new(text_specs),
             paths_version: 0,
             values: NativeValueCache::new(),
             fts: NativeFtsIndex::new(),
@@ -80,6 +89,7 @@ impl ServiceIndexes {
         self.labels.sync(graph);
         self.props.sync(graph);
         self.paths.sync(graph);
+        self.texts.sync(graph);
         self.values.sync(graph);
         self.fts.sync(graph);
         self.fts_rel.sync(graph);
@@ -168,11 +178,13 @@ pub struct NativeService {
     /// to the `(label, property)` it targets, so `CREATE VECTOR INDEX` /
     /// `db.index.vector.queryNodes` round-trip. Persisted in the same sidecar.
     vector_indexes: RwLock<crate::vector_index_registry::VectorIndexRegistry>,
-    /// Named nested-path index definitions (issue #578). Persisted in the same
-    /// sidecar; the index data lives in [`ServiceIndexes::paths`].
+    /// Named nested-path and text index definitions (issues #578, #589).
+    /// Persisted in the same sidecar; the index data lives in
+    /// [`ServiceIndexes::paths`] and [`ServiceIndexes::texts`].
     path_indexes: RwLock<crate::path_index_registry::PathIndexRegistry>,
-    /// Bumped on every path-index DDL, so the next statement rebuilds
-    /// [`ServiceIndexes::paths`] over the new definitions.
+    /// Bumped on every path- or text-index DDL, so the next statement rebuilds
+    /// [`ServiceIndexes::paths`] and [`ServiceIndexes::texts`] over the new
+    /// definitions.
     path_specs_version: AtomicU64,
     /// Sidecar path for the registries (`<wal dir>/semantic.json`), or
     /// `None` for an in-memory service (nothing to persist). Always `None` on
@@ -213,7 +225,8 @@ struct SemanticSidecar {
     /// sidecars written before #532 (which had only `node`/`rel`) loadable.
     #[serde(default)]
     vector: crate::vector_index_registry::VectorIndexRegistry,
-    /// Nested-path index definitions (issue #578); absent in older sidecars.
+    /// Nested-path and text index definitions (issues #578, #589); absent in
+    /// older sidecars.
     #[serde(default)]
     path: crate::path_index_registry::PathIndexRegistry,
 }
@@ -313,7 +326,11 @@ impl NativeService {
             vector,
             path: path_indexes,
         } = load_semantic_sidecar(&sidecar);
-        let indexes = RwLock::new(ServiceIndexes::synced_over(&graph, path_indexes.specs()));
+        let indexes = RwLock::new(ServiceIndexes::synced_over(
+            &graph,
+            path_indexes.specs(),
+            path_indexes.text_specs(),
+        ));
         Ok(Self {
             graph,
             indexes,
@@ -349,7 +366,7 @@ impl NativeService {
     /// in-memory graph, for tests and embedded use.
     pub fn in_memory() -> Self {
         let graph = NativeGraph::new();
-        let indexes = RwLock::new(ServiceIndexes::synced_over(&graph, Vec::new()));
+        let indexes = RwLock::new(ServiceIndexes::synced_over(&graph, Vec::new(), Vec::new()));
         Self {
             graph,
             indexes,
@@ -580,12 +597,12 @@ impl NativeService {
         let mut idx = self.indexes.write().unwrap_or_else(|e| e.into_inner());
         let version = self.path_specs_version.load(Ordering::SeqCst);
         if idx.paths_version != version {
-            let specs = self
-                .path_indexes
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .specs();
+            let (specs, text_specs) = {
+                let reg = self.path_indexes.read().unwrap_or_else(|e| e.into_inner());
+                (reg.specs(), reg.text_specs())
+            };
             idx.paths.set_specs(specs, &self.graph);
+            idx.texts.set_specs(text_specs, &self.graph);
             idx.paths_version = version;
         }
         if idx.synced_head != self.graph.change_head() {
@@ -1192,12 +1209,13 @@ impl NativeService {
             .to_vec()
     }
 
-    // ----- nested-path indexes (issue #578) ----------------------------------
+    // ----- nested-path and text indexes (issues #578, #589) -------------------
 
     /// Register a path index (`CREATE INDEX [<name>] FOR (n[:label]) ON
-    /// (n.a.b, …)`), persisting it. A missing `name` is generated from the
-    /// label and paths. `if_not_exists` makes a taken name a no-op. The index
-    /// is built before the next statement runs.
+    /// (n.a.b, …)`) or, with `kind` = `Text`, a text index (`CREATE TEXT
+    /// INDEX … ON (n.prop)`), persisting it. A missing `name` is generated from
+    /// the kind, label and paths. `if_not_exists` makes a taken name a no-op.
+    /// The index is built before the next statement runs.
     ///
     /// # Errors
     /// [`crate::path_index_registry::IndexError::AlreadyExists`] if the name is
@@ -1205,12 +1223,13 @@ impl NativeService {
     pub fn path_index_create(
         &self,
         name: Option<&str>,
+        kind: crate::path_index_registry::IndexKind,
         label: Option<&str>,
         paths: Vec<crate::native_path_index::PropertyPath>,
         if_not_exists: bool,
     ) -> Result<(), crate::path_index_registry::IndexError> {
         use crate::path_index_registry::{generated_name, IndexError, PathIndex};
-        let name = name.map_or_else(|| generated_name(label, &paths), str::to_string);
+        let name = name.map_or_else(|| generated_name(kind, label, &paths), str::to_string);
         {
             let vectors = self
                 .vector_indexes
@@ -1226,6 +1245,7 @@ impl NativeService {
             }
             reg.insert(PathIndex {
                 name,
+                kind,
                 label: label.map(str::to_string),
                 paths,
             });
@@ -1235,7 +1255,8 @@ impl NativeService {
         Ok(())
     }
 
-    /// Every registered path index, in creation order (for `SHOW INDEXES`).
+    /// Every registered path and text index, in creation order (for `SHOW
+    /// INDEXES`).
     #[must_use]
     pub fn path_index_list(&self) -> Vec<crate::path_index_registry::PathIndex> {
         self.path_indexes
@@ -1245,7 +1266,7 @@ impl NativeService {
             .to_vec()
     }
 
-    /// Drop the path or vector index named `name` (`DROP INDEX <name>`),
+    /// Drop the path, text or vector index named `name` (`DROP INDEX <name>`),
     /// persisting the change. `if_exists` makes a missing name a no-op.
     ///
     /// # Errors
@@ -1995,6 +2016,7 @@ impl NativeService {
             labels: Some(&idx.labels),
             properties: Some(&idx.props),
             paths: Some(&idx.paths),
+            texts: Some(&idx.texts),
             values: Some(&idx.values),
             #[cfg(feature = "http")]
             embedder: self.embedder.get(),
