@@ -87,6 +87,11 @@ pub enum Clause {
     /// [OPTIONS {…}]` — register a named vector index (issue #532). The Neo4j
     /// DDL that binds an index name to a `(label, property)` pair.
     CreateVectorIndex(CreateVectorIndex),
+    /// `CREATE [RANGE|BTREE] INDEX [<name>] [IF NOT EXISTS] FOR (n[:Label])
+    /// ON (n.a.b, n.c.*, …)` — an index on nested property paths (issue #578).
+    CreatePathIndex(CreatePathIndex),
+    /// `DROP INDEX <name> [IF EXISTS]` — drop a path or vector index.
+    DropIndex(DropIndex),
     /// `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT] INDEX …` and
     /// `CREATE CONSTRAINT …` — accepted for Neo4j-client compatibility but a
     /// **no-op**: drevo auto-indexes and has no schema DDL (issue #532). Parsed
@@ -389,6 +394,35 @@ pub struct CreateVectorIndex {
     /// `IF NOT EXISTS` was given — a name clash is a no-op rather than an error.
     pub if_not_exists: bool,
     /// Source span of the `CREATE` keyword.
+    pub span: Span,
+}
+
+/// `CREATE [RANGE|BTREE] INDEX [<name>] [IF NOT EXISTS] FOR (n[:Label])
+/// ON (n.a.b, n.c.*, …) [OPTIONS {…}]` (issue #578): index the values at
+/// nested property paths. Each path is indexed on its own (not as a composite
+/// key). Top-level paths are dropped by the parser — they are always indexed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreatePathIndex {
+    /// The index name, or `None` to generate one from the label and paths.
+    pub name: Option<String>,
+    /// Only nodes with this label are indexed; `None` (`FOR (n)`) means all.
+    pub label: Option<String>,
+    /// The nested paths, in declaration order.
+    pub paths: Vec<crate::native_path_index::PropertyPath>,
+    /// `IF NOT EXISTS` was given — a name clash is a no-op rather than an error.
+    pub if_not_exists: bool,
+    /// Source span of the `CREATE` keyword.
+    pub span: Span,
+}
+
+/// `DROP INDEX <name> [IF EXISTS]`: drop a path index or a vector index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropIndex {
+    /// The index name.
+    pub name: String,
+    /// `IF EXISTS` was given — a missing name is a no-op rather than an error.
+    pub if_exists: bool,
+    /// Source span of the `DROP` keyword.
     pub span: Span,
 }
 

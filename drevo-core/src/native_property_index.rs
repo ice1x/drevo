@@ -301,13 +301,7 @@ impl NativePropertyIndex {
 
     /// Discard everything and re-index every node in `graph`.
     fn rebuild_from(&mut self, graph: &NativeGraph) {
-        self.postings.clear();
-        self.docs.clear();
-        self.numeric_int.clear();
-        self.numeric_float.clear();
-        self.numeric_docs.clear();
-        self.range_blocked.clear();
-        self.blocked_docs.clear();
+        self.clear();
         if let Ok(nodes) = graph.all_nodes() {
             for node in &nodes {
                 self.index_node(node);
@@ -320,9 +314,6 @@ impl NativePropertyIndex {
     /// equality lookup or a range scan. A node with no such property is untracked.
     fn index_node(&mut self, node: &Node) {
         self.remove_node(node.id);
-        let mut pairs: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut nums: Vec<(String, NumEntry)> = Vec::new();
-        let mut blocked: Vec<String> = Vec::new();
         // The executor surfaces the model `title` / `body` fields as ordinary
         // Cypher properties (aliases, overridden by an explicit properties
         // entry of the same name). Index the *effective* property set the same
@@ -335,14 +326,44 @@ impl NativePropertyIndex {
             .then(|| JsonValue::String(node.body.clone()));
         let entries = title_alias
             .as_ref()
-            .map(|v| ("title", v))
+            .map(|v| ("title".to_string(), v))
             .into_iter()
-            .chain(body_alias.as_ref().map(|v| ("body", v)))
-            .chain(node.properties.0.iter().map(|(k, v)| (k.as_str(), v)));
+            .chain(body_alias.as_ref().map(|v| ("body".to_string(), v)))
+            .chain(
+                node.properties
+                    .0
+                    .iter()
+                    .filter(|(k, _)| k.as_str() != SECONDARY_LABELS_KEY)
+                    .map(|(k, v)| (k.clone(), v)),
+            );
+        self.insert_entries(node.id, entries);
+    }
+
+    /// Discard every posting, ready for a rebuild.
+    pub(crate) fn clear(&mut self) {
+        self.postings.clear();
+        self.docs.clear();
+        self.numeric_int.clear();
+        self.numeric_float.clear();
+        self.numeric_docs.clear();
+        self.range_blocked.clear();
+        self.blocked_docs.clear();
+    }
+
+    /// Index `(key, value)` pairs for node `id`, which must currently have no
+    /// postings (call [`remove_node`](Self::remove_node) first). Shared with
+    /// [`NativePathIndex`](crate::native_path_index::NativePathIndex), whose
+    /// keys are encoded property paths.
+    pub(crate) fn insert_entries<'v>(
+        &mut self,
+        id: u64,
+        entries: impl IntoIterator<Item = (String, &'v JsonValue)>,
+    ) {
+        let mut pairs: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut nums: Vec<(String, NumEntry)> = Vec::new();
+        let mut blocked: Vec<String> = Vec::new();
         for (key, value) in entries {
-            if key == SECONDARY_LABELS_KEY {
-                continue;
-            }
+            let key = key.as_str();
             // A non-numeric value blocks range scans on this key.
             if is_range_blocking(value) {
                 *self.range_blocked.entry(key.to_string()).or_default() += 1;
@@ -356,7 +377,7 @@ impl NativePropertyIndex {
                         .or_default()
                         .entry(bytes.clone())
                         .or_default()
-                        .insert(node.id);
+                        .insert(id);
                     pairs.push((key.to_string(), bytes));
                 }
             }
@@ -370,7 +391,7 @@ impl NativePropertyIndex {
                         .or_default()
                         .entry(i)
                         .or_default()
-                        .insert(node.id);
+                        .insert(id);
                     nums.push((key.to_string(), NumEntry::Int(i)));
                 } else if let Some(f) = n.as_f64() {
                     if f.is_finite() {
@@ -380,26 +401,26 @@ impl NativePropertyIndex {
                             .or_default()
                             .entry(f)
                             .or_default()
-                            .insert(node.id);
+                            .insert(id);
                         nums.push((key.to_string(), NumEntry::Float(f)));
                     }
                 }
             }
         }
         if !pairs.is_empty() {
-            self.docs.insert(node.id, pairs);
+            self.docs.insert(id, pairs);
         }
         if !nums.is_empty() {
-            self.numeric_docs.insert(node.id, nums);
+            self.numeric_docs.insert(id, nums);
         }
         if !blocked.is_empty() {
-            self.blocked_docs.insert(node.id, blocked);
+            self.blocked_docs.insert(id, blocked);
         }
     }
 
     /// Remove a node's postings (exact and numeric), dropping any bucket / map
     /// entry that empties.
-    fn remove_node(&mut self, id: u64) {
+    pub(crate) fn remove_node(&mut self, id: u64) {
         if let Some(pairs) = self.docs.remove(&id) {
             for (key, bytes) in &pairs {
                 if let Some(by_val) = self.postings.get_mut(key) {

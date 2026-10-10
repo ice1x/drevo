@@ -35,6 +35,7 @@ use crate::lww::{OriginId, Stamp};
 use crate::native::NativeGraph;
 use crate::native_fts::{NativeFtsIndex, NativeFtsRelIndex};
 use crate::native_label_index::NativeLabelIndex;
+use crate::native_path_index::{NativePathIndex, PathIndexSpec};
 use crate::native_property_index::NativePropertyIndex;
 use crate::native_value_cache::NativeValueCache;
 
@@ -44,6 +45,10 @@ struct ServiceIndexes {
     labels: NativeLabelIndex,
     /// Property-equality index.
     props: NativePropertyIndex,
+    /// Opt-in nested-path index (issue #578), over the registered specs.
+    paths: NativePathIndex,
+    /// The [`NativeService::path_specs_version`] `paths` was built for.
+    paths_version: u64,
     /// Executor `NodeValue` projection cache.
     values: NativeValueCache,
     /// Trigram BM25 full-text index — `fts.search` served natively.
@@ -56,10 +61,12 @@ struct ServiceIndexes {
 }
 
 impl ServiceIndexes {
-    fn synced_over(graph: &NativeGraph) -> Self {
+    fn synced_over(graph: &NativeGraph, path_specs: Vec<PathIndexSpec>) -> Self {
         let mut idx = ServiceIndexes {
             labels: NativeLabelIndex::new(),
             props: NativePropertyIndex::new(),
+            paths: NativePathIndex::new(path_specs),
+            paths_version: 0,
             values: NativeValueCache::new(),
             fts: NativeFtsIndex::new(),
             fts_rel: NativeFtsRelIndex::new(),
@@ -72,6 +79,7 @@ impl ServiceIndexes {
     fn catch_up(&mut self, graph: &NativeGraph) {
         self.labels.sync(graph);
         self.props.sync(graph);
+        self.paths.sync(graph);
         self.values.sync(graph);
         self.fts.sync(graph);
         self.fts_rel.sync(graph);
@@ -160,6 +168,12 @@ pub struct NativeService {
     /// to the `(label, property)` it targets, so `CREATE VECTOR INDEX` /
     /// `db.index.vector.queryNodes` round-trip. Persisted in the same sidecar.
     vector_indexes: RwLock<crate::vector_index_registry::VectorIndexRegistry>,
+    /// Named nested-path index definitions (issue #578). Persisted in the same
+    /// sidecar; the index data lives in [`ServiceIndexes::paths`].
+    path_indexes: RwLock<crate::path_index_registry::PathIndexRegistry>,
+    /// Bumped on every path-index DDL, so the next statement rebuilds
+    /// [`ServiceIndexes::paths`] over the new definitions.
+    path_specs_version: AtomicU64,
     /// Sidecar path for the registries (`<wal dir>/semantic.json`), or
     /// `None` for an in-memory service (nothing to persist). Always `None` on
     /// wasm, which has no filesystem to persist to.
@@ -199,6 +213,9 @@ struct SemanticSidecar {
     /// sidecars written before #532 (which had only `node`/`rel`) loadable.
     #[serde(default)]
     vector: crate::vector_index_registry::VectorIndexRegistry,
+    /// Nested-path index definitions (issue #578); absent in older sidecars.
+    #[serde(default)]
+    path: crate::path_index_registry::PathIndexRegistry,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -252,10 +269,15 @@ impl NativeService {
         let path = path.as_ref();
         let graph = NativeGraph::open_durable(path)?;
         graph.compact_wal()?;
-        let indexes = RwLock::new(ServiceIndexes::synced_over(&graph));
         let last_compact_head = AtomicU64::new(graph.change_head());
         let sidecar = semantic_sidecar_path(path);
-        let SemanticSidecar { node, rel, vector } = load_semantic_sidecar(&sidecar);
+        let SemanticSidecar {
+            node,
+            rel,
+            vector,
+            path: path_indexes,
+        } = load_semantic_sidecar(&sidecar);
+        let indexes = RwLock::new(ServiceIndexes::synced_over(&graph, path_indexes.specs()));
         Ok(Self {
             graph,
             indexes,
@@ -268,6 +290,8 @@ impl NativeService {
             semantic: RwLock::new(node),
             rel_semantic: RwLock::new(rel),
             vector_indexes: RwLock::new(vector),
+            path_indexes: RwLock::new(path_indexes),
+            path_specs_version: AtomicU64::new(0),
             semantic_sidecar: Some(sidecar),
             #[cfg(feature = "http")]
             embed_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -289,7 +313,7 @@ impl NativeService {
     /// in-memory graph, for tests and embedded use.
     pub fn in_memory() -> Self {
         let graph = NativeGraph::new();
-        let indexes = RwLock::new(ServiceIndexes::synced_over(&graph));
+        let indexes = RwLock::new(ServiceIndexes::synced_over(&graph, Vec::new()));
         Self {
             graph,
             indexes,
@@ -302,6 +326,8 @@ impl NativeService {
             semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             rel_semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             vector_indexes: RwLock::new(crate::vector_index_registry::VectorIndexRegistry::new()),
+            path_indexes: RwLock::new(crate::path_index_registry::PathIndexRegistry::default()),
+            path_specs_version: AtomicU64::new(0),
             semantic_sidecar: None,
             #[cfg(feature = "http")]
             embed_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -505,13 +531,27 @@ impl NativeService {
     /// request after a write, and it keeps the sync + serve pair simple
     /// (std's `RwLock` cannot downgrade).
     fn with_fresh_indexes<R>(&self, serve: impl FnOnce(&ServiceIndexes) -> R) -> R {
+        let fresh = |idx: &ServiceIndexes| {
+            idx.synced_head == self.graph.change_head()
+                && idx.paths_version == self.path_specs_version.load(Ordering::SeqCst)
+        };
         {
             let idx = self.indexes.read().unwrap_or_else(|e| e.into_inner());
-            if idx.synced_head == self.graph.change_head() {
+            if fresh(&idx) {
                 return serve(&idx);
             }
         }
         let mut idx = self.indexes.write().unwrap_or_else(|e| e.into_inner());
+        let version = self.path_specs_version.load(Ordering::SeqCst);
+        if idx.paths_version != version {
+            let specs = self
+                .path_indexes
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .specs();
+            idx.paths.set_specs(specs, &self.graph);
+            idx.paths_version = version;
+        }
         if idx.synced_head != self.graph.change_head() {
             idx.catch_up(&self.graph);
         }
@@ -1046,6 +1086,18 @@ impl NativeService {
                 .vector_indexes
                 .write()
                 .unwrap_or_else(|e| e.into_inner());
+            // Index names are unique across index kinds, like Neo4j.
+            let path_taken = self
+                .path_indexes
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+                .is_some();
+            if path_taken {
+                return Err(
+                    crate::vector_index_registry::VectorIndexError::AlreadyExists(name.to_string()),
+                );
+            }
             reg.create(
                 name.to_string(),
                 label.to_string(),
@@ -1102,6 +1154,94 @@ impl NativeService {
             .unwrap_or_else(|e| e.into_inner())
             .list()
             .to_vec()
+    }
+
+    // ----- nested-path indexes (issue #578) ----------------------------------
+
+    /// Register a path index (`CREATE INDEX [<name>] FOR (n[:label]) ON
+    /// (n.a.b, …)`), persisting it. A missing `name` is generated from the
+    /// label and paths. `if_not_exists` makes a taken name a no-op. The index
+    /// is built before the next statement runs.
+    ///
+    /// # Errors
+    /// [`crate::path_index_registry::IndexError::AlreadyExists`] if the name is
+    /// taken by any index and `if_not_exists` is false.
+    pub fn path_index_create(
+        &self,
+        name: Option<&str>,
+        label: Option<&str>,
+        paths: Vec<crate::native_path_index::PropertyPath>,
+        if_not_exists: bool,
+    ) -> Result<(), crate::path_index_registry::IndexError> {
+        use crate::path_index_registry::{generated_name, IndexError, PathIndex};
+        let name = name.map_or_else(|| generated_name(label, &paths), str::to_string);
+        {
+            let vectors = self
+                .vector_indexes
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            let mut reg = self.path_indexes.write().unwrap_or_else(|e| e.into_inner());
+            if reg.get(&name).is_some() || vectors.get(&name).is_some() {
+                return if if_not_exists {
+                    Ok(())
+                } else {
+                    Err(IndexError::AlreadyExists(name))
+                };
+            }
+            reg.insert(PathIndex {
+                name,
+                label: label.map(str::to_string),
+                paths,
+            });
+        }
+        self.path_specs_version.fetch_add(1, Ordering::SeqCst);
+        self.persist_semantic();
+        Ok(())
+    }
+
+    /// Every registered path index, in creation order (for `SHOW INDEXES`).
+    #[must_use]
+    pub fn path_index_list(&self) -> Vec<crate::path_index_registry::PathIndex> {
+        self.path_indexes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+            .to_vec()
+    }
+
+    /// Drop the path or vector index named `name` (`DROP INDEX <name>`),
+    /// persisting the change. `if_exists` makes a missing name a no-op.
+    ///
+    /// # Errors
+    /// [`crate::path_index_registry::IndexError::NotFound`] if no index has
+    /// that name and `if_exists` is false.
+    pub fn index_drop(
+        &self,
+        name: &str,
+        if_exists: bool,
+    ) -> Result<(), crate::path_index_registry::IndexError> {
+        let removed_path = self
+            .path_indexes
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name);
+        if removed_path {
+            self.path_specs_version.fetch_add(1, Ordering::SeqCst);
+            self.persist_semantic();
+            return Ok(());
+        }
+        if self.vector_index_get(name).is_some() {
+            return self
+                .vector_index_drop(name, true)
+                .map_err(|_| crate::path_index_registry::IndexError::NotFound(name.to_string()));
+        }
+        if if_exists {
+            Ok(())
+        } else {
+            Err(crate::path_index_registry::IndexError::NotFound(
+                name.to_string(),
+            ))
+        }
     }
 
     /// The registered node-side targets — parity with `Drevo::semantic_status`.
@@ -1623,6 +1763,11 @@ impl NativeService {
                     .read()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone(),
+                path: self
+                    .path_indexes
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
             };
             let Ok(bytes) = serde_json::to_vec(&sidecar) else {
                 return;
@@ -1813,6 +1958,7 @@ impl NativeService {
             fts_rel: Some(&idx.fts_rel),
             labels: Some(&idx.labels),
             properties: Some(&idx.props),
+            paths: Some(&idx.paths),
             values: Some(&idx.values),
             #[cfg(feature = "http")]
             embedder: self.embedder.get(),

@@ -153,11 +153,11 @@ use std::sync::Arc;
 const VARLEN_DEFAULT_UPPER: usize = 25;
 
 use crate::cypher::ast::{
-    BinaryOp, CallClause, Clause, CreateClause, CreateVectorIndex, Direction as AstDirection,
-    Expression, ForeachClause, LabelExpr, ListPredicateKind, MapLiteral, MapProjectionSelector,
-    MatchClause, NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem,
-    Query, RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery,
-    UnaryOp, UnionKind, UnwindClause, YieldItem,
+    BinaryOp, CallClause, Clause, CreateClause, CreatePathIndex, CreateVectorIndex,
+    Direction as AstDirection, DropIndex, Expression, ForeachClause, LabelExpr, ListPredicateKind,
+    MapLiteral, MapProjectionSelector, MatchClause, NamedPattern, NodePattern, OrderDirection,
+    OrderItem, PathPattern, ProjectionItem, Query, RelLength, RelationshipPattern, ReturnClause,
+    SearchClause, ShortestKind, SingleQuery, UnaryOp, UnionKind, UnwindClause, YieldItem,
 };
 use crate::cypher::lexer::Span;
 use crate::engine::GraphEngine;
@@ -830,9 +830,7 @@ pub fn execute_on_engine(
     engine: &dyn GraphEngine,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(
-        query, engine, None, None, None, None, None, None, None, params,
-    )
+    execute_inner(query, engine, &NativeQueryContext::default(), params)
 }
 
 /// Like [`execute_on_engine`], but with a native full-text index so
@@ -853,18 +851,11 @@ pub fn execute_on_engine_with_fts(
     fts: &crate::native_fts::NativeFtsIndex,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(
-        query,
-        engine,
-        Some(fts),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        params,
-    )
+    let ctx = NativeQueryContext {
+        fts: Some(fts),
+        ..NativeQueryContext::default()
+    };
+    execute_inner(query, engine, &ctx, params)
 }
 
 /// Like [`execute_on_engine`], but with the native secondary indexes so
@@ -891,9 +882,13 @@ pub fn execute_on_engine_with_indexes(
     props: Option<&crate::native_property_index::NativePropertyIndex>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(
-        query, engine, fts, None, labels, props, None, None, None, params,
-    )
+    let ctx = NativeQueryContext {
+        fts,
+        labels,
+        properties: props,
+        ..NativeQueryContext::default()
+    };
+    execute_inner(query, engine, &ctx, params)
 }
 
 /// Like [`execute_on_engine_with_indexes`], additionally supplying a
@@ -915,9 +910,14 @@ pub fn execute_on_engine_with_indexes_and_values(
     values: Option<&crate::native_value_cache::NativeValueCache>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(
-        query, engine, fts, None, labels, props, values, None, None, params,
-    )
+    let ctx = NativeQueryContext {
+        fts,
+        labels,
+        properties: props,
+        values,
+        ..NativeQueryContext::default()
+    };
+    execute_inner(query, engine, &ctx, params)
 }
 
 /// A borrowed handle to a server-side text embedder for the native path.
@@ -945,6 +945,8 @@ pub struct NativeQueryContext<'a> {
     pub labels: Option<&'a crate::native_label_index::NativeLabelIndex>,
     /// Property-equality index (`MATCH (n {key: value})`).
     pub properties: Option<&'a crate::native_property_index::NativePropertyIndex>,
+    /// Opt-in nested-path index (`WHERE n.meta.author = …`, issue #578).
+    pub paths: Option<&'a crate::native_path_index::NativePathIndex>,
     /// `NodeValue` projection cache.
     pub values: Option<&'a crate::native_value_cache::NativeValueCache>,
     /// Server-side text embedder — lets `drevo.semantic.embed` /
@@ -968,48 +970,19 @@ pub fn execute_on_engine_with_context(
     ctx: &NativeQueryContext<'_>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    execute_inner(
-        query,
-        engine,
-        ctx.fts,
-        ctx.fts_rel,
-        ctx.labels,
-        ctx.properties,
-        ctx.values,
-        ctx.embedder,
-        ctx.semantic,
-        params,
-    )
+    execute_inner(query, engine, ctx, params)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_inner(
     query: &Query,
     engine: &dyn GraphEngine,
-    native_fts: Option<&crate::native_fts::NativeFtsIndex>,
-    native_fts_rel: Option<&crate::native_fts::NativeFtsRelIndex>,
-    native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
-    native_props: Option<&crate::native_property_index::NativePropertyIndex>,
-    native_values: Option<&crate::native_value_cache::NativeValueCache>,
-    native_embedder: Option<QueryEmbedder<'_>>,
-    native_semantic: Option<&crate::native_service::NativeService>,
+    ctx: &NativeQueryContext<'_>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Fast path — a query with no `UNION` is a single arm, executed
     // directly with no row combination.
     if query.parts.len() == 1 {
-        return execute_single(
-            &query.parts[0].query,
-            engine,
-            native_fts,
-            native_fts_rel,
-            native_labels,
-            native_props,
-            native_values,
-            native_embedder,
-            native_semantic,
-            params,
-        );
+        return execute_single(&query.parts[0].query, engine, ctx, params);
     }
 
     // Multi-arm `UNION`. The parser guarantees `parts[i].union` is
@@ -1044,18 +1017,7 @@ fn execute_inner(
     let mut rows: Vec<Vec<Value>> = Vec::new();
     let mut stats = ExecStats::default();
     for part in &query.parts {
-        let arm = execute_single(
-            &part.query,
-            engine,
-            native_fts,
-            native_fts_rel,
-            native_labels,
-            native_props,
-            native_values,
-            native_embedder,
-            native_semantic,
-            params.clone(),
-        )?;
+        let arm = execute_single(&part.query, engine, ctx, params.clone())?;
         match &columns {
             None => columns = Some(arm.columns),
             Some(expected) if *expected != arm.columns => {
@@ -1179,17 +1141,10 @@ fn try_count_pushdown(
 
 /// Execute one `UNION`-free arm against a fresh executor over the given engine
 /// (and its optional native index stack).
-#[allow(clippy::too_many_arguments)]
 fn execute_single(
     single: &SingleQuery,
     engine: &dyn GraphEngine,
-    native_fts: Option<&crate::native_fts::NativeFtsIndex>,
-    native_fts_rel: Option<&crate::native_fts::NativeFtsRelIndex>,
-    native_labels: Option<&crate::native_label_index::NativeLabelIndex>,
-    native_props: Option<&crate::native_property_index::NativePropertyIndex>,
-    native_values: Option<&crate::native_value_cache::NativeValueCache>,
-    native_embedder: Option<QueryEmbedder<'_>>,
-    native_semantic: Option<&crate::native_service::NativeService>,
+    ctx: &NativeQueryContext<'_>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
     // Upfront sweep — surface unsupported constructs before any side
@@ -1203,19 +1158,20 @@ fn execute_single(
     // Count pushdown (RFC #307): a bare `MATCH (n[:L]) RETURN count(*)`
     // needs no enumeration, no projection, and no row machinery — answer it
     // from the engine's cardinality (and the label index's) directly.
-    if let Some(result) = try_count_pushdown(single, engine, native_labels)? {
+    if let Some(result) = try_count_pushdown(single, engine, ctx.labels)? {
         return Ok(result);
     }
 
     let mut executor = Executor {
         engine,
-        native_fts,
-        native_fts_rel,
-        native_labels,
-        native_props,
-        native_values,
-        native_embedder,
-        native_semantic,
+        native_fts: ctx.fts,
+        native_fts_rel: ctx.fts_rel,
+        native_labels: ctx.labels,
+        native_props: ctx.properties,
+        native_paths: ctx.paths,
+        native_values: ctx.values,
+        native_embedder: ctx.embedder,
+        native_semantic: ctx.semantic,
         pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
@@ -1429,7 +1385,10 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
             validate_expr_supported(&s.limit)?;
         }
         // Schema DDL (issue #532) carries no expressions to validate.
-        Clause::CreateVectorIndex(_) | Clause::SchemaNoop(_) => {}
+        Clause::CreateVectorIndex(_)
+        | Clause::CreatePathIndex(_)
+        | Clause::DropIndex(_)
+        | Clause::SchemaNoop(_) => {}
     }
     Ok(())
 }
@@ -2266,6 +2225,8 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
             Clause::Call(c) => c.span,
             Clause::Search(s) => s.span,
             Clause::CreateVectorIndex(c) => c.span,
+            Clause::CreatePathIndex(c) => c.span,
+            Clause::DropIndex(d) => d.span,
             Clause::SchemaNoop(s) => s.span,
         }
     } else {
@@ -2321,6 +2282,10 @@ struct Executor<'a> {
     /// instead of a full node scan. `None` on the KV path (which scans
     /// `list_recent`) or when no index was supplied (then the scan is used).
     native_props: Option<&'a crate::native_property_index::NativePropertyIndex>,
+    /// The opt-in nested-path index (issue #578): serves `WHERE n.a.b …`
+    /// pushdown when a declared path index covers the pattern. `None` when
+    /// none was supplied.
+    native_paths: Option<&'a crate::native_path_index::NativePathIndex>,
     /// Memoised `NodeValue` projections for unchanged native records; hits are
     /// `Arc::ptr_eq`-validated against the live node, so staleness can only
     /// cost speed, never correctness.
@@ -2455,8 +2420,35 @@ impl<'a> Executor<'a> {
             Clause::Call(c) => self.run_call(c),
             Clause::Search(s) => self.run_search(s),
             Clause::CreateVectorIndex(c) => self.run_create_vector_index(c),
+            Clause::CreatePathIndex(c) => self.run_create_path_index(c),
+            Clause::DropIndex(d) => self.run_drop_index(d),
             Clause::SchemaNoop(_) => Ok(()), // accepted, no-op (drevo auto-indexes)
         }
+    }
+
+    /// `CREATE INDEX … ON (n.a.b, …)` (issue #578): register the nested-path
+    /// index definition in the native service; the index is built before the
+    /// next statement. Produces no rows, like Neo4j schema commands.
+    fn run_create_path_index(&mut self, c: &CreatePathIndex) -> ExecResultT<()> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("CREATE INDEX"))?;
+        svc.path_index_create(
+            c.name.as_deref(),
+            c.label.as_deref(),
+            c.paths.clone(),
+            c.if_not_exists,
+        )
+        .map_err(|e| ExecError::InvalidMutation(e.to_string()))
+    }
+
+    /// `DROP INDEX <name> [IF EXISTS]` (issue #578): drop a path or vector index.
+    fn run_drop_index(&mut self, d: &DropIndex) -> ExecResultT<()> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("DROP INDEX"))?;
+        svc.index_drop(&d.name, d.if_exists)
+            .map_err(|e| ExecError::InvalidMutation(e.to_string()))
     }
 
     /// `CREATE VECTOR INDEX` (issue #532): register the name→(label, property)
@@ -2472,6 +2464,11 @@ impl<'a> Executor<'a> {
         } else {
             crate::vector_index_registry::VectorIndexEntity::Node
         };
+        // A name held by a path index is taken too (names are unique across
+        // index kinds); `IF NOT EXISTS` makes that a no-op, as in Neo4j.
+        if c.if_not_exists && svc.path_index_list().iter().any(|i| i.name == c.name) {
+            return Ok(());
+        }
         svc.vector_index_create(&c.name, &c.label, &c.property, entity, c.if_not_exists)
             .map_err(|e| ExecError::InvalidMutation(e.to_string()))?;
         Ok(())
@@ -3255,8 +3252,22 @@ impl<'a> Executor<'a> {
         pattern: &NodePattern,
         row: &Bindings,
     ) -> ExecResultT<Option<Vec<Arc<Node>>>> {
-        let Some(idx) = self.native_props else {
+        if self.native_props.is_none() && self.native_paths.is_none() {
             return Ok(None);
+        }
+        // The posting store and key serving a property path: the always-on
+        // top-level index for `n.key`, a declared path index covering this
+        // pattern's labels for `n.a.b…` (#578), or `None` (cannot narrow).
+        let index_for = |path: &[String]| -> Option<(
+            &crate::native_property_index::NativePropertyIndex,
+            String,
+        )> {
+            match path {
+                [key] => self.native_props.map(|idx| (idx, key.clone())),
+                _ => self
+                    .native_paths
+                    .and_then(|paths| paths.covering_key(&pattern.labels, path)),
+            }
         };
 
         let mut candidate_ids: Option<std::collections::BTreeSet<u64>> = None;
@@ -3275,7 +3286,7 @@ impl<'a> Executor<'a> {
         // that fails to evaluate abandons the index path so the caller's exact
         // filter re-evaluates and surfaces the identical error rather than a
         // silently different one.
-        if let Some(map) = &pattern.properties {
+        if let (Some(map), Some(idx)) = (&pattern.properties, self.native_props) {
             for (key, expr) in &map.entries {
                 let Ok(value) = self.eval(expr, row) else {
                     return Ok(None);
@@ -3299,29 +3310,38 @@ impl<'a> Executor<'a> {
             if let Some(constraints) = self.pushdown.get(var) {
                 for constraint in constraints {
                     let allowed = match constraint {
-                        PushConstraint::Eq { key, value } => {
+                        PushConstraint::Eq { path, value } => {
+                            let Some((idx, key)) = index_for(path) else {
+                                continue;
+                            };
                             let Ok(value) = self.eval(value, row) else {
                                 continue;
                             };
-                            match eq_allowed(idx, key, &value) {
+                            match eq_allowed(idx, &key, &value) {
                                 Some(a) => a,
                                 None => continue,
                             }
                         }
-                        PushConstraint::In { key, list } => {
+                        PushConstraint::In { path, list } => {
+                            let Some((idx, key)) = index_for(path) else {
+                                continue;
+                            };
                             let Ok(list) = self.eval(list, row) else {
                                 continue;
                             };
-                            match in_allowed(idx, key, &list) {
+                            match in_allowed(idx, &key, &list) {
                                 Some(a) => a,
                                 None => continue,
                             }
                         }
-                        PushConstraint::Range { key, op, bound } => {
+                        PushConstraint::Range { path, op, bound } => {
+                            let Some((idx, key)) = index_for(path) else {
+                                continue;
+                            };
                             let Ok(bound) = self.eval(bound, row) else {
                                 continue;
                             };
-                            match range_allowed(idx, key, *op, &bound) {
+                            match range_allowed(idx, &key, *op, &bound) {
                                 Some(a) => a,
                                 None => continue,
                             }
@@ -5178,17 +5198,17 @@ impl<'a> Executor<'a> {
     /// `SHOW [type] INDEXES [YIELD …] [WHERE …]` (issue #532), run as
     /// `CALL db.showIndexes(type)`: one row per named vector index, in Neo4j's
     /// `SHOW INDEXES` column layout (see [`procedure_columns`]). `type` is the
-    /// optional type word (`VECTOR`, `RANGE`, …) or `ALL`; every index drevo
-    /// names is a `VECTOR` index, so any other type lists nothing. drevo's
-    /// automatic property / label / full-text indexes have no names and are not
-    /// listed, and the no-op `CREATE INDEX` DDL registers nothing.
+    /// optional type word (`VECTOR`, `RANGE`, …) or `ALL`. drevo names two
+    /// kinds of index: `VECTOR` indexes and nested-path indexes, listed as
+    /// `RANGE` (issue #578) with their paths as `properties`. The automatic
+    /// top-level property / label / full-text indexes have no names and are
+    /// not listed.
     fn proc_show_indexes(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
         use crate::vector_index_registry::VectorIndexEntity;
         let empty = Bindings::new();
         let filter = self.eval(&args[0], &empty)?.as_string(span)?.to_uppercase();
-        if filter != "ALL" && filter != "VECTOR" {
-            return Ok(Vec::new());
-        }
+        let want_vector = filter == "ALL" || filter == "VECTOR";
+        let want_range = filter == "ALL" || filter == "RANGE" || filter == "BTREE";
         let Some(svc) = self.native_semantic else {
             return Ok(Vec::new());
         };
@@ -5201,7 +5221,12 @@ impl<'a> Executor<'a> {
             )
         };
         let mut rows = Vec::new();
-        for (i, index) in svc.vector_index_list().into_iter().enumerate() {
+        let vectors = if want_vector {
+            svc.vector_index_list()
+        } else {
+            Vec::new()
+        };
+        for (i, index) in vectors.into_iter().enumerate() {
             let entity = match index.entity {
                 VectorIndexEntity::Node => "NODE",
                 VectorIndexEntity::Relationship => "RELATIONSHIP",
@@ -5231,6 +5256,36 @@ impl<'a> Executor<'a> {
                 Value::String("vector-2.0".to_string()),
                 Value::Null,
                 options,
+            ]);
+        }
+        let paths = if want_range {
+            svc.path_index_list()
+        } else {
+            Vec::new()
+        };
+        for index in paths {
+            let id = i64::try_from(rows.len()).unwrap_or(i64::MAX) + 1;
+            rows.push(vec![
+                Value::Integer(id),
+                Value::String(index.name.clone()),
+                Value::String("ONLINE".to_string()),
+                Value::Float(100.0),
+                Value::String("RANGE".to_string()),
+                Value::String("NODE".to_string()),
+                Value::List(index.label.iter().cloned().map(Value::String).collect()),
+                Value::List(
+                    index
+                        .paths
+                        .iter()
+                        .map(|p| Value::String(p.to_string()))
+                        .collect(),
+                ),
+                Value::String("range-1.0".to_string()),
+                Value::Null,
+                Value::Map(BTreeMap::from([(
+                    "indexProvider".to_string(),
+                    Value::String("range-1.0".to_string()),
+                )])),
             ]);
         }
         Ok(rows)
@@ -8911,15 +8966,22 @@ fn intersect_nodes_by_id(a: Vec<Arc<Node>>, b: Vec<Arc<Node>>) -> Vec<Arc<Node>>
 /// lifted from a `MATCH`'s `WHERE` clause for pushdown into the native property
 /// index. The value/list expression is stored verbatim and evaluated later
 /// against the row, so `$param` and already-bound references work.
+///
+/// `path` is the property path below the variable: one segment for a
+/// top-level property (`n.key`, served by the always-on property index), more
+/// for a nested one (`n.meta.author`, served by a declared path index, #578).
 enum PushConstraint {
-    /// `variable.key = value`.
-    Eq { key: String, value: Expression },
-    /// `variable.key IN list` — the property equals one of the list's elements.
-    In { key: String, list: Expression },
-    /// `variable.key <op> bound` — an inequality against a numeric bound
+    /// `variable.path = value`.
+    Eq {
+        path: Vec<String>,
+        value: Expression,
+    },
+    /// `variable.path IN list` — the property equals one of the list's elements.
+    In { path: Vec<String>, list: Expression },
+    /// `variable.path <op> bound` — an inequality against a numeric bound
     /// (`>`, `>=`, `<`, `<=`), resolved through the ordered numeric index.
     Range {
-        key: String,
+        path: Vec<String>,
         op: crate::native_property_index::RangeOp,
         bound: Expression,
     },
@@ -8931,15 +8993,15 @@ enum PushConstraint {
 }
 
 impl PushConstraint {
-    /// The property key this constraint applies to (used by tests); the
-    /// id-seek constraints report the pseudo-key `"id()"`.
+    /// The dotted property path this constraint applies to (used by tests);
+    /// the id-seek constraints report the pseudo-key `"id()"`.
     #[cfg(test)]
-    fn key(&self) -> &str {
+    fn key(&self) -> String {
         match self {
-            PushConstraint::Eq { key, .. }
-            | PushConstraint::In { key, .. }
-            | PushConstraint::Range { key, .. } => key,
-            PushConstraint::IdEq { .. } | PushConstraint::IdIn { .. } => "id()",
+            PushConstraint::Eq { path, .. }
+            | PushConstraint::In { path, .. }
+            | PushConstraint::Range { path, .. } => path.join("."),
+            PushConstraint::IdEq { .. } | PushConstraint::IdIn { .. } => "id()".to_string(),
         }
     }
 }
@@ -8980,14 +9042,14 @@ fn extract_pushdown_constraints(expr: &Expression, out: &mut HashMap<String, Vec
                 out.entry(var).or_default().push(PushConstraint::IdEq {
                     value: (**lhs).clone(),
                 });
-            } else if let Some((var, key)) = property_var_key(lhs) {
+            } else if let Some((var, path)) = property_var_path(lhs) {
                 out.entry(var).or_default().push(PushConstraint::Eq {
-                    key,
+                    path,
                     value: (**rhs).clone(),
                 });
-            } else if let Some((var, key)) = property_var_key(rhs) {
+            } else if let Some((var, path)) = property_var_path(rhs) {
                 out.entry(var).or_default().push(PushConstraint::Eq {
-                    key,
+                    path,
                     value: (**lhs).clone(),
                 });
             }
@@ -8997,9 +9059,9 @@ fn extract_pushdown_constraints(expr: &Expression, out: &mut HashMap<String, Vec
                 out.entry(var).or_default().push(PushConstraint::IdIn {
                     list: (**list).clone(),
                 });
-            } else if let Some((var, key)) = property_var_key(expr) {
+            } else if let Some((var, path)) = property_var_path(expr) {
                 out.entry(var).or_default().push(PushConstraint::In {
-                    key,
+                    path,
                     list: (**list).clone(),
                 });
             }
@@ -9012,18 +9074,18 @@ fn extract_pushdown_constraints(expr: &Expression, out: &mut HashMap<String, Vec
         } => {
             // `prop <op> bound`, or `bound <op> prop` (operator flipped so it
             // always reads relative to the property).
-            if let Some((var, key)) = property_var_key(lhs) {
+            if let Some((var, path)) = property_var_path(lhs) {
                 if let Some(range_op) = binary_to_range_op(*op) {
                     out.entry(var).or_default().push(PushConstraint::Range {
-                        key,
+                        path,
                         op: range_op,
                         bound: (**rhs).clone(),
                     });
                 }
-            } else if let Some((var, key)) = property_var_key(rhs) {
+            } else if let Some((var, path)) = property_var_path(rhs) {
                 if let Some(range_op) = binary_to_range_op(*op).map(flip_range_op) {
                     out.entry(var).or_default().push(PushConstraint::Range {
-                        key,
+                        path,
                         op: range_op,
                         bound: (**lhs).clone(),
                     });
@@ -9080,15 +9142,23 @@ fn id_call_var(expr: &Expression) -> Option<String> {
     None
 }
 
-/// `variable.key` → `(variable, key)` when `expr` is a property access on a bare
-/// variable; `None` otherwise.
-fn property_var_key(expr: &Expression) -> Option<(String, String)> {
-    if let Expression::Property { base, name, .. } = expr {
-        if let Expression::Variable(var, _) = base.as_ref() {
-            return Some((var.clone(), name.clone()));
-        }
+/// `variable.a.b…` → `(variable, [a, b, …])` when `expr` is a chain of
+/// property accesses rooted at a bare variable; `None` otherwise.
+fn property_var_path(expr: &Expression) -> Option<(String, Vec<String>)> {
+    let mut path = Vec::new();
+    let mut cur = expr;
+    while let Expression::Property { base, name, .. } = cur {
+        path.push(name.clone());
+        cur = base.as_ref();
     }
-    None
+    let Expression::Variable(var, _) = cur else {
+        return None;
+    };
+    if path.is_empty() {
+        return None;
+    }
+    path.reverse();
+    Some((var.clone(), path))
 }
 
 /// The id set a `key = value` equality allows through the property index, or

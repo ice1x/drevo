@@ -202,6 +202,8 @@ fn clause_keyword(clause: &Clause) -> &'static str {
         Clause::Foreach(_) => "FOREACH",
         Clause::Call(_) => "CALL",
         Clause::CreateVectorIndex(_) => "CREATE VECTOR INDEX",
+        Clause::CreatePathIndex(_) => "CREATE INDEX",
+        Clause::DropIndex(_) => "DROP INDEX",
         Clause::SchemaNoop(_) => "CREATE",
     }
 }
@@ -472,6 +474,8 @@ impl Parser {
             _ if self.is_soft_keyword("SEARCH") => self.parse_search(),
             // `SHOW INDEXES` / `SHOW CONSTRAINTS` (issue #532), also a soft keyword.
             _ if self.is_soft_keyword("SHOW") => self.parse_show(),
+            // `DROP INDEX` (issue #578), a soft keyword too.
+            _ if self.is_soft_keyword("DROP") => self.parse_drop(),
             _ => Err(ParseError::Expected {
                 expected: "clause keyword (MATCH, CREATE, MERGE, DELETE, SET, REMOVE, WITH, RETURN, UNWIND, FOREACH, CALL, SEARCH, SHOW, OPTIONAL, DETACH)".to_string(),
                 found: format!("{}", self.peek_kind()),
@@ -589,8 +593,21 @@ impl Parser {
             self.consume(); // VECTOR
             return self.parse_create_vector_index(span);
         }
-        // Any other index (`CREATE INDEX …`, `CREATE RANGE|TEXT|POINT|LOOKUP|
-        // FULLTEXT|BTREE INDEX …`) — accepted but a no-op (drevo auto-indexes).
+        // `CREATE [RANGE|BTREE] INDEX … FOR (n[:L]) ON (n.a.b, …)` over nested
+        // paths is a path index (#578). Every other index form (`TEXT`,
+        // `POINT`, `LOOKUP`, `FULLTEXT`, relationship patterns, top-level-only
+        // properties) is accepted but a no-op: drevo auto-indexes top-level
+        // properties, labels and full text.
+        let range_like = self.is_soft_keyword("INDEX")
+            || ((self.is_soft_keyword("RANGE") || self.is_soft_keyword("BTREE"))
+                && self.is_soft_keyword_at(1, "INDEX"));
+        if range_like {
+            let start = self.pos;
+            match self.parse_create_path_index(span) {
+                Ok(Some(clause)) => return Ok(clause),
+                Ok(None) | Err(_) => self.pos = start,
+            }
+        }
         if self.is_soft_keyword("INDEX")
             || (self.is_index_type_keyword() && self.is_soft_keyword_at(1, "INDEX"))
         {
@@ -605,6 +622,132 @@ impl Parser {
             reject_label_expressions(p, "CREATE")?;
         }
         Ok(Clause::Create(CreateClause { patterns, span }))
+    }
+
+    /// Parse `[RANGE|BTREE] INDEX [<name>] [IF NOT EXISTS] FOR (n[:Label])
+    /// ON (n.a.b [, n.c.*]…) [OPTIONS {…}]` (#578). `Ok(None)` when the
+    /// statement is valid Neo4j DDL drevo treats as a no-op — a relationship
+    /// pattern, or only top-level properties; the caller then rewinds and
+    /// accepts it as such. Errors also make the caller fall back to the no-op,
+    /// so an index form drevo does not model never fails a schema bootstrap.
+    fn parse_create_path_index(&mut self, span: Span) -> ParseResult<Option<Clause>> {
+        if !self.is_soft_keyword("INDEX") {
+            self.consume(); // RANGE / BTREE
+        }
+        self.expect_soft_keyword("INDEX")?;
+        let name = if self.is_soft_keyword("IF") || self.is_soft_keyword("FOR") {
+            None
+        } else {
+            Some(self.consume_name()?.0)
+        };
+        let if_not_exists = if self.is_soft_keyword("IF") {
+            self.consume(); // IF
+            self.eat(&TokenKind::Not, "NOT after IF")?;
+            self.eat(&TokenKind::Exists, "EXISTS after IF NOT")?;
+            true
+        } else {
+            false
+        };
+        self.expect_soft_keyword("FOR")?;
+        self.eat(&TokenKind::LParen, "`(` after FOR")?;
+        if matches!(self.peek_kind(), TokenKind::RParen) {
+            return Ok(None); // `FOR ()-[r:T]-()`: relationship indexes are no-ops
+        }
+        let (var, _) = self.consume_name()?;
+        let label = if matches!(self.peek_kind(), TokenKind::Colon) {
+            self.consume();
+            Some(self.consume_name()?.0)
+        } else {
+            None
+        };
+        self.eat(&TokenKind::RParen, "`)` after the index pattern")?;
+        self.eat(&TokenKind::On, "ON after the FOR pattern")?;
+        self.eat(&TokenKind::LParen, "`(` after ON")?;
+        let mut paths = Vec::new();
+        loop {
+            let (owner, owner_span) = self.consume_name()?;
+            if owner != var {
+                return Err(ParseError::Malformed {
+                    message: format!("index property must belong to `{var}`, found `{owner}`"),
+                    span: owner_span,
+                });
+            }
+            let mut segments = Vec::new();
+            let mut wildcard = false;
+            while matches!(self.peek_kind(), TokenKind::Dot) {
+                self.consume();
+                if matches!(self.peek_kind(), TokenKind::Star) {
+                    self.consume();
+                    wildcard = true;
+                    break;
+                }
+                segments.push(self.consume_name()?.0);
+            }
+            let path =
+                crate::native_path_index::PropertyPath::new(segments, wildcard).map_err(|e| {
+                    ParseError::Malformed {
+                        message: e.to_string(),
+                        span: owner_span,
+                    }
+                })?;
+            if path.is_nested() {
+                paths.push(path);
+            }
+            if matches!(self.peek_kind(), TokenKind::Comma) {
+                self.consume();
+                continue;
+            }
+            break;
+        }
+        self.eat(&TokenKind::RParen, "`)` after the index properties")?;
+        if self.is_soft_keyword("OPTIONS") {
+            self.consume_to_statement_end();
+        }
+        if !self.at_eof() && !matches!(self.peek_kind(), TokenKind::Semicolon | TokenKind::Union) {
+            return Err(ParseError::Expected {
+                expected: "end of the CREATE INDEX statement".to_string(),
+                found: format!("{}", self.peek_kind()),
+                span: self.peek_span(),
+            });
+        }
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Clause::CreatePathIndex(CreatePathIndex {
+            name,
+            label,
+            paths,
+            if_not_exists,
+            span,
+        })))
+    }
+
+    /// Parse `DROP INDEX <name> [IF EXISTS]` (#578). `DROP CONSTRAINT …` is
+    /// accepted as a no-op, like `CREATE CONSTRAINT`.
+    fn parse_drop(&mut self) -> ParseResult<Clause> {
+        let span = self.peek_span();
+        self.consume(); // DROP
+        if self.is_soft_keyword("CONSTRAINT") {
+            self.consume_to_statement_end();
+            return Ok(Clause::SchemaNoop(SchemaNoop {
+                kind: "constraint",
+                span,
+            }));
+        }
+        self.expect_soft_keyword("INDEX")?;
+        let (name, _) = self.consume_name()?;
+        let if_exists = if self.is_soft_keyword("IF") {
+            self.consume(); // IF
+            self.eat(&TokenKind::Exists, "EXISTS after IF")?;
+            true
+        } else {
+            false
+        };
+        Ok(Clause::DropIndex(DropIndex {
+            name,
+            if_exists,
+            span,
+        }))
     }
 
     /// Is the next token one of the non-vector index-type soft keywords that can
