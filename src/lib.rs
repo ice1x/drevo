@@ -225,6 +225,10 @@ pub mod native_api;
 /// property, value cache, full-text) tailed off the change-feed. The
 /// step past the read mirror on the track toward retiring redb.
 pub mod native_service;
+/// Optional CBOR / MessagePack bodies for the HTTP API, next to JSON
+/// (issue #581). Compiled with the `http` feature; the formats themselves
+/// behind `format-cbor` / `format-msgpack`.
+pub mod wire_format;
 /// In-memory property-value index that tails a [`native::NativeGraph`]'s
 /// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.7) — the native
 /// counterpart of the KV `property_index`, so a `MATCH (n {key: value})`

@@ -81,6 +81,8 @@ pub struct NativeApiState {
     /// instrumentation middleware — a [`DrevoMetrics`] registry, so a scrape
     /// looks identical on either engine.
     metrics: Arc<DrevoMetrics>,
+    /// Body formats offered next to JSON (issue #581); JSON only by default.
+    formats: Arc<crate::wire_format::WireFormats>,
 }
 
 impl NativeApiState {
@@ -107,7 +109,16 @@ impl NativeApiState {
             embeddings: None,
             embeddings_config: None,
             metrics: Arc::new(DrevoMetrics::new()),
+            formats: Arc::new(crate::wire_format::WireFormats::default()),
         }
+    }
+
+    /// Offer `formats` (from `DREVO_HTTP_FORMATS`) next to JSON for request
+    /// and response bodies (issue #581).
+    #[must_use]
+    pub fn with_wire_formats(mut self, formats: crate::wire_format::WireFormats) -> Self {
+        self.formats = Arc::new(formats);
+        self
     }
 
     /// The shared multi-database catalog backing `/databases` and Cypher `USE`.
@@ -254,6 +265,12 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             track_metrics,
+        ))
+        // Outermost: CBOR / MessagePack bodies are transcoded to and from JSON
+        // here, so every handler (and the metrics layer) only sees JSON.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state.formats),
+            crate::wire_format::negotiate,
         ))
         .with_state(state)
 }

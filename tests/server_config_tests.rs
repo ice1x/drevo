@@ -233,3 +233,47 @@ fn invalid_data_dir_error_mentions_data_dir() {
         "error message should mention data_dir: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------
+// DREVO_HTTP_FORMATS (issue #581)
+// ---------------------------------------------------------------------
+
+#[test]
+fn http_formats_default_to_json_only() {
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert_eq!(
+        cfg.http_formats.enabled(),
+        &[drevo::wire_format::WireFormat::Json]
+    );
+}
+
+#[test]
+fn http_formats_reject_unknown_names() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_HTTP_FORMATS", "json,xml")])))
+        .expect_err("xml is not a format");
+    assert!(matches!(err, ConfigError::InvalidHttpFormats(_)), "{err}");
+    assert!(err.to_string().contains("xml"), "{err}");
+}
+
+#[cfg(all(feature = "format-cbor", feature = "format-msgpack"))]
+#[test]
+fn http_formats_enable_compiled_formats() {
+    use drevo::wire_format::WireFormat;
+    let cfg = Config::from_env(getter(HashMap::from([(
+        "DREVO_HTTP_FORMATS",
+        "cbor, msgpack",
+    )])))
+    .expect("both compiled in");
+    assert_eq!(
+        cfg.http_formats.enabled(),
+        &[WireFormat::Json, WireFormat::Cbor, WireFormat::MsgPack]
+    );
+}
+
+#[cfg(not(feature = "format-cbor"))]
+#[test]
+fn http_formats_reject_a_format_built_without() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_HTTP_FORMATS", "cbor")])))
+        .expect_err("not compiled in");
+    assert!(err.to_string().contains("format-cbor"), "{err}");
+}
