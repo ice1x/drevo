@@ -929,18 +929,21 @@ RETURN relationship, score ORDER BY score DESC
 ```
 
 Schema DDL that drevo does not need is **accepted but a no-op**, so a driver's
-bootstrap does not fail: a non-vector `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT]
-INDEX …` and `CREATE CONSTRAINT …` parse and do nothing (drevo auto-indexes and
-enforces no constraints). Only `CREATE VECTOR INDEX` has an effect.
+bootstrap does not fail: `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT] INDEX …` on
+top-level properties or relationships, and `CREATE CONSTRAINT …` /
+`DROP CONSTRAINT …`, parse and do nothing (drevo auto-indexes every top-level
+node property and enforces no constraints). `CREATE VECTOR INDEX` and indexes
+on nested property paths ([below](#indexes-on-nested-properties-578)) have an
+effect.
 
-`SHOW [type] INDEXES` lists the named vector indexes in Neo4j's column layout
+`SHOW [type] INDEXES` lists the named indexes in Neo4j's column layout
 (`id`, `name`, `state`, `populationPercent`, `type`, `entityType`,
 `labelsOrTypes`, `properties`, `indexProvider`, `owningConstraint`, `options`),
 with the usual `YIELD …` / `WHERE …` / `RETURN …`, a bare `WHERE`, and
-`YIELD *`. Every named index is a `VECTOR` index, so `SHOW VECTOR INDEXES` and
-`SHOW ALL INDEXES` list them all and another type lists none; drevo's automatic
-indexes have no names and the no-op DDL registers nothing. `SHOW CONSTRAINTS`
-lists nothing, since drevo enforces none. That is exactly what a client's
+`YIELD *`. Vector indexes are listed as `VECTOR`, nested-path indexes as
+`RANGE`; `SHOW ALL INDEXES` lists both. drevo's automatic indexes have no
+names and the no-op DDL registers nothing. `SHOW CONSTRAINTS` lists nothing,
+since drevo enforces none. That is exactly what a client's
 check-then-create bootstrap expects, e.g. neo4j-agent-memory's:
 
 ```cypher
@@ -965,6 +968,57 @@ the Okapi BM25 relevance. Post-filter with a `WHERE` on any node property and
 ```cypher
 CALL fts.search('anxious thoughts about work', 25) YIELD node, score
 RETURN node, score ORDER BY score DESC
+```
+
+### Indexes on nested properties (#578)
+
+Every top-level node property is indexed automatically. Values *inside* a map
+property are not, so `WHERE n.meta.author = 'ann'` scans every node — unless
+you declare an index on that path:
+
+```cypher
+CREATE INDEX doc_author IF NOT EXISTS FOR (n:Doc) ON (n.meta.author)
+```
+
+Index every path under a map, or the whole property map, with a wildcard. The
+label is optional; without it the index covers every node:
+
+```cypher
+CREATE INDEX doc_meta FOR (n:Doc) ON (n.meta.*)
+```
+
+```cypher
+CREATE INDEX everything FOR (n) ON (n.*)
+```
+
+Equality, `IN` and numeric ranges on a covered path then go through the index:
+
+```cypher
+MATCH (n:Doc)
+WHERE n.meta.author = 'ann' AND n.meta.review.score >= 4
+RETURN n.title
+```
+
+- **Coverage:** an index declared `FOR (n:Doc)` serves patterns that require
+  `:Doc`, because only `Doc` nodes are indexed. An index without a label serves
+  any pattern. A `WHERE` term under `OR` or `NOT` is not served, just as with
+  top-level properties.
+- **Values:** the same types the automatic index handles: strings, booleans
+  and integers for equality, integers and floats for ranges. A list is a leaf;
+  nothing below a list is indexed. A range over a path where some node stores
+  a non-number falls back to a scan.
+- **Each path stands alone:** `ON (n.a.b, n.c.*)` declares two paths. It is
+  not a composite key.
+- **Names:** an index without a name gets one from its label and paths
+  (`index_Doc_meta_author`). Names are unique across vector and path indexes.
+- **Lifecycle:** definitions are stored next to the WAL and survive a
+  restart. The index data lives in memory, is rebuilt on open, and is rebuilt
+  before the next statement whenever an index is created or dropped.
+
+`DROP INDEX` removes a path index or a vector index:
+
+```cypher
+DROP INDEX doc_author IF EXISTS
 ```
 
 ### Server info (#303)

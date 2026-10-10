@@ -205,6 +205,9 @@ pub use drevo_core::native_fts;
 /// `MATCH (n:Label)` gathers candidates from an index union instead of a full
 /// node scan. Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
 pub use drevo_core::native_label_index;
+/// Opt-in indexes on nested property paths (issue #578), re-exported from
+/// `drevo-core`.
+pub use drevo_core::native_path_index;
 /// HTTP surface for the durable-native server mode
 /// (`DREVO_ENGINE=native-durable`, RFC `docs/rfc-native-core.md`, #307,
 /// Phase 4/7) — a minimal router over [`native_service::NativeService`]:
@@ -243,6 +246,10 @@ pub mod native_value_cache;
 /// `tracing` event. Always compiled and WASM-safe; the `/metrics` HTTP route
 /// and per-request instrumentation live in [`api`] behind the `http` feature.
 pub mod observability;
+/// Named nested-path index definitions (issue #578) — what `CREATE INDEX …
+/// ON (n.a.b)` registers and `DROP INDEX` removes. Persisted in the
+/// `semantic.json` sidecar beside the WAL (see [`native_service`]).
+pub mod path_index_registry;
 /// Extracted env-var parser, validator, and bind/serve loop for the
 /// `drevo-server` binary. Compiled only with the `http` feature.
 /// Phase 14 task `00085` — cost-based query planner foundation: graph

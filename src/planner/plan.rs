@@ -454,6 +454,8 @@ impl PlanBuilder<'_> {
                 | Clause::Call(_)
                 // Schema DDL (issue #532) produces no rows — pass through.
                 | Clause::CreateVectorIndex(_)
+                | Clause::CreatePathIndex(_)
+                | Clause::DropIndex(_)
                 | Clause::SchemaNoop(_) => {}
             }
         }
