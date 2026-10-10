@@ -333,6 +333,9 @@ jobs:
       # Issue #582 — the binary WAL encodings live in drevo-core behind
       # `wal-cbor` / `wal-msgpack`; run its recovery / compaction / tailer
       # tests and the inline unit tests with both on.
+      # Issue #583 — the gRPC API lives behind `grpc` (tonic/prost).
+      - name: Run gRPC feature tests (nextest)
+        run: cargo nextest run --no-fail-fast --features grpc -E 'binary(grpc_api_tests) | binary(server_config_tests)'
       - name: Run drevo-core WAL format feature tests (nextest)
         run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack -E 'binary(wal_formats) | (kind(lib) & test(wal_format))'
       - name: Run doctests
@@ -376,6 +379,8 @@ jobs:
       - run: cargo clippy --all-targets --features bolt-auth -- -D warnings
       # Issue #581 — the CBOR / MessagePack transcoding paths.
       - run: cargo clippy --all-targets --features format-cbor,format-msgpack -- -D warnings
+      # Issue #583 — the gRPC service and its tests.
+      - run: cargo clippy --all-targets --features grpc -- -D warnings
       # Issue #582 — drevo-core's binary WAL paths and their tests.
       - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack -- -D warnings
 

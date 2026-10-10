@@ -44,6 +44,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
 | `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
 | `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor` or `msgpack`. See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
+| `DREVO_GRPC_PORT` | unset (off) | Serve the gRPC API on this port, same host as HTTP. See [gRPC API](#grpc-api-opt-in). Rejected at startup by a build without the `grpc` feature. |
 | `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
 | `DREVO_AUTO_COMPACT_RATIO` | `2.0` | Minimum bloat ratio to trigger auto-compaction. |
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
@@ -107,6 +108,35 @@ instead. Both formats are compiled into the Docker image (Cargo features
 - **Readability:** a binary log can no longer be inspected with `tail` or
   `jq`. To look inside, set `DREVO_WAL_FORMAT=json` and restart, or use
   `GET /export/json`.
+
+### gRPC API (opt-in)
+
+Next to HTTP and Bolt, drevo can serve Cypher over gRPC (HTTP/2 +
+protobuf). It is compiled into the Docker image (Cargo feature `grpc`) and
+served only when `DREVO_GRPC_PORT` is set, e.g. `DREVO_GRPC_PORT=50051`.
+
+The schema is [`proto/drevo.proto`](https://github.com/ice1x/drevo/blob/main/proto/drevo.proto)
+(package `drevo.v1`); generate a client for any language from it.
+
+- **`Execute(ExecuteRequest)`** runs one statement (`query`, `params`, and
+  optionally `database`) and streams back a `Header` with the column names,
+  the rows in batches of 256, and a `Summary` with the write counters.
+- **Values** keep their Cypher type, including nodes, relationships and
+  paths. A list of floats (an embedding) is sent as a packed `FloatList`.
+- **Errors** end the call with a status: `INVALID_ARGUMENT` for a query that
+  does not parse or fails, `NOT_FOUND` for an unknown database, `UNAVAILABLE`
+  while writes are paused by a prepared two-phase commit, `UNIMPLEMENTED` for
+  database administration (use HTTP or Bolt).
+- **`Health`** returns `ok` and the server version.
+
+There is no authentication on the gRPC port, as on HTTP: expose it only on a
+trusted network.
+
+```bash
+grpcurl -plaintext -import-path proto -proto drevo.proto \
+  -d '{"query":"MATCH (n) RETURN n.title LIMIT 3"}' \
+  localhost:50051 drevo.v1.Drevo/Execute
+```
 
 ### Embeddings proxy (`/v1/embeddings`, opt-in)
 
