@@ -210,6 +210,9 @@ pub use drevo_core::native_label_index;
 pub use drevo_core::native_path_index;
 /// Write-ahead-log encodings (issue #582), re-exported from `drevo-core`.
 pub use drevo_core::wal_format;
+/// Arrow Flight endpoint (issue #584): Cypher results as Arrow record
+/// batches. Compiled with the `arrow-flight` feature.
+pub mod flight;
 /// gRPC API (issue #583): Cypher over HTTP/2 + protobuf with streamed rows.
 /// Compiled with the `grpc` feature; schema in `proto/drevo.proto`.
 pub mod grpc;

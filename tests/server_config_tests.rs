@@ -351,3 +351,39 @@ fn grpc_port_without_the_feature_is_a_startup_error() {
         .expect_err("not compiled in");
     assert!(err.to_string().contains("`grpc` feature"), "{err}");
 }
+
+// ---------------------------------------------------------------------
+// DREVO_FLIGHT_PORT (issue #584)
+// ---------------------------------------------------------------------
+
+#[test]
+fn flight_is_off_unless_a_port_is_set() {
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert_eq!(cfg.flight_port, None);
+}
+
+#[test]
+fn flight_port_must_be_a_port() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_FLIGHT_PORT", "flight")])))
+        .expect_err("not a port");
+    assert!(
+        matches!(err, ConfigError::InvalidFlightPort { .. }),
+        "{err}"
+    );
+}
+
+#[cfg(feature = "arrow-flight")]
+#[test]
+fn flight_port_is_taken_from_the_environment() {
+    let cfg = Config::from_env(getter(HashMap::from([("DREVO_FLIGHT_PORT", "8815")])))
+        .expect("compiled in");
+    assert_eq!(cfg.flight_port, Some(8815));
+}
+
+#[cfg(not(feature = "arrow-flight"))]
+#[test]
+fn flight_port_without_the_feature_is_a_startup_error() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_FLIGHT_PORT", "8815")])))
+        .expect_err("not compiled in");
+    assert!(err.to_string().contains("`arrow-flight` feature"), "{err}");
+}

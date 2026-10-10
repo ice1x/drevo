@@ -103,6 +103,9 @@ pub struct Config {
     /// Port of the gRPC API from `DREVO_GRPC_PORT` (issue #583); `None`
     /// (unset) serves no gRPC. Needs a build with the `grpc` feature.
     pub grpc_port: Option<u16>,
+    /// Port of the Arrow Flight endpoint from `DREVO_FLIGHT_PORT` (issue
+    /// #584); `None` serves none. Needs the `arrow-flight` feature.
+    pub flight_port: Option<u16>,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -186,6 +189,14 @@ pub enum ConfigError {
     /// `DREVO_GRPC_PORT` was not a port, or the build has no gRPC API.
     #[error("invalid DREVO_GRPC_PORT `{value}`: {reason}")]
     InvalidGrpcPort {
+        /// The raw env-var value.
+        value: String,
+        /// Why it was rejected.
+        reason: String,
+    },
+    /// `DREVO_FLIGHT_PORT` was not a port, or the build has no Flight endpoint.
+    #[error("invalid DREVO_FLIGHT_PORT `{value}`: {reason}")]
+    InvalidFlightPort {
         /// The raw env-var value.
         value: String,
         /// Why it was rejected.
@@ -298,6 +309,25 @@ impl Config {
             }
         };
 
+        let flight_port = match getter("DREVO_FLIGHT_PORT") {
+            None => None,
+            Some(raw) => {
+                let port = parse_port(raw.trim()).map_err(|_| ConfigError::InvalidFlightPort {
+                    value: raw.clone(),
+                    reason: "expected a port number 1-65535".to_string(),
+                })?;
+                if !cfg!(feature = "arrow-flight") {
+                    return Err(ConfigError::InvalidFlightPort {
+                        value: raw,
+                        reason: "this build has no Arrow Flight endpoint; rebuild with the \
+                                 `arrow-flight` feature"
+                            .to_string(),
+                    });
+                }
+                Some(port)
+            }
+        };
+
         Ok(Self {
             host,
             port,
@@ -309,6 +339,7 @@ impl Config {
             http_formats,
             wal_format,
             grpc_port,
+            flight_port,
         })
     }
 
@@ -712,6 +743,28 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                 crate::grpc::serve(grpc_registry, grpc_listener, shutdown_signal()).await
             {
                 tracing::error!(error = %err, "grpc server stopped");
+            }
+        });
+    }
+
+    // Optional Arrow Flight endpoint (issue #584), on the same host.
+    #[cfg(feature = "arrow-flight")]
+    if let Some(flight_port) = cfg.flight_port {
+        let flight_addr = SocketAddr::new(addr.ip(), flight_port);
+        let flight_listener =
+            tokio::net::TcpListener::bind(flight_addr)
+                .await
+                .map_err(|source| RunError::Bind {
+                    addr: flight_addr,
+                    source,
+                })?;
+        tracing::info!(%flight_addr, "arrow flight listening");
+        let flight_registry = std::sync::Arc::clone(&registry);
+        tokio::spawn(async move {
+            if let Err(err) =
+                crate::flight::serve(flight_registry, flight_listener, shutdown_signal()).await
+            {
+                tracing::error!(error = %err, "arrow flight server stopped");
             }
         });
     }
