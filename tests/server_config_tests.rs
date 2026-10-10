@@ -313,3 +313,41 @@ fn wal_format_rejects_a_format_built_without() {
         .expect_err("not compiled in");
     assert!(err.to_string().contains("not compiled in"), "{err}");
 }
+
+// ---------------------------------------------------------------------
+// DREVO_GRPC_PORT (issue #583)
+// ---------------------------------------------------------------------
+
+#[test]
+fn grpc_is_off_unless_a_port_is_set() {
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert_eq!(cfg.grpc_port, None);
+}
+
+#[test]
+fn grpc_port_must_be_a_port() {
+    for bad in ["0", "70000", "grpc"] {
+        let err =
+            Config::from_env(getter(HashMap::from([("DREVO_GRPC_PORT", bad)]))).expect_err(bad);
+        assert!(
+            matches!(err, ConfigError::InvalidGrpcPort { .. }),
+            "{bad}: {err}"
+        );
+    }
+}
+
+#[cfg(feature = "grpc")]
+#[test]
+fn grpc_port_is_taken_from_the_environment() {
+    let cfg = Config::from_env(getter(HashMap::from([("DREVO_GRPC_PORT", "50051")])))
+        .expect("grpc compiled in");
+    assert_eq!(cfg.grpc_port, Some(50051));
+}
+
+#[cfg(not(feature = "grpc"))]
+#[test]
+fn grpc_port_without_the_feature_is_a_startup_error() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_GRPC_PORT", "50051")])))
+        .expect_err("not compiled in");
+    assert!(err.to_string().contains("`grpc` feature"), "{err}");
+}

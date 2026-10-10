@@ -57,12 +57,14 @@ COPY static/ static/
 # extra system deps). The optional HTTP body formats (CBOR / MessagePack, issue
 # #581) and the binary write-ahead-log encodings (#582) are compiled in for the
 # same reason and are likewise runtime-gated: they are used only once listed in
-# `DREVO_HTTP_FORMATS` / set in `DREVO_WAL_FORMAT`. Override to a lean build via:
+# `DREVO_HTTP_FORMATS` / set in `DREVO_WAL_FORMAT`. The gRPC API (#583) is
+# compiled in and served only when `DREVO_GRPC_PORT` is set. Override to a lean
+# build via:
 #   docker build --build-arg CARGO_FEATURES="http" .
 # (The Cargo library default stays dependency-free; this opinionated default is
 # the deploy image only.) Locked by
 # `tests/dockerfile_tests.rs::dockerfile_features_are_build_arg_overridable`.
-ARG CARGO_FEATURES="http,embeddings-proxy,format-cbor,format-msgpack"
+ARG CARGO_FEATURES="http,embeddings-proxy,format-cbor,format-msgpack,grpc"
 # The version the built server reports (`/`, `/status`, Bolt `server` agent,
 # metrics). `.git` is excluded from the build context, so `build.rs` cannot run
 # `git describe` here and would fall back to `CARGO_PKG_VERSION` (0.0.0, since the

@@ -100,6 +100,9 @@ pub struct Config {
     /// Write-ahead-log encoding from `DREVO_WAL_FORMAT` (issue #582; default
     /// `json`). Applied to every store at open, by compaction.
     pub wal_format: crate::wal_format::WalFormat,
+    /// Port of the gRPC API from `DREVO_GRPC_PORT` (issue #583); `None`
+    /// (unset) serves no gRPC. Needs a build with the `grpc` feature.
+    pub grpc_port: Option<u16>,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -180,6 +183,14 @@ pub enum ConfigError {
     /// `DREVO_HTTP_FORMATS` named an unknown format or one not compiled in.
     #[error("invalid DREVO_HTTP_FORMATS: {0}")]
     InvalidHttpFormats(#[from] crate::wire_format::FormatsError),
+    /// `DREVO_GRPC_PORT` was not a port, or the build has no gRPC API.
+    #[error("invalid DREVO_GRPC_PORT `{value}`: {reason}")]
+    InvalidGrpcPort {
+        /// The raw env-var value.
+        value: String,
+        /// Why it was rejected.
+        reason: String,
+    },
     /// `DREVO_WAL_FORMAT` named an unknown format or one not compiled in.
     #[error(
         "invalid DREVO_WAL_FORMAT: {0}; rebuild with the matching `format-*` feature if needed"
@@ -269,6 +280,24 @@ impl Config {
             Some(raw) => raw.parse()?,
         };
 
+        let grpc_port = match getter("DREVO_GRPC_PORT") {
+            None => None,
+            Some(raw) => {
+                let port = parse_port(raw.trim()).map_err(|_| ConfigError::InvalidGrpcPort {
+                    value: raw.clone(),
+                    reason: "expected a port number 1-65535".to_string(),
+                })?;
+                if !cfg!(feature = "grpc") {
+                    return Err(ConfigError::InvalidGrpcPort {
+                        value: raw,
+                        reason: "this build has no gRPC API; rebuild with the `grpc` feature"
+                            .to_string(),
+                    });
+                }
+                Some(port)
+            }
+        };
+
         Ok(Self {
             host,
             port,
@@ -279,6 +308,7 @@ impl Config {
             prepared_tx_timeout,
             http_formats,
             wal_format,
+            grpc_port,
         })
     }
 
@@ -661,6 +691,27 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                     }
                     Err(err) => tracing::warn!(error = %err, "bolt accept failed"),
                 }
+            }
+        });
+    }
+
+    // Optional gRPC API (issue #583), on the same host.
+    #[cfg(feature = "grpc")]
+    if let Some(grpc_port) = cfg.grpc_port {
+        let grpc_addr = SocketAddr::new(addr.ip(), grpc_port);
+        let grpc_listener = tokio::net::TcpListener::bind(grpc_addr)
+            .await
+            .map_err(|source| RunError::Bind {
+                addr: grpc_addr,
+                source,
+            })?;
+        tracing::info!(%grpc_addr, "grpc listening");
+        let grpc_registry = std::sync::Arc::clone(&registry);
+        tokio::spawn(async move {
+            if let Err(err) =
+                crate::grpc::serve(grpc_registry, grpc_listener, shutdown_signal()).await
+            {
+                tracing::error!(error = %err, "grpc server stopped");
             }
         });
     }

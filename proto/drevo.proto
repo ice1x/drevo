@@ -1,0 +1,114 @@
+// drevo gRPC API (issue #583).
+//
+// Run Cypher and stream the result back. Served only by a server built with
+// the `grpc` feature and started with DREVO_GRPC_PORT set.
+syntax = "proto3";
+
+package drevo.v1;
+
+service Drevo {
+  // Run one Cypher statement. The stream carries one Header, then the rows in
+  // batches, then one Summary. An error ends the stream with a gRPC status.
+  rpc Execute(ExecuteRequest) returns (stream ExecuteResponse);
+
+  // Liveness and build identity.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message ExecuteRequest {
+  // The Cypher statement.
+  string query = 1;
+  // Query parameters, referenced as $name.
+  map<string, Value> params = 2;
+  // Database to run against; empty means the default database.
+  string database = 3;
+}
+
+message ExecuteResponse {
+  oneof part {
+    Header header = 1;
+    RowBatch rows = 2;
+    Summary summary = 3;
+  }
+}
+
+message Header {
+  repeated string columns = 1;
+}
+
+message RowBatch {
+  repeated Row rows = 1;
+}
+
+message Row {
+  repeated Value values = 1;
+}
+
+message Summary {
+  uint64 nodes_created = 1;
+  uint64 relationships_created = 2;
+  uint64 properties_set = 3;
+  uint64 nodes_deleted = 4;
+  uint64 relationships_deleted = 5;
+  uint64 labels_added = 6;
+  uint64 labels_removed = 7;
+}
+
+// A Cypher value.
+message Value {
+  oneof kind {
+    // Cypher null.
+    bool null = 1;
+    bool boolean = 2;
+    int64 integer = 3;
+    double float = 4;
+    string string = 5;
+    List list = 6;
+    Map map = 7;
+    Node node = 8;
+    Relationship relationship = 9;
+    Path path = 10;
+    // A list whose elements are all floats (an embedding), packed.
+    FloatList floats = 11;
+  }
+}
+
+message List {
+  repeated Value values = 1;
+}
+
+message Map {
+  map<string, Value> entries = 1;
+}
+
+message FloatList {
+  repeated double values = 1;
+}
+
+message Node {
+  uint64 id = 1;
+  bytes uuid = 2;
+  repeated string labels = 3;
+  map<string, Value> properties = 4;
+}
+
+message Relationship {
+  uint64 id = 1;
+  bytes uuid = 2;
+  uint64 start_node_id = 3;
+  uint64 end_node_id = 4;
+  string type = 5;
+  map<string, Value> properties = 6;
+}
+
+message Path {
+  repeated Node nodes = 1;
+  repeated Relationship relationships = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ok = 1;
+  string version = 2;
+}
