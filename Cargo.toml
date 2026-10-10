@@ -184,11 +184,12 @@ bolt-auth = ["dep:argon2"]
 # `http` because the proxy is only reachable through the HTTP endpoint.
 embeddings-proxy = ["http", "dep:reqwest", "dep:idna_adapter"]
 
-# Issue #581 — optional binary bodies for the HTTP API, next to JSON (which
-# stays the default and is always available). Compiling a format in does not
-# turn it on: the operator lists it in `DREVO_HTTP_FORMATS` (default `json`).
-format-cbor = ["http", "dep:ciborium"]
-format-msgpack = ["http", "dep:rmp-serde"]
+# Issues #581 / #582 — optional binary encodings next to JSON (which stays
+# the default and is always available): HTTP request/response bodies and the
+# write-ahead log. Compiling a format in does not turn it on: the operator
+# lists it in `DREVO_HTTP_FORMATS` and/or sets `DREVO_WAL_FORMAT`.
+format-cbor = ["http", "dep:ciborium", "drevo-core/wal-cbor"]
+format-msgpack = ["http", "dep:rmp-serde", "drevo-core/wal-msgpack"]
 
 # `js-sys` is the clock source for `now_ms`/`new_uuid_v7` on wasm32, where
 # `std::time::SystemTime::now()` aborts (see `model.rs`, drevo#198). It is

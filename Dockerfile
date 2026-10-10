@@ -55,8 +55,9 @@ COPY static/ static/
 # nothing is forced on and the "opt-in at runtime" contract holds. The extra
 # HTTP client uses pure-Rust `rustls` on the `ring` provider (no aws-lc-rs / no
 # extra system deps). The optional HTTP body formats (CBOR / MessagePack, issue
-# #581) are compiled in for the same reason and are likewise runtime-gated: they
-# are served only once listed in `DREVO_HTTP_FORMATS`. Override to a lean build via:
+# #581) and the binary write-ahead-log encodings (#582) are compiled in for the
+# same reason and are likewise runtime-gated: they are used only once listed in
+# `DREVO_HTTP_FORMATS` / set in `DREVO_WAL_FORMAT`. Override to a lean build via:
 #   docker build --build-arg CARGO_FEATURES="http" .
 # (The Cargo library default stays dependency-free; this opinionated default is
 # the deploy image only.) Locked by

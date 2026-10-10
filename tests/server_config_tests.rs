@@ -277,3 +277,39 @@ fn http_formats_reject_a_format_built_without() {
         .expect_err("not compiled in");
     assert!(err.to_string().contains("format-cbor"), "{err}");
 }
+
+// ---------------------------------------------------------------------
+// DREVO_WAL_FORMAT (issue #582)
+// ---------------------------------------------------------------------
+
+#[test]
+fn wal_format_defaults_to_json() {
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert_eq!(cfg.wal_format, drevo::wal_format::WalFormat::Json);
+}
+
+#[test]
+fn wal_format_rejects_unknown_names() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_WAL_FORMAT", "protobuf")])))
+        .expect_err("not a WAL format");
+    assert!(matches!(err, ConfigError::InvalidWalFormat(_)), "{err}");
+}
+
+#[cfg(all(feature = "format-cbor", feature = "format-msgpack"))]
+#[test]
+fn wal_format_accepts_compiled_formats() {
+    use drevo::wal_format::WalFormat;
+    for (raw, want) in [("cbor", WalFormat::Cbor), (" MsgPack ", WalFormat::MsgPack)] {
+        let cfg = Config::from_env(getter(HashMap::from([("DREVO_WAL_FORMAT", raw)])))
+            .expect("compiled in");
+        assert_eq!(cfg.wal_format, want);
+    }
+}
+
+#[cfg(not(feature = "format-cbor"))]
+#[test]
+fn wal_format_rejects_a_format_built_without() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_WAL_FORMAT", "cbor")])))
+        .expect_err("not compiled in");
+    assert!(err.to_string().contains("not compiled in"), "{err}");
+}
