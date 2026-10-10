@@ -208,6 +208,8 @@ pub use drevo_core::native_label_index;
 /// Opt-in indexes on nested property paths (issue #578), re-exported from
 /// `drevo-core`.
 pub use drevo_core::native_path_index;
+/// Write-ahead-log encodings (issue #582), re-exported from `drevo-core`.
+pub use drevo_core::wal_format;
 /// HTTP surface for the durable-native server mode
 /// (`DREVO_ENGINE=native-durable`, RFC `docs/rfc-native-core.md`, #307,
 /// Phase 4/7) — a minimal router over [`native_service::NativeService`]:

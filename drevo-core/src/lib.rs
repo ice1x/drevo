@@ -78,3 +78,4 @@ pub mod native_property_index;
 pub mod replica;
 pub mod tokenizer;
 pub mod value_encoding;
+pub mod wal_format;

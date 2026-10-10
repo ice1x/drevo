@@ -43,6 +43,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PREPARED_TX_WARN_SECS` | `60` | Log an ERROR (and so raise a Web UI notification) for each two-phase-commit transaction that has stayed prepared longer than this many seconds. While one is prepared, every write is refused. `0` turns the alert off. |
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
 | `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
+| `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor` or `msgpack`. See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
 | `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
 | `DREVO_AUTO_COMPACT_RATIO` | `2.0` | Minimum bloat ratio to trigger auto-compaction. |
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
@@ -84,6 +85,28 @@ curl -s localhost:8080/cypher -H 'Accept: application/cbor' \
   -H 'Content-Type: application/json' -d '{"query":"MATCH (n) RETURN n LIMIT 10"}' \
   -o result.cbor
 ```
+
+### Write-ahead-log format (opt-in)
+
+The write-ahead log (`native.wal`) is JSON Lines by default. With
+`DREVO_WAL_FORMAT=cbor` or `msgpack` it is written as framed binary records
+instead. Both formats are compiled into the Docker image (Cargo features
+`format-cbor` / `format-msgpack`).
+
+- **Switching:** set the variable and restart. The log is compacted at every
+  start, and compaction rewrites it in the configured format, so the switch
+  happens at that restart. It works in both directions, and a log in any
+  compiled-in format opens whatever the setting is.
+- **Size:** the gain is the embeddings. A float that fits in 32 bits takes 5
+  bytes in CBOR against about 20 characters in JSON, so a log dominated by
+  vectors shrinks several-fold. MessagePack writes every float in 9 bytes.
+- **Durability:** unchanged. A binary log starts with an 8-byte header, and
+  each record carries its length and a CRC-32. A torn last record (a crash
+  mid-write) is dropped on open; a damaged record with valid records after it
+  refuses to open, exactly as with JSON Lines.
+- **Readability:** a binary log can no longer be inspected with `tail` or
+  `jq`. To look inside, set `DREVO_WAL_FORMAT=json` and restart, or use
+  `GET /export/json`.
 
 ### Embeddings proxy (`/v1/embeddings`, opt-in)
 

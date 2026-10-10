@@ -328,8 +328,13 @@ jobs:
       # Issue #581 — the optional HTTP body formats (CBOR / MessagePack) live
       # behind `format-cbor` / `format-msgpack`, NOT in the default set, so
       # re-run their test binary and the inline unit tests with both on.
-      - name: Run HTTP body format feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features format-cbor,format-msgpack -E 'binary(http_wire_format_tests) | (kind(lib) & test(wire_format))'
+      - name: Run HTTP body / WAL format feature tests (nextest)
+        run: cargo nextest run --no-fail-fast --features format-cbor,format-msgpack -E 'binary(http_wire_format_tests) | binary(native_wal_format_tests) | binary(server_config_tests) | (kind(lib) & test(wire_format))'
+      # Issue #582 — the binary WAL encodings live in drevo-core behind
+      # `wal-cbor` / `wal-msgpack`; run its recovery / compaction / tailer
+      # tests and the inline unit tests with both on.
+      - name: Run drevo-core WAL format feature tests (nextest)
+        run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack -E 'binary(wal_formats) | (kind(lib) & test(wal_format))'
       - name: Run doctests
         run: cargo test --doc --all-features
 
@@ -371,6 +376,8 @@ jobs:
       - run: cargo clippy --all-targets --features bolt-auth -- -D warnings
       # Issue #581 — the CBOR / MessagePack transcoding paths.
       - run: cargo clippy --all-targets --features format-cbor,format-msgpack -- -D warnings
+      # Issue #582 — drevo-core's binary WAL paths and their tests.
+      - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack -- -D warnings
 
   fmt:
     name: Format

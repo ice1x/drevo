@@ -161,15 +161,16 @@ impl NativeReplica {
     }
 }
 
-/// Tails a primary's on-disk WAL file — the append-only JSON-Lines op log the
-/// durable engine writes (`native.wal`) — across a process or machine
+/// Tails a primary's on-disk WAL file — the append-only op log the durable
+/// engine writes (`native.wal`), in any
+/// [`WalFormat`](crate::wal_format::WalFormat) — across a process or machine
 /// boundary. This is the cross-process feed transport: a replica process
 /// opens the leader's WAL path and polls for newly-appended records.
 ///
 /// [`poll`](Self::poll) returns the [`WalOp`](crate::native::WalOp)s appended
 /// since the last call and advances a byte cursor past every **complete**
-/// (newline-terminated) record; a trailing partial line — a write still in
-/// flight — is left for the next poll, so a reader never applies half a record.
+/// record; a trailing partial record — a write still in flight — is left for
+/// the next poll, so a reader never applies half a record.
 /// Feed the returned ops to
 /// [`NativeGraph::apply_wal_ops`](crate::native::NativeGraph::apply_wal_ops) (or
 /// let a [`NativeReplica`] own the graph). The byte cursor is the resume point:
@@ -178,6 +179,9 @@ impl NativeReplica {
 pub struct WalTailer {
     path: std::path::PathBuf,
     offset: u64,
+    /// The log's format, detected from its header on the first poll that
+    /// finds one.
+    format: Option<crate::wal_format::WalFormat>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -188,6 +192,7 @@ impl WalTailer {
         Self {
             path: path.into(),
             offset: 0,
+            format: None,
         }
     }
 
@@ -197,6 +202,7 @@ impl WalTailer {
         Self {
             path: path.into(),
             offset,
+            format: None,
         }
     }
 
@@ -211,15 +217,55 @@ impl WalTailer {
     /// advance the byte cursor past every complete line. A trailing partial line
     /// is left unconsumed. A not-yet-created WAL file yields no ops.
     pub fn poll(&mut self) -> Result<Vec<crate::native::WalOp>> {
+        use crate::wal_format::{detect, read_record, Detected, Record, WalFormat, HEADER_LEN};
         use std::io::{Read, Seek, SeekFrom};
         let mut file = match std::fs::File::open(&self.path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
         };
+        let format = match self.format {
+            Some(f) => f,
+            None => {
+                let mut head = Vec::with_capacity(HEADER_LEN);
+                (&mut file).take(HEADER_LEN as u64).read_to_end(&mut head)?;
+                match detect(&head)? {
+                    // The header is still being written: try again later.
+                    Detected::TornHeader => return Ok(Vec::new()),
+                    // Nothing written yet.
+                    Detected::Log { .. } if head.is_empty() => return Ok(Vec::new()),
+                    Detected::Log { format, body_start } => {
+                        self.offset = self.offset.max(body_start as u64);
+                        self.format = Some(format);
+                        format
+                    }
+                }
+            }
+        };
         file.seek(SeekFrom::Start(self.offset))?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
+        if format != WalFormat::Json {
+            let mut ops = Vec::new();
+            let mut pos = 0;
+            while pos < buf.len() {
+                match read_record(format, &buf, pos) {
+                    Record::Ops {
+                        ops: mut recs,
+                        next,
+                    } => {
+                        ops.append(&mut recs);
+                        pos = next;
+                    }
+                    // Like an unparseable JSON line, a corrupt record is skipped.
+                    Record::Invalid { next } => pos = next,
+                    // An append still in flight: wait for the next poll.
+                    Record::Incomplete => break,
+                }
+            }
+            self.offset += pos as u64;
+            return Ok(ops);
+        }
         // Consume only up to the last newline; a trailing partial line is an
         // in-flight append and waits for the next poll.
         let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {

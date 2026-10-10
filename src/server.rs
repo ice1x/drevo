@@ -97,6 +97,9 @@ pub struct Config {
     /// Body formats the HTTP API offers next to JSON, from
     /// `DREVO_HTTP_FORMATS` (issue #581; default `json`).
     pub http_formats: crate::wire_format::WireFormats,
+    /// Write-ahead-log encoding from `DREVO_WAL_FORMAT` (issue #582; default
+    /// `json`). Applied to every store at open, by compaction.
+    pub wal_format: crate::wal_format::WalFormat,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -177,6 +180,11 @@ pub enum ConfigError {
     /// `DREVO_HTTP_FORMATS` named an unknown format or one not compiled in.
     #[error("invalid DREVO_HTTP_FORMATS: {0}")]
     InvalidHttpFormats(#[from] crate::wire_format::FormatsError),
+    /// `DREVO_WAL_FORMAT` named an unknown format or one not compiled in.
+    #[error(
+        "invalid DREVO_WAL_FORMAT: {0}; rebuild with the matching `format-*` feature if needed"
+    )]
+    InvalidWalFormat(#[from] crate::wal_format::WalFormatError),
 }
 
 impl Config {
@@ -256,6 +264,11 @@ impl Config {
             Some(raw) => raw.parse()?,
         };
 
+        let wal_format = match getter("DREVO_WAL_FORMAT") {
+            None => crate::wal_format::WalFormat::default(),
+            Some(raw) => raw.parse()?,
+        };
+
         Ok(Self {
             host,
             port,
@@ -265,6 +278,7 @@ impl Config {
             prepared_tx_warn,
             prepared_tx_timeout,
             http_formats,
+            wal_format,
         })
     }
 
@@ -519,6 +533,10 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
              native engine instead. Drop DREVO_ENGINE or set it to `native-durable`."
         );
     }
+    // Every store opened from here on (default database, registry, …) uses
+    // the configured log format; compaction on open converts older logs.
+    crate::native_service::NativeService::set_default_wal_format(cfg.wal_format);
+    tracing::info!(wal_format = cfg.wal_format.name(), "write-ahead log format");
     run_native_durable(cfg, addr).await
 }
 

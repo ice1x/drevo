@@ -1154,6 +1154,48 @@ pub struct NativeGraph {
     /// dead-code lint quiet without an `allow`.
     #[cfg(not(target_arch = "wasm32"))]
     _lock: Option<std::fs::File>,
+    /// The format compaction writes the log in. An existing log
+    /// keeps its own format for appends until compaction rewrites it.
+    #[cfg(not(target_arch = "wasm32"))]
+    wal_target: crate::wal_format::WalFormat,
+    /// The current log file's format, readable without the sink lock so a
+    /// writer can encode its record before queueing it. Compaction updates it
+    /// under the sink lock; the flushing leader re-encodes any record queued
+    /// in the old format.
+    #[cfg(not(target_arch = "wasm32"))]
+    wal_file_format: std::sync::atomic::AtomicU8,
+}
+
+/// [`crate::wal_format::WalFormat`] ⇄ `u8`, for [`NativeGraph::wal_file_format`].
+#[cfg(not(target_arch = "wasm32"))]
+fn wal_format_to_u8(f: crate::wal_format::WalFormat) -> u8 {
+    use crate::wal_format::WalFormat;
+    match f {
+        WalFormat::Json => 0,
+        WalFormat::Cbor => 1,
+        WalFormat::MsgPack => 2,
+    }
+}
+
+/// Decode a record [`crate::wal_format::WalFormat::encode_record`] produced.
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_single_record(format: crate::wal_format::WalFormat, bytes: &[u8]) -> Result<Vec<WalOp>> {
+    match crate::wal_format::read_record(format, bytes, 0) {
+        crate::wal_format::Record::Ops { ops, .. } => Ok(ops),
+        _ => Err(CoreError::Backend(
+            "could not re-encode a queued WAL record".to_string(),
+        )),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn wal_format_from_u8(v: u8) -> crate::wal_format::WalFormat {
+    use crate::wal_format::WalFormat;
+    match v {
+        1 => WalFormat::Cbor,
+        2 => WalFormat::MsgPack,
+        _ => WalFormat::Json,
+    }
 }
 
 /// A tombstone: the causal [`Stamp`] of a delete plus the deleted entity's
@@ -1400,15 +1442,19 @@ pub struct ChangeBatch {
 struct WalSink {
     path: std::path::PathBuf,
     file: std::fs::File,
+    /// The format of the log file as it is now.
+    format: crate::wal_format::WalFormat,
 }
 
-/// One writer's pending durable commit: its ops, the pre-serialized WAL line,
-/// and the commit sequence that fixes its order in the log.
+/// One writer's pending durable commit: its ops, the pre-encoded WAL record
+/// and the format it was encoded in, and the commit sequence that fixes its
+/// order in the log.
 #[cfg(not(target_arch = "wasm32"))]
 struct PendingCommit {
     seq: u64,
     ops: Vec<WalOp>,
-    line: String,
+    line: Vec<u8>,
+    format: crate::wal_format::WalFormat,
 }
 
 /// Group-commit queue. Concurrent durable writers enqueue here; one elected
@@ -2328,17 +2374,14 @@ impl NativeGraph {
     /// concurrent autocommit writes into far fewer than N fsyncs.
     #[cfg(not(target_arch = "wasm32"))]
     fn group_commit(&self, wal_ops: &[WalOp], feed_ops: &[WalOp]) -> Result<()> {
-        // Serialize the WAL line up front, off the queue lock. A single op is a
-        // bare object; a multi-op batch (a transaction) is one JSON array line,
-        // so it still recovers all-or-nothing.
-        let mut line = match wal_ops {
-            [] => String::new(),
-            [op] => serde_json::to_string(op)?,
-            many => serde_json::to_string(many)?,
-        };
-        if !line.is_empty() {
-            line.push('\n');
-        }
+        // Encode the WAL record up front, off the queue lock, in the log's
+        // current format. One record holds the whole batch (a transaction), so
+        // it still recovers all-or-nothing.
+        let format = wal_format_from_u8(
+            self.wal_file_format
+                .load(std::sync::atomic::Ordering::Acquire),
+        );
+        let line = format.encode_record(wal_ops)?;
 
         let my_seq = {
             let mut q = self.group.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -2351,6 +2394,7 @@ impl NativeGraph {
                 seq,
                 ops: feed_ops.to_vec(),
                 line,
+                format,
             });
             seq
         };
@@ -2406,7 +2450,15 @@ impl NativeGraph {
         if let Some(wal) = &self.wal {
             let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
             for pc in batch {
-                sink.file.write_all(pc.line.as_bytes())?;
+                if pc.format == sink.format {
+                    sink.file.write_all(&pc.line)?;
+                } else {
+                    // Compaction switched the log's format after this record
+                    // was encoded: re-encode it so the file never mixes formats.
+                    let ops = decode_single_record(pc.format, &pc.line)?;
+                    let line = sink.format.encode_record(&ops)?;
+                    sink.file.write_all(&line)?;
+                }
             }
             sink.file.sync_all()?;
             self.group
@@ -2800,6 +2852,10 @@ impl NativeGraph {
             tombstones: RwLock::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             _lock: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            wal_target: crate::wal_format::WalFormat::Json,
+            #[cfg(not(target_arch = "wasm32"))]
+            wal_file_format: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -2831,7 +2887,25 @@ impl NativeGraph {
     /// the tail; [`CoreError::Json`] on an encode failure.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_durable(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        use std::io::Read;
+        Self::open_durable_with(path, crate::wal_format::WalFormat::Json)
+    }
+
+    /// [`open_durable`](Self::open_durable), choosing the log's format.
+    /// A new log is created in `format`. An existing log is read
+    /// in whatever format it was written in and keeps being appended to in
+    /// that format; [`compact_wal`](Self::compact_wal) rewrites it in
+    /// `format`.
+    ///
+    /// # Errors
+    /// As [`open_durable`](Self::open_durable); also [`CoreError::Io`] for a
+    /// log in a format this build was compiled without.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_durable_with(
+        path: impl AsRef<std::path::Path>,
+        format: crate::wal_format::WalFormat,
+    ) -> Result<Self> {
+        use crate::wal_format::{detect, read_record, Detected, Record};
+        use std::io::{Read, Write};
         let path = path.as_ref();
         // Take the exclusive-open lock BEFORE reading/replaying the WAL (#455):
         // a second handle on the same store must be turned away up front, so two
@@ -2843,59 +2917,94 @@ impl NativeGraph {
         // never renamed, so the guard holds across compaction.
         let lock = acquire_exclusive_lock(&lock_sidecar(path))?;
         let mut inner = Inner::default();
+        let mut bytes = Vec::new();
         if path.exists() {
-            let mut bytes = Vec::new();
             std::fs::File::open(path)?.read_to_end(&mut bytes)?;
-            let mut valid_end = 0usize; // byte offset just past the last valid record
-            let mut pos = 0usize;
-            let mut torn = false;
-            while pos < bytes.len() {
-                let (line_end, next) = match bytes[pos..].iter().position(|b| *b == b'\n') {
-                    Some(i) => (pos + i, pos + i + 1),
-                    None => (bytes.len(), bytes.len()),
-                };
-                match Self::parse_wal_record(&bytes[pos..line_end]) {
-                    Some(ops) => {
-                        for op in ops {
-                            inner.apply_wal_op(op);
-                        }
-                        valid_end = next;
-                        pos = next;
-                    }
-                    None => {
-                        // Invalid record: a torn tail only if nothing but
-                        // whitespace follows it; otherwise acknowledged
-                        // history is corrupt — refuse.
-                        let rest_is_blank = bytes[next..].iter().all(|b| b.is_ascii_whitespace());
-                        if rest_is_blank {
-                            torn = true;
-                            break;
-                        }
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "corrupt write-ahead-log record at byte {pos} of {} \
-                                 (valid records follow it, so this is not a torn tail); \
-                                 refusing to open rather than drop acknowledged writes",
-                                path.display()
-                            ),
-                        )
-                        .into());
-                    }
-                }
-            }
-            if torn {
-                // Drop the unacknowledged tail so the log is clean for append.
+        }
+        let file_format = match detect(&bytes)? {
+            // A crash while a fresh binary log was being created: nothing in
+            // it was acknowledged, so start over as a new log.
+            Detected::TornHeader => {
+                bytes.clear();
                 std::fs::OpenOptions::new()
                     .write(true)
                     .open(path)?
-                    .set_len(valid_end as u64)?;
+                    .set_len(0)?;
+                None
             }
-        }
-        let file = std::fs::OpenOptions::new()
+            Detected::Log { .. } if bytes.is_empty() => None,
+            Detected::Log { format, body_start } => {
+                let mut valid_end = body_start; // just past the last valid record
+                let mut pos = body_start;
+                let mut torn = false;
+                while pos < bytes.len() {
+                    match read_record(format, &bytes, pos) {
+                        Record::Ops { ops, next } => {
+                            for op in ops {
+                                inner.apply_wal_op(op);
+                            }
+                            valid_end = next;
+                            pos = next;
+                        }
+                        // Cut off by the end of the log: an unacknowledged tail.
+                        Record::Incomplete => {
+                            torn = true;
+                            break;
+                        }
+                        // Invalid record: a torn tail only if nothing follows
+                        // it (nothing but whitespace, for JSON Lines);
+                        // otherwise acknowledged history is corrupt — refuse.
+                        Record::Invalid { next } => {
+                            let rest = &bytes[next.min(bytes.len())..];
+                            let nothing_follows = match format {
+                                crate::wal_format::WalFormat::Json => {
+                                    rest.iter().all(u8::is_ascii_whitespace)
+                                }
+                                _ => rest.is_empty(),
+                            };
+                            if nothing_follows {
+                                torn = true;
+                                break;
+                            }
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "corrupt write-ahead-log record at byte {pos} of {} \
+                                     (valid records follow it, so this is not a torn tail); \
+                                     refusing to open rather than drop acknowledged writes",
+                                    path.display()
+                                ),
+                            )
+                            .into());
+                        }
+                    }
+                }
+                if torn {
+                    // Drop the unacknowledged tail so the log is clean for append.
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(path)?
+                        .set_len(valid_end as u64)?;
+                }
+                Some(format)
+            }
+        };
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)?;
+        // A new (or emptied) log is created in the requested format.
+        let file_format = match file_format {
+            Some(f) => f,
+            None => {
+                let header = format.header();
+                if !header.is_empty() {
+                    file.write_all(&header)?;
+                    file.sync_all()?;
+                }
+                format
+            }
+        };
         // Seed the change-feed with the recovered state so feed-tailing
         // subscribers (indexes, value cache) see recovered data — see
         // [`Self::replay`].
@@ -2905,6 +3014,7 @@ impl NativeGraph {
             wal: Some(std::sync::Mutex::new(WalSink {
                 path: path.to_path_buf(),
                 file,
+                format: file_format,
             })),
             reg_txs: std::sync::Mutex::new(HashMap::new()),
             next_reg_tx: std::sync::atomic::AtomicU64::new(0),
@@ -2925,6 +3035,8 @@ impl NativeGraph {
             tombstones: RwLock::new(load_tombstones(&tombstone_sidecar(path))),
             // Hold the exclusive-open lock for this handle's lifetime (#455).
             _lock: Some(lock),
+            wal_target: format,
+            wal_file_format: std::sync::atomic::AtomicU8::new(wal_format_to_u8(file_format)),
         })
     }
 
@@ -2935,15 +3047,7 @@ impl NativeGraph {
     /// valid record.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn parse_wal_record(line: &[u8]) -> Option<Vec<WalOp>> {
-        let text = std::str::from_utf8(line).ok()?.trim();
-        if text.is_empty() {
-            return Some(Vec::new());
-        }
-        if text.starts_with('[') {
-            serde_json::from_str::<Vec<WalOp>>(text).ok()
-        } else {
-            serde_json::from_str::<WalOp>(text).ok().map(|op| vec![op])
-        }
+        crate::wal_format::parse_json_line(line)
     }
 
     /// Compact the write-ahead log: rewrite it as the current state's snapshot
@@ -2979,17 +3083,25 @@ impl NativeGraph {
         let bytes_before = std::fs::metadata(&sink.path).ok().map(|m| m.len());
 
         let tmp = sink.path.with_extension("wal.tmp");
+        let target = self.wal_target;
         {
-            let mut f = std::fs::File::create(&tmp)?;
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            f.write_all(&target.header())?;
             for op in &ops {
-                let mut line = serde_json::to_string(op)?;
-                line.push('\n');
-                f.write_all(line.as_bytes())?;
+                f.write_all(&target.encode_record(std::slice::from_ref(op))?)?;
             }
-            f.sync_all()?;
+            f.into_inner()
+                .map_err(|e| std::io::Error::other(e.to_string()))?
+                .sync_all()?;
         }
         std::fs::rename(&tmp, &sink.path)?;
         sink.file = std::fs::OpenOptions::new().append(true).open(&sink.path)?;
+        // From here on the log is in the target format.
+        sink.format = target;
+        self.wal_file_format.store(
+            wal_format_to_u8(target),
+            std::sync::atomic::Ordering::Release,
+        );
         let bytes_after = std::fs::metadata(&sink.path).ok().map(|m| m.len());
         Ok(CompactWalStats {
             bytes_before,
@@ -3014,15 +3126,24 @@ impl NativeGraph {
     /// and old versions.
     #[must_use]
     pub fn wal_compacted_bytes(&self) -> u64 {
-        read(&self.inner)
+        let records: u64 = read(&self.inner)
             .to_wal_ops()
             .iter()
-            .map(|op| {
-                serde_json::to_string(op)
-                    .map(|s| s.len() as u64 + 1)
-                    .unwrap_or(0)
-            })
-            .sum()
+            .map(|op| self.record_bytes(op))
+            .sum();
+        #[cfg(not(target_arch = "wasm32"))]
+        let records = records + self.wal_target.header().len() as u64;
+        records
+    }
+
+    /// The bytes one op takes as a compacted log record, in the format
+    /// compaction writes (JSON Lines for an in-memory engine).
+    fn record_bytes(&self, op: &WalOp) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        let encoded = self.wal_target.encode_record(std::slice::from_ref(op));
+        #[cfg(target_arch = "wasm32")]
+        let encoded = crate::wal_format::WalFormat::Json.encode_record(std::slice::from_ref(op));
+        encoded.map(|b| b.len() as u64).unwrap_or(0)
     }
 
     /// Per-structure breakdown of the live index stack for the storage panel's
@@ -3044,9 +3165,7 @@ impl NativeGraph {
         let mut edge_bytes = 0u64;
         let mut embedding_bytes = 0u64;
         for op in inner.to_wal_ops() {
-            let bytes = serde_json::to_string(&op)
-                .map(|s| s.len() as u64 + 1)
-                .unwrap_or(0);
+            let bytes = self.record_bytes(&op);
             match op {
                 WalOp::UpsertNode(_) => node_bytes += bytes,
                 WalOp::UpsertEdge(_) => edge_bytes += bytes,

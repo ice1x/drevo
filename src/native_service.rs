@@ -233,7 +233,41 @@ fn load_semantic_sidecar(path: &std::path::Path) -> SemanticSidecar {
     }
 }
 
+/// The write-ahead-log format stores are opened with, as
+/// [`WalFormat`](crate::wal_format::WalFormat) ⇄ `u8` (issue #582). Process-wide,
+/// so every store — the default database, the ones the registry opens, FFI —
+/// follows the server's `DREVO_WAL_FORMAT` without threading it through each.
+#[cfg(not(target_arch = "wasm32"))]
+static DEFAULT_WAL_FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 impl NativeService {
+    /// Set the write-ahead-log format every store opened from now on uses
+    /// (issue #582). A store whose log is in another format is read as it is
+    /// and rewritten in this one by the compaction [`Self::open`] runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_default_wal_format(format: crate::wal_format::WalFormat) {
+        use crate::wal_format::WalFormat;
+        let v = match format {
+            WalFormat::Json => 0,
+            WalFormat::Cbor => 1,
+            WalFormat::MsgPack => 2,
+        };
+        DEFAULT_WAL_FORMAT.store(v, Ordering::SeqCst);
+    }
+
+    /// The write-ahead-log format new opens use (see
+    /// [`Self::set_default_wal_format`]); JSON unless changed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn default_wal_format() -> crate::wal_format::WalFormat {
+        use crate::wal_format::WalFormat;
+        match DEFAULT_WAL_FORMAT.load(Ordering::SeqCst) {
+            1 => WalFormat::Cbor,
+            2 => WalFormat::MsgPack,
+            _ => WalFormat::Json,
+        }
+    }
+
     /// Open (or create) the durable store at `path` — the write-ahead log the
     /// graph recovers from and appends to. The log is compacted on open, so a
     /// long overwrite history costs restart time only once, and the indexes
@@ -267,7 +301,9 @@ impl NativeService {
         // `NativeGraph::open_durable` loads/mints+persists `origin.json` next to
         // the WAL, reused across restarts.
         let path = path.as_ref();
-        let graph = NativeGraph::open_durable(path)?;
+        let graph = NativeGraph::open_durable_with(path, Self::default_wal_format())?;
+        // Compaction also rewrites a log written in another format in the
+        // configured one (issue #582).
         graph.compact_wal()?;
         let last_compact_head = AtomicU64::new(graph.change_head());
         let sidecar = semantic_sidecar_path(path);
