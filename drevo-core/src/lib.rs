@@ -57,7 +57,8 @@
 //!   create/patch inputs.
 //! - Indexes: [`native_fts`] (BM25 full-text search),
 //!   [`native_label_index`], [`native_property_index`], and opt-in indexes on
-//!   nested property paths, [`native_path_index`].
+//!   nested property paths, [`native_path_index`], and on substrings,
+//!   [`native_text_index`].
 //! - Replication: [`replica`], [`delta`], [`hlc`], [`lww`].
 
 pub mod bm25;
@@ -75,6 +76,7 @@ pub mod native_fts;
 pub mod native_label_index;
 pub mod native_path_index;
 pub mod native_property_index;
+pub mod native_text_index;
 pub mod replica;
 pub mod tokenizer;
 pub mod value_encoding;

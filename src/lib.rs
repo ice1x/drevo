@@ -208,6 +208,9 @@ pub use drevo_core::native_label_index;
 /// Opt-in indexes on nested property paths (issue #578), re-exported from
 /// `drevo-core`.
 pub use drevo_core::native_path_index;
+/// Opt-in trigram text indexes for `CONTAINS` / `STARTS WITH` / `ENDS WITH`
+/// (issue #589), re-exported from `drevo-core`.
+pub use drevo_core::native_text_index;
 /// Write-ahead-log encodings (issue #582), re-exported from `drevo-core`.
 pub use drevo_core::wal_format;
 /// Arrow Flight endpoint (issue #584): Cypher results as Arrow record
