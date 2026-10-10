@@ -226,16 +226,24 @@ impl WireFormats {
 /// # Errors
 /// A message describing why the body could not be decoded.
 pub fn to_json(format: WireFormat, bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let value: serde_json::Value = match format {
-        WireFormat::Json => return Ok(bytes.to_vec()),
-        #[cfg(feature = "format-cbor")]
-        WireFormat::Cbor => ciborium::from_reader(bytes).map_err(|e| e.to_string())?,
-        #[cfg(feature = "format-msgpack")]
-        WireFormat::MsgPack => rmp_serde::from_slice(bytes).map_err(|e| e.to_string())?,
-        #[allow(unreachable_patterns)]
-        other => return Err(format!("{other} is not compiled in")),
-    };
+    if format == WireFormat::Json {
+        return Ok(bytes.to_vec());
+    }
+    let value = decode_value(format, bytes)?;
     serde_json::to_vec(&value).map_err(|e| e.to_string())
+}
+
+/// Decode a body in `format` into a JSON value.
+fn decode_value(format: WireFormat, bytes: &[u8]) -> Result<serde_json::Value, String> {
+    match format {
+        WireFormat::Json => serde_json::from_slice(bytes).map_err(|e| e.to_string()),
+        #[cfg(feature = "format-cbor")]
+        WireFormat::Cbor => ciborium::from_reader(bytes).map_err(|e| e.to_string()),
+        #[cfg(feature = "format-msgpack")]
+        WireFormat::MsgPack => rmp_serde::from_slice(bytes).map_err(|e| e.to_string()),
+        #[allow(unreachable_patterns)]
+        other => Err(format!("{other} is not compiled in")),
+    }
 }
 
 /// Decode a JSON body and re-encode it in `format`.
