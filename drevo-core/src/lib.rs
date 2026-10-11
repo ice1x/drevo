@@ -59,6 +59,7 @@
 //!   [`native_label_index`], [`native_property_index`], and opt-in indexes on
 //!   nested property paths, [`native_path_index`], and on substrings,
 //!   [`native_text_index`].
+//! - Text: [`tokenizer`] and [`levenshtein`] edit distance.
 //! - Replication: [`replica`], [`delta`], [`hlc`], [`lww`].
 
 pub mod bm25;
@@ -69,6 +70,7 @@ pub mod engine;
 pub mod error;
 pub mod hlc;
 pub mod labels;
+pub mod levenshtein;
 pub mod lww;
 pub mod model;
 pub mod native;

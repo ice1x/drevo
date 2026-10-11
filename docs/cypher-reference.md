@@ -542,6 +542,7 @@ procedures.
 | `drevo.closeness()` | `node, score` | Harmonic closeness centrality over the directed, unweighted graph; `score` is `Σ 1/d` over all nodes reachable along edge direction (stays finite when disconnected), rows most-central first (RFC #307 Phase 8) |
 | `drevo.ricciCurvature()` | `from, to, curvature` | Ollivier–Ricci curvature of every undirected edge over the unweighted projection (edge direction and weight ignored): `curvature ≤ 1` is negative on bridge-like edges between communities (good cut candidates) and positive inside dense clusters; each edge returned once with `from` the smaller-id endpoint, ascending by `(from, to)` (issue #526) |
 | `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale–Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
+| `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 
 ### Stable matching (#541)
 
@@ -620,6 +621,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | Family | Functions |
 |--------|-----------|
 | String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
+| Edit distance | `apoc.text.levenshteinDistance(a, b)` — the fewest single-character insertions, deletions and substitutions turning `a` into `b` (an `Integer`); `apoc.text.levenshteinSimilarity(a, b)` — `1 − distance / max(length)`, `1.0` for two empty strings. Characters are Unicode code points. See [Fuzzy matching](#fuzzy-matching-593) |
 | Numeric | `abs`, `ceil`, `floor`, `round(x[, precision[, mode]])`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` — see [round()](#rounding-with-round) for the precision / mode overloads |
 | List conversion | `toIntegerList(list)`, `toFloatList(list)`, `toBooleanList(list)`, `toStringList(list)` — element-wise conversion; an unconvertible (or `NULL`) element becomes `NULL`, preserving list length |
 | Lenient conversion | `toIntegerOrNull(x)`, `toFloatOrNull(x)`, `toBooleanOrNull(x)`, `toStringOrNull(x)` — fully-lenient scalar conversion; any value that cannot be converted yields `NULL` instead of an error (unlike the strict `toString`, which errors on a non-stringifiable value) |
@@ -1070,6 +1072,41 @@ as without the index.
 Full-text search (`fts.search`, `db.index.fulltext.queryNodes`) is a different
 tool: it ranks whole nodes by relevance, ignores case and punctuation, and
 needs no declaration.
+
+### Fuzzy matching (#593)
+
+Find values that are close to a string rather than equal to it — typos,
+variant spellings, near-duplicate titles. The edit distance is the fewest
+single-character insertions, deletions and substitutions between two strings:
+
+```cypher
+RETURN apoc.text.levenshteinDistance('recieve', 'receive') AS edits,
+       apoc.text.levenshteinSimilarity('abcd', 'abed') AS similarity
+```
+
+The functions work anywhere, but filtering with them computes the distance for
+every row. `drevo.text.fuzzy` searches a [text index](#text-indexes-589)
+instead:
+
+```cypher
+CREATE TEXT INDEX bug_summary IF NOT EXISTS FOR (b:Bug) ON (b.summary)
+```
+
+```cypher
+CALL drevo.text.fuzzy('bug_summary', 'login fails on Safary', 2)
+YIELD node, distance
+RETURN node.summary, distance
+```
+
+It returns every node the index covers whose value is within `maxEdits` edits
+of `query`, nearest first. One edit changes at most three of a value's
+trigrams, so a match must share all but `3 × maxEdits` of the query's
+trigrams. The index counts shared trigrams to pick candidates, and only those
+get the exact distance. When that bound rules nothing out (a query of a few
+characters, or a large `maxEdits`), every indexed value is checked. Results
+are exact either way, including after a write earlier in the same statement.
+Arguments are literals or parameters; `maxEdits` must be a non-negative
+integer.
 
 ### Server info (#303)
 

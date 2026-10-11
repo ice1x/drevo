@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use drevo_core::engine::GraphEngine;
 use drevo_core::model::{NewNode, NodePatch, Properties};
 use drevo_core::native::NativeGraph;
-use drevo_core::native_text_index::{NativeTextIndex, TextIndexSpec, TextMatch};
+use drevo_core::native_text_index::{text_at, NativeTextIndex, TextIndexSpec, TextMatch};
 use serde_json::{json, Value};
 
 fn node(g: &NativeGraph, kind: &str, title: &str, props: Value) -> u64 {
@@ -391,4 +391,105 @@ fn a_needle_most_values_share_declines_on_a_large_index() {
         idx.candidates(&[], &summary, TextMatch::EndsWith, "007"),
         Some(BTreeSet::from([rare[1], rare[2]]))
     );
+}
+
+// ----- fuzzy candidates (issue #593) -------------------------------------------
+
+#[test]
+fn fuzzy_candidates_include_every_value_within_the_edit_budget() {
+    let g = NativeGraph::new();
+    let receive = node(&g, "Word", "w1", json!({"text": "receive"}));
+    let deceive = node(&g, "Word", "w2", json!({"text": "deceive"}));
+    node(&g, "Word", "w3", json!({"text": "graph database"}));
+    let mut idx = NativeTextIndex::new(vec![spec(Some("Word"), &["text"])]);
+    idx.sync(&g);
+    let text = strings(&["text"]);
+    let got = idx
+        .fuzzy_candidates(Some("Word"), &text, "recieve", 2)
+        .expect("declared");
+    assert!(got.contains(&receive), "{got:?}");
+    let got = idx
+        .fuzzy_candidates(Some("Word"), &text, "deceive", 0)
+        .expect("declared");
+    assert_eq!(got, vec![deceive]);
+    // Only the declared spec answers: another label or path is unknown.
+    assert_eq!(idx.fuzzy_candidates(None, &text, "receive", 1), None);
+    assert_eq!(
+        idx.fuzzy_candidates(Some("Word"), &strings(&["title"]), "w1", 1),
+        None
+    );
+}
+
+#[test]
+fn fuzzy_candidates_fall_back_to_every_value_when_trigrams_cannot_filter() {
+    // Three edits can destroy all of a one-letter query's trigrams.
+    let g = NativeGraph::new();
+    let a = node(&g, "Word", "w1", json!({"text": "a"}));
+    let b = node(&g, "Word", "w2", json!({"text": "bcd"}));
+    node(&g, "Word", "w3", json!({"text": 7}));
+    let mut idx = NativeTextIndex::new(vec![spec(None, &["text"])]);
+    idx.sync(&g);
+    let got = idx
+        .fuzzy_candidates(None, &strings(&["text"]), "x", 3)
+        .expect("declared");
+    assert_eq!(got, vec![a, b]);
+}
+
+#[test]
+fn text_at_reads_strings_and_the_title_alias() {
+    let g = NativeGraph::new();
+    let id = node(
+        &g,
+        "Doc",
+        "a title",
+        json!({"meta": {"author": "ann"}, "n": 1}),
+    );
+    let n = g.get_node(id).expect("read").expect("exists");
+    assert_eq!(text_at(&n, &strings(&["title"])), Some("a title"));
+    assert_eq!(text_at(&n, &strings(&["meta", "author"])), Some("ann"));
+    assert_eq!(text_at(&n, &strings(&["n"])), None);
+    assert_eq!(text_at(&n, &strings(&["missing"])), None);
+}
+
+/// The candidates are a superset of the values within `k` edits, over random
+/// strings from a small alphabet.
+#[test]
+fn fuzzy_candidates_never_miss_a_match() {
+    let mut state: u64 = 0xd1b5_4a32_d192_ed03;
+    let mut next = move |bound: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % bound
+    };
+    let alphabet = ['a', 'b', 'c', 'ё'];
+    let mut word = |max: u64| -> String {
+        let n = next(max);
+        (0..n).map(|_| alphabet[next(4) as usize]).collect()
+    };
+    let g = NativeGraph::new();
+    let mut values = Vec::new();
+    for i in 0..150 {
+        let v = word(10);
+        let id = node(&g, "Item", &format!("item {i}"), json!({ "code": v }));
+        values.push((id, v));
+    }
+    let mut idx = NativeTextIndex::new(vec![spec(None, &["code"])]);
+    idx.sync(&g);
+    let code = strings(&["code"]);
+    for _ in 0..300 {
+        let query = word(10);
+        for k in 0..4 {
+            let got: BTreeSet<u64> = idx
+                .fuzzy_candidates(None, &code, &query, k)
+                .expect("declared")
+                .into_iter()
+                .collect();
+            for (id, v) in &values {
+                if drevo_core::levenshtein::distance(v, &query) <= k {
+                    assert!(got.contains(id), "{query:?} k={k} missed {v:?}");
+                }
+            }
+        }
+    }
 }
