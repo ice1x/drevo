@@ -189,6 +189,21 @@ drevo-py adds `PreparedTransactionError(TransactionError)` with `UnknownGidError
 `HeuristicRollbackError`. `PreparedTransactionPending` surfaces as `TransactionConflict`, because it
 is retryable.
 
+A coordinator classifies resolve failures by code alone (#590). The message text is the same on
+every surface and is not a contract.
+
+| Failure | Bolt `FAILURE.code` | HTTP status, body `code` |
+|---|---|---|
+| `UnknownGid`: never prepared, or already committed / rolled back | `Neo.ClientError.Transaction.UnknownPreparedTransaction` | 404, the same string |
+| `HeuristicRollback`: committing a gid the server rolled back heuristically | `Neo.ClientError.Transaction.HeuristicRollback` | 409, the same string |
+| Writes refused while a transaction is prepared | `Neo.TransientError.Transaction.LockAcquisitionTimeout` (retryable) | 503 |
+| Anything else, e.g. a non-string gid | `Neo.ClientError.Statement.SemanticError` | 400 |
+
+The HTTP codes apply to `POST /transactions/prepared/{gid}/commit`, `/rollback` and
+`/heuristic-rollback`, and to the `drevo.tx.*` procedures run through `POST /cypher`. Both Bolt
+codes are client errors, which official drivers do not retry. Rolling back a gid the server already
+rolled back heuristically succeeds, because it agrees with the outcome.
+
 ## 5. Acceptance tests (from #556, made concrete)
 
 1. prepare → commit_prepared: the writes are visible and survive a reopen.

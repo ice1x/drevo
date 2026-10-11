@@ -371,6 +371,21 @@ pub enum ExecError {
         /// Source span of the offending `CALL`.
         span: Span,
     },
+    /// `drevo.tx.commitPrepared` / `rollbackPrepared` / `heuristicRollback`
+    /// named a gid that cannot be resolved (#590). The message reads like
+    /// [`ExecError::InvalidProcedureCall`]'s; `reason` gives clients a stable
+    /// code ([`UnresolvedPrepared::code`]) instead.
+    #[error("invalid procedure call `{name}`: {message}")]
+    PreparedTransactionUnresolved {
+        /// Procedure name (`"drevo.tx.commitPrepared"`).
+        name: String,
+        /// Why the gid cannot be resolved.
+        reason: UnresolvedPrepared,
+        /// The engine's explanation, naming the gid.
+        message: String,
+        /// Source span of the offending `CALL`.
+        span: Span,
+    },
     /// The arms of a `UNION` are incompatible. Either the projected
     /// column names differ between arms (Neo4j requires every arm of a
     /// `UNION` to return the same column names in the same order), or a
@@ -431,6 +446,29 @@ impl From<drevo_core::error::CoreError> for ExecError {
     }
 }
 
+/// Why a prepared transaction could not be resolved (#590).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnresolvedPrepared {
+    /// No transaction is prepared under the gid: never prepared, or already
+    /// committed or rolled back.
+    UnknownGid,
+    /// The server rolled the transaction back heuristically, so it cannot be
+    /// committed.
+    HeuristicRollback,
+}
+
+impl UnresolvedPrepared {
+    /// The stable status code reported for this reason: the Bolt `FAILURE`
+    /// code, and the `code` field of an HTTP error body.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::UnknownGid => "Neo.ClientError.Transaction.UnknownPreparedTransaction",
+            Self::HeuristicRollback => "Neo.ClientError.Transaction.HeuristicRollback",
+        }
+    }
+}
+
 impl ExecError {
     /// Return the [`Span`] of the offending source construct, when
     /// available.
@@ -441,6 +479,7 @@ impl ExecError {
             | Self::TypeMismatch { span, .. }
             | Self::InvalidFunctionCall { span, .. }
             | Self::InvalidProcedureCall { span, .. }
+            | Self::PreparedTransactionUnresolved { span, .. }
             | Self::UnionMismatch { span, .. }
             | Self::InvalidRegex { span, .. } => Some(*span),
             Self::MissingParameter(_)
@@ -6266,11 +6305,7 @@ impl<'a> Executor<'a> {
             Err(crate::native::ResolveError::Io(msg)) => Err(ExecError::Storage(DrevoError::Io(
                 std::io::Error::other(msg),
             ))),
-            Err(e) => Err(ExecError::InvalidProcedureCall {
-                name: name.to_string(),
-                message: e.to_string(),
-                span,
-            }),
+            Err(e) => Err(unresolved_prepared(name, &e, span)),
         }
     }
 
@@ -6300,11 +6335,7 @@ impl<'a> Executor<'a> {
             Err(crate::native::ResolveError::Io(msg)) => Err(ExecError::Storage(DrevoError::Io(
                 std::io::Error::other(msg),
             ))),
-            Err(e) => Err(ExecError::InvalidProcedureCall {
-                name: name.to_string(),
-                message: e.to_string(),
-                span,
-            }),
+            Err(e) => Err(unresolved_prepared(name, &e, span)),
         }
     }
 
@@ -11174,6 +11205,23 @@ fn boolean(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<Valu
         },
         _ => unreachable!(),
     })
+}
+
+/// The error for a `drevo.tx.*` resolve call the engine refused (#590). `Io`
+/// is handled by the caller as a storage error.
+fn unresolved_prepared(name: &str, e: &crate::native::ResolveError, span: Span) -> ExecError {
+    let reason = match e {
+        crate::native::ResolveError::HeuristicRollback(_) => UnresolvedPrepared::HeuristicRollback,
+        crate::native::ResolveError::UnknownGid(_) | crate::native::ResolveError::Io(_) => {
+            UnresolvedPrepared::UnknownGid
+        }
+    };
+    ExecError::PreparedTransactionUnresolved {
+        name: name.to_string(),
+        reason,
+        message: e.to_string(),
+        span,
+    }
 }
 
 fn string_test(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<Value> {

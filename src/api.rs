@@ -57,6 +57,17 @@ pub enum ApiError {
     /// An upstream dependency failed (502 Bad Gateway). Used by `POST
     /// /v1/embeddings` when the configured embeddings upstream errors.
     BadGateway(String),
+    /// A failure with a stable machine-readable `code` in the body next to
+    /// `error` and `status` — e.g. resolving an unknown prepared transaction
+    /// (#590).
+    Coded {
+        /// HTTP status.
+        status: StatusCode,
+        /// Stable code, the same string Bolt reports.
+        code: &'static str,
+        /// Human-readable message.
+        message: String,
+    },
 }
 
 impl From<DrevoError> for ApiError {
@@ -121,6 +132,18 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             ApiError::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
             ApiError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg),
+            ApiError::Coded {
+                status,
+                code,
+                message,
+            } => {
+                let body = Json(serde_json::json!({
+                    "error": message,
+                    "status": status.as_u16(),
+                    "code": code,
+                }));
+                return (status, body).into_response();
+            }
         };
         json_error(status, &message)
     }

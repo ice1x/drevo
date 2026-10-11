@@ -878,6 +878,11 @@ fn run_cypher_on(
             crate::cypher::executor::ExecError::Storage(
                 err @ crate::error::DrevoError::PreparedTransactionPending(_),
             ) => ApiError::Db(err),
+            // `drevo.tx.*` on an unknown / heuristically rolled-back gid
+            // (#590): the same status and code as the resolve routes.
+            crate::cypher::executor::ExecError::PreparedTransactionUnresolved {
+                reason, ..
+            } => unresolved_error(reason, format!("Cypher execution error: {e}")),
             e => ApiError::BadRequest(format!("Cypher execution error: {e}")),
         }
     })?;
@@ -904,12 +909,35 @@ async fn list_prepared_http(State(state): State<NativeApiState>) -> Json<serde_j
 
 /// Map a failed two-phase-commit resolution onto an HTTP error.
 fn resolve_error(e: crate::native::ResolveError) -> ApiError {
+    use crate::cypher::executor::UnresolvedPrepared;
     match e {
-        crate::native::ResolveError::UnknownGid(_) => ApiError::NotFound(e.to_string()),
-        crate::native::ResolveError::HeuristicRollback(_) => ApiError::Conflict(e.to_string()),
+        crate::native::ResolveError::UnknownGid(_) => {
+            unresolved_error(UnresolvedPrepared::UnknownGid, e.to_string())
+        }
+        crate::native::ResolveError::HeuristicRollback(_) => {
+            unresolved_error(UnresolvedPrepared::HeuristicRollback, e.to_string())
+        }
         crate::native::ResolveError::Io(msg) => {
             ApiError::Db(crate::error::DrevoError::Io(std::io::Error::other(msg)))
         }
+    }
+}
+
+/// 404 for an unknown gid, 409 for a heuristic rollback, each with the stable
+/// code Bolt reports (#590).
+fn unresolved_error(
+    reason: crate::cypher::executor::UnresolvedPrepared,
+    message: String,
+) -> ApiError {
+    use crate::cypher::executor::UnresolvedPrepared;
+    let status = match reason {
+        UnresolvedPrepared::UnknownGid => axum::http::StatusCode::NOT_FOUND,
+        UnresolvedPrepared::HeuristicRollback => axum::http::StatusCode::CONFLICT,
+    };
+    ApiError::Coded {
+        status,
+        code: reason.code(),
+        message,
     }
 }
 
