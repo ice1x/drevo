@@ -567,3 +567,42 @@ fn main_ci_workflow_does_not_push_images() {
          belong to docker-publish.yml"
     );
 }
+
+// ------------------------------------------------------------------
+// 11. The published image knows its own version (issue #597).
+// `CALL drevo.info()` reads DREVO_VERSION / DREVO_GIT_SHA /
+// DREVO_BUILD_DATE baked in as Docker build-args; without them a CI-built
+// image reports `0.0.0-unknown` and a null git sha.
+// ------------------------------------------------------------------
+
+#[test]
+fn published_image_is_built_with_version_sha_and_date() {
+    let wf = read_workflow_code_only();
+    let build = wf
+        .split("uses: docker/build-push-action")
+        .nth(1)
+        .expect("the publish job builds with docker/build-push-action");
+    let step = build.split("\n      - ").next().unwrap_or(build);
+    assert!(
+        step.contains("build-args:"),
+        "build step passes build-args:\n{step}"
+    );
+    for (arg, source) in [
+        ("DREVO_VERSION=", "steps.meta.outputs.version"),
+        ("DREVO_GIT_SHA=", "steps.build_info.outputs.git_sha"),
+        ("DREVO_BUILD_DATE=", "steps.build_info.outputs.build_date"),
+    ] {
+        let line = step
+            .lines()
+            .find(|l| l.contains(arg))
+            .unwrap_or_else(|| panic!("build-args must set {arg}:\n{step}"));
+        assert!(
+            line.contains(source),
+            "{arg} must come from {source}: {line}"
+        );
+    }
+    assert!(
+        wf.contains("id: build_info"),
+        "a `build_info` step computes the short git sha and the build date"
+    );
+}
