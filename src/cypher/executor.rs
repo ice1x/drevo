@@ -3050,10 +3050,11 @@ impl<'a> Executor<'a> {
         //      - by **property** (`native_property_candidates`, the intersection
         //        of the indexable inline pairs' postings), available when a
         //        property index can narrow the pattern.
-        //    When both exist the two supersets are **intersected** (each already
-        //    contains every match, so their intersection does too) for the
-        //    tightest correct set; otherwise whichever exists is used; if neither
-        //    does, a full node scan through the seam.
+        //    The property set wins when it exists: it is already narrow, and the
+        //    exact filter checks labels, so building the label set only to
+        //    intersect would cost O(label size) for nothing (#600). Otherwise
+        //    the label set is used; if neither exists, a full node scan through
+        //    the seam.
         // Engine-independent id seek FIRST: a conjunctive `WHERE id(var) = X` /
         // `id(var) IN [...]` resolves through `get_node` point lookups on any
         // engine — no scan, no index. The exact filter below still enforces
@@ -3085,16 +3086,19 @@ impl<'a> Executor<'a> {
         // + exact filter (which reads the live engine) keeps a stale index costing
         // only speed, never answers.
         let indexes_trusted = !self.statement_has_written();
-        let label_cands = match (self.native_labels, first_label) {
-            (Some(label_idx), Some(label)) if indexes_trusted => {
-                Some(self.native_label_candidates(label_idx, label)?)
-            }
-            _ => None,
-        };
         let prop_cands = if indexes_trusted {
             self.native_property_candidates(pattern, row)?
         } else {
             None
+        };
+        // Index candidates are already a narrow superset, and the exact
+        // filter below checks every label, so loading all nodes of the label
+        // to intersect would only cost time: O(label size) per query (#600).
+        let label_cands = match (self.native_labels, first_label) {
+            (Some(label_idx), Some(label)) if indexes_trusted && prop_cands.is_none() => {
+                Some(self.native_label_candidates(label_idx, label)?)
+            }
+            _ => None,
         };
         let nodes: Vec<Arc<Node>> = match (label_cands, prop_cands) {
             (Some(l), Some(p)) => intersect_nodes_by_id(l, p),
