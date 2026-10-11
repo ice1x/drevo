@@ -185,6 +185,8 @@ pub use drevo_core::replica;
 /// the rest of Phase 13 (GC `00082`, OCC `00083`, isolation levels
 /// `00084`) builds on. Dependency-free and always compiled.
 pub mod mvcc;
+/// Levenshtein edit distance (issue #593), re-exported from `drevo-core`.
+pub use drevo_core::levenshtein;
 /// The native in-memory graph engine (RFC `docs/rfc-native-core.md`, #307,
 /// Phase 2) — an implementation of [`engine::GraphEngine`] that holds nodes and
 /// edges directly with maintained adjacency, instead of encoding them as

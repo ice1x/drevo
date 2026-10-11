@@ -1795,7 +1795,8 @@ enum Endpoint {
 
 fn is_scalar_function_name(name: &[String]) -> bool {
     if name.len() != 1 {
-        return false;
+        // Namespaced built-ins (`apoc.text.levenshteinDistance`, #593).
+        return is_builtin_scalar_function(&name.join(".").to_ascii_lowercase());
     }
     let lower = name[0].to_ascii_lowercase();
     // `startnode` / `endnode` (issue #232) are DB-aware like `similar` /
@@ -1832,6 +1833,9 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             | "right"
             | "reverse"
             | "tostring"
+            // Edit distance (issue #593), under their APOC names.
+            | "apoc.text.levenshteindistance"
+            | "apoc.text.levenshteinsimilarity"
             // Numeric functions.
             | "abs"
             | "ceil"
@@ -6994,6 +6998,80 @@ impl<'a> Executor<'a> {
         Err(Self::engine_capability("fts.search"))
     }
 
+    /// `CALL drevo.text.fuzzy(indexName, query, maxEdits) YIELD node, distance`
+    /// (issue #593): every node the text index `indexName` covers whose string
+    /// is within `maxEdits` Levenshtein edits of `query`, nearest first (ties by
+    /// node id). The index's trigrams pick the candidates and each is checked
+    /// with the exact distance. Once this statement has written, the index may
+    /// be stale, so the candidates come from a scan instead; the answer is the
+    /// same either way.
+    fn proc_text_fuzzy(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        const PROC: &str = "drevo.text.fuzzy";
+        let empty = Bindings::new();
+        let name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let query = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
+        let max_edits = self.eval_usize(&args[2], &empty)?;
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability(PROC))?;
+        let index = svc
+            .path_index_list()
+            .into_iter()
+            .find(|i| i.name == name && i.kind == crate::path_index_registry::IndexKind::Text)
+            .ok_or_else(|| ExecError::InvalidProcedureCall {
+                name: PROC.to_string(),
+                message: format!("no text index named `{name}`"),
+                span,
+            })?;
+        let path: Vec<String> = index
+            .paths
+            .first()
+            .map(|p| p.segments().to_vec())
+            .unwrap_or_default();
+        let label = index.label.as_deref();
+        let indexed = self
+            .native_texts
+            .filter(|_| !self.statement_has_written())
+            .and_then(|texts| texts.fuzzy_candidates(label, &path, &query, max_edits));
+        let candidates: Vec<Arc<Node>> = match indexed {
+            Some(ids) => {
+                let mut nodes = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if let Some(node) = self.engine().get_node(id)? {
+                        nodes.push(node);
+                    }
+                }
+                nodes
+            }
+            None => self.engine().all_nodes()?,
+        };
+        let mut hits: Vec<(usize, Arc<Node>)> = Vec::new();
+        for node in candidates {
+            deadline::tick()?;
+            if let Some(l) = label {
+                if node.kind != l && !secondary_labels(&node).iter().any(|s| s == l) {
+                    continue;
+                }
+            }
+            let Some(text) = crate::native_text_index::text_at(&node, &path) else {
+                continue;
+            };
+            if let Some(d) = crate::levenshtein::distance_within(text, &query, max_edits) {
+                hits.push((d, node));
+            }
+        }
+        hits.sort_by_key(|(d, node)| (*d, node.id));
+        Ok(hits
+            .into_iter()
+            .map(|(d, node)| {
+                vec![
+                    Value::Node(node_to_value(&node)),
+                    Value::Integer(i64::try_from(d).unwrap_or(i64::MAX)),
+                ]
+            })
+            .collect())
+    }
+
     /// `CALL fts.searchRelationships(query, k) YIELD rel, score` (#227-B) — the
     /// top-`k` relationships whose string properties best match `query`, ranked
     /// by BM25. The edge companion of [`Self::proc_fts_search`].
@@ -7077,6 +7155,7 @@ impl<'a> Executor<'a> {
             "drevo.closeness" => self.proc_closeness(),
             "drevo.ricciCurvature" => self.proc_ricci_curvature(),
             "drevo.stableMatching" => self.proc_stable_matching(args, span),
+            "drevo.text.fuzzy" => self.proc_text_fuzzy(args, span),
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
@@ -8398,15 +8477,13 @@ impl<'a> Executor<'a> {
         if name.len() == 1 && name[0].eq_ignore_ascii_case("endNode") {
             return self.eval_endpoint_node("endNode", Endpoint::End, args, row, span);
         }
-        if name.len() == 1 {
-            let lower = name[0].to_ascii_lowercase();
-            if is_builtin_scalar_function(&lower) {
-                let mut values = Vec::with_capacity(args.len());
-                for arg in args {
-                    values.push(self.eval(arg, row)?);
-                }
-                return call_scalar(&lower, values, span);
+        let lower = name.join(".").to_ascii_lowercase();
+        if is_builtin_scalar_function(&lower) {
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                values.push(self.eval(arg, row)?);
             }
+            return call_scalar(&lower, values, span);
         }
         Err(ExecError::Unsupported {
             feature: format!("function call `{}`", name.join(".")),
@@ -8739,6 +8816,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.ricciCurvature" => Some(&["from", "to", "curvature"]),
         // Gale–Shapley stable matching (issue #541): matched pairs + mutual ranks.
         "drevo.stableMatching" => Some(&["proposer", "acceptor", "proposerRank", "acceptorRank"]),
+        // Fuzzy lookup through a text index (issue #593): node + edit distance.
+        "drevo.text.fuzzy" => Some(&["node", "distance"]),
         // Engine-flip observability: engine mode + mirror routing counters.
         "drevo.engine.status" => Some(&[
             "engine",
@@ -8861,6 +8940,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.ricciCurvature" => 0,
         // drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty).
         "drevo.stableMatching" => 4,
+        // drevo.text.fuzzy(indexName, query, maxEdits) (issue #593).
+        "drevo.text.fuzzy" => 3,
         // drevo.engine.status() — no arguments.
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
@@ -9557,6 +9638,16 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "left" => scalar_left_right(name, args, span, true),
         "right" => scalar_left_right(name, args, span, false),
         "tostring" => scalar_tostring(args, span),
+        "apoc.text.levenshteindistance" => {
+            let (a, b) = two_strings("apoc.text.levenshteinDistance", &args, span)?;
+            Ok(Value::Integer(
+                i64::try_from(crate::levenshtein::distance(a, b)).unwrap_or(i64::MAX),
+            ))
+        }
+        "apoc.text.levenshteinsimilarity" => {
+            let (a, b) = two_strings("apoc.text.levenshteinSimilarity", &args, span)?;
+            Ok(Value::Float(crate::levenshtein::similarity(a, b)))
+        }
         // ---- Numeric ----
         "abs" => scalar_abs(args, span),
         "ceil" => float_map(name, args, span, f64::ceil),
@@ -9681,6 +9772,15 @@ fn one_string(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<String> {
             span,
         )),
     }
+}
+
+/// The two string arguments of a two-string function (`levenshteinDistance`).
+fn two_strings<'a>(name: &str, args: &'a [Value], span: Span) -> ExecResultT<(&'a str, &'a str)> {
+    expect_arity(name, args, 2, span)?;
+    Ok((
+        string_arg(name, &args[0], "first", span)?,
+        string_arg(name, &args[1], "second", span)?,
+    ))
 }
 
 /// One-argument `String -> String` mapping (`toLower`, `trim`, …).

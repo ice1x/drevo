@@ -27,6 +27,12 @@
 //! A top-level `title` or `body` path reads the node's own field unless the
 //! property map has an entry of that name, the same way Cypher shows them.
 //!
+//! [`fuzzy_candidates`](NativeTextIndex::fuzzy_candidates) finds values within
+//! `k` edits of a query: one edit changes at most three of a value's padded
+//! trigrams, so a match shares at least `|Q| − 3k` of the query's distinct
+//! trigrams `Q`. Counting shared trigrams picks the candidates; checking them
+//! with [`levenshtein`](crate::levenshtein) gives the exact answer.
+//!
 //! ```
 //! use drevo_core::engine::GraphEngine;
 //! use drevo_core::model::NewNode;
@@ -171,12 +177,7 @@ impl TrigramStore {
     }
 
     fn insert(&mut self, id: u64, text: &str) {
-        let mut padded = vec![START, START];
-        padded.extend(text.chars());
-        padded.extend([END, END]);
-        let mut trigrams: Vec<Trigram> = padded.windows(3).map(|w| [w[0], w[1], w[2]]).collect();
-        trigrams.sort_unstable();
-        trigrams.dedup();
+        let trigrams = padded_trigrams(text);
         for t in &trigrams {
             self.postings.entry(*t).or_default().insert(id);
         }
@@ -294,6 +295,49 @@ impl NativeTextIndex {
             .and_then(|(_, store)| store.intersect(&query))
     }
 
+    /// Ids of the nodes indexed by the spec declared exactly as `label` /
+    /// `path` whose string may be within `max_edits` edits of `query` — a
+    /// superset, ascending. Every indexed string is a candidate when the
+    /// trigram bound cannot filter (a short query or a large budget). `None`
+    /// when no such spec is declared.
+    #[must_use]
+    pub fn fuzzy_candidates(
+        &self,
+        label: Option<&str>,
+        path: &[String],
+        query: &str,
+        max_edits: usize,
+    ) -> Option<Vec<u64>> {
+        let store = self
+            .specs
+            .iter()
+            .zip(&self.stores)
+            .find(|(spec, _)| spec.label.as_deref() == label && spec.path == path)
+            .map(|(_, store)| store)?;
+        let wanted = padded_trigrams(query);
+        let needed = wanted.len().saturating_sub(max_edits.saturating_mul(3));
+        if needed == 0 {
+            let mut all: Vec<u64> = store.docs.keys().copied().collect();
+            all.sort_unstable();
+            return Some(all);
+        }
+        let mut shared: HashMap<u64, usize> = HashMap::new();
+        for t in &wanted {
+            if let Some(ids) = store.postings.get(t) {
+                for id in ids {
+                    *shared.entry(*id).or_default() += 1;
+                }
+            }
+        }
+        let mut out: Vec<u64> = shared
+            .into_iter()
+            .filter(|(_, n)| *n >= needed)
+            .map(|(id, _)| id)
+            .collect();
+        out.sort_unstable();
+        Some(out)
+    }
+
     /// Bring the index up to date with `graph` by consuming its change feed
     /// since the last [`cursor`](Self::cursor). A feed trimmed past the cursor
     /// triggers a rebuild.
@@ -384,6 +428,29 @@ fn query_trigrams(op: TextMatch, needle: &str) -> Option<Vec<Trigram>> {
     trigrams.sort_unstable();
     trigrams.dedup();
     (!trigrams.is_empty()).then_some(trigrams)
+}
+
+/// The distinct trigrams of `text` padded with the start and end markers,
+/// sorted.
+fn padded_trigrams(text: &str) -> Vec<Trigram> {
+    let mut padded = vec![START, START];
+    padded.extend(text.chars());
+    padded.extend([END, END]);
+    let mut trigrams: Vec<Trigram> = padded.windows(3).map(|w| [w[0], w[1], w[2]]).collect();
+    trigrams.sort_unstable();
+    trigrams.dedup();
+    trigrams
+}
+
+/// The string `node` holds at `path`, the way a text index reads it: a
+/// top-level `title` / `body` falls back to the node's own field. `None` for
+/// a missing, `null` or non-string value.
+#[must_use]
+pub fn text_at<'n>(node: &'n Node, path: &[String]) -> Option<&'n str> {
+    match resolve(node, path) {
+        Resolved::Text(text) => Some(text),
+        Resolved::Absent | Resolved::Blocking => None,
+    }
 }
 
 /// What `node` holds at `path`.

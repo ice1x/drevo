@@ -186,6 +186,11 @@ fn needs_runtime_config(source: &str) -> bool {
         || source.contains("drevo.tx.commitPrepared")
         || source.contains("drevo.tx.rollbackPrepared")
         || source.contains("drevo.tx.heuristicRollback")
+        // `drevo.text.fuzzy` (#593) resolves a *named* text index from a prior
+        // `CREATE TEXT INDEX`, which a pristine doc database lacks — the same
+        // situation as `db.index.vector.queryNodes`. Covered end to end in
+        // `tests/cypher_levenshtein_tests.rs`.
+        || source.contains("drevo.text.fuzzy")
 }
 
 #[test]
