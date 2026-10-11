@@ -142,19 +142,16 @@ fn failed_tx_on_one_connection_does_not_block_begin_on_another() {
     // on a *fresh pooled connection*. That retry's BEGIN must succeed.
     let d = open();
 
-    // Seed a node with a fixed title so a duplicate CREATE fails mid-tx.
-    let mut setup = ready(&d);
-    run_pull(&mut setup, "CREATE (:Item {title: 'dup'})");
-
     let mut c1 = ready(&d);
     assert!(is_success(&begin(&mut c1)[0]));
-    // Colliding CREATE → c1 goes Failed, its tx stays open (contract).
+    // A CREATE that divides by zero → c1 goes Failed, its tx stays open
+    // (contract).
     let bad = c1.handle(ClientMessage::Run {
-        query: "CREATE (:Item {title: 'dup'})".to_string(),
+        query: "CREATE (:Item {title: 'bad', ratio: 1 / 0})".to_string(),
         parameters: BTreeMap::new(),
         extra: BTreeMap::new(),
     });
-    assert!(is_failure(&bad[0]), "duplicate CREATE should fail");
+    assert!(is_failure(&bad[0]), "the failing CREATE should fail");
     assert_eq!(c1.state(), State::Failed);
 
     // c1 is still alive in the pool (not reset, not dropped). The retry lands

@@ -162,19 +162,16 @@ fn add_constraint_rejects_preexisting_violation_and_is_not_stored() {
 
 // ── structural invariants (no explicit constraint needed) ──────────────────
 
-/// Title uniqueness is a global invariant.
+/// Titles are ordinary values (#595): a repeat is a second node, and the
+/// title index stays consistent with the nodes.
 #[test]
-fn title_uniqueness_invariant_holds() {
+fn repeated_titles_keep_the_title_index_consistent() {
     let g = NativeGraph::new();
-    g.create_node(node("note", "dup")).unwrap();
-    assert!(
-        matches!(
-            g.create_node(node("note", "dup")),
-            Err(CoreError::DuplicateTitle(_))
-        ),
-        "a second node with the same title must be rejected"
-    );
-    assert_eq!(g.node_count(), 1);
+    let a = g.create_node(node("note", "dup")).unwrap();
+    let b = g.create_node(node("note", "dup")).unwrap();
+    assert_eq!(g.node_count(), 2);
+    let ids: Vec<u64> = g.nodes_by_title("dup").iter().map(|n| n.id).collect();
+    assert_eq!(ids, vec![a.id, b.id]);
 }
 
 /// An edge cannot reference a non-existent endpoint.

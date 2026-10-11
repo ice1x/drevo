@@ -8,8 +8,8 @@
 //! ([`QueryTimeoutError`]), missing parameters ([`ParameterMissingError`]) and
 //! every other executor error ([`CypherError`], their common base). Storage
 //! failures keep their existing classes ([`crate::errors::map_err`]), so a
-//! duplicate title from Cypher is the same `DuplicateTitleError` as from
-//! `create_node`.
+//! storage error from Cypher is the same class as from the matching handle
+//! method.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;

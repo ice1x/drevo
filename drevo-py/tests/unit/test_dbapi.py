@@ -268,11 +268,22 @@ def test_errors_map_to_pep249_classes(
     assert info.value.__cause__ is not None or error is dbapi.NotSupportedError
 
 
-def test_duplicate_title_is_an_integrity_error(conn: Any) -> None:
+def test_conflict_errors_are_integrity_errors() -> None:
+    """`ConflictError` and its subclasses map to PEP 249 `IntegrityError`."""
+    for exc in (
+        drevo.ConstraintViolation("unique", "unique"),
+        drevo.DuplicateTitleError("dup"),
+    ):
+        assert isinstance(dbapi._translate(exc), dbapi.IntegrityError)
+
+
+def test_a_repeated_title_is_not_an_error(conn: Any) -> None:
+    """Titles are not unique (#595)."""
     cur = conn.cursor()
     cur.execute("CREATE (:note {title: 'dup'})")
-    with pytest.raises(dbapi.IntegrityError):
-        cur.execute("CREATE (:note {title: 'dup'})")
+    cur.execute("CREATE (:note {title: 'dup'})")
+    cur.execute("MATCH (n:note) RETURN count(n)")
+    assert cur.fetchone() == (2,)
 
 
 def test_a_failed_statement_aborts_the_implicit_transaction(conn: Any) -> None:

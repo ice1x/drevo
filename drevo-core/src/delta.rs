@@ -47,10 +47,10 @@
 //!
 //! # Remaining limitations
 //!
-//! * **Title uniqueness is not reconciled.** A node's `title` is a natural key
-//!   inside one graph; two replicas that mint *different* uuids under the *same*
-//!   title merge into two nodes sharing a title (the title index resolves to the
-//!   last writer). Reconciling that is a semantic-merge concern beyond id remap.
+//! * **Same-title nodes are not merged.** Two replicas that mint *different*
+//!   uuids under the *same* title converge to two nodes sharing that title, as
+//!   in any graph where titles are ordinary values. Deciding they are one
+//!   entity is a semantic-merge concern beyond id remap.
 //! * **The uuid resolution is rebuilt per apply.** `apply_delta` scans the live
 //!   graph once to index `uuid → local id` (plus the in-memory tombstones), so a
 //!   merge is `O(n + delta)`; a persistent uuid index is a later optimisation.

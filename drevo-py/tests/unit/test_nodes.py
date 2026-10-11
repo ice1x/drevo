@@ -68,11 +68,23 @@ def test_create_node_stores_properties_dict(drevo_db: drevo.Drevo, fake) -> None
     assert node.properties == props
 
 
-def test_create_node_duplicate_title_raises(drevo_db: drevo.Drevo) -> None:
-    """RFC §5.1 — a colliding title surfaces as `DuplicateTitleError`."""
-    drevo_db.create_node(drevo.NewNode(kind="note", title="dup"))
-    with pytest.raises(drevo.DuplicateTitleError):
-        drevo_db.create_node(drevo.NewNode(kind="note", title="dup"))
+def test_create_node_with_a_repeated_title_makes_a_second_node(drevo_db: drevo.Drevo, fake) -> None:
+    """Titles are not unique (#595): an embedded note may share its name with
+    an external one, and `get_node_by_title` returns the oldest."""
+    title = fake.sentence(nb_words=3)
+    external = drevo_db.create_node(drevo.NewNode(kind="note", title=title))
+    embedded = drevo_db.create_node(drevo.NewNode(kind="embedded", title=title))
+    assert embedded.id != external.id
+    found = drevo_db.get_node_by_title(title)
+    assert found is not None
+    assert found.id == external.id
+
+
+def test_rename_onto_a_taken_title_is_allowed(drevo_db: drevo.Drevo) -> None:
+    drevo_db.create_node(drevo.NewNode(kind="tag", title="rust"))
+    note = drevo_db.create_node(drevo.NewNode(kind="note", title="draft"))
+    renamed = drevo_db.update_node(note.id, drevo.NodePatch(title="rust"))
+    assert renamed.title == "rust"
 
 
 # ── get_node / get_node_by_uuid / get_node_by_title ──────────────────

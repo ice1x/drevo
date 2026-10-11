@@ -151,8 +151,9 @@ with drevo.Drevo.open_in_memory() as db:
 
 Errors: `CypherSyntaxError` (did not parse), `ParameterMissingError`,
 `QueryTimeoutError` and any other executor error derive from
-`drevo.CypherError`. Storage failures keep their usual classes, so a duplicate
-title is a `DuplicateTitleError` whether it comes from Cypher or `create_node`.
+`drevo.CypherError`. Storage failures keep their usual classes, whether they
+come from Cypher or the matching handle method. Titles are not unique: two
+nodes may share one, from Cypher or `create_node` alike.
 
 ### Transactions
 
@@ -253,7 +254,7 @@ conn.close()
   | DB-API error | Raised for |
   |---|---|
   | `ProgrammingError` | Cypher syntax or semantic errors, a missing parameter, misuse |
-  | `IntegrityError` | duplicate title, constraint violation |
+  | `IntegrityError` | constraint violation |
   | `OperationalError` | commit conflict (retry), statement timeout, storage |
   | `DataError` | value out of range |
   | `InterfaceError` | closed connection or cursor |

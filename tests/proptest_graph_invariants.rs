@@ -267,7 +267,7 @@ fn adjacency_violations(db: &NativeService, node_ids: &[u64], edge_ids: &[u64]) 
 /// Apply an op-sequence to a fresh in-memory `NativeService` and assert that
 /// the graph stays internally consistent after every step.
 ///
-/// Per-op errors (e.g. `DuplicateTitle`, `NodeNotFound`) are tolerated —
+/// Per-op errors (e.g. `NodeNotFound`) are tolerated —
 /// the harness's job is *not* to construct a perfectly-coherent sequence,
 /// it's to ensure the database stays internally consistent **regardless**
 /// of which ops succeeded.

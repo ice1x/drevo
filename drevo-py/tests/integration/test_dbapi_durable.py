@@ -50,13 +50,14 @@ def test_a_batch_is_all_or_nothing(tmp_db_path: str) -> None:
     cur = conn.cursor()
     try:
         cur.executemany(
-            "CREATE (:note {title: $t})",
-            [{"t": "first"}, {"t": "second"}, {"t": "taken"}],  # the last one collides
+            "CREATE (:note {title: $t, ratio: 10 / $d})",
+            # The last one divides by zero.
+            [{"t": "first", "d": 1}, {"t": "second", "d": 2}, {"t": "third", "d": 0}],
         )
-    except dbapi.IntegrityError:
+    except dbapi.Error:
         pass
     else:
-        raise AssertionError("the duplicate title should have failed the batch")
+        raise AssertionError("the division by zero should have failed the batch")
     conn.commit()  # the failure already rolled the transaction back
     conn.close()
 

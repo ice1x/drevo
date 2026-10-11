@@ -116,11 +116,10 @@ fn native_enforces_core_semantics() {
     let b = g.create_node(new_node("k", "b")).unwrap();
     assert_eq!((a.id, b.id), (1, 2));
 
-    // Title uniqueness.
-    assert!(matches!(
-        g.create_node(new_node("k", "a")),
-        Err(CoreError::DuplicateTitle(t)) if t == "a"
-    ));
+    // Titles may repeat (#595): a third node can reuse "a".
+    let again = g.create_node(new_node("k", "a")).unwrap();
+    assert_eq!(again.id, 3);
+    assert_eq!(g.get_node_by_title("a").map(|n| n.id), Some(1));
 
     // Edge endpoint validation + invalid weight.
     assert!(matches!(

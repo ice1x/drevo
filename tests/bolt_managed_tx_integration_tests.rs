@@ -257,17 +257,12 @@ fn bulk_write_note(s: &mut Session, t: usize) {
 #[test]
 fn driver_retry_after_failed_statement_succeeds_concurrently() {
     // Model the driver's managed-tx retry: connection A's tx fails a statement
-    // (duplicate title) and stays open; connections B, C and D keep committing
+    // (division by zero) and stays open; connections B, C and D keep committing
     // their own transactions — none is blocked by A's still-open failed
     // transaction (each connection has an independent `NativeTx`).
     let db = open();
-    // Seed the title that A will collide on.
-    {
-        let mut s = hello(&db);
-        run_step(&mut s, "CREATE (:Item {title: 'dup'})").unwrap();
-    }
 
-    // A: open a tx, fail a statement (duplicate title — a permanent client
+    // A: open a tx, fail a statement (division by zero — a permanent client
     // error, not a transient conflict), leave it open (as a pool would).
     let mut a = hello(&db);
     assert!(is_success(
@@ -276,7 +271,7 @@ fn driver_retry_after_failed_statement_succeeds_concurrently() {
         })[0]
     ));
     let bad = a.handle(ClientMessage::Run {
-        query: "CREATE (:Item {title: 'dup'})".to_string(),
+        query: "CREATE (:Item {title: 'bad', ratio: 1 / 0})".to_string(),
         parameters: BTreeMap::new(),
         extra: BTreeMap::new(),
     });

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — titles are no longer unique (issue #595)
+
+* Two nodes may share a title, as in Neo4j and Memgraph. `create_node`,
+  `update_node`, batch creates and Cypher `CREATE` no longer raise
+  `DuplicateTitleError`; the class stays exported so existing `except` clauses
+  keep working. `get_node_by_title` returns the oldest node with that title.
+
 Tracked here as Phase 16 tasks land. Sections roll into the next
 released entry on a tagged commit.
 

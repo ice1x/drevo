@@ -40,8 +40,8 @@
 //! Re-importing an identical dump into a populated database is a no-op: nodes
 //! and edges already present (matched by `id` AND byte-equal content) are
 //! skipped and counted in [`crate::dump::ImportReport::nodes_skipped`] /
-//! [`crate::dump::ImportReport::edges_skipped`]. A title collision against a
-//! *different* node yields [`crate::error::DrevoError::DuplicateTitle`].
+//! [`crate::dump::ImportReport::edges_skipped`]. A node whose title matches an
+//! existing node's is imported as a separate node: titles are not unique.
 //!
 //! ## Errors
 //!
@@ -90,8 +90,8 @@
 //!   ids (edges follow the remap); missing uuids/timestamps are generated at
 //!   import time. Unrecognised `<data>` keys are folded into the node/edge
 //!   property map so nothing is silently dropped.
-//! * **Constraints.** Node titles must be unique (drevo's data-model
-//!   invariant); an edge whose `source`/`target` names a node absent from the
+//! * **Constraints.** Titles may repeat, as anywhere in drevo (#595); an
+//!   edge whose `source`/`target` names a node absent from the
 //!   document is rejected as [`crate::dump::DumpError::MalformedGraphml`].
 //!   Malformed XML, a missing `<graphml>`/`<graph>` element, or an id
 //!   collision against different existing content surface as

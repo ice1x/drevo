@@ -67,18 +67,18 @@ fn create_nodes_assigns_ascending_ids() {
 }
 
 #[test]
-fn create_nodes_is_all_or_nothing_on_duplicate_title() {
+fn create_nodes_accepts_repeated_titles() {
+    // Titles are not unique (#595): repeats within the batch and against an
+    // existing node are separate nodes.
     let g = NativeGraph::new();
-    // Duplicate WITHIN the batch → whole batch rejected, nothing written.
-    let err = g.create_nodes(vec![nn("dup"), nn("ok"), nn("dup")]);
-    assert!(matches!(err, Err(CoreError::DuplicateTitle(t)) if t == "dup"));
-    assert_eq!(g.node_count(), 0);
-
-    // Duplicate against an EXISTING node → same, nothing added.
+    let batch = g
+        .create_nodes(vec![nn("dup"), nn("ok"), nn("dup")])
+        .unwrap();
+    assert_eq!(batch.len(), 3);
     g.create_nodes(vec![nn("x")]).unwrap();
-    let err = g.create_nodes(vec![nn("y"), nn("x")]);
-    assert!(matches!(err, Err(CoreError::DuplicateTitle(t)) if t == "x"));
-    assert_eq!(g.node_count(), 1);
+    g.create_nodes(vec![nn("y"), nn("x")]).unwrap();
+    assert_eq!(g.node_count(), 6);
+    assert_eq!(g.nodes_by_title("x").len(), 2);
 }
 
 #[test]

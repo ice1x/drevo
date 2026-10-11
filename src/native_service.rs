@@ -98,8 +98,8 @@ impl ServiceIndexes {
 }
 
 /// Prefix of the placeholder title drevo synthesises for a node created without
-/// one (Cypher `CREATE` needs unique titles). Such a title is an identifier, not
-/// text, so semantic auto-embedding never reads it.
+/// one through Cypher `CREATE`. Such a title is an identifier, not text, so
+/// semantic auto-embedding never reads it.
 pub(crate) const SYNTHETIC_TITLE_PREFIX: &str = "__cypher__:";
 
 /// A node's dedicated text fields. A node keeps `title` and `body` outside its
@@ -789,10 +789,15 @@ impl NativeService {
         self.graph.get_node_by_uuid(uuid)
     }
 
-    /// Look up a node by its unique title — parity with
-    /// `Drevo::get_node_by_title`. `None` if no node has that title.
+    /// The oldest node (lowest id) with `title`, or `None`. Titles are not
+    /// unique (#595); [`nodes_by_title`](Self::nodes_by_title) returns all.
     pub fn get_node_by_title(&self, title: &str) -> Option<crate::model::Node> {
         self.graph.get_node_by_title(title)
+    }
+
+    /// Every node with `title`, id-ascending.
+    pub fn nodes_by_title(&self, title: &str) -> Vec<crate::model::Node> {
+        self.graph.nodes_by_title(title)
     }
 
     /// Most-recently-updated nodes first, capped at `limit` — parity with
@@ -2383,16 +2388,14 @@ mod health_and_batch_tests {
     }
 
     #[test]
-    fn create_nodes_is_atomic_on_duplicate_title() {
-        // A duplicate title fails the whole batch — nothing is written, matching
-        // `NativeGraph::create_nodes`' all-or-nothing contract.
+    fn create_nodes_accepts_repeated_titles() {
+        // Titles are not unique (#595): a batch repeating an existing title
+        // writes every node.
         let svc = NativeService::in_memory();
         svc.create_node(nn("dup")).unwrap();
-        assert!(svc.create_nodes(vec![nn("fresh"), nn("dup")]).is_err());
-        assert!(
-            svc.get_node_by_title("fresh").is_none(),
-            "the batch must not have written the first node"
-        );
+        svc.create_nodes(vec![nn("fresh"), nn("dup")]).unwrap();
+        assert!(svc.get_node_by_title("fresh").is_some());
+        assert_eq!(svc.nodes_by_title("dup").len(), 2);
     }
 }
 
