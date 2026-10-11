@@ -2164,7 +2164,7 @@ async fn ui_graph_math_module_serves_to_client() {
     assert!(content_type.contains("javascript"));
     assert!(body.contains("meanEdgeLength"));
     assert!(body.contains("DrevoGraphMath"));
-    // Node labels hide the synthesised `__cypher__:` placeholder title (#545).
+    // Node labels treat an empty or legacy `__cypher__:` title as no title (#545).
     assert!(body.contains("nodeLabel"));
 }
 

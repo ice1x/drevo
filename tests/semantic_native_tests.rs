@@ -604,8 +604,7 @@ fn a_title_target_embeds_real_titles_but_not_synthetic_ones() {
     );
     run(&svc, "CREATE (:Doc {title: 'Quarterly plan'})");
     assert!(embedding_of(&svc, "Quarterly plan").is_some());
-    // No title given → drevo synthesises a unique placeholder, which is not
-    // text worth embedding.
+    // No title given → the node is untitled, so there is nothing to embed.
     run(&svc, "CREATE (:Doc {x: 1})");
     assert_eq!(embedded_docs(&svc), Value::Integer(1));
     assert_eq!(calls_now(&calls), 1);

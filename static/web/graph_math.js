@@ -54,10 +54,10 @@
     return Number.isFinite(d) && d > 0 ? d : fb;
   }
 
-  // A node's display label. drevo stores a unique placeholder title
-  // (`__cypher__:<Label>:<uuid>`) for nodes created without one (#545); that
-  // is storage plumbing, not a name, so a node carrying it is labelled by its
-  // first naming property instead, else `<kind> #<id>`.
+  // A node's display label. An untitled node has an empty title; older
+  // versions stored a placeholder (`__cypher__:<Label>:<uuid>`, #545) that is
+  // not a name either. Such a node is labelled by its first naming property
+  // instead, else `<kind> #<id>`.
   const SYNTHETIC_TITLE_PREFIX = "__cypher__:";
   const NAME_KEYS = ["name", "title", "label", "text"];
   function nodeLabel(n) {
