@@ -318,8 +318,7 @@ fn top_level_and_unsupported_forms_stay_no_ops() {
         // Top-level properties are always indexed.
         "CREATE INDEX FOR (n:Bug) ON (n.title)",
         "CREATE INDEX title_idx FOR (n:Bug) ON (n.title)",
-        // Not range indexes / not nodes.
-        "CREATE TEXT INDEX FOR (n:Bug) ON (n.meta.severity)",
+        // Not range or text indexes / not nodes.
         "CREATE POINT INDEX FOR (n:Bug) ON (n.meta.location)",
         "CREATE INDEX FOR ()-[r:LINKS]-() ON (r.meta.kind)",
         "CREATE FULLTEXT INDEX ft FOR (n:Bug) ON EACH [n.title]",

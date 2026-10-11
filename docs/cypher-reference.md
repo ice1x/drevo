@@ -929,19 +929,20 @@ RETURN relationship, score ORDER BY score DESC
 ```
 
 Schema DDL that drevo does not need is **accepted but a no-op**, so a driver's
-bootstrap does not fail: `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT] INDEX …` on
-top-level properties or relationships, and `CREATE CONSTRAINT …` /
-`DROP CONSTRAINT …`, parse and do nothing (drevo auto-indexes every top-level
-node property and enforces no constraints). `CREATE VECTOR INDEX` and indexes
-on nested property paths ([below](#indexes-on-nested-properties-578)) have an
-effect.
+bootstrap does not fail: `CREATE [RANGE|POINT|LOOKUP|FULLTEXT] INDEX …` on
+top-level properties or relationships, `CREATE TEXT INDEX` on relationships,
+and `CREATE CONSTRAINT …` / `DROP CONSTRAINT …`, parse and do nothing (drevo
+auto-indexes every top-level node property and enforces no constraints).
+`CREATE VECTOR INDEX`, indexes on nested property paths
+([below](#indexes-on-nested-properties-578)) and text indexes on node
+properties ([below](#text-indexes-589)) have an effect.
 
 `SHOW [type] INDEXES` lists the named indexes in Neo4j's column layout
 (`id`, `name`, `state`, `populationPercent`, `type`, `entityType`,
 `labelsOrTypes`, `properties`, `indexProvider`, `owningConstraint`, `options`),
 with the usual `YIELD …` / `WHERE …` / `RETURN …`, a bare `WHERE`, and
 `YIELD *`. Vector indexes are listed as `VECTOR`, nested-path indexes as
-`RANGE`; `SHOW ALL INDEXES` lists both. drevo's automatic indexes have no
+`RANGE`, text indexes as `TEXT`; `SHOW ALL INDEXES` lists all of them. drevo's automatic indexes have no
 names and the no-op DDL registers nothing. `SHOW CONSTRAINTS` lists nothing,
 since drevo enforces none. That is exactly what a client's
 check-then-create bootstrap expects, e.g. neo4j-agent-memory's:
@@ -1010,16 +1011,65 @@ RETURN n.title
 - **Each path stands alone:** `ON (n.a.b, n.c.*)` declares two paths. It is
   not a composite key.
 - **Names:** an index without a name gets one from its label and paths
-  (`index_Doc_meta_author`). Names are unique across vector and path indexes.
+  (`index_Doc_meta_author`). Names are unique across vector, path and text
+  indexes.
 - **Lifecycle:** definitions are stored next to the WAL and survive a
   restart. The index data lives in memory, is rebuilt on open, and is rebuilt
   before the next statement whenever an index is created or dropped.
 
-`DROP INDEX` removes a path index or a vector index:
+`DROP INDEX` removes a path, text or vector index:
 
 ```cypher
 DROP INDEX doc_author IF EXISTS
 ```
+
+### Text indexes (#589)
+
+`CONTAINS`, `STARTS WITH` and `ENDS WITH` normally test every node the pattern
+reaches. A text index on one property answers them from an index instead:
+
+```cypher
+CREATE TEXT INDEX ticket_summary IF NOT EXISTS FOR (t:Ticket) ON (t.summary)
+```
+
+```cypher
+MATCH (t:Ticket)
+WHERE t.summary CONTAINS 'timeout' AND t.summary STARTS WITH 'PROJ-'
+RETURN t.title
+```
+
+The index splits each value into overlapping three-character pieces
+(trigrams), case-sensitively, with markers for the start and end of the value.
+A query looks up the needle's trigrams, keeps the nodes that have all of them,
+and checks those nodes with the real predicate, so results are always the same
+as without the index.
+
+- **One property per index**, top-level (`t.summary`) or nested
+  (`t.meta.author`); the label is optional, as with nested-path indexes, and a
+  labelled index serves only patterns that require the label.
+- **Needle length:** `STARTS WITH` and `ENDS WITH` use the index from one
+  character; `CONTAINS` needs at least three. An empty needle matches every
+  string and is answered by a scan.
+- **Values:** strings are indexed; `null` and missing values never match. While
+  any indexed node holds a number, list or map at that property, the index is
+  not used, so the query raises the same type error it would without the
+  index.
+- **Common needles:** on an index of 1 024 values or more, a needle whose
+  rarest trigram appears in more than half of them is answered by a scan, which
+  is cheaper at that point.
+- **Where it applies:** the predicate must be `property <op> needle` in a
+  top-level `AND` of the `MATCH`'s `WHERE`; the needle can be a literal or a
+  parameter. Under `OR` or `NOT`, or with the property as the needle
+  (`'text' CONTAINS n.word`), the query scans.
+- **Names and lifecycle:** an unnamed index is called
+  `text_index_<label|all>_<path>` (`text_index_Ticket_summary`). Definitions
+  survive a restart, the data is rebuilt in memory on open, and `DROP INDEX`
+  removes it. `OPTIONS {…}` is accepted and ignored. Relationship text indexes
+  are accepted as no-ops.
+
+Full-text search (`fts.search`, `db.index.fulltext.queryNodes`) is a different
+tool: it ranks whole nodes by relevance, ignores case and punctuation, and
+needs no declaration.
 
 ### Server info (#303)
 
