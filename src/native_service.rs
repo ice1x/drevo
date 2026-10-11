@@ -97,9 +97,10 @@ impl ServiceIndexes {
     }
 }
 
-/// Prefix of the placeholder title drevo synthesises for a node created without
-/// one through Cypher `CREATE`. Such a title is an identifier, not text, so
-/// semantic auto-embedding never reads it.
+/// Prefix of the placeholder title older drevo versions stored for a node
+/// created without one through Cypher (#602 stores an empty title instead).
+/// Such a title is an identifier, not text: it reads as no title, and semantic
+/// auto-embedding never reads it.
 pub(crate) const SYNTHETIC_TITLE_PREFIX: &str = "__cypher__:";
 
 /// A node's dedicated text fields. A node keeps `title` and `body` outside its

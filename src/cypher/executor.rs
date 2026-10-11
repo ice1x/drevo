@@ -122,9 +122,10 @@
 //!   [`crate::model::Properties`] map. The reserved property key
 //!   `"title"` aliases [`crate::model::Node::title`] so the storage
 //!   layer's title index stays useful from Cypher; if it is absent the
-//!   executor stores a placeholder (`__cypher__:<Label>:<uuid>`), which
-//!   reads as no title. Titles are not unique: any number of nodes may
-//!   share one (#595). The `"body"` key aliases [`crate::model::Node::body`] for
+//!   node is stored with an empty title (#602). Older versions stored a
+//!   placeholder (`__cypher__:<Label>:<uuid>`), which still reads as no
+//!   title. Titles are not unique: any number of nodes may share one
+//!   (#595). The `"body"` key aliases [`crate::model::Node::body`] for
 //!   the same reason (the FTS index reads from `title` + `body`).
 //! * **`DELETE`** of a node with connected relationships errors with
 //!   [`ExecError::InvalidMutation`](crate::cypher::executor::ExecError::InvalidMutation) unless the user wrote
@@ -162,9 +163,7 @@ use crate::cypher::ast::{
 use crate::cypher::lexer::Span;
 use crate::engine::GraphEngine;
 use crate::error::DrevoError;
-use crate::model::{
-    new_uuid_v7, Direction as ModelDirection, Edge, NewEdge, NewNode, Node, Properties,
-};
+use crate::model::{Direction as ModelDirection, Edge, NewEdge, NewNode, Node, Properties};
 use crate::semantic_index::{IndexMode, SemanticIndex};
 use crate::vector::cosine_similarity;
 
@@ -741,10 +740,10 @@ pub(crate) fn node_to_value(node: &Node) -> Arc<NodeValue> {
     // Surface `title` and `body` as ordinary properties so Cypher code
     // sees a homogeneous map. The user can override either via the
     // inline map; the executor uses these names as aliases when
-    // creating nodes. A placeholder title the executor synthesised for an
-    // untitled node is storage plumbing, not a property: hiding it keeps
-    // `keys(n)` Neo4j-shaped and stops `SET b = properties(a)` from copying
-    // a's unique placeholder onto b.
+    // creating nodes. An untitled node has an empty title; a placeholder
+    // title older versions stored for one (`__cypher__:…`) is hidden the same
+    // way, so `keys(n)` stays Neo4j-shaped and `SET b = properties(a)` never
+    // copies it onto b.
     if !node.title.is_empty()
         && !node
             .title
@@ -3793,7 +3792,7 @@ impl<'a> Executor<'a> {
         let mut props = self.eval_map(&pattern.properties, row)?;
         let title = match props.remove("title") {
             Some(Value::String(s)) => s,
-            Some(Value::Null) | None => synth_title(&label),
+            Some(Value::Null) | None => String::new(),
             Some(other) => {
                 return Err(ExecError::TypeMismatch {
                     expected: "String".into(),
@@ -4494,7 +4493,7 @@ impl<'a> Executor<'a> {
         // On replace, clear title/body if not provided in the new map.
         if !merge {
             if !new_map.contains_key("title") {
-                patch.title = Some(synth_title(&stored.kind));
+                patch.title = Some(String::new());
             }
             if !new_map.contains_key("body") {
                 patch.body = Some(String::new());
@@ -4583,7 +4582,7 @@ impl<'a> Executor<'a> {
             .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
         let mut patch = crate::model::NodePatch::default();
         match prop_name {
-            "title" => patch.title = Some(synth_title(&stored.kind)),
+            "title" => patch.title = Some(String::new()),
             "body" => patch.body = Some(String::new()),
             _ => {
                 let mut props = stored.properties.clone();
@@ -9078,18 +9077,6 @@ fn value_as_string_for_alias(value: &Value, alias: &str) -> ExecResultT<String> 
             other.type_name()
         ))),
     }
-}
-
-fn synth_title(label: &str) -> String {
-    // A per-node placeholder for an untitled node; readers treat the
-    // `__cypher__:` prefix as "no title".
-    let uuid = uuid::Uuid::from_bytes(new_uuid_v7());
-    format!(
-        "{}{}:{}",
-        crate::native_service::SYNTHETIC_TITLE_PREFIX,
-        label,
-        uuid.as_simple()
-    )
 }
 
 /// Intersect two node candidate sets by id, preserving `a`'s order. Both inputs
