@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — UNIQUE constraints (issue #604)
+
+* After `CREATE CONSTRAINT … REQUIRE n.prop IS UNIQUE`, a write that would
+  duplicate a value raises `drevo.ConstraintViolation`, with
+  `.args == (message, label)`. This covers `execute`, `create_node`,
+  `update_node` and batches.
+
 ### Changed — titles are no longer unique (issue #595)
 
 * Two nodes may share a title, as in Neo4j and Memgraph. `create_node`,

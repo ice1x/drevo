@@ -1586,6 +1586,10 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         ExecError::Storage(crate::error::DrevoError::PreparedTransactionPending(_)) => {
             codes::TRANSIENT_PREPARED_PENDING
         }
+        // A declared constraint refused the write (#604).
+        ExecError::Storage(crate::error::DrevoError::ConstraintViolation { .. }) => {
+            codes::CONSTRAINT_FAILED
+        }
         ExecError::Storage(_) => codes::STORAGE,
         ExecError::Timeout { .. } => codes::TIMED_OUT,
     };

@@ -322,23 +322,19 @@ fn prepare_reports_a_conflict_and_closes_the_transaction() {
 
 #[test]
 fn prepare_validates_constraints() {
+    // PROPERTY EXISTS is validated when the transaction is prepared (UNIQUE
+    // rejects the write itself, #604).
     let g = NativeGraph::new();
-    g.add_constraint(Constraint::UniqueNodeProperty {
+    g.add_constraint(Constraint::PropertyExists {
         kind: "user".into(),
         property: "email".into(),
     })
     .unwrap();
     let tx = g.tx_begin();
     let engine = g.tx_engine(tx).unwrap();
-    for title in ["a", "b"] {
-        let mut nn = node(title);
-        nn.kind = "user".into();
-        nn.properties = Properties(std::collections::HashMap::from([(
-            "email".to_string(),
-            serde_json::Value::String("same@example.com".into()),
-        )]));
-        engine.create_node(nn).unwrap();
-    }
+    let mut nn = node("a");
+    nn.kind = "user".into();
+    engine.create_node(nn).unwrap();
     assert!(matches!(
         g.tx_prepare(tx, "g"),
         Err(PrepareError::Constraint(_))

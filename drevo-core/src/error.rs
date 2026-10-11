@@ -2,7 +2,8 @@
 //!
 //! [`crate::error::CoreError`] is returned by the graph engine, its indexes and
 //! the dump format. It names the graph-level failures (`NodeNotFound`,
-//! `EdgeNotFound`, `DuplicateTitle`, `InvalidWeight`) plus the I/O and JSON
+//! `EdgeNotFound`, `DuplicateTitle`, `InvalidWeight`, `ConstraintViolation`)
+//! plus the I/O and JSON
 //! boundaries (`Io`, `Json`).
 //!
 //! Failures from layers built on top — vector indexes, transaction state in a
@@ -78,6 +79,11 @@ pub enum CoreError {
     /// carries the pending global transaction ids.
     #[error("writes are paused while prepared transaction(s) {} await resolution; retry", .0.join(", "))]
     PreparedTransactionPending(Vec<String>),
+
+    /// A write would break a declared schema constraint, e.g. a second node
+    /// with the same value under a UNIQUE constraint. Nothing was written.
+    #[error("{0}")]
+    ConstraintViolation(crate::native::ConstraintViolation),
 }
 
 /// Convenience alias for fallible core operations.

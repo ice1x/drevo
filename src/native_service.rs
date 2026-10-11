@@ -183,6 +183,9 @@ pub struct NativeService {
     /// Persisted in the same sidecar; the index data lives in
     /// [`ServiceIndexes::paths`] and [`ServiceIndexes::texts`].
     path_indexes: RwLock<crate::path_index_registry::PathIndexRegistry>,
+    /// Named UNIQUE constraints (issue #604). The graph enforces them; this
+    /// keeps their names and is persisted in the same sidecar.
+    constraints: RwLock<crate::constraint_registry::ConstraintRegistry>,
     /// Bumped on every path- or text-index DDL, so the next statement rebuilds
     /// [`ServiceIndexes::paths`] and [`ServiceIndexes::texts`] over the new
     /// definitions.
@@ -230,6 +233,9 @@ struct SemanticSidecar {
     /// older sidecars.
     #[serde(default)]
     path: crate::path_index_registry::PathIndexRegistry,
+    /// UNIQUE constraint definitions (issue #604); absent in older sidecars.
+    #[serde(default)]
+    constraints: crate::constraint_registry::ConstraintRegistry,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -326,7 +332,19 @@ impl NativeService {
             rel,
             vector,
             path: path_indexes,
+            constraints,
         } = load_semantic_sidecar(&sidecar);
+        // Constraints are schema, not WAL data: install them over the replayed
+        // graph. Data written through drevo already satisfies them; if a
+        // replicated or imported write broke one, keep serving and say so.
+        for c in constraints.list() {
+            if let Err(e) = graph.add_constraint(c.constraint()) {
+                #[cfg(feature = "http")]
+                tracing::error!(constraint = %c.name, error = %e, "constraint not enforced: existing data violates it");
+                #[cfg(not(feature = "http"))]
+                let _ = e;
+            }
+        }
         let indexes = RwLock::new(ServiceIndexes::synced_over(
             &graph,
             path_indexes.specs(),
@@ -345,6 +363,7 @@ impl NativeService {
             rel_semantic: RwLock::new(rel),
             vector_indexes: RwLock::new(vector),
             path_indexes: RwLock::new(path_indexes),
+            constraints: RwLock::new(constraints),
             path_specs_version: AtomicU64::new(0),
             semantic_sidecar: Some(sidecar),
             #[cfg(feature = "http")]
@@ -381,6 +400,7 @@ impl NativeService {
             rel_semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             vector_indexes: RwLock::new(crate::vector_index_registry::VectorIndexRegistry::new()),
             path_indexes: RwLock::new(crate::path_index_registry::PathIndexRegistry::default()),
+            constraints: RwLock::new(crate::constraint_registry::ConstraintRegistry::default()),
             path_specs_version: AtomicU64::new(0),
             semantic_sidecar: None,
             #[cfg(feature = "http")]
@@ -1151,7 +1171,13 @@ impl NativeService {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .get(name)
-                .is_some();
+                .is_some()
+                || self
+                    .constraints
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(name)
+                    .is_some();
             if path_taken {
                 return Err(
                     crate::vector_index_registry::VectorIndexError::AlreadyExists(name.to_string()),
@@ -1242,7 +1268,13 @@ impl NativeService {
                 .read()
                 .unwrap_or_else(|e| e.into_inner());
             let mut reg = self.path_indexes.write().unwrap_or_else(|e| e.into_inner());
-            if reg.get(&name).is_some() || vectors.get(&name).is_some() {
+            let constraint_taken = self
+                .constraints
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&name)
+                .is_some();
+            if reg.get(&name).is_some() || vectors.get(&name).is_some() || constraint_taken {
                 return if if_not_exists {
                     Ok(())
                 } else {
@@ -1305,6 +1337,105 @@ impl NativeService {
                 name.to_string(),
             ))
         }
+    }
+
+    // ----- UNIQUE constraints (issue #604) -------------------------------------
+
+    /// Declare a UNIQUE constraint (`CREATE CONSTRAINT [<name>] FOR (n:label)
+    /// REQUIRE n.property IS UNIQUE`), persisting it. A missing `name` is
+    /// generated from the label and property. `if_not_exists` makes a taken
+    /// name or an equivalent constraint a no-op.
+    ///
+    /// # Errors
+    /// [`ConstraintError::AlreadyExists`](crate::constraint_registry::ConstraintError::AlreadyExists)
+    /// if the name is taken by a constraint or an index,
+    /// [`Equivalent`](crate::constraint_registry::ConstraintError::Equivalent)
+    /// if the same rule exists under another name,
+    /// [`Violated`](crate::constraint_registry::ConstraintError::Violated) if
+    /// existing data breaks it.
+    pub fn constraint_create(
+        &self,
+        name: Option<&str>,
+        label: &str,
+        property: &str,
+        if_not_exists: bool,
+    ) -> Result<(), crate::constraint_registry::ConstraintError> {
+        use crate::constraint_registry::{generated_name, ConstraintError, UniqueConstraint};
+        let name = name.map_or_else(|| generated_name(label, property), str::to_string);
+        {
+            let mut reg = self.constraints.write().unwrap_or_else(|e| e.into_inner());
+            let index_taken = self
+                .path_indexes
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&name)
+                .is_some()
+                || self.vector_index_get(&name).is_some();
+            if reg.get(&name).is_some() || index_taken {
+                return if if_not_exists {
+                    Ok(())
+                } else {
+                    Err(ConstraintError::AlreadyExists(name))
+                };
+            }
+            if let Some(existing) = reg.equivalent(label, property) {
+                return if if_not_exists {
+                    Ok(())
+                } else {
+                    Err(ConstraintError::Equivalent(existing.name.clone()))
+                };
+            }
+            let constraint = UniqueConstraint {
+                name,
+                label: label.to_string(),
+                property: property.to_string(),
+            };
+            self.graph
+                .add_constraint(constraint.constraint())
+                .map_err(|e| ConstraintError::Violated(e.to_string()))?;
+            reg.insert(constraint);
+        }
+        self.persist_semantic();
+        Ok(())
+    }
+
+    /// Drop the constraint named `name` (`DROP CONSTRAINT <name>`), persisting
+    /// the change. `if_exists` makes a missing name a no-op.
+    ///
+    /// # Errors
+    /// [`ConstraintError::NotFound`](crate::constraint_registry::ConstraintError::NotFound)
+    /// if no constraint has that name and `if_exists` is false.
+    pub fn constraint_drop(
+        &self,
+        name: &str,
+        if_exists: bool,
+    ) -> Result<(), crate::constraint_registry::ConstraintError> {
+        let removed = self
+            .constraints
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name);
+        match removed {
+            Some(c) => {
+                self.graph.remove_constraint(&c.constraint());
+                self.persist_semantic();
+                Ok(())
+            }
+            None if if_exists => Ok(()),
+            None => Err(crate::constraint_registry::ConstraintError::NotFound(
+                name.to_string(),
+            )),
+        }
+    }
+
+    /// Every declared constraint, in creation order (for `SHOW CONSTRAINTS`).
+    #[must_use]
+    pub fn constraint_list(&self) -> Vec<crate::constraint_registry::UniqueConstraint> {
+        self.constraints
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+            .to_vec()
     }
 
     /// The registered node-side targets — parity with `Drevo::semantic_status`.
@@ -1828,6 +1959,11 @@ impl NativeService {
                     .clone(),
                 path: self
                     .path_indexes
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                constraints: self
+                    .constraints
                     .read()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone(),

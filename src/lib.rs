@@ -248,6 +248,8 @@ pub mod wire_format;
 /// equality pattern resolves through an index instead of a full node scan.
 /// Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
 pub use drevo_core::native_property_index;
+/// Named UNIQUE constraint definitions (issue #604).
+pub mod constraint_registry;
 /// Change-feed-maintained memo of the executor's `NodeValue` projection
 /// ([`native_value_cache::NativeValueCache`]) — a hit is validated against the
 /// live record with `Arc::ptr_eq`, so a stale cache costs speed, never answers

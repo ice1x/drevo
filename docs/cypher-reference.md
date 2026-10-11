@@ -933,11 +933,13 @@ RETURN relationship, score ORDER BY score DESC
 Schema DDL that drevo does not need is **accepted but a no-op**, so a driver's
 bootstrap does not fail: `CREATE [RANGE|POINT|LOOKUP|FULLTEXT] INDEX …` on
 top-level properties or relationships, `CREATE TEXT INDEX` on relationships,
-and `CREATE CONSTRAINT …` / `DROP CONSTRAINT …`, parse and do nothing (drevo
-auto-indexes every top-level node property and enforces no constraints).
+and every `CREATE CONSTRAINT` form other than a single-property node `UNIQUE`
+(`IS NOT NULL`, `IS NODE KEY`, composite, relationship, property types), parse
+and do nothing (drevo auto-indexes every top-level node property).
 `CREATE VECTOR INDEX`, indexes on nested property paths
-([below](#indexes-on-nested-properties-578)) and text indexes on node
-properties ([below](#text-indexes-589)) have an effect.
+([below](#indexes-on-nested-properties-578)), text indexes on node
+properties ([below](#text-indexes-589)) and UNIQUE constraints
+([below](#unique-constraints-604)) have an effect.
 
 `SHOW [type] INDEXES` lists the named indexes in Neo4j's column layout
 (`id`, `name`, `state`, `populationPercent`, `type`, `entityType`,
@@ -945,8 +947,8 @@ properties ([below](#text-indexes-589)) have an effect.
 with the usual `YIELD …` / `WHERE …` / `RETURN …`, a bare `WHERE`, and
 `YIELD *`. Vector indexes are listed as `VECTOR`, nested-path indexes as
 `RANGE`, text indexes as `TEXT`; `SHOW ALL INDEXES` lists all of them. drevo's automatic indexes have no
-names and the no-op DDL registers nothing. `SHOW CONSTRAINTS` lists nothing,
-since drevo enforces none. That is exactly what a client's
+names and the no-op DDL registers nothing. `SHOW CONSTRAINTS` lists the
+declared UNIQUE constraints and nothing else. That is exactly what a client's
 check-then-create bootstrap expects, e.g. neo4j-agent-memory's:
 
 ```cypher
@@ -1072,6 +1074,44 @@ as without the index.
 Full-text search (`fts.search`, `db.index.fulltext.queryNodes`) is a different
 tool: it ranks whole nodes by relevance, ignores case and punctuation, and
 needs no declaration.
+
+### Unique constraints (#604)
+
+A UNIQUE constraint stops two nodes with a label from sharing a value of a
+property:
+
+```cypher
+CREATE CONSTRAINT customer_email IF NOT EXISTS FOR (c:Customer) REQUIRE c.email IS UNIQUE
+```
+
+The Neo4j 4 spelling `CREATE CONSTRAINT … ON (c:Customer) ASSERT c.email IS
+UNIQUE` works too, and `OPTIONS {…}` is accepted and ignored.
+
+- **Enforced on every write:** `CREATE`, `SET`, adding a label, `MERGE`'s
+  create branch, HTTP, Python and batch writes. A violating write fails and
+  changes nothing. `MERGE (c:Customer {email: …})` finds the existing node
+  instead. A lookup on the value makes each check constant-time.
+- **Which nodes:** every node carrying the label, as its first label or any
+  other. Nodes without the property (or with `null`) are not constrained.
+  `title` and `body` are covered like any property. Values compare by type and
+  content, so `1` and `'1'` differ.
+- **Existing data:** creating a constraint that the data already breaks fails,
+  and nothing is stored.
+- **Errors:** Bolt `Neo.ClientError.Schema.ConstraintValidationFailed`; HTTP 409
+  with that string in the body's `code`; Python `drevo.ConstraintViolation`.
+- **Names:** an unnamed constraint is called `constraint_<label>_<property>`.
+  Names are shared with indexes. Declaring the same rule again under another
+  name is an error unless `IF NOT EXISTS` is given.
+- **Lifecycle:** definitions are stored next to the WAL and survive a restart.
+  `SHOW CONSTRAINTS` lists them with type `UNIQUENESS`, and `DROP CONSTRAINT`
+  removes one:
+
+```cypher
+DROP CONSTRAINT customer_email IF EXISTS
+```
+
+Other constraint kinds (`IS NOT NULL`, `IS NODE KEY`, composite keys,
+relationship constraints, property types) are accepted and not enforced.
 
 ### Fuzzy matching (#593)
 

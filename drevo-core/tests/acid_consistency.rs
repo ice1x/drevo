@@ -52,10 +52,11 @@ fn edge(from_id: u64, to_id: u64, kind: &str, weight: f32) -> NewEdge {
 
 // ── declared constraints, enforced at commit ──────────────────────────────
 
-/// UNIQUE(kind, property): two nodes of the kind sharing a value abort the
-/// whole commit; distinct values commit; another kind is unaffected.
+/// UNIQUE(kind, property): inside a transaction, the second node of the kind
+/// sharing a value is rejected at once (#604) and the transaction can still
+/// commit what was valid; distinct values commit; another kind is unaffected.
 #[test]
-fn unique_node_property_is_enforced_at_commit() {
+fn unique_node_property_is_enforced_in_a_transaction() {
     let g = NativeGraph::new();
     g.add_constraint(Constraint::UniqueNodeProperty {
         kind: "user".into(),
@@ -66,10 +67,16 @@ fn unique_node_property_is_enforced_at_commit() {
     let mut tx = g.begin();
     tx.create_node(node_with_props("user", "u1", &[("email", "a@x")]))
         .unwrap();
-    tx.create_node(node_with_props("user", "u2", &[("email", "a@x")]))
-        .unwrap();
-    assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
-    assert_eq!(g.node_count(), 0, "the violating commit landed nothing");
+    assert!(matches!(
+        tx.create_node(node_with_props("user", "u2", &[("email", "a@x")])),
+        Err(drevo_core::error::CoreError::ConstraintViolation(_))
+    ));
+    tx.rollback();
+    assert_eq!(
+        g.node_count(),
+        0,
+        "the rolled-back transaction landed nothing"
+    );
 
     let mut tx = g.begin();
     tx.create_node(node_with_props("user", "u1", &[("email", "a@x")]))
