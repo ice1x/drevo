@@ -193,6 +193,14 @@ jobs:
       # is pushed, so the absent auth is fine; the build step still validates
       # the image.
 
+      # `CALL drevo.info()` reports these (issue #597); without them a
+      # CI-built image says `0.0.0-unknown` with a null git sha.
+      - name: Build info for drevo.info()
+        id: build_info
+        run: |
+          echo "git_sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -222,6 +230,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DREVO_VERSION=${{ steps.meta.outputs.version }}
+            DREVO_GIT_SHA=${{ steps.build_info.outputs.git_sha }}
+            DREVO_BUILD_DATE=${{ steps.build_info.outputs.build_date }}
           # GitHub Actions cache backend keeps amd64 + arm64 layers warm
           # across runs without paying egress to GHCR. Scope so the
           # publish job's cache stays separate from any future test job.
