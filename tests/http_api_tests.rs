@@ -177,19 +177,17 @@ async fn post_nodes_creates_node_and_returns_201() {
 }
 
 #[tokio::test]
-async fn post_nodes_duplicate_title_returns_409() {
+async fn post_nodes_with_a_repeated_title_creates_a_second_node() {
+    // Titles are not unique (#595): the same POST twice makes two nodes.
     let app = make_app();
     let body = new_node_body("note", "Dup", "a");
-    let (first, _) = send(&app, "POST", "/nodes", Some(body.clone())).await;
+    let (first, a) = send(&app, "POST", "/nodes", Some(body.clone())).await;
     assert_eq!(first, StatusCode::CREATED);
 
-    let (second, err) = send(&app, "POST", "/nodes", Some(body)).await;
-    assert_eq!(second, StatusCode::CONFLICT);
-    assert!(err["error"]
-        .as_str()
-        .unwrap()
-        .to_lowercase()
-        .contains("dup"));
+    let (second, b) = send(&app, "POST", "/nodes", Some(body)).await;
+    assert_eq!(second, StatusCode::CREATED);
+    assert_ne!(a["id"], b["id"]);
+    assert_eq!(b["title"], "Dup");
 }
 
 #[tokio::test]
@@ -968,11 +966,11 @@ async fn bad_request_responses_include_status_field() {
 #[tokio::test]
 async fn conflict_responses_include_status_field() {
     let app = make_app();
-    let body = new_node_body("note", "ConflictTest", "");
-    let (first, _) = send(&app, "POST", "/nodes", Some(body.clone())).await;
+    let body = json!({ "name": "conflict_test" });
+    let (first, _) = send(&app, "POST", "/databases", Some(body.clone())).await;
     assert_eq!(first, StatusCode::CREATED);
 
-    let (status, value) = send(&app, "POST", "/nodes", Some(body)).await;
+    let (status, value) = send(&app, "POST", "/databases", Some(body)).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(value["error"].is_string());
     assert_eq!(value["status"].as_u64().unwrap(), 409);

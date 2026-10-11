@@ -872,9 +872,7 @@ fn failure_inside_tx_routes_to_failed_then_reset_rolls_back() {
     let drevo = open();
     let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
-    // Seed a node in autocommit mode using an explicit `title` so the
-    // drevo storage-layer title-uniqueness rule kicks in when we try
-    // to recreate it mid-tx.
+    // Seed a node in autocommit mode; it must survive the rolled-back tx.
     s.handle(ClientMessage::Run {
         query: "CREATE (:Person {title: 'dup'})".to_string(),
         parameters: dict([]),
@@ -893,10 +891,10 @@ fn failure_inside_tx_routes_to_failed_then_reset_rolls_back() {
     s.handle(ClientMessage::Pull {
         extra: dict([("n", Value::Integer(-1))]),
     });
-    // A second CREATE that collides with the pre-tx node — drives the
-    // session to Failed because the executor returns DuplicateTitle.
+    // A statement that fails — deleting a node that still has a
+    // relationship — drives the session to Failed.
     s.handle(ClientMessage::Run {
-        query: "CREATE (:Person {title: 'dup'})".to_string(),
+        query: "CREATE (a:Tmp {title: 'a'})-[:R]->(:Tmp {title: 'b'}) WITH a DELETE a".to_string(),
         parameters: dict([]),
         extra: dict([]),
     });

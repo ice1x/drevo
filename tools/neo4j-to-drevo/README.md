@@ -65,10 +65,11 @@ with drevo.Drevo.open("graph.redb") as db:
 - **Labels → kind.** Neo4j label *sets* fold into drevo's single `kind`
   (joined with `MigrationConfig.label_join`); the full ordered set is
   preserved under the reserved `_labels` property.
-- **Unique titles.** drevo enforces globally-unique node titles; the
-  title is resolved from `title` / `name` / `id` and any collision is
-  disambiguated with the unique source id (so N identically-named nodes
-  import with zero `DuplicateTitleError`).
+- **Distinct titles.** The title is resolved from `title` / `name` / `id`
+  and any collision is disambiguated with the unique source id, so N
+  identically-named nodes stay easy to tell apart. drevo itself allows
+  repeated titles (issue #595); the suffix is a convenience, not a
+  requirement.
 - **Property types.** Neo4j temporal/spatial values coerce to
   JSON-storable forms (`isoformat()` / element-wise / `str`).
 - **Dangling edges.** `--on-error skip` records edges to unmigrated

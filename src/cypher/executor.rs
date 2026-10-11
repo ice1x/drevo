@@ -122,9 +122,9 @@
 //!   [`crate::model::Properties`] map. The reserved property key
 //!   `"title"` aliases [`crate::model::Node::title`] so the storage
 //!   layer's title index stays useful from Cypher; if it is absent the
-//!   executor synthesises a unique placeholder so multiple unnamed
-//!   nodes of the same label don't collide on drevo's title uniqueness
-//!   index. The `"body"` key aliases [`crate::model::Node::body`] for
+//!   executor stores a placeholder (`__cypher__:<Label>:<uuid>`), which
+//!   reads as no title. Titles are not unique: any number of nodes may
+//!   share one (#595). The `"body"` key aliases [`crate::model::Node::body`] for
 //!   the same reason (the FTS index reads from `title` + `body`).
 //! * **`DELETE`** of a node with connected relationships errors with
 //!   [`ExecError::InvalidMutation`](crate::cypher::executor::ExecError::InvalidMutation) unless the user wrote
@@ -9050,8 +9050,8 @@ fn value_as_string_for_alias(value: &Value, alias: &str) -> ExecResultT<String> 
 }
 
 fn synth_title(label: &str) -> String {
-    // UUID-based suffix keeps drevo's title uniqueness invariant while
-    // staying deterministic for the storage layer's title index.
+    // A per-node placeholder for an untitled node; readers treat the
+    // `__cypher__:` prefix as "no title".
     let uuid = uuid::Uuid::from_bytes(new_uuid_v7());
     format!(
         "{}{}:{}",

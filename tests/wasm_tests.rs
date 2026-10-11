@@ -552,10 +552,11 @@ fn wasm_error_delete_nonexistent_edge() {
 }
 
 #[test]
-fn wasm_error_duplicate_title() {
+fn wasm_repeated_title_creates_a_second_node() {
+    // Titles are not unique (#595).
     let db = make_db();
     make_node(&db, "note", "DupTitle");
-    let err = db
+    let second = db
         .create_node(NewNode {
             kind: "note".to_string(),
             title: "DupTitle".to_string(),
@@ -563,8 +564,8 @@ fn wasm_error_duplicate_title() {
             body_html: String::new(),
             properties: Properties::default(),
         })
-        .unwrap_err();
-    assert!(err.to_string().contains("duplicate title"));
+        .expect("a repeated title is allowed");
+    assert_eq!(second.title, "DupTitle");
 }
 
 #[test]

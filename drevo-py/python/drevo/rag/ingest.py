@@ -102,9 +102,10 @@ def ingest_documents(
     The two paths serve different query surfaces, so both are kept.
 
     Returns the created Nodes in the same order as `docs`. No
-    deduplication — duplicate truncated titles raise
-    `drevo.DuplicateTitleError`; callers that need dedup pass a
-    `schema.title_from` resolving to a unique field.
+    deduplication — documents with the same truncated title become
+    separate nodes; callers that need dedup check
+    `get_node_by_title` first or pass a `schema.title_from` resolving to
+    a unique field.
     """
 
     if not docs:

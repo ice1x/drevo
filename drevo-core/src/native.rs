@@ -29,8 +29,7 @@
 //!
 //! # Guarantees
 //!
-//! Monotonic ids from 1, title uniqueness
-//! ([`CoreError::DuplicateTitle`]),
+//! Monotonic ids from 1,
 //! endpoint existence on edge create
 //! ([`CoreError::NodeNotFound`]), weight
 //! finiteness ([`CoreError::InvalidWeight`]),
@@ -108,8 +107,9 @@ struct Inner {
     out_adj: HashMap<u64, Vec<AdjEntry>>,
     /// `to_id → entries` (neighbour = the edge's `from_id`), insertion order.
     in_adj: HashMap<u64, Vec<AdjEntry>>,
-    /// `title → node id`: the title-uniqueness index.
-    titles: HashMap<String, u64>,
+    /// `title → ids of the nodes with that title`, ascending. Titles are
+    /// ordinary values; any number of nodes may share one.
+    titles: HashMap<String, BTreeSet<u64>>,
     /// `node kind → ids of that kind`: the primary-kind index, so
     /// `nodes_by_kind` is `O(matches · log)` instead of a full `O(n)` scan.
     /// The `BTreeSet` keeps ids ascending, the order `nodes_by_kind` returns
@@ -382,13 +382,36 @@ impl Inner {
             .collect()
     }
 
-    /// Look up a node by its unique title via the `titles` index (title
-    /// uniqueness is enforced on write, so at most one match).
+    /// The oldest node (lowest id) with `title`, via the `titles` index.
     fn get_node_by_title(&self, title: &str) -> Option<Node> {
         self.titles
             .get(title)
+            .and_then(|ids| ids.first())
             .and_then(|id| self.nodes.get(id))
             .map(|a| (**a).clone())
+    }
+
+    /// Every node with `title`, id-ascending.
+    fn nodes_by_title(&self, title: &str) -> Vec<Node> {
+        self.titles
+            .get(title)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.nodes.get(id).map(|a| (**a).clone()))
+            .collect()
+    }
+
+    fn index_title(&mut self, id: u64, title: &str) {
+        self.titles.entry(title.to_string()).or_default().insert(id);
+    }
+
+    fn unindex_title(&mut self, id: u64, title: &str) {
+        if let Some(ids) = self.titles.get_mut(title) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.titles.remove(title);
+            }
+        }
     }
 
     /// Most-recently-updated nodes first, capped at `limit`: `updated_at`
@@ -438,14 +461,11 @@ impl Inner {
     // ----- write operations (mutate through Arc::make_mut) -------------------
 
     fn create_node(&mut self, new_node: NewNode) -> Result<Node> {
-        if self.titles.contains_key(&new_node.title) {
-            return Err(CoreError::DuplicateTitle(new_node.title));
-        }
         self.next_node_id += 1;
         let id = self.next_node_id;
         let node = new_node.into_node(id);
         self.observe_updated_at(node.updated_at);
-        self.titles.insert(node.title.clone(), id);
+        self.index_title(id, &node.title);
         self.index_node_kind(id, &node.kind);
         self.nodes.insert(id, Arc::new(node.clone()));
         Ok(node)
@@ -459,15 +479,8 @@ impl Inner {
             .ok_or(CoreError::NodeNotFound(id))?;
         let old_kind = node.kind.clone();
         if let Some(ref new_title) = patch.title {
-            // A rename collides only when a *different* node owns the title.
-            match self.titles.get(new_title) {
-                Some(&owner) if owner != id => {
-                    return Err(CoreError::DuplicateTitle(new_title.clone()));
-                }
-                _ => {}
-            }
-            self.titles.remove(&node.title);
-            self.titles.insert(new_title.clone(), id);
+            self.unindex_title(id, &node.title);
+            self.index_title(id, new_title);
             node.title = new_title.clone();
         }
         if let Some(kind) = patch.kind {
@@ -510,7 +523,7 @@ impl Inner {
         for eid in edge_ids {
             self.remove_edge(eid);
         }
-        self.titles.remove(&node.title);
+        self.unindex_title(id, &node.title);
         self.unindex_node_kind(id, &node.kind);
         self.nodes.remove(&id);
         // Deleting a node cascades to its embedding (parity with the KV handle,
@@ -660,12 +673,10 @@ impl Inner {
                 // off the old values before the new record lands.
                 let old = self.nodes.get(&node.id).map(|a| (**a).clone());
                 if let Some(ref old) = old {
-                    if old.title != node.title {
-                        self.titles.remove(&old.title);
-                    }
+                    self.unindex_title(node.id, &old.title);
                     self.unindex_node_kind(node.id, &old.kind);
                 }
-                self.titles.insert(node.title.clone(), node.id);
+                self.index_title(node.id, &node.title);
                 self.index_node_kind(node.id, &node.kind);
                 self.next_node_id = self.next_node_id.max(node.id);
                 self.observe_updated_at(node.updated_at);
@@ -681,7 +692,7 @@ impl Inner {
                     for eid in edge_ids {
                         self.remove_edge(eid);
                     }
-                    self.titles.remove(&node.title);
+                    self.unindex_title(id, &node.title);
                     self.unindex_node_kind(id, &node.kind);
                     self.nodes.remove(&id);
                     // Cascade the embedding, same as the live delete path.
@@ -2076,9 +2087,15 @@ impl NativeGraph {
             .map(|a| (**a).clone())
     }
 
-    /// Fetch a node by its unique `title` via the title index.
+    /// The oldest node (lowest id) whose `title` is `title`. Titles are not
+    /// unique; [`nodes_by_title`](Self::nodes_by_title) returns every match.
     pub fn get_node_by_title(&self, title: &str) -> Option<Node> {
         read(&self.inner).get_node_by_title(title)
+    }
+
+    /// Every node whose `title` is `title`, id-ascending.
+    pub fn nodes_by_title(&self, title: &str) -> Vec<Node> {
+        read(&self.inner).nodes_by_title(title)
     }
 
     /// Most-recently-updated nodes first, capped at `limit` (`updated_at`
@@ -2191,9 +2208,7 @@ impl NativeGraph {
     /// Create many nodes in one durable batch.
     ///
     /// # Errors
-    /// [`CoreError::DuplicateTitle`] if any title collides (within the batch or
-    /// against an existing node) — the whole batch fails and nothing is written;
-    /// propagates a WAL append/fsync failure.
+    /// Propagates a WAL append/fsync failure; nothing is written then.
     pub fn create_nodes(&self, new_nodes: Vec<NewNode>) -> Result<Vec<Node>> {
         if new_nodes.is_empty() {
             return Ok(Vec::new());
@@ -2204,7 +2219,7 @@ impl NativeGraph {
         let mut nodes = Vec::with_capacity(new_nodes.len());
         let mut ops = Vec::with_capacity(new_nodes.len());
         for nn in new_nodes {
-            let node = w.create_node(nn)?; // validates DuplicateTitle in the working copy
+            let node = w.create_node(nn)?;
             ops.push(WalOp::UpsertNode(node.clone()));
             nodes.push(node);
         }
@@ -3183,7 +3198,11 @@ impl NativeGraph {
 
         let out_rows: u64 = inner.out_adj.values().map(|v| v.len() as u64).sum();
         let in_rows: u64 = inner.in_adj.values().map(|v| v.len() as u64).sum();
-        let title_bytes: u64 = inner.titles.keys().map(|k| k.len() as u64 + 8).sum();
+        let title_bytes: u64 = inner
+            .titles
+            .iter()
+            .map(|(k, ids)| k.len() as u64 + ids.len() as u64 * 8)
+            .sum();
         let kind_rows: u64 = inner.kind_index.values().map(|s| s.len() as u64).sum();
         let kind_bytes: u64 = inner
             .kind_index
@@ -3471,8 +3490,7 @@ impl NativeTx<'_> {
     /// [`GraphEngine::create_node`].
     ///
     /// # Errors
-    /// [`CoreError::DuplicateTitle`]
-    /// if the title is taken in the transaction's view.
+    /// None today; the `Result` matches [`GraphEngine::create_node`].
     pub fn create_node(&mut self, new_node: NewNode) -> Result<Node> {
         let node = Arc::make_mut(&mut self.working).create_node(new_node)?;
         self.ops.push(WalOp::UpsertNode(node.clone()));

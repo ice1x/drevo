@@ -15,12 +15,12 @@ drevo are reconciled here:
   reserved `config.labels_property` (`_labels` by default) so the
   mapping is lossless and round-trips with drevo's Cypher multi-label
   convention.
-* **Unique titles.** drevo enforces *globally unique* node titles
-  (`DuplicateTitleError`); a property graph has no such concept. The
-  engine resolves a title from `config.title_properties` (first present
-  wins) and, on any collision within the run, disambiguates
-  deterministically with the source id — which is unique — so a graph
-  with ten "Alice" nodes migrates without a single title clash.
+* **Distinct titles.** The engine resolves a title from
+  `config.title_properties` (first present wins) and, on any collision
+  within the run, disambiguates deterministically with the source id —
+  which is unique — so ten "Alice" nodes get ten distinguishable titles.
+  drevo allows repeated titles (issue #595), so this is for readability,
+  not to avoid an error.
 """
 
 from __future__ import annotations
@@ -181,12 +181,12 @@ def _resolve_field(props: dict[str, Any], keys: Sequence[str]) -> str | None:
 
 
 def _resolve_title(node: SourceNode, config: MigrationConfig, used: set[str]) -> str:
-    """Resolve a globally-unique title for `node`.
+    """Resolve a title for `node` that is distinct within this run.
 
     Preference order: first present `title_properties` value; else a
     synthesized `<kind>#<source-id>`. On any collision with a title
     already used this run, disambiguate by appending the source id (which
-    is unique), guaranteeing no `DuplicateTitleError`.
+    is unique).
     """
     base = _resolve_field(node.properties, config.title_properties)
     if base is None or base == "":

@@ -33,8 +33,8 @@ python -m neo4j_to_drevo dump \
 ### Phase 2 — Dry run
 
 Read, map, and validate everything, writing **nothing** — the dry run uses a throwaway
-in-memory drevo to exercise the *full* mapping, including drevo's globally-unique-title check
-and dangling-edge detection, so it surfaces every conflict you'd hit for real:
+in-memory drevo to exercise the *full* mapping, including dangling-edge detection, so it
+surfaces every conflict you'd hit for real:
 
 ```bash
 python -m neo4j_to_drevo import --apoc-json graph.json --drevo-path graph.redb --dry-run
@@ -100,11 +100,12 @@ reserved `_labels` property.
 - `["Person", "Developer"]` → `kind = "Person;Developer"`, `_labels = ["Person", "Developer"]`.
 - drevo's Cypher `MATCH (n:Person:Developer)` then matches such a node by any of its labels.
 
-### Globally-unique titles
+### Titles
 
-drevo enforces **globally-unique node titles**. The migration resolves a title from the
-`title` / `name` / `id` fields (in that order) and disambiguates collisions by appending the
-source node id — so a migration never fails on a `DuplicateTitleError` and is idempotent.
+The migration resolves a title from the `title` / `name` / `id` fields (in that order) and
+disambiguates collisions by appending the source node id. drevo itself lets any number of
+nodes share a title (issue #595), as Neo4j does, so the suffix only keeps titles easy to
+tell apart; it is not needed for the import to succeed.
 
 ### Property coercion
 

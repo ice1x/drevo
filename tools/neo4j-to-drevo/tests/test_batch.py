@@ -61,8 +61,8 @@ def test_batched_duplicate_titles_disambiguated_across_chunks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(_engine, "_BATCH_SIZE", 1)  # each node is its own chunk
-    # Same source 'name' on every node — the engine must disambiguate titles
-    # so no chunk hits DuplicateTitleError (titles are globally unique in drevo).
+    # Same source 'name' on every node — the engine disambiguates titles
+    # across chunks, so every migrated node keeps a distinct title.
     nodes = [
         SourceNode(id=f"n{i}", labels=["Person"], properties={"name": "same"}) for i in range(4)
     ]

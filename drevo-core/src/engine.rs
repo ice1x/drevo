@@ -33,7 +33,7 @@ pub trait GraphEngine {
     ///
     /// # Errors
     /// Propagates any [`crate::error::CoreError`] from the underlying store
-    /// (e.g. a title-uniqueness violation).
+    /// (e.g. a write-ahead-log failure).
     fn create_node(&self, new_node: NewNode) -> Result<Node>;
 
     /// Fetch a node by id, or `Ok(None)` if absent.
@@ -46,7 +46,7 @@ pub trait GraphEngine {
     ///
     /// # Errors
     /// Propagates any [`crate::error::CoreError`] from the underlying store
-    /// (e.g. the node not existing, or a title-uniqueness violation).
+    /// (e.g. the node not existing).
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node>;
 
     /// Delete a node (and its incident edges/indexes).
@@ -213,6 +213,6 @@ pub trait GraphEngine {
     /// * [`crate::error::CoreError::NodeNotFound`] — an edge references an
     ///   endpoint that neither exists nor is supplied by the dump.
     /// * Other [`crate::error::CoreError`] variants — an id collision against
-    ///   different content, a title/uuid clash, or a backend failure.
+    ///   different content, or a backend failure.
     fn apply_dump(&self, dump: Dump) -> Result<ImportReport>;
 }

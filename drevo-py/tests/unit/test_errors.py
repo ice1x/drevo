@@ -66,11 +66,12 @@ def test_edge_not_found_caught_by_not_found_error(drevo_db: drevo.Drevo) -> None
         drevo_db.delete_edge(99_999)
 
 
-def test_duplicate_title_caught_by_conflict_error(drevo_db: drevo.Drevo) -> None:
-    """A duplicate title surfaces as a `ConflictError` subclass."""
+def test_a_repeated_title_raises_nothing(drevo_db: drevo.Drevo) -> None:
+    """Titles are not unique (#595): `DuplicateTitleError` is no longer raised
+    by node writes; the class stays importable for existing `except` code."""
     drevo_db.create_node(drevo.NewNode(kind="note", title="dup"))
-    with pytest.raises(drevo.ConflictError):
-        drevo_db.create_node(drevo.NewNode(kind="note", title="dup"))
+    drevo_db.create_node(drevo.NewNode(kind="note", title="dup"))
+    assert issubclass(drevo.DuplicateTitleError, drevo.ConflictError)
 
 
 # ── Per-variant trigger tests ────────────────────────────────────────

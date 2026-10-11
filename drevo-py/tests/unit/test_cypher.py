@@ -175,10 +175,12 @@ def test_semantic_error_is_a_cypher_error(drevo_db: drevo.Drevo) -> None:
         drevo_db.execute("RETURN undefined_variable AS v")
 
 
-def test_storage_errors_keep_their_existing_types(drevo_db: drevo.Drevo) -> None:
+def test_create_with_a_repeated_title_makes_two_nodes(drevo_db: drevo.Drevo) -> None:
+    """Titles are not unique (#595), as in Neo4j."""
     drevo_db.execute("CREATE (:note {title: 'dup'})")
-    with pytest.raises(drevo.DuplicateTitleError):
-        drevo_db.execute("CREATE (:note {title: 'dup'})")
+    drevo_db.execute("CREATE (:note {title: 'dup'})")
+    rows = drevo_db.execute("MATCH (n:note {title: 'dup'}) RETURN count(n) AS c").rows
+    assert rows == [{"c": 2}]
 
 
 def test_params_must_be_a_dict(drevo_db: drevo.Drevo) -> None:

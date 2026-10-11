@@ -6,6 +6,17 @@ history and the in-repo issue tracker; format loosely follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Node titles are no longer unique** (issue #595). Any number of nodes may
+  share a title, as in Neo4j and Memgraph:
+  - Cypher `CREATE` / `SET`, the HTTP API, the Python SDK, batch creates and
+    imports no longer reject a repeat. HTTP `POST /nodes` no longer answers 409.
+  - `get_node_by_title` returns the oldest node with the title; the new
+    `nodes_by_title` returns all of them.
+  - `DuplicateTitle` / `DuplicateTitleError` stay in the API so existing
+    matches compile, but node writes no longer produce them.
+
 ### Added
 
 - **CSR adjacency snapshot** (`drevo_core::csr::CsrAdjacency`, issue #382,

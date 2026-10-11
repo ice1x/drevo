@@ -121,7 +121,7 @@ class OperationalError(DatabaseError):
 
 
 class IntegrityError(DatabaseError):
-    """Relational integrity is affected, e.g. a duplicate title."""
+    """Relational integrity is affected, e.g. a constraint violation."""
 
 
 class InternalError(DatabaseError):

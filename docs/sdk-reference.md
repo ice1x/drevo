@@ -152,8 +152,10 @@ with drevo.Drevo.open("graph.redb") as db:        # or Drevo.open_in_memory()
 
 Classes mirror the Rust model: `Node`, `Edge`, `NewNode`, `NewEdge`, `NodePatch`, `EdgePatch`,
 `Direction`, `ScoredNode`, `SubGraph`, `CompactReport`. The exception hierarchy is rooted at
-`DrevoError`, with `NodeNotFoundError`, `EdgeNotFoundError`, `DuplicateTitleError`,
-`StorageError`, and friends.
+`DrevoError`, with `NodeNotFoundError`, `EdgeNotFoundError`, `StorageError`, and friends.
+Titles are not unique: two nodes may share one, and `get_node_by_title` returns the
+oldest. `DuplicateTitleError` remains for existing `except` clauses but is no longer
+raised by node writes.
 
 ### Graph-RAG helpers
 

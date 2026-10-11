@@ -288,7 +288,8 @@ class ConflictError(DrevoError):
     """A write conflicted with a uniqueness invariant."""
 
 class DuplicateTitleError(ConflictError):
-    """A node title collided with an existing one. `.args == (title,)`."""
+    """A title clash. Node writes no longer raise it — titles are not unique —
+    but the class stays for existing `except` clauses. `.args == (title,)`."""
 
 class StorageError(DrevoError):
     """The underlying backend failed (redb, filesystem, etc.)."""

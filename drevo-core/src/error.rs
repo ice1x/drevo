@@ -33,7 +33,9 @@ pub enum CoreError {
     #[error("edge not found: {0}")]
     EdgeNotFound(u64),
 
-    /// A node with the given title already exists (title uniqueness).
+    /// A title clash. Node writes no longer produce it — titles are ordinary
+    /// values that any number of nodes may share — but the variant stays so
+    /// code matching on it keeps compiling.
     #[error("duplicate title: {0}")]
     DuplicateTitle(String),
 
