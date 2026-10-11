@@ -122,6 +122,14 @@ impl IntoResponse for ApiError {
                     (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
                 }
                 DrevoError::NoActiveTransaction => (StatusCode::CONFLICT, err.to_string()),
+                DrevoError::ConstraintViolation { .. } => {
+                    return ApiError::Coded {
+                        status: StatusCode::CONFLICT,
+                        code: CONSTRAINT_VALIDATION_FAILED,
+                        message: err.to_string(),
+                    }
+                    .into_response();
+                }
                 DrevoError::Encode(_)
                 | DrevoError::Decode(_)
                 | DrevoError::Json(_)
@@ -148,6 +156,10 @@ impl IntoResponse for ApiError {
         json_error(status, &message)
     }
 }
+
+/// The status code reported for a write that breaks a declared constraint:
+/// Neo4j's, used for the Bolt `FAILURE` and the HTTP error body alike (#604).
+pub const CONSTRAINT_VALIDATION_FAILED: &str = "Neo.ClientError.Schema.ConstraintValidationFailed";
 
 /// Build a unified JSON error response with both `error` (message) and
 /// `status` (numeric HTTP status code) fields.  Every error response
@@ -753,6 +765,7 @@ mod error_mapping_tests {
                 DrevoError::NeedsMigration { .. } => "NeedsMigration",
                 DrevoError::Vector(_) => "Vector",
                 DrevoError::PreparedTransactionPending(_) => "PreparedTransactionPending",
+                DrevoError::ConstraintViolation { .. } => "ConstraintViolation",
             }
         }
     }

@@ -153,11 +153,12 @@ use std::sync::Arc;
 const VARLEN_DEFAULT_UPPER: usize = 25;
 
 use crate::cypher::ast::{
-    BinaryOp, CallClause, Clause, CreateClause, CreatePathIndex, CreateVectorIndex,
-    Direction as AstDirection, DropIndex, Expression, ForeachClause, LabelExpr, ListPredicateKind,
-    MapLiteral, MapProjectionSelector, MatchClause, NamedPattern, NodePattern, OrderDirection,
-    OrderItem, PathPattern, ProjectionItem, Query, RelLength, RelationshipPattern, ReturnClause,
-    SearchClause, ShortestKind, SingleQuery, UnaryOp, UnionKind, UnwindClause, YieldItem,
+    BinaryOp, CallClause, Clause, CreateClause, CreateConstraint, CreatePathIndex,
+    CreateVectorIndex, Direction as AstDirection, DropConstraint, DropIndex, Expression,
+    ForeachClause, LabelExpr, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause,
+    NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query,
+    RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery, UnaryOp,
+    UnionKind, UnwindClause, YieldItem,
 };
 use crate::cypher::lexer::Span;
 use crate::engine::GraphEngine;
@@ -1430,6 +1431,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
         Clause::CreateVectorIndex(_)
         | Clause::CreatePathIndex(_)
         | Clause::DropIndex(_)
+        | Clause::CreateConstraint(_)
+        | Clause::DropConstraint(_)
         | Clause::SchemaNoop(_) => {}
     }
     Ok(())
@@ -2273,6 +2276,8 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
             Clause::CreateVectorIndex(c) => c.span,
             Clause::CreatePathIndex(c) => c.span,
             Clause::DropIndex(d) => d.span,
+            Clause::CreateConstraint(c) => c.span,
+            Clause::DropConstraint(d) => d.span,
             Clause::SchemaNoop(s) => s.span,
         }
     } else {
@@ -2472,8 +2477,30 @@ impl<'a> Executor<'a> {
             Clause::CreateVectorIndex(c) => self.run_create_vector_index(c),
             Clause::CreatePathIndex(c) => self.run_create_path_index(c),
             Clause::DropIndex(d) => self.run_drop_index(d),
+            Clause::CreateConstraint(c) => self.run_create_constraint(c),
+            Clause::DropConstraint(d) => self.run_drop_constraint(d),
             Clause::SchemaNoop(_) => Ok(()), // accepted, no-op (drevo auto-indexes)
         }
+    }
+
+    /// `CREATE CONSTRAINT … REQUIRE n.prop IS UNIQUE` (issue #604): declare
+    /// the constraint in the native service, which enforces it from now on.
+    /// Produces no rows, like Neo4j schema commands.
+    fn run_create_constraint(&mut self, c: &CreateConstraint) -> ExecResultT<()> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("CREATE CONSTRAINT"))?;
+        svc.constraint_create(c.name.as_deref(), &c.label, &c.property, c.if_not_exists)
+            .map_err(|e| ExecError::InvalidMutation(e.to_string()))
+    }
+
+    /// `DROP CONSTRAINT <name> [IF EXISTS]` (issue #604).
+    fn run_drop_constraint(&mut self, d: &DropConstraint) -> ExecResultT<()> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability("DROP CONSTRAINT"))?;
+        svc.constraint_drop(&d.name, d.if_exists)
+            .map_err(|e| ExecError::InvalidMutation(e.to_string()))
     }
 
     /// `CREATE INDEX … ON (n.a.b, …)` (issue #578) / `CREATE TEXT INDEX … ON
@@ -5366,16 +5393,44 @@ impl<'a> Executor<'a> {
     }
 
     /// `SHOW [type] CONSTRAINTS [YIELD …] [WHERE …]` (issue #532), run as
-    /// `CALL db.showConstraints(type)`. drevo enforces no constraints — `CREATE
-    /// CONSTRAINT` is accepted as a no-op — so this lists none, which is what
-    /// lets a client's check-then-create schema bootstrap proceed.
+    /// `CALL db.showConstraints(type)`: one row per declared UNIQUE constraint
+    /// (issue #604) in Neo4j's column layout, type `UNIQUENESS`. `type` is
+    /// `ALL` or a uniqueness word; any other type (`EXISTENCE`, `NODE KEY`, …)
+    /// lists nothing, since drevo enforces only UNIQUE.
     fn proc_show_constraints(
         &self,
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
-        let _filter = self.eval(&args[0], &Bindings::new())?.as_string(span)?;
-        Ok(Vec::new())
+        let filter = self
+            .eval(&args[0], &Bindings::new())?
+            .as_string(span)?
+            .to_uppercase();
+        let wanted = matches!(
+            filter.as_str(),
+            "ALL" | "UNIQUE" | "UNIQUENESS" | "NODE UNIQUE" | "NODE_UNIQUE"
+        );
+        let Some(svc) = self.native_semantic.filter(|_| wanted) else {
+            return Ok(Vec::new());
+        };
+        Ok(svc
+            .constraint_list()
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                vec![
+                    Value::Integer(i64::try_from(i).unwrap_or(i64::MAX) + 1),
+                    Value::String(c.name.clone()),
+                    Value::String("UNIQUENESS".to_string()),
+                    Value::String("NODE".to_string()),
+                    Value::List(vec![Value::String(c.label)]),
+                    Value::List(vec![Value::String(c.property)]),
+                    // Neo4j names the backing index after the constraint.
+                    Value::String(c.name),
+                    Value::Null,
+                ]
+            })
+            .collect())
     }
 
     /// `CALL db.index.fulltext.queryNodes(indexName, queryString) YIELD node,

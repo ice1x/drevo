@@ -121,6 +121,19 @@ pub enum DrevoError {
         .0.join(", ")
     )]
     PreparedTransactionPending(Vec<String>),
+
+    /// A write would break a declared schema constraint (#604), e.g. a second
+    /// node with the same value under a UNIQUE constraint. Nothing was
+    /// written. Maps to HTTP 409, the Bolt status
+    /// `Neo.ClientError.Schema.ConstraintValidationFailed` and Python's
+    /// `ConstraintViolation`.
+    #[error("constraint on `{kind}` violated: {message}")]
+    ConstraintViolation {
+        /// The label the constraint applies to.
+        kind: String,
+        /// What was violated.
+        message: String,
+    },
 }
 
 /// Convenience type alias for drevo operations.
@@ -150,6 +163,10 @@ impl From<drevo_core::error::CoreError> for DrevoError {
             C::Locked => DrevoError::Locked,
             C::Backend(msg) => DrevoError::Io(std::io::Error::other(msg)),
             C::PreparedTransactionPending(gids) => DrevoError::PreparedTransactionPending(gids),
+            C::ConstraintViolation(v) => DrevoError::ConstraintViolation {
+                kind: v.kind,
+                message: v.message,
+            },
         }
     }
 }
@@ -178,6 +195,9 @@ impl From<DrevoError> for drevo_core::error::CoreError {
             DrevoError::Json(e) => C::Json(e),
             DrevoError::Locked => C::Locked,
             DrevoError::PreparedTransactionPending(gids) => C::PreparedTransactionPending(gids),
+            DrevoError::ConstraintViolation { kind, message } => {
+                C::ConstraintViolation(drevo_core::native::ConstraintViolation { kind, message })
+            }
             // No structured counterpart in the core — keep the message.
             other => C::Backend(other.to_string()),
         }

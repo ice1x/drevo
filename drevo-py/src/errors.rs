@@ -125,6 +125,10 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
         // Writes are paused while a two-phase-commit transaction is prepared
         // (#556): retryable once it is resolved, like an optimistic conflict.
         e @ D::PreparedTransactionPending(_) => TransactionConflict::new_err(e.to_string()),
+        // A declared constraint refused the write (#604): the same class a
+        // transaction commit raises for one.
+        // `.args == (message, kind)`, as for a commit-time violation.
+        D::ConstraintViolation { kind, message } => ConstraintViolation::new_err((message, kind)),
     }
 }
 

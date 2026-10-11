@@ -111,8 +111,9 @@ fn dropping_a_transaction_discards_its_writes() {
 /// individually-valid write (atomic abort).
 #[test]
 fn a_constraint_rejected_commit_applies_nothing() {
+    // PROPERTY EXISTS is checked at commit (UNIQUE rejects the write itself).
     let g = NativeGraph::new();
-    g.add_constraint(Constraint::UniqueNodeProperty {
+    g.add_constraint(Constraint::PropertyExists {
         kind: "user".into(),
         property: "email".into(),
     })
@@ -120,7 +121,9 @@ fn a_constraint_rejected_commit_applies_nothing() {
 
     let mut tx = g.begin();
     tx.create_node(node_with_email("u1", "a@x")).unwrap(); // individually fine
-    tx.create_node(node_with_email("u2", "a@x")).unwrap(); // dup → whole tx fails
+    let mut missing = node_with_email("u2", "b@x");
+    missing.properties = Properties::default(); // no email → whole tx fails
+    tx.create_node(missing).unwrap();
     assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
     assert_eq!(
         g.node_count(),

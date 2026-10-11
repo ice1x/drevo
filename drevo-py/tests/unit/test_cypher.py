@@ -193,3 +193,19 @@ def test_closed_handle_raises(drevo_db: drevo.Drevo) -> None:
     db.close()
     with pytest.raises(RuntimeError):
         db.execute("RETURN 1 AS v")
+
+
+def test_a_unique_constraint_refuses_duplicates(drevo_db: drevo.Drevo, fake) -> None:
+    """`CREATE CONSTRAINT … IS UNIQUE` is enforced on every write (#604)."""
+    email = fake.email()
+    drevo_db.execute("CREATE CONSTRAINT FOR (c:Customer) REQUIRE c.email IS UNIQUE")
+    drevo_db.execute("CREATE (:Customer {email: $email})", {"email": email})
+    with pytest.raises(drevo.ConstraintViolation) as info:
+        drevo_db.execute("CREATE (:Customer {email: $email})", {"email": email})
+    assert info.value.args[1] == "Customer"
+    with pytest.raises(drevo.ConstraintViolation):
+        drevo_db.create_node(
+            drevo.NewNode(kind="Customer", title="again", properties={"email": email})
+        )
+    rows = drevo_db.execute("MATCH (c:Customer) RETURN count(c) AS c").rows
+    assert rows == [{"c": 1}]

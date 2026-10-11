@@ -456,6 +456,8 @@ impl PlanBuilder<'_> {
                 | Clause::CreateVectorIndex(_)
                 | Clause::CreatePathIndex(_)
                 | Clause::DropIndex(_)
+                | Clause::CreateConstraint(_)
+                | Clause::DropConstraint(_)
                 | Clause::SchemaNoop(_) => {}
             }
         }

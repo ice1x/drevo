@@ -878,6 +878,10 @@ fn run_cypher_on(
             crate::cypher::executor::ExecError::Storage(
                 err @ crate::error::DrevoError::PreparedTransactionPending(_),
             ) => ApiError::Db(err),
+            // A declared constraint refused the write (#604): 409 with its code.
+            crate::cypher::executor::ExecError::Storage(
+                err @ crate::error::DrevoError::ConstraintViolation { .. },
+            ) => ApiError::Db(err),
             // `drevo.tx.*` on an unknown / heuristically rolled-back gid
             // (#590): the same status and code as the resolve routes.
             crate::cypher::executor::ExecError::PreparedTransactionUnresolved {

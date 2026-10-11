@@ -289,8 +289,8 @@ fn node_with_prop(kind: &str, title: &str, prop: &str, val: &str) -> NewNode {
 }
 
 #[test]
-fn native_unique_constraint_enforced_at_commit() {
-    use drevo::native::{CommitError, Constraint, NativeGraph};
+fn native_unique_constraint_enforced_in_a_transaction() {
+    use drevo::native::{Constraint, NativeGraph};
 
     let g = NativeGraph::new();
     g.add_constraint(Constraint::UniqueNodeProperty {
@@ -299,13 +299,16 @@ fn native_unique_constraint_enforced_at_commit() {
     })
     .unwrap();
 
-    // Two users with the same email → the whole commit is rejected, nothing lands.
+    // The second user with the same email is refused at once (#604); the
+    // rolled-back transaction lands nothing.
     let mut tx = g.begin();
     tx.create_node(node_with_prop("user", "u1", "email", "a@x"))
         .unwrap();
-    tx.create_node(node_with_prop("user", "u2", "email", "a@x"))
-        .unwrap();
-    assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
+    assert!(matches!(
+        tx.create_node(node_with_prop("user", "u2", "email", "a@x")),
+        Err(CoreError::ConstraintViolation(_))
+    ));
+    tx.rollback();
     assert_eq!(g.all_nodes().unwrap().len(), 0);
 
     // Distinct emails commit fine.

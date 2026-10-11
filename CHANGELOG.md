@@ -6,6 +6,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **UNIQUE constraints** (issue #604):
+  - `CREATE CONSTRAINT [name] [IF NOT EXISTS] FOR (n:Label) REQUIRE n.prop IS
+    UNIQUE` (and Neo4j 4's `ON … ASSERT …`), `DROP CONSTRAINT`, and
+    `SHOW CONSTRAINTS` listing them.
+  - Enforced on every node write through a value index.
+  - A violation surfaces as Bolt `Neo.ClientError.Schema.ConstraintValidationFailed`,
+    HTTP 409 with that `code`, and Python `ConstraintViolation`.
+  - Definitions persist next to the WAL. Other constraint forms stay
+    accepted no-ops.
+
 ### Changed
 
 - **Node titles are no longer unique** (issue #595). Any number of nodes may

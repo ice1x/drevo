@@ -204,6 +204,8 @@ fn clause_keyword(clause: &Clause) -> &'static str {
         Clause::CreateVectorIndex(_) => "CREATE VECTOR INDEX",
         Clause::CreatePathIndex(_) => "CREATE INDEX",
         Clause::DropIndex(_) => "DROP INDEX",
+        Clause::CreateConstraint(_) => "CREATE CONSTRAINT",
+        Clause::DropConstraint(_) => "DROP CONSTRAINT",
         Clause::SchemaNoop(_) => "CREATE",
     }
 }
@@ -581,7 +583,14 @@ impl Parser {
                         // keywords (identifiers), so a normal `CREATE (pattern)` — which always
                         // begins with `(` or a `var =` path binding — is never mistaken for DDL.
         if self.is_soft_keyword("CONSTRAINT") {
-            // No constraints in drevo: accept and ignore the whole statement.
+            // A single-property node UNIQUE constraint is enforced (#604);
+            // every other form (NOT NULL, NODE KEY, composite, relationship,
+            // property types) is accepted and ignored.
+            let start = self.pos;
+            match self.parse_create_unique_constraint(span) {
+                Ok(Some(clause)) => return Ok(clause),
+                Ok(None) | Err(_) => self.pos = start,
+            }
             self.consume_to_statement_end();
             return Ok(Clause::SchemaNoop(SchemaNoop {
                 kind: "constraint",
@@ -761,6 +770,32 @@ impl Parser {
         let span = self.peek_span();
         self.consume(); // DROP
         if self.is_soft_keyword("CONSTRAINT") {
+            // `DROP CONSTRAINT <name> [IF EXISTS]` drops a declared constraint
+            // (#604); the Neo4j 4 form `DROP CONSTRAINT ON (…) ASSERT …` names
+            // no constraint and stays a no-op.
+            self.consume(); // CONSTRAINT
+            if !matches!(self.peek_kind(), TokenKind::On) {
+                let start = self.pos;
+                if let Ok((name, _)) = self.consume_name() {
+                    let if_exists = if self.is_soft_keyword("IF") {
+                        self.consume(); // IF
+                        self.eat(&TokenKind::Exists, "EXISTS after IF")?;
+                        true
+                    } else {
+                        false
+                    };
+                    if self.at_eof()
+                        || matches!(self.peek_kind(), TokenKind::Semicolon | TokenKind::Union)
+                    {
+                        return Ok(Clause::DropConstraint(DropConstraint {
+                            name,
+                            if_exists,
+                            span,
+                        }));
+                    }
+                }
+                self.pos = start;
+            }
             self.consume_to_statement_end();
             return Ok(Clause::SchemaNoop(SchemaNoop {
                 kind: "constraint",
@@ -781,6 +816,84 @@ impl Parser {
             if_exists,
             span,
         }))
+    }
+
+    /// Parse `CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE n.prop
+    /// IS UNIQUE [OPTIONS {…}]` or the Neo4j 4 form `… ON (n:Label) ASSERT
+    /// n.prop IS UNIQUE` (#604). `Ok(None)` (or an error) for any other
+    /// constraint form; the caller then accepts the statement as a no-op.
+    fn parse_create_unique_constraint(&mut self, span: Span) -> ParseResult<Option<Clause>> {
+        self.expect_soft_keyword("CONSTRAINT")?;
+        let at_for = |p: &Self| p.is_soft_keyword("FOR") || matches!(p.peek_kind(), TokenKind::On);
+        let name = if self.is_soft_keyword("IF") || at_for(self) {
+            None
+        } else {
+            Some(self.consume_name()?.0)
+        };
+        let if_not_exists = if self.is_soft_keyword("IF") {
+            self.consume(); // IF
+            self.eat(&TokenKind::Not, "NOT after IF")?;
+            self.eat(&TokenKind::Exists, "EXISTS after IF NOT")?;
+            true
+        } else {
+            false
+        };
+        if !at_for(self) {
+            return Ok(None);
+        }
+        self.consume(); // FOR / ON
+        self.eat(&TokenKind::LParen, "`(` after FOR")?;
+        if matches!(self.peek_kind(), TokenKind::RParen) {
+            return Ok(None); // a relationship pattern
+        }
+        let (var, _) = self.consume_name()?;
+        if !matches!(self.peek_kind(), TokenKind::Colon) {
+            return Ok(None);
+        }
+        self.consume(); // :
+        let (label, _) = self.consume_name()?;
+        self.eat(&TokenKind::RParen, "`)` after the constraint pattern")?;
+        if !(self.is_soft_keyword("REQUIRE") || self.is_soft_keyword("ASSERT")) {
+            return Ok(None);
+        }
+        self.consume(); // REQUIRE / ASSERT
+        let parenthesised = matches!(self.peek_kind(), TokenKind::LParen);
+        if parenthesised {
+            self.consume();
+        }
+        let (owner, _) = self.consume_name()?;
+        if owner != var || !matches!(self.peek_kind(), TokenKind::Dot) {
+            return Ok(None);
+        }
+        self.consume(); // .
+        let (property, _) = self.consume_name()?;
+        if parenthesised {
+            if !matches!(self.peek_kind(), TokenKind::RParen) {
+                return Ok(None); // composite: `(n.a, n.b)`
+            }
+            self.consume();
+        }
+        if !matches!(self.peek_kind(), TokenKind::Is) {
+            return Ok(None);
+        }
+        self.consume(); // IS
+        if !self.is_soft_keyword("UNIQUE") {
+            return Ok(None);
+        }
+        self.consume(); // UNIQUE
+        if self.is_soft_keyword("OPTIONS") {
+            self.consume_to_statement_end();
+        }
+        if !self.at_eof() && !matches!(self.peek_kind(), TokenKind::Semicolon | TokenKind::Union) {
+            return Ok(None);
+        }
+        Ok(Some(Clause::CreateConstraint(CreateConstraint {
+            name,
+            label,
+            property,
+            if_not_exists,
+            span,
+        })))
     }
 
     /// Is the next token one of the non-vector index-type soft keywords that can

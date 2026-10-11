@@ -92,6 +92,11 @@ pub enum Clause {
     CreatePathIndex(CreatePathIndex),
     /// `DROP INDEX <name> [IF EXISTS]` — drop a path or vector index.
     DropIndex(DropIndex),
+    /// `CREATE CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE
+    /// n.prop IS UNIQUE` — declare a UNIQUE constraint (issue #604).
+    CreateConstraint(CreateConstraint),
+    /// `DROP CONSTRAINT <name> [IF EXISTS]` — drop a UNIQUE constraint.
+    DropConstraint(DropConstraint),
     /// `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT] INDEX …` and
     /// `CREATE CONSTRAINT …` — accepted for Neo4j-client compatibility but a
     /// **no-op**: drevo auto-indexes and has no schema DDL (issue #532). Parsed
@@ -425,6 +430,35 @@ pub struct CreatePathIndex {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropIndex {
     /// The index name.
+    pub name: String,
+    /// `IF EXISTS` was given — a missing name is a no-op rather than an error.
+    pub if_exists: bool,
+    /// Source span of the `DROP` keyword.
+    pub span: Span,
+}
+
+/// `CREATE CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE n.prop
+/// IS UNIQUE [OPTIONS {…}]`, or the Neo4j 4 spelling `ON (n:Label) ASSERT
+/// n.prop IS UNIQUE` (issue #604).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateConstraint {
+    /// The constraint name, or `None` to generate one.
+    pub name: Option<String>,
+    /// The constrained label.
+    pub label: String,
+    /// The property whose values must be unique.
+    pub property: String,
+    /// `IF NOT EXISTS` was given — a taken name or an equivalent constraint is
+    /// a no-op rather than an error.
+    pub if_not_exists: bool,
+    /// Source span of the `CREATE` keyword.
+    pub span: Span,
+}
+
+/// `DROP CONSTRAINT <name> [IF EXISTS]` (issue #604).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropConstraint {
+    /// The constraint name.
     pub name: String,
     /// `IF EXISTS` was given — a missing name is a no-op rather than an error.
     pub if_exists: bool,
