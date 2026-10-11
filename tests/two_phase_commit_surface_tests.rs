@@ -140,7 +140,13 @@ fn cypher_resolving_an_unknown_gid_fails_cleanly() {
     ] {
         let err = exec(&svc, q).expect_err("unknown gid");
         assert!(
-            matches!(err, ExecError::InvalidProcedureCall { .. }),
+            matches!(
+                err,
+                ExecError::PreparedTransactionUnresolved {
+                    reason: drevo::cypher::executor::UnresolvedPrepared::UnknownGid,
+                    ..
+                }
+            ),
             "{q}: {err:?}"
         );
         assert!(err.to_string().contains("nope"), "{err}");

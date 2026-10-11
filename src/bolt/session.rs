@@ -1578,6 +1578,9 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         | ExecError::UnionMismatch { .. }
         | ExecError::InvalidRegex { .. } => codes::SEMANTIC_ERROR,
         ExecError::MissingParameter(_) => codes::PARAMETER_MISSING,
+        // An unknown / heuristically rolled-back gid in `drevo.tx.*` (#590):
+        // a dedicated code so a coordinator classifies it without parsing text.
+        ExecError::PreparedTransactionUnresolved { reason, .. } => reason.code(),
         // Writes paused by a prepared two-phase-commit transaction (#556):
         // transient, so drivers back off and retry.
         ExecError::Storage(crate::error::DrevoError::PreparedTransactionPending(_)) => {
