@@ -2482,15 +2482,21 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// `CREATE CONSTRAINT … REQUIRE n.prop IS UNIQUE` (issue #604): declare
-    /// the constraint in the native service, which enforces it from now on.
+    /// `CREATE CONSTRAINT … REQUIRE …` (issues #604, #606): declare the
+    /// constraint in the native service, which enforces it from now on.
     /// Produces no rows, like Neo4j schema commands.
     fn run_create_constraint(&mut self, c: &CreateConstraint) -> ExecResultT<()> {
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE CONSTRAINT"))?;
-        svc.constraint_create(c.name.as_deref(), &c.label, &c.property, c.if_not_exists)
-            .map_err(|e| ExecError::InvalidMutation(e.to_string()))
+        svc.constraint_create(
+            c.name.as_deref(),
+            &c.label,
+            c.kind,
+            &c.properties,
+            c.if_not_exists,
+        )
+        .map_err(|e| ExecError::InvalidMutation(e.to_string()))
     }
 
     /// `DROP CONSTRAINT <name> [IF EXISTS]` (issue #604).
@@ -5392,40 +5398,64 @@ impl<'a> Executor<'a> {
     }
 
     /// `SHOW [type] CONSTRAINTS [YIELD …] [WHERE …]` (issue #532), run as
-    /// `CALL db.showConstraints(type)`: one row per declared UNIQUE constraint
-    /// (issue #604) in Neo4j's column layout, type `UNIQUENESS`. `type` is
-    /// `ALL` or a uniqueness word; any other type (`EXISTENCE`, `NODE KEY`, …)
-    /// lists nothing, since drevo enforces only UNIQUE.
+    /// `CALL db.showConstraints(type)`: one row per declared constraint
+    /// (issues #604, #606) in Neo4j's column layout, with type `UNIQUENESS`,
+    /// `NODE_PROPERTY_EXISTENCE` or `NODE_KEY`. `type` is `ALL` or Neo4j's
+    /// filter words (`UNIQUE`, `NODE EXISTENCE`, `KEY`, …); relationship
+    /// filters list nothing.
     fn proc_show_constraints(
         &self,
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        use crate::constraint_registry::ConstraintKind;
         let filter = self
             .eval(&args[0], &Bindings::new())?
             .as_string(span)?
-            .to_uppercase();
-        let wanted = matches!(
-            filter.as_str(),
-            "ALL" | "UNIQUE" | "UNIQUENESS" | "NODE UNIQUE" | "NODE_UNIQUE"
-        );
-        let Some(svc) = self.native_semantic.filter(|_| wanted) else {
+            .to_uppercase()
+            .replace('_', " ");
+        let wanted = |kind: ConstraintKind| match filter.as_str() {
+            "ALL" => true,
+            "UNIQUE" | "UNIQUENESS" | "NODE UNIQUE" | "NODE UNIQUENESS" => {
+                kind == ConstraintKind::Unique
+            }
+            "EXIST"
+            | "EXISTS"
+            | "EXISTENCE"
+            | "NODE EXIST"
+            | "NODE EXISTENCE"
+            | "PROPERTY EXIST"
+            | "PROPERTY EXISTENCE"
+            | "NODE PROPERTY EXIST"
+            | "NODE PROPERTY EXISTENCE" => kind == ConstraintKind::NotNull,
+            "KEY" | "NODE KEY" => kind == ConstraintKind::NodeKey,
+            _ => false,
+        };
+        let Some(svc) = self.native_semantic else {
             return Ok(Vec::new());
         };
         Ok(svc
             .constraint_list()
             .into_iter()
             .enumerate()
+            .filter(|(_, c)| wanted(c.kind))
             .map(|(i, c)| {
+                // Neo4j backs uniqueness and node keys with an index named
+                // after the constraint; existence has none.
+                let owned_index = match c.kind {
+                    ConstraintKind::NotNull => Value::Null,
+                    ConstraintKind::Unique | ConstraintKind::NodeKey => {
+                        Value::String(c.name.clone())
+                    }
+                };
                 vec![
                     Value::Integer(i64::try_from(i).unwrap_or(i64::MAX) + 1),
-                    Value::String(c.name.clone()),
-                    Value::String("UNIQUENESS".to_string()),
+                    Value::String(c.name),
+                    Value::String(c.kind.show_type().to_string()),
                     Value::String("NODE".to_string()),
                     Value::List(vec![Value::String(c.label)]),
-                    Value::List(vec![Value::String(c.property)]),
-                    // Neo4j names the backing index after the constraint.
-                    Value::String(c.name),
+                    Value::List(c.properties.into_iter().map(Value::String).collect()),
+                    owned_index,
                     Value::Null,
                 ]
             })

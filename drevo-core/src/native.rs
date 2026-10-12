@@ -122,14 +122,15 @@ struct Inner {
     /// rebuilt from it), but keyed by node id and **cascaded on node
     /// deletion**.
     embeddings: HashMap<u64, Vec<f32>>,
-    /// Declared schema constraints. UNIQUE ones are checked on every node
-    /// write through [`Inner::unique`]; the rest at transaction commit.
+    /// Declared schema constraints. Uniqueness is checked on every node write
+    /// through [`Inner::unique`]; existence on every write outside a
+    /// transaction and at transaction commit.
     constraints: Vec<Constraint>,
-    /// `(label, property) → (value key → ids)` for every UNIQUE constraint: the
-    /// lookup a write is checked against, so the check costs O(1), not
-    /// O(label size). Ids are a set so data loaded in breach (replication,
-    /// replay) is still tracked exactly.
-    unique: HashMap<(String, String), HashMap<String, BTreeSet<u64>>>,
+    /// `(label, properties) → (value key → ids)` for every property tuple a
+    /// constraint keeps unique: the lookup a write is checked against, so the
+    /// check costs O(1), not O(label size). Ids are a set so data loaded in
+    /// breach (replication, replay) is still tracked exactly.
+    unique: HashMap<(String, Vec<String>), HashMap<String, BTreeSet<u64>>>,
     next_node_id: u64,
     next_edge_id: u64,
     /// High-water mark of every `updated_at` timestamp the graph has issued.
@@ -420,14 +421,14 @@ impl Inner {
         }
     }
 
-    /// The first UNIQUE constraint `node` would break against the other
-    /// nodes, if any.
+    /// The first uniqueness rule `node` would break against the other nodes,
+    /// if any.
     fn check_unique(&self, node: &Node) -> std::result::Result<(), ConstraintViolation> {
-        for ((label, property), values) in &self.unique {
+        for ((label, properties), values) in &self.unique {
             if !has_label(node, label) {
                 continue;
             }
-            let Some(key) = unique_key(node, property) else {
+            let Some(key) = tuple_key(node, properties) else {
                 continue;
             };
             if let Some(other) = values
@@ -437,7 +438,9 @@ impl Inner {
                 return Err(ConstraintViolation {
                     kind: label.clone(),
                     message: format!(
-                        "node {other} already has `{property}` = {key} (unique constraint)"
+                        "node {other} already has {} = {} (unique constraint)",
+                        describe_properties(properties),
+                        describe_key(&key)
                     ),
                 });
             }
@@ -445,24 +448,49 @@ impl Inner {
         Ok(())
     }
 
-    /// Record `node`'s values under every UNIQUE constraint covering it.
+    /// The first existence rule `node` breaks, if any: a property a
+    /// `PropertyExists` or `NodeKey` constraint on one of its labels requires
+    /// and the node lacks.
+    fn check_exists(&self, node: &Node) -> std::result::Result<(), ConstraintViolation> {
+        for c in &self.constraints {
+            let (kind, required): (&String, &[String]) = match c {
+                Constraint::PropertyExists { kind, property } => {
+                    (kind, std::slice::from_ref(property))
+                }
+                Constraint::NodeKey { kind, properties } => (kind, properties),
+                _ => continue,
+            };
+            if !has_label(node, kind) {
+                continue;
+            }
+            if let Some(missing) = required.iter().find(|p| unique_key(node, p).is_none()) {
+                return Err(ConstraintViolation {
+                    kind: kind.clone(),
+                    message: format!("node {} is missing required property `{missing}`", node.id),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Record `node`'s values under every unique property tuple covering it.
     fn index_unique(&mut self, node: &Node) {
-        for ((label, property), values) in &mut self.unique {
+        for ((label, properties), values) in &mut self.unique {
             if has_label(node, label) {
-                if let Some(key) = unique_key(node, property) {
+                if let Some(key) = tuple_key(node, properties) {
                     values.entry(key).or_default().insert(node.id);
                 }
             }
         }
     }
 
-    /// Drop `node`'s values from every UNIQUE constraint's lookup.
+    /// Drop `node`'s values from every unique property tuple's lookup.
     fn unindex_unique(&mut self, node: &Node) {
-        for ((label, property), values) in &mut self.unique {
+        for ((label, properties), values) in &mut self.unique {
             if !has_label(node, label) {
                 continue;
             }
-            let Some(key) = unique_key(node, property) else {
+            let Some(key) = tuple_key(node, properties) else {
                 continue;
             };
             if let Some(ids) = values.get_mut(&key) {
@@ -474,15 +502,36 @@ impl Inner {
         }
     }
 
-    /// Build the lookup for a UNIQUE constraint from the current nodes.
-    fn build_unique(&self, label: &str, property: &str) -> HashMap<String, BTreeSet<u64>> {
+    /// Build the lookup for a unique property tuple from the current nodes.
+    fn build_unique(&self, label: &str, properties: &[String]) -> HashMap<String, BTreeSet<u64>> {
         let mut values: HashMap<String, BTreeSet<u64>> = HashMap::new();
         for node in self.nodes.values().filter(|n| has_label(n, label)) {
-            if let Some(key) = unique_key(node, property) {
+            if let Some(key) = tuple_key(node, properties) {
                 values.entry(key).or_default().insert(node.id);
             }
         }
         values
+    }
+
+    /// Make [`Inner::unique`] hold exactly the lookups the declared
+    /// constraints need: build the missing ones, drop the unused ones.
+    fn sync_unique(&mut self) {
+        let needed: Vec<(String, Vec<String>)> = self
+            .constraints
+            .iter()
+            .filter_map(Constraint::unique_tuple)
+            .map(|(kind, properties)| (kind.to_string(), properties.to_vec()))
+            .collect();
+        self.unique.retain(|key, _| needed.contains(key));
+        for (label, properties) in needed {
+            if !self
+                .unique
+                .contains_key(&(label.clone(), properties.clone()))
+            {
+                let values = self.build_unique(&label, &properties);
+                self.unique.insert((label, properties), values);
+            }
+        }
     }
 
     /// Most-recently-updated nodes first, capped at `limit`: `updated_at`
@@ -532,10 +581,21 @@ impl Inner {
     // ----- write operations (mutate through Arc::make_mut) -------------------
 
     fn create_node(&mut self, new_node: NewNode) -> Result<Node> {
+        self.create_node_checked(new_node, false)
+    }
+
+    /// Create a node; `require` also checks the existence rules, which a
+    /// write outside a transaction must satisfy at once (a transaction is
+    /// checked at commit instead).
+    fn create_node_checked(&mut self, new_node: NewNode, require: bool) -> Result<Node> {
         let id = self.next_node_id + 1;
         let node = new_node.into_node(id);
         self.check_unique(&node)
             .map_err(CoreError::ConstraintViolation)?;
+        if require {
+            self.check_exists(&node)
+                .map_err(CoreError::ConstraintViolation)?;
+        }
         self.next_node_id = id;
         self.observe_updated_at(node.updated_at);
         self.index_title(id, &node.title);
@@ -546,6 +606,11 @@ impl Inner {
     }
 
     fn update_node(&mut self, id: u64, patch: NodePatch) -> Result<Node> {
+        self.update_node_checked(id, patch, false)
+    }
+
+    /// Update a node; `require` as in [`Inner::create_node_checked`].
+    fn update_node_checked(&mut self, id: u64, patch: NodePatch, require: bool) -> Result<Node> {
         let old = self
             .nodes
             .get(&id)
@@ -571,6 +636,10 @@ impl Inner {
         // everything as it was.
         self.check_unique(&node)
             .map_err(CoreError::ConstraintViolation)?;
+        if require {
+            self.check_exists(&node)
+                .map_err(CoreError::ConstraintViolation)?;
+        }
         if old.title != node.title {
             self.unindex_title(id, &old.title);
             self.index_title(id, &node.title);
@@ -867,71 +936,30 @@ impl Inner {
     }
 
     /// Check every declared constraint against the current node set, returning
-    /// the first [`ConstraintViolation`] found. A `UNIQUE(kind, property)`
-    /// constraint covers nodes carrying the label as primary kind or secondary
-    /// label, ignores those without a value (matching Neo4j), and flags the
-    /// first pair that shares one.
+    /// the first [`ConstraintViolation`] found: a node missing a required
+    /// property, or two nodes sharing a unique value or tuple. Labels include
+    /// secondary labels; nodes without (all of) a unique tuple are not
+    /// constrained by it.
     fn validate_constraints(&self) -> std::result::Result<(), ConstraintViolation> {
+        for node in self.nodes.values() {
+            self.check_exists(node)?;
+        }
         for c in &self.constraints {
-            match c {
-                Constraint::UniqueNodeProperty { kind, property } => {
-                    let mut seen: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
-                    for n in self.nodes.values().filter(|n| has_label(n, kind)) {
-                        if let Some(value) = unique_key(n, property) {
-                            if !seen.insert(value.clone()) {
-                                return Err(ConstraintViolation {
-                                    kind: kind.clone(),
-                                    message: format!(
-                                        "duplicate value {value} for unique property `{property}`"
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                }
-                Constraint::PropertyExists { kind, property } => {
-                    for n in self.nodes.values().filter(|n| &n.kind == kind) {
-                        if !n.properties.0.contains_key(property) {
-                            return Err(ConstraintViolation {
-                                kind: kind.clone(),
-                                message: format!(
-                                    "node {} is missing required property `{property}`",
-                                    n.id
-                                ),
-                            });
-                        }
-                    }
-                }
-                Constraint::NodeKey { kind, properties } => {
-                    let mut seen: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
-                    for n in self.nodes.values().filter(|n| &n.kind == kind) {
-                        let mut parts = Vec::with_capacity(properties.len());
-                        for p in properties {
-                            match n.properties.0.get(p) {
-                                Some(v) => parts.push(v.to_string()),
-                                None => {
-                                    return Err(ConstraintViolation {
-                                        kind: kind.clone(),
-                                        message: format!(
-                                            "node {} is missing node-key property `{p}`",
-                                            n.id
-                                        ),
-                                    })
-                                }
-                            }
-                        }
-                        // Unit separator joins the tuple into one comparable key.
-                        let key = parts.join("\u{1f}");
-                        if !seen.insert(key) {
-                            return Err(ConstraintViolation {
-                                kind: kind.clone(),
-                                message: format!(
-                                    "duplicate node key {parts:?} on properties {properties:?}"
-                                ),
-                            });
-                        }
+            let Some((kind, properties)) = c.unique_tuple() else {
+                continue;
+            };
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for n in self.nodes.values().filter(|n| has_label(n, kind)) {
+                if let Some(key) = tuple_key(n, properties) {
+                    if !seen.insert(key.clone()) {
+                        return Err(ConstraintViolation {
+                            kind: kind.to_string(),
+                            message: format!(
+                                "duplicate value {} for unique {}",
+                                describe_key(&key),
+                                describe_properties(properties)
+                            ),
+                        });
                     }
                 }
             }
@@ -966,40 +994,138 @@ fn unique_key(node: &Node, property: &str) -> Option<String> {
     }
 }
 
-/// A schema constraint a [`NativeGraph`] enforces at transaction commit
-/// — the Neo4j-parity set: UNIQUE, property EXISTS, and
-/// NODE KEY.
+/// Separates the values of a property tuple in a lookup key. JSON text
+/// escapes control characters, so it never occurs inside a value.
+const TUPLE_SEPARATOR: char = '\u{1f}';
+
+/// The comparable key of `node`'s values for `properties`, or `None` when it
+/// lacks any of them (see [`unique_key`]).
+fn tuple_key(node: &Node, properties: &[String]) -> Option<String> {
+    let mut key = String::new();
+    for (i, property) in properties.iter().enumerate() {
+        if i > 0 {
+            key.push(TUPLE_SEPARATOR);
+        }
+        key.push_str(&unique_key(node, property)?);
+    }
+    Some(key)
+}
+
+/// `` `email` `` for one property, `` (`first`, `last`) `` for a tuple.
+fn describe_properties(properties: &[String]) -> String {
+    match properties {
+        [one] => format!("`{one}`"),
+        many => format!(
+            "({})",
+            many.iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// A lookup key as the values it holds: `"a@x"` or `("ann", "lee")`.
+fn describe_key(key: &str) -> String {
+    if key.contains(TUPLE_SEPARATOR) {
+        format!(
+            "({})",
+            key.split(TUPLE_SEPARATOR).collect::<Vec<_>>().join(", ")
+        )
+    } else {
+        key.to_string()
+    }
+}
+
+/// A schema constraint a [`NativeGraph`] enforces — Neo4j's node
+/// constraints: UNIQUE (on one property or a tuple), property existence
+/// (`IS NOT NULL`) and NODE KEY.
+///
+/// All of them cover the nodes carrying the label `kind` as primary kind or
+/// secondary label. `title` and `body` read the node's own fields unless the
+/// property map has an entry of that name; an empty field and a `null` value
+/// are no value. Values compare by type and content (`1` ≠ `"1"`).
+///
+/// Uniqueness is checked on every node write. Existence is checked on every
+/// write made outside a transaction and, inside one, at commit — so a
+/// transaction may create a node and set its required properties afterwards.
+///
+/// ```
+/// use drevo_core::engine::GraphEngine;
+/// use drevo_core::model::{NewNode, Properties};
+/// use drevo_core::native::{Constraint, NativeGraph};
+///
+/// let g = NativeGraph::new();
+/// g.add_constraint(Constraint::PropertyExists {
+///     kind: "User".into(),
+///     property: "email".into(),
+/// })
+/// .unwrap();
+/// let user = NewNode {
+///     kind: "User".into(),
+///     title: "ada".into(),
+///     body: String::new(),
+///     body_html: String::new(),
+///     properties: Properties::default(),
+/// };
+/// // No `email`: the write is refused.
+/// assert!(g.create_node(user).is_err());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Constraint {
-    /// Among nodes carrying the label `kind` (as primary kind or secondary
-    /// label), the value of `property` must be unique. `title` and `body` read
-    /// the node's own fields unless the property map has an entry of that
-    /// name; an empty field is no value. Nodes without a value are not
-    /// constrained. Values compare by type and content (`1` ≠ `"1"`).
-    /// Checked on every node write, not only at transaction commit.
+    /// No two nodes of `kind` share a value of `property`. Nodes without a
+    /// value are not constrained.
     UniqueNodeProperty {
         /// The node kind (label) the constraint applies to.
         kind: String,
         /// The property whose value must be unique within that kind.
         property: String,
     },
-    /// Every node of `kind` must carry `property` (Neo4j property-existence
-    /// constraint).
+    /// No two nodes of `kind` share the combination of values of
+    /// `properties`. Nodes lacking any of them are not constrained.
+    UniqueNodeProperties {
+        /// The node kind (label) the constraint applies to.
+        kind: String,
+        /// The properties whose combination must be unique, in order.
+        properties: Vec<String>,
+    },
+    /// Every node of `kind` carries `property` (Neo4j `IS NOT NULL`).
     PropertyExists {
         /// The node kind the constraint applies to.
         kind: String,
         /// The property every such node must have.
         property: String,
     },
-    /// The tuple of `properties` is unique among nodes of `kind`, **and** every
-    /// such node must carry all of them — Neo4j's NODE KEY (existence +
-    /// uniqueness of the combination).
+    /// Every node of `kind` carries all of `properties`, and no two share
+    /// their combination — Neo4j's NODE KEY.
     NodeKey {
         /// The node kind the constraint applies to.
         kind: String,
         /// The properties whose combination forms the key.
         properties: Vec<String>,
     },
+}
+
+impl Constraint {
+    /// The label and property tuple this constraint keeps unique, if any.
+    fn unique_tuple(&self) -> Option<(&str, &[String])> {
+        match self {
+            Constraint::UniqueNodeProperty { kind, property } => {
+                Some((kind, std::slice::from_ref(property)))
+            }
+            Constraint::UniqueNodeProperties { kind, properties }
+            | Constraint::NodeKey { kind, properties } => Some((kind, properties)),
+            Constraint::PropertyExists { .. } => None,
+        }
+    }
+
+    /// Whether this constraint requires properties to be present.
+    fn requires_presence(&self) -> bool {
+        matches!(
+            self,
+            Constraint::PropertyExists { .. } | Constraint::NodeKey { .. }
+        )
+    }
 }
 
 /// The details of a [`Constraint`] that was violated: the node kind and a
@@ -2335,7 +2461,7 @@ impl NativeGraph {
         let mut nodes = Vec::with_capacity(new_nodes.len());
         let mut ops = Vec::with_capacity(new_nodes.len());
         for nn in new_nodes {
-            let node = w.create_node(nn)?;
+            let node = w.create_node_checked(nn, true)?;
             ops.push(WalOp::UpsertNode(node.clone()));
             nodes.push(node);
         }
@@ -2892,13 +3018,13 @@ impl NativeGraph {
         Ok(())
     }
 
-    /// Declare a schema [`Constraint`] the engine enforces at transaction
-    /// commit.
+    /// Declare a schema [`Constraint`] the engine enforces from now on.
     ///
     /// The constraint is validated against the current data first: if existing
     /// nodes already violate it, it is **not** stored and the
     /// [`ConstraintViolation`] is returned (matching Neo4j, which refuses to
-    /// create a constraint the data does not already satisfy).
+    /// create a constraint the data does not already satisfy). Declaring a
+    /// constraint twice is a no-op.
     ///
     /// # Errors
     /// [`ConstraintViolation`] if the current graph already violates the
@@ -2912,15 +3038,12 @@ impl NativeGraph {
         if g.constraints.contains(&constraint) {
             return Ok(());
         }
-        g.constraints.push(constraint.clone());
+        g.constraints.push(constraint);
         if let Err(e) = g.validate_constraints() {
             g.constraints.pop();
             return Err(e);
         }
-        if let Constraint::UniqueNodeProperty { kind, property } = constraint {
-            let values = g.build_unique(&kind, &property);
-            g.unique.insert((kind, property), values);
-        }
+        g.sync_unique();
         Ok(())
     }
 
@@ -2930,10 +3053,18 @@ impl NativeGraph {
         let g = Arc::make_mut(&mut guard);
         let before = g.constraints.len();
         g.constraints.retain(|c| c != constraint);
-        if let Constraint::UniqueNodeProperty { kind, property } = constraint {
-            g.unique.remove(&(kind.clone(), property.clone()));
-        }
+        g.sync_unique();
         g.constraints.len() != before
+    }
+
+    /// Whether a declared constraint requires properties to be present
+    /// (`PropertyExists` or `NodeKey`).
+    #[must_use]
+    pub fn has_existence_constraints(&self) -> bool {
+        read(&self.inner)
+            .constraints
+            .iter()
+            .any(Constraint::requires_presence)
     }
 
     /// The declared constraints, in declaration order.
@@ -3721,7 +3852,8 @@ impl NativeGraph {
 
 impl GraphEngine for NativeGraph {
     fn create_node(&self, new_node: NewNode) -> Result<Node> {
-        let node = Arc::make_mut(&mut *self.write_for_commit()?).create_node(new_node)?;
+        let node =
+            Arc::make_mut(&mut *self.write_for_commit()?).create_node_checked(new_node, true)?;
         self.record(&[WalOp::UpsertNode(node.clone())])?;
         self.stamp_write(StampTarget::Node(node.id));
         Ok(node)
@@ -3733,7 +3865,8 @@ impl GraphEngine for NativeGraph {
     }
 
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
-        let node = Arc::make_mut(&mut *self.write_for_commit()?).update_node(id, patch)?;
+        let node =
+            Arc::make_mut(&mut *self.write_for_commit()?).update_node_checked(id, patch, true)?;
         self.record(&[WalOp::UpsertNode(node.clone())])?;
         self.stamp_write(StampTarget::Node(node.id));
         Ok(node)

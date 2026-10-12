@@ -519,10 +519,81 @@ impl NativeService {
     ) -> Result<ExecResult, ExecError> {
         let result = crate::cypher::executor::deadline::with_statement_timeout(
             self.statement_timeout(),
-            || self.with_fresh_indexes(|idx| self.execute_with(idx, query, params)),
+            || {
+                if self.graph.has_existence_constraints() && query_writes(query) {
+                    self.execute_as_transaction(query, &params)
+                } else {
+                    self.with_fresh_indexes(|idx| self.execute_with(idx, query, params))
+                }
+            },
         );
         self.maybe_compact();
         result
+    }
+
+    /// Run a writing statement as one transaction, committed at its end
+    /// (#606). Used while an `IS NOT NULL` or `NODE KEY` constraint is
+    /// declared: those are checked at commit, so `CREATE (n:User) SET
+    /// n.email = …` or `MERGE … ON CREATE SET …` satisfy them by the end of
+    /// the statement, and a statement that does not writes nothing. Reads in
+    /// the statement see its own writes and are not narrowed by the
+    /// property, label, path or text indexes, which describe the committed
+    /// graph. A commit that lost a race with another writer is retried.
+    fn execute_as_transaction(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+    ) -> Result<ExecResult, ExecError> {
+        const ATTEMPTS: usize = 8;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let tx = self.graph.tx_begin();
+            let Some(engine) = self.graph.tx_engine(tx) else {
+                return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(
+                    "the statement's transaction closed before it ran",
+                ))));
+            };
+            let result = self.with_fresh_indexes(|idx| {
+                let ctx = NativeQueryContext {
+                    fts: Some(&idx.fts),
+                    fts_rel: Some(&idx.fts_rel),
+                    labels: None,
+                    properties: None,
+                    paths: None,
+                    texts: None,
+                    values: None,
+                    #[cfg(feature = "http")]
+                    embedder: self.embedder.get(),
+                    #[cfg(not(feature = "http"))]
+                    embedder: None,
+                    semantic: Some(self),
+                };
+                execute_on_engine_with_context(query, &engine, &ctx, params.clone())
+            });
+            let rows = match result {
+                Ok(rows) => rows,
+                Err(e) => {
+                    self.graph.tx_rollback(tx);
+                    return Err(e);
+                }
+            };
+            match self.graph.tx_commit(tx) {
+                Ok(()) => return Ok(rows),
+                Err(crate::native::CommitError::Conflict) if attempt < ATTEMPTS => {}
+                Err(crate::native::CommitError::Constraint(v)) => {
+                    return Err(ExecError::Storage(DrevoError::ConstraintViolation {
+                        kind: v.kind,
+                        message: v.message,
+                    }));
+                }
+                Err(e) => {
+                    return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(
+                        e.to_string(),
+                    ))));
+                }
+            }
+        }
     }
 
     /// Limit every statement [`execute`](Self::execute) runs to `limit` of
@@ -1339,12 +1410,12 @@ impl NativeService {
         }
     }
 
-    // ----- UNIQUE constraints (issue #604) -------------------------------------
+    // ----- Node constraints (issues #604, #606) ---------------------------------
 
-    /// Declare a UNIQUE constraint (`CREATE CONSTRAINT [<name>] FOR (n:label)
-    /// REQUIRE n.property IS UNIQUE`), persisting it. A missing `name` is
-    /// generated from the label and property. `if_not_exists` makes a taken
-    /// name or an equivalent constraint a no-op.
+    /// Declare a node constraint (`CREATE CONSTRAINT [<name>] FOR (n:label)
+    /// REQUIRE …`), persisting it. A missing `name` is generated from the
+    /// label, properties and kind. `if_not_exists` makes a taken name or an
+    /// equivalent constraint a no-op.
     ///
     /// # Errors
     /// [`ConstraintError::AlreadyExists`](crate::constraint_registry::ConstraintError::AlreadyExists)
@@ -1357,11 +1428,12 @@ impl NativeService {
         &self,
         name: Option<&str>,
         label: &str,
-        property: &str,
+        kind: crate::constraint_registry::ConstraintKind,
+        properties: &[String],
         if_not_exists: bool,
     ) -> Result<(), crate::constraint_registry::ConstraintError> {
-        use crate::constraint_registry::{generated_name, ConstraintError, UniqueConstraint};
-        let name = name.map_or_else(|| generated_name(label, property), str::to_string);
+        use crate::constraint_registry::{generated_name, ConstraintError, SchemaConstraint};
+        let name = name.map_or_else(|| generated_name(label, kind, properties), str::to_string);
         {
             let mut reg = self.constraints.write().unwrap_or_else(|e| e.into_inner());
             let index_taken = self
@@ -1378,18 +1450,19 @@ impl NativeService {
                     Err(ConstraintError::AlreadyExists(name))
                 };
             }
-            if let Some(existing) = reg.equivalent(label, property) {
+            let constraint = SchemaConstraint {
+                name,
+                label: label.to_string(),
+                kind,
+                properties: properties.to_vec(),
+            };
+            if let Some(existing) = reg.equivalent(&constraint) {
                 return if if_not_exists {
                     Ok(())
                 } else {
                     Err(ConstraintError::Equivalent(existing.name.clone()))
                 };
             }
-            let constraint = UniqueConstraint {
-                name,
-                label: label.to_string(),
-                property: property.to_string(),
-            };
             self.graph
                 .add_constraint(constraint.constraint())
                 .map_err(|e| ConstraintError::Violated(e.to_string()))?;
@@ -1430,7 +1503,7 @@ impl NativeService {
 
     /// Every declared constraint, in creation order (for `SHOW CONSTRAINTS`).
     #[must_use]
-    pub fn constraint_list(&self) -> Vec<crate::constraint_registry::UniqueConstraint> {
+    pub fn constraint_list(&self) -> Vec<crate::constraint_registry::SchemaConstraint> {
         self.constraints
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -2223,6 +2296,25 @@ impl NativeService {
         })?;
         Ok(report)
     }
+}
+
+/// Whether `query` has a clause that writes data (`CREATE`, `MERGE`, `SET`,
+/// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
+fn query_writes(query: &Query) -> bool {
+    use crate::cypher::ast::Clause;
+    query.parts.iter().any(|part| {
+        part.query.clauses.iter().any(|c| {
+            matches!(
+                c,
+                Clause::Create(_)
+                    | Clause::Merge(_)
+                    | Clause::Set(_)
+                    | Clause::Remove(_)
+                    | Clause::Delete(_)
+                    | Clause::Foreach(_)
+            )
+        })
+    })
 }
 
 #[cfg(test)]

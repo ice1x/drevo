@@ -113,8 +113,9 @@ fn property_exists_constraint_is_enforced_at_commit() {
     assert_eq!(g.node_count(), 1);
 }
 
-/// NODE KEY(kind, [props]): the tuple must be present and unique; a duplicate
-/// tuple aborts the commit.
+/// NODE KEY(kind, [props]): the tuple must be present and unique. A duplicate
+/// tuple is refused by the write itself (like UNIQUE); a missing key property
+/// aborts the commit.
 #[test]
 fn node_key_constraint_is_enforced_at_commit() {
     let g = NativeGraph::new();
@@ -127,11 +128,15 @@ fn node_key_constraint_is_enforced_at_commit() {
     let mut tx = g.begin();
     tx.create_node(node_with_props("book", "b1", &[("isbn", "111")]))
         .unwrap();
-    tx.create_node(node_with_props("book", "b2", &[("isbn", "111")]))
-        .unwrap();
+    assert!(
+        tx.create_node(node_with_props("book", "b2", &[("isbn", "111")]))
+            .is_err(),
+        "a duplicate node-key tuple must be rejected"
+    );
+    tx.create_node(node("book", "no-isbn")).unwrap();
     assert!(
         matches!(tx.commit(), Err(CommitError::Constraint(_))),
-        "a duplicate node-key tuple must be rejected"
+        "a node lacking a key property must abort the commit"
     );
     assert_eq!(g.node_count(), 0);
 }

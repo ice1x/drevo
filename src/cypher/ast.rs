@@ -92,10 +92,10 @@ pub enum Clause {
     CreatePathIndex(CreatePathIndex),
     /// `DROP INDEX <name> [IF EXISTS]` — drop a path or vector index.
     DropIndex(DropIndex),
-    /// `CREATE CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE
-    /// n.prop IS UNIQUE` — declare a UNIQUE constraint (issue #604).
+    /// `CREATE CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE …`
+    /// — declare a node constraint (issues #604, #606).
     CreateConstraint(CreateConstraint),
-    /// `DROP CONSTRAINT <name> [IF EXISTS]` — drop a UNIQUE constraint.
+    /// `DROP CONSTRAINT <name> [IF EXISTS]` — drop a declared constraint.
     DropConstraint(DropConstraint),
     /// `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT] INDEX …` and
     /// `CREATE CONSTRAINT …` — accepted for Neo4j-client compatibility but a
@@ -437,17 +437,20 @@ pub struct DropIndex {
     pub span: Span,
 }
 
-/// `CREATE CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE n.prop
-/// IS UNIQUE [OPTIONS {…}]`, or the Neo4j 4 spelling `ON (n:Label) ASSERT
-/// n.prop IS UNIQUE` (issue #604).
+/// `CREATE CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE …
+/// [OPTIONS {…}]`, or the Neo4j 4 spelling `ON (n:Label) ASSERT …`, where `…`
+/// is `n.p IS UNIQUE`, `(n.a, n.b) IS UNIQUE`, `n.p IS NOT NULL`
+/// (`exists(n.p)`) or `(n.a, n.b) IS NODE KEY` (issues #604, #606).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateConstraint {
     /// The constraint name, or `None` to generate one.
     pub name: Option<String>,
     /// The constrained label.
     pub label: String,
-    /// The property whose values must be unique.
-    pub property: String,
+    /// What the constraint requires.
+    pub kind: crate::constraint_registry::ConstraintKind,
+    /// The constrained properties, in order.
+    pub properties: Vec<String>,
     /// `IF NOT EXISTS` was given — a taken name or an equivalent constraint is
     /// a no-op rather than an error.
     pub if_not_exists: bool,

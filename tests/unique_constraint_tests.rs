@@ -2,7 +2,7 @@
 //!
 //! A declared UNIQUE constraint is enforced on every node write, listed by
 //! `SHOW CONSTRAINTS`, removed with `DROP CONSTRAINT` and kept across a
-//! restart. Other constraint forms stay accepted no-ops.
+//! restart. Relationship and property-type constraints stay accepted no-ops.
 
 #![cfg(feature = "http")]
 
@@ -244,9 +244,6 @@ fn neo4j_4_syntax_and_options_are_accepted() {
 fn other_constraint_forms_stay_no_ops() {
     let svc = NativeService::in_memory();
     for q in [
-        "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.name IS NOT NULL",
-        "CREATE CONSTRAINT FOR (p:Person) REQUIRE (p.a, p.b) IS NODE KEY",
-        "CREATE CONSTRAINT FOR (p:Person) REQUIRE (p.a, p.b) IS UNIQUE",
         "CREATE CONSTRAINT FOR ()-[r:KNOWS]-() REQUIRE r.since IS UNIQUE",
         "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.age IS :: INTEGER",
         "DROP CONSTRAINT ON (p:Person) ASSERT p.name IS UNIQUE",
