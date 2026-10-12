@@ -617,7 +617,7 @@ fn native_node_key_constraint() {
         .unwrap();
     assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
 
-    // Duplicate (first,last) tuple → rejected.
+    // Duplicate (first,last) tuple → refused by the write itself.
     let mut tx = g.begin();
     tx.create_node(node_with_props(
         "person",
@@ -625,13 +625,14 @@ fn native_node_key_constraint() {
         &[("first", "ann"), ("last", "lee")],
     ))
     .unwrap();
-    tx.create_node(node_with_props(
-        "person",
-        "p2",
-        &[("first", "ann"), ("last", "lee")],
-    ))
-    .unwrap();
-    assert!(matches!(tx.commit(), Err(CommitError::Constraint(_))));
+    assert!(tx
+        .create_node(node_with_props(
+            "person",
+            "p2",
+            &[("first", "ann"), ("last", "lee")],
+        ))
+        .is_err());
+    drop(tx);
     assert_eq!(g.all_nodes().unwrap().len(), 0);
 
     // Distinct tuples commit.

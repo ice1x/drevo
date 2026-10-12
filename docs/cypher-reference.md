@@ -933,13 +933,12 @@ RETURN relationship, score ORDER BY score DESC
 Schema DDL that drevo does not need is **accepted but a no-op**, so a driver's
 bootstrap does not fail: `CREATE [RANGE|POINT|LOOKUP|FULLTEXT] INDEX …` on
 top-level properties or relationships, `CREATE TEXT INDEX` on relationships,
-and every `CREATE CONSTRAINT` form other than a single-property node `UNIQUE`
-(`IS NOT NULL`, `IS NODE KEY`, composite, relationship, property types), parse
-and do nothing (drevo auto-indexes every top-level node property).
+and the relationship and property-type `CREATE CONSTRAINT` forms parse and do
+nothing (drevo auto-indexes every top-level node property).
 `CREATE VECTOR INDEX`, indexes on nested property paths
 ([below](#indexes-on-nested-properties-578)), text indexes on node
-properties ([below](#text-indexes-589)) and UNIQUE constraints
-([below](#unique-constraints-604)) have an effect.
+properties ([below](#text-indexes-589)) and node constraints
+([below](#constraints-604-606)) have an effect.
 
 `SHOW [type] INDEXES` lists the named indexes in Neo4j's column layout
 (`id`, `name`, `state`, `populationPercent`, `type`, `entityType`,
@@ -1075,43 +1074,85 @@ Full-text search (`fts.search`, `db.index.fulltext.queryNodes`) is a different
 tool: it ranks whole nodes by relevance, ignores case and punctuation, and
 needs no declaration.
 
-### Unique constraints (#604)
+### Constraints (#604, #606)
 
-A UNIQUE constraint stops two nodes with a label from sharing a value of a
-property:
+A constraint is a rule every node with a label must follow. drevo enforces
+Neo4j's three node constraints:
 
 ```cypher
 CREATE CONSTRAINT customer_email IF NOT EXISTS FOR (c:Customer) REQUIRE c.email IS UNIQUE
 ```
 
-The Neo4j 4 spelling `CREATE CONSTRAINT … ON (c:Customer) ASSERT c.email IS
-UNIQUE` works too, and `OPTIONS {…}` is accepted and ignored.
+```cypher
+CREATE CONSTRAINT release_name FOR (r:Release) REQUIRE (r.product, r.name) IS UNIQUE
+```
 
-- **Enforced on every write:** `CREATE`, `SET`, adding a label, `MERGE`'s
-  create branch, HTTP, Python and batch writes. A violating write fails and
-  changes nothing. `MERGE (c:Customer {email: …})` finds the existing node
-  instead. A lookup on the value makes each check constant-time.
+```cypher
+CREATE CONSTRAINT ticket_status FOR (t:Ticket) REQUIRE t.status IS NOT NULL
+```
+
+```cypher
+CREATE CONSTRAINT ticket_key FOR (t:Ticket) REQUIRE (t.project, t.number) IS NODE KEY
+```
+
+- **`IS UNIQUE`:** no two nodes share the value, or the combination of values
+  for a list of properties. Nodes lacking the property (or any property of
+  the list) are not constrained.
+- **`IS NOT NULL`:** every node has the property. One property per
+  constraint.
+- **`IS NODE KEY`** (or `IS KEY`): every node has all the properties, and no
+  two share their combination.
+
+The Neo4j 4 spellings work too: `ON (t:Ticket) ASSERT t.status IS NOT NULL`,
+`ASSERT exists(t.status)`, `ASSERT (t.project, t.number) IS NODE KEY`.
+`OPTIONS {…}` is accepted and ignored.
+
+- **When uniqueness is checked:** on every write: `CREATE`, `SET`, adding a
+  label, `MERGE`'s create branch, HTTP, Python and batch writes. A violating
+  write fails and changes nothing. `MERGE (c:Customer {email: …})` finds the
+  existing node instead. A lookup on the values makes each check
+  constant-time.
+- **When presence is checked:** at the end of the statement, and at commit in
+  an explicit transaction. A statement may create a node and set its required
+  property later, so this works:
+
+```cypher
+CREATE CONSTRAINT ticket_status FOR (t:Ticket) REQUIRE t.status IS NOT NULL
+```
+
+```cypher
+MERGE (t:Ticket {project: 'APP', number: 7})
+ON CREATE SET t.status = 'new', t.title = 'Login fails'
+```
+
+  A statement that leaves a required property missing writes nothing. While
+  an `IS NOT NULL` or `IS NODE KEY` constraint exists, every writing statement
+  runs as one transaction; its `MATCH`es then read the graph without the
+  property and label indexes. A single HTTP or Python write is checked at
+  once.
 - **Which nodes:** every node carrying the label, as its first label or any
-  other. Nodes without the property (or with `null`) are not constrained.
-  `title` and `body` are covered like any property. Values compare by type and
-  content, so `1` and `'1'` differ.
+  other. `null` counts as no value. `title` and `body` are covered like any
+  property. Values compare by type and content, so `1` and `'1'` differ.
 - **Existing data:** creating a constraint that the data already breaks fails,
   and nothing is stored.
 - **Errors:** Bolt `Neo.ClientError.Schema.ConstraintValidationFailed`; HTTP 409
   with that string in the body's `code`; Python `drevo.ConstraintViolation`.
-- **Names:** an unnamed constraint is called `constraint_<label>_<property>`.
-  Names are shared with indexes. Declaring the same rule again under another
-  name is an error unless `IF NOT EXISTS` is given.
+- **Names:** an unnamed constraint is called `constraint_<label>_<properties>`,
+  with `_not_null` or `_node_key` appended for those kinds. Names are shared
+  with indexes. Declaring the same rule again under another name is an error
+  unless `IF NOT EXISTS` is given.
 - **Lifecycle:** definitions are stored next to the WAL and survive a restart.
-  `SHOW CONSTRAINTS` lists them with type `UNIQUENESS`, and `DROP CONSTRAINT`
-  removes one:
+  `SHOW CONSTRAINTS` lists them with type `UNIQUENESS`,
+  `NODE_PROPERTY_EXISTENCE` or `NODE_KEY`; `SHOW UNIQUE CONSTRAINTS`,
+  `SHOW EXISTENCE CONSTRAINTS` and `SHOW NODE KEY CONSTRAINTS` filter them.
+  `DROP CONSTRAINT` removes one:
 
 ```cypher
 DROP CONSTRAINT customer_email IF EXISTS
 ```
 
-Other constraint kinds (`IS NOT NULL`, `IS NODE KEY`, composite keys,
-relationship constraints, property types) are accepted and not enforced.
+Relationship constraints and property-type constraints (`IS :: INTEGER`) are
+accepted and not enforced.
 
 ### Fuzzy matching (#593)
 

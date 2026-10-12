@@ -8,6 +8,22 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`IS NOT NULL`, composite `IS UNIQUE` and `IS NODE KEY` constraints**
+  (issue #606), in the Neo4j 5 `FOR … REQUIRE` and Neo4j 4 `ON … ASSERT`
+  spellings (incl. `exists(n.p)`):
+  - Uniqueness of a property tuple is checked on every write; presence at the
+    end of the statement and at transaction commit. While a presence rule
+    exists, each writing statement runs as one transaction, so
+    `MERGE … ON CREATE SET` can fill a required property and a violating
+    statement writes nothing.
+  - `SHOW CONSTRAINTS` reports types `NODE_PROPERTY_EXISTENCE` and `NODE_KEY`
+    and accepts multi-word filters (`SHOW NODE KEY CONSTRAINTS`).
+  - drevo-core: `Constraint::UniqueNodeProperties`;
+    `NativeGraph::has_existence_constraints`. `PropertyExists` and `NodeKey`
+    now cover secondary labels and the `title`/`body` fields, treat `null` as
+    missing, and are checked on writes outside a transaction too; a `NodeKey`
+    duplicate is refused by the write itself.
+
 - **UNIQUE constraints** (issue #604):
   - `CREATE CONSTRAINT [name] [IF NOT EXISTS] FOR (n:Label) REQUIRE n.prop IS
     UNIQUE` (and Neo4j 4's `ON … ASSERT …`), `DROP CONSTRAINT`, and

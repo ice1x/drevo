@@ -583,9 +583,9 @@ impl Parser {
                         // keywords (identifiers), so a normal `CREATE (pattern)` — which always
                         // begins with `(` or a `var =` path binding — is never mistaken for DDL.
         if self.is_soft_keyword("CONSTRAINT") {
-            // A single-property node UNIQUE constraint is enforced (#604);
-            // every other form (NOT NULL, NODE KEY, composite, relationship,
-            // property types) is accepted and ignored.
+            // Node UNIQUE, NOT NULL and NODE KEY constraints are enforced
+            // (#604, #606); every other form (relationship, property types)
+            // is accepted and ignored.
             let start = self.pos;
             match self.parse_create_unique_constraint(span) {
                 Ok(Some(clause)) => return Ok(clause),
@@ -818,11 +818,14 @@ impl Parser {
         }))
     }
 
-    /// Parse `CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE n.prop
-    /// IS UNIQUE [OPTIONS {…}]` or the Neo4j 4 form `… ON (n:Label) ASSERT
-    /// n.prop IS UNIQUE` (#604). `Ok(None)` (or an error) for any other
-    /// constraint form; the caller then accepts the statement as a no-op.
+    /// Parse `CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE <rule>
+    /// [OPTIONS {…}]` or the Neo4j 4 form `… ON (n:Label) ASSERT <rule>`
+    /// (#604, #606), where `<rule>` is `n.p IS UNIQUE`, `(n.a, n.b) IS
+    /// UNIQUE`, `n.p IS NOT NULL`, `exists(n.p)` or `(n.a, …) IS [NODE] KEY`.
+    /// `Ok(None)` (or an error) for any other constraint form; the caller then
+    /// accepts the statement as a no-op.
     fn parse_create_unique_constraint(&mut self, span: Span) -> ParseResult<Option<Clause>> {
+        use crate::constraint_registry::ConstraintKind;
         self.expect_soft_keyword("CONSTRAINT")?;
         let at_for = |p: &Self| p.is_soft_keyword("FOR") || matches!(p.peek_kind(), TokenKind::On);
         let name = if self.is_soft_keyword("IF") || at_for(self) {
@@ -857,43 +860,106 @@ impl Parser {
             return Ok(None);
         }
         self.consume(); // REQUIRE / ASSERT
-        let parenthesised = matches!(self.peek_kind(), TokenKind::LParen);
-        if parenthesised {
-            self.consume();
+
+        // Neo4j 4: `ASSERT exists(n.p)`.
+        if matches!(self.peek_kind(), TokenKind::Exists) {
+            self.consume(); // exists
+            self.eat(&TokenKind::LParen, "`(` after exists")?;
+            let Some(property) = self.constraint_property(&var)? else {
+                return Ok(None);
+            };
+            self.eat(&TokenKind::RParen, "`)` after the property")?;
+            return self.finish_constraint(CreateConstraint {
+                name,
+                label,
+                kind: ConstraintKind::NotNull,
+                properties: vec![property],
+                if_not_exists,
+                span,
+            });
         }
-        let (owner, _) = self.consume_name()?;
-        if owner != var || !matches!(self.peek_kind(), TokenKind::Dot) {
-            return Ok(None);
-        }
-        self.consume(); // .
-        let (property, _) = self.consume_name()?;
-        if parenthesised {
-            if !matches!(self.peek_kind(), TokenKind::RParen) {
-                return Ok(None); // composite: `(n.a, n.b)`
+
+        let mut properties = Vec::new();
+        if matches!(self.peek_kind(), TokenKind::LParen) {
+            self.consume(); // (
+            loop {
+                let Some(property) = self.constraint_property(&var)? else {
+                    return Ok(None);
+                };
+                properties.push(property);
+                if matches!(self.peek_kind(), TokenKind::Comma) {
+                    self.consume();
+                    continue;
+                }
+                break;
             }
-            self.consume();
+            if !matches!(self.peek_kind(), TokenKind::RParen) {
+                return Ok(None);
+            }
+            self.consume(); // )
+        } else {
+            let Some(property) = self.constraint_property(&var)? else {
+                return Ok(None);
+            };
+            properties.push(property);
         }
         if !matches!(self.peek_kind(), TokenKind::Is) {
             return Ok(None);
         }
         self.consume(); // IS
-        if !self.is_soft_keyword("UNIQUE") {
+        let kind = if self.is_soft_keyword("UNIQUE") {
+            self.consume(); // UNIQUE
+            ConstraintKind::Unique
+        } else if matches!(self.peek_kind(), TokenKind::Not) {
+            self.consume(); // NOT
+            self.eat(&TokenKind::Null, "NULL after IS NOT")?;
+            if properties.len() != 1 {
+                return Ok(None); // Neo4j allows one property only
+            }
+            ConstraintKind::NotNull
+        } else if self.is_soft_keyword("NODE") || self.is_soft_keyword("KEY") {
+            if self.is_soft_keyword("NODE") {
+                self.consume(); // NODE
+            }
+            if !self.is_soft_keyword("KEY") {
+                return Ok(None);
+            }
+            self.consume(); // KEY
+            ConstraintKind::NodeKey
+        } else {
+            // `IS :: TYPE` and other forms.
+            return Ok(None);
+        };
+        self.finish_constraint(CreateConstraint {
+            name,
+            label,
+            kind,
+            properties,
+            if_not_exists,
+            span,
+        })
+    }
+
+    /// `var.property` inside a constraint rule, or `None` when the tokens are
+    /// something else (another variable, no dot).
+    fn constraint_property(&mut self, var: &str) -> ParseResult<Option<String>> {
+        let (owner, _) = self.consume_name()?;
+        if owner != var || !matches!(self.peek_kind(), TokenKind::Dot) {
             return Ok(None);
         }
-        self.consume(); // UNIQUE
+        self.consume(); // .
+        Ok(Some(self.consume_name()?.0))
+    }
+
+    /// Skip `OPTIONS {…}` and require the end of the statement.
+    fn finish_constraint(&mut self, c: CreateConstraint) -> ParseResult<Option<Clause>> {
         if self.is_soft_keyword("OPTIONS") {
             self.consume_to_statement_end();
         }
         if !self.at_eof() && !matches!(self.peek_kind(), TokenKind::Semicolon | TokenKind::Union) {
             return Ok(None);
         }
-        Ok(Some(Clause::CreateConstraint(CreateConstraint {
-            name,
-            label,
-            property,
-            if_not_exists,
-            span,
-        })))
+        Ok(Some(Clause::CreateConstraint(c)))
     }
 
     /// Is the next token one of the non-vector index-type soft keywords that can
@@ -1022,7 +1088,8 @@ impl Parser {
     fn parse_show(&mut self) -> ParseResult<Clause> {
         let span = self.peek_span();
         self.consume(); // SHOW
-        let mut filter = "ALL".to_string();
+                        // Type words, joined: `SHOW NODE KEY CONSTRAINTS` filters by "NODE KEY".
+        let mut words: Vec<String> = Vec::new();
         let procedure = loop {
             let word = match self.peek_kind() {
                 TokenKind::Identifier(s) => s.to_uppercase(),
@@ -1040,8 +1107,13 @@ impl Parser {
             match word.as_str() {
                 "INDEX" | "INDEXES" => break "showIndexes",
                 "CONSTRAINT" | "CONSTRAINTS" => break "showConstraints",
-                _ => filter = word,
+                _ => words.push(word),
             }
+        };
+        let filter = if words.is_empty() {
+            "ALL".to_string()
+        } else {
+            words.join(" ")
         };
 
         let (yields, where_clause) = if matches!(self.peek_kind(), TokenKind::Yield) {

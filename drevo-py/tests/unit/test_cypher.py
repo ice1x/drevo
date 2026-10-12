@@ -209,3 +209,24 @@ def test_a_unique_constraint_refuses_duplicates(drevo_db: drevo.Drevo, fake) -> 
         )
     rows = drevo_db.execute("MATCH (c:Customer) RETURN count(c) AS c").rows
     assert rows == [{"c": 1}]
+
+
+def test_a_not_null_constraint_is_checked_at_statement_end(
+    drevo_db: drevo.Drevo, fake: Faker
+) -> None:
+    """`IS NOT NULL` lets a statement set the property late; a statement that
+    leaves it missing writes nothing (#606)."""
+    drevo_db.execute("CREATE CONSTRAINT FOR (t:Ticket) REQUIRE t.status IS NOT NULL")
+    drevo_db.execute(
+        "CREATE (t:Ticket {title: $title}) SET t.status = 'open'",
+        {"title": fake.sentence()},
+    )
+    with pytest.raises(drevo.ConstraintViolation):
+        drevo_db.execute(
+            "CREATE (:Ticket {title: $a, status: 'open'}), (:Ticket {title: $b})",
+            {"a": fake.sentence(), "b": fake.sentence()},
+        )
+    with pytest.raises(drevo.ConstraintViolation):
+        drevo_db.create_node(drevo.NewNode(kind="Ticket", title=fake.sentence()))
+    rows = drevo_db.execute("MATCH (t:Ticket) RETURN count(t) AS c").rows
+    assert rows == [{"c": 1}]
