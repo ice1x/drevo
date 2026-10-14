@@ -45,7 +45,8 @@ changes to the same records (a lost update).
 4. Move the transaction from the registered set into a **prepared table** keyed by `gid`, holding
    `{ base, working, ops, prepared_at }`.
 5. Set the graph's **prepared fence**: while any prepared transaction exists, every other commit
-   (registered transactions and autocommit writes) is refused (§2.3). Reads are unaffected.
+   that writes (registered transactions and autocommit writes) is refused (§2.3). Reads, and
+   commits of transactions that wrote nothing, are unaffected.
 
 A `gid` is a caller-chosen string, unique among unresolved prepared transactions. A duplicate is
 rejected (`PrepareError::DuplicateGid`), as in PostgreSQL. An empty (read-only) transaction may be

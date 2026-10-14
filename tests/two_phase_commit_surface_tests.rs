@@ -332,3 +332,103 @@ fn the_fence_bolt_code_is_retryable_by_official_drivers() {
         );
     }
 }
+
+// ── Explicit transactions while a gid is prepared (#608) ───────────────
+
+const FORBIDDEN: &str = "Neo.ClientError.Transaction.ForbiddenDueToTransactionType";
+
+fn begin(s: &mut Session<'_>) {
+    assert!(matches!(
+        s.handle(ClientMessage::Begin {
+            extra: BTreeMap::new()
+        })[0],
+        ServerMessage::Success { .. }
+    ));
+}
+
+#[test]
+fn bolt_a_read_only_explicit_transaction_commits_while_prepared() {
+    let svc = Arc::new(NativeService::in_memory());
+    ok(&svc, "CREATE (:Applied {txn: 7})");
+    prepare_creating(&svc, "T", 1, "g");
+    let mut s = hello(&svc);
+    begin(&mut s);
+    let read = run(&mut s, "MATCH (m:Applied {txn: 7}) RETURN count(m) AS c");
+    assert_eq!(failure_code(&read), None, "{read:?}");
+    assert_eq!(records(&read), vec![vec![Bolt::Integer(1)]]);
+    let commit = s.handle(ClientMessage::Commit);
+    assert_eq!(failure_code(&commit), None, "{commit:?}");
+    assert_eq!(svc.list_prepared().len(), 1, "the gid is still prepared");
+}
+
+#[test]
+fn bolt_a_writing_explicit_transaction_is_still_fenced() {
+    let svc = Arc::new(NativeService::in_memory());
+    prepare_creating(&svc, "T", 1, "g");
+    let mut s = hello(&svc);
+    begin(&mut s);
+    assert_eq!(failure_code(&run(&mut s, "CREATE (:X)")), None);
+    assert_eq!(
+        failure_code(&s.handle(ClientMessage::Commit)).as_deref(),
+        Some("Neo.TransientError.Transaction.LockAcquisitionTimeout")
+    );
+    assert_eq!(count(&svc, "X"), 0);
+}
+
+#[test]
+fn bolt_resolving_inside_an_explicit_transaction_is_a_client_error() {
+    let svc = Arc::new(NativeService::in_memory());
+    prepare_creating(&svc, "T", 1, "g");
+    for q in [
+        "CALL drevo.tx.commitPrepared('g')",
+        "CALL drevo.tx.rollbackPrepared('g')",
+        "CALL drevo.tx.heuristicRollback('g')",
+        "CALL drevo.tx.listPrepared()",
+    ] {
+        let mut s = hello(&svc);
+        begin(&mut s);
+        let replies = run(&mut s, q);
+        assert_eq!(failure_code(&replies).as_deref(), Some(FORBIDDEN), "{q}");
+        let message = replies
+            .iter()
+            .find_map(|m| match m {
+                ServerMessage::Failure { metadata } => match metadata.get("message") {
+                    Some(Bolt::String(m)) => Some(m.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert!(message.contains("explicit transaction"), "{q}: {message}");
+        assert!(!message.contains("KV storage engine"), "{q}: {message}");
+    }
+    assert_eq!(svc.list_prepared().len(), 1, "nothing was resolved");
+
+    // The same call in auto-commit mode resolves it.
+    let mut s = hello(&svc);
+    assert_eq!(
+        failure_code(&run(&mut s, "CALL drevo.tx.rollbackPrepared('g')")),
+        None
+    );
+    assert!(svc.list_prepared().is_empty());
+}
+
+#[test]
+fn service_resolving_inside_a_transaction_names_the_cause() {
+    let svc = NativeService::in_memory();
+    prepare_creating(&svc, "T", 1, "g");
+    let tx = svc.begin_tx();
+    let err = svc
+        .execute_in_tx(
+            tx,
+            &parse("CALL drevo.tx.commitPrepared('g')").unwrap(),
+            HashMap::new(),
+        )
+        .expect_err("refused");
+    assert!(
+        matches!(err, ExecError::ForbiddenInTransaction { ref procedure, .. } if procedure == "drevo.tx.commitPrepared"),
+        "{err:?}"
+    );
+    svc.rollback_tx(tx);
+    assert_eq!(svc.list_prepared().len(), 1);
+}
