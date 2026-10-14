@@ -569,6 +569,7 @@ impl NativeService {
                     embedder: None,
                     semantic: Some(self),
                     in_transaction: false,
+                    tx_has_written: false,
                 };
                 execute_on_engine_with_context(query, &engine, &ctx, params.clone())
             });
@@ -747,6 +748,9 @@ impl NativeService {
     /// runs over the transaction's working copy (read-your-writes, invisible
     /// to concurrent statements) **without** index narrowing — the service's
     /// indexes describe the committed graph, not this transaction's view.
+    /// Search, vector, `SHOW INDEXES` and auto-embed work as in auto-commit
+    /// mode; full-text search fails once the transaction has written, and
+    /// schema commands fail with `ForbiddenInTransaction`.
     ///
     /// # Errors
     ///
@@ -763,14 +767,26 @@ impl NativeService {
                 "the transaction has already been closed",
             ))));
         };
-        // No index stack (it describes the committed graph) and no semantic
-        // control plane (its auto-embed would act on uncommitted writes).
-        let ctx = NativeQueryContext {
-            in_transaction: true,
-            ..NativeQueryContext::default()
-        };
+        // The label, property, path and text indexes describe the committed
+        // graph, not this transaction's snapshot, so reads scan instead. The
+        // full-text indexes have no scan fallback: they serve the statement
+        // and their hits resolve against the snapshot, until the transaction
+        // has written (`tx_has_written`).
+        let tx_has_written = self.graph.tx_has_writes(tx);
         crate::cypher::executor::deadline::with_statement_timeout(self.statement_timeout(), || {
-            execute_on_engine_with_context(query, &engine, &ctx, params)
+            self.with_fresh_indexes(|idx| {
+                let ctx = NativeQueryContext {
+                    fts: Some(&idx.fts),
+                    fts_rel: Some(&idx.fts_rel),
+                    #[cfg(feature = "http")]
+                    embedder: self.embedder.get(),
+                    semantic: Some(self),
+                    in_transaction: true,
+                    tx_has_written,
+                    ..NativeQueryContext::default()
+                };
+                execute_on_engine_with_context(query, &engine, &ctx, params)
+            })
         })
     }
 
@@ -2248,6 +2264,7 @@ impl NativeService {
             // manage this service's registry instead of a KV secondary (#447).
             semantic: Some(self),
             in_transaction: false,
+            tx_has_written: false,
         };
         execute_on_engine_with_context(query, &self.graph, &ctx, params)
     }

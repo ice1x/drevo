@@ -36,6 +36,24 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Search, vector and schema statements inside explicit transactions**
+  (issue #610). Inside Bolt `BEGIN` … `COMMIT` (the Neo4j drivers'
+  `execute_read` / `execute_write`) and a Python `Transaction`:
+  - Full-text, vector and fuzzy search, `keywords()`, `drevo.semantic.*`
+    queries and status now work. Before, they failed with an error blaming a
+    "KV storage engine". Hits resolve against the transaction's snapshot.
+  - `SHOW INDEXES` / `SHOW CONSTRAINTS` list the schema (they were empty).
+  - Nodes and relationships created in the transaction are auto-embedded.
+  - Full-text search after the transaction (or the same statement) wrote fails
+    with a message saying the index covers committed data only (Bolt
+    `Neo.ClientError.Transaction.ForbiddenDueToTransactionType`).
+  - Schema commands (`CREATE` / `DROP INDEX`, `CREATE` / `DROP CONSTRAINT`,
+    `drevo.semantic.register*` / `reindex*`) take effect at once and cannot be
+    rolled back, so they fail with that code and say to use auto-commit mode.
+  - A query run without the server's services now says which one is missing
+    instead of naming the removed KV engine.
+  - drevo-core: `NativeGraph::tx_has_writes`.
+
 - **Explicit transactions while a two-phase commit is prepared** (issue #608):
   - A transaction that only read now commits while a transaction is prepared
     (before, its `COMMIT` failed with the retryable "writes are paused"

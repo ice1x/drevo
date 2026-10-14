@@ -1370,6 +1370,44 @@ Unlike the reference library, where `valid_until` is written but never set,
 drevo closes superseded facts and filters on the window, so "as of" questions
 get real answers.
 
+### Explicit transactions
+
+An explicit transaction is a group of statements that commit or roll back
+together: Bolt `BEGIN` … `COMMIT` (which is how the Neo4j drivers run
+`session.execute_read` / `execute_write`) or a Python `Transaction`. Its
+statements read a snapshot taken at `BEGIN` plus its own writes, and nobody
+else sees those writes until `COMMIT`.
+
+Inside one, everything a statement can do in auto-commit mode works,
+including full-text, vector and fuzzy search, `keywords()`, `SHOW INDEXES`,
+`SHOW CONSTRAINTS` and auto-embedding of new nodes. Two exceptions:
+
+- **Full-text search covers committed data only.** `fts.search`,
+  `fts.searchRelationships`, `db.index.fulltext.queryNodes` and
+  `drevo.memory.recall` work until the transaction writes. After that they
+  fail with `Neo.ClientError.Transaction.ForbiddenDueToTransactionType`,
+  because the index cannot rank uncommitted writes. Search before writing, or
+  after `COMMIT`. A hit committed by someone else after `BEGIN` is left out,
+  since it is not in the snapshot. The same rule applies to one auto-commit
+  statement that writes and then searches.
+- **Schema commands run in auto-commit mode only.** `CREATE` / `DROP INDEX`,
+  `CREATE VECTOR INDEX`, `CREATE` / `DROP CONSTRAINT`,
+  `drevo.semantic.register`, `registerRel`, `reindex` and `reindexRel` take
+  effect at once and cannot be rolled back. Inside an explicit transaction they
+  fail with the same code, and the transaction is rolled back.
+
+A read in a managed transaction, for example with the Python driver:
+
+```python
+with driver.session() as session:
+    rows = session.execute_read(
+        lambda tx: tx.run(
+            "CALL db.index.fulltext.queryNodes('docs', $q) YIELD node, score "
+            "RETURN node.title AS title, score", q="graph"
+        ).data()
+    )
+```
+
 ### Two-phase commit (#556)
 
 drevo can take part in a distributed transaction run by an external

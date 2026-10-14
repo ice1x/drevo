@@ -136,6 +136,37 @@ def test_a_failed_statement_rolls_the_transaction_back(drevo_db: drevo.Drevo) ->
     assert count(drevo_db, "T") == 0
 
 
+# ── Search and schema inside a transaction (#610) ───────────────────
+
+
+def test_full_text_search_runs_in_a_transaction(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    word = fake.unique.lexify("zq????").lower()
+    drevo_db.execute("CREATE (:Doc {title: $t})", {"t": f"{word} notes"})
+    with drevo_db.transaction() as tx:
+        rows = tx.execute(
+            "CALL fts.search($q, 5) YIELD node RETURN node.title AS t", {"q": word}
+        ).rows
+        assert rows == [{"t": f"{word} notes"}]
+        tx.execute("CREATE (:Doc {title: 'draft'})")
+        with pytest.raises(drevo.CypherError, match="committed data only"):
+            tx.execute("CALL fts.search($q, 5) YIELD node RETURN node", {"q": word})
+
+
+def test_show_indexes_in_a_transaction_lists_the_schema(drevo_db: drevo.Drevo) -> None:
+    drevo_db.execute("CREATE TEXT INDEX doc_title FOR (n:Doc) ON (n.title)")
+    with drevo_db.transaction() as tx:
+        names = [row["name"] for row in tx.execute("SHOW INDEXES YIELD name RETURN name").rows]
+    assert "doc_title" in names
+
+
+def test_a_schema_command_in_a_transaction_raises(drevo_db: drevo.Drevo) -> None:
+    tx = drevo_db.begin()
+    with pytest.raises(drevo.CypherError, match="auto-commit"):
+        tx.execute("CREATE TEXT INDEX doc_title FOR (n:Doc) ON (n.title)")
+    assert tx.closed
+    assert drevo_db.execute("SHOW INDEXES YIELD name RETURN name").rows == []
+
+
 def test_a_syntax_error_also_closes_the_transaction(drevo_db: drevo.Drevo) -> None:
     tx = drevo_db.begin()
     with pytest.raises(drevo.CypherSyntaxError):

@@ -386,19 +386,35 @@ pub enum ExecError {
         /// Source span of the offending `CALL`.
         span: Span,
     },
-    /// A procedure that acts on the database outside the current transaction
-    /// (`drevo.tx.commitPrepared`, `rollbackPrepared`, `heuristicRollback`,
-    /// `listPrepared`) was called inside an explicit transaction. Resolving a
-    /// prepared transaction takes effect at once and cannot be rolled back
-    /// with the caller's transaction, so these run in auto-commit mode only.
+    /// A command that acts on the database outside the current transaction
+    /// was run inside an explicit transaction. Resolving a prepared
+    /// transaction (`drevo.tx.commitPrepared`, `rollbackPrepared`,
+    /// `heuristicRollback`, `listPrepared`) and changing the schema
+    /// (`CREATE INDEX`, `CREATE CONSTRAINT`, `drevo.semantic.register`, …)
+    /// take effect at once and cannot be rolled back with the caller's
+    /// transaction, so these run in auto-commit mode only.
     #[error(
         "`{procedure}` cannot run inside an explicit transaction; call it in auto-commit mode"
     )]
     ForbiddenInTransaction {
-        /// Procedure name (`"drevo.tx.commitPrepared"`).
+        /// Procedure or command name (`"drevo.tx.commitPrepared"`,
+        /// `"CREATE INDEX"`).
         procedure: String,
-        /// Source span of the offending `CALL`.
+        /// Source span of the offending `CALL` or schema command.
         span: Span,
+    },
+    /// A full-text procedure (`fts.search`, `db.index.fulltext.queryNodes`,
+    /// …) ran after its statement or transaction had written. The full-text
+    /// index covers committed data only, so it cannot rank those writes;
+    /// search before writing, or after `COMMIT`.
+    #[error(
+        "`{feature}` searches the full-text index, which covers committed data only, \
+         and this statement or transaction has already written; search before writing \
+         or after COMMIT"
+    )]
+    IndexBehindWrites {
+        /// Procedure name (`"fts.search"`).
+        feature: String,
     },
     /// The arms of a `UNION` are incompatible. Either the projected
     /// column names differ between arms (Neo4j requires every arm of a
@@ -424,14 +440,14 @@ pub enum ExecError {
     /// Underlying storage / serialization failure.
     #[error("storage error: {0}")]
     Storage(#[from] DrevoError),
-    /// The query used a subsystem the active graph engine does not provide.
-    /// The native `drevo-core` engine implements the core graph (nodes, edges,
-    /// adjacency) but not the KV store's secondary indexes — full-text search,
-    /// vector/semantic similarity, recency scans, keyword extraction. Those
-    /// require the KV (`Drevo`) engine (they will be fed to the native engine
-    /// via a change-feed in a later Phase-6 slice).
+    /// The query used a service the executor was run without: the
+    /// full-text index, the vector and semantic registry, the schema
+    /// registry or a text embedder. A drevo server attaches them all (the
+    /// embedder when one is configured); a bare graph engine has none, so
+    /// `CALL fts.search('x', 5)` on a `NativeGraph` fails with this error.
     #[error(
-        "`{feature}` is not available on the active graph engine (requires the KV storage engine)"
+        "`{feature}` is not available: this query runs without the service that provides it \
+         (full-text index, vector or schema registry, or text embedder)"
     )]
     EngineCapability {
         /// Short label of the unavailable subsystem (`"fts.search"`).
@@ -501,6 +517,7 @@ impl ExecError {
             | Self::InvalidCreate(_)
             | Self::InvalidMutation(_)
             | Self::EngineCapability { .. }
+            | Self::IndexBehindWrites { .. }
             | Self::Timeout { .. }
             | Self::Storage(_) => None,
         }
@@ -1018,6 +1035,11 @@ pub struct NativeQueryContext<'a> {
     /// `drevo.tx.commitPrepared`, are refused with
     /// [`ExecError::ForbiddenInTransaction`].
     pub in_transaction: bool,
+    /// The explicit transaction has written in an earlier statement, so the
+    /// full-text index (committed data only) does not describe what this
+    /// statement reads: full-text procedures fail with
+    /// [`ExecError::IndexBehindWrites`].
+    pub tx_has_written: bool,
 }
 
 /// Execute over any engine with a [`NativeQueryContext`] attached — the
@@ -1235,6 +1257,7 @@ fn execute_single(
         native_embedder: ctx.embedder,
         native_semantic: ctx.semantic,
         in_transaction: ctx.in_transaction,
+        tx_has_written: ctx.tx_has_written,
         pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
@@ -2381,6 +2404,9 @@ struct Executor<'a> {
     /// Whether the statement runs inside an explicit transaction
     /// ([`NativeQueryContext::in_transaction`]).
     in_transaction: bool,
+    /// Whether an earlier statement of the explicit transaction wrote
+    /// ([`NativeQueryContext::tx_has_written`]).
+    tx_has_written: bool,
     /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
     /// `WHERE` clause (`variable → [constraint]`), so a term like
     /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
@@ -2425,6 +2451,20 @@ impl<'a> Executor<'a> {
         ExecError::EngineCapability {
             feature: feature.to_string(),
         }
+    }
+
+    /// The full-text `index` for `feature`, when it describes what this
+    /// statement reads. It covers committed data only, so once the statement
+    /// or its explicit transaction has written it is withheld with
+    /// [`ExecError::IndexBehindWrites`] — full-text has no exact-scan
+    /// fallback that could see those writes.
+    fn full_text_index<T>(&self, index: Option<&'a T>, feature: &str) -> ExecResultT<&'a T> {
+        if self.statement_has_written() || self.tx_has_written {
+            return Err(ExecError::IndexBehindWrites {
+                feature: feature.to_string(),
+            });
+        }
+        index.ok_or_else(|| Self::engine_capability(feature))
     }
 
     /// Embed query text server-side through the native path's attached
@@ -2510,6 +2550,7 @@ impl<'a> Executor<'a> {
     /// constraint in the native service, which enforces it from now on.
     /// Produces no rows, like Neo4j schema commands.
     fn run_create_constraint(&mut self, c: &CreateConstraint) -> ExecResultT<()> {
+        self.outside_transaction("CREATE CONSTRAINT", c.span)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE CONSTRAINT"))?;
@@ -2525,6 +2566,7 @@ impl<'a> Executor<'a> {
 
     /// `DROP CONSTRAINT <name> [IF EXISTS]` (issue #604).
     fn run_drop_constraint(&mut self, d: &DropConstraint) -> ExecResultT<()> {
+        self.outside_transaction("DROP CONSTRAINT", d.span)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("DROP CONSTRAINT"))?;
@@ -2537,6 +2579,7 @@ impl<'a> Executor<'a> {
     /// service; the index is built before the next statement. Produces no
     /// rows, like Neo4j schema commands.
     fn run_create_path_index(&mut self, c: &CreatePathIndex) -> ExecResultT<()> {
+        self.outside_transaction("CREATE INDEX", c.span)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE INDEX"))?;
@@ -2552,6 +2595,7 @@ impl<'a> Executor<'a> {
 
     /// `DROP INDEX <name> [IF EXISTS]` (issue #578): drop a path or vector index.
     fn run_drop_index(&mut self, d: &DropIndex) -> ExecResultT<()> {
+        self.outside_transaction("DROP INDEX", d.span)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("DROP INDEX"))?;
@@ -2564,6 +2608,7 @@ impl<'a> Executor<'a> {
     /// `db.index.vector.queryNodes(<name>, …)` can later resolve it. Produces no
     /// rows (Neo4j schema commands return an empty result), only a registration.
     fn run_create_vector_index(&mut self, c: &CreateVectorIndex) -> ExecResultT<()> {
+        self.outside_transaction("CREATE VECTOR INDEX", c.span)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE VECTOR INDEX"))?;
@@ -5509,19 +5554,17 @@ impl<'a> Executor<'a> {
         let _index_name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
         let query = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
 
-        if let Some(fts) = self.native_fts.filter(|_| !self.statement_has_written()) {
-            let mut rows = Vec::new();
-            for (id, score) in fts.search(&query, DEFAULT_FULLTEXT_LIMIT) {
-                if let Some(node) = self.engine().get_node(id)? {
-                    rows.push(vec![
-                        Value::Node(node_to_value(&node)),
-                        Value::Float(f64::from(score)),
-                    ]);
-                }
+        let fts = self.full_text_index(self.native_fts, "db.index.fulltext.queryNodes")?;
+        let mut rows = Vec::new();
+        for (id, score) in fts.search(&query, DEFAULT_FULLTEXT_LIMIT) {
+            if let Some(node) = self.engine().get_node(id)? {
+                rows.push(vec![
+                    Value::Node(node_to_value(&node)),
+                    Value::Float(f64::from(score)),
+                ]);
             }
-            return Ok(rows);
         }
-        Err(Self::engine_capability("db.index.fulltext.queryNodes"))
+        Ok(rows)
     }
 
     /// `CALL drevo.memory.recall(session, query, k) YIELD node, score` (issue
@@ -5546,9 +5589,7 @@ impl<'a> Executor<'a> {
         // Over-fetch FTS candidates (the index is graph-wide, not per-session),
         // then keep this session's messages in BM25 order until we have `k`.
         let candidates = k.saturating_mul(8).max(50);
-        let Some(fts) = self.native_fts.filter(|_| !self.statement_has_written()) else {
-            return Err(Self::engine_capability("drevo.memory.recall"));
-        };
+        let fts = self.full_text_index(self.native_fts, "drevo.memory.recall")?;
         let mut rows = Vec::new();
         for (id, score) in fts.search(&query, candidates) {
             if rows.len() >= k {
@@ -6319,6 +6360,7 @@ impl<'a> Executor<'a> {
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        self.outside_transaction("drevo.semantic.register", span)?;
         // Arity (4) is enforced by the upfront validation sweep.
         let empty = Bindings::new();
         let label = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
@@ -6903,6 +6945,7 @@ impl<'a> Executor<'a> {
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        self.outside_transaction("drevo.semantic.reindex", span)?;
         // Arity (3) is enforced by the upfront validation sweep.
         let empty = Bindings::new();
         let label = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
@@ -6964,6 +7007,7 @@ impl<'a> Executor<'a> {
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        self.outside_transaction("drevo.semantic.registerRel", span)?;
         let empty = Bindings::new();
         let rel_type = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
         let text_property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
@@ -7060,6 +7104,7 @@ impl<'a> Executor<'a> {
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        self.outside_transaction("drevo.semantic.reindexRel", span)?;
         let empty = Bindings::new();
         let rel_type = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
         let embedding_property = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
@@ -7136,25 +7181,20 @@ impl<'a> Executor<'a> {
         let query = query.as_string(span)?.to_string();
         let k = self.eval_usize(&args[1], &empty)?;
 
-        // On the native engine, answer from the change-feed-fed full-text index;
-        // otherwise use the KV store's `search_fts`. Both return nodes ranked by
-        // descending BM25 score. Once this statement has written, the
-        // pre-statement FTS snapshot may be missing those writes, and full-text
-        // has no exact-scan fallback — so the index is treated as absent
-        // (surfacing the engine-capability error) rather than answering stale.
-        if let Some(fts) = self.native_fts.filter(|_| !self.statement_has_written()) {
-            let mut rows = Vec::new();
-            for (id, score) in fts.search(&query, k) {
-                if let Some(node) = self.engine().get_node(id)? {
-                    rows.push(vec![
-                        Value::Node(node_to_value(&node)),
-                        Value::Float(f64::from(score)),
-                    ]);
-                }
+        // Answer from the change-feed-fed full-text index, nodes ranked by
+        // descending BM25 score; it is withheld once the statement or its
+        // transaction has written (see `full_text_index`).
+        let fts = self.full_text_index(self.native_fts, "fts.search")?;
+        let mut rows = Vec::new();
+        for (id, score) in fts.search(&query, k) {
+            if let Some(node) = self.engine().get_node(id)? {
+                rows.push(vec![
+                    Value::Node(node_to_value(&node)),
+                    Value::Float(f64::from(score)),
+                ]);
             }
-            return Ok(rows);
         }
-        Err(Self::engine_capability("fts.search"))
+        Ok(rows)
     }
 
     /// `CALL drevo.text.fuzzy(indexName, query, maxEdits) YIELD node, distance`
@@ -7244,28 +7284,19 @@ impl<'a> Executor<'a> {
         let query = query.as_string(span)?.to_string();
         let k = self.eval_usize(&args[1], &empty)?;
 
-        // On the native engine, answer from the change-feed-fed relationship
-        // full-text index; otherwise use the KV store's edge FTS. Both return
-        // edges ranked by descending BM25 score. As with `fts.search`, once
-        // this statement has written the pre-statement snapshot may be missing
-        // those writes and edge FTS has no exact-scan fallback, so the index is
-        // treated as absent (surfacing the capability error) rather than stale.
-        if let Some(fts_rel) = self
-            .native_fts_rel
-            .filter(|_| !self.statement_has_written())
-        {
-            let mut rows = Vec::new();
-            for (id, score) in fts_rel.search(&query, k) {
-                if let Some(edge) = self.engine().get_edge(id)? {
-                    rows.push(vec![
-                        Value::Relationship(edge_to_value(&edge)),
-                        Value::Float(f64::from(score)),
-                    ]);
-                }
+        // Answer from the relationship full-text index, edges ranked by
+        // descending BM25 score; withheld after a write, as for `fts.search`.
+        let fts_rel = self.full_text_index(self.native_fts_rel, "fts.searchRelationships")?;
+        let mut rows = Vec::new();
+        for (id, score) in fts_rel.search(&query, k) {
+            if let Some(edge) = self.engine().get_edge(id)? {
+                rows.push(vec![
+                    Value::Relationship(edge_to_value(&edge)),
+                    Value::Float(f64::from(score)),
+                ]);
             }
-            return Ok(rows);
         }
-        Err(Self::engine_capability("fts.searchRelationships"))
+        Ok(rows)
     }
 
     /// Run a built-in procedure and return its output rows, each a

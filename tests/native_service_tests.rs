@@ -412,7 +412,7 @@ fn semantic_embed_without_an_embedder_surfaces_the_capability_error() {
         .expect_err("no embedder installed");
     assert!(
         err.to_string()
-            .contains("not available on the active graph engine"),
+            .contains("`semantic embedding` is not available"),
         "unexpected error: {err}"
     );
 }

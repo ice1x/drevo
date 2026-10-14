@@ -405,9 +405,11 @@ mod codes {
     /// reclassify those two as non-retryable client errors.
     pub const TRANSIENT_PREPARED_PENDING: &str =
         "Neo.TransientError.Transaction.LockAcquisitionTimeout";
-    /// A procedure that acts outside the caller's transaction (resolving a
-    /// prepared two-phase-commit transaction) was called inside an explicit
-    /// one (#608). A client error, so drivers do not retry it.
+    /// The statement does not fit the transaction it runs in: a command that
+    /// acts outside the caller's transaction (resolving a prepared
+    /// transaction, a schema change) inside an explicit one, or a full-text
+    /// search after the transaction wrote. A client error, so drivers do not
+    /// retry it.
     pub const FORBIDDEN_DUE_TO_TRANSACTION_TYPE: &str =
         "Neo.ClientError.Transaction.ForbiddenDueToTransactionType";
     /// A commit violated a declared schema constraint.
@@ -1586,7 +1588,12 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         // An unknown / heuristically rolled-back gid in `drevo.tx.*` (#590):
         // a dedicated code so a coordinator classifies it without parsing text.
         ExecError::PreparedTransactionUnresolved { reason, .. } => reason.code(),
-        ExecError::ForbiddenInTransaction { .. } => codes::FORBIDDEN_DUE_TO_TRANSACTION_TYPE,
+        // A schema command or prepared-transaction resolve inside an explicit
+        // transaction, or a full-text search after this transaction wrote
+        // (#608, #610): the statement does not fit the transaction's state.
+        ExecError::ForbiddenInTransaction { .. } | ExecError::IndexBehindWrites { .. } => {
+            codes::FORBIDDEN_DUE_TO_TRANSACTION_TYPE
+        }
         // Writes paused by a prepared two-phase-commit transaction (#556):
         // transient, so drivers back off and retry.
         ExecError::Storage(crate::error::DrevoError::PreparedTransactionPending(_)) => {
