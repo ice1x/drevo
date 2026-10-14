@@ -220,7 +220,7 @@ fn while_prepared_other_writers_fail_fast_and_reads_work() {
 }
 
 #[test]
-fn a_new_transaction_can_begin_and_read_while_prepared_but_not_commit() {
+fn a_new_transaction_can_begin_and_read_while_prepared_but_only_a_writer_is_refused() {
     let g = NativeGraph::new();
     let tx = tx_creating(&g, &["ada"]);
     g.tx_prepare(tx, "g1").unwrap();
@@ -231,8 +231,40 @@ fn a_new_transaction_can_begin_and_read_while_prepared_but_not_commit() {
         g.tx_commit(writer),
         Err(CommitError::PreparedPending(_))
     ));
-    assert!(g.tx_rollback(reader));
+    // A transaction that wrote nothing has nothing to pause: it commits.
+    g.tx_commit(reader).unwrap();
+    assert!(!g.tx_rollback(reader), "the commit closed the transaction");
     g.rollback_prepared("g1").unwrap();
+}
+
+#[test]
+fn a_read_only_transaction_commits_while_prepared() {
+    let g = NativeGraph::new();
+    g.create_node(node("existing")).unwrap();
+    let read_only = g.begin();
+    assert_eq!(read_only.all_nodes().len(), 1);
+    let tx = tx_creating(&g, &["ada"]);
+    g.tx_prepare(tx, "g1").unwrap();
+
+    read_only.commit().unwrap();
+    // A failed write leaves the write set empty too.
+    let reader = g.tx_begin();
+    assert!(g.tx_engine(reader).unwrap().delete_node(9_999).is_err());
+    g.tx_commit(reader).unwrap();
+
+    assert_eq!(gids(&g), vec!["g1"]);
+    g.commit_prepared("g1").unwrap();
+    assert_eq!(titles(&g), vec!["ada", "existing"]);
+}
+
+#[test]
+fn a_read_only_transaction_does_not_conflict_with_a_later_writer() {
+    let g = NativeGraph::new();
+    let reader = g.tx_begin();
+    assert!(g.tx_engine(reader).unwrap().all_nodes().unwrap().is_empty());
+    g.create_node(node("meanwhile")).unwrap();
+    g.tx_commit(reader).unwrap();
+    assert_eq!(titles(&g), vec!["meanwhile"]);
 }
 
 // ── 7: commit_prepared never conflicts ─────────────────────────────────

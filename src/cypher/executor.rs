@@ -386,6 +386,20 @@ pub enum ExecError {
         /// Source span of the offending `CALL`.
         span: Span,
     },
+    /// A procedure that acts on the database outside the current transaction
+    /// (`drevo.tx.commitPrepared`, `rollbackPrepared`, `heuristicRollback`,
+    /// `listPrepared`) was called inside an explicit transaction. Resolving a
+    /// prepared transaction takes effect at once and cannot be rolled back
+    /// with the caller's transaction, so these run in auto-commit mode only.
+    #[error(
+        "`{procedure}` cannot run inside an explicit transaction; call it in auto-commit mode"
+    )]
+    ForbiddenInTransaction {
+        /// Procedure name (`"drevo.tx.commitPrepared"`).
+        procedure: String,
+        /// Source span of the offending `CALL`.
+        span: Span,
+    },
     /// The arms of a `UNION` are incompatible. Either the projected
     /// column names differ between arms (Neo4j requires every arm of a
     /// `UNION` to return the same column names in the same order), or a
@@ -480,6 +494,7 @@ impl ExecError {
             | Self::InvalidFunctionCall { span, .. }
             | Self::InvalidProcedureCall { span, .. }
             | Self::PreparedTransactionUnresolved { span, .. }
+            | Self::ForbiddenInTransaction { span, .. }
             | Self::UnionMismatch { span, .. }
             | Self::InvalidRegex { span, .. } => Some(*span),
             Self::MissingParameter(_)
@@ -998,6 +1013,11 @@ pub struct NativeQueryContext<'a> {
     /// `.registerRel` / `.status` manage the native registry without a KV
     /// secondary (issue #447).
     pub semantic: Option<&'a crate::native_service::NativeService>,
+    /// The statement runs inside an explicit transaction (Bolt `BEGIN`,
+    /// drevo-py `Transaction`): procedures that act outside it, such as
+    /// `drevo.tx.commitPrepared`, are refused with
+    /// [`ExecError::ForbiddenInTransaction`].
+    pub in_transaction: bool,
 }
 
 /// Execute over any engine with a [`NativeQueryContext`] attached — the
@@ -1214,6 +1234,7 @@ fn execute_single(
         native_values: ctx.values,
         native_embedder: ctx.embedder,
         native_semantic: ctx.semantic,
+        in_transaction: ctx.in_transaction,
         pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
@@ -2357,6 +2378,9 @@ struct Executor<'a> {
     /// the native registry instead of the KV `secondary`. `None` on the KV path
     /// (which uses `secondary`) or when the serving layer did not supply one.
     native_semantic: Option<&'a crate::native_service::NativeService>,
+    /// Whether the statement runs inside an explicit transaction
+    /// ([`NativeQueryContext::in_transaction`]).
+    in_transaction: bool,
     /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
     /// `WHERE` clause (`variable → [constraint]`), so a term like
     /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
@@ -6351,10 +6375,24 @@ impl<'a> Executor<'a> {
         Ok(statuses.iter().map(semantic_status_row).collect())
     }
 
+    /// Refuse `procedure` inside an explicit transaction: it acts on the
+    /// database outside the caller's transaction (see
+    /// [`ExecError::ForbiddenInTransaction`]).
+    fn outside_transaction(&self, procedure: &str, span: Span) -> ExecResultT<()> {
+        if self.in_transaction {
+            return Err(ExecError::ForbiddenInTransaction {
+                procedure: procedure.to_string(),
+                span,
+            });
+        }
+        Ok(())
+    }
+
     /// `CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount` (#556) —
     /// the prepared, unresolved two-phase-commit transactions, by ascending
     /// gid; `preparedAt` is ISO-8601 UTC.
-    fn proc_tx_list_prepared(&self, _span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+    fn proc_tx_list_prepared(&self, span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        self.outside_transaction("drevo.tx.listPrepared", span)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("drevo.tx.listPrepared"))?;
@@ -6381,6 +6419,7 @@ impl<'a> Executor<'a> {
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        self.outside_transaction(name, span)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability(name))?;
@@ -6406,6 +6445,7 @@ impl<'a> Executor<'a> {
         span: Span,
         commit: bool,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        self.outside_transaction(name, span)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability(name))?;

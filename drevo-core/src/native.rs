@@ -2812,10 +2812,13 @@ impl NativeGraph {
     /// atomically (one fsynced WAL batch) if the graph has not changed
     /// since [`Self::tx_begin`] and the result satisfies every declared
     /// constraint. The slot is always closed — a failed commit discards
-    /// the buffered writes, exactly like [`NativeTx::commit`].
+    /// the buffered writes, exactly like [`NativeTx::commit`]. A
+    /// transaction that wrote nothing always commits.
     ///
     /// # Errors
     /// - [`CommitError::Conflict`] if another writer committed since begin.
+    /// - [`CommitError::PreparedPending`] if it wrote while a transaction is
+    ///   prepared.
     /// - [`CommitError::Constraint`] on a constraint violation.
     /// - [`CommitError::Io`] on a WAL failure, or for an unknown /
     ///   already-closed id.
@@ -2847,7 +2850,8 @@ impl NativeGraph {
     /// [`rollback_prepared`](Self::rollback_prepared), from any handle and
     /// across restarts. While the fence is up every other write fails fast
     /// ([`CoreError::PreparedTransactionPending`] /
-    /// [`CommitError::PreparedPending`]); reads are unaffected.
+    /// [`CommitError::PreparedPending`]); reads, and commits of transactions
+    /// that only read, are unaffected.
     ///
     /// # Errors
     ///
@@ -2991,15 +2995,22 @@ impl NativeGraph {
 
     /// The shared commit tail of [`NativeTx::commit`] and
     /// [`Self::tx_commit`]: conflict check, constraint validation, one
-    /// recorded (WAL + feed) batch, then the atomic swap.
+    /// recorded (WAL + feed) batch, then the atomic swap. An empty write set
+    /// commits at once.
     fn commit_parts(
         &self,
         base: Arc<Inner>,
         working: Arc<Inner>,
         ops: &[WalOp],
     ) -> std::result::Result<(), CommitError> {
+        // A transaction that wrote nothing has nothing to apply, validate or
+        // log: its reads came from its own snapshot, so it commits as is,
+        // even while a transaction is prepared or after another writer.
+        if ops.is_empty() {
+            return Ok(());
+        }
         let mut live = write(&self.inner);
-        // The two-phase-commit fence (#556): nothing else commits while a
+        // The two-phase-commit fence (#556): no other write commits while a
         // transaction is prepared.
         if !live.prepared.is_empty() {
             return Err(CommitError::PreparedPending(

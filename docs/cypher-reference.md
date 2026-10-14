@@ -1411,8 +1411,17 @@ write fails fast** with a retryable error:
 - HTTP: 503;
 - Python: `TransactionConflict`.
 
-Reads keep working. A prepared transaction is never resolved automatically;
-see the [Admin Guide](admin-guide.md) for the alert and HTTP routes.
+Reads keep working, in auto-commit and in explicit transactions: `BEGIN`,
+`MATCH … RETURN …`, `COMMIT` succeeds, because a transaction that wrote nothing
+has nothing to hold back. A prepared transaction is never resolved
+automatically; see the [Admin Guide](admin-guide.md) for the alert and HTTP
+routes.
+
+`commitPrepared`, `rollbackPrepared`, `heuristicRollback` and `listPrepared`
+run in auto-commit mode only. Resolving takes effect at once and cannot be
+undone by the caller's own rollback, so inside an explicit transaction they
+fail with `Neo.ClientError.Transaction.ForbiddenDueToTransactionType` (Python:
+`CypherError`), and the transaction is rolled back.
 
 ### Semantic-index control plane (#251, Phase 21)
 

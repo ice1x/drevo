@@ -12,6 +12,7 @@ the same through the optional PEP 249 two-phase-commit extension (`xid`,
 from __future__ import annotations
 
 import pytest
+from faker import Faker
 
 import drevo
 import drevo.dbapi as dbapi
@@ -60,6 +61,33 @@ def test_writes_while_prepared_raise_transaction_conflict(drevo_db: drevo.Drevo)
         other.commit()
     assert count(drevo_db, "X") == 0, "reads still work"
     drevo_db.commit_prepared("g1")
+
+
+def test_a_read_only_transaction_commits_while_prepared(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    """A transaction that wrote nothing is not held back by the fence (#608)."""
+    gid = fake.uuid4()
+    drevo_db.execute("CREATE (:Applied {txn: $t})", {"t": gid})
+    prepared(drevo_db, gid)
+    tx = drevo_db.begin()
+    rows = tx.execute("MATCH (m:Applied {txn: $t}) RETURN count(m) AS c", {"t": gid})
+    assert rows[0]["c"] == 1
+    tx.commit()
+    assert tx.closed
+    assert [p.gid for p in drevo_db.list_prepared()] == [gid]
+
+
+def test_resolving_inside_a_transaction_is_refused(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    """Resolving acts outside the caller's transaction, so it runs in
+    auto-commit mode only (#608)."""
+    gid = fake.uuid4()
+    prepared(drevo_db, gid)
+    tx = drevo_db.begin()
+    with pytest.raises(drevo.CypherError, match="explicit transaction"):
+        tx.execute("CALL drevo.tx.rollbackPrepared($gid)", {"gid": gid})
+    assert tx.closed  # a failed statement rolls the transaction back
+    assert [p.gid for p in drevo_db.list_prepared()] == [gid]
+    drevo_db.execute("CALL drevo.tx.rollbackPrepared($gid)", {"gid": gid})
+    assert drevo_db.list_prepared() == []
 
 
 def test_unknown_gid(drevo_db: drevo.Drevo) -> None:

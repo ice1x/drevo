@@ -568,6 +568,7 @@ impl NativeService {
                     #[cfg(not(feature = "http"))]
                     embedder: None,
                     semantic: Some(self),
+                    in_transaction: false,
                 };
                 execute_on_engine_with_context(query, &engine, &ctx, params.clone())
             });
@@ -762,8 +763,14 @@ impl NativeService {
                 "the transaction has already been closed",
             ))));
         };
+        // No index stack (it describes the committed graph) and no semantic
+        // control plane (its auto-embed would act on uncommitted writes).
+        let ctx = NativeQueryContext {
+            in_transaction: true,
+            ..NativeQueryContext::default()
+        };
         crate::cypher::executor::deadline::with_statement_timeout(self.statement_timeout(), || {
-            crate::cypher::executor::execute_on_engine(query, &engine, params)
+            execute_on_engine_with_context(query, &engine, &ctx, params)
         })
     }
 
@@ -2240,6 +2247,7 @@ impl NativeService {
             // The native semantic control plane — `semantic.register/status`
             // manage this service's registry instead of a KV secondary (#447).
             semantic: Some(self),
+            in_transaction: false,
         };
         execute_on_engine_with_context(query, &self.graph, &ctx, params)
     }

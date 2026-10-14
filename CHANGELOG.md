@@ -34,6 +34,19 @@ history and the in-repo issue tracker; format loosely follows
   - Definitions persist next to the WAL. Other constraint forms stay
     accepted no-ops.
 
+### Fixed
+
+- **Explicit transactions while a two-phase commit is prepared** (issue #608):
+  - A transaction that only read now commits while a transaction is prepared
+    (before, its `COMMIT` failed with the retryable "writes are paused"
+    error). In drevo-core, a commit with an empty write set always succeeds
+    and never reports a conflict.
+  - `drevo.tx.commitPrepared` / `rollbackPrepared` / `heuristicRollback` /
+    `listPrepared` inside an explicit transaction fail with
+    `Neo.ClientError.Transaction.ForbiddenDueToTransactionType` and a message
+    saying to call them in auto-commit mode, instead of an unknown error that
+    blamed the storage engine.
+
 ### Changed
 
 - **Node titles are no longer unique** (issue #595). Any number of nodes may
