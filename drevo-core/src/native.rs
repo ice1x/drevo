@@ -2808,6 +2808,35 @@ impl NativeGraph {
             })
     }
 
+    /// Whether a registered transaction has buffered any write — `false`
+    /// for one that only read, and for a closed id.
+    ///
+    /// ```
+    /// use drevo_core::engine::GraphEngine;
+    /// use drevo_core::model::{NewNode, Properties};
+    /// use drevo_core::native::NativeGraph;
+    ///
+    /// let g = NativeGraph::new();
+    /// let tx = g.tx_begin();
+    /// assert!(!g.tx_has_writes(tx));
+    /// let node = NewNode {
+    ///     kind: "note".to_string(),
+    ///     title: "draft".to_string(),
+    ///     body: String::new(),
+    ///     body_html: String::new(),
+    ///     properties: Properties::default(),
+    /// };
+    /// g.tx_engine(tx).unwrap().create_node(node).unwrap();
+    /// assert!(g.tx_has_writes(tx));
+    /// ```
+    pub fn tx_has_writes(&self, id: NativeTxId) -> bool {
+        self.reg_txs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id.0)
+            .is_some_and(|slot| !slot.ops.is_empty())
+    }
+
     /// Commit a registered transaction: apply its buffered writes
     /// atomically (one fsynced WAL batch) if the graph has not changed
     /// since [`Self::tx_begin`] and the result satisfies every declared

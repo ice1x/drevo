@@ -515,3 +515,19 @@ fn a_new_prepare_reusing_a_heuristic_gid_starts_fresh() {
     g.commit_prepared("reused").unwrap();
     assert_eq!(titles(&g), vec!["b"]);
 }
+
+#[test]
+fn tx_has_writes_reports_buffered_writes_of_an_open_transaction() {
+    let g = NativeGraph::new();
+    let reader = g.tx_begin();
+    let _ = g.tx_engine(reader).unwrap().all_nodes().unwrap();
+    assert!(!g.tx_has_writes(reader), "a read buffers nothing");
+    let writer = tx_creating(&g, &["ada"]);
+    assert!(g.tx_has_writes(writer));
+    g.tx_commit(writer).unwrap();
+    assert!(
+        !g.tx_has_writes(writer),
+        "a closed transaction has no writes"
+    );
+    assert!(g.tx_rollback(reader));
+}
