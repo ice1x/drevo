@@ -222,11 +222,31 @@
       </ol>
     </aside>
 
-    <!-- Graph canvas: Cytoscape.js renders here. The tooltip is an
-         absolutely-positioned child that app.js moves + fills on
-         node hover (task 00093). -->
-    <section class="graph-canvas" id="cy">
-      <div id="cy-tooltip" class="cy-tooltip" role="tooltip" aria-hidden="true"></div>
+    <!-- Main area: the last result as a graph, a table or JSON, picked with
+         the tabs. A Cypher result opens as a graph when it holds nodes and as
+         a table otherwise. -->
+    <section class="main-view" id="main-view">
+      <nav class="view-tabs" id="view-tabs" role="tablist" aria-label="Result view">
+        <button type="button" class="view-tab" role="tab" data-view="graph"
+                aria-selected="true" aria-controls="cy">Graph</button>
+        <button type="button" class="view-tab" role="tab" data-view="table"
+                aria-selected="false" aria-controls="table-view">Table</button>
+        <button type="button" class="view-tab" role="tab" data-view="json"
+                aria-selected="false" aria-controls="json-view">JSON</button>
+        <span class="view-meta" id="view-meta"></span>
+        <button type="button" id="copy-csv" class="copy-csv" hidden
+                title="Copy the table to the clipboard as CSV (downloads a .csv file when the clipboard is not available)">Copy CSV</button>
+      </nav>
+      <!-- Graph canvas: Cytoscape.js renders here. The tooltip is an
+           absolutely-positioned child that app.js moves + fills on
+           node hover (task 00093). -->
+      <div class="graph-canvas" id="cy" role="tabpanel">
+        <div id="cy-tooltip" class="cy-tooltip" role="tooltip" aria-hidden="true"></div>
+      </div>
+      <div class="table-view" id="table-view" role="tabpanel" hidden>
+        <p class="view-empty">Run a Cypher query to see its rows here.</p>
+      </div>
+      <pre class="json-view" id="json-view" role="tabpanel" hidden>Run a Cypher query to see its JSON here.</pre>
     </section>
 
     <!-- Right rail: node inspector. Shows when a node is clicked. -->
@@ -242,12 +262,16 @@
 
   <footer class="statusbar" id="statusbar">
     <span id="status-text">Ready.</span>
-    <span class="hint">Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours.</span>
+    <span class="hint">Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours. Query results open in the Graph, Table or JSON tab.</span>
   </footer>
 
   <!-- Pure graph-geometry helpers (unit-tested in graph_math.test.js); must
        load before app.js, which reads window.DrevoGraphMath. -->
   <script src="/ui/graph_math.js"></script>
+  <!-- Table / JSON result helpers (unit-tested in results_view.test.js); they
+       label nodes through DrevoGraphMath, and app.js reads
+       window.DrevoResultsView. -->
+  <script src="/ui/results_view.js"></script>
   <!-- Problem toasts + "Report a problem" helpers (unit-tested in
        report.test.js); must load before app.js, which reads window.DrevoReport. -->
   <script src="/ui/report.js"></script>

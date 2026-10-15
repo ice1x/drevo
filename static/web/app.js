@@ -37,6 +37,12 @@
   const $statusText = document.getElementById("status-text");
   const $tooltip = document.getElementById("cy-tooltip");
   const $nodeLimit = document.getElementById("node-limit");
+  const $viewTabs = document.getElementById("view-tabs");
+  const $cyBox = document.getElementById("cy");
+  const $tableView = document.getElementById("table-view");
+  const $jsonView = document.getElementById("json-view");
+  const $viewMeta = document.getElementById("view-meta");
+  const $copyCsv = document.getElementById("copy-csv");
   const $graphRefresh = document.getElementById("graph-refresh");
   const $kindChips = document.getElementById("kind-chips");
   const $themeToggle = document.getElementById("theme-toggle");
@@ -1152,6 +1158,8 @@
   function renderCypherResult(resp) {
     const graph = resp.graph || { nodes: [], edges: [] };
     const edges = connectResultNodes(graph.nodes, graph.edges);
+    // Show the view first: the graph is laid out in a visible canvas.
+    showView(DrevoResultsView.defaultView(resp));
     // Draw whatever nodes/relationships the query touched, plus the edges
     // that connect the returned nodes to each other.
     if (graph.nodes.length > 0) {
@@ -1160,6 +1168,10 @@
       cy.elements().remove();
     }
     renderCypherRows(resp.columns || [], resp.rows || []);
+    renderCypherJson(resp);
+    renderResultSummary((resp.rows || []).length);
+    // Re-apply the view now that the table exists (it decides Copy CSV).
+    showView(currentView);
     const s = resp.stats || {};
     const writes =
       (s.nodes_created || 0) +
@@ -1178,16 +1190,41 @@
     );
   }
 
-  // Render the tabular result in the left rail. Node/edge-valued cells show
-  // a readable label; scalars show their JSON. A node cell stays clickable
-  // to load its 2-hop neighbourhood, like a search result.
+  // ── Result views: Graph / Table / JSON ─────────────────────────────
+  // The main area shows the last result in one of three views. The graph view
+  // is the Cytoscape canvas; Cytoscape cannot measure a hidden container, so
+  // it is resized and refitted whenever the graph view comes back. Only user
+  // actions switch the view: the overview that loads on start redraws the
+  // canvas but leaves a table the user is reading on screen.
+  let currentView = "graph";
+  let lastTable = null; // {columns, rows} of the last Cypher result
+
+  function showView(view) {
+    currentView = view;
+    for (const tab of $viewTabs.querySelectorAll("[data-view]")) {
+      tab.setAttribute("aria-selected", String(tab.dataset.view === view));
+    }
+    $cyBox.hidden = view !== "graph";
+    $tableView.hidden = view !== "table";
+    $jsonView.hidden = view !== "json";
+    $copyCsv.hidden = !(view === "table" && lastTable && lastTable.rows.length > 0);
+    if (view === "graph" && cy) {
+      cy.resize();
+      if (cy.elements().length > 0) cy.fit(undefined, 28);
+    }
+  }
+
+  // Render a Cypher result's rows in the Table view. Node cells stay
+  // clickable and load the node's 2-hop neighbourhood in the Graph view.
   function renderCypherRows(columns, rows) {
-    $results.innerHTML = "";
+    lastTable = { columns, rows };
+    $tableView.innerHTML = "";
+    $viewMeta.textContent = `${rows.length} row${rows.length === 1 ? "" : "s"}`;
     if (rows.length === 0) {
-      const li = document.createElement("li");
-      li.className = "results-empty";
-      li.textContent = "Query returned no rows.";
-      $results.appendChild(li);
+      const p = document.createElement("p");
+      p.className = "view-empty";
+      p.textContent = "Query returned no rows.";
+      $tableView.appendChild(p);
       return;
     }
     const table = document.createElement("table");
@@ -1206,22 +1243,55 @@
       const tr = document.createElement("tr");
       for (const cell of row) {
         const td = document.createElement("td");
-        if (cell && typeof cell === "object" && typeof cell.id === "number" && "kind" in cell) {
-          // A node (or edge) value — show a clickable label.
-          td.className = "cell-node";
-          td.textContent = DrevoGraphMath.nodeLabel(cell);
-          if (!("from_id" in cell)) {
-            td.addEventListener("click", () => selectResult(cell.id, null));
-          }
-        } else {
-          td.textContent = JSON.stringify(cell);
+        const v = DrevoResultsView.cellValue(cell);
+        td.className = `cell-${v.kind}`;
+        td.textContent = v.text;
+        if (v.kind === "node") {
+          td.title = `Show the neighbourhood of node ${v.id}`;
+          td.addEventListener("click", () => selectResult(v.id, null));
         }
         tr.appendChild(td);
       }
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    $results.appendChild(table);
+    $tableView.appendChild(table);
+  }
+
+  // The JSON view shows what the query returned: columns, rows and stats.
+  function renderCypherJson(resp) {
+    const { columns, rows, stats } = resp;
+    $jsonView.textContent = JSON.stringify({ columns, rows, stats }, null, 2);
+  }
+
+  // The left rail keeps full-text search results; for a Cypher result it
+  // shows one line pointing at the Table view.
+  function renderResultSummary(rowCount) {
+    $results.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "results-summary";
+    li.textContent = `Cypher result: ${rowCount} row${rowCount === 1 ? "" : "s"} — open the Table view`;
+    li.addEventListener("click", () => showView("table"));
+    $results.appendChild(li);
+  }
+
+  // Copy the table as CSV. When the browser refuses clipboard access (no
+  // permission, or the page is not focused), the CSV is downloaded instead.
+  async function copyCsv() {
+    if (!lastTable) return;
+    const csv = DrevoResultsView.toCsv(lastTable.columns, lastTable.rows);
+    const rows = `${lastTable.rows.length} row${lastTable.rows.length === 1 ? "" : "s"}`;
+    try {
+      await navigator.clipboard.writeText(csv);
+      status(`Copied ${rows} as CSV.`, "ok");
+    } catch (_) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      a.download = "drevo-result.csv";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 0);
+      status(`The clipboard is not available here; downloaded ${rows} as drevo-result.csv.`, "ok");
+    }
   }
 
   function renderResults(results) {
@@ -1261,6 +1331,7 @@
     try {
       // /subgraph endpoint already returns { nodes, edges }.
       const sub = await apiGet(`/nodes/${nodeId}/subgraph?depth=2`);
+      showView("graph");
       renderSubgraph(sub, nodeId);
       status(
         `Loaded ${sub.nodes.length} node${
@@ -1538,6 +1609,7 @@
       chip.addEventListener("click", () => {
         activeKind = kindOrNull;
         renderKindChips();
+        showView("graph");
         renderSample();
       });
       return chip;
@@ -1616,6 +1688,7 @@
     graphCache = null;
     activeKind = null;
     status(`Switched to database “${name}”.`, "ok");
+    showView("graph");
     await loadOverview();
   }
 
@@ -1668,7 +1741,10 @@
 
   // Re-render (from cache, no re-fetch) when the node limit changes.
   if ($nodeLimit) {
-    $nodeLimit.addEventListener("change", () => renderSample());
+    $nodeLimit.addEventListener("change", () => {
+      showView("graph");
+      renderSample();
+    });
   }
 
   // Explicit "refresh from server": re-fetch /export/json and rebuild the
@@ -1677,6 +1753,7 @@
   if ($graphRefresh) {
     $graphRefresh.addEventListener("click", () => {
       activeKind = null;
+      showView("graph");
       loadOverview();
     });
   }
@@ -1689,6 +1766,11 @@
   }
 
   // Storage panel — open / close / refresh.
+  $viewTabs.addEventListener("click", (e) => {
+    const tab = e.target.closest("[data-view]");
+    if (tab) showView(tab.dataset.view);
+  });
+  $copyCsv.addEventListener("click", copyCsv);
   if ($storageToggle) $storageToggle.addEventListener("click", openStorage);
   if ($storageClose) $storageClose.addEventListener("click", closeStorage);
   if ($storageShrink) $storageShrink.addEventListener("click", doShrink);

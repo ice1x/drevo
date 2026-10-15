@@ -287,7 +287,7 @@ body {
 }
 .kind-chip.active .kind-chip-count { color: rgba(255, 255, 255, 0.85); }
 
-/* ── Cypher result table (left rail, dual-mode query bar) ── */
+/* ── Cypher result table (the Table view) ── */
 .cypher-table {
   width: 100%;
   border-collapse: collapse;
@@ -349,8 +349,101 @@ body {
   margin-top: 0.15rem;
 }
 
-/* Cytoscape canvas — fills the middle column entirely. */
+/* Main area: Graph / Table / JSON tabs over the selected view. */
+.main-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.main-view > [hidden] { display: none !important; }
+.view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.view-tab {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.85em;
+  padding: 0.25rem 0.7rem;
+  cursor: pointer;
+}
+.view-tab:hover { color: var(--text); }
+.view-tab[aria-selected="true"] {
+  color: var(--text);
+  background: var(--bg-elev);
+  border-color: var(--border);
+}
+.view-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.8em;
+  font-variant-numeric: tabular-nums;
+}
+.copy-csv {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8em;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+.copy-csv:hover { border-color: var(--accent); }
+.table-view,
+.json-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  background: var(--bg);
+}
+.json-view {
+  padding: 0.75rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.view-empty {
+  padding: 1rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.table-view .cypher-table { font-size: 0.85em; }
+.table-view .cypher-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 1;
+}
+/* Wrap between words only: a column is at least as wide as its longest word,
+   so short values like `null` or a header never break letter by letter. */
+.table-view .cypher-table th,
+.table-view .cypher-table td {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+.table-view .cypher-table th { white-space: nowrap; }
+.table-view .cypher-table td { max-width: 40rem; }
+.cypher-table td.cell-null { color: var(--text-muted); font-style: italic; }
+.cypher-table td.cell-number { text-align: right; font-variant-numeric: tabular-nums; }
+.cypher-table td.cell-list,
+.cypher-table td.cell-map { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.cypher-table td.cell-relationship { color: var(--text-muted); }
+.results-list li.results-summary { cursor: pointer; color: var(--text-muted); }
+
+/* Cytoscape canvas — fills the rest of the main area. */
 .graph-canvas {
+  flex: 1;
   background: var(--bg);
   min-height: 0;
   position: relative;

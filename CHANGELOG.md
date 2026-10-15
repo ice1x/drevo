@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Web UI result views** (issue #613). A Cypher result opens in the main area
+  under **Graph**, **Table** and **JSON** tabs instead of a table in the left
+  rail. A result with nodes opens as a graph, otherwise as a table. Table cells
+  show strings without quotes, `null` dimmed, numbers right-aligned and nodes
+  as clickable labels; the header stays visible while scrolling, and
+  **Copy CSV** copies the rows.
+
 - **`IS NOT NULL`, composite `IS UNIQUE` and `IS NODE KEY` constraints**
   (issue #606), in the Neo4j 5 `FOR … REQUIRE` and Neo4j 4 `ON … ASSERT`
   spellings (incl. `exists(n.p)`):
