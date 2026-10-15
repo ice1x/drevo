@@ -54,8 +54,11 @@
 //! * **The uuid resolution is rebuilt per apply.** `apply_delta` scans the live
 //!   graph once to index `uuid → local id` (plus the in-memory tombstones), so a
 //!   merge is `O(n + delta)`; a persistent uuid index is a later optimisation.
-//! * **Stamps and tombstones live in memory**, rebuilt as writes happen after a
-//!   restart; they are not persisted in the WAL.
+//! * **Stamps and tombstones are saved next to the WAL without `fsync`.** A
+//!   durable store keeps them in `stamps.jsonl` and `tombstones.json`, so a
+//!   reopened replica still seeds a fresh peer and keeps its LWW order. A stamp
+//!   lost in a crash comes back as the lowest stamp: the entity is still sent
+//!   to a fresh peer, but any real write to it wins.
 
 use std::collections::HashMap;
 
