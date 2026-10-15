@@ -4,7 +4,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { meanEdgeLength, segmentLength, nodeLabel } = require("./graph_math.js");
+const { meanEdgeLength, segmentLength, nodeLabel, visibleKinds } = require("./graph_math.js");
 
 test("meanEdgeLength averages the segment lengths", () => {
   // A 3-long and a 4-long segment → mean 3.5.
@@ -94,4 +94,46 @@ test("nodeLabel falls back through common naming properties", () => {
   assert.equal(nodeLabel({ id: 4, kind: "N", properties: { name: 42 } }), "42");
   assert.equal(nodeLabel({ id: 5, properties: { title: "__cypher__:N:abc" } }), "node #5");
   assert.equal(nodeLabel(null), "");
+});
+
+// ── visibleKinds ─────────────────────────────────────────────────────
+
+const COUNTS = [
+  ["Entity", 3307],
+  ["Migration", 213],
+  ["Task", 71],
+  ["Entity:Task", 23],
+  ["task", 1],
+];
+
+test("visibleKinds shows the top labels and counts the rest as hidden", () => {
+  const v = visibleKinds(COUNTS, { limit: 2 });
+  assert.deepEqual(v.shown.map(([k]) => k), ["Entity", "Migration"]);
+  assert.equal(v.hidden, 3);
+});
+
+test("visibleKinds shows everything when expanded", () => {
+  const v = visibleKinds(COUNTS, { limit: 2, expanded: true });
+  assert.equal(v.shown.length, 5);
+  assert.equal(v.hidden, 0);
+});
+
+test("visibleKinds keeps the active label visible even outside the top", () => {
+  const v = visibleKinds(COUNTS, { limit: 2, active: "task" });
+  assert.deepEqual(v.shown.map(([k]) => k), ["Entity", "Migration", "task"]);
+  assert.equal(v.hidden, 2);
+});
+
+test("a filter matches case-insensitively anywhere and shows every match", () => {
+  const v = visibleKinds(COUNTS, { limit: 1, filter: "TASK" });
+  assert.deepEqual(v.shown.map(([k]) => k), ["Task", "Entity:Task", "task"]);
+  assert.equal(v.hidden, 0);
+});
+
+test("a blank filter is no filter", () => {
+  assert.deepEqual(visibleKinds(COUNTS, { limit: 2, filter: "  " }), visibleKinds(COUNTS, { limit: 2 }));
+});
+
+test("a filter that matches nothing shows nothing", () => {
+  assert.deepEqual(visibleKinds(COUNTS, { filter: "zzz" }), { shown: [], hidden: 0 });
 });

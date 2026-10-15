@@ -48,6 +48,8 @@
   const $copyCsv = document.getElementById("copy-csv");
   const $graphRefresh = document.getElementById("graph-refresh");
   const $kindChips = document.getElementById("kind-chips");
+  const $kindFilter = document.getElementById("kind-filter");
+  const $kindMore = document.getElementById("kind-more");
   const $themeToggle = document.getElementById("theme-toggle");
   const $dbSelect = document.getElementById("db-select");
   const $dbNew = document.getElementById("db-new");
@@ -84,6 +86,7 @@
   let graphCache = null;
   const degreeById = new Map(); // node id → degree (for top-N sampling)
   let activeKind = null; // null = all kinds
+  let kindsExpanded = false; // show every label chip, not just the top ones
 
   // ── Dynamic node colour (task 00093) ────────────────────────────────
   // A handful of common kinds get curated, semantically-suggestive
@@ -1620,9 +1623,29 @@
       return chip;
     };
     $kindChips.appendChild(makeChip("All", total, null));
-    for (const [kind, count] of kindCounts()) {
+    const counts = kindCounts();
+    const filter = $kindFilter.value;
+    const { shown, hidden } = DrevoGraphMath.visibleKinds(counts, {
+      filter,
+      expanded: kindsExpanded,
+      active: activeKind,
+    });
+    for (const [kind, count] of shown) {
       $kindChips.appendChild(makeChip(kind, count, kind));
     }
+    if (filter.trim() && shown.length === 0) {
+      const none = document.createElement("span");
+      none.className = "kind-chips-empty";
+      none.textContent = "No label matches.";
+      $kindChips.appendChild(none);
+    }
+    // "Show all" when labels are hidden; "Show fewer" once expanded.
+    const collapsible =
+      kindsExpanded &&
+      !filter.trim() &&
+      DrevoGraphMath.visibleKinds(counts, { active: activeKind }).hidden > 0;
+    $kindMore.hidden = !(hidden > 0 || collapsible);
+    $kindMore.textContent = hidden > 0 ? `Show all ${counts.length} labels` : "Show fewer";
   }
 
   /** Pick the top-`limit` highest-degree nodes from a pool (id asc ties). */
@@ -1915,6 +1938,13 @@
         if (ok && isGraphWrite(q)) loadOverview();
       });
     } else runSearch(q);
+  });
+
+  // Label chips: filter as you type; toggle between the top labels and all.
+  $kindFilter.addEventListener("input", renderKindChips);
+  $kindMore.addEventListener("click", () => {
+    kindsExpanded = !kindsExpanded;
+    renderKindChips();
   });
 
   // Re-render (from cache, no re-fetch) when the node limit changes.

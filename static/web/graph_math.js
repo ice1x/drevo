@@ -1,7 +1,8 @@
-// drevo browser — pure graph-geometry helpers, split out of app.js so they can
-// be unit-tested under `node --test` with no DOM and no Cytoscape (see
-// graph_math.test.js). These are the numbers that drive the interactive layout,
-// so a regression here is a visible UI bug — hence a real, executable test.
+// drevo browser — pure graph helpers (layout geometry, node labels, which
+// label chips to show), split out of app.js so they can be unit-tested under
+// `node --test` with no DOM and no Cytoscape (see graph_math.test.js). The
+// geometry drives the interactive layout, so a regression here is a visible UI
+// bug — hence a real, executable test.
 //
 // UMD: attaches to the global `DrevoGraphMath` in the browser (loaded before
 // app.js) and to `module.exports` under node's test runner. No DOM references.
@@ -73,5 +74,25 @@
     return `${n.kind || "node"} #${n.id}`;
   }
 
-  return { meanEdgeLength, segmentLength, nodeLabel };
+  // Which label chips to show, from `counts` (`[[label, count], …]`, most
+  // common first). A non-blank `filter` shows every label containing it
+  // (case-insensitive). Otherwise the first `limit` labels (default 12) are
+  // shown, plus `active` if it is further down, unless `expanded` shows all.
+  // `hidden` is how many labels are left out.
+  //
+  //   visibleKinds([["Entity", 9], ["Task", 3], ["Bug", 1]], {limit: 1})
+  //     → {shown: [["Entity", 9]], hidden: 2}
+  function visibleKinds(counts, { filter = "", limit = 12, expanded = false, active = null } = {}) {
+    const needle = String(filter).trim().toLowerCase();
+    if (needle) {
+      return { shown: counts.filter(([k]) => k.toLowerCase().includes(needle)), hidden: 0 };
+    }
+    if (expanded || counts.length <= limit) return { shown: counts.slice(), hidden: 0 };
+    const shown = counts.slice(0, limit);
+    const extra = counts.slice(limit).find(([k]) => k === active);
+    if (extra) shown.push(extra);
+    return { shown, hidden: counts.length - shown.length };
+  }
+
+  return { meanEdgeLength, segmentLength, nodeLabel, visibleKinds };
 });

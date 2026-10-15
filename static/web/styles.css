@@ -99,7 +99,17 @@ body {
   font: inherit;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.search textarea::placeholder { color: var(--text-muted); font-family: inherit; }
+.search textarea::placeholder {
+  color: var(--text-muted);
+  font-family: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* On a narrow window the editor needs the room more than the version string. */
+@media (max-width: 1200px) {
+  .server-info { display: none; }
+}
 .search textarea:focus {
   outline: none;
   border-color: var(--accent);
@@ -316,6 +326,29 @@ body {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
+.kind-filter {
+  width: 100%;
+  margin: 0 0 0.5rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8em;
+}
+.kind-filter:focus { outline: none; border-color: var(--accent); }
+.kind-more {
+  margin-top: 0.45rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.78em;
+  cursor: pointer;
+}
+.kind-more:hover { text-decoration: underline; }
 .kind-chips {
   display: flex;
   flex-wrap: wrap;
