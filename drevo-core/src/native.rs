@@ -1378,21 +1378,29 @@ pub struct NativeGraph {
     /// The Hybrid Logical Clock issuing causal timestamps for this replica.
     clock: std::sync::Mutex<HlcClock>,
     /// The causal [`Stamp`] of each **live** node/edge's last autocommit write
-    ///. A create/update sets it, a delete moves it into
-    /// [`tombstones`]; queried via [`stamp_of`]. In-memory only for now (rebuilt
-    /// as writes happen after a restart); stamps are not written to the WAL.
+    /// or applied upsert. A create/update sets it, a delete moves it into
+    /// [`tombstones`]; queried via [`stamp_of`]. A durable store keeps it in the
+    /// stamp log next to the WAL ([`stamp_log`]), so it survives a reopen.
     ///
     /// [`tombstones`]: Self::tombstones
+    /// [`stamp_log`]: Self::stamp_log
     stamps: RwLock<HashMap<StampTarget, Stamp>>,
     /// The [`Tomb`] of each **deleted** node/edge — its causal [`Stamp`] plus the
     /// entity's `uuid`. Kept disjoint from [`stamps`]: a target is
     /// either live (in `stamps`) or deleted (here), and the greater stamp wins.
     /// Tombstones let a [`Delta`] carry deletes so a peer converges on removals,
     /// not just upserts; the stored `uuid` lets the receiver remap the deletion
-    /// onto its own local id. In-memory only, like `stamps`.
+    /// onto its own local id. A durable store checkpoints it to
+    /// `tombstones.json` next to the WAL.
     ///
     /// [`stamps`]: Self::stamps
     tombstones: RwLock<HashMap<StampTarget, Tomb>>,
+    /// The stamp log of a durable store: `stamps.jsonl` next to the WAL, one
+    /// `[target, stamp]` line per stamp set, appended as stamps are set and
+    /// rewritten to one line per live entity on open, on WAL compaction and
+    /// once it grows large. `None` for an in-memory engine.
+    #[cfg(not(target_arch = "wasm32"))]
+    stamp_log: std::sync::Mutex<Option<StampLog>>,
     /// The held exclusive-open lock for a durable store: the open
     /// lock-sidecar file whose advisory `flock`/`LockFileEx` this handle owns.
     /// Kept for the engine's whole lifetime so a second `open_durable` on the
@@ -1659,6 +1667,98 @@ fn persist_tombstones(
     std::fs::rename(&tmp, sidecar)
 }
 
+/// The stamp-log sidecar path, next to the WAL file.
+#[cfg(not(target_arch = "wasm32"))]
+fn stamp_log_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
+    wal_path.with_file_name("stamps.jsonl")
+}
+
+/// Read the stamp log at `path`: the greatest stamp per target. A missing
+/// file reads as empty and an unparseable line (a torn tail) is skipped.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_stamp_log(path: &std::path::Path) -> HashMap<StampTarget, Stamp> {
+    let mut map: HashMap<StampTarget, Stamp> = HashMap::new();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return map;
+    };
+    for line in text.lines() {
+        if let Ok((target, stamp)) = serde_json::from_str::<(StampTarget, Stamp)>(line) {
+            let slot = map.entry(target).or_insert(stamp);
+            if stamp > *slot {
+                *slot = stamp;
+            }
+        }
+    }
+    map
+}
+
+/// The live stamp table of a reopened store: the logged stamps of the entities
+/// that exist in `inner`, and the lowest stamp (`Hlc` zero, this replica's
+/// `origin`) for an entity with none logged. The lowest stamp still puts the
+/// entity in a delta for a fresh peer, but loses to any real write.
+#[cfg(not(target_arch = "wasm32"))]
+fn recover_stamps(
+    inner: &Inner,
+    mut logged: HashMap<StampTarget, Stamp>,
+    origin: OriginId,
+) -> HashMap<StampTarget, Stamp> {
+    let lowest = Stamp::new(crate::hlc::Hlc::default(), origin);
+    let mut stamps = HashMap::with_capacity(inner.nodes.len() + inner.edges.len());
+    let targets = inner
+        .nodes
+        .keys()
+        .map(|&id| StampTarget::Node(id))
+        .chain(inner.edges.keys().map(|&id| StampTarget::Edge(id)));
+    for target in targets {
+        stamps.insert(target, logged.remove(&target).unwrap_or(lowest));
+    }
+    stamps
+}
+
+/// The open stamp log of a durable store: its path, an append handle and the
+/// number of lines it holds.
+#[cfg(not(target_arch = "wasm32"))]
+struct StampLog {
+    path: std::path::PathBuf,
+    file: std::fs::File,
+    lines: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StampLog {
+    /// Write `stamps` to `path` as one line per entry, atomically (temp file,
+    /// then rename; no `fsync`), and open it for appends.
+    fn rewrite(
+        path: std::path::PathBuf,
+        stamps: &HashMap<StampTarget, Stamp>,
+    ) -> std::io::Result<Self> {
+        let mut text = Vec::with_capacity(stamps.len() * 64);
+        for entry in stamps {
+            serde_json::to_writer(&mut text, &entry).map_err(std::io::Error::other)?;
+            text.push(b'\n');
+        }
+        let tmp = path.with_extension("jsonl.tmp");
+        std::fs::write(&tmp, &text)?;
+        std::fs::rename(&tmp, &path)?;
+        let file = std::fs::OpenOptions::new().append(true).open(&path)?;
+        Ok(Self {
+            path,
+            file,
+            lines: stamps.len(),
+        })
+    }
+
+    /// Append one `[target, stamp]` line.
+    fn append(&mut self, target: StampTarget, stamp: Stamp) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut line = serde_json::to_vec(&(target, stamp)).map_err(std::io::Error::other)?;
+        line.push(b'\n');
+        self.file.write_all(&line)?;
+        self.lines += 1;
+        Ok(())
+    }
+}
+
 /// The in-memory tail of committed [`WalOp`]s backing [`NativeGraph`]'s
 /// change-feed. `start_seq` is the sequence number *before* `ops[0]`, so the
 /// change at index `i` carries sequence `start_seq + i + 1` and the current
@@ -1798,9 +1898,12 @@ impl NativeGraph {
         Stamp::new(hlc, self.origin)
     }
 
-    /// The causal [`Stamp`] of `target`'s last autocommit write, or `None` if it
-    /// is absent (never written, or deleted). Stamps live in memory only, so
-    /// this starts empty after a restart.
+    /// The causal [`Stamp`] of `target`'s last autocommit write or applied
+    /// upsert, or `None` if it is absent (never written, or deleted). A durable
+    /// store keeps stamps across a reopen; an entity whose stamp was never
+    /// persisted reopens with the lowest stamp (see [`open_durable`]).
+    ///
+    /// [`open_durable`]: Self::open_durable
     pub fn stamp_of(&self, target: StampTarget) -> Option<Stamp> {
         self.stamps
             .read()
@@ -1817,6 +1920,7 @@ impl NativeGraph {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(target, stamp);
+        self.persist_stamp(target, stamp);
         self.tombstones
             .write()
             .unwrap_or_else(|e| e.into_inner())
@@ -1845,6 +1949,7 @@ impl NativeGraph {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(target, stamp);
+        self.persist_stamp(target, stamp);
         self.tombstones
             .write()
             .unwrap_or_else(|e| e.into_inner())
@@ -1873,6 +1978,36 @@ impl NativeGraph {
             .observe(stamp.hlc());
     }
 
+    /// Append `target`'s new live stamp to the stamp log (durable stores only),
+    /// so it survives a reopen. Best-effort and without `fsync`,
+    /// like the tombstone checkpoint: a stamp lost in a crash leaves its entity
+    /// with the lowest stamp after the restart, which still seeds a fresh peer
+    /// and never beats a real edit. Rewrites the log to one line per live
+    /// entity once it holds more than twice that many lines (at least 1024).
+    ///
+    /// Takes the log lock and then, when rewriting, the stamp table's read
+    /// lock; callers must not hold the stamp table lock.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn persist_stamp(&self, target: StampTarget, stamp: Stamp) {
+        let mut guard = self.stamp_log.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(log) = guard.as_mut() else {
+            return;
+        };
+        if log.append(target, stamp).is_err() {
+            return;
+        }
+        let live = self.stamps.read().unwrap_or_else(|e| e.into_inner());
+        if log.lines > (2 * live.len()).max(1024) {
+            if let Ok(fresh) = StampLog::rewrite(log.path.clone(), &live) {
+                *log = fresh;
+            }
+        }
+    }
+
+    /// No stamp log on wasm (no WAL); stamps are in-memory only.
+    #[cfg(target_arch = "wasm32")]
+    fn persist_stamp(&self, _target: StampTarget, _stamp: Stamp) {}
+
     /// Best-effort checkpoint of the tombstone table to a sidecar next to the WAL
     ///, so deletes converge across a restart: without it, a
     /// restarted replica has neither a deleted entity nor its tombstone, and a
@@ -1881,9 +2016,8 @@ impl NativeGraph {
     /// Durable stores only (an in-memory graph has nowhere to write). No
     /// `fsync` and every I/O error is swallowed — a lost checkpoint only widens
     /// the resurrection window, which a full re-sync heals, so it is not worth a
-    /// flush on the write path. Live stamps and the version vector are **not**
-    /// persisted (an accepted tradeoff: a restarted replica re-syncs upserts in
-    /// full).
+    /// flush on the write path. Live stamps go to the stamp log instead
+    /// ([`persist_stamp`](Self::persist_stamp)).
     #[cfg(not(target_arch = "wasm32"))]
     fn checkpoint_tombstones(&self) {
         let Some(path) = self
@@ -1926,8 +2060,8 @@ impl NativeGraph {
     ///. A peer hands this to [`delta_since`] to learn
     /// the minimal set of writes it is missing.
     ///
-    /// Built from the in-memory stamp table, so (like the table itself) it
-    /// reflects only writes seen since the process started.
+    /// Built from the stamp table, which a durable store restores on reopen, so
+    /// it covers every write the replica holds.
     ///
     /// [`delta_since`]: Self::delta_since
     pub fn version_vector(&self) -> VersionVector {
@@ -3177,6 +3311,8 @@ impl NativeGraph {
             stamps: RwLock::new(HashMap::new()),
             tombstones: RwLock::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
+            stamp_log: std::sync::Mutex::new(None),
+            #[cfg(not(target_arch = "wasm32"))]
             _lock: None,
             #[cfg(not(target_arch = "wasm32"))]
             wal_target: crate::wal_format::WalFormat::Json,
@@ -3335,6 +3471,20 @@ impl NativeGraph {
         // subscribers (indexes, value cache) see recovered data — see
         // [`Self::replay`].
         let seed = inner.to_wal_ops();
+        // Stable replica identity persisted next to the WAL (issue #389),
+        // reused across restarts so a peer's writes keep a stable provenance.
+        let origin = load_or_mint_origin(&origin_sidecar(path));
+        // Live stamps from the stamp log (issue #612), restricted to the entities
+        // that exist; an entity without one gets the lowest stamp. Then compact
+        // the log and keep it open for appends (best-effort: without it, stamps
+        // set from now on only live in memory).
+        let stamps = recover_stamps(&inner, load_stamp_log(&stamp_log_sidecar(path)), origin);
+        let stamp_log = StampLog::rewrite(stamp_log_sidecar(path), &stamps).ok();
+        let mut clock = HlcClock::new();
+        if let Some(latest) = stamps.values().max() {
+            // Never issue a stamp below one already handed out.
+            let _ = clock.observe(latest.hlc());
+        }
         Ok(NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
             wal: Some(std::sync::Mutex::new(WalSink {
@@ -3350,15 +3500,13 @@ impl NativeGraph {
             }),
             #[cfg(not(target_arch = "wasm32"))]
             group: GroupCommit::default(),
-            // Stable replica identity persisted next to the WAL (issue #389),
-            // reused across restarts so a peer's writes keep a stable provenance.
-            origin: load_or_mint_origin(&origin_sidecar(path)),
-            clock: std::sync::Mutex::new(HlcClock::new()),
-            stamps: RwLock::new(HashMap::new()),
+            origin,
+            clock: std::sync::Mutex::new(clock),
+            stamps: RwLock::new(stamps),
             // Restore the tombstone checkpoint so deletes survive a restart and a
             // peer cannot resurrect a deleted entity on the next sync (issue #389).
-            // Live stamps are not persisted (upserts re-sync in full).
             tombstones: RwLock::new(load_tombstones(&tombstone_sidecar(path))),
+            stamp_log: std::sync::Mutex::new(stamp_log),
             // Hold the exclusive-open lock for this handle's lifetime (#455).
             _lock: Some(lock),
             wal_target: format,
@@ -3429,6 +3577,16 @@ impl NativeGraph {
             std::sync::atomic::Ordering::Release,
         );
         let bytes_after = std::fs::metadata(&sink.path).ok().map(|m| m.len());
+        drop(sink);
+        drop(inner);
+        // Compact the stamp log alongside (best-effort, as on open).
+        let mut log = self.stamp_log.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(current) = log.as_mut() {
+            let live = self.stamps.read().unwrap_or_else(|e| e.into_inner());
+            if let Ok(fresh) = StampLog::rewrite(current.path.clone(), &live) {
+                *current = fresh;
+            }
+        }
         Ok(CompactWalStats {
             bytes_before,
             bytes_after,

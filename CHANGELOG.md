@@ -54,6 +54,19 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Replica stamps survive a reopen** (issue #612). A durable store keeps
+  each live node's and edge's causal stamp in `stamps.jsonl` next to the WAL,
+  so after a restart its version vector is intact:
+  - `delta_since(&VersionVector::new())` still carries every live record, so
+    a new peer can bootstrap from a replica that restarted since its last write.
+  - A local edit keeps its stamp, so a peer's older copy cannot overwrite it
+    after the restart, and a peer's newer edit still wins.
+  - A record without a saved stamp (a store from an earlier version, or a
+    crash before the stamp reached disk) reopens with the lowest stamp: it
+    is still sent to a new peer but loses to any real write.
+  - The log is appended per stamped write without `fsync` and rewritten to one
+    line per live record on open, on `compact_wal` and once it grows large.
+
 - **Search, vector and schema statements inside explicit transactions**
   (issue #610). Inside Bolt `BEGIN` … `COMMIT` (the Neo4j drivers'
   `execute_read` / `execute_write`) and a Python `Transaction`:
