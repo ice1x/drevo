@@ -14,6 +14,7 @@
 //! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/results_view.js` → `results_view.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/query_history.js` → `query_history.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/styles.css` → `styles.css` (`text/css; charset=utf-8`)
 //! - `GET /ui/vendor/cytoscape.min.js` → Cytoscape.js core
 //! - `GET /ui/vendor/layout-base.js` → fcose dep
@@ -73,6 +74,11 @@ const REPORT_JS: &str = include_str!("../static/web/report.js");
 /// time. Unit-tested separately by `results_view.test.js` under `node --test`.
 const RESULTS_VIEW_JS: &str = include_str!("../static/web/results_view.js");
 
+/// `query_history.js` body — pure helpers for the query editor (the
+/// per-browser query history and the key that runs a query), embedded at
+/// compile time. Unit-tested separately by `query_history.test.js`.
+const QUERY_HISTORY_JS: &str = include_str!("../static/web/query_history.js");
+
 /// `styles.css` body — embedded at compile time.
 const STYLES_CSS: &str = include_str!("../static/web/styles.css");
 
@@ -120,6 +126,11 @@ pub async fn serve_report_js() -> Response {
 /// `GET /ui/results_view.js` → serve the result-view helpers `app.js` depends on.
 pub async fn serve_results_view_js() -> Response {
     asset_response(RESULTS_VIEW_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/query_history.js` → serve the query-editor helpers `app.js` depends on.
+pub async fn serve_query_history_js() -> Response {
+    asset_response(QUERY_HISTORY_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/styles.css` → serve the stylesheet.
@@ -222,6 +233,8 @@ mod tests {
             "id=\"table-view\"",
             "id=\"json-view\"",
             "id=\"copy-csv\"",
+            "id=\"history-toggle\"",
+            "id=\"history-menu\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),
@@ -484,6 +497,26 @@ mod tests {
             gm < rv && rv < appjs,
             "load order: graph_math.js, results_view.js, app.js"
         );
+    }
+
+    #[test]
+    fn embedded_query_history_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(
+            QUERY_HISTORY_JS.contains("DrevoQueryHistory")
+                && QUERY_HISTORY_JS.contains("pushQuery"),
+            "query_history.js must export pushQuery on DrevoQueryHistory"
+        );
+        assert!(
+            !QUERY_HISTORY_JS.contains("document") && !QUERY_HISTORY_JS.contains("window."),
+            "query_history.js must stay DOM-free so it is unit-testable under node"
+        );
+        let qh = INDEX_HTML
+            .find("/ui/query_history.js")
+            .expect("index.html must load query_history.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(qh < appjs, "query_history.js must load before app.js");
     }
 
     #[test]

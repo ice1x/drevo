@@ -231,6 +231,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             "/ui/results_view.js",
             get(crate::web_ui::serve_results_view_js),
         )
+        .route(
+            "/ui/query_history.js",
+            get(crate::web_ui::serve_query_history_js),
+        )
         .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
         .route(
             "/ui/vendor/cytoscape.min.js",

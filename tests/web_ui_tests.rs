@@ -294,6 +294,52 @@ async fn ui_serves_results_view_module_and_result_tabs() {
     }
 }
 
+// Query editor (#615): the query bar is a multi-line textarea with a history
+// menu, and the pure history / run-key helpers are served before app.js.
+#[tokio::test]
+async fn ui_serves_query_history_module_and_multiline_editor() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/query_history.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/javascript"), "got {ct:?}");
+    let js = String::from_utf8(bytes).expect("utf-8");
+    for needle in [
+        "DrevoQueryHistory",
+        "pushQuery",
+        "stepHistory",
+        "parseHistory",
+        "isRunKey",
+    ] {
+        assert!(js.contains(needle), "query_history.js must define {needle}");
+    }
+
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let qh = idx
+        .find("/ui/query_history.js")
+        .expect("index.html must load query_history.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(qh < appjs, "query_history.js must load before app.js");
+    for needle in [
+        "<textarea id=\"search-input\"",
+        "id=\"history-toggle\"",
+        "id=\"history-menu\"",
+    ] {
+        assert!(idx.contains(needle), "index.html must contain `{needle}`");
+    }
+
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "DrevoQueryHistory.pushQuery(",
+        "DrevoQueryHistory.stepHistory(",
+        "DrevoQueryHistory.parseHistory(",
+        "DrevoQueryHistory.isRunKey(",
+    ] {
+        assert!(app_js.contains(needle), "app.js must use {needle}");
+    }
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

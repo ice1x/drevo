@@ -8,6 +8,11 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Web UI query editor** (issue #615). The query bar takes several lines and
+  grows with the text. Enter runs a one-line query, Shift+Enter adds a line,
+  Ctrl/Cmd+Enter runs any query. Alt+↑ / Alt+↓ step through the last 50
+  queries, which the ▾ button also lists; the history is kept in the browser.
+
 - **Web UI result views** (issue #613). A Cypher result opens in the main area
   under **Graph**, **Table** and **JSON** tabs instead of a table in the left
   rail. A result with nodes opens as a graph, otherwise as a table. Table cells
