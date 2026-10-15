@@ -61,7 +61,11 @@ drevo is the same engine no matter how you reach it:
 - **Cypher** — over the [Bolt protocol](sdk-reference.md#bolt-protocol) (port `7687`, works with
   official Neo4j drivers) or in-process via `parse` + `execute`.
 - **HTTP API** — a REST surface on port `8080` for CRUD, traversal, search, and import/export.
-- **Web UI** — a Cytoscape.js graph explorer at `/ui` on the HTTP server. Server problems (a
+- **Web UI** — a Cytoscape.js graph explorer at `/ui` on the HTTP server. The top bar takes a
+  Cypher query or full-text search terms. A query's result opens in the main area under three
+  tabs: **Graph**, **Table** and **JSON**. A result with nodes opens as a graph; one with only
+  values, such as `MATCH (t:Task) RETURN t.title, t.status`, opens as a table. In the table a
+  node cell opens that node's neighbourhood, and **Copy CSV** copies the rows. Server problems (a
   query stopped by the statement timeout, storage errors, any server WARN/ERROR) and failed UI
   requests show up as notifications. The ⚑ button (or **Report…** on a notification) builds a
   bug report: server build and config, graph size, recent problems, your last failing query

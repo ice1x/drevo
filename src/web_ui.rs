@@ -13,6 +13,7 @@
 //! - `GET /ui/app.js` → `app.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/results_view.js` → `results_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/styles.css` → `styles.css` (`text/css; charset=utf-8`)
 //! - `GET /ui/vendor/cytoscape.min.js` → Cytoscape.js core
 //! - `GET /ui/vendor/layout-base.js` → fcose dep
@@ -67,6 +68,11 @@ const GRAPH_MATH_JS: &str = include_str!("../static/web/graph_math.js");
 /// `report.test.js` under `node --test`.
 const REPORT_JS: &str = include_str!("../static/web/report.js");
 
+/// `results_view.js` body — pure helpers for the Table / JSON result views
+/// (cell formatting, the view a result opens in, CSV), embedded at compile
+/// time. Unit-tested separately by `results_view.test.js` under `node --test`.
+const RESULTS_VIEW_JS: &str = include_str!("../static/web/results_view.js");
+
 /// `styles.css` body — embedded at compile time.
 const STYLES_CSS: &str = include_str!("../static/web/styles.css");
 
@@ -109,6 +115,11 @@ pub async fn serve_graph_math_js() -> Response {
 /// `GET /ui/report.js` → serve the problem-report helpers `app.js` depends on.
 pub async fn serve_report_js() -> Response {
     asset_response(REPORT_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/results_view.js` → serve the result-view helpers `app.js` depends on.
+pub async fn serve_results_view_js() -> Response {
+    asset_response(RESULTS_VIEW_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/styles.css` → serve the stylesheet.
@@ -207,6 +218,10 @@ mod tests {
             "id=\"toasts\"",
             "id=\"report-toggle\"",
             "id=\"report-modal\"",
+            "id=\"view-tabs\"",
+            "id=\"table-view\"",
+            "id=\"json-view\"",
+            "id=\"copy-csv\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),
@@ -444,6 +459,31 @@ mod tests {
             .find("/ui/app.js")
             .expect("index.html must load app.js");
         assert!(gm < appjs, "graph_math.js must load before app.js");
+    }
+
+    #[test]
+    fn embedded_results_view_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(
+            RESULTS_VIEW_JS.contains("DrevoResultsView") && RESULTS_VIEW_JS.contains("cellValue"),
+            "results_view.js must export cellValue on DrevoResultsView"
+        );
+        assert!(
+            !RESULTS_VIEW_JS.contains("document") && !RESULTS_VIEW_JS.contains("window."),
+            "results_view.js must stay DOM-free so it is unit-testable under node"
+        );
+        let gm = INDEX_HTML
+            .find("/ui/graph_math.js")
+            .expect("index.html must load graph_math.js");
+        let rv = INDEX_HTML
+            .find("/ui/results_view.js")
+            .expect("index.html must load results_view.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(
+            gm < rv && rv < appjs,
+            "load order: graph_math.js, results_view.js, app.js"
+        );
     }
 
     #[test]

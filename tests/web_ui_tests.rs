@@ -244,6 +244,56 @@ async fn ui_serves_graph_math_module_before_app_js() {
     );
 }
 
+// Query results (#613): the pure results-view helpers are served same-origin
+// after graph_math.js (they label nodes through it) and before app.js, and the
+// page has the Graph / Table / JSON tabs over the main area.
+#[tokio::test]
+async fn ui_serves_results_view_module_and_result_tabs() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/results_view.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/javascript"), "got {ct:?}");
+    let js = String::from_utf8(bytes).expect("utf-8");
+    for needle in ["DrevoResultsView", "cellValue", "defaultView", "toCsv"] {
+        assert!(js.contains(needle), "results_view.js must define {needle}");
+    }
+
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let gm = idx
+        .find("/ui/graph_math.js")
+        .expect("index.html must load graph_math.js");
+    let rv = idx
+        .find("/ui/results_view.js")
+        .expect("index.html must load results_view.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(
+        gm < rv && rv < appjs,
+        "load order: graph_math.js, results_view.js, app.js"
+    );
+    for id in [
+        "id=\"view-tabs\"",
+        "data-view=\"graph\"",
+        "data-view=\"table\"",
+        "data-view=\"json\"",
+        "id=\"table-view\"",
+        "id=\"json-view\"",
+        "id=\"copy-csv\"",
+    ] {
+        assert!(idx.contains(id), "index.html must contain `{id}`");
+    }
+
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "DrevoResultsView.cellValue(",
+        "DrevoResultsView.defaultView(",
+        "DrevoResultsView.toCsv(",
+    ] {
+        assert!(app_js.contains(needle), "app.js must use {needle}");
+    }
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

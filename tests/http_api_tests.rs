@@ -2169,6 +2169,17 @@ async fn ui_graph_math_module_serves_to_client() {
 }
 
 #[tokio::test]
+async fn ui_results_view_module_serves_to_client() {
+    // The query-result helpers (#613), unit-tested by results_view.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/results_view.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoResultsView"));
+    assert!(body.contains("toCsv"));
+}
+
+#[tokio::test]
 async fn ui_report_module_serves_to_client() {
     // The "Report a problem" helpers (#552), unit-tested by report.test.js.
     let app = make_app();
