@@ -127,6 +127,22 @@ body {
   font: inherit;
   cursor: pointer;
 }
+.ask-button {
+  padding: 0.5rem 0.9rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ask-button:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ask-button[aria-disabled="true"] {
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+.ask-button[aria-busy="true"] { cursor: progress; opacity: 0.7; }
 .history-toggle:hover,
 .history-toggle[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
 .history-menu {

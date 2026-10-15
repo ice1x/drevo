@@ -340,6 +340,34 @@ async fn ui_serves_query_history_module_and_multiline_editor() {
     }
 }
 
+// Ask (#616): the query bar has an Ask button that sends the text to
+// `drevo.cypher.fromText` through the tested helpers and reads the server's
+// text-to-Cypher status from `GET /`.
+#[tokio::test]
+async fn ui_has_ask_button_wired_to_text_to_cypher() {
+    let app = make_app();
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    assert!(
+        idx.contains("id=\"ask-button\""),
+        "index.html must have the Ask button"
+    );
+
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "DrevoQueryHistory.fromTextRequest(",
+        "DrevoQueryHistory.generatedCypher(",
+        "info.text2cypher",
+    ] {
+        assert!(app_js.contains(needle), "app.js must use {needle}");
+    }
+
+    let (_, _, js) = get(&app, "/ui/query_history.js").await;
+    let js = String::from_utf8(js).expect("utf-8");
+    assert!(js.contains("drevo.cypher.fromText($question)"));
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

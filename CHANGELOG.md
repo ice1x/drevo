@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Ask in plain language** (issue #616). The Web UI's **Ask** button sends
+  the editor's text to `drevo.cypher.fromText` and puts the generated Cypher
+  in the editor to review; it never runs it. `GET /` reports
+  `"text2cypher": {"model": …}` when an upstream is configured (`null`
+  otherwise), and the button explains the setup until then.
+
 - **Web UI query editor** (issue #615). The query bar takes several lines and
   grows with the text. Enter runs a one-line query, Shift+Enter adds a line,
   Ctrl/Cmd+Enter runs any query. Alt+↑ / Alt+↓ step through the last 50

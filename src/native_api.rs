@@ -798,7 +798,13 @@ async fn health(State(state): State<NativeApiState>) -> Response {
 }
 
 /// `GET /status` — same shape as the KV server's, plus the engine marker.
+///
+/// `text2cypher` is `{"model": "<model or null>"}` while
+/// `drevo.cypher.fromText` has an upstream configured, else `null`; the web
+/// UI's **Ask** button reads it. The upstream URL is not exposed.
 async fn status(State(state): State<NativeApiState>) -> Json<serde_json::Value> {
+    let text2cypher = crate::text2cypher::installed()
+        .map(|generator| serde_json::json!({ "model": generator.model() }));
     Json(serde_json::json!({
         "name": "drevo",
         "version": crate::VERSION,
@@ -807,6 +813,7 @@ async fn status(State(state): State<NativeApiState>) -> Json<serde_json::Value> 
         // Stable replica identity for the multi-writer/P2P substrate (issue
         // #389). A string so a u64 survives JSON clients that use f64 numbers.
         "origin": state.service.origin_id().0.to_string(),
+        "text2cypher": text2cypher,
     }))
 }
 
