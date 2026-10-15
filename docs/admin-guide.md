@@ -243,6 +243,34 @@ forwarded verbatim, and the upstream response — including base64 embeddings
 provider works without drevo needing to know its parameter set. (The outbound
 destination is still config-only — a forwarded field never changes it.)
 
+### Text-to-Cypher (`drevo.cypher.fromText`, opt-in)
+
+`CALL drevo.cypher.fromText($question) YIELD cypher` turns a plain-language
+question into a Cypher query with an LLM. drevo sends the question and the
+graph's schema (labels, relationship types, property keys) to an
+OpenAI-compatible `chat/completions` endpoint and returns the generated query
+**without running it**. The Web UI's **Ask** button uses it. It needs the
+`embeddings-proxy` build feature, which the Docker image includes.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `DREVO_TEXT2CYPHER_UPSTREAM` | (unset) | Full `chat/completions` URL. Unset ⇒ the procedure reports "not configured". Must be `http`/`https`. |
+| `DREVO_TEXT2CYPHER_MODEL` | `gpt-4o-mini` | Chat model to request. |
+| `DREVO_TEXT2CYPHER_API_KEY` | (unset) | Bearer token, if the upstream needs one. |
+
+A local Ollama needs no key. From the drevo container it is reached through the
+Docker host:
+
+```
+DREVO_TEXT2CYPHER_UPSTREAM=http://host.docker.internal:11434/v1/chat/completions
+DREVO_TEXT2CYPHER_MODEL=qwen2.5-coder:14b
+```
+
+`GET /` reports `"text2cypher": {"model": "…"}` once an upstream is configured
+(`null` otherwise); the upstream URL is not exposed. The prompt carries the
+whole schema, so on a large graph a model running on CPU can take minutes;
+on Apple Silicon run the native arm64 Ollama so the model uses the GPU.
+
 ---
 
 ## 3. Docker

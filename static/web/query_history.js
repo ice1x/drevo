@@ -1,6 +1,7 @@
 // drevo browser — pure helpers for the query editor: the per-browser query
-// history and the key that runs a query. DOM-free so they can be unit-tested
-// under `node --test` (see query_history.test.js).
+// history, the key that runs a query, and the Ask (text-to-Cypher) request and
+// reply. DOM-free so they can be unit-tested under `node --test` (see
+// query_history.test.js).
 //
 // UMD: attaches to the global `DrevoQueryHistory` in the browser (loaded
 // before app.js) and to `module.exports` under node's test runner.
@@ -63,5 +64,38 @@
     return !String(text).includes("\n");
   }
 
-  return { MAX_HISTORY, pushQuery, stepHistory, parseHistory, isRunKey };
+  // The POST /cypher body that asks `drevo.cypher.fromText` to turn a question
+  // into Cypher. The question travels as a parameter, so quotes in it need no
+  // escaping.
+  function fromTextRequest(question) {
+    return {
+      query: "CALL drevo.cypher.fromText($question) YIELD cypher RETURN cypher",
+      params: { question: String(question).trim() },
+    };
+  }
+
+  // The generated query in a `fromText` reply. `answered` is false when the
+  // model returned only `//` comment lines, which is how it says the schema
+  // cannot answer the question, or when the reply holds no query at all.
+  //
+  //   generatedCypher({rows: [["MATCH (p:Project) RETURN p"]]})
+  //     → {cypher: "MATCH (p:Project) RETURN p", answered: true}
+  function generatedCypher(resp) {
+    const cell = resp && Array.isArray(resp.rows) && resp.rows[0] ? resp.rows[0][0] : null;
+    const cypher = typeof cell === "string" ? cell.trim() : "";
+    const answered = cypher
+      .split("\n")
+      .some((line) => line.trim() !== "" && !line.trim().startsWith("//"));
+    return { cypher, answered };
+  }
+
+  return {
+    MAX_HISTORY,
+    pushQuery,
+    stepHistory,
+    parseHistory,
+    isRunKey,
+    fromTextRequest,
+    generatedCypher,
+  };
 });

@@ -33,6 +33,7 @@
   const $input = document.getElementById("search-input");
   const $historyToggle = document.getElementById("history-toggle");
   const $historyMenu = document.getElementById("history-menu");
+  const $askButton = document.getElementById("ask-button");
   const $results = document.getElementById("results-list");
   const $serverInfo = document.getElementById("server-info");
   const $inspectorBody = document.getElementById("inspector-body");
@@ -368,6 +369,7 @@
       const ver = info.version || "?";
       $serverInfo.textContent = `${name} v${ver}`;
       $serverInfo.title = `${name} v${ver}`; // full text when it is cut off
+      setAskAvailability(info.text2cypher || null);
     } catch (e) {
       $serverInfo.textContent = "(disconnected)";
       status("Cannot reach drevo HTTP API at /. Is the server running?", "error");
@@ -1819,6 +1821,73 @@
   document.addEventListener("click", (e) => {
     if (!$historyMenu.hidden && !$form.contains(e.target)) closeHistoryMenu();
   });
+
+  // ── Ask: plain language → Cypher ───────────────────────────────────
+  // `drevo.cypher.fromText` turns the editor's text into Cypher with the LLM
+  // the server is configured with (`DREVO_TEXT2CYPHER_*`). The generated query
+  // replaces the text for review and is never run automatically: it may write.
+  let text2cypher = null; // {model} from GET /, or null when not configured
+  const ASK_SETUP =
+    "Ask needs text-to-Cypher on the server: set DREVO_TEXT2CYPHER_UPSTREAM " +
+    "(an OpenAI-compatible chat/completions URL, e.g. a local Ollama) and " +
+    "DREVO_TEXT2CYPHER_MODEL, then restart drevo.";
+
+  function setAskAvailability(config) {
+    text2cypher = config;
+    $askButton.setAttribute("aria-disabled", String(!config));
+    $askButton.title = config
+      ? `Ask in plain language: ${config.model || "the configured model"} turns the text into Cypher for you to review`
+      : ASK_SETUP;
+  }
+
+  async function askQuestion() {
+    if ($askButton.getAttribute("aria-busy") === "true") return;
+    if (!text2cypher) {
+      status(ASK_SETUP);
+      return;
+    }
+    const question = $input.value.trim();
+    if (!question) {
+      status("Type a question first, e.g. “which tasks are completed?”, then press Ask.");
+      $input.focus();
+      return;
+    }
+    closeHistoryMenu();
+    rememberQuery(question);
+    $askButton.setAttribute("aria-busy", "true");
+    $askButton.textContent = "Asking…";
+    status(`Asking ${text2cypher.model || "the model"} to write Cypher…`);
+    try {
+      const r = await fetch("/cypher", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json", ...dbHeader() },
+        body: JSON.stringify(DrevoQueryHistory.fromTextRequest(question)),
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        status(`Ask failed: ${Report.errorMessage(text)}`, "error");
+        return;
+      }
+      const { cypher, answered } = DrevoQueryHistory.generatedCypher(JSON.parse(text));
+      if (!answered) {
+        status(
+          cypher
+            ? `The model could not answer from this graph's schema: ${cypher.replace(/^\/\/\s*/, "")}`
+            : "The model returned no query."
+        );
+        return;
+      }
+      setEditorText(cypher);
+      $input.focus();
+      status("Generated Cypher is in the editor: review it, then press Ctrl/Cmd+Enter to run.", "ok");
+    } catch (e) {
+      status(`Ask failed: ${e.message}`, "error");
+    } finally {
+      $askButton.removeAttribute("aria-busy");
+      $askButton.textContent = "Ask";
+    }
+  }
+  $askButton.addEventListener("click", askQuestion);
 
   // ── Bootstrap ──────────────────────────────────────────────────────
   $form.addEventListener("submit", (e) => {

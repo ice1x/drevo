@@ -52,7 +52,9 @@
     <div class="brand">drevo browser</div>
     <!-- Query editor: Cypher or full-text search terms. Enter runs a one-line
          query, Shift+Enter adds a line, Ctrl/Cmd+Enter runs any query, and
-         Alt+↑ / Alt+↓ step through the history (also listed under ▾). -->
+         Alt+↑ / Alt+↓ step through the history (also listed under ▾). Ask
+         turns a plain-language question into Cypher (drevo.cypher.fromText)
+         and puts it in the editor without running it. -->
     <form id="search-form" class="search">
       <textarea id="search-input" name="query" rows="1" spellcheck="false"
                 placeholder="Cypher (MATCH (n) RETURN n LIMIT 25) or full-text search…"
@@ -61,6 +63,8 @@
       <button type="button" id="history-toggle" class="history-toggle"
               title="Query history" aria-label="Query history"
               aria-haspopup="listbox" aria-expanded="false" aria-controls="history-menu">▾</button>
+      <button type="button" id="ask-button" class="ask-button" aria-disabled="true"
+              title="Ask in plain language: the server turns the text into Cypher for you to review">Ask</button>
       <button type="submit">Search</button>
       <ul id="history-menu" class="history-menu" role="listbox"
           aria-label="Query history" hidden></ul>

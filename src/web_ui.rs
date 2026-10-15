@@ -235,6 +235,7 @@ mod tests {
             "id=\"copy-csv\"",
             "id=\"history-toggle\"",
             "id=\"history-menu\"",
+            "id=\"ask-button\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),

@@ -4,7 +4,15 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { pushQuery, stepHistory, parseHistory, isRunKey, MAX_HISTORY } = require("./query_history.js");
+const {
+  pushQuery,
+  stepHistory,
+  parseHistory,
+  isRunKey,
+  fromTextRequest,
+  generatedCypher,
+  MAX_HISTORY,
+} = require("./query_history.js");
 
 // ── pushQuery ────────────────────────────────────────────────────────
 
@@ -100,4 +108,42 @@ test("other keys never run", () => {
 
 test("Enter while an IME is composing does not run", () => {
   assert.equal(isRunKey({ key: "Enter", isComposing: true }, "x"), false);
+});
+
+// ── Ask: text-to-Cypher ──────────────────────────────────────────────
+
+test("fromTextRequest passes the question as a parameter, not inside the query", () => {
+  const q = "which tasks are 'done'?";
+  assert.deepEqual(fromTextRequest(q), {
+    query: "CALL drevo.cypher.fromText($question) YIELD cypher RETURN cypher",
+    params: { question: q },
+  });
+});
+
+test("fromTextRequest trims the question", () => {
+  assert.equal(fromTextRequest("  list projects \n").params.question, "list projects");
+});
+
+test("generatedCypher returns the query from the single cypher row", () => {
+  const resp = { columns: ["cypher"], rows: [["  MATCH (p:Project) RETURN p  "]] };
+  assert.deepEqual(generatedCypher(resp), { cypher: "MATCH (p:Project) RETURN p", answered: true });
+});
+
+test("a reply that is only a // comment means the model could not answer", () => {
+  const resp = { columns: ["cypher"], rows: [["// no such data in this schema"]] };
+  assert.deepEqual(generatedCypher(resp), {
+    cypher: "// no such data in this schema",
+    answered: false,
+  });
+});
+
+test("a reply with a leading comment and a query still counts as answered", () => {
+  const resp = { columns: ["cypher"], rows: [["// tasks\nMATCH (t:Task) RETURN t"]] };
+  assert.equal(generatedCypher(resp).answered, true);
+});
+
+test("an empty or malformed reply yields no query", () => {
+  assert.deepEqual(generatedCypher({ rows: [] }), { cypher: "", answered: false });
+  assert.deepEqual(generatedCypher({ rows: [[null]] }), { cypher: "", answered: false });
+  assert.deepEqual(generatedCypher(null), { cypher: "", answered: false });
 });

@@ -64,7 +64,10 @@ drevo is the same engine no matter how you reach it:
 - **Web UI** — a Cytoscape.js graph explorer at `/ui` on the HTTP server. The top bar takes a
   Cypher query or full-text search terms. Enter runs a one-line query, Shift+Enter adds a
   line, and Ctrl/Cmd+Enter runs a query of any length. Alt+↑ / Alt+↓ step through earlier
-  queries, and the ▾ button lists the last 50; the history stays in your browser. A query's result opens in the main area under three
+  queries, and the ▾ button lists the last 50; the history stays in your browser. **Ask** turns
+  a question in plain language into Cypher with the server's
+  [text-to-Cypher model](admin-guide.md#text-to-cypher-drevocypherfromtext-opt-in) and puts the
+  query in the editor for you to check and run. A query's result opens in the main area under three
   tabs: **Graph**, **Table** and **JSON**. A result with nodes opens as a graph; one with only
   values, such as `MATCH (t:Task) RETURN t.title, t.status`, opens as a table. In the table a
   node cell opens that node's neighbourhood, and **Copy CSV** copies the rows. Server problems (a
