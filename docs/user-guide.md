@@ -62,7 +62,9 @@ drevo is the same engine no matter how you reach it:
   official Neo4j drivers) or in-process via `parse` + `execute`.
 - **HTTP API** — a REST surface on port `8080` for CRUD, traversal, search, and import/export.
 - **Web UI** — a Cytoscape.js graph explorer at `/ui` on the HTTP server. The top bar takes a
-  Cypher query or full-text search terms. A query's result opens in the main area under three
+  Cypher query or full-text search terms. Enter runs a one-line query, Shift+Enter adds a
+  line, and Ctrl/Cmd+Enter runs a query of any length. Alt+↑ / Alt+↓ step through earlier
+  queries, and the ▾ button lists the last 50; the history stays in your browser. A query's result opens in the main area under three
   tabs: **Graph**, **Table** and **JSON**. A result with nodes opens as a graph; one with only
   values, such as `MATCH (t:Task) RETURN t.title, t.status`, opens as a table. In the table a
   node cell opens that node's neighbourhood, and **Copy CSV** copies the rows. Server problems (a

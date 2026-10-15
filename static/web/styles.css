@@ -71,15 +71,26 @@ body {
   font-weight: 700;
   letter-spacing: 0.01em;
   color: var(--accent);
+  white-space: nowrap;
 }
 .search {
   flex: 1;
   display: flex;
+  align-items: flex-start;
   gap: 0.5rem;
-  max-width: 620px;
+  max-width: 720px;
+  position: relative;
 }
-.search input {
+.search textarea {
   flex: 1;
+  min-width: 12rem;
+  resize: none;
+  min-height: 2.35rem;
+  max-height: 12rem;
+  overflow-y: auto;
+  line-height: 1.35;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
   padding: 0.5rem 0.8rem;
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
@@ -88,13 +99,13 @@ body {
   font: inherit;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.search input::placeholder { color: var(--text-muted); }
-.search input:focus {
+.search textarea::placeholder { color: var(--text-muted); font-family: inherit; }
+.search textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
-.search button {
+.search button[type="submit"] {
   padding: 0.5rem 1.1rem;
   border-radius: var(--radius);
   border: 1px solid var(--accent);
@@ -105,12 +116,57 @@ body {
   cursor: pointer;
   transition: filter 0.12s ease, transform 0.05s ease;
 }
-.search button:hover { filter: brightness(1.06); }
-.search button:active { transform: translateY(1px); }
+.search button[type="submit"]:hover { filter: brightness(1.06); }
+.search button[type="submit"]:active { transform: translateY(1px); }
+.history-toggle {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.history-toggle:hover,
+.history-toggle[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
+.history-menu {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 22rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.history-menu li {
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 4.2em;
+  overflow: hidden;
+}
+.history-menu li:hover,
+.history-menu li[aria-selected="true"] { background: var(--bg-elev); }
+.history-menu li.history-empty { cursor: default; color: var(--text-muted); font-style: italic; font-family: inherit; }
 .server-info {
   color: var(--text-muted);
   font-size: 0.85em;
   white-space: nowrap;
+  /* A long dev build string must not squeeze the query editor. */
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .theme-toggle {
   margin-left: auto;

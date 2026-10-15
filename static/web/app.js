@@ -31,6 +31,8 @@
   // ── DOM refs ────────────────────────────────────────────────────────
   const $form = document.getElementById("search-form");
   const $input = document.getElementById("search-input");
+  const $historyToggle = document.getElementById("history-toggle");
+  const $historyMenu = document.getElementById("history-menu");
   const $results = document.getElementById("results-list");
   const $serverInfo = document.getElementById("server-info");
   const $inspectorBody = document.getElementById("inspector-body");
@@ -365,6 +367,7 @@
       const name = info.name || "drevo";
       const ver = info.version || "?";
       $serverInfo.textContent = `${name} v${ver}`;
+      $serverInfo.title = `${name} v${ver}`; // full text when it is cut off
     } catch (e) {
       $serverInfo.textContent = "(disconnected)";
       status("Cannot reach drevo HTTP API at /. Is the server running?", "error");
@@ -1712,11 +1715,117 @@
     $dbNew.addEventListener("click", () => createDatabase());
   }
 
+  // ── Query editor: run keys and history ─────────────────────────────
+  // The query bar is a textarea that grows with its text. The history (newest
+  // first, at most 50) is kept per browser in localStorage; storage can be
+  // unavailable (private mode, blocked site data), so it is best-effort.
+  const HISTORY_KEY = "drevo.queryHistory";
+  let queryHistory = loadHistory();
+  let historyIndex = -1; // -1 = the text being typed, 0 = newest entry
+  let historyDraft = ""; // the typed text, kept while stepping through history
+
+  function loadHistory() {
+    try {
+      return DrevoQueryHistory.parseHistory(localStorage.getItem(HISTORY_KEY));
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function rememberQuery(q) {
+    queryHistory = DrevoQueryHistory.pushQuery(queryHistory, q);
+    historyIndex = -1;
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(queryHistory));
+    } catch (_) {
+      // Not persisted; the history still works for this page.
+    }
+  }
+
+  // Fit the editor's height to its text (CSS caps it and then it scrolls).
+  function autosizeEditor() {
+    $input.style.height = "auto";
+    $input.style.height = `${$input.scrollHeight + 2}px`;
+  }
+
+  function setEditorText(text) {
+    $input.value = text;
+    autosizeEditor();
+    $input.setSelectionRange(text.length, text.length);
+  }
+
+  function renderHistoryMenu() {
+    $historyMenu.innerHTML = "";
+    if (queryHistory.length === 0) {
+      const li = document.createElement("li");
+      li.className = "history-empty";
+      li.textContent = "No queries yet.";
+      $historyMenu.appendChild(li);
+      return;
+    }
+    for (const q of queryHistory) {
+      const li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.textContent = q;
+      li.title = q;
+      li.addEventListener("click", () => {
+        setEditorText(q);
+        closeHistoryMenu();
+        $input.focus();
+      });
+      $historyMenu.appendChild(li);
+    }
+  }
+
+  function openHistoryMenu() {
+    renderHistoryMenu();
+    $historyMenu.hidden = false;
+    $historyToggle.setAttribute("aria-expanded", "true");
+  }
+
+  function closeHistoryMenu() {
+    $historyMenu.hidden = true;
+    $historyToggle.setAttribute("aria-expanded", "false");
+  }
+
+  $input.addEventListener("keydown", (e) => {
+    if (DrevoQueryHistory.isRunKey(e, $input.value)) {
+      e.preventDefault();
+      closeHistoryMenu();
+      $form.requestSubmit();
+      return;
+    }
+    if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      if (historyIndex === -1) historyDraft = $input.value;
+      const step = DrevoQueryHistory.stepHistory(
+        queryHistory,
+        historyIndex,
+        e.key === "ArrowUp" ? "back" : "forward"
+      );
+      historyIndex = step.index;
+      setEditorText(step.text === null ? historyDraft : step.text);
+    }
+  });
+  // Editing a recalled query makes it the new draft.
+  $input.addEventListener("input", () => {
+    historyIndex = -1;
+    autosizeEditor();
+  });
+  $historyToggle.addEventListener("click", () => {
+    if ($historyMenu.hidden) openHistoryMenu();
+    else closeHistoryMenu();
+  });
+  document.addEventListener("click", (e) => {
+    if (!$historyMenu.hidden && !$form.contains(e.target)) closeHistoryMenu();
+  });
+
   // ── Bootstrap ──────────────────────────────────────────────────────
   $form.addEventListener("submit", (e) => {
     e.preventDefault();
     const q = $input.value.trim();
     if (!q) return;
+    rememberQuery(q);
     // A bare `USE <name>` just switches the active database (like the
     // picker) — no query to run.
     const bareUse = q.match(BARE_USE_RE);
@@ -1812,6 +1921,7 @@
     if (e.key === "Escape" && $storageModal && !$storageModal.hidden) closeStorage();
     if (e.key === "Escape" && $settingsModal && !$settingsModal.hidden) closeSettings();
     if (e.key === "Escape" && $reportModal && !$reportModal.hidden) closeReport();
+    if (e.key === "Escape" && !$historyMenu.hidden) closeHistoryMenu();
   });
   pollProblems();
   setInterval(pollProblems, PROBLEM_POLL_MS);

@@ -50,11 +50,20 @@
 <body>
   <header class="topbar">
     <div class="brand">drevo browser</div>
+    <!-- Query editor: Cypher or full-text search terms. Enter runs a one-line
+         query, Shift+Enter adds a line, Ctrl/Cmd+Enter runs any query, and
+         Alt+↑ / Alt+↓ step through the history (also listed under ▾). -->
     <form id="search-form" class="search">
-      <input type="text" id="search-input" name="query"
-             placeholder="Cypher (MATCH (n) RETURN n LIMIT 25) or full-text search…"
-             autocomplete="off" />
+      <textarea id="search-input" name="query" rows="1" spellcheck="false"
+                placeholder="Cypher (MATCH (n) RETURN n LIMIT 25) or full-text search…"
+                title="Enter runs a one-line query · Shift+Enter adds a line · Ctrl/Cmd+Enter runs · Alt+↑/↓ history"
+                autocomplete="off"></textarea>
+      <button type="button" id="history-toggle" class="history-toggle"
+              title="Query history" aria-label="Query history"
+              aria-haspopup="listbox" aria-expanded="false" aria-controls="history-menu">▾</button>
       <button type="submit">Search</button>
+      <ul id="history-menu" class="history-menu" role="listbox"
+          aria-label="Query history" hidden></ul>
     </form>
     <div class="db-picker" title="Active database">
       <label for="db-select" class="db-label">db</label>
@@ -272,6 +281,9 @@
        label nodes through DrevoGraphMath, and app.js reads
        window.DrevoResultsView. -->
   <script src="/ui/results_view.js"></script>
+  <!-- Query history and run-key helpers (unit-tested in query_history.test.js);
+       app.js reads window.DrevoQueryHistory. -->
+  <script src="/ui/query_history.js"></script>
   <!-- Problem toasts + "Report a problem" helpers (unit-tested in
        report.test.js); must load before app.js, which reads window.DrevoReport. -->
   <script src="/ui/report.js"></script>

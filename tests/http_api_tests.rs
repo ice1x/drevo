@@ -2180,6 +2180,17 @@ async fn ui_results_view_module_serves_to_client() {
 }
 
 #[tokio::test]
+async fn ui_query_history_module_serves_to_client() {
+    // The query-editor helpers (#615), unit-tested by query_history.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/query_history.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoQueryHistory"));
+    assert!(body.contains("isRunKey"));
+}
+
+#[tokio::test]
 async fn ui_report_module_serves_to_client() {
     // The "Report a problem" helpers (#552), unit-tested by report.test.js.
     let app = make_app();
