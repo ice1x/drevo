@@ -1,7 +1,7 @@
 // drevo browser — pure helpers for the query editor: the per-browser query
-// history, the key that runs a query, and the Ask (text-to-Cypher) request and
-// reply. DOM-free so they can be unit-tested under `node --test` (see
-// query_history.test.js).
+// history, the key that runs a query, the Ask (text-to-Cypher) request and
+// reply, and how long a request has run. DOM-free so they can be unit-tested
+// under `node --test` (see query_history.test.js).
 //
 // UMD: attaches to the global `DrevoQueryHistory` in the browser (loaded
 // before app.js) and to `module.exports` under node's test runner.
@@ -89,8 +89,18 @@
     return { cypher, answered };
   }
 
+  // How long a request has run, for the status bar: tenths of a second under
+  // a minute ("12.3s"), then minutes and seconds ("1m 05s").
+  function elapsedText(ms) {
+    const t = Math.max(0, Number(ms) || 0);
+    if (t < 60000) return `${(Math.floor(t / 100) / 10).toFixed(1)}s`;
+    const seconds = Math.floor((t % 60000) / 1000);
+    return `${Math.floor(t / 60000)}m ${String(seconds).padStart(2, "0")}s`;
+  }
+
   return {
     MAX_HISTORY,
+    elapsedText,
     pushQuery,
     stepHistory,
     parseHistory,

@@ -285,8 +285,12 @@
   </main>
 
   <footer class="statusbar" id="statusbar">
-    <span id="status-text">Ready.</span>
-    <span class="hint">Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours. Query results open in the Graph, Table or JSON tab.</span>
+    <span class="status-main">
+      <span id="status-text">Ready.</span>
+      <button type="button" id="stop-request" class="stop-request" hidden
+              title="Stop waiting for this request (the server may still finish it)">Stop</button>
+    </span>
+    <span class="hint" title="Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours. Query results open in the Graph, Table or JSON tab.">Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours. Query results open in the Graph, Table or JSON tab.</span>
   </footer>
 
   <!-- Pure graph-geometry helpers (unit-tested in graph_math.test.js); must

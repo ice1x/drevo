@@ -682,7 +682,35 @@ body {
   color: var(--text-muted);
   font-size: 0.8em;
 }
-.statusbar .hint { font-style: italic; }
+.statusbar { gap: 1rem; }
+/* The status keeps its room; the tip gives way and is cut with an ellipsis. */
+.statusbar .hint {
+  font-style: italic;
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.status-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 0 1 auto;
+  max-width: 70%;
+  font-variant-numeric: tabular-nums;
+}
+.stop-request {
+  padding: 0.1rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  cursor: pointer;
+}
+.stop-request:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .statusbar .status-error { color: var(--danger); }
 .statusbar .status-ok { color: var(--accent-2); }
 

@@ -38,6 +38,7 @@
   const $serverInfo = document.getElementById("server-info");
   const $inspectorBody = document.getElementById("inspector-body");
   const $statusText = document.getElementById("status-text");
+  const $stopRequest = document.getElementById("stop-request");
   const $tooltip = document.getElementById("cy-tooltip");
   const $nodeLimit = document.getElementById("node-limit");
   const $viewTabs = document.getElementById("view-tabs");
@@ -210,7 +211,7 @@
     }
     return r.json();
   }
-  async function apiPost(path, body) {
+  async function apiPost(path, body, signal) {
     const r = await fetch(path, {
       method: "POST",
       headers: {
@@ -219,6 +220,7 @@
         ...dbHeader(),
       },
       body: JSON.stringify(body),
+      signal,
     });
     if (!r.ok) {
       throw new Error(`POST ${path} → ${r.status} ${r.statusText}`);
@@ -1163,11 +1165,57 @@
     }
   }
 
+  // ── Request progress ───────────────────────────────────────────────
+  // While a query, search or Ask request runs, the status bar counts up and
+  // Stop abandons the request. That only stops the browser waiting; the
+  // server may still finish the work (DREVO_QUERY_TIMEOUT_MS caps queries).
+  // A new request replaces a running one.
+  let running = null; // {controller, timer, startedAt}
+
+  function startRequest(label) {
+    if (running) running.controller.abort();
+    const req = { controller: new AbortController(), startedAt: performance.now() };
+    const tick = () =>
+      status(`${label}… ${DrevoQueryHistory.elapsedText(performance.now() - req.startedAt)}`);
+    tick();
+    req.timer = setInterval(tick, 100);
+    running = req;
+    $stopRequest.hidden = false;
+    return req;
+  }
+
+  function finishRequest(req) {
+    clearInterval(req.timer);
+    if (running === req) {
+      running = null;
+      $stopRequest.hidden = true;
+    }
+  }
+
+  // Whether `error` is this request being stopped (by Stop, not by a newer
+  // request); if so, say so in the status bar.
+  function reportStopped(req, error) {
+    if (!error || error.name !== "AbortError") return false;
+    if (running === req) {
+      const after = DrevoQueryHistory.elapsedText(performance.now() - req.startedAt);
+      status(
+        `Stopped waiting after ${after}. The server may still finish it; ` +
+          "DREVO_QUERY_TIMEOUT_MS caps how long a query may run."
+      );
+    }
+    return true;
+  }
+
+  $stopRequest.addEventListener("click", () => {
+    if (running) running.controller.abort();
+  });
+
   // ── FTS search ──────────────────────────────────────────────────────
   async function runSearch(query) {
-    status(`Searching for ${JSON.stringify(query)}…`);
+    const req = startRequest(`Searching for ${JSON.stringify(query)}`);
     try {
-      const resp = await apiPost("/search/fts", { query, limit: 25 });
+      const resp = await apiPost("/search/fts", { query, limit: 25 }, req.controller.signal);
+      finishRequest(req);
       // The HTTP layer wraps the result; accept either `[ScoredNode]`
       // or `{ results: [...] }` to stay robust against minor shape
       // changes.
@@ -1181,7 +1229,9 @@
         results.length === 0 ? null : "ok"
       );
     } catch (e) {
-      status(`Search failed: ${e.message}`, "error");
+      if (!reportStopped(req, e)) status(`Search failed: ${e.message}`, "error");
+    } finally {
+      finishRequest(req);
     }
   }
 
@@ -1211,7 +1261,7 @@
   }
 
   async function runCypher(query) {
-    status("Running Cypher…");
+    const req = startRequest("Running Cypher");
     try {
       // Own fetch (not apiPost) so we can surface the executor's error
       // text — /cypher returns the parse/exec message as the body on 400.
@@ -1223,8 +1273,10 @@
           ...dbHeader(),
         },
         body: JSON.stringify({ query }),
+        signal: req.controller.signal,
       });
       const text = await r.text();
+      finishRequest(req);
       if (!r.ok) {
         const message = Report.errorMessage(text);
         lastFailure = { query, params: {}, error: message, at: nowIso() };
@@ -1234,9 +1286,12 @@
       renderCypherResult(JSON.parse(text));
       return true;
     } catch (e) {
+      if (reportStopped(req, e)) return false;
       lastFailure = { query, params: {}, error: e.message, at: nowIso() };
       status(`Cypher failed: ${e.message}`, "error");
       return false;
+    } finally {
+      finishRequest(req);
     }
   }
 
@@ -2023,14 +2078,16 @@
     rememberQuery(question);
     $askButton.setAttribute("aria-busy", "true");
     $askButton.textContent = "Asking…";
-    status(`Asking ${text2cypher.model || "the model"} to write Cypher…`);
+    const req = startRequest(`Asking ${text2cypher.model || "the model"} to write Cypher`);
     try {
       const r = await fetch("/cypher", {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json", ...dbHeader() },
         body: JSON.stringify(DrevoQueryHistory.fromTextRequest(question)),
+        signal: req.controller.signal,
       });
       const text = await r.text();
+      finishRequest(req);
       if (!r.ok) {
         status(`Ask failed: ${Report.errorMessage(text)}`, "error");
         return;
@@ -2048,8 +2105,9 @@
       $input.focus();
       status("Generated Cypher is in the editor: review it, then press Ctrl/Cmd+Enter to run.", "ok");
     } catch (e) {
-      status(`Ask failed: ${e.message}`, "error");
+      if (!reportStopped(req, e)) status(`Ask failed: ${e.message}`, "error");
     } finally {
+      finishRequest(req);
       $askButton.removeAttribute("aria-busy");
       $askButton.textContent = "Ask";
     }
