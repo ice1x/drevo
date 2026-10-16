@@ -257,7 +257,7 @@ fn new_token() -> String {
     })
 }
 
-fn hash_password(password: &str) -> Result<String, AuthError> {
+pub(crate) fn hash_password(password: &str) -> Result<String, AuthError> {
     use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
     use argon2::Argon2;
 
@@ -268,7 +268,7 @@ fn hash_password(password: &str) -> Result<String, AuthError> {
         .map_err(|e| AuthError::Hash(e.to_string()))
 }
 
-fn verify_password(password: &str, stored_phc: &str) -> bool {
+pub(crate) fn verify_password(password: &str, stored_phc: &str) -> bool {
     use argon2::password_hash::{PasswordHash, PasswordVerifier};
     use argon2::Argon2;
 

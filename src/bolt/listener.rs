@@ -178,6 +178,25 @@ pub async fn accept_and_run_session_durable_with_registry(
     .await
 }
 
+/// Like [`accept_and_run_session_durable_with_registry`], with the server's
+/// users for the Cypher user-management commands (`CREATE USER`, …).
+pub async fn accept_and_run_session_durable_with_security(
+    socket: TcpStream,
+    registry: &std::sync::Arc<crate::database_registry::DatabaseRegistry>,
+    security: crate::security::Security,
+) -> BoltResult<()> {
+    let accepted = accept_handshake_on(socket).await?;
+    if accepted.negotiated.is_none() {
+        return Ok(());
+    }
+    let mut stream = accepted.stream;
+    run_session_on_inner(
+        &mut stream,
+        Session::new_durable_with_registry(std::sync::Arc::clone(registry)).with_security(security),
+    )
+    .await
+}
+
 /// Post-handshake session loop over the durable native store of record. Drives
 /// a [`Session`] over any `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS,
 /// etc. The stream must already be past the 20-byte handshake (call

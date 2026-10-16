@@ -77,6 +77,8 @@ pub struct NativeApiState {
     /// (Web-UI-settable API key/upstream/model); the same `Arc` the proxy
     /// reads, so a write takes effect live.
     embeddings_config: Option<Arc<crate::embeddings::EmbeddingsConfigStore>>,
+    /// The server's users, for the Cypher user-management commands.
+    security: crate::security::Security,
     /// Prometheus metrics registry backing `GET /metrics` and the per-request
     /// instrumentation middleware — a [`DrevoMetrics`] registry, so a scrape
     /// looks identical on either engine.
@@ -108,6 +110,7 @@ impl NativeApiState {
             shutting_down: Arc::new(AtomicBool::new(false)),
             embeddings: None,
             embeddings_config: None,
+            security: crate::security::Security::default(),
             metrics: Arc::new(DrevoMetrics::new()),
             formats: Arc::new(crate::wire_format::WireFormats::default()),
         }
@@ -118,6 +121,14 @@ impl NativeApiState {
     #[must_use]
     pub fn with_wire_formats(mut self, formats: crate::wire_format::WireFormats) -> Self {
         self.formats = Arc::new(formats);
+        self
+    }
+
+    /// Run the Cypher user-management commands (`CREATE USER`, `SHOW USERS`,
+    /// …) against `security`.
+    #[must_use]
+    pub fn with_security(mut self, security: crate::security::Security) -> Self {
+        self.security = security;
         self
     }
 
@@ -834,6 +845,9 @@ async fn cypher(
         query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
     let params = params.unwrap_or_default();
 
+    if let Some(parsed) = crate::cypher::security_admin::parse(&query) {
+        return run_security_command(&state, parsed, &params).map(Json);
+    }
     if let Some(command) = crate::cypher::admin::parse(&query) {
         return handle_admin_cypher(&state, command, params).map(Json);
     }
@@ -1150,6 +1164,34 @@ fn handle_admin_cypher(
                 None => Ok(empty_cypher_response()),
             }
         }
+    }
+}
+
+/// Run a user-management command (`CREATE USER`, `SHOW USERS`, …). There is
+/// no signed-in user on HTTP yet, so the current-user commands see none.
+fn run_security_command(
+    state: &NativeApiState,
+    parsed: Result<crate::cypher::security_admin::SecurityCommand, String>,
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> Result<CypherResponse, ApiError> {
+    use crate::security::{ParamValue, SecurityError};
+    let lookup = |name: &str| {
+        params.get(name).map(|v| match v {
+            serde_json::Value::String(s) => ParamValue::String(s.clone()),
+            _ => ParamValue::Other,
+        })
+    };
+    let outcome = parsed
+        .map_err(SecurityError::syntax)
+        .and_then(|command| state.security.execute(&command, None, &lookup));
+    match outcome {
+        Ok(result) => Ok(exec_result_to_response(result)),
+        Err(e) => Err(ApiError::Coded {
+            status: StatusCode::from_u16(e.kind.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            code: e.kind.code(),
+            message: e.message,
+        }),
     }
 }
 

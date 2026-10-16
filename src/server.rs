@@ -25,6 +25,7 @@
 //! | `DREVO_HOST`      | `0.0.0.0`   | Bind address (IPv4, IPv6, or DNS) |
 //! | `DREVO_PORT`      | `8080`      | TCP port (1..=65535)              |
 //! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `native.wal`    |
+//! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_ENGINE`    | `native-durable` | Serving engine. `native-durable` (default) — the WAL-backed native engine IS the store of record (`<data_dir>/native.wal`), no KV. `kv` still parses but its serving mode was removed (epic #444): a `kv` process warns and is served by the native engine. |
 //!
 //! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
@@ -106,6 +107,11 @@ pub struct Config {
     /// Port of the Arrow Flight endpoint from `DREVO_FLIGHT_PORT` (issue
     /// #584); `None` serves none. Needs the `arrow-flight` feature.
     pub flight_port: Option<u16>,
+    /// How to create the first user, from `DREVO_AUTH` (Neo4j's `NEO4J_AUTH`
+    /// format): `user/password`, `none`, or unset for `neo4j` with a generated
+    /// password. Its `Debug` output hides the password.
+    #[cfg(feature = "auth")]
+    pub auth: drevo_auth::users::Bootstrap,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -207,6 +213,13 @@ pub enum ConfigError {
         "invalid DREVO_WAL_FORMAT: {0}; rebuild with the matching `format-*` feature if needed"
     )]
     InvalidWalFormat(#[from] crate::wal_format::WalFormatError),
+    /// `DREVO_AUTH` was malformed, or the build has no user management. The
+    /// message never contains the password.
+    #[error("invalid DREVO_AUTH: {reason}")]
+    InvalidAuth {
+        /// Why it was rejected.
+        reason: String,
+    },
 }
 
 impl Config {
@@ -328,7 +341,24 @@ impl Config {
             }
         };
 
+        let auth_raw = getter("DREVO_AUTH");
+        #[cfg(feature = "auth")]
+        let auth = drevo_auth::users::Bootstrap::parse(auth_raw.as_deref()).map_err(|e| {
+            ConfigError::InvalidAuth {
+                reason: format!("{e}; expected user/password or none"),
+            }
+        })?;
+        #[cfg(not(feature = "auth"))]
+        if auth_raw.is_some_and(|raw| !raw.eq_ignore_ascii_case("none")) {
+            return Err(ConfigError::InvalidAuth {
+                reason: "this build has no user management; rebuild with the `auth` feature"
+                    .to_string(),
+            });
+        }
+
         Ok(Self {
+            #[cfg(feature = "auth")]
+            auth,
             host,
             port,
             data_dir: PathBuf::from(data_dir_raw),
@@ -435,6 +465,39 @@ pub enum RunError {
     #[cfg(feature = "embeddings-proxy")]
     #[error("invalid text-to-Cypher configuration: {0}")]
     Text2Cypher(String),
+    /// The users could not be loaded from `<data_dir>/security.json`, or the
+    /// first user could not be created. A damaged file stops the server
+    /// rather than starting it with no users.
+    #[cfg(feature = "auth")]
+    #[error("cannot open the server's users: {0}")]
+    Security(String),
+}
+
+/// Open the server's users from `<data_dir>/security.json` and create the
+/// first one from `DREVO_AUTH` when there are none, logging what happened.
+#[cfg(feature = "auth")]
+fn configure_security(cfg: &Config) -> Result<crate::security::Security, RunError> {
+    use drevo_auth::users::BootstrapOutcome;
+    let (security, outcome) = crate::security::open_server_security(Some(&cfg.data_dir), &cfg.auth)
+        .map_err(|e| RunError::Security(e.to_string()))?;
+    match outcome {
+        BootstrapOutcome::Disabled => tracing::info!("DREVO_AUTH=none: no first user created"),
+        BootstrapOutcome::AlreadyInitialised => {}
+        BootstrapOutcome::Created => tracing::info!("created the first user from DREVO_AUTH"),
+        BootstrapOutcome::Generated { user, password } => tracing::warn!(
+            user = %user,
+            password = %password,
+            "created the first user with a generated password; it must be changed at the first \
+             login. Set DREVO_AUTH=user/password to choose it instead"
+        ),
+    }
+    Ok(security)
+}
+
+/// Without the `auth` feature there is no user management.
+#[cfg(not(feature = "auth"))]
+fn configure_security(_cfg: &Config) -> Result<crate::security::Security, RunError> {
+    Ok(crate::security::Security::default())
 }
 
 /// Build the shared, persisted embeddings config store from `cfg`: the
@@ -643,6 +706,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // Opt-in statement timeout (#547): every database, including ones created
     // later through the catalog, stops a statement past this limit.
     registry.set_statement_timeout(cfg.query_timeout);
+    // The server's users, shared by HTTP and Bolt (issue #633).
+    let security = configure_security(&cfg)?;
     // Two-phase commit (#556): a prepared transaction blocks every write, so
     // one left waiting too long is reported at ERROR (and thus in the Web UI's
     // problem feed). Checked every 10 s across every database.
@@ -699,16 +764,19 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
             })?;
         tracing::info!(%bolt_addr, "bolt listening (native-durable)");
         let bolt_registry = std::sync::Arc::clone(&registry);
+        let bolt_security = security.clone();
         tokio::spawn(async move {
             loop {
                 match bolt_listener.accept().await {
                     Ok((socket, _peer)) => {
                         let conn_registry = std::sync::Arc::clone(&bolt_registry);
+                        let conn_security = bolt_security.clone();
                         tokio::spawn(async move {
                             if let Err(err) =
-                                crate::bolt::listener::accept_and_run_session_durable_with_registry(
+                                crate::bolt::listener::accept_and_run_session_durable_with_security(
                                     socket,
                                     &conn_registry,
+                                    conn_security,
                                 )
                                 .await
                             {
@@ -770,7 +838,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     }
 
     let state = crate::native_api::NativeApiState::with_registry(service, registry)
-        .with_wire_formats(cfg.http_formats.clone());
+        .with_wire_formats(cfg.http_formats.clone())
+        .with_security(security);
     // Opt-in embeddings proxy, exactly like the KV path — the restart
     // tooling probes POST /v1/embeddings after boot. Store-backed so the key is
     // Web-UI-settable.

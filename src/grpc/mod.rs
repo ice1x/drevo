@@ -86,6 +86,11 @@ impl pb::drevo_server::Drevo for DrevoGrpc {
                 "database administration is not available over gRPC; use HTTP or Bolt",
             ));
         }
+        if crate::cypher::security_admin::parse(&query).is_some() {
+            return Err(Status::unimplemented(
+                "user management is not available over gRPC; use HTTP or Bolt",
+            ));
+        }
         let name = if database.is_empty() {
             self.registry.default_name().to_string()
         } else {

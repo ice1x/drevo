@@ -268,6 +268,11 @@ async fn errors_map_to_grpc_statuses() {
         code(run(&mut c, req("CREATE DATABASE other")).await),
         Code::Unimplemented
     );
+    // User management runs over HTTP and Bolt only.
+    assert_eq!(
+        code(run(&mut c, req("CREATE USER ann SET PASSWORD 'first-password'")).await),
+        Code::Unimplemented
+    );
     let mut r = req("RETURN $n");
     r.params = HashMap::from([(
         "n".to_string(),
