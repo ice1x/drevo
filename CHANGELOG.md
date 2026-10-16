@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Node menu** (issue #630). A right-click on a node in the Web UI graph
+  opens a menu: **Expand neighbours**, **Show only its neighbourhood**,
+  **Query its neighbours** (puts `MATCH (n)-[r]-(m) WHERE id(n) = 42 RETURN
+  n, r, m` in the editor), **Copy Cypher**, **Copy id** and **Hide from the
+  canvas** (the node stays in the database).
+
 - **Request progress and Stop** (issue #628). While a Cypher query, a search
   or an Ask request runs, the Web UI status bar counts up (`Running Cypher…
   12.3s`) and a **Stop** button abandons the request in the browser; the

@@ -241,6 +241,7 @@ mod tests {
             "id=\"color-by\"",
             "id=\"color-legend\"",
             "id=\"stop-request\"",
+            "id=\"node-menu\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),

@@ -43,6 +43,7 @@
   const $nodeLimit = document.getElementById("node-limit");
   const $viewTabs = document.getElementById("view-tabs");
   const $cyBox = document.getElementById("cy");
+  const $nodeMenu = document.getElementById("node-menu");
   const $tableView = document.getElementById("table-view");
   const $jsonView = document.getElementById("json-view");
   const $viewMeta = document.getElementById("view-meta");
@@ -1074,6 +1075,13 @@
     });
     cy.on("zoom", refreshLabelSize);
 
+    // A right-click on a node opens the node menu; any other canvas
+    // interaction closes it.
+    cy.on("cxttap", "node", (evt) =>
+      openNodeMenu(evt.target, evt.renderedPosition || evt.target.renderedPosition())
+    );
+    cy.on("tap pan zoom", closeNodeMenu);
+
     // Hover tooltips (task 00093): show title + kind + id near the node.
     cy.on("mouseover", "node", (evt) => showTooltip(evt.target));
     cy.on("mousemove", "node", (evt) => positionTooltip(evt.target));
@@ -1164,6 +1172,75 @@
       status(`Expand failed: ${e.message}`, "error");
     }
   }
+
+  // ── Node menu ──────────────────────────────────────────────────────
+  let menuNode = null;
+
+  function openNodeMenu(node, at) {
+    hideTooltip();
+    menuNode = node;
+    $nodeMenu.hidden = false;
+    // Keep the menu inside the canvas.
+    const box = $cyBox.getBoundingClientRect();
+    const x = Math.min(at.x, box.width - $nodeMenu.offsetWidth - 4);
+    const y = Math.min(at.y, box.height - $nodeMenu.offsetHeight - 4);
+    $nodeMenu.style.left = `${Math.max(4, x)}px`;
+    $nodeMenu.style.top = `${Math.max(4, y)}px`;
+    $nodeMenu.querySelector("button").focus();
+  }
+
+  function closeNodeMenu() {
+    $nodeMenu.hidden = true;
+    menuNode = null;
+  }
+
+  async function copyText(text, done) {
+    try {
+      await navigator.clipboard.writeText(text);
+      status(done, "ok");
+    } catch (_) {
+      status(`The clipboard is not available here; copy it by hand: ${text}`);
+    }
+  }
+
+  function runNodeAction(action, node) {
+    const id = node.data("raw") ? node.data("raw").id : Number(node.id());
+    switch (action) {
+      case "expand":
+        expandNode(node);
+        break;
+      case "focus":
+        selectResult(id, null);
+        break;
+      case "query":
+        setEditorText(DrevoQueryHistory.neighboursQuery(id));
+        $input.focus();
+        status("The query is in the editor: press Ctrl/Cmd+Enter to run it.");
+        break;
+      case "copy-cypher":
+        copyText(DrevoQueryHistory.nodeQuery(id), `Copied the Cypher for node ${id}.`);
+        break;
+      case "copy-id":
+        copyText(String(id), `Copied node id ${id}.`);
+        break;
+      case "hide":
+        node.remove();
+        refreshEmphasis();
+        renderColorLegend();
+        status(`Node ${id} is hidden from the canvas (not deleted).`);
+        break;
+    }
+  }
+
+  $nodeMenu.addEventListener("click", (e) => {
+    const item = e.target.closest("[data-action]");
+    if (!item || !menuNode) return;
+    const node = menuNode;
+    closeNodeMenu();
+    runNodeAction(item.dataset.action, node);
+  });
+  // The canvas has its own menu; keep the browser's out of the way.
+  $cyBox.addEventListener("contextmenu", (e) => e.preventDefault());
 
   // ── Request progress ───────────────────────────────────────────────
   // While a query, search or Ask request runs, the status bar counts up and
@@ -2225,6 +2302,7 @@
     if (e.key === "Escape" && $settingsModal && !$settingsModal.hidden) closeSettings();
     if (e.key === "Escape" && $reportModal && !$reportModal.hidden) closeReport();
     if (e.key === "Escape" && !$historyMenu.hidden) closeHistoryMenu();
+    if (e.key === "Escape" && !$nodeMenu.hidden) closeNodeMenu();
   });
   pollProblems();
   setInterval(pollProblems, PROBLEM_POLL_MS);

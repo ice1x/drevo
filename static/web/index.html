@@ -266,6 +266,15 @@
            node hover (task 00093). -->
       <div class="graph-canvas" id="cy" role="tabpanel">
         <div id="cy-tooltip" class="cy-tooltip" role="tooltip" aria-hidden="true"></div>
+        <!-- Node menu: opened by a right-click on a node. -->
+        <div id="node-menu" class="node-menu" role="menu" aria-label="Node actions" hidden>
+          <button type="button" role="menuitem" data-action="expand">Expand neighbours</button>
+          <button type="button" role="menuitem" data-action="focus">Show only its neighbourhood</button>
+          <button type="button" role="menuitem" data-action="query">Query its neighbours</button>
+          <button type="button" role="menuitem" data-action="copy-cypher">Copy Cypher</button>
+          <button type="button" role="menuitem" data-action="copy-id">Copy id</button>
+          <button type="button" role="menuitem" data-action="hide">Hide from the canvas</button>
+        </div>
       </div>
       <div class="table-view" id="table-view" role="tabpanel" hidden>
         <p class="view-empty">Run a Cypher query to see its rows here.</p>
