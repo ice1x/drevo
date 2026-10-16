@@ -4,7 +4,15 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { meanEdgeLength, segmentLength, nodeLabel, visibleKinds } = require("./graph_math.js");
+const {
+  meanEdgeLength,
+  segmentLength,
+  nodeLabel,
+  visibleKinds,
+  colorCandidates,
+  colorValue,
+  legendEntries,
+} = require("./graph_math.js");
 
 test("meanEdgeLength averages the segment lengths", () => {
   // A 3-long and a 4-long segment → mean 3.5.
@@ -136,4 +144,61 @@ test("a blank filter is no filter", () => {
 
 test("a filter that matches nothing shows nothing", () => {
   assert.deepEqual(visibleKinds(COUNTS, { filter: "zzz" }), { shown: [], hidden: 0 });
+});
+
+// ── Colour by ────────────────────────────────────────────────────────
+
+const mk = (id, kind, properties) => ({ id, kind, title: `n${id}`, properties });
+const NODES = [
+  mk(1, "Entity", { type: "Module", project: "a", name: "x1", status: "open" }),
+  mk(2, "Entity", { type: "Module", project: "a", name: "x2" }),
+  mk(3, "Entity", { type: "Task", project: "b", name: "x3" }),
+  mk(4, "Entity", { type: "Task", project: "b", name: "x4" }),
+  mk(5, "Task", { name: "x5", count: 3 }),
+];
+
+test("colorCandidates offers string properties whose top values cover most nodes", () => {
+  // type and project: their top 2 values cover all 4 nodes that have them.
+  // name: every value differs, so the top 2 cover only 2 of 5; status sits on
+  // 1 of 5 nodes (< 30%); count is not a string.
+  assert.deepEqual(colorCandidates(NODES, { topValues: 2 }), ["project", "type"]);
+});
+
+test("a long tail of rare values is fine while the top values dominate", () => {
+  const nodes = [];
+  for (let i = 0; i < 80; i++) nodes.push(mk(i, "E", { type: i % 2 ? "Task" : "File" }));
+  for (let i = 80; i < 100; i++) nodes.push(mk(i, "E", { type: `rare${i}` }));
+  assert.deepEqual(colorCandidates(nodes, { topValues: 2 }), ["type"]);
+});
+
+test("colorCandidates orders by coverage, then by key", () => {
+  const nodes = [...NODES, mk(6, "X", { project: "a" })];
+  assert.deepEqual(colorCandidates(nodes, { topValues: 2 }), ["project", "type"]);
+});
+
+test("a property with a single value is not worth colouring by", () => {
+  const nodes = [mk(1, "A", { env: "prod" }), mk(2, "A", { env: "prod" })];
+  assert.deepEqual(colorCandidates(nodes), []);
+});
+
+test("colorValue reads the label or the chosen property", () => {
+  assert.equal(colorValue(NODES[0], "kind"), "Entity");
+  assert.equal(colorValue(NODES[0], "type"), "Module");
+  assert.equal(colorValue(NODES[4], "type"), "", "no value reads as empty");
+});
+
+test("legendEntries counts values, most common first, and caps the list", () => {
+  assert.deepEqual(legendEntries(NODES, "type", 2), {
+    entries: [["Module", 2], ["Task", 2]],
+    more: 1,
+  });
+  assert.deepEqual(legendEntries(NODES, "kind", 5), {
+    entries: [["Entity", 4], ["Task", 1]],
+    more: 0,
+  });
+});
+
+test("legendEntries lists a missing value last, as an empty key", () => {
+  const { entries } = legendEntries(NODES, "type", 5);
+  assert.deepEqual(entries[entries.length - 1], ["", 1]);
 });

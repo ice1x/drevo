@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Colour nodes by a property** (issue #624). A **Colour by** select in the
+  Web UI's left rail colours the graph by label (the default) or by a
+  property such as `type` or `project`, with a legend of the values on the
+  canvas. It offers string properties on at least 30% of the nodes whose 12
+  most common values cover at least 60% of the nodes that have them. The
+  choice is remembered per browser.
+
 - **Readable inspector** (issue #622). The node and relationship inspector
   shows strings without quotes, `null` dimmed and every date as
   `YYYY-MM-DD HH:MM:SS UTC` (epoch numbers under time-like keys and ISO 8601
