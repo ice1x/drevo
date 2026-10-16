@@ -224,11 +224,15 @@ port is `7687`. The session understands `HELLO`, `RUN`, `PULL`, `DISCARD`, `RESE
 ```python
 from neo4j import GraphDatabase
 
-driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "choose-a-password"))
 with driver.session() as session:
     for record in session.run("MATCH (n:Task) RETURN n.title AS title LIMIT 10"):
         print(record["title"])
 ```
+
+Bolt needs a login with one of the server's users (the first comes from `DREVO_AUTH`; see the
+[Admin Guide](admin-guide.md#users)), unless the server runs with `DREVO_AUTH=none`. A user whose
+password must be changed can only run `ALTER CURRENT USER SET PASSWORD FROM … TO …` until they do.
 
 The Cypher accepted over Bolt is exactly the [Cypher Reference](cypher-reference.md) subset.
 TLS is available behind the `bolt-tls` feature, authentication behind `auth`

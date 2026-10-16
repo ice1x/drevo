@@ -8,6 +8,23 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Bolt login** (issue #634). With user management on, a Bolt `HELLO` must
+  log in as one of the server's users, with a password or a session token,
+  unless `DREVO_AUTH=none`:
+  - Refused logins get `Neo.ClientError.Security.Unauthorized` with one
+    message for a wrong password, an unknown user and a suspended user.
+    Three failures in a row lock the user for five seconds
+    (`AuthenticationRateLimit`).
+  - A user who must change the password can only run `ALTER CURRENT USER`
+    until they do (`CredentialsExpired`). `SHOW CURRENT USER` and
+    `ALTER CURRENT USER` act on the logged-in user.
+  - drevo-auth: `AuthManager::authenticate`, session tokens with idle and
+    total lifetimes (`SessionPolicy`), `LockoutPolicy`, `Principal`,
+    `LoginError` and a `Clock` trait. Changing a password, suspending or
+    dropping a user ends their sessions.
+  - **Upgrading:** a server started without `DREVO_AUTH` now requires a Bolt
+    login. Set `DREVO_AUTH=user/password` (or `none`) before upgrading.
+
 - **Users** (issue #633). A server built with `auth` (the Docker image is)
   keeps its users in `<data dir>/security.json` and manages them with Neo4j's
   Cypher commands over HTTP and Bolt: `CREATE USER`, `ALTER USER`,

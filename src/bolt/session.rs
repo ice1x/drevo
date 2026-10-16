@@ -96,7 +96,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::bolt::auth::{AuthOutcome, Authenticator};
+use crate::bolt::auth::{string_field, AuthOutcome, Authenticator};
 use crate::bolt::chunked::{read_message, write_message};
 use crate::bolt::error::{BoltError, BoltResult};
 use crate::bolt::packstream::{decode, encode, Value};
@@ -473,6 +473,9 @@ pub struct Session<'a> {
     /// The server's users, for the Cypher user-management commands
     /// (`CREATE USER`, `SHOW USERS`, …).
     security: crate::security::Security,
+    /// The user this connection logged in as, when the server requires a
+    /// login.
+    signed_in: Option<crate::security::SignedIn>,
     /// How a `db` selector on `RUN` / `BEGIN` maps to a concrete service — a
     /// single-database session ignores it (embedded / sync entry points), a
     /// catalog-backed one resolves it against the shared registry (issue #523).
@@ -582,6 +585,7 @@ impl<'a> Session<'a> {
             prepared_gid: None,
             resolver,
             security: crate::security::Security::default(),
+            signed_in: None,
         }
     }
 
@@ -692,6 +696,22 @@ impl<'a> Session<'a> {
                     metadata: failure_metadata(codes::UNAUTHORIZED, &reason),
                 }];
             }
+        } else if self.security.requires_login() {
+            // The server's users (issue #634): log in with a password or a
+            // session token, and remember who for the current-user commands.
+            match self.security.login(
+                string_field(&extra, "scheme"),
+                string_field(&extra, "principal"),
+                string_field(&extra, "credentials"),
+            ) {
+                Ok(user) => self.signed_in = Some(user),
+                Err(e) => {
+                    self.state = State::Defunct;
+                    return vec![ServerMessage::Failure {
+                        metadata: failure_metadata(e.kind.code(), &e.message),
+                    }];
+                }
+            }
         }
         self.state = State::Ready;
         let mut md: BTreeMap<String, Value> = BTreeMap::new();
@@ -747,6 +767,9 @@ impl<'a> Session<'a> {
     }
 
     fn handle_begin(&mut self, extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
+        if self.must_change_password() {
+            return self.credentials_expired();
+        }
         if self.state != State::Ready {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
@@ -962,6 +985,17 @@ impl<'a> Session<'a> {
                 }];
             }
         };
+        // A user who must change the password may run only that change.
+        if self.must_change_password()
+            && !matches!(
+                crate::cypher::security_admin::parse(&query),
+                Some(Ok(
+                    crate::cypher::security_admin::SecurityCommand::AlterCurrentUserPassword { .. }
+                ))
+            )
+        {
+            return self.credentials_expired();
+        }
         // Convert PackStream parameters into Cypher executor values.
         let cypher_params = match params_to_cypher(parameters) {
             Ok(p) => p,
@@ -1064,6 +1098,24 @@ impl<'a> Session<'a> {
         vec![ServerMessage::Success { metadata: md }]
     }
 
+    /// Whether the signed-in user must change the password before anything
+    /// else.
+    fn must_change_password(&self) -> bool {
+        self.signed_in
+            .as_ref()
+            .is_some_and(|u| u.password_change_required)
+    }
+
+    fn credentials_expired(&mut self) -> Vec<ServerMessage> {
+        self.state = State::Failed;
+        vec![ServerMessage::Failure {
+            metadata: failure_metadata(
+                crate::security::SecurityErrorKind::CredentialsExpired.code(),
+                crate::security::CHANGE_PASSWORD_FIRST,
+            ),
+        }]
+    }
+
     /// Run a user-management command and stream its rows like a query result.
     fn handle_security_command(
         &mut self,
@@ -1088,13 +1140,23 @@ impl<'a> Session<'a> {
                 _ => ParamValue::Other,
             })
         };
-        // No signed-in user is tracked yet, so the current-user commands see
-        // none.
-        let outcome = parsed
-            .map_err(SecurityError::syntax)
-            .and_then(|command| self.security.execute(&command, None, &lookup));
+        let current = self.signed_in.as_ref().map(|u| u.name.clone());
+        let parsed = parsed.map_err(SecurityError::syntax);
+        let changes_own_password = matches!(
+            parsed,
+            Ok(crate::cypher::security_admin::SecurityCommand::AlterCurrentUserPassword { .. })
+        );
+        let outcome =
+            parsed.and_then(|command| self.security.execute(&command, current.as_deref(), &lookup));
         let result = match outcome {
-            Ok(result) => result,
+            Ok(result) => {
+                if changes_own_password {
+                    if let Some(user) = self.signed_in.as_mut() {
+                        user.password_change_required = false;
+                    }
+                }
+                result
+            }
             Err(e) => {
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
