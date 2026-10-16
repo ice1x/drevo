@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Graph labels at any zoom** (issue #626). In the Web UI graph, a node's
+  size follows its number of connections on the canvas, and the 8 most
+  connected nodes keep a readable label however far the view is zoomed out.
+  Clicking a node labels it and its 8 most connected neighbours the same
+  way until the background is clicked.
+
 - **Colour nodes by a property** (issue #624). A **Colour by** select in the
   Web UI's left rail colours the graph by label (the default) or by a
   property such as `type` or `project`, with a legend of the values on the

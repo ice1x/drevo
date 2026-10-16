@@ -948,12 +948,26 @@
           // them — declutters the wide-out view (like the Neo4j Browser).
           "min-zoomed-font-size": 9,
           "z-index": 10, // nodes paint above edges
-          width: 30,
-          height: 30,
+          // Size grows with the node's connections on the canvas (`size` is
+          // set by refreshEmphasis).
+          width: (ele) => ele.data("size") || 30,
+          height: (ele) => ele.data("size") || 30,
           "border-width": 1.5,
           "border-color": t.nodeBorder,
           "transition-property": "background-color, border-color, width, height",
           "transition-duration": "160ms",
+        },
+      },
+      {
+        // Hubs and the clicked node's neighbourhood keep a readable label at
+        // any zoom: refreshLabelSize scales their font against the zoom.
+        selector: "node.hub, node.focus",
+        style: {
+          "min-zoomed-font-size": 0,
+          "font-size": "data(labelSize)",
+          // The 120px cap scales with the font, so a label keeps its length.
+          "text-max-width": "data(labelWidth)",
+          "z-index": 20,
         },
       },
       {
@@ -1043,6 +1057,7 @@
       lastTapId = id;
       lastTapAt = now;
       renderInspector(node.data("raw"));
+      focusNeighbourhood(node);
     });
     // Tapping a relationship inspects it — the sidebar shows its type,
     // endpoints and properties, mirroring node inspection.
@@ -1052,8 +1067,10 @@
     cy.on("tap", (evt) => {
       if (evt.target === cy) {
         clearInspector();
+        cy.nodes(".focus").removeClass("focus");
       }
     });
+    cy.on("zoom", refreshLabelSize);
 
     // Hover tooltips (task 00093): show title + kind + id near the node.
     cy.on("mouseover", "node", (evt) => showTooltip(evt.target));
@@ -1470,7 +1487,51 @@
     // Fresh render → randomise the seed so even an edgeless result spreads.
     runLayout(true, true);
     cy.fit(undefined, 28);
+    refreshEmphasis();
     renderColorLegend();
+  }
+
+  // ── Emphasis: node size, hubs, focus ───────────────────────────────
+  // Every node's size follows its connections on the canvas, and the most
+  // connected ones (hubs) keep a readable label at any zoom.
+  function refreshEmphasis() {
+    if (!cy) return;
+    const degrees = new Map();
+    cy.nodes().forEach((n) => degrees.set(Number(n.id()), n.degree(false)));
+    const hubs = DrevoGraphMath.hubIds(degrees, { max: 8 });
+    cy.batch(() => {
+      cy.nodes().forEach((n) => {
+        n.data("size", DrevoGraphMath.nodeSize(degrees.get(Number(n.id())) || 0));
+        n.toggleClass("hub", hubs.has(Number(n.id())));
+      });
+    });
+    refreshLabelSize();
+  }
+
+  // Keep emphasised labels about 11px on screen whatever the zoom.
+  function refreshLabelSize() {
+    if (!cy) return;
+    const size = DrevoGraphMath.labelFontSize(cy.zoom());
+    const width = `${Math.round((120 * size) / 11)}px`;
+    cy.batch(() =>
+      cy.nodes(".hub, .focus").forEach((n) => n.data({ labelSize: size, labelWidth: width }))
+    );
+  }
+
+  // Label the clicked node and its most connected neighbours (up to 8, so a
+  // dense cluster stays readable) until the background is clicked.
+  function focusNeighbourhood(node) {
+    const degrees = new Map();
+    node.neighborhood("node").forEach((n) => degrees.set(Number(n.id()), n.degree(false)));
+    const shown = DrevoGraphMath.hubIds(degrees, { max: 8, minDegree: 0 });
+    cy.batch(() => {
+      cy.nodes(".focus").removeClass("focus");
+      node.addClass("focus");
+      node.neighborhood("node").forEach((n) => {
+        if (shown.has(Number(n.id()))) n.addClass("focus");
+      });
+    });
+    refreshLabelSize();
   }
 
   // Merge a subgraph into the existing canvas (double-click expand),
@@ -1485,7 +1546,10 @@
         added++;
       }
     }
-    if (added > 0) renderColorLegend();
+    if (added > 0) {
+      refreshEmphasis();
+      renderColorLegend();
+    }
     return added;
   }
 
