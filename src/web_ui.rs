@@ -240,6 +240,7 @@ mod tests {
             "id=\"kind-more\"",
             "id=\"color-by\"",
             "id=\"color-legend\"",
+            "id=\"stop-request\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),

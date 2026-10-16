@@ -11,6 +11,7 @@ const {
   isRunKey,
   fromTextRequest,
   generatedCypher,
+  elapsedText,
   MAX_HISTORY,
 } = require("./query_history.js");
 
@@ -146,4 +147,24 @@ test("an empty or malformed reply yields no query", () => {
   assert.deepEqual(generatedCypher({ rows: [] }), { cypher: "", answered: false });
   assert.deepEqual(generatedCypher({ rows: [[null]] }), { cypher: "", answered: false });
   assert.deepEqual(generatedCypher(null), { cypher: "", answered: false });
+});
+
+// ── elapsedText ──────────────────────────────────────────────────────
+
+test("elapsedText shows tenths of a second under a minute", () => {
+  assert.equal(elapsedText(0), "0.0s");
+  assert.equal(elapsedText(420), "0.4s");
+  assert.equal(elapsedText(12345), "12.3s");
+  assert.equal(elapsedText(59949), "59.9s");
+});
+
+test("elapsedText shows minutes and two-digit seconds from a minute on", () => {
+  assert.equal(elapsedText(60000), "1m 00s");
+  assert.equal(elapsedText(65400), "1m 05s");
+  assert.equal(elapsedText(3725000), "62m 05s");
+});
+
+test("elapsedText treats a negative or missing duration as zero", () => {
+  assert.equal(elapsedText(-5), "0.0s");
+  assert.equal(elapsedText(undefined), "0.0s");
 });

@@ -445,6 +445,28 @@ async fn ui_labels_hubs_and_focus_at_any_zoom() {
     }
 }
 
+// Request progress (#628): the status bar counts up while a request runs and
+// a Stop button abandons it in the browser.
+#[tokio::test]
+async fn ui_shows_request_progress_with_a_stop_button() {
+    let app = make_app();
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    assert!(
+        idx.contains("id=\"stop-request\""),
+        "index.html must have the Stop button"
+    );
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "DrevoQueryHistory.elapsedText(",
+        "new AbortController()",
+        "signal: req.controller.signal",
+    ] {
+        assert!(app_js.contains(needle), "app.js must contain {needle}");
+    }
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

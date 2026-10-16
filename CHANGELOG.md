@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Request progress and Stop** (issue #628). While a Cypher query, a search
+  or an Ask request runs, the Web UI status bar counts up (`Running Cypher…
+  12.3s`) and a **Stop** button abandons the request in the browser; the
+  server may still finish it (`DREVO_QUERY_TIMEOUT_MS` caps queries). A new
+  request replaces a running one.
+
 - **Graph labels at any zoom** (issue #626). In the Web UI graph, a node's
   size follows its number of connections on the canvas, and the 8 most
   connected nodes keep a readable label however far the view is zoomed out.

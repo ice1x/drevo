@@ -67,7 +67,8 @@ drevo is the same engine no matter how you reach it:
   queries, and the ▾ button lists the last 50; the history stays in your browser. **Ask** turns
   a question in plain language into Cypher with the server's
   [text-to-Cypher model](admin-guide.md#text-to-cypher-drevocypherfromtext-opt-in) and puts the
-  query in the editor for you to check and run. The left rail lists the most common node labels;
+  query in the editor for you to check and run. While a request runs, the status bar shows how
+  long it has taken, and **Stop** stops waiting for it. The left rail lists the most common node labels;
   **Filter labels** finds any other, and clicking a label shows a sample of its nodes. **Colour
   by** colours the graph by label or by a property such as `type`, with a legend. Bigger nodes
   have more connections; the most connected ones, and the neighbours of the node you click, stay
