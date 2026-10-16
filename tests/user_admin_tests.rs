@@ -364,8 +364,11 @@ fn dict<I: IntoIterator<Item = (&'static str, Value)>>(entries: I) -> BTreeMap<S
         .collect()
 }
 
+/// A Bolt session on a server that needs no login (`DREVO_AUTH=none`): these
+/// tests are about the commands; logging in is covered in bolt_login_tests.
 fn bolt_session(security: Security) -> Session<'static> {
-    let mut s = Session::new_durable(Arc::new(NativeService::in_memory())).with_security(security);
+    let mut s = Session::new_durable(Arc::new(NativeService::in_memory()))
+        .with_security(security.without_login());
     s.handle(ClientMessage::Hello { extra: dict([]) });
     s
 }

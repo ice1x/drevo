@@ -552,8 +552,22 @@ Passwords are string literals or `$parameters`; neither a password nor its hash 
 a result, an error or a log line. Errors use Neo4j codes: a bad name or password, an existing or
 unknown user is `Neo.ClientError.General.InvalidArguments` (HTTP 400, 409 or 404).
 
-These commands manage users; a login is not yet required to reach the server, so keep the
-network surface trusted until authentication is enforced.
+### Logging in
+
+Bolt clients must log in as one of these users, with a password or a session token (`bearer`
+scheme), unless the server runs with `DREVO_AUTH=none`:
+
+- A wrong password, an unknown user or a suspended user gets
+  `Neo.ClientError.Security.Unauthorized` with the same message, and the connection closes.
+- Three failed logins in a row lock the user for five seconds
+  (`Neo.ClientError.Security.AuthenticationRateLimit`), even with the right password.
+- A user whose password must be changed can log in but can only run
+  `ALTER CURRENT USER SET PASSWORD FROM … TO …`; anything else gets
+  `Neo.ClientError.Security.CredentialsExpired`.
+- `SHOW CURRENT USER` and `ALTER CURRENT USER` act on the logged-in user.
+- Changing a user's password, suspending or dropping the user ends their session tokens.
+
+The HTTP API does not ask for a login yet; keep port 8080 on a trusted network until it does.
 
 TLS for Bolt is provided by the **`bolt-tls`** feature (pure-Rust rustls, no OpenSSL):
 

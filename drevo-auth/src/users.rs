@@ -27,9 +27,11 @@
 //! assert_eq!(users.user("ann").unwrap().status, UserStatus::Suspended);
 //! ```
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use crate::authn::{hash_password, verify_password};
+use crate::authn::{hash_password, new_token, verify_password, Credentials};
 use crate::catalog::{Catalog, CatalogStore, StoreError, User};
 
 pub use crate::catalog::UserStatus;
@@ -323,7 +325,104 @@ impl std::fmt::Debug for BootstrapOutcome {
     }
 }
 
-/// The users of one server, stored in a [`CatalogStore`].
+/// The time source for lockouts, sessions and timestamps.
+pub trait Clock: Send + Sync {
+    /// Now, in Unix milliseconds.
+    fn now_ms(&self) -> i64;
+}
+
+/// The system clock.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now_ms(&self) -> i64 {
+        now_ms()
+    }
+}
+
+/// When repeated failed logins lock a user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockoutPolicy {
+    /// Failed logins in a row that lock the user; `0` never locks.
+    pub max_failed_attempts: u32,
+    /// How long a locked user is refused, even with the right password.
+    pub lock_for: Duration,
+}
+
+impl Default for LockoutPolicy {
+    /// Three failures lock for five seconds, as in Neo4j.
+    fn default() -> Self {
+        Self {
+            max_failed_attempts: 3,
+            lock_for: Duration::from_secs(5),
+        }
+    }
+}
+
+/// How long a session token stays valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionPolicy {
+    /// A token unused for longer than this expires.
+    pub idle: Duration,
+    /// A token expires this long after it was issued, however often used.
+    pub lifetime: Duration,
+}
+
+impl Default for SessionPolicy {
+    /// 30 minutes idle, 12 hours in all.
+    fn default() -> Self {
+        Self {
+            idle: Duration::from_secs(30 * 60),
+            lifetime: Duration::from_secs(12 * 60 * 60),
+        }
+    }
+}
+
+/// A logged-in user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Principal {
+    /// The user's name.
+    pub name: String,
+    /// Whether the user must change the password before doing anything else.
+    pub password_change_required: bool,
+}
+
+/// Why a login was refused. Messages never contain a password or token.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LoginError {
+    /// An unknown user or a wrong password — deliberately the same failure.
+    #[error("invalid principal or credentials")]
+    InvalidCredentials,
+    /// A session token that was never issued, was revoked or has expired.
+    #[error("invalid or expired token")]
+    InvalidToken,
+    /// The user exists and the password is right, but the user is suspended.
+    #[error("the user is suspended")]
+    Suspended,
+    /// Too many failed logins in a row; the user is refused for a while.
+    #[error("too many failed logins; try again in {} s", .retry_after.as_millis().div_ceil(1000))]
+    Locked {
+        /// How long until a login is accepted again.
+        retry_after: Duration,
+    },
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct Failures {
+    count: u32,
+    locked_until_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct Session {
+    user: String,
+    created_ms: i64,
+    last_used_ms: i64,
+}
+
+/// The users of one server, stored in a [`CatalogStore`], with their
+/// failed-login counts and session tokens (kept in memory).
 ///
 /// `AuthManager` is `Send + Sync`; changes are serialised, so concurrent
 /// changes are all kept.
@@ -331,6 +430,11 @@ pub struct AuthManager {
     store: Arc<dyn CatalogStore>,
     catalog: Mutex<Catalog>,
     policy: PasswordPolicy,
+    lockout: LockoutPolicy,
+    session_policy: SessionPolicy,
+    clock: Arc<dyn Clock>,
+    failures: Mutex<HashMap<String, Failures>>,
+    sessions: Mutex<HashMap<String, Session>>,
 }
 
 impl AuthManager {
@@ -345,7 +449,161 @@ impl AuthManager {
             store,
             catalog: Mutex::new(catalog),
             policy: PasswordPolicy::default(),
+            lockout: LockoutPolicy::default(),
+            session_policy: SessionPolicy::default(),
+            clock: Arc::new(SystemClock),
+            failures: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Lock users out after repeated failed logins by `lockout`.
+    #[must_use]
+    pub fn with_lockout(mut self, lockout: LockoutPolicy) -> Self {
+        self.lockout = lockout;
+        self
+    }
+
+    /// Expire session tokens by `sessions`.
+    #[must_use]
+    pub fn with_sessions(mut self, sessions: SessionPolicy) -> Self {
+        self.session_policy = sessions;
+        self
+    }
+
+    /// Read the time from `clock` (the system clock by default).
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Log in with `credentials`: a password (checked against the lockout and
+    /// the user's status) or a session token (checked against its expiry).
+    ///
+    /// # Errors
+    ///
+    /// A [`LoginError`] saying why the login was refused.
+    pub fn authenticate(&self, credentials: &Credentials) -> Result<Principal, LoginError> {
+        match credentials {
+            Credentials::Basic { username, password } => self.login(username, password),
+            Credentials::Token(token) => self.resume(token),
+        }
+    }
+
+    fn login(&self, name: &str, password: &str) -> Result<Principal, LoginError> {
+        let now = self.clock.now_ms();
+        if let Some(f) = self.lock(&self.failures).get(name) {
+            if f.locked_until_ms > now {
+                let left = u64::try_from(f.locked_until_ms - now).unwrap_or(0);
+                return Err(LoginError::Locked {
+                    retry_after: Duration::from_millis(left),
+                });
+            }
+        }
+        let Some(user) = self.read(|c| c.users.get(name).cloned()) else {
+            return Err(LoginError::InvalidCredentials);
+        };
+        // Hash outside every lock: Argon2 is deliberately slow.
+        if !verify_password(password, &user.password_hash) {
+            self.record_failure(name, now);
+            return Err(LoginError::InvalidCredentials);
+        }
+        self.lock(&self.failures).remove(name);
+        if user.status == UserStatus::Suspended {
+            return Err(LoginError::Suspended);
+        }
+        Ok(Principal {
+            name: user.name,
+            password_change_required: user.password_change_required,
+        })
+    }
+
+    fn record_failure(&self, name: &str, now: i64) {
+        if self.lockout.max_failed_attempts == 0 {
+            return;
+        }
+        let mut failures = self.lock(&self.failures);
+        let f = failures.entry(name.to_string()).or_default();
+        f.count += 1;
+        if f.count >= self.lockout.max_failed_attempts {
+            let lock_ms = i64::try_from(self.lockout.lock_for.as_millis()).unwrap_or(i64::MAX);
+            f.locked_until_ms = now.saturating_add(lock_ms);
+            f.count = 0;
+        }
+    }
+
+    fn resume(&self, token: &str) -> Result<Principal, LoginError> {
+        let now = self.clock.now_ms();
+        let idle = i64::try_from(self.session_policy.idle.as_millis()).unwrap_or(i64::MAX);
+        let lifetime = i64::try_from(self.session_policy.lifetime.as_millis()).unwrap_or(i64::MAX);
+        let mut sessions = self.lock(&self.sessions);
+        let Some(session) = sessions.get_mut(token) else {
+            return Err(LoginError::InvalidToken);
+        };
+        let expired = now - session.last_used_ms > idle || now - session.created_ms > lifetime;
+        let user = self.read(|c| c.users.get(&session.user).cloned());
+        match user {
+            Some(user) if !expired && user.status == UserStatus::Active => {
+                session.last_used_ms = now;
+                Ok(Principal {
+                    name: user.name,
+                    password_change_required: user.password_change_required,
+                })
+            }
+            _ => {
+                sessions.remove(token);
+                Err(LoginError::InvalidToken)
+            }
+        }
+    }
+
+    /// Issue a session token for `name`, or `None` for an unknown or
+    /// suspended user.
+    #[must_use]
+    pub fn issue_session(&self, name: &str) -> Option<String> {
+        let active = self.read(|c| {
+            c.users
+                .get(name)
+                .is_some_and(|u| u.status == UserStatus::Active)
+        });
+        if !active {
+            return None;
+        }
+        let now = self.clock.now_ms();
+        let token = new_token();
+        self.lock(&self.sessions).insert(
+            token.clone(),
+            Session {
+                user: name.to_string(),
+                created_ms: now,
+                last_used_ms: now,
+            },
+        );
+        Some(token)
+    }
+
+    /// End a session. Returns whether the token existed.
+    pub fn revoke_session(&self, token: &str) -> bool {
+        self.lock(&self.sessions).remove(token).is_some()
+    }
+
+    /// End every session of `name`. Returns how many were ended.
+    pub fn revoke_sessions_of(&self, name: &str) -> usize {
+        let mut sessions = self.lock(&self.sessions);
+        let before = sessions.len();
+        sessions.retain(|_, s| s.user != name);
+        before - sessions.len()
+    }
+
+    /// How many users have failed logins on record.
+    #[must_use]
+    pub fn tracked_failures(&self) -> usize {
+        self.lock(&self.failures).len()
+    }
+
+    fn lock<'m, T>(&self, m: &'m Mutex<T>) -> std::sync::MutexGuard<'m, T> {
+        m.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Use `policy` for new passwords.
@@ -402,6 +660,7 @@ impl AuthManager {
     /// [`ManageError::UserNotFound`], [`ManageError::WeakPassword`],
     /// [`ManageError::SamePassword`], or a store or hashing failure.
     pub fn alter_user(&self, name: &str, alter: AlterUser) -> Result<(), ManageError> {
+        let ends_sessions = alter.password.is_some() || alter.status == Some(UserStatus::Suspended);
         self.change(|catalog| {
             let user = catalog
                 .users
@@ -422,7 +681,12 @@ impl AuthManager {
                 user.status = status;
             }
             Ok(true)
-        })
+        })?;
+        // A new password or a suspension ends the user's sessions.
+        if ends_sessions {
+            self.revoke_sessions_of(name);
+        }
+        Ok(())
     }
 
     /// Drop a user.
@@ -435,7 +699,10 @@ impl AuthManager {
             Some(_) => Ok(true),
             None if if_exists => Ok(false),
             None => Err(ManageError::UserNotFound(name.to_string())),
-        })
+        })?;
+        self.revoke_sessions_of(name);
+        self.lock(&self.failures).remove(name);
+        Ok(())
     }
 
     /// A user's own password change: `current` must be the password now. A
@@ -467,7 +734,9 @@ impl AuthManager {
             user.password_changed_at_ms = now_ms();
             user.password_change_required = false;
             Ok(true)
-        })
+        })?;
+        self.revoke_sessions_of(name);
+        Ok(())
     }
 
     /// Every user, ordered by name.

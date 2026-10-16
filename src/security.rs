@@ -38,8 +38,13 @@ pub enum SecurityErrorKind {
     AlreadyExists,
     /// The user does not exist.
     NotFound,
-    /// The command needs a signed-in user and there is none.
+    /// The command needs a signed-in user and there is none, or a login was
+    /// refused.
     Unauthenticated,
+    /// Too many failed logins in a row for this user.
+    RateLimited,
+    /// The signed-in user must change the password before anything else.
+    CredentialsExpired,
     /// User management is not enabled on this server.
     Unavailable,
     /// The security catalog could not be saved or read.
@@ -57,6 +62,8 @@ impl SecurityErrorKind {
                 "Neo.ClientError.General.InvalidArguments"
             }
             Self::Unauthenticated => "Neo.ClientError.Security.Unauthorized",
+            Self::RateLimited => "Neo.ClientError.Security.AuthenticationRateLimit",
+            Self::CredentialsExpired => "Neo.ClientError.Security.CredentialsExpired",
             Self::Unavailable | Self::Internal => "Neo.DatabaseError.General.UnknownError",
         }
     }
@@ -69,6 +76,8 @@ impl SecurityErrorKind {
             Self::AlreadyExists => 409,
             Self::NotFound => 404,
             Self::Unauthenticated => 401,
+            Self::RateLimited => 429,
+            Self::CredentialsExpired => 403,
             Self::Unavailable => 503,
             Self::Internal => 500,
         }
@@ -116,17 +125,39 @@ pub enum ParamValue {
     Other,
 }
 
+/// A logged-in user of a connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedIn {
+    /// The user's name.
+    pub name: String,
+    /// Whether the user must change the password before anything else.
+    pub password_change_required: bool,
+}
+
+/// The message for every refused login: the same whether the user is
+/// unknown, the password wrong, the token expired or the user suspended, so
+/// a client learns nothing about which.
+pub const LOGIN_REFUSED: &str = "The client is unauthorized due to authentication failure.";
+
+/// The message for a user who must change the password first.
+pub const CHANGE_PASSWORD_FIRST: &str = "The credentials you provided were valid, but must be \
+     changed before you can use this instance. Run ALTER CURRENT USER SET PASSWORD FROM \
+     <current> TO <new>.";
+
 /// The server's users, shared by HTTP and Bolt. Cheap to clone.
 #[derive(Clone, Default)]
 pub struct Security {
     #[cfg(feature = "auth")]
     users: Option<Arc<drevo_auth::users::AuthManager>>,
+    #[cfg(feature = "auth")]
+    require_login: bool,
 }
 
 impl std::fmt::Debug for Security {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Security")
             .field("enabled", &self.is_enabled())
+            .field("requires_login", &self.requires_login())
             .finish()
     }
 }
@@ -136,7 +167,26 @@ impl Security {
     #[cfg(feature = "auth")]
     #[must_use]
     pub fn new(users: Arc<drevo_auth::users::AuthManager>) -> Self {
-        Self { users: Some(users) }
+        Self {
+            users: Some(users),
+            require_login: true,
+        }
+    }
+
+    /// The same users, but connections need no login (`DREVO_AUTH=none`).
+    #[cfg(feature = "auth")]
+    #[must_use]
+    pub fn without_login(mut self) -> Self {
+        self.require_login = false;
+        self
+    }
+
+    /// The same users, but connections need no login (`DREVO_AUTH=none`).
+    /// Without user management nothing needs a login anyway.
+    #[cfg(not(feature = "auth"))]
+    #[must_use]
+    pub fn without_login(self) -> Self {
+        self
     }
 
     /// The users, when user management is enabled.
@@ -144,6 +194,66 @@ impl Security {
     #[must_use]
     pub fn users(&self) -> Option<&Arc<drevo_auth::users::AuthManager>> {
         self.users.as_ref()
+    }
+
+    /// Whether a connection must log in before it runs anything.
+    #[must_use]
+    pub fn requires_login(&self) -> bool {
+        #[cfg(feature = "auth")]
+        {
+            self.users.is_some() && self.require_login
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            false
+        }
+    }
+
+    /// Log a connection in from the Neo4j `(scheme, principal, credentials)`
+    /// triple: a password, or a session token as `bearer`.
+    ///
+    /// # Errors
+    ///
+    /// [`SecurityErrorKind::Unauthenticated`] with [`LOGIN_REFUSED`] for any
+    /// refused login, [`SecurityErrorKind::RateLimited`] after repeated
+    /// failures, [`SecurityErrorKind::Unavailable`] without user management.
+    pub fn login(
+        &self,
+        scheme: Option<&str>,
+        principal: Option<&str>,
+        credentials: Option<&str>,
+    ) -> Result<SignedIn, SecurityError> {
+        #[cfg(feature = "auth")]
+        {
+            use drevo_auth::authn::Credentials;
+            use drevo_auth::users::LoginError;
+            let Some(users) = &self.users else {
+                return Err(not_enabled());
+            };
+            let credentials =
+                Credentials::from_parts(scheme, principal, credentials).map_err(|e| {
+                    SecurityError::new(SecurityErrorKind::Unauthenticated, e.to_string())
+                })?;
+            match users.authenticate(&credentials) {
+                Ok(p) => Ok(SignedIn {
+                    name: p.name,
+                    password_change_required: p.password_change_required,
+                }),
+                Err(e @ LoginError::Locked { .. }) => Err(SecurityError::new(
+                    SecurityErrorKind::RateLimited,
+                    e.to_string(),
+                )),
+                Err(_) => Err(SecurityError::new(
+                    SecurityErrorKind::Unauthenticated,
+                    LOGIN_REFUSED,
+                )),
+            }
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            let _ = (scheme, principal, credentials);
+            Err(not_enabled())
+        }
     }
 
     /// Whether user management is enabled.
@@ -374,5 +484,11 @@ pub fn open_server_security(
     };
     let users = Arc::new(drevo_auth::users::AuthManager::open(store)?);
     let outcome = users.bootstrap(bootstrap)?;
-    Ok((Security::new(users), outcome))
+    let security = Security::new(users);
+    let security = if *bootstrap == drevo_auth::users::Bootstrap::Disabled {
+        security.without_login()
+    } else {
+        security
+    };
+    Ok((security, outcome))
 }

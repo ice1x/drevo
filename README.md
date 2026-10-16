@@ -17,13 +17,19 @@ A lightweight, embeddable graph database written in Rust, with **full ACID trans
 **Run it in a container** — HTTP API + embedded Web UI on `:8080`, Neo4j-compatible Bolt on `:7687`:
 
 ```bash
-# Published image (Docker Hub badge above):
-docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data ice1x/drevo:latest
+# Published image (Docker Hub badge above). DREVO_AUTH sets the first user's
+# password, as NEO4J_AUTH does for Neo4j; Bolt clients log in with it.
+docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data \
+  -e DREVO_AUTH=neo4j/choose-a-password ice1x/drevo:latest
 
 # …or build it from this repo (no registry access needed):
 docker build -t drevo . && \
-  docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data drevo
+  docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo-data:/data \
+    -e DREVO_AUTH=neo4j/choose-a-password drevo
 ```
+
+Without `DREVO_AUTH` the first start creates `neo4j` with a generated password, printed once in
+`docker logs drevo`, which must be changed at the first login; `DREVO_AUTH=none` turns logins off.
 
 Then open <http://localhost:8080/ui>. Full deploy options — Compose, host bind-mounts, custom Bolt port, Kubernetes — are in the [Admin Guide](docs/admin-guide.md#3-docker).
 

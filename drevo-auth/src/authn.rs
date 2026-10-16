@@ -245,7 +245,7 @@ impl UserStore {
 }
 
 /// 32 random bytes from the operating system as 64 lowercase hex characters.
-fn new_token() -> String {
+pub(crate) fn new_token() -> String {
     use argon2::password_hash::rand_core::{OsRng, RngCore};
     use std::fmt::Write;
 
