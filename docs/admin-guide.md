@@ -492,19 +492,27 @@ Monitor disk growth against node/edge count and FTS index size; pre-size the PVC
 
 ## 7. Authentication
 
-Bolt authentication is built in two layers:
+Users, passwords, session tokens and roles come from the
+[`drevo-auth`](https://github.com/ice1x/drevo/tree/main/drevo-auth) crate, which drevo
+re-exports. Bolt authentication is built in two layers:
 
 - A dependency-free `Authenticator` trait (always compiled). A session with no authenticator
   accepts any connection; with one, it authenticates the Bolt `HELLO` before going ready.
-- An Argon2id-backed `UserStore` behind the **`bolt-auth`** feature: passwords are stored as
-  salted Argon2id PHC strings, and successful basic auth issues opaque 256-bit in-memory
-  session tokens.
+- An Argon2id-backed `UserStore` behind the **`auth`** feature (`bolt-auth` is the same
+  feature under its earlier name). Passwords are stored as salted Argon2id PHC strings, and
+  a successful login can issue a session token: 32 random bytes from the operating system,
+  kept in memory.
 
 ```rust
+use drevo::bolt::auth::UserStore;
+
 let mut store = UserStore::new();
-store.add_user("neo4j", "secret")?;       // hashes with Argon2id
-store.verify_basic("neo4j", "secret");    // -> bool
+store.add_user("neo4j", "secret")?;           // hashes with Argon2id
+assert!(store.verify_basic("neo4j", "secret"));
+let token = store.issue_token("neo4j");       // Some(64 hex characters)
 ```
+
+Roles and the access policy are `drevo::authz` (the crate's `authz` module).
 
 TLS for Bolt is provided by the **`bolt-tls`** feature (pure-Rust rustls, no OpenSSL):
 

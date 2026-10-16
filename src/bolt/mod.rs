@@ -47,7 +47,7 @@
 /// Bolt authentication — the [`crate::bolt::auth::Authenticator`] trait
 /// + [`crate::bolt::auth::AuthOutcome`] (dependency-free, always
 /// compiled) plus the argon2-backed [`crate::bolt::auth::UserStore`]
-/// (feature `bolt-auth`: basic auth + session tokens + user table).
+/// (feature `auth`: basic auth + session tokens + user table, from `drevo-auth`).
 /// Phase 11 task `00074`.
 pub mod auth;
 pub mod chunked;

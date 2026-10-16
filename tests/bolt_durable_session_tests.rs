@@ -219,9 +219,9 @@ fn durable_sync_driver_persists_writes_to_the_service() {
     assert_eq!(notes[0].title, "from-bolt");
 }
 
-// --- Authentication over the durable engine (gated on `bolt-auth`) ----------
+// --- Authentication over the durable engine (gated on `auth`) ----------
 
-#[cfg(feature = "bolt-auth")]
+#[cfg(feature = "auth")]
 mod auth {
     use super::*;
     use drevo::bolt::auth::UserStore;

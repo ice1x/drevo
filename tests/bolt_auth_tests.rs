@@ -11,10 +11,10 @@
 //! * an issued bearer **session token** re-authenticates without the
 //!   password.
 //!
-//! Gated on the `bolt-auth` feature — the whole file compiles to nothing
+//! Gated on the `auth` feature (or its old name `bolt-auth`) — the whole file compiles to nothing
 //! in the default build (mirroring `tests/bolt_tls_tests.rs`).
 
-#![cfg(all(not(target_arch = "wasm32"), feature = "bolt-auth"))]
+#![cfg(all(not(target_arch = "wasm32"), feature = "auth"))]
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -244,4 +244,16 @@ fn issued_bearer_token_authenticates() {
     assert_eq!(tags[1], SUCCESS, "RUN ack");
     assert_eq!(tags[2], RECORD);
     assert_eq!(tags[3], SUCCESS);
+}
+
+/// `drevo::bolt::auth::UserStore` and `drevo::authz` are the `drevo-auth`
+/// crate's types, not copies: a value built through one path is accepted
+/// where the other is expected.
+#[test]
+fn drevo_paths_are_the_drevo_auth_types() {
+    let mut store: drevo_auth::authn::UserStore = UserStore::new();
+    store.add_user("neo4j", "s3cret").unwrap();
+    let policy: drevo_auth::authz::AccessPolicy = drevo::authz::AccessPolicy::new();
+    assert!(policy.role_names().is_empty());
+    assert!(store.verify_basic("neo4j", "s3cret"));
 }

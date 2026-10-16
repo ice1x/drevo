@@ -1,0 +1,36 @@
+# --- drevo-auth --------------------------------------------------------------
+#
+# Authentication and role-based authorization for drevo, as a crate of its own:
+# users with Argon2id password hashes, session tokens, roles and an access
+# policy. It knows nothing about graphs, Cypher or networking — the drevo
+# server wires it into Bolt, HTTP and the executor — so other projects can use
+# it too. Published to crates.io on its own cadence, like drevo-core.
+[package]
+name = "drevo-auth"
+version = "0.1.0"
+edition = "2021"
+# Match the workspace MSRV (locked by the `msrv` CI job).
+rust-version = "1.85"
+description = "Authentication and role-based access control: Argon2id users, session tokens, roles and a deny-overrides access policy"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ice1x/drevo"
+homepage = "https://github.com/ice1x/drevo"
+documentation = "https://docs.rs/drevo-auth"
+readme = "README.md"
+keywords = ["authentication", "authorization", "rbac", "argon2", "security"]
+categories = ["authentication"]
+
+[features]
+default = ["password"]
+# Users with Argon2id password hashes and session tokens (`authn`). Without it
+# the crate is the dependency-free access policy (`authz`) alone, which also
+# builds for wasm32-unknown-unknown.
+password = ["dep:argon2"]
+
+[dependencies]
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "rand", "std"], optional = true }
+thiserror = "2"
+
+# docs.rs documents every module, including the feature-gated `authn`.
+[package.metadata.docs.rs]
+all-features = true
