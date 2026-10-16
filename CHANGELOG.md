@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Web UI label filter** (issue #620). The label chips show the 12 most
+  common labels (plus the selected one) with **Show all N labels**, and a
+  **Filter labels** box shows every label containing the typed text. On a
+  window narrower than 1200px the top bar hides the server version to keep
+  room for the query editor.
+
 - **Ask in plain language** (issue #616). The Web UI's **Ask** button sends
   the editor's text to `drevo.cypher.fromText` and puts the generated Cypher
   in the editor to review; it never runs it. `GET /` reports

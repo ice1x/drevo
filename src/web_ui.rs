@@ -236,6 +236,8 @@ mod tests {
             "id=\"history-toggle\"",
             "id=\"history-menu\"",
             "id=\"ask-button\"",
+            "id=\"kind-filter\"",
+            "id=\"kind-more\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),

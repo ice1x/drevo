@@ -368,6 +368,25 @@ async fn ui_has_ask_button_wired_to_text_to_cypher() {
     assert!(js.contains("drevo.cypher.fromText($question)"));
 }
 
+// Label chips (#620): a filter box and a show-all toggle over the chips, and
+// app.js picks the chips through the tested helper.
+#[tokio::test]
+async fn ui_label_chips_have_filter_and_show_all_toggle() {
+    let app = make_app();
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    for id in ["id=\"kind-filter\"", "id=\"kind-more\""] {
+        assert!(idx.contains(id), "index.html must contain `{id}`");
+    }
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    assert!(app_js.contains("DrevoGraphMath.visibleKinds("));
+    let (_, _, gm) = get(&app, "/ui/graph_math.js").await;
+    assert!(String::from_utf8(gm)
+        .expect("utf-8")
+        .contains("function visibleKinds"));
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

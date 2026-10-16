@@ -57,7 +57,7 @@
          and puts it in the editor without running it. -->
     <form id="search-form" class="search">
       <textarea id="search-input" name="query" rows="1" spellcheck="false"
-                placeholder="Cypher (MATCH (n) RETURN n LIMIT 25) or full-text search…"
+                placeholder="Cypher query or search terms…"
                 title="Enter runs a one-line query · Shift+Enter adds a line · Ctrl/Cmd+Enter runs · Alt+↑/↓ history"
                 autocomplete="off"></textarea>
       <button type="button" id="history-toggle" class="history-toggle"
@@ -225,9 +225,13 @@
             Refresh
           </button>
         </label>
+        <input type="search" id="kind-filter" class="kind-filter"
+               placeholder="Filter labels…" aria-label="Filter labels"
+               autocomplete="off" spellcheck="false" />
         <div class="kind-chips" id="kind-chips">
           <span class="kind-chips-empty">loading…</span>
         </div>
+        <button type="button" id="kind-more" class="kind-more" hidden></button>
       </section>
       <h2>Results</h2>
       <ol id="results-list" class="results-list">
