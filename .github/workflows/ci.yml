@@ -339,6 +339,10 @@ jobs:
       # Issue #584 — the Arrow Flight endpoint lives behind `arrow-flight`.
       - name: Run Arrow Flight feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features arrow-flight -E 'binary(arrow_flight_tests) | binary(server_config_tests)'
+      # Logging in to gRPC and Arrow Flight (issue #634): needs the users
+      # (`auth`) and both services.
+      - name: Run gRPC / Arrow Flight login tests (nextest)
+        run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight -E 'binary(rpc_login_tests) | (kind(lib) & test(rpc_login))'
       - name: Run drevo-core WAL format feature tests (nextest)
         run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack -E 'binary(wal_formats) | (kind(lib) & test(wal_format))'
       - name: Run doctests
@@ -389,6 +393,8 @@ jobs:
       - run: cargo clippy --all-targets --features grpc -- -D warnings
       # Issue #584 — the Arrow Flight service and its tests.
       - run: cargo clippy --all-targets --features arrow-flight -- -D warnings
+      # Issue #634 — the gRPC / Flight login paths and their tests.
+      - run: cargo clippy --all-targets --features auth,grpc,arrow-flight -- -D warnings
       # Issue #582 — drevo-core's binary WAL paths and their tests.
       - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack -- -D warnings
 

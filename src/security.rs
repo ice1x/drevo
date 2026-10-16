@@ -144,7 +144,7 @@ pub const CHANGE_PASSWORD_FIRST: &str = "The credentials you provided were valid
      changed before you can use this instance. Run ALTER CURRENT USER SET PASSWORD FROM \
      <current> TO <new>.";
 
-/// The server's users, shared by HTTP and Bolt. Cheap to clone.
+/// The server's users, shared by HTTP, Bolt, gRPC and Arrow Flight. Cheap to clone.
 #[derive(Clone, Default)]
 pub struct Security {
     #[cfg(feature = "auth")]

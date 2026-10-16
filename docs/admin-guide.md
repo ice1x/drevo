@@ -130,11 +130,17 @@ The schema is [`proto/drevo.proto`](https://github.com/ice1x/drevo/blob/main/pro
   database administration (use HTTP or Bolt).
 - **`Health`** returns `ok` and the server version.
 
-There is no authentication on the gRPC port, as on HTTP: expose it only on a
-trusted network.
+When the server requires a login (see [Logging in](#logging-in)), `Execute`
+needs an `authorization` metadata entry written as the HTTP header:
+`Basic <base64 of user:password>` or `Bearer <session token>` (from
+`POST /auth/login`). Without a valid one the call ends with
+`UNAUTHENTICATED`; too many failed logins in a row with
+`RESOURCE_EXHAUSTED`; a user who must change the password first with
+`PERMISSION_DENIED` (change it over HTTP or Bolt). `Health` needs no login.
 
 ```bash
 grpcurl -plaintext -import-path proto -proto drevo.proto \
+  -H "authorization: Basic $(printf 'ann:ann-password' | base64)" \
   -d '{"query":"MATCH (n) RETURN n.title LIMIT 3"}' \
   localhost:50051 drevo.v1.Drevo/Execute
 ```
@@ -160,13 +166,23 @@ back in record batches of up to 8192 rows. Column types follow the values:
 | lists of numbers (embeddings) | `List<Float64>` |
 | nodes, relationships, maps, mixed types | `Utf8` holding JSON |
 
-Only `DoGet` is served; other Flight calls answer `UNIMPLEMENTED`. As on
-HTTP there is no authentication: expose the port only on a trusted network.
+Only `DoGet` and `Handshake` are served; other Flight calls answer
+`UNIMPLEMENTED`.
+
+When the server requires a login, `DoGet` takes the same `authorization`
+header as the gRPC API. `Handshake` with a `Basic` header answers with a
+session token, as the payload and as an `authorization: Bearer <token>`
+header, so a client logs in once with the password and then sends only the
+token:
 
 ```python
 import pyarrow.flight as flight
 client = flight.connect("grpc://localhost:8815")
-table = client.do_get(flight.Ticket(b"MATCH (t:Task) RETURN t.title, t.estimate")).read_all()
+token = client.authenticate_basic_token("ann", "ann-password")
+options = flight.FlightCallOptions(headers=[token])
+table = client.do_get(
+    flight.Ticket(b"MATCH (t:Task) RETURN t.title, t.estimate"), options
+).read_all()
 df = table.to_pandas()
 ```
 
@@ -554,14 +570,16 @@ unknown user is `Neo.ClientError.General.InvalidArguments` (HTTP 400, 409 or 404
 
 ### Logging in
 
-Bolt and HTTP clients must log in as one of these users, unless the server runs with
-`DREVO_AUTH=none`:
+Bolt, HTTP, gRPC and Arrow Flight clients must log in as one of these users, unless the server
+runs with `DREVO_AUTH=none`:
 
 - **Bolt**: the `HELLO` credentials, a password (`basic`) or a session token (`bearer`).
 - **HTTP**: `Authorization: Basic …` or `Bearer <session token>`, or the `drevo_session` cookie
   that `POST /auth/login` sets for the Web UI, which then shows a sign-in screen. `/`, `/health`,
   `/ready`, `/status` and the Web UI's own files stay open, so health checks keep working.
   Refused requests get `401` (`429` while locked, `403` until a required password change).
+- **gRPC and Arrow Flight**: an `authorization` metadata entry, `Basic …` or `Bearer <session
+  token>`, on every call (see [gRPC API](#grpc-api-opt-in) and [Arrow Flight](#arrow-flight-opt-in)).
 - Session tokens expire after 30 minutes unused or 12 hours in all.
 
 Either way:

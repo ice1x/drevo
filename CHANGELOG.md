@@ -8,6 +8,16 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **gRPC and Arrow Flight login** (issue #634). With user management on,
+  gRPC `Execute` and Flight `DoGet` need `authorization` metadata — `Basic`
+  (user:password) or `Bearer <session token>` — else `UNAUTHENTICATED`
+  (`RESOURCE_EXHAUSTED` after repeated failures, `PERMISSION_DENIED` for a
+  user who must change the password). Flight `Handshake` trades a password
+  for a session token (pyarrow `authenticate_basic_token`). gRPC `Health`
+  needs no login.
+  - **Upgrading:** gRPC and Flight clients of a server with logins need
+    credentials too.
+
 - **HTTP login and Web UI sign-in** (issue #634). With user management on,
   every HTTP request outside `/`, `/health`, `/ready`, `/status`, the Web UI's
   files and `POST /auth/login` needs `Authorization: Basic`, `Bearer <session

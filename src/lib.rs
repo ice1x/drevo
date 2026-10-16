@@ -241,6 +241,10 @@ pub mod native_api;
 /// property, value cache, full-text) tailed off the change-feed. The
 /// step past the read mirror on the track toward retiring redb.
 pub mod native_service;
+/// Logging in to the gRPC API and the Arrow Flight endpoint with
+/// `authorization` metadata.
+#[cfg(any(feature = "grpc", feature = "arrow-flight"))]
+pub(crate) mod rpc_login;
 /// Optional CBOR / MessagePack bodies for the HTTP API, next to JSON
 /// (issue #581). Compiled with the `http` feature; the formats themselves
 /// behind `format-cbor` / `format-msgpack`.

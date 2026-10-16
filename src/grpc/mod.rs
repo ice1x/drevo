@@ -14,6 +14,11 @@
 //! that does not parse or fails, `NOT_FOUND` for an unknown database,
 //! `UNAVAILABLE` while writes are paused by a prepared two-phase commit,
 //! `UNIMPLEMENTED` for database administration (use HTTP or Bolt).
+//!
+//! When the server requires a login, `Execute` needs an `authorization`
+//! metadata entry — `Basic <base64 of user:password>` or `Bearer <session
+//! token>` — and answers `UNAUTHENTICATED` without a valid one. `Health`
+//! needs no login.
 
 #![cfg(feature = "grpc")]
 // tonic's service trait returns `Result<_, tonic::Status>` by value, and the
@@ -27,6 +32,7 @@ use tonic::{Request, Response, Status};
 
 use crate::cypher::executor::{ExecError, ExecResult, NodeValue, RelationshipValue, Value};
 use crate::database_registry::DatabaseRegistry;
+use crate::security::Security;
 
 /// The protobuf messages and the service/client generated from
 /// `proto/drevo.proto`.
@@ -49,13 +55,24 @@ pub(crate) const ROWS_PER_BATCH: usize = 256;
 #[derive(Clone)]
 pub struct DrevoGrpc {
     registry: Arc<DatabaseRegistry>,
+    security: Security,
 }
 
 impl DrevoGrpc {
-    /// Serve the databases in `registry`.
+    /// Serve the databases in `registry`, with no login.
     #[must_use]
     pub fn new(registry: Arc<DatabaseRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            security: Security::default(),
+        }
+    }
+
+    /// Log calls in against `security`'s users when it requires a login.
+    #[must_use]
+    pub fn with_security(mut self, security: Security) -> Self {
+        self.security = security;
+        self
     }
 
     /// The tonic service, ready for `Server::add_service`.
@@ -76,6 +93,7 @@ impl pb::drevo_server::Drevo for DrevoGrpc {
         &self,
         request: Request<pb::ExecuteRequest>,
     ) -> Result<Response<Self::ExecuteStream>, Status> {
+        crate::rpc_login::require_login(&self.security, request.metadata()).await?;
         let pb::ExecuteRequest {
             query,
             params,
@@ -284,7 +302,7 @@ pub fn param_from_pb(v: pb::Value) -> Result<Value, Status> {
 }
 
 /// Serve the gRPC API on an already-bound `listener` until `shutdown`
-/// resolves.
+/// resolves, with no login.
 ///
 /// # Errors
 /// The transport error if the server fails.
@@ -293,9 +311,28 @@ pub async fn serve(
     listener: tokio::net::TcpListener,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> Result<(), tonic::transport::Error> {
+    serve_with_security(registry, Security::default(), listener, shutdown).await
+}
+
+/// Serve the gRPC API on an already-bound `listener` until `shutdown`
+/// resolves, logging calls in against `security`'s users when it requires a
+/// login.
+///
+/// # Errors
+/// The transport error if the server fails.
+pub async fn serve_with_security(
+    registry: Arc<DatabaseRegistry>,
+    security: Security,
+    listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send,
+) -> Result<(), tonic::transport::Error> {
     let incoming = tonic::transport::server::TcpIncoming::from(listener);
     tonic::transport::Server::builder()
-        .add_service(DrevoGrpc::new(registry).into_service())
+        .add_service(
+            DrevoGrpc::new(registry)
+                .with_security(security)
+                .into_service(),
+        )
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await
 }
