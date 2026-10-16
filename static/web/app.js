@@ -49,6 +49,8 @@
   const $graphRefresh = document.getElementById("graph-refresh");
   const $kindChips = document.getElementById("kind-chips");
   const $kindFilter = document.getElementById("kind-filter");
+  const $colorBy = document.getElementById("color-by");
+  const $colorLegend = document.getElementById("color-legend");
   const $kindMore = document.getElementById("kind-more");
   const $themeToggle = document.getElementById("theme-toggle");
   const $dbSelect = document.getElementById("db-select");
@@ -115,6 +117,80 @@
     }
     const hue = Math.abs(h) % 360;
     return `hsl(${hue}, 62%, 62%)`;
+  }
+
+  // ── Colour by: label or a property ─────────────────────────────────
+  // Nodes are coloured by their label, or by a property picked in the left
+  // rail (remembered per browser). A node without the property is grey.
+  const COLOR_BY_KEY = "drevo.colorBy";
+  const NO_VALUE_COLOR = "#6b7280";
+  let colorBy = "kind";
+  try {
+    colorBy = localStorage.getItem(COLOR_BY_KEY) || "kind";
+  } catch (_) {
+    // Storage unavailable: start from the label.
+  }
+
+  function colorForValue(value) {
+    return value === "" ? NO_VALUE_COLOR : colorForKind(value);
+  }
+
+  function nodeColor(raw) {
+    return colorForValue(DrevoGraphMath.colorValue(raw || {}, colorBy));
+  }
+
+  // Offer the label plus the properties worth colouring the loaded graph by.
+  function renderColorByOptions() {
+    const keys = DrevoGraphMath.colorCandidates((graphCache && graphCache.nodes) || []);
+    if (colorBy !== "kind" && !keys.includes(colorBy)) colorBy = "kind";
+    $colorBy.innerHTML = "";
+    for (const key of ["kind", ...keys]) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = key === "kind" ? "label" : key;
+      $colorBy.appendChild(opt);
+    }
+    $colorBy.value = colorBy;
+  }
+
+  // The legend of the values on the canvas; the label chips already show the
+  // label colours, so it is hidden while colouring by label.
+  function renderColorLegend() {
+    $colorLegend.innerHTML = "";
+    $colorLegend.hidden = colorBy === "kind" || !cy;
+    if ($colorLegend.hidden) return;
+    const raws = cy.nodes().map((n) => n.data("raw") || {});
+    const { entries, more } = DrevoGraphMath.legendEntries(raws, colorBy);
+    for (const [value, count] of entries) {
+      const li = document.createElement("li");
+      const swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.style.setProperty("--swatch", colorForValue(value));
+      const name = document.createElement("span");
+      name.textContent = value === "" ? `(no ${colorBy})` : value;
+      const c = document.createElement("span");
+      c.className = "count";
+      c.textContent = String(count);
+      li.append(swatch, name, c);
+      $colorLegend.appendChild(li);
+    }
+    if (more > 0) {
+      const li = document.createElement("li");
+      li.className = "legend-more";
+      li.textContent = `+${more} more`;
+      $colorLegend.appendChild(li);
+    }
+  }
+
+  function setColorBy(key) {
+    colorBy = key;
+    try {
+      localStorage.setItem(COLOR_BY_KEY, key);
+    } catch (_) {
+      // Not remembered; the choice still applies to this page.
+    }
+    if (cy) cy.nodes().forEach((n) => n.data("color", nodeColor(n.data("raw"))));
+    renderColorLegend();
   }
 
   // ── HTTP helpers ────────────────────────────────────────────────────
@@ -854,8 +930,9 @@
       {
         selector: "node",
         style: {
-          // Dynamic colour: every distinct `kind` gets a stable hue.
-          "background-color": (ele) => colorForKind(ele.data("kind")),
+          // Dynamic colour: every distinct label (or value of the property
+          // picked under "Colour by") gets a stable hue.
+          "background-color": (ele) => ele.data("color") || colorForKind(ele.data("kind")),
           label: "data(title)",
           color: t.label,
           "text-valign": "bottom",
@@ -1364,6 +1441,7 @@
         id: String(n.id),
         title: DrevoGraphMath.nodeLabel(n),
         kind: n.kind || "",
+        color: nodeColor(n),
         raw: n,
       },
       classes: n.id === rootId ? "root" : "",
@@ -1392,6 +1470,7 @@
     // Fresh render → randomise the seed so even an edgeless result spreads.
     runLayout(true, true);
     cy.fit(undefined, 28);
+    renderColorLegend();
   }
 
   // Merge a subgraph into the existing canvas (double-click expand),
@@ -1406,6 +1485,7 @@
         added++;
       }
     }
+    if (added > 0) renderColorLegend();
     return added;
   }
 
@@ -1578,6 +1658,7 @@
         degreeById.set(e.to_id, (degreeById.get(e.to_id) || 0) + 1);
       }
       renderKindChips();
+      renderColorByOptions();
       renderSample();
     } catch (e) {
       status(`Overview load failed: ${e.message}`, "error");
@@ -1938,6 +2019,8 @@
       });
     } else runSearch(q);
   });
+
+  $colorBy.addEventListener("change", () => setColorBy($colorBy.value));
 
   // Label chips: filter as you type; toggle between the top labels and all.
   $kindFilter.addEventListener("input", renderKindChips);

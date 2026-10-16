@@ -238,6 +238,8 @@ mod tests {
             "id=\"ask-button\"",
             "id=\"kind-filter\"",
             "id=\"kind-more\"",
+            "id=\"color-by\"",
+            "id=\"color-legend\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),

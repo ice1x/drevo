@@ -1,5 +1,5 @@
 // drevo browser — pure graph helpers (layout geometry, node labels, which
-// label chips to show), split out of app.js so they can be unit-tested under
+// label chips to show, what nodes are coloured by), split out of app.js so they can be unit-tested under
 // `node --test` with no DOM and no Cytoscape (see graph_math.test.js). The
 // geometry drives the interactive layout, so a regression here is a visible UI
 // bug — hence a real, executable test.
@@ -94,5 +94,67 @@
     return { shown, hidden: counts.length - shown.length };
   }
 
-  return { meanEdgeLength, segmentLength, nodeLabel, visibleKinds };
+  // Property keys worth colouring `nodes` by: string-valued, with at least
+  // two values, present on at least `minCoverage` of the nodes, and whose
+  // `topValues` most common values cover at least `minTopShare` of the nodes
+  // that have the key (so `type`, with a long tail of rare values, qualifies
+  // and `name`, all different, does not). Most widely present first, then by
+  // key.
+  function colorCandidates(
+    nodes,
+    { topValues = 12, minTopShare = 0.6, minCoverage = 0.3 } = {}
+  ) {
+    const seen = new Map(); // key → {count, strings, values: Map(value → count)}
+    for (const n of nodes) {
+      for (const [key, value] of Object.entries(n.properties || {})) {
+        let s = seen.get(key);
+        if (!s) seen.set(key, (s = { count: 0, strings: true, values: new Map() }));
+        s.count += 1;
+        if (typeof value !== "string") s.strings = false;
+        else if (s.strings) s.values.set(value, (s.values.get(value) || 0) + 1);
+      }
+    }
+    const qualifies = (s) => {
+      if (!s.strings || s.count < nodes.length * minCoverage || s.values.size < 2) return false;
+      const top = [...s.values.values()].sort((a, b) => b - a).slice(0, topValues);
+      return top.reduce((sum, c) => sum + c, 0) >= s.count * minTopShare;
+    };
+    return [...seen.entries()]
+      .filter(([, s]) => qualifies(s))
+      .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+      .map(([key]) => key);
+  }
+
+  // The value a node is coloured by: its label for "kind", else the chosen
+  // property as text ("" when the node lacks it).
+  function colorValue(node, by) {
+    if (by === "kind") return node.kind || "";
+    const v = (node.properties || {})[by];
+    return v === undefined || v === null ? "" : String(v);
+  }
+
+  // The legend for colouring `nodes` by `by`: `[value, count]` pairs, most
+  // common first (ties by value), the missing value ("") last, at most `limit`
+  // of them; `more` counts the values left out.
+  function legendEntries(nodes, by, limit = 12) {
+    const counts = new Map();
+    for (const n of nodes) {
+      const v = colorValue(n, by);
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    const all = [...counts.entries()].sort(
+      (a, b) => (a[0] === "") - (b[0] === "") || b[1] - a[1] || a[0].localeCompare(b[0])
+    );
+    return { entries: all.slice(0, limit), more: Math.max(0, all.length - limit) };
+  }
+
+  return {
+    meanEdgeLength,
+    segmentLength,
+    nodeLabel,
+    visibleKinds,
+    colorCandidates,
+    colorValue,
+    legendEntries,
+  };
 });

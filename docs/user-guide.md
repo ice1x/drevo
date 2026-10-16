@@ -68,7 +68,8 @@ drevo is the same engine no matter how you reach it:
   a question in plain language into Cypher with the server's
   [text-to-Cypher model](admin-guide.md#text-to-cypher-drevocypherfromtext-opt-in) and puts the
   query in the editor for you to check and run. The left rail lists the most common node labels;
-  **Filter labels** finds any other, and clicking a label shows a sample of its nodes. The
+  **Filter labels** finds any other, and clicking a label shows a sample of its nodes. **Colour
+  by** colours the graph by label or by a property such as `type`, with a legend. The
   inspector on the right shows the clicked node's or relationship's fields, with dates in UTC; a
   relationship's **from** and **to** open those nodes. A query's result opens in the main area under three
   tabs: **Graph**, **Table** and **JSON**. A result with nodes opens as a graph; one with only

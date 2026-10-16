@@ -406,6 +406,27 @@ async fn ui_inspector_formats_values_and_links_relationship_ends() {
     assert!(rv.contains("function propertyValue") && rv.contains("function clipText"));
 }
 
+// Colour by (#624): a select and a legend in the left rail, driven by the
+// tested helpers.
+#[tokio::test]
+async fn ui_colours_nodes_by_a_chosen_property() {
+    let app = make_app();
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    for id in ["id=\"color-by\"", "id=\"color-legend\""] {
+        assert!(idx.contains(id), "index.html must contain `{id}`");
+    }
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "DrevoGraphMath.colorCandidates(",
+        "DrevoGraphMath.colorValue(",
+        "DrevoGraphMath.legendEntries(",
+    ] {
+        assert!(app_js.contains(needle), "app.js must use {needle}");
+    }
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.
