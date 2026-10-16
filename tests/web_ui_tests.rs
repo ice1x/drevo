@@ -427,6 +427,24 @@ async fn ui_colours_nodes_by_a_chosen_property() {
     }
 }
 
+// Hub labels (#626): node size, hubs and label size come from the tested
+// helpers, and hubs / the clicked neighbourhood keep their labels at any zoom.
+#[tokio::test]
+async fn ui_labels_hubs_and_focus_at_any_zoom() {
+    let app = make_app();
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "DrevoGraphMath.hubIds(",
+        "DrevoGraphMath.nodeSize(",
+        "DrevoGraphMath.labelFontSize(",
+        "node.hub, node.focus",
+        "\"min-zoomed-font-size\": 0",
+    ] {
+        assert!(app_js.contains(needle), "app.js must contain {needle}");
+    }
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

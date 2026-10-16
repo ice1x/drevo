@@ -1,8 +1,9 @@
 // drevo browser — pure graph helpers (layout geometry, node labels, which
-// label chips to show, what nodes are coloured by), split out of app.js so they can be unit-tested under
-// `node --test` with no DOM and no Cytoscape (see graph_math.test.js). The
-// geometry drives the interactive layout, so a regression here is a visible UI
-// bug — hence a real, executable test.
+// label chips to show, what nodes are coloured by, hubs and label sizes),
+// split out of app.js so they can be unit-tested under `node --test` with no
+// DOM and no Cytoscape (see graph_math.test.js). The geometry drives the
+// interactive layout, so a regression here is a visible UI bug — hence a
+// real, executable test.
 //
 // UMD: attaches to the global `DrevoGraphMath` in the browser (loaded before
 // app.js) and to `module.exports` under node's test runner. No DOM references.
@@ -148,7 +149,33 @@
     return { entries: all.slice(0, limit), more: Math.max(0, all.length - limit) };
   }
 
+  // The hub ids among `degrees` (`Map id → number of connections`): the
+  // `max` most connected nodes with at least `minDegree` connections, ties
+  // broken by the lower id. Hubs keep their label at any zoom.
+  function hubIds(degrees, { max = 12, minDegree = 2 } = {}) {
+    const ranked = [...degrees.entries()]
+      .filter(([, d]) => d >= minDegree)
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+    return new Set(ranked.slice(0, max).map(([id]) => id));
+  }
+
+  // A node's diameter in px from its number of connections: 22 for none,
+  // growing with log2(1 + degree), at most 54.
+  function nodeSize(degree) {
+    return Math.min(54, Math.round(22 + 6 * Math.log2(1 + Math.max(0, degree))));
+  }
+
+  // The label font size that shows as about 11px at canvas `zoom`: 11 / zoom,
+  // never below 11 and at most 44 (a far-out view keeps labels short).
+  function labelFontSize(zoom) {
+    const z = zoom > 0 ? zoom : 1;
+    return Math.max(11, Math.min(44, Math.round(11 / z)));
+  }
+
   return {
+    hubIds,
+    nodeSize,
+    labelFontSize,
     meanEdgeLength,
     segmentLength,
     nodeLabel,

@@ -12,6 +12,9 @@ const {
   colorCandidates,
   colorValue,
   legendEntries,
+  hubIds,
+  nodeSize,
+  labelFontSize,
 } = require("./graph_math.js");
 
 test("meanEdgeLength averages the segment lengths", () => {
@@ -201,4 +204,35 @@ test("legendEntries counts values, most common first, and caps the list", () => 
 test("legendEntries lists a missing value last, as an empty key", () => {
   const { entries } = legendEntries(NODES, "type", 5);
   assert.deepEqual(entries[entries.length - 1], ["", 1]);
+});
+
+// ── Hubs, node size, label size ──────────────────────────────────────
+
+test("hubIds picks the most connected nodes, at most max", () => {
+  const degrees = new Map([[1, 9], [2, 5], [3, 5], [4, 2], [5, 1]]);
+  assert.deepEqual([...hubIds(degrees, { max: 2 })].sort(), [1, 2]);
+});
+
+test("hubIds with minDegree 0 ranks every node", () => {
+  assert.deepEqual([...hubIds(new Map([[4, 0], [2, 1]]), { max: 5, minDegree: 0 })].sort(), [2, 4]);
+});
+
+test("hubIds breaks degree ties by id and skips nodes below minDegree", () => {
+  const degrees = new Map([[7, 3], [3, 3], [9, 1]]);
+  assert.deepEqual([...hubIds(degrees, { max: 5, minDegree: 2 })].sort(), [3, 7]);
+  assert.deepEqual([...hubIds(new Map([[1, 1]]))], []);
+});
+
+test("nodeSize grows with degree on a log scale and is capped", () => {
+  assert.equal(nodeSize(0), 22);
+  assert.ok(nodeSize(1) > nodeSize(0));
+  assert.ok(nodeSize(10) > nodeSize(3));
+  assert.equal(nodeSize(1e6), 54);
+});
+
+test("labelFontSize keeps about 11px on screen within bounds", () => {
+  assert.equal(labelFontSize(1), 11);
+  assert.equal(labelFontSize(0.5), 22);
+  assert.equal(labelFontSize(0.05), 44, "capped when zoomed far out");
+  assert.equal(labelFontSize(3), 11, "never below the base size");
 });
