@@ -251,3 +251,81 @@ fn the_store_is_shared_safely_across_threads() {
     let tokens: HashSet<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     assert_eq!(tokens.len(), 8);
 }
+
+// ── Credentials::from_http_authorization ────────────────────────────
+
+#[test]
+fn a_basic_authorization_header_carries_user_and_password() {
+    // "ann:s3cret" in base64.
+    assert_eq!(
+        Credentials::from_http_authorization("Basic YW5uOnMzY3JldA=="),
+        Some(Credentials::Basic {
+            username: "ann".into(),
+            password: "s3cret".into()
+        })
+    );
+}
+
+#[test]
+fn the_password_in_a_basic_header_may_contain_colons_and_utf8() {
+    // "ann:a:b:пароль" — only the first colon separates.
+    let header = "Basic YW5uOmE6YjrQv9Cw0YDQvtC70Yw=";
+    assert_eq!(
+        Credentials::from_http_authorization(header),
+        Some(Credentials::Basic {
+            username: "ann".into(),
+            password: "a:b:пароль".into()
+        })
+    );
+}
+
+#[test]
+fn the_scheme_is_case_insensitive_and_padding_optional() {
+    for header in [
+        "basic YW5uOnMzY3JldA==",
+        "BASIC YW5uOnMzY3JldA",
+        "Basic   YW5uOnMzY3JldA==",
+    ] {
+        assert!(
+            matches!(
+                Credentials::from_http_authorization(header),
+                Some(Credentials::Basic { .. })
+            ),
+            "{header:?}"
+        );
+    }
+}
+
+#[test]
+fn a_bearer_header_carries_a_session_token() {
+    assert_eq!(
+        Credentials::from_http_authorization("Bearer abc123"),
+        Some(Credentials::Token("abc123".into()))
+    );
+    assert_eq!(
+        Credentials::from_http_authorization("bearer abc123"),
+        Some(Credentials::Token("abc123".into()))
+    );
+}
+
+#[test]
+fn malformed_authorization_headers_carry_nothing() {
+    for header in [
+        "",
+        "Basic",
+        "Basic !!!not-base64!!!",
+        "Basic YW5u",         // "ann": no colon
+        "Basic OnMzY3JldA==", // ":s3cret": no user
+        "Basic //79",         // not UTF-8
+        "Bearer",
+        "Bearer ",
+        "Digest abc",
+        "Token abc",
+    ] {
+        assert_eq!(
+            Credentials::from_http_authorization(header),
+            None,
+            "{header:?}"
+        );
+    }
+}

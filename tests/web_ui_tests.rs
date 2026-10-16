@@ -495,6 +495,59 @@ async fn ui_has_a_node_context_menu() {
     }
 }
 
+// Sign-in (#634): the pure sign-in helpers are served before app.js, the page
+// has the sign-in and password-change dialogs and the user menu, and app.js
+// drives them through /auth/me, /auth/login and /auth/logout.
+#[tokio::test]
+async fn ui_serves_sign_in_module_and_dialogs() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/auth.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/javascript"), "got {ct:?}");
+    let js = String::from_utf8(bytes).expect("utf-8");
+    for needle in [
+        "DrevoAuth",
+        "authView",
+        "signInError",
+        "changePasswordRequest",
+    ] {
+        assert!(js.contains(needle), "auth.js must define {needle}");
+    }
+
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let auth = idx
+        .find("/ui/auth.js")
+        .expect("index.html must load auth.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(auth < appjs, "auth.js must load before app.js");
+    for id in [
+        "id=\"sign-in-modal\"",
+        "id=\"sign-in-form\"",
+        "id=\"sign-in-user\"",
+        "id=\"sign-in-password\"",
+        "id=\"sign-in-msg\"",
+        "id=\"change-password-form\"",
+        "id=\"user-menu\"",
+        "id=\"sign-out\"",
+    ] {
+        assert!(idx.contains(id), "index.html must contain `{id}`");
+    }
+
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "DrevoAuth.authView(",
+        "DrevoAuth.signInError(",
+        "DrevoAuth.changePasswordRequest(",
+        "\"/auth/me\"",
+        "\"/auth/login\"",
+        "\"/auth/logout\"",
+    ] {
+        assert!(app_js.contains(needle), "app.js must use {needle}");
+    }
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

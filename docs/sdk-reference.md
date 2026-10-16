@@ -187,8 +187,23 @@ Other building blocks: `ingest_documents` (load LangChain-style `Document`s into
 Enabled by the `http` feature (default). The [`drevo-server`](https://github.com/ice1x/drevo/tree/main/src/bin/server.rs) binary
 listens on `${DREVO_HOST}:${DREVO_PORT}` (default `0.0.0.0:8080`). All bodies are JSON.
 
+When the server requires a login (see the [Admin Guide](admin-guide.md#logging-in)), every
+request except `/`, `/health`, `/ready`, `/status`, the Web UI under `/ui` and `POST /auth/login`
+must carry `Authorization: Basic …`, `Authorization: Bearer <session token>` or the
+`drevo_session` cookie; otherwise it gets `401` with code `Neo.ClientError.Security.Unauthorized`.
+
+```bash
+curl -u ann:first-password http://localhost:8080/databases
+token=$(curl -s http://localhost:8080/auth/login -H 'Content-Type: application/json' \
+  -d '{"username": "ann", "password": "first-password"}' | jq -r .token)
+curl -H "Authorization: Bearer $token" http://localhost:8080/databases
+```
+
 | Method | Path | Purpose |
 |--------|------|---------|
+| `POST` | `/auth/login` | `{username, password}` → `{token, user, passwordChangeRequired}`; also sets the `drevo_session` cookie (HttpOnly, SameSite=Strict). |
+| `POST` | `/auth/logout` | End the caller's session and clear the cookie. |
+| `GET` | `/auth/me` | The signed-in user: `{user, passwordChangeRequired}` (`user` is `null` when no login is required). |
 | `GET` | `/` | Server metadata (name, version). |
 | `GET` | `/health` | Liveness (503 while shutting down). |
 | `GET` | `/ready` | Readiness — exercises the backend. |

@@ -181,6 +181,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/ready", get(health))
         .route("/status", get(status))
         .route("/cypher", post(cypher))
+        // Sign-in for the Web UI and API clients (issue #634).
+        .route("/auth/login", post(auth_login))
+        .route("/auth/logout", post(auth_logout))
+        .route("/auth/me", get(auth_me))
         .route("/export/graphml", get(export_graphml))
         .route("/v1/embeddings", post(embeddings))
         .route(
@@ -246,6 +250,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             "/ui/query_history.js",
             get(crate::web_ui::serve_query_history_js),
         )
+        .route("/ui/auth.js", get(crate::web_ui::serve_auth_js))
         .route("/ui/styles.css", get(crate::web_ui::serve_styles_css))
         .route(
             "/ui/vendor/cytoscape.min.js",
@@ -278,6 +283,12 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             "/import/graphml",
             post(import_graphml).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
+        // Login check (issue #634): innermost, so the handlers see the signed-in
+        // user and the metrics layer still counts refused requests.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_login,
+        ))
         // Per-request metrics instrumentation — layered after the routes so it
         // wraps every handler and before `with_state` so it can extract the
         // shared state, exactly as the KV router does.
@@ -838,15 +849,32 @@ async fn status(State(state): State<NativeApiState>) -> Json<serde_json::Value> 
 /// database, exactly as before.
 async fn cypher(
     State(state): State<NativeApiState>,
+    signed_in: Option<axum::Extension<crate::security::SignedIn>>,
     body: Result<Json<CypherRequest>, JsonRejection>,
 ) -> Result<Json<CypherResponse>, ApiError> {
     let Json(CypherRequest { query, params }) = body?;
     let query =
         query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
     let params = params.unwrap_or_default();
+    let signed_in = signed_in.map(|axum::Extension(user)| user);
 
-    if let Some(parsed) = crate::cypher::security_admin::parse(&query) {
-        return run_security_command(&state, parsed, &params).map(Json);
+    let parsed = crate::cypher::security_admin::parse(&query);
+    // A user who must change the password may run only that change.
+    if signed_in
+        .as_ref()
+        .is_some_and(|u| u.password_change_required)
+        && !matches!(
+            parsed,
+            Some(Ok(
+                crate::cypher::security_admin::SecurityCommand::AlterCurrentUserPassword { .. }
+            ))
+        )
+    {
+        return Err(credentials_expired());
+    }
+    if let Some(parsed) = parsed {
+        let current = signed_in.as_ref().map(|u| u.name.as_str());
+        return run_security_command(&state, parsed, &params, current).map(Json);
     }
     if let Some(command) = crate::cypher::admin::parse(&query) {
         return handle_admin_cypher(&state, command, params).map(Json);
@@ -1173,6 +1201,7 @@ fn run_security_command(
     state: &NativeApiState,
     parsed: Result<crate::cypher::security_admin::SecurityCommand, String>,
     params: &serde_json::Map<String, serde_json::Value>,
+    current_user: Option<&str>,
 ) -> Result<CypherResponse, ApiError> {
     use crate::security::{ParamValue, SecurityError};
     let lookup = |name: &str| {
@@ -1183,15 +1212,183 @@ fn run_security_command(
     };
     let outcome = parsed
         .map_err(SecurityError::syntax)
-        .and_then(|command| state.security.execute(&command, None, &lookup));
+        .and_then(|command| state.security.execute(&command, current_user, &lookup));
     match outcome {
         Ok(result) => Ok(exec_result_to_response(result)),
-        Err(e) => Err(ApiError::Coded {
-            status: StatusCode::from_u16(e.kind.http_status())
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            code: e.kind.code(),
-            message: e.message,
-        }),
+        Err(e) => Err(security_error(e)),
+    }
+}
+
+/// A [`SecurityError`](crate::security::SecurityError) as an HTTP error with
+/// its Neo4j code.
+fn security_error(e: crate::security::SecurityError) -> ApiError {
+    ApiError::Coded {
+        status: StatusCode::from_u16(e.kind.http_status())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        code: e.kind.code(),
+        message: e.message,
+    }
+}
+
+fn credentials_expired() -> ApiError {
+    security_error(crate::security::SecurityError {
+        kind: crate::security::SecurityErrorKind::CredentialsExpired,
+        message: crate::security::CHANGE_PASSWORD_FIRST.to_string(),
+    })
+}
+
+/// The name of the Web UI's session cookie.
+const SESSION_COOKIE: &str = "drevo_session";
+
+/// The session token from a request's `drevo_session` cookie.
+fn session_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .find_map(|pair| {
+            let (name, value) = pair.trim().split_once('=')?;
+            (name == SESSION_COOKIE && !value.is_empty()).then(|| value.to_string())
+        })
+}
+
+/// Paths a client may reach without logging in: health and server info, the
+/// Web UI's own files, and the sign-in itself.
+fn is_open_path(method: &axum::http::Method, path: &str) -> bool {
+    use axum::http::Method;
+    let read = method == Method::GET || method == Method::HEAD;
+    (read && matches!(path, "/" | "/health" | "/ready" | "/status"))
+        || (read && (path == "/ui" || path.starts_with("/ui/")))
+        || (method == Method::POST && path == "/auth/login")
+}
+
+/// Login check (issue #634): when the server requires a login, every request
+/// outside [`is_open_path`] must carry `Authorization: Basic` / `Bearer` or
+/// the session cookie. The signed-in user goes into the request extensions.
+/// A user who must change the password reaches only `/cypher` (for
+/// `ALTER CURRENT USER`) and `/auth/*`.
+async fn require_login(
+    State(state): State<NativeApiState>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !state.security.requires_login() || is_open_path(req.method(), req.uri().path()) {
+        return next.run(req).await;
+    }
+    let authorization = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let cookie = session_cookie(req.headers());
+    let user = match state
+        .security
+        .login_http(authorization.as_deref(), cookie.as_deref())
+    {
+        Ok(user) => user,
+        Err(e) => {
+            let unauthenticated = e.kind == crate::security::SecurityErrorKind::Unauthenticated;
+            let mut resp = security_error(e).into_response();
+            if unauthenticated {
+                // A Bearer challenge, so browsers do not pop up their own
+                // Basic login box over the Web UI's sign-in screen.
+                resp.headers_mut().insert(
+                    axum::http::header::WWW_AUTHENTICATE,
+                    axum::http::HeaderValue::from_static(r#"Bearer realm="drevo""#),
+                );
+            }
+            return resp;
+        }
+    };
+    let path = req.uri().path();
+    if user.password_change_required && path != "/cypher" && !path.starts_with("/auth/") {
+        return credentials_expired().into_response();
+    }
+    req.extensions_mut().insert(user);
+    next.run(req).await
+}
+
+/// `POST /auth/login` body.
+#[derive(serde::Deserialize)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+/// `POST /auth/login {username, password}` — log in and start a session: the
+/// reply carries the session token (for `Authorization: Bearer`) and sets it
+/// as the Web UI's `drevo_session` cookie (HttpOnly, SameSite=Strict).
+async fn auth_login(
+    State(state): State<NativeApiState>,
+    body: Result<Json<LoginRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let Json(LoginRequest { username, password }) = body?;
+    let security = state.security.clone();
+    let (user, token) = run_blocking(move || {
+        let user = security
+            .login(Some("basic"), Some(&username), Some(&password))
+            .map_err(security_error)?;
+        let token = security.issue_session(&user.name).ok_or_else(|| {
+            security_error(crate::security::SecurityError {
+                kind: crate::security::SecurityErrorKind::Unauthenticated,
+                message: crate::security::LOGIN_REFUSED.to_string(),
+            })
+        })?;
+        Ok::<_, ApiError>((user, token))
+    })?;
+    let mut resp = Json(serde_json::json!({
+        "token": token,
+        "user": user.name,
+        "passwordChangeRequired": user.password_change_required,
+    }))
+    .into_response();
+    let cookie = format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/");
+    if let Ok(value) = axum::http::HeaderValue::from_str(&cookie) {
+        resp.headers_mut()
+            .insert(axum::http::header::SET_COOKIE, value);
+    }
+    Ok(resp)
+}
+
+/// `POST /auth/logout` — end the caller's session (cookie or Bearer token) and
+/// clear the cookie.
+async fn auth_logout(
+    State(state): State<NativeApiState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(|t| t.trim().to_string());
+    for token in [bearer, session_cookie(&headers)].into_iter().flatten() {
+        state.security.revoke_session(&token);
+    }
+    let mut resp = Json(serde_json::json!({})).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        axum::http::HeaderValue::from_static(
+            "drevo_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+        ),
+    );
+    resp
+}
+
+/// `GET /auth/me` — the signed-in user: `{user, passwordChangeRequired}`;
+/// `user` is `null` when the server needs no login.
+async fn auth_me(
+    signed_in: Option<axum::Extension<crate::security::SignedIn>>,
+) -> Json<serde_json::Value> {
+    match signed_in {
+        Some(axum::Extension(user)) => Json(serde_json::json!({
+            "user": user.name,
+            "passwordChangeRequired": user.password_change_required,
+        })),
+        None => Json(serde_json::json!({ "user": null, "passwordChangeRequired": false })),
     }
 }
 

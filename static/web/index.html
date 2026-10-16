@@ -83,9 +83,61 @@
     <button type="button" id="report-toggle" class="report-toggle"
             title="Report a problem (opens a prefilled GitHub issue)"
             aria-label="Report a problem">⚑</button>
+    <!-- The signed-in user (#634); hidden when the server needs no login. -->
+    <span id="user-menu" class="user-menu" hidden>
+      <span id="user-name" class="user-name"></span>
+      <button type="button" id="change-password" class="user-action"
+              title="Change your password">Change password</button>
+      <button type="button" id="sign-out" class="user-action" title="Sign out">Sign out</button>
+    </span>
     <button type="button" id="theme-toggle" class="theme-toggle"
             title="Toggle light / dark theme" aria-label="Toggle theme">◐</button>
   </header>
+
+  <!-- Sign-in (#634): shown when the server requires a login and this browser
+       has no session, and to change a password that must be changed. Signing
+       in sets an HttpOnly session cookie; nothing is kept in page storage. -->
+  <div id="sign-in-modal" class="storage-modal sign-in-modal" hidden aria-hidden="true"
+       role="dialog" aria-modal="true" aria-labelledby="sign-in-title">
+    <div class="storage-dialog sign-in-dialog" role="document">
+      <header class="storage-head">
+        <h2 id="sign-in-title">Sign in to drevo</h2>
+      </header>
+      <form id="sign-in-form" class="storage-body settings-form">
+        <label class="settings-field">
+          <span>User</span>
+          <input type="text" id="sign-in-user" name="username" autocomplete="username"
+                 spellcheck="false" required />
+        </label>
+        <label class="settings-field">
+          <span>Password</span>
+          <input type="password" id="sign-in-password" name="password"
+                 autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="storage-shrink">Sign in</button>
+      </form>
+      <form id="change-password-form" class="storage-body settings-form" hidden>
+        <p id="change-password-intro" class="settings-status"></p>
+        <label class="settings-field">
+          <span>Current password</span>
+          <input type="password" id="change-current" autocomplete="current-password" required />
+        </label>
+        <label class="settings-field">
+          <span>New password</span>
+          <input type="password" id="change-new" autocomplete="new-password" minlength="8" required />
+        </label>
+        <label class="settings-field">
+          <span>Repeat the new password</span>
+          <input type="password" id="change-repeat" autocomplete="new-password" minlength="8" required />
+        </label>
+        <div class="sign-in-actions">
+          <button type="submit" class="storage-shrink">Change password</button>
+          <button type="button" id="change-cancel" class="storage-refresh" hidden>Cancel</button>
+        </div>
+      </form>
+      <p id="sign-in-msg" class="settings-msg sign-in-msg" role="alert" hidden></p>
+    </div>
+  </div>
 
   <!-- Problem notifications (#552): server WARN/ERROR events from
        GET /problems and failed UI requests, newest at the bottom. -->
@@ -312,6 +364,9 @@
   <!-- Query history and run-key helpers (unit-tested in query_history.test.js);
        app.js reads window.DrevoQueryHistory. -->
   <script src="/ui/query_history.js"></script>
+  <!-- Sign-in helpers (unit-tested in auth.test.js); app.js reads
+       window.DrevoAuth. -->
+  <script src="/ui/auth.js"></script>
   <!-- Problem toasts + "Report a problem" helpers (unit-tested in
        report.test.js); must load before app.js, which reads window.DrevoReport. -->
   <script src="/ui/report.js"></script>

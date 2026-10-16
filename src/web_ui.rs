@@ -15,6 +15,7 @@
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/results_view.js` → `results_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/query_history.js` → `query_history.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/auth.js` → `auth.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/styles.css` → `styles.css` (`text/css; charset=utf-8`)
 //! - `GET /ui/vendor/cytoscape.min.js` → Cytoscape.js core
 //! - `GET /ui/vendor/layout-base.js` → fcose dep
@@ -79,6 +80,11 @@ const RESULTS_VIEW_JS: &str = include_str!("../static/web/results_view.js");
 /// compile time. Unit-tested separately by `query_history.test.js`.
 const QUERY_HISTORY_JS: &str = include_str!("../static/web/query_history.js");
 
+/// `auth.js` body — pure sign-in helpers (which screen to show after
+/// `/auth/me`, sign-in error messages, the password-change request), embedded
+/// at compile time. Unit-tested separately by `auth.test.js`.
+const AUTH_JS: &str = include_str!("../static/web/auth.js");
+
 /// `styles.css` body — embedded at compile time.
 const STYLES_CSS: &str = include_str!("../static/web/styles.css");
 
@@ -131,6 +137,11 @@ pub async fn serve_results_view_js() -> Response {
 /// `GET /ui/query_history.js` → serve the query-editor helpers `app.js` depends on.
 pub async fn serve_query_history_js() -> Response {
     asset_response(QUERY_HISTORY_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/auth.js` → serve the sign-in helpers `app.js` depends on.
+pub async fn serve_auth_js() -> Response {
+    asset_response(AUTH_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/styles.css` → serve the stylesheet.
@@ -242,6 +253,8 @@ mod tests {
             "id=\"color-legend\"",
             "id=\"stop-request\"",
             "id=\"node-menu\"",
+            "id=\"sign-in-modal\"",
+            "id=\"user-menu\"",
         ] {
             assert!(
                 INDEX_HTML.contains(needle),
@@ -530,6 +543,22 @@ mod tests {
             .find("/ui/app.js")
             .expect("index.html must load app.js");
         assert!(qh < appjs, "query_history.js must load before app.js");
+    }
+
+    #[test]
+    fn embedded_auth_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(AUTH_JS.contains("DrevoAuth") && AUTH_JS.contains("authView"));
+        assert!(
+            !AUTH_JS.contains("document") && !AUTH_JS.contains("window."),
+            "auth.js must stay DOM-free so it is unit-testable under node"
+        );
+        let auth = INDEX_HTML
+            .find("/ui/auth.js")
+            .expect("index.html must load auth.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(auth < appjs, "auth.js must load before app.js");
     }
 
     #[test]

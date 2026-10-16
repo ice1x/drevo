@@ -312,6 +312,7 @@
   }
 
   async function pollProblems() {
+    if (signedOut) return; // nothing to poll until someone signs in
     try {
       const since = problemCursor === null ? 0 : problemCursor;
       const r = await fetch(`/problems?since=${since}`, { headers: { Accept: "application/json" } });
@@ -1172,6 +1173,166 @@
       status(`Expand failed: ${e.message}`, "error");
     }
   }
+
+  // ── Sign-in (#634) ─────────────────────────────────────────────────
+  // When the server requires a login, the page asks GET /auth/me first and
+  // shows the sign-in dialog instead of the graph. POST /auth/login sets an
+  // HttpOnly session cookie that every later request carries, so nothing is
+  // kept in page storage. Any request answered 401 later (an expired session)
+  // brings the dialog back.
+  const $signInModal = document.getElementById("sign-in-modal");
+  const $signInForm = document.getElementById("sign-in-form");
+  const $signInUser = document.getElementById("sign-in-user");
+  const $signInPassword = document.getElementById("sign-in-password");
+  const $signInMsg = document.getElementById("sign-in-msg");
+  const $signInTitle = document.getElementById("sign-in-title");
+  const $changeForm = document.getElementById("change-password-form");
+  const $changeIntro = document.getElementById("change-password-intro");
+  const $changeCurrent = document.getElementById("change-current");
+  const $changeNew = document.getElementById("change-new");
+  const $changeRepeat = document.getElementById("change-repeat");
+  const $changeCancel = document.getElementById("change-cancel");
+  const $userMenu = document.getElementById("user-menu");
+  const $userName = document.getElementById("user-name");
+  const $signOut = document.getElementById("sign-out");
+  const $changePassword = document.getElementById("change-password");
+  let signedOut = false;
+  let currentUser = null;
+
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    const resp = await nativeFetch(input, init);
+    const url = typeof input === "string" ? input : (input && input.url) || "";
+    if (resp.status === 401 && !url.startsWith("/auth/") && !signedOut) showSignIn();
+    return resp;
+  };
+
+  async function postJson(path, body) {
+    const r = await nativeFetch(path, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...dbHeader() },
+      body: JSON.stringify(body),
+    });
+    let json = null;
+    try {
+      json = await r.json();
+    } catch (_) {
+      // not JSON
+    }
+    return { status: r.status, ok: r.ok, json };
+  }
+
+  async function checkAuth() {
+    try {
+      const r = await nativeFetch("/auth/me", { headers: { Accept: "application/json" } });
+      let body = null;
+      try {
+        body = await r.json();
+      } catch (_) {
+        // not JSON
+      }
+      return DrevoAuth.authView(r.status, body);
+    } catch (_) {
+      return DrevoAuth.authView(0, null);
+    }
+  }
+
+  function setSignInMsg(text) {
+    $signInMsg.textContent = text || "";
+    $signInMsg.hidden = !text;
+  }
+
+  function openSignInModal() {
+    $signInModal.hidden = false;
+    $signInModal.setAttribute("aria-hidden", "false");
+  }
+
+  function showSignIn(message) {
+    signedOut = true;
+    $signInTitle.textContent = "Sign in to drevo";
+    $changeForm.hidden = true;
+    $signInForm.hidden = false;
+    setSignInMsg(message || "");
+    openSignInModal();
+    $signInUser.focus();
+  }
+
+  // `forced`: the server requires the change before anything else, so the
+  // dialog cannot be cancelled.
+  function showChangePassword(user, forced) {
+    currentUser = user;
+    if (forced) signedOut = true;
+    $signInTitle.textContent = "Change your password";
+    $changeIntro.textContent = forced
+      ? `Signed in as ${user}. Choose a new password before you continue.`
+      : `Signed in as ${user}.`;
+    $signInForm.hidden = true;
+    $changeForm.hidden = false;
+    $changeCancel.hidden = forced;
+    setSignInMsg("");
+    openSignInModal();
+    $changeCurrent.focus();
+  }
+
+  function closeSignInModal() {
+    $signInModal.hidden = true;
+    $signInModal.setAttribute("aria-hidden", "true");
+  }
+
+  function showUser(user) {
+    currentUser = user;
+    $userMenu.hidden = !user;
+    $userName.textContent = user || "";
+  }
+
+  $signInForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const username = $signInUser.value.trim();
+    const password = $signInPassword.value;
+    const r = await postJson("/auth/login", { username, password });
+    if (!r.ok) {
+      setSignInMsg(DrevoAuth.signInError(r.status, r.json));
+      $signInPassword.select();
+      return;
+    }
+    $signInPassword.value = "";
+    if (r.json && r.json.passwordChangeRequired) {
+      showChangePassword(r.json.user, true);
+      $changeCurrent.value = password;
+      $changeNew.focus();
+      return;
+    }
+    window.location.reload();
+  });
+
+  $changeForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if ($changeNew.value !== $changeRepeat.value) {
+      setSignInMsg("The new passwords do not match.");
+      return;
+    }
+    const next = $changeNew.value;
+    const r = await postJson("/cypher", DrevoAuth.changePasswordRequest($changeCurrent.value, next));
+    if (!r.ok) {
+      setSignInMsg((r.json && r.json.error) || `Password change failed (${r.status}).`);
+      return;
+    }
+    // A password change ends the user's sessions: sign in again with the new
+    // password.
+    const again = await postJson("/auth/login", { username: currentUser, password: next });
+    [$changeCurrent, $changeNew, $changeRepeat].forEach((el) => {
+      el.value = "";
+    });
+    if (again.ok) window.location.reload();
+    else showSignIn("Password changed. Sign in with the new password.");
+  });
+
+  $changeCancel.addEventListener("click", closeSignInModal);
+  $changePassword.addEventListener("click", () => showChangePassword(currentUser, false));
+  $signOut.addEventListener("click", async () => {
+    await nativeFetch("/auth/logout", { method: "POST" });
+    window.location.reload();
+  });
 
   // ── Node menu ──────────────────────────────────────────────────────
   let menuNode = null;
@@ -2304,23 +2465,27 @@
     if (e.key === "Escape" && !$historyMenu.hidden) closeHistoryMenu();
     if (e.key === "Escape" && !$nodeMenu.hidden) closeNodeMenu();
   });
-  pollProblems();
   setInterval(pollProblems, PROBLEM_POLL_MS);
 
-  document.addEventListener("DOMContentLoaded", () => {
+  // Start: ask who is signed in first; load the graph only when the server
+  // lets this browser in.
+  let started = false;
+  async function start() {
+    if (started) return;
+    started = true;
     initTheme();
+    const auth = await checkAuth();
+    if (auth.view === "sign-in") return showSignIn();
+    if (auth.view === "change-password") return showChangePassword(auth.user, true);
+    showUser(auth.user);
     initCytoscape();
     loadServerInfo();
     loadDatabases();
     loadOverview();
-  });
+    pollProblems();
+  }
+  document.addEventListener("DOMContentLoaded", start);
   // Some bundlers / browsers race: if DOMContentLoaded already fired,
   // initialise immediately.
-  if (document.readyState !== "loading") {
-    initTheme();
-    initCytoscape();
-    loadServerInfo();
-    loadDatabases();
-    loadOverview();
-  }
+  if (document.readyState !== "loading") start();
 })();

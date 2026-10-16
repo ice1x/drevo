@@ -30,8 +30,11 @@ fn security() -> Security {
     ))
 }
 
+/// An app on a server that needs no login (`DREVO_AUTH=none`): these tests are
+/// about the commands; logging in is covered in http_login_tests.
 fn app_with(security: Security) -> axum::Router {
-    let state = NativeApiState::new(Arc::new(NativeService::in_memory())).with_security(security);
+    let state = NativeApiState::new(Arc::new(NativeService::in_memory()))
+        .with_security(security.without_login());
     build_native_router(state)
 }
 
