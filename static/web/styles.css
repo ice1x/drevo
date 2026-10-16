@@ -540,6 +540,22 @@ body {
 .table-view .cypher-table th { white-space: nowrap; }
 .table-view .cypher-table td { max-width: 40rem; }
 .cypher-table td.cell-null { color: var(--text-muted); font-style: italic; }
+.inspector-row .v.val-null { color: var(--text-muted); font-style: italic; }
+.inspector-row .v.val-list,
+.inspector-row .v.val-map { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.inspector-link,
+.inspector-more {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.inspector-link:hover,
+.inspector-more:hover { text-decoration: underline; }
+.inspector-more { display: block; margin-top: 0.2rem; font-size: 0.9em; }
 .cypher-table td.cell-number { text-align: right; font-variant-numeric: tabular-nums; }
 .cypher-table td.cell-list,
 .cypher-table td.cell-map { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

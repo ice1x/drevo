@@ -4,7 +4,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { cellValue, defaultView, toCsv } = require("./results_view.js");
+const { cellValue, defaultView, toCsv, propertyValue, clipText } = require("./results_view.js");
 
 const node = { id: 7, kind: "Task", title: "Ship it", properties: {} };
 const rel = { id: 3, kind: "DEPENDS_ON", from_id: 7, to_id: 8, properties: {} };
@@ -97,4 +97,56 @@ test("toCsv leaves null cells empty and labels nodes", () => {
 
 test("toCsv quotes a header that needs it", () => {
   assert.equal(toCsv(["a,b"], []), '"a,b"');
+});
+
+// ── propertyValue (inspector rows) ───────────────────────────────────
+
+test("an epoch-millis value under a time-like key reads as a UTC date", () => {
+  assert.deepEqual(propertyValue("created_at", 1782410800000), {
+    kind: "date",
+    text: "2026-06-25 18:06:40 UTC",
+    title: "1782410800000",
+  });
+});
+
+test("epoch seconds under a time-like key are recognised too", () => {
+  assert.equal(propertyValue("updated_ts", 1782410800).text, "2026-06-25 18:06:40 UTC");
+});
+
+test("a number under an ordinary key stays a number", () => {
+  assert.deepEqual(propertyValue("count", 1782410800000), {
+    kind: "number",
+    text: "1782410800000",
+  });
+});
+
+test("an ISO 8601 string reads as the same UTC date format, under any key", () => {
+  assert.deepEqual(propertyValue("created", "2026-02-21T15:02:07.642000000+00:00"), {
+    kind: "date",
+    text: "2026-02-21 15:02:07 UTC",
+    title: "2026-02-21T15:02:07.642000000+00:00",
+  });
+  assert.equal(propertyValue("due", "2026-02-21T18:02:07+03:00").text, "2026-02-21 15:02:07 UTC");
+  assert.equal(propertyValue("seen", "2026-02-21T15:02:07Z").text, "2026-02-21 15:02:07 UTC");
+});
+
+test("a plain date or a date-like word is left as text", () => {
+  assert.deepEqual(propertyValue("day", "2026-02-21"), { kind: "string", text: "2026-02-21" });
+  assert.equal(propertyValue("note", "2026-02-21T is not a date").kind, "string");
+});
+
+test("strings lose their quotes; null, lists and maps read like table cells", () => {
+  assert.deepEqual(propertyValue("name", "Task052"), { kind: "string", text: "Task052" });
+  assert.deepEqual(propertyValue("x", null), { kind: "null", text: "null" });
+  assert.deepEqual(propertyValue("tags", ["a", "b"]), { kind: "list", text: '["a","b"]' });
+});
+
+// ── clipText ─────────────────────────────────────────────────────────
+
+test("clipText leaves short text alone", () => {
+  assert.deepEqual(clipText("short", 10), { text: "short", clipped: false });
+});
+
+test("clipText cuts long text at the limit and marks it", () => {
+  assert.deepEqual(clipText("abcdefghij", 4), { text: "abcd…", clipped: true });
 });

@@ -1,6 +1,7 @@
-// drevo browser — pure helpers for showing a Cypher result in the Table and
-// JSON views and picking the view a result opens in. DOM-free so they can be
-// unit-tested under `node --test` (see results_view.test.js).
+// drevo browser — pure helpers for showing values: Cypher result cells in the
+// Table and JSON views, the view a result opens in, and property values in
+// the inspector. DOM-free so they can be unit-tested under `node --test` (see
+// results_view.test.js).
 //
 // UMD: attaches to the global `DrevoResultsView` in the browser (loaded after
 // graph_math.js and before app.js) and to `module.exports` under node's test
@@ -71,5 +72,45 @@
     return out.join("\r\n");
   }
 
-  return { cellValue, defaultView, toCsv };
+  // Dates in the inspector read one way: "YYYY-MM-DD HH:MM:SS UTC".
+  function utcText(ms) {
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 19).replace("T", " ") + " UTC";
+  }
+
+  // Keys whose numbers are epoch timestamps: `created_at`, `seen_ts`, `time`…
+  const TIME_KEY_RE = /(^|_)(at|ts|time|timestamp)$/i;
+  // An ISO 8601 date-time with an explicit offset; the fraction may run past
+  // milliseconds (`.642000000`).
+  const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
+
+  // How one property reads in the inspector: like a table cell, except that
+  // dates read as UTC text with the raw value in `title`. A date is an epoch
+  // number (seconds below 1e12, else milliseconds) under a time-like key, or
+  // an ISO 8601 string under any key.
+  //
+  //   propertyValue("created_at", 1782410800000)
+  //     → {kind: "date", text: "2026-06-25 18:06:40 UTC", title: "1782410800000"}
+  function propertyValue(key, value) {
+    let ms = null;
+    if (typeof value === "number" && Number.isFinite(value) && TIME_KEY_RE.test(key)) {
+      ms = value < 1e12 ? value * 1000 : value;
+    } else if (typeof value === "string" && ISO_RE.test(value)) {
+      ms = Date.parse(value.replace(/(\.\d{3})\d+/, "$1"));
+    }
+    const text = ms === null ? null : utcText(ms);
+    if (text) return { kind: "date", text, title: String(value) };
+    const cell = cellValue(value);
+    return { kind: cell.kind, text: cell.text };
+  }
+
+  // `text` cut to `max` characters with an ellipsis when longer.
+  function clipText(text, max) {
+    return text.length > max
+      ? { text: `${text.slice(0, max)}…`, clipped: true }
+      : { text, clipped: false };
+  }
+
+  return { cellValue, defaultView, toCsv, propertyValue, clipText };
 });
