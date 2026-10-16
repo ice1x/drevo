@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Readable inspector** (issue #622). The node and relationship inspector
+  shows strings without quotes, `null` dimmed and every date as
+  `YYYY-MM-DD HH:MM:SS UTC` (epoch numbers under time-like keys and ISO 8601
+  strings alike, raw value in the tooltip). Text over 300 characters is
+  clipped behind **Show more**, and a relationship's **from** / **to** are
+  node links that open that node's neighbourhood.
+
 - **Web UI label filter** (issue #620). The label chips show the 12 most
   common labels (plus the selected one) with **Show all N labels**, and a
   **Filter labels** box shows every label containing the typed text. On a

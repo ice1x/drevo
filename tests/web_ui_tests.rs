@@ -387,6 +387,25 @@ async fn ui_label_chips_have_filter_and_show_all_toggle() {
         .contains("function visibleKinds"));
 }
 
+// Inspector (#622): property values go through the tested formatter, long
+// text is clipped, and a relationship's ends are links to their nodes.
+#[tokio::test]
+async fn ui_inspector_formats_values_and_links_relationship_ends() {
+    let app = make_app();
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "DrevoResultsView.propertyValue(",
+        "DrevoResultsView.clipText(",
+        "inspector-link",
+    ] {
+        assert!(app_js.contains(needle), "app.js must use {needle}");
+    }
+    let (_, _, rv) = get(&app, "/ui/results_view.js").await;
+    let rv = String::from_utf8(rv).expect("utf-8");
+    assert!(rv.contains("function propertyValue") && rv.contains("function clipText"));
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

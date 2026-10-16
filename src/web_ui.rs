@@ -276,10 +276,16 @@ mod tests {
         // (created_at / updated_at, stored as i64 and sent raw over the
         // wire) as human-readable dates rather than raw integers, keeping
         // the raw value in a tooltip. Formatting lives in the UI (browser
-        // `Date`) so the engine stays free of a date-time dependency.
+        // `Date`) so the engine stays free of a date-time dependency; the
+        // DOM-free results_view.js does it, tested under node.
         assert!(
-            APP_JS.contains("formatTimestamp"),
-            "app.js must humanize epoch timestamps in the inspector"
+            RESULTS_VIEW_JS.contains("function propertyValue")
+                && RESULTS_VIEW_JS.contains("TIME_KEY_RE"),
+            "results_view.js must format inspector timestamps"
+        );
+        assert!(
+            APP_JS.contains("DrevoResultsView.propertyValue("),
+            "app.js must humanize timestamps in the inspector through propertyValue"
         );
     }
 
