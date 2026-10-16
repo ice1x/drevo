@@ -21,11 +21,6 @@ use super::permission::{Action, Effect, Permission, Resource};
 use super::role::Role;
 
 /// An error from configuring or validating an [`AccessPolicy`].
-///
-/// Kept in its own channel rather than lifted into the crate-wide
-/// [`crate::error::DrevoError`]: like the planner and MVCC engines, the
-/// authorization layer is a standalone mechanism that the executor / server
-/// wiring will consume, so it owns its own recoverable error type.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthzError {
     /// A role with this name is already defined and
@@ -75,9 +70,9 @@ impl Decision {
 /// The RBAC policy engine: a registry of [`Role`]s plus the map of which roles
 /// each subject holds.
 ///
-/// A *subject* is any opaque identity string — typically the username the
-/// authentication layer (Bolt [`UserStore`](crate::bolt::auth::UserStore))
-/// resolved from a session token. The policy answers, for a `(subject, action,
+/// A *subject* is any opaque identity string — typically the username a
+/// [`UserStore`](crate::authn::UserStore) resolved from a password or session
+/// token. The policy answers, for a `(subject, action,
 /// resource)` triple, whether the action is permitted.
 #[derive(Debug, Clone, Default)]
 pub struct AccessPolicy {

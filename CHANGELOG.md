@@ -8,6 +8,21 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`drevo-auth` crate** (issue #647). Authentication and role-based access
+  control now live in a workspace crate of their own, publishable to
+  crates.io and usable outside drevo:
+  - `drevo_auth::authn`: the Argon2id `UserStore` with session tokens, plus
+    `Credentials` (`Basic` or `Token`, built from a scheme / principal /
+    credentials triple) and `AuthFailure`.
+  - `drevo_auth::authz`: roles, permissions and the deny-overrides
+    `AccessPolicy`.
+  - drevo re-exports both as before (`drevo::authz`,
+    `drevo::bolt::auth::UserStore`); its Cargo feature is now `auth`, with
+    `bolt-auth` kept as an alias.
+  - Session tokens are now 32 random bytes from the operating system; they
+    were two time-ordered UUIDs, whose leading characters repeat between
+    consecutive tokens.
+
 - **Node menu** (issue #630). A right-click on a node in the Web UI graph
   opens a menu: **Expand neighbours**, **Show only its neighbourhood**,
   **Query its neighbours** (puts `MATCH (n)-[r]-(m) WHERE id(n) = 42 RETURN

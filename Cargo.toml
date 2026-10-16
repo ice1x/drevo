@@ -21,12 +21,12 @@
 # want to compile `drevo-py` locally run `cargo build -p drevo-py`
 # with a Python install on PATH.
 [workspace]
-members = [".", "drevo-core", "drevo-py"]
+members = [".", "drevo-core", "drevo-auth", "drevo-py"]
 # `drevo-core` IS in the default set (unlike `drevo-py`, which needs a Python
 # interpreter): it is pure Rust, so every existing CI gate — `cargo check`,
 # `cargo test`, `cargo clippy --all-targets`, `cargo doc` — should cover it too,
 # and its moved unit tests must keep running.
-default-members = [".", "drevo-core"]
+default-members = [".", "drevo-core", "drevo-auth"]
 resolver = "2"
 
 # --- Build profiles ----------------------------------------------------------
@@ -127,17 +127,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
 rustls-pemfile = { version = "2", optional = true }
-# Phase 11 task `00074` — authentication for Bolt. `argon2` is the
-# modern, pure-Rust password-hashing standard (Argon2id), so the user
-# table stores PHC-format salted hashes — never plaintext or an
-# unsalted digest. It is pure Rust (no C toolchain, preserving the
-# "embeddable, no external system deps" property) and is gated behind
-# the `bolt-auth` Cargo feature so default builds (and every CI gate
-# that doesn't opt in) keep their dependency graph unchanged. The
-# `Authenticator` trait + `AuthOutcome` in `src/bolt/auth.rs` are
-# dependency-free and always compiled; only the argon2-backed
-# `UserStore` is feature-gated.
-argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "rand", "std"], optional = true }
+# Authentication and authorization live in the `drevo-auth` workspace crate
+# (issue #647). Its access policy (`authz`) is always compiled and needs only
+# std; the Argon2id user store (`authn`) is its `password` feature, enabled by
+# drevo's `auth` feature so default builds keep their dependency graph.
+drevo-auth = { path = "drevo-auth", version = "0.1.0", default-features = false }
 # Phase 19 task `00217` — OpenAI-compatible `/v1/embeddings` proxy. `reqwest`
 # is the HTTP client used to forward embeddings requests to a configured
 # upstream (OpenAI/Ollama/vLLM/…). It is gated behind the `embeddings-proxy`
@@ -176,13 +170,14 @@ http = ["dep:axum", "dep:tokio", "dep:tower", "dep:tracing", "dep:tracing-subscr
 # `http` because TLS is meaningless without the TCP listener (which
 # is itself gated on `http`).
 bolt-tls = ["http", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
-# Phase 11 task `00074` — authentication for Bolt. Compiles the
-# argon2-backed `UserStore` in `src/bolt/auth.rs` (basic auth +
-# session tokens + user table). Does NOT imply `http`: the auth
-# logic + `run_session_sync_with_auth` driver are transport-agnostic
-# (plain `std::io::Read`/`Write`); the async listener `_with_auth`
-# entry points are independently gated on `http`.
-bolt-auth = ["dep:argon2"]
+# Authentication: the Argon2id `UserStore` from `drevo-auth` (basic auth +
+# session tokens), re-exported as `drevo::bolt::auth::UserStore` and usable as
+# a Bolt `Authenticator`. Does NOT imply `http`: the auth logic and
+# `run_session_sync_with_auth` are transport-agnostic; the async listener
+# `_with_auth` entry points are gated on `http` separately.
+auth = ["drevo-auth/password"]
+# The feature's earlier name, kept so existing builds keep working.
+bolt-auth = ["auth"]
 
 # Phase 19 task `00217` — OpenAI-compatible `/v1/embeddings`. The endpoint,
 # its request/response types, the SSRF-safe config, and the `503

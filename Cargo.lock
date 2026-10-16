@@ -672,7 +672,6 @@ dependencies = [
 name = "drevo"
 version = "0.0.0"
 dependencies = [
- "argon2",
  "arrow-array",
  "arrow-flight",
  "arrow-schema",
@@ -681,6 +680,7 @@ dependencies = [
  "cbindgen",
  "ciborium",
  "criterion",
+ "drevo-auth",
  "drevo-core",
  "futures",
  "getrandom 0.4.2",
@@ -708,6 +708,14 @@ dependencies = [
  "tracing-test",
  "uuid",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "drevo-auth"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "thiserror",
 ]
 
 [[package]]

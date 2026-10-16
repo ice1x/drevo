@@ -1234,7 +1234,7 @@ fn run_session_sync_drives_full_hello_run_pull_goodbye_flow() {
 // --- Authentication (Phase 11 task 00074) ----------------------------------
 
 /// Dependency-free test authenticator: accepts exactly one
-/// principal/credentials pair, regardless of the `bolt-auth` feature.
+/// principal/credentials pair, regardless of the `auth` feature.
 /// Proves the session layer enforces *any* `Authenticator`, not just the
 /// argon2-backed `UserStore` (which is exercised in `bolt_auth_tests.rs`).
 struct FixedCreds {

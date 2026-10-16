@@ -231,8 +231,8 @@ with driver.session() as session:
 ```
 
 The Cypher accepted over Bolt is exactly the [Cypher Reference](cypher-reference.md) subset.
-TLS is available behind the `bolt-tls` feature, authentication behind `bolt-auth`
-(see the [Admin Guide](admin-guide.md#authentication)).
+TLS is available behind the `bolt-tls` feature, authentication behind `auth`
+(see the [Admin Guide](admin-guide.md#7-authentication)).
 
 ---
 
@@ -253,7 +253,7 @@ See that repo's README for the tool list and client setup.
 |---------|---------|---------|
 | `redb-backend` | ✅ | Disk-backed redb storage; `Drevo::open` / `recover`. |
 | `http` | ✅ | Axum HTTP API server **and** the Bolt TCP listener. |
-| `bolt-auth` | — | Argon2id user store + session tokens (transport-agnostic auth). |
+| `auth` | — | Argon2id user store + session tokens from the `drevo-auth` crate (transport-agnostic auth). `bolt-auth` is the same feature under its earlier name. |
 | `bolt-tls` | — | rustls TLS for Bolt; implies `http`. |
 | `wasm` | — | WebAssembly build (excludes `bolt`, `ffi`). |
 | `cbindgen` | ✅ | Generate the C header (`drevo.h`) from the FFI surface. |

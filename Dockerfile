@@ -14,8 +14,10 @@ COPY src/ src/
 # workspace member that `drevo` depends on (`pub use drevo_core::model`), so —
 # unlike `drevo-py` below, which is copied only so the workspace manifest parses
 # — its source is genuinely compiled into `drevo-server`. Copy the whole crate.
+# `drevo-auth` (users, passwords, roles) is compiled in the same way.
 # Locked by `tests/dockerfile_tests.rs::dockerfile_copies_every_workspace_member_dir`.
 COPY drevo-core/ drevo-core/
+COPY drevo-auth/ drevo-auth/
 # Cargo parses every `[[bench]]` / `[[bin]]` / `[[test]]` declaration in
 # Cargo.toml even when we ask it to build a single bin — the file must
 # exist or the manifest fails to parse with:

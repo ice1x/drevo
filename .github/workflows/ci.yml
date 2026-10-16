@@ -324,7 +324,7 @@ jobs:
       # auth tests in `bolt_session_tests` are already covered by the
       # full-suite step above; this step adds the argon2 path.
       - name: Run bolt-auth feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features bolt-auth -E 'binary(bolt_auth_tests) | (kind(lib) & test(bolt::auth))'
+        run: cargo nextest run --no-fail-fast --features auth -E 'binary(bolt_auth_tests) | (kind(lib) & test(bolt::auth))'
       # Issue #581 — the optional HTTP body formats (CBOR / MessagePack) live
       # behind `format-cbor` / `format-msgpack`, NOT in the default set, so
       # re-run their test binary and the inline unit tests with both on.
@@ -376,10 +376,13 @@ jobs:
       # invocation with the feature enabled is the only way to catch
       # warnings in those files before merge.
       - run: cargo clippy --all-targets --features bolt-tls -- -D warnings
-      # Phase 11 task `00074` — guard the `bolt-auth`-gated code paths
-      # (`src/bolt/auth.rs` UserStore + `tests/bolt_auth_tests.rs`)
-      # against clippy regressions the default-feature pass can't see.
-      - run: cargo clippy --all-targets --features bolt-auth -- -D warnings
+      # Guard the `auth`-gated code paths (the `drevo-auth` UserStore as a
+      # Bolt authenticator + `tests/bolt_auth_tests.rs`) against clippy
+      # regressions the default-feature pass can't see.
+      - run: cargo clippy --all-targets --features auth -- -D warnings
+      # drevo-auth without its default `password` feature: the access
+      # policy alone (the build drevo uses when `auth` is off).
+      - run: cargo clippy -p drevo-auth --all-targets --no-default-features -- -D warnings
       # Issue #581 — the CBOR / MessagePack transcoding paths.
       - run: cargo clippy --all-targets --features format-cbor,format-msgpack -- -D warnings
       # Issue #583 — the gRPC service and its tests.
@@ -486,6 +489,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo doc --no-deps --all-features
+      # drevo-auth is published to crates.io on its own: check that it
+      # packages and builds from the packaged sources alone.
+      - run: cargo package -p drevo-auth
 
   # Audit task 00113 — MSRV is declared in `Cargo.toml` (`rust-version`)
   # and locked in by `tests/crosscut_audit_tests.rs::cargo_toml_declares_rust_version`.
@@ -531,6 +537,9 @@ jobs:
           RUSTFLAGS: -D warnings
         # The wasm sanity check is the cheapest way to catch a future MSRV
         # bump on `getrandom/wasm_js` (audit 00111 / 00113 cross-link).
+      - run: cargo check -p drevo-auth --no-default-features --target wasm32-unknown-unknown
+        env:
+          RUSTFLAGS: -D warnings
 
   # Phase 9 task 00058 — coverage-guided fuzz smoke run for the FTS
   # tokenizer. cargo-fuzz needs nightly Rust + libFuzzer; the job is
