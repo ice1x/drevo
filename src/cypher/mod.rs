@@ -35,3 +35,4 @@ pub mod parser;
 /// A small dependency-free regular-expression engine backing the Cypher
 /// `=~` operator. Task `00140`.
 pub mod regex;
+pub mod security_admin;

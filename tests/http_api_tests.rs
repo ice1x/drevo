@@ -2461,3 +2461,21 @@ async fn cypher_create_database_registers_it() {
     .await;
     assert_eq!(status, StatusCode::OK);
 }
+
+// User management commands on a server started without user management.
+#[tokio::test]
+async fn user_commands_without_user_management_answer_503() {
+    let app = make_app();
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(serde_json::json!({ "query": "SHOW USERS" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body.to_string().contains("user management is not enabled"),
+        "{body}"
+    );
+}

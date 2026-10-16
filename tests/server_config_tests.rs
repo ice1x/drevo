@@ -387,3 +387,56 @@ fn flight_port_without_the_feature_is_a_startup_error() {
         .expect_err("not compiled in");
     assert!(err.to_string().contains("`arrow-flight` feature"), "{err}");
 }
+
+// ── DREVO_AUTH: the first user (NEO4J_AUTH style) ─────────────────────
+
+#[cfg(feature = "auth")]
+#[test]
+fn auth_bootstrap_is_read_like_neo4j_auth() {
+    use drevo_auth::users::Bootstrap;
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert_eq!(cfg.auth, Bootstrap::Generated);
+    let cfg = Config::from_env(getter(HashMap::from([("DREVO_AUTH", "none")]))).unwrap();
+    assert_eq!(cfg.auth, Bootstrap::Disabled);
+    let cfg =
+        Config::from_env(getter(HashMap::from([("DREVO_AUTH", "admin/s3cret-pass")]))).unwrap();
+    assert_eq!(
+        cfg.auth,
+        Bootstrap::Admin {
+            user: "admin".into(),
+            password: "s3cret-pass".into()
+        }
+    );
+}
+
+#[cfg(feature = "auth")]
+#[test]
+fn a_malformed_auth_setting_is_a_startup_error_without_the_password() {
+    for bad in ["admin", "admin/", "bad name/s3cret-pass"] {
+        let err = Config::from_env(getter(HashMap::from([("DREVO_AUTH", bad)])))
+            .expect_err("malformed DREVO_AUTH");
+        assert!(matches!(err, ConfigError::InvalidAuth { .. }), "{err}");
+        assert!(err.to_string().contains("DREVO_AUTH"), "{err}");
+        assert!(!err.to_string().contains("s3cret"), "{err}");
+    }
+}
+
+#[cfg(feature = "auth")]
+#[test]
+fn the_config_debug_output_hides_the_password() {
+    let cfg =
+        Config::from_env(getter(HashMap::from([("DREVO_AUTH", "admin/s3cret-pass")]))).unwrap();
+    let shown = format!("{cfg:?}");
+    assert!(shown.contains("admin"), "{shown}");
+    assert!(!shown.contains("s3cret-pass"), "{shown}");
+}
+
+#[cfg(not(feature = "auth"))]
+#[test]
+fn auth_without_the_feature_is_a_startup_error_unless_none() {
+    Config::from_env(getter(HashMap::from([("DREVO_AUTH", "none")]))).expect("none needs nothing");
+    let err = Config::from_env(getter(HashMap::from([("DREVO_AUTH", "admin/s3cret-pass")])))
+        .expect_err("not compiled in");
+    assert!(err.to_string().contains("`auth` feature"), "{err}");
+    assert!(!err.to_string().contains("s3cret"), "{err}");
+}

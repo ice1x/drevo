@@ -1,0 +1,287 @@
+//! The security catalog: the stored list of users, and where it is kept.
+//!
+//! A [`Catalog`] holds every user with their Argon2id password hash and
+//! account state. A [`CatalogStore`] loads and saves it:
+//!
+//! - [`FileStore`] keeps it as JSON in one file. A save writes a temporary
+//!   file, flushes it to disk and renames it over the old one, so the file is
+//!   always either the previous or the new catalog, never half of one. On Unix
+//!   the file is readable by its owner only (mode `0600`).
+//! - [`MemoryStore`] keeps it in memory, for tests and embedded use.
+//!
+//! A file that cannot be read as a catalog is an error, never an empty
+//! catalog: starting empty would let a server create a new administrator over
+//! a damaged file.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+
+/// The catalog format this version reads and writes. A file with a higher
+/// `format_version` is refused rather than misread.
+pub const FORMAT_VERSION: u32 = 1;
+
+/// Whether a user may log in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserStatus {
+    /// The user may log in.
+    #[default]
+    Active,
+    /// The user exists but may not log in.
+    Suspended,
+}
+
+/// A stored user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct User {
+    /// The user's name.
+    pub name: String,
+    /// The Argon2id PHC string of the password (`$argon2id$…`).
+    pub password_hash: String,
+    /// Whether the user may log in.
+    #[serde(default)]
+    pub status: UserStatus,
+    /// Whether the user must set a new password before doing anything else.
+    #[serde(default)]
+    pub password_change_required: bool,
+    /// When the user was created, in Unix milliseconds.
+    #[serde(default)]
+    pub created_at_ms: i64,
+    /// When the password was last set, in Unix milliseconds.
+    #[serde(default)]
+    pub password_changed_at_ms: i64,
+}
+
+/// Every user, by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Catalog {
+    /// The format the catalog was written in; see [`FORMAT_VERSION`].
+    pub format_version: u32,
+    /// Users by name.
+    #[serde(default)]
+    pub users: BTreeMap<String, User>,
+}
+
+impl Default for Catalog {
+    fn default() -> Self {
+        Self {
+            format_version: FORMAT_VERSION,
+            users: BTreeMap::new(),
+        }
+    }
+}
+
+/// Why a catalog could not be loaded or saved.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StoreError {
+    /// The file could not be read or written.
+    #[error("cannot access the security catalog at {path}: {message}")]
+    Io {
+        /// The file.
+        path: PathBuf,
+        /// The operating system's message.
+        message: String,
+    },
+    /// The file is not a valid catalog.
+    #[error("the security catalog at {path} is damaged: {reason}")]
+    Corrupt {
+        /// The file.
+        path: PathBuf,
+        /// What is wrong with it.
+        reason: String,
+    },
+    /// The file was written by a newer version.
+    #[error("the security catalog uses format {found}; this version reads up to {supported}")]
+    UnsupportedVersion {
+        /// The file's `format_version`.
+        found: u32,
+        /// The highest version this build reads.
+        supported: u32,
+    },
+}
+
+/// Where a [`Catalog`] is kept.
+pub trait CatalogStore: Send + Sync {
+    /// The stored catalog, or `None` when nothing has been saved yet.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreError`] when the stored catalog cannot be read.
+    fn load(&self) -> Result<Option<Catalog>, StoreError>;
+
+    /// Replace the stored catalog with `catalog`. When this returns `Ok`, the
+    /// change is stored.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreError`] when the catalog cannot be written; the stored catalog
+    /// is then unchanged.
+    fn save(&self, catalog: &Catalog) -> Result<(), StoreError>;
+}
+
+/// A catalog kept in memory.
+#[derive(Debug, Default)]
+pub struct MemoryStore {
+    catalog: Mutex<Option<Catalog>>,
+}
+
+impl MemoryStore {
+    /// An empty store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl CatalogStore for MemoryStore {
+    fn load(&self) -> Result<Option<Catalog>, StoreError> {
+        Ok(self
+            .catalog
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone())
+    }
+
+    fn save(&self, catalog: &Catalog) -> Result<(), StoreError> {
+        *self.catalog.lock().unwrap_or_else(|p| p.into_inner()) = Some(catalog.clone());
+        Ok(())
+    }
+}
+
+/// A catalog kept as JSON in one file.
+#[derive(Debug, Clone)]
+pub struct FileStore {
+    path: PathBuf,
+}
+
+impl FileStore {
+    /// A store at `path`. Nothing is read or written until the first
+    /// [`load`](CatalogStore::load) or [`save`](CatalogStore::save).
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// The file this store uses.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn io(&self, e: &std::io::Error) -> StoreError {
+        StoreError::Io {
+            path: self.path.clone(),
+            message: e.to_string(),
+        }
+    }
+
+    fn corrupt(&self, reason: impl Into<String>) -> StoreError {
+        StoreError::Corrupt {
+            path: self.path.clone(),
+            reason: reason.into(),
+        }
+    }
+}
+
+impl CatalogStore for FileStore {
+    fn load(&self) -> Result<Option<Catalog>, StoreError> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(self.io(&e)),
+        };
+        // Check the version before the shape, so a newer format is reported as
+        // such rather than as damage.
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| self.corrupt(e.to_string()))?;
+        let version = value
+            .get("format_version")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| self.corrupt("no format_version"))?;
+        let version = u32::try_from(version).unwrap_or(u32::MAX);
+        if version > FORMAT_VERSION {
+            return Err(StoreError::UnsupportedVersion {
+                found: version,
+                supported: FORMAT_VERSION,
+            });
+        }
+        let catalog: Catalog =
+            serde_json::from_value(value).map_err(|e| self.corrupt(e.to_string()))?;
+        Ok(Some(catalog))
+    }
+
+    fn save(&self, catalog: &Catalog) -> Result<(), StoreError> {
+        use std::io::Write;
+
+        let json = serde_json::to_vec_pretty(catalog).map_err(|e| self.corrupt(e.to_string()))?;
+        let tmp = self.path.with_extension("json.tmp");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let written = options.open(&tmp).and_then(|mut file| {
+            file.write_all(&json)?;
+            file.sync_all()
+        });
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(self.io(&e));
+        }
+        if let Err(e) = std::fs::rename(&tmp, &self.path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(self.io(&e));
+        }
+        // Make the rename itself durable (best-effort: not every platform can
+        // open a directory).
+        #[cfg(unix)]
+        if let Some(dir) = self.path.parent() {
+            if let Ok(dir) = std::fs::File::open(if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            }) {
+                let _ = dir.sync_all();
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_older_catalog_without_optional_fields_still_loads() {
+        let json = r#"{"format_version": 1, "users": {"ann": {"name": "ann", "password_hash": "$argon2id$x"}}}"#;
+        let catalog: Catalog = serde_json::from_str(json).unwrap();
+        let ann = &catalog.users["ann"];
+        assert_eq!(ann.status, UserStatus::Active);
+        assert!(!ann.password_change_required);
+    }
+
+    #[test]
+    fn status_is_stored_in_lower_case() {
+        assert_eq!(
+            serde_json::to_string(&UserStatus::Suspended).unwrap(),
+            r#""suspended""#
+        );
+    }
+
+    #[test]
+    fn a_catalog_without_a_version_is_damaged() {
+        let dir = std::env::temp_dir().join(format!("drevo_auth_cat_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("security.json");
+        std::fs::write(&file, r#"{"users": {}}"#).unwrap();
+        let err = FileStore::new(&file).load().unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(err, StoreError::Corrupt { .. }), "{err:?}");
+    }
+}

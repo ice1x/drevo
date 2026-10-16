@@ -514,6 +514,47 @@ let token = store.issue_token("neo4j");       // Some(64 hex characters)
 
 Roles and the access policy are `drevo::authz` (the crate's `authz` module).
 
+### Users
+
+A server built with the `auth` feature (the Docker image is) keeps its users in
+`<DREVO_DATA_DIR>/security.json`. The file holds Argon2id hashes, never passwords, and is
+readable by its owner only. A damaged file stops the server rather than starting it with no
+users.
+
+The first user is created from `DREVO_AUTH` when there are none, as with Neo4j's
+`NEO4J_AUTH`:
+
+| `DREVO_AUTH` | First start |
+|---|---|
+| `admin/long-password` | creates `admin` with that password (at least 8 characters) |
+| `none` | creates nobody |
+| unset | creates `neo4j` with a generated password, logged once at `WARN`; it must be changed at the first login |
+
+Later starts leave existing users alone, whatever `DREVO_AUTH` says.
+
+Manage users with Cypher over HTTP (`POST /cypher`) or Bolt, in auto-commit mode; inside an
+explicit transaction these commands fail with
+`Neo.ClientError.Transaction.ForbiddenDueToTransactionType`:
+
+```
+CREATE USER ann SET PASSWORD 'first-password'
+CREATE USER bob IF NOT EXISTS SET PASSWORD $pw CHANGE NOT REQUIRED SET STATUS SUSPENDED
+ALTER USER ann SET PASSWORD 'second-password' CHANGE REQUIRED
+ALTER USER bob SET STATUS ACTIVE
+DROP USER bob IF EXISTS
+SHOW USERS
+SHOW CURRENT USER
+ALTER CURRENT USER SET PASSWORD FROM 'old-password' TO 'new-password'
+```
+
+`SHOW USERS` returns `user`, `roles`, `passwordChangeRequired`, `suspended` and `home`.
+Passwords are string literals or `$parameters`; neither a password nor its hash ever appears in
+a result, an error or a log line. Errors use Neo4j codes: a bad name or password, an existing or
+unknown user is `Neo.ClientError.General.InvalidArguments` (HTTP 400, 409 or 404).
+
+These commands manage users; a login is not yet required to reach the server, so keep the
+network surface trusted until authentication is enforced.
+
 TLS for Bolt is provided by the **`bolt-tls`** feature (pure-Rust rustls, no OpenSSL):
 
 ```rust

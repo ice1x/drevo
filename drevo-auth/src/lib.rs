@@ -13,3 +13,7 @@
 #[cfg(feature = "password")]
 pub mod authn;
 pub mod authz;
+#[cfg(feature = "password")]
+pub mod catalog;
+#[cfg(feature = "password")]
+pub mod users;

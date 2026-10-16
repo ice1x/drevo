@@ -8,6 +8,22 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Users** (issue #633). A server built with `auth` (the Docker image is)
+  keeps its users in `<data dir>/security.json` and manages them with Neo4j's
+  Cypher commands over HTTP and Bolt: `CREATE USER`, `ALTER USER`,
+  `DROP USER`, `SHOW USERS`, `SHOW CURRENT USER` and
+  `ALTER CURRENT USER SET PASSWORD`.
+  - `DREVO_AUTH` creates the first user like `NEO4J_AUTH`: `user/password`,
+    `none`, or unset for `neo4j` with a generated password that is logged
+    once and must be changed.
+  - Passwords are Argon2id-hashed, at least 8 characters, and never appear in
+    results, errors or logs. The file is written atomically, readable by its
+    owner only, and a damaged one stops the server.
+  - drevo-auth: `catalog` (`Catalog`, `CatalogStore`, `FileStore`,
+    `MemoryStore`) and `users` (`AuthManager`, `NewUser`, `AlterUser`,
+    `PasswordPolicy`, `Bootstrap`).
+  - These commands manage users only; logging in is not yet required.
+
 - **`drevo-auth` crate** (issue #647). Authentication and role-based access
   control now live in a workspace crate of their own, publishable to
   crates.io and usable outside drevo:

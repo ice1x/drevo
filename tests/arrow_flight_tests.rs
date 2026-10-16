@@ -171,6 +171,12 @@ async fn errors_and_unsupported_calls() {
         .await
         .unwrap_err();
     assert!(err.contains("no database named"), "{err}");
+    // User management runs over HTTP and Bolt only.
+    let err = get(&mut c, "SHOW USERS").await.unwrap_err();
+    assert!(
+        err.contains("user management is not available over Flight"),
+        "{err}"
+    );
     let err = c
         .get_flight_info(arrow_flight::FlightDescriptor::new_cmd("RETURN 1"))
         .await

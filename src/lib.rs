@@ -148,6 +148,10 @@ pub mod migrate;
 /// `SemanticTargetStatus`) — relocated out of `db` so they outlive the KV
 /// engine's retirement (epic #444).
 pub mod report;
+/// The server's users: the Cypher user-management commands (`CREATE USER`,
+/// `SHOW USERS`, …) run against the `drevo-auth` security catalog.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod security;
 /// Text-to-Cypher LLM proxy (`drevo.cypher.fromText`, issue #429). Gated on
 /// `http` like [`embeddings`]; the `reqwest`-backed proxy is further gated on
 /// `embeddings-proxy`.

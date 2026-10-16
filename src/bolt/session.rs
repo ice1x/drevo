@@ -470,6 +470,9 @@ pub struct Session<'a> {
     /// is acknowledged as a no-op; resolution is `drevo.tx.commitPrepared` /
     /// `rollbackPrepared`, from any session.
     prepared_gid: Option<String>,
+    /// The server's users, for the Cypher user-management commands
+    /// (`CREATE USER`, `SHOW USERS`, …).
+    security: crate::security::Security,
     /// How a `db` selector on `RUN` / `BEGIN` maps to a concrete service — a
     /// single-database session ignores it (embedded / sync entry points), a
     /// catalog-backed one resolves it against the shared registry (issue #523).
@@ -578,7 +581,15 @@ impl<'a> Session<'a> {
             native_tx: None,
             prepared_gid: None,
             resolver,
+            security: crate::security::Security::default(),
         }
+    }
+
+    /// Run the Cypher user-management commands against `security`.
+    #[must_use]
+    pub fn with_security(mut self, security: crate::security::Security) -> Self {
+        self.security = security;
+        self
     }
 
     /// Resolve a `db` selector to the concrete service a statement runs on.
@@ -961,6 +972,12 @@ impl<'a> Session<'a> {
                 }];
             }
         };
+        // User-management commands (`CREATE USER`, `SHOW USERS`, …) are not
+        // graph queries: they change the server's users at once and cannot be
+        // rolled back, so they run in auto-commit mode only.
+        if let Some(parsed) = crate::cypher::security_admin::parse(&query) {
+            return self.handle_security_command(parsed, &cypher_params, in_tx);
+        }
         // Parse.
         let ast = match parser::parse(&query) {
             Ok(q) => q,
@@ -1039,6 +1056,57 @@ impl<'a> Session<'a> {
         } else {
             State::Streaming
         };
+        let mut md: BTreeMap<String, Value> = BTreeMap::new();
+        md.insert(
+            "fields".to_string(),
+            Value::List(cols.into_iter().map(Value::String).collect()),
+        );
+        vec![ServerMessage::Success { metadata: md }]
+    }
+
+    /// Run a user-management command and stream its rows like a query result.
+    fn handle_security_command(
+        &mut self,
+        parsed: Result<crate::cypher::security_admin::SecurityCommand, String>,
+        params: &HashMap<String, CypherValue>,
+        in_tx: bool,
+    ) -> Vec<ServerMessage> {
+        use crate::security::{ParamValue, SecurityError};
+        if in_tx {
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::FORBIDDEN_DUE_TO_TRANSACTION_TYPE,
+                    "user management commands change the server's users at once and cannot run \
+                     inside an explicit transaction; run them in auto-commit mode",
+                ),
+            }];
+        }
+        let lookup = |name: &str| {
+            params.get(name).map(|v| match v {
+                CypherValue::String(s) => ParamValue::String(s.clone()),
+                _ => ParamValue::Other,
+            })
+        };
+        // No signed-in user is tracked yet, so the current-user commands see
+        // none.
+        let outcome = parsed
+            .map_err(SecurityError::syntax)
+            .and_then(|command| self.security.execute(&command, None, &lookup));
+        let result = match outcome {
+            Ok(result) => result,
+            Err(e) => {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(e.kind.code(), &e.message),
+                }];
+            }
+        };
+        let cols = result.columns.clone();
+        self.pending = Some(PendingResult {
+            rows: result.rows.into_iter(),
+        });
+        self.state = State::Streaming;
         let mut md: BTreeMap<String, Value> = BTreeMap::new();
         md.insert(
             "fields".to_string(),

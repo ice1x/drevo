@@ -167,6 +167,11 @@ fn dockerfile_features_are_build_arg_overridable() {
          (runtime-gated to 503 until configured); override to lean via --build-arg: {arg_line}"
     );
     assert!(
+        arg_line.contains("auth"),
+        "the deploy image must ship user management (`auth`) so CREATE USER / SHOW USERS \
+         work: {arg_line}"
+    );
+    assert!(
         content.contains("${CARGO_FEATURES}"),
         "the cargo build must take features from ${{CARGO_FEATURES}}, not a hardcoded list"
     );

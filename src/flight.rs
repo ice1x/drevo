@@ -260,6 +260,11 @@ impl FlightService for DrevoFlight {
                 "database administration is not available over Flight; use HTTP or Bolt",
             ));
         }
+        if crate::cypher::security_admin::parse(&query).is_some() {
+            return Err(Status::unimplemented(
+                "user management is not available over Flight; use HTTP or Bolt",
+            ));
+        }
         let name = database
             .filter(|d| !d.is_empty())
             .unwrap_or_else(|| self.registry.default_name().to_string());

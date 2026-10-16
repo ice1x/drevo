@@ -22,14 +22,18 @@ categories = ["authentication"]
 
 [features]
 default = ["password"]
-# Users with Argon2id password hashes and session tokens (`authn`). Without it
+# Users with Argon2id password hashes and session tokens (`authn`), the stored
+# security catalog (`catalog`) and user management (`users`). Without it
 # the crate is the dependency-free access policy (`authz`) alone, which also
 # builds for wasm32-unknown-unknown.
-password = ["dep:argon2"]
+password = ["dep:argon2", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "rand", "std"], optional = true }
 thiserror = "2"
+# The security catalog is stored as JSON.
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 # docs.rs documents every module, including the feature-gated `authn`.
 [package.metadata.docs.rs]
