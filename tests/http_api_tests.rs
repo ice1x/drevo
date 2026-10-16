@@ -2191,6 +2191,16 @@ async fn ui_query_history_module_serves_to_client() {
 }
 
 #[tokio::test]
+async fn ui_auth_module_serves_to_client() {
+    // The sign-in helpers (#634), unit-tested by auth.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/auth.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoAuth"));
+}
+
+#[tokio::test]
 async fn ui_report_module_serves_to_client() {
     // The "Report a problem" helpers (#552), unit-tested by report.test.js.
     let app = make_app();

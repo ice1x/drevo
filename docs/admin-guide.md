@@ -554,8 +554,17 @@ unknown user is `Neo.ClientError.General.InvalidArguments` (HTTP 400, 409 or 404
 
 ### Logging in
 
-Bolt clients must log in as one of these users, with a password or a session token (`bearer`
-scheme), unless the server runs with `DREVO_AUTH=none`:
+Bolt and HTTP clients must log in as one of these users, unless the server runs with
+`DREVO_AUTH=none`:
+
+- **Bolt**: the `HELLO` credentials, a password (`basic`) or a session token (`bearer`).
+- **HTTP**: `Authorization: Basic …` or `Bearer <session token>`, or the `drevo_session` cookie
+  that `POST /auth/login` sets for the Web UI, which then shows a sign-in screen. `/`, `/health`,
+  `/ready`, `/status` and the Web UI's own files stay open, so health checks keep working.
+  Refused requests get `401` (`429` while locked, `403` until a required password change).
+- Session tokens expire after 30 minutes unused or 12 hours in all.
+
+Either way:
 
 - A wrong password, an unknown user or a suspended user gets
   `Neo.ClientError.Security.Unauthorized` with the same message, and the connection closes.
@@ -567,7 +576,8 @@ scheme), unless the server runs with `DREVO_AUTH=none`:
 - `SHOW CURRENT USER` and `ALTER CURRENT USER` act on the logged-in user.
 - Changing a user's password, suspending or dropping the user ends their session tokens.
 
-The HTTP API does not ask for a login yet; keep port 8080 on a trusted network until it does.
+Credentials travel in clear text over plain HTTP and Bolt; put the server behind TLS or on a
+trusted network.
 
 TLS for Bolt is provided by the **`bolt-tls`** feature (pure-Rust rustls, no OpenSSL):
 

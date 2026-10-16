@@ -599,6 +599,35 @@ body {
 .cypher-table td.cell-relationship { color: var(--text-muted); }
 .results-list li.results-summary { cursor: pointer; color: var(--text-muted); }
 
+/* Sign-in (#634). */
+.sign-in-dialog { max-width: 24rem; }
+.sign-in-dialog form[hidden],
+.sign-in-dialog [hidden] { display: none; }
+.sign-in-dialog .storage-shrink { margin-top: 0.4rem; width: 100%; }
+.sign-in-actions { display: flex; gap: 0.5rem; }
+.sign-in-actions button { flex: 1; }
+.sign-in-msg { margin: 0 1.1rem 1rem; color: var(--danger); }
+.user-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.user-menu[hidden] { display: none; }
+.user-name { color: var(--text); font-weight: 600; }
+.user-action {
+  padding: 0.25rem 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.user-action:hover { border-color: var(--accent); }
+
 /* Node menu (right-click on a node). */
 .node-menu {
   position: absolute;

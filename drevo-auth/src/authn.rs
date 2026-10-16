@@ -95,6 +95,77 @@ impl Credentials {
     }
 }
 
+impl Credentials {
+    /// Credentials from an HTTP `Authorization` header value: `Basic
+    /// <base64 of user:password>` (the first `:` separates, so the password
+    /// may contain `:`) or `Bearer <session token>`. The scheme is
+    /// case-insensitive. `None` for any other or malformed value.
+    ///
+    /// ```
+    /// use drevo_auth::authn::Credentials;
+    ///
+    /// assert_eq!(
+    ///     Credentials::from_http_authorization("Basic YW5uOnMzY3JldA=="),
+    ///     Some(Credentials::Basic { username: "ann".into(), password: "s3cret".into() })
+    /// );
+    /// assert_eq!(
+    ///     Credentials::from_http_authorization("Bearer 6f1c"),
+    ///     Some(Credentials::Token("6f1c".into()))
+    /// );
+    /// ```
+    #[must_use]
+    pub fn from_http_authorization(value: &str) -> Option<Self> {
+        let (scheme, rest) = value.trim().split_once(char::is_whitespace)?;
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return None;
+        }
+        if scheme.eq_ignore_ascii_case("bearer") {
+            return Some(Credentials::Token(rest.to_string()));
+        }
+        if !scheme.eq_ignore_ascii_case("basic") {
+            return None;
+        }
+        let decoded = String::from_utf8(decode_base64(rest)?).ok()?;
+        let (username, password) = decoded.split_once(':')?;
+        if username.is_empty() {
+            return None;
+        }
+        Some(Credentials::Basic {
+            username: username.to_string(),
+            password: password.to_string(),
+        })
+    }
+}
+
+/// Decode standard base64 (`A–Z a–z 0–9 + /`), with or without `=` padding.
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    fn value(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes = input.trim_end_matches('=').as_bytes();
+    if bytes.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut acc = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            acc |= value(c)? << (18 - 6 * i);
+        }
+        let n = chunk.len() * 6 / 8;
+        out.extend_from_slice(&acc.to_be_bytes()[1..=n]);
+    }
+    Some(out)
+}
+
 /// Why credentials were refused. The message is safe to send to the client:
 /// it never contains a password or a token.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -283,6 +354,21 @@ pub(crate) fn verify_password(password: &str, stored_phc: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_decodes_every_length_and_refuses_bad_input() {
+        assert_eq!(decode_base64("").unwrap(), b"");
+        assert_eq!(decode_base64("YQ==").unwrap(), b"a");
+        assert_eq!(decode_base64("YWI=").unwrap(), b"ab");
+        assert_eq!(decode_base64("YWJj").unwrap(), b"abc");
+        assert_eq!(decode_base64("YWJjZA").unwrap(), b"abcd");
+        assert_eq!(decode_base64("+/+/").unwrap(), [0xfb, 0xff, 0xbf]);
+        assert!(
+            decode_base64("Y").is_none(),
+            "one leftover character is not base64"
+        );
+        assert!(decode_base64("YW-j").is_none());
+    }
 
     #[test]
     fn a_corrupt_stored_hash_never_verifies() {

@@ -8,6 +8,19 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **HTTP login and Web UI sign-in** (issue #634). With user management on,
+  every HTTP request outside `/`, `/health`, `/ready`, `/status`, the Web UI's
+  files and `POST /auth/login` needs `Authorization: Basic`, `Bearer <session
+  token>` or the `drevo_session` cookie (HttpOnly, SameSite=Strict), else
+  `401` with a `Bearer` challenge (no browser login box). `POST /auth/login`,
+  `POST /auth/logout` and `GET /auth/me` manage the session; the Web UI shows
+  a sign-in screen, the signed-in user with **Sign out** and **Change
+  password**, and the forced password change. A user who must change the
+  password reaches only that change (`403 CredentialsExpired`). drevo-auth:
+  `Credentials::from_http_authorization`.
+  - **Upgrading:** scripts calling the HTTP API (e.g. a restart script that
+    probes `/v1/embeddings`) need credentials too, or `DREVO_AUTH=none`.
+
 - **Bolt login** (issue #634). With user management on, a Bolt `HELLO` must
   log in as one of the server's users, with a password or a session token,
   unless `DREVO_AUTH=none`:

@@ -256,6 +256,71 @@ impl Security {
         }
     }
 
+    /// Log an HTTP request in from its `Authorization` header (`Basic` or
+    /// `Bearer`) or, failing that, the session token from its cookie.
+    ///
+    /// # Errors
+    ///
+    /// As [`login`](Self::login); no or malformed credentials are refused
+    /// with [`LOGIN_REFUSED`].
+    pub fn login_http(
+        &self,
+        authorization: Option<&str>,
+        cookie_token: Option<&str>,
+    ) -> Result<SignedIn, SecurityError> {
+        #[cfg(feature = "auth")]
+        {
+            use drevo_auth::authn::Credentials;
+            let refused = || SecurityError::new(SecurityErrorKind::Unauthenticated, LOGIN_REFUSED);
+            let credentials = match (authorization, cookie_token) {
+                (Some(header), _) => {
+                    Credentials::from_http_authorization(header).ok_or_else(refused)?
+                }
+                (None, Some(token)) => Credentials::Token(token.to_string()),
+                (None, None) => return Err(refused()),
+            };
+            match credentials {
+                Credentials::Basic { username, password } => {
+                    self.login(Some("basic"), Some(&username), Some(&password))
+                }
+                Credentials::Token(token) => self.login(Some("bearer"), None, Some(&token)),
+            }
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            let _ = (authorization, cookie_token);
+            Err(not_enabled())
+        }
+    }
+
+    /// Issue a session token for `name`, or `None` for an unknown or
+    /// suspended user, or without user management.
+    #[must_use]
+    pub fn issue_session(&self, name: &str) -> Option<String> {
+        #[cfg(feature = "auth")]
+        {
+            self.users.as_ref()?.issue_session(name)
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            let _ = name;
+            None
+        }
+    }
+
+    /// End a session; returns whether the token existed.
+    pub fn revoke_session(&self, token: &str) -> bool {
+        #[cfg(feature = "auth")]
+        {
+            self.users.as_ref().is_some_and(|u| u.revoke_session(token))
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            let _ = token;
+            false
+        }
+    }
+
     /// Whether user management is enabled.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
