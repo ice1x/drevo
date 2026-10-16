@@ -467,6 +467,34 @@ async fn ui_shows_request_progress_with_a_stop_button() {
     }
 }
 
+// Node menu (#630): a right-click on a node opens a menu whose Cypher comes
+// from the tested helpers.
+#[tokio::test]
+async fn ui_has_a_node_context_menu() {
+    let app = make_app();
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    assert!(
+        idx.contains("id=\"node-menu\""),
+        "index.html must have the node menu"
+    );
+    for action in ["expand", "focus", "query", "copy-cypher", "copy-id", "hide"] {
+        assert!(
+            idx.contains(&format!("data-action=\"{action}\"")),
+            "the node menu must offer {action}"
+        );
+    }
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    for needle in [
+        "\"cxttap\", \"node\"",
+        "DrevoQueryHistory.nodeQuery(",
+        "DrevoQueryHistory.neighboursQuery(",
+    ] {
+        assert!(app_js.contains(needle), "app.js must contain {needle}");
+    }
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

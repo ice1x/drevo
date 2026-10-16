@@ -1,7 +1,7 @@
 // drevo browser — pure helpers for the query editor: the per-browser query
 // history, the key that runs a query, the Ask (text-to-Cypher) request and
-// reply, and how long a request has run. DOM-free so they can be unit-tested
-// under `node --test` (see query_history.test.js).
+// reply, how long a request has run, and the node menu's queries. DOM-free so
+// they can be unit-tested under `node --test` (see query_history.test.js).
 //
 // UMD: attaches to the global `DrevoQueryHistory` in the browser (loaded
 // before app.js) and to `module.exports` under node's test runner.
@@ -98,9 +98,29 @@
     return `${Math.floor(t / 60000)}m ${String(seconds).padStart(2, "0")}s`;
   }
 
+  // A node id as Cypher text: a whole, non-negative number only, so the
+  // queries below can never carry anything else.
+  function idText(id) {
+    const n = typeof id === "string" && /^\d+$/.test(id) ? Number(id) : id;
+    if (!Number.isSafeInteger(n) || n < 0) throw new Error(`not a node id: ${id}`);
+    return String(n);
+  }
+
+  // The Cypher for one node, by id: `MATCH (n) WHERE id(n) = 42 RETURN n`.
+  function nodeQuery(id) {
+    return `MATCH (n) WHERE id(n) = ${idText(id)} RETURN n`;
+  }
+
+  // The Cypher for a node with its relationships and neighbours.
+  function neighboursQuery(id) {
+    return `MATCH (n)-[r]-(m) WHERE id(n) = ${idText(id)} RETURN n, r, m`;
+  }
+
   return {
     MAX_HISTORY,
     elapsedText,
+    nodeQuery,
+    neighboursQuery,
     pushQuery,
     stepHistory,
     parseHistory,

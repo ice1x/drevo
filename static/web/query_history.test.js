@@ -12,6 +12,8 @@ const {
   fromTextRequest,
   generatedCypher,
   elapsedText,
+  nodeQuery,
+  neighboursQuery,
   MAX_HISTORY,
 } = require("./query_history.js");
 
@@ -167,4 +169,25 @@ test("elapsedText shows minutes and two-digit seconds from a minute on", () => {
 test("elapsedText treats a negative or missing duration as zero", () => {
   assert.equal(elapsedText(-5), "0.0s");
   assert.equal(elapsedText(undefined), "0.0s");
+});
+
+// ── Node menu queries ────────────────────────────────────────────────
+
+test("nodeQuery matches one node by id", () => {
+  assert.equal(nodeQuery(42), "MATCH (n) WHERE id(n) = 42 RETURN n");
+});
+
+test("neighboursQuery returns the node, its relationships and neighbours", () => {
+  assert.equal(neighboursQuery(7), "MATCH (n)-[r]-(m) WHERE id(n) = 7 RETURN n, r, m");
+});
+
+test("the node queries accept a numeric id given as text", () => {
+  assert.equal(nodeQuery("42"), "MATCH (n) WHERE id(n) = 42 RETURN n");
+});
+
+test("the node queries refuse anything but a whole, non-negative id", () => {
+  for (const bad of [-1, 1.5, "1 OR 1=1", NaN, null]) {
+    assert.throws(() => nodeQuery(bad), /node id/);
+    assert.throws(() => neighboursQuery(bad), /node id/);
+  }
 });
