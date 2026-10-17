@@ -21,6 +21,14 @@
 //! `null` fits any column. Only `DoGet` (and an empty `Handshake`) are
 //! served; every other Flight call answers `UNIMPLEMENTED`. Errors use the
 //! same statuses as the gRPC API.
+//!
+//! When the server requires a login, `DoGet` needs an `authorization`
+//! header — `Basic <base64 of user:password>` or `Bearer <session token>` —
+//! as the gRPC API does. `Handshake` with such a header answers with a
+//! session token, both as the response payload and as an
+//! `authorization: Bearer <token>` header, so clients that log in once with
+//! a password (pyarrow's `authenticate_basic_token`) send only the token
+//! afterwards.
 
 #![cfg(feature = "arrow-flight")]
 // tonic's service trait returns `Result<_, tonic::Status>` by value.
@@ -44,6 +52,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 use crate::cypher::executor::{ExecError, ExecResult, Value};
 use crate::database_registry::DatabaseRegistry;
+use crate::security::Security;
 
 /// Rows per Arrow record batch.
 const ROWS_PER_BATCH: usize = 8192;
@@ -52,13 +61,24 @@ const ROWS_PER_BATCH: usize = 8192;
 #[derive(Clone)]
 pub struct DrevoFlight {
     registry: Arc<DatabaseRegistry>,
+    security: Security,
 }
 
 impl DrevoFlight {
-    /// Serve the databases in `registry`.
+    /// Serve the databases in `registry`, with no login.
     #[must_use]
     pub fn new(registry: Arc<DatabaseRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            security: Security::default(),
+        }
+    }
+
+    /// Log calls in against `security`'s users when it requires a login.
+    #[must_use]
+    pub fn with_security(mut self, security: Security) -> Self {
+        self.security = security;
+        self
     }
 
     /// The tonic service, ready for `Server::add_service`.
@@ -239,17 +259,39 @@ impl FlightService for DrevoFlight {
 
     async fn handshake(
         &self,
-        _request: Request<Streaming<HandshakeRequest>>,
+        request: Request<Streaming<HandshakeRequest>>,
     ) -> Result<Response<Self::HandshakeStream>, Status> {
-        // No authentication: an empty handshake, as on HTTP.
-        let out: BoxStream<'static, Result<HandshakeResponse, Status>> = stream::empty().boxed();
-        Ok(Response::new(out))
+        // Without a login requirement: an empty handshake, as on HTTP.
+        let Some(user) =
+            crate::rpc_login::require_login(&self.security, request.metadata()).await?
+        else {
+            let out: BoxStream<'static, Result<HandshakeResponse, Status>> =
+                stream::empty().boxed();
+            return Ok(Response::new(out));
+        };
+        let token = self
+            .security
+            .issue_session(&user.name)
+            .ok_or_else(|| Status::unauthenticated(crate::security::LOGIN_REFUSED))?;
+        let bearer = format!("Bearer {token}")
+            .parse()
+            .map_err(|_| Status::internal("a session token is not a valid header value"))?;
+        let reply = HandshakeResponse {
+            protocol_version: 0,
+            payload: token.into_bytes().into(),
+        };
+        let out: BoxStream<'static, Result<HandshakeResponse, Status>> =
+            stream::once(async move { Ok(reply) }).boxed();
+        let mut response = Response::new(out);
+        response.metadata_mut().insert("authorization", bearer);
+        Ok(response)
     }
 
     async fn do_get(
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
+        crate::rpc_login::require_login(&self.security, request.metadata()).await?;
         let TicketQuery {
             query,
             params,
@@ -358,7 +400,7 @@ fn unimplemented() -> Status {
 }
 
 /// Serve the Flight endpoint on an already-bound `listener` until `shutdown`
-/// resolves.
+/// resolves, with no login.
 ///
 /// # Errors
 /// The transport error if the server fails.
@@ -367,9 +409,28 @@ pub async fn serve(
     listener: tokio::net::TcpListener,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> Result<(), tonic::transport::Error> {
+    serve_with_security(registry, Security::default(), listener, shutdown).await
+}
+
+/// Serve the Flight endpoint on an already-bound `listener` until `shutdown`
+/// resolves, logging calls in against `security`'s users when it requires a
+/// login.
+///
+/// # Errors
+/// The transport error if the server fails.
+pub async fn serve_with_security(
+    registry: Arc<DatabaseRegistry>,
+    security: Security,
+    listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send,
+) -> Result<(), tonic::transport::Error> {
     let incoming = tonic::transport::server::TcpIncoming::from(listener);
     tonic::transport::Server::builder()
-        .add_service(DrevoFlight::new(registry).into_service())
+        .add_service(
+            DrevoFlight::new(registry)
+                .with_security(security)
+                .into_service(),
+        )
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await
 }

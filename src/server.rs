@@ -706,7 +706,7 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // Opt-in statement timeout (#547): every database, including ones created
     // later through the catalog, stops a statement past this limit.
     registry.set_statement_timeout(cfg.query_timeout);
-    // The server's users, shared by HTTP and Bolt (issue #633).
+    // The server's users, shared by HTTP, Bolt, gRPC and Flight (issue #633).
     let security = configure_security(&cfg)?;
     // Two-phase commit (#556): a prepared transaction blocks every write, so
     // one left waiting too long is reported at ERROR (and thus in the Web UI's
@@ -806,9 +806,15 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
             })?;
         tracing::info!(%grpc_addr, "grpc listening");
         let grpc_registry = std::sync::Arc::clone(&registry);
+        let grpc_security = security.clone();
         tokio::spawn(async move {
-            if let Err(err) =
-                crate::grpc::serve(grpc_registry, grpc_listener, shutdown_signal()).await
+            if let Err(err) = crate::grpc::serve_with_security(
+                grpc_registry,
+                grpc_security,
+                grpc_listener,
+                shutdown_signal(),
+            )
+            .await
             {
                 tracing::error!(error = %err, "grpc server stopped");
             }
@@ -828,9 +834,15 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                 })?;
         tracing::info!(%flight_addr, "arrow flight listening");
         let flight_registry = std::sync::Arc::clone(&registry);
+        let flight_security = security.clone();
         tokio::spawn(async move {
-            if let Err(err) =
-                crate::flight::serve(flight_registry, flight_listener, shutdown_signal()).await
+            if let Err(err) = crate::flight::serve_with_security(
+                flight_registry,
+                flight_security,
+                flight_listener,
+                shutdown_signal(),
+            )
+            .await
             {
                 tracing::error!(error = %err, "arrow flight server stopped");
             }
