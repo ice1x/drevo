@@ -23,7 +23,8 @@
 //! [`decide`] answers a [`Request`]: a privilege that covers it and is
 //! denied wins over any that grants it, and what nothing grants is refused.
 //! [`builtin_privileges`] gives the starting privileges of Neo4j's built-in
-//! roles ([`BUILTIN_ROLES`]).
+//! roles ([`BUILTIN_ROLES`]). A [`SecurityContext`] compiles a user's
+//! privileges once for a session and answers its checks from a cache.
 //!
 //! ```
 //! use drevo_auth::privileges::{decide, parse, Access, Action, Element, Op, Request};
@@ -54,11 +55,13 @@
 //! This module uses `std` only and builds for `wasm32-unknown-unknown`.
 
 mod builtin;
+mod context;
 mod decide;
 mod model;
 mod parse;
 
 pub use builtin::{builtin_privileges, BUILTIN_ROLES, PUBLIC};
+pub use context::SecurityContext;
 pub use decide::{decide, Decision, Element, Request};
 pub use model::{Access, Action, Entry, Level, Pattern, Privilege, Resource, Segment, Target};
 pub use parse::{parse, Command, Op, ParseError};

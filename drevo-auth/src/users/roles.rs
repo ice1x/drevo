@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use super::{AuthManager, ManageError};
 use crate::catalog::{HeldPrivilege, Role};
 use crate::privileges::{
-    decide, Access, Decision, Entry, Privilege, Request, BUILTIN_ROLES, PUBLIC,
+    decide, Access, Decision, Entry, Privilege, Request, SecurityContext, BUILTIN_ROLES, PUBLIC,
 };
 
 /// The longest role name, in characters.
@@ -341,6 +341,19 @@ impl AuthManager {
                 .map(|held| (held.access, &held.privilege));
             decide(held, request)
         })
+    }
+
+    /// The security context of `user`, from the privileges of the user's
+    /// roles, with `home` as the home database. An unknown user gets a
+    /// context that allows nothing.
+    #[must_use]
+    pub fn security_context(&self, user: &str, home: &str) -> SecurityContext {
+        let held: Vec<(Access, Privilege)> = self
+            .privileges(&PrivilegeFilter::User(user.to_string()))
+            .into_iter()
+            .map(|e| (e.access, e.privilege))
+            .collect();
+        SecurityContext::new(held, home)
     }
 
     /// Give the bootstrap user the `admin` role, when it exists.

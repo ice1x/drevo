@@ -8,6 +8,21 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`SecurityContext` in drevo-auth** (issue #636). A session's privileges
+  are compiled once from the user's roles, and each check is answered from a
+  cache:
+  - `can_access`, `can_traverse_node`, `can_traverse_relationship` and
+    `can_read_property`;
+  - `can_write` (create, delete, labels, properties), `can_database`,
+    `can_execute_procedure` / `can_execute_function` and `has_dbms`;
+  - `reads_everything` / `writes_everything`, so roles such as `reader` and
+    `editor` can skip filtering.
+
+  `SecurityContext::unrestricted()` checks nothing.
+  `AuthManager::security_context(user, home)` builds a user's context, and
+  `AuthManager::generation()` moves on with every change, so a cached
+  context can tell it is stale.
+
 - **Role and privilege commands** (issue #635). These are Cypher over HTTP and Bolt, in
   auto-commit mode:
   - roles: `CREATE ROLE … [IF NOT EXISTS] [AS COPY OF …]`, `DROP ROLE`,

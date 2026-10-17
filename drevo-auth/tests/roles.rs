@@ -489,3 +489,43 @@ fn a_catalog_from_before_roles_gives_its_users_the_admin_role() {
         serde_json::from_str(&fs::read_to_string(dir.file()).unwrap()).unwrap();
     assert_eq!(saved["format_version"], 2);
 }
+
+// ── Security contexts ────────────────────────────────────────────────
+
+#[test]
+fn a_users_security_context_holds_its_roles_privileges() {
+    let m = with_users();
+    m.grant_role("reader", "ann").unwrap();
+    let ann = m.security_context("ann", "tasks");
+    assert!(ann.reads_everything("tasks"));
+    assert!(!ann.writes_everything("tasks"));
+    let bob = m.security_context("bob", "tasks");
+    assert!(bob.can_access("tasks"), "PUBLIC reaches the home database");
+    assert!(!bob.can_access("erp"));
+    assert!(!bob.can_traverse_node("tasks", &["Task"]));
+    let nobody = m.security_context("nobody", "tasks");
+    assert!(!nobody.is_unrestricted());
+    assert!(
+        !nobody.can_access("tasks"),
+        "an unknown user may do nothing"
+    );
+}
+
+#[test]
+fn every_change_moves_the_generation_on() {
+    let m = with_users();
+    let g0 = m.generation();
+    m.grant_role("reader", "ann").unwrap();
+    let g1 = m.generation();
+    assert!(g1 > g0);
+    apply(&m, "DENY TRAVERSE ON GRAPH * NODES Secret TO reader");
+    assert!(m.generation() > g1);
+    // A change that changes nothing keeps it.
+    let g2 = m.generation();
+    m.grant_role("reader", "ann").unwrap();
+    assert_eq!(m.generation(), g2);
+    // A context built after the change sees it.
+    assert!(!m
+        .security_context("ann", "tasks")
+        .can_traverse_node("tasks", &["Secret"]));
+}
