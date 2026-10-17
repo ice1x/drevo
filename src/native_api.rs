@@ -293,6 +293,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             get(crate::web_ui::serve_transactions_view_js),
         )
         .route(
+            "/ui/backups_view.js",
+            get(crate::web_ui::serve_backups_view_js),
+        )
+        .route(
             "/ui/live_refresh.js",
             get(crate::web_ui::serve_live_refresh_js),
         )

@@ -2213,6 +2213,18 @@ async fn ui_transactions_view_module_serves_to_client() {
 }
 
 #[tokio::test]
+async fn ui_backups_view_module_serves_to_client() {
+    // The physical-backup helpers of the Storage panel, unit-tested by
+    // backups_view.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/backups_view.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoBackupsView"));
+    assert!(body.contains("/admin/backup"));
+}
+
+#[tokio::test]
 async fn ui_live_refresh_module_serves_to_client() {
     // The live-overview helpers, unit-tested by live_refresh.test.js.
     let app = make_app();

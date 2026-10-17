@@ -927,6 +927,8 @@ body {
   white-space: nowrap;
 }
 .storage-tx-table .tx-terminate { padding: 0.15rem 0.5rem; font-size: 0.8rem; }
+.storage-backup-actions { display: flex; gap: 0.5rem; margin: 0.5rem 0; }
+.storage-backup-actions .storage-refresh { margin-left: 0; }
 .storage-keyspaces {
   width: 100%;
   border-collapse: collapse;
