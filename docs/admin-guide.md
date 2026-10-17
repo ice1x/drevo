@@ -674,10 +674,22 @@ altogether, at no measurable cost. A role with denies costs about 1.6× on a fil
 privilege_bench`).
 
 Still not filtered: graph algorithms (`drevo.pagerank`, …) compute over the whole graph, and
-only their results are filtered; `db.labels()` / `db.propertyKeys()` list every name; the REST
-routes outside `/cypher` (`/nodes`, `/export/…`) serve unfiltered data. `MERGE` does not match
-a node the user cannot see, and so may create a second one; constraint checks still see all
-data.
+only their results are filtered; `db.labels()` / `db.propertyKeys()` list every name. `MERGE`
+does not match a node the user cannot see, and so may create a second one; constraint checks
+still see all data.
+
+The REST routes outside `/cypher` serve the graph as stored, so they need privileges under
+which filtering would change nothing (otherwise `403`, `Neo.ClientError.Security.Forbidden`):
+
+| Routes | Need |
+|---|---|
+| `GET /export/…`, `/nodes…`, `/edges`, `/facets`, `/paths/shortest`, `POST /search/fts` | read the whole graph (no graph denies, e.g. `reader`) |
+| `POST /nodes`, `/edges`, `/import/json` | read and write the whole graph (e.g. `editor`) |
+| `POST /databases`, `DELETE /databases/{name}` | `DATABASE MANAGEMENT` |
+| `/storage/…`, `/config/…`, `/transactions/prepared…`, `/problems`, `/report` | `ALL DBMS PRIVILEGES` (`admin`) |
+
+`/status`, `/auth/…`, `GET /databases`, `/metrics`, `/v1/embeddings` and the Web UI need only a
+login.
 
 A role change applies from the next statement. A server started with `DREVO_AUTH=none` checks
 nothing.

@@ -8,6 +8,20 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **REST routes need the privileges they bypass** (issue #636). With logins
+  required, the routes outside `/cypher` (which serve the graph unfiltered)
+  answer `403 Neo.ClientError.Security.Forbidden` unless:
+  - graph reads (`/export/…`, `/nodes…`, `/edges`, `/facets`,
+    `/paths/shortest`, `/search/fts`): the user reads the whole graph;
+  - REST writes and `/import/json`: the user reads and writes the whole
+    graph;
+  - creating or dropping a database: `DATABASE MANAGEMENT`;
+  - server administration (`/storage/…`, `/config/…`,
+    `/transactions/prepared…`, `/problems`, `/report`): `ALL DBMS
+    PRIVILEGES`.
+
+  The Web UI stops showing problem notifications to non-admins.
+
 - **Reads filter by privilege** (issue #636). As in Neo4j, a node the
   signed-in user may not traverse is not matched, expanded, counted
   (`count(*)` included), returned, or found by search, vector and memory
