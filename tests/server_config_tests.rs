@@ -499,3 +499,48 @@ fn tls_without_the_feature_is_a_startup_error() {
     assert!(matches!(err, ConfigError::InvalidTls { .. }), "{err}");
     assert!(err.to_string().contains("`bolt-tls` feature"), "{err}");
 }
+
+// ---------------------------------------------------------------------
+// DREVO_AUDIT_LOG / DREVO_AUDIT_QUERY_TEXT
+// ---------------------------------------------------------------------
+
+#[test]
+fn the_audit_log_is_off_unless_set() {
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert_eq!(cfg.audit_log, drevo::server::AuditLog::Off);
+    assert!(!cfg.audit_query_text);
+    let cfg = Config::from_env(getter(HashMap::from([("DREVO_AUDIT_LOG", "off")]))).unwrap();
+    assert_eq!(cfg.audit_log, drevo::server::AuditLog::Off);
+}
+
+#[cfg(feature = "auth")]
+#[test]
+fn the_audit_log_goes_to_stdout_or_a_file() {
+    let cfg = Config::from_env(getter(HashMap::from([("DREVO_AUDIT_LOG", "stdout")]))).unwrap();
+    assert_eq!(cfg.audit_log, drevo::server::AuditLog::Stdout);
+    let cfg = Config::from_env(getter(HashMap::from([
+        ("DREVO_AUDIT_LOG", "/var/log/drevo/audit.log"),
+        ("DREVO_AUDIT_QUERY_TEXT", "true"),
+    ])))
+    .unwrap();
+    assert_eq!(
+        cfg.audit_log,
+        drevo::server::AuditLog::File("/var/log/drevo/audit.log".into())
+    );
+    assert!(cfg.audit_query_text);
+}
+
+#[test]
+fn audit_query_text_must_be_a_switch() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_AUDIT_QUERY_TEXT", "maybe")])))
+        .expect_err("not a switch");
+    assert!(matches!(err, ConfigError::InvalidAudit { .. }), "{err}");
+}
+
+#[cfg(not(feature = "auth"))]
+#[test]
+fn an_audit_log_without_the_auth_feature_is_a_startup_error() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_AUDIT_LOG", "stdout")])))
+        .expect_err("not compiled in");
+    assert!(err.to_string().contains("`auth` feature"), "{err}");
+}

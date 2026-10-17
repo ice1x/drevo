@@ -8,6 +8,22 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Security audit log** (issue #637). `DREVO_AUDIT_LOG=off|stdout|<path>`
+  records the following, with time, user, client address, protocol, target,
+  outcome and reason:
+  - password logins, failed logins and lockouts;
+  - logouts;
+  - password changes;
+  - user, role and privilege changes;
+  - refusals for a missing privilege.
+
+  A file is written as JSON lines, readable by its owner only, rotated at
+  10 MiB with five old files kept. Events never carry a password or token.
+  `DREVO_AUDIT_QUERY_TEXT=true` adds a refused statement's text, but never
+  that of a user or role command. Failed logins and refusals also reach the
+  Web UI's problem feed. drevo-auth gains the `audit` module (`AuditEvent`,
+  `AuditSink`, `JsonLinesFile`, `Stdout`, `MemorySink`).
+
 - **REST routes need the privileges they bypass** (issue #636). With logins
   required, the routes outside `/cypher` (which serve the graph unfiltered)
   answer `403 Neo.ClientError.Security.Forbidden` unless:

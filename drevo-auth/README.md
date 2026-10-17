@@ -19,6 +19,10 @@ Authentication and role-based access control for Rust servers:
   Neo4j's default privileges.
   A `SecurityContext` compiles one user's privileges for a session and
   answers each check from a cache.
+- **Audit** (`audit`): security events of a fixed shape — logins, logouts,
+  password, user, role and privilege changes, refusals — with no field for
+  a password or token, written as JSON lines to a size-rotated file, to
+  stdout or to memory.
 
 It knows nothing about the network, so it fits any server: authenticate the
 connection, then ask the user's security context before each action.

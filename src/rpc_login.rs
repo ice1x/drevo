@@ -25,6 +25,7 @@ pub(crate) const PASSWORD_CHANGE_REQUIRED: &str =
 pub(crate) async fn require_login(
     security: &Security,
     metadata: &MetadataMap,
+    origin: &crate::security::Origin,
 ) -> Result<Option<SignedIn>, Status> {
     if !security.requires_login() {
         return Ok(None);
@@ -34,12 +35,14 @@ pub(crate) async fn require_login(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let security = security.clone();
+    let origin = origin.clone();
     // Checking a password hashes it with Argon2id: keep that off the async
     // workers.
-    let user = tokio::task::spawn_blocking(move || security.login_http(header.as_deref(), None))
-        .await
-        .map_err(|e| Status::internal(format!("login task failed: {e}")))?
-        .map_err(login_status)?;
+    let user =
+        tokio::task::spawn_blocking(move || security.login_http(&origin, header.as_deref(), None))
+            .await
+            .map_err(|e| Status::internal(format!("login task failed: {e}")))?
+            .map_err(login_status)?;
     if user.password_change_required {
         return Err(Status::permission_denied(PASSWORD_CHANGE_REQUIRED));
     }
@@ -93,9 +96,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_without_a_login_requirement_lets_every_call_in() {
-        let none = require_login(&Security::default(), &MetadataMap::new())
-            .await
-            .unwrap();
+        let none = require_login(
+            &Security::default(),
+            &MetadataMap::new(),
+            &crate::security::Origin::new("grpc"),
+        )
+        .await
+        .unwrap();
         assert!(none.is_none());
     }
 }

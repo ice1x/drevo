@@ -264,8 +264,12 @@ impl FlightService for DrevoFlight {
         request: Request<Streaming<HandshakeRequest>>,
     ) -> Result<Response<Self::HandshakeStream>, Status> {
         // Without a login requirement: an empty handshake, as on HTTP.
-        let Some(user) =
-            crate::rpc_login::require_login(&self.security, request.metadata()).await?
+        let Some(user) = crate::rpc_login::require_login(
+            &self.security,
+            request.metadata(),
+            &crate::security::Origin::new("flight").from_client(request.remote_addr()),
+        )
+        .await?
         else {
             let out: BoxStream<'static, Result<HandshakeResponse, Status>> =
                 stream::empty().boxed();
@@ -293,7 +297,13 @@ impl FlightService for DrevoFlight {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        let signed_in = crate::rpc_login::require_login(&self.security, request.metadata()).await?;
+        let remote = request.remote_addr();
+        let signed_in = crate::rpc_login::require_login(
+            &self.security,
+            request.metadata(),
+            &crate::security::Origin::new("flight").from_client(request.remote_addr()),
+        )
+        .await?;
         let TicketQuery {
             query,
             params,
@@ -327,6 +337,9 @@ impl FlightService for DrevoFlight {
             signed_in.as_ref().map(|u| u.name.as_str()),
             self.registry.default_name(),
         );
+        let audit_security = self.security.clone();
+        let audit_origin = crate::security::Origin::new("flight").from_client(remote);
+        let audit_user = signed_in.as_ref().map(|u| u.name.clone());
         let result = tokio::task::spawn_blocking(move || {
             let restriction =
                 context
@@ -336,6 +349,14 @@ impl FlightService for DrevoFlight {
                         database: &name,
                     });
             let r = service.execute_as(&ast, params, restriction);
+            if let Err(ExecError::Forbidden { message }) = &r {
+                audit_security.record_forbidden(
+                    &audit_origin,
+                    audit_user.as_deref(),
+                    message,
+                    Some(&query),
+                );
+            }
             if let Err(e) = &r {
                 crate::problems::note_exec_error("flight", &name, &query, e);
             }

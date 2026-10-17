@@ -478,6 +478,8 @@ pub struct Session<'a> {
     /// The user this connection logged in as, when the server requires a
     /// login.
     signed_in: Option<crate::security::SignedIn>,
+    /// The client's address, for the audit log.
+    client: Option<String>,
     /// How a `db` selector on `RUN` / `BEGIN` maps to a concrete service — a
     /// single-database session ignores it (embedded / sync entry points), a
     /// catalog-backed one resolves it against the shared registry (issue #523).
@@ -590,6 +592,7 @@ impl<'a> Session<'a> {
             resolver,
             security: crate::security::Security::default(),
             signed_in: None,
+            client: None,
         }
     }
 
@@ -598,6 +601,19 @@ impl<'a> Session<'a> {
     pub fn with_security(mut self, security: crate::security::Security) -> Self {
         self.security = security;
         self
+    }
+
+    /// Record `client` (the peer's `host:port`) as the connection's address in
+    /// audit events (#637).
+    #[must_use]
+    pub fn with_client(mut self, client: Option<impl ToString>) -> Self {
+        self.client = client.map(|c| c.to_string());
+        self
+    }
+
+    /// Where this connection's requests come from, for the audit log.
+    fn origin(&self) -> crate::security::Origin {
+        crate::security::Origin::new("bolt").from_client(self.client.as_ref())
     }
 
     /// Resolve a `db` selector to the concrete service a statement runs on.
@@ -740,6 +756,7 @@ impl<'a> Session<'a> {
             // The server's users (issue #634): log in with a password or a
             // session token, and remember who for the current-user commands.
             match self.security.login(
+                &self.origin(),
                 string_field(&extra, "scheme"),
                 string_field(&extra, "principal"),
                 string_field(&extra, "credentials"),
@@ -972,12 +989,16 @@ impl<'a> Session<'a> {
             if !(context.can_execute_procedure("drevo.tx.prepare")
                 && context.has_dbms(drevo_auth::privileges::Action::ExecuteAdminProcedures))
             {
+                let reason = "`drevo.tx.prepare` is an administration procedure and needs EXECUTE ADMIN PROCEDURES";
+                self.security.record_forbidden(
+                    &self.origin(),
+                    self.signed_in.as_ref().map(|u| u.name.as_str()),
+                    reason,
+                    None,
+                );
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
-                    metadata: failure_metadata(
-                        codes::FORBIDDEN,
-                        "`drevo.tx.prepare` is an administration procedure and needs EXECUTE ADMIN PROCEDURES",
-                    ),
+                    metadata: failure_metadata(codes::FORBIDDEN, reason),
                 }];
             }
         }
@@ -1156,6 +1177,14 @@ impl<'a> Session<'a> {
                     &query,
                     &e,
                 );
+                if let ExecError::Forbidden { message } = &e {
+                    self.security.record_forbidden(
+                        &self.origin(),
+                        self.signed_in.as_ref().map(|u| u.name.as_str()),
+                        message,
+                        Some(&query),
+                    );
+                }
                 self.state = State::Failed;
                 return vec![ServerMessage::Failure {
                     metadata: exec_error_metadata(&e),
@@ -1228,8 +1257,11 @@ impl<'a> Session<'a> {
             parsed,
             Ok(crate::cypher::security_admin::SecurityCommand::AlterCurrentUserPassword { .. })
         );
-        let outcome =
-            parsed.and_then(|command| self.security.execute(&command, current.as_deref(), &lookup));
+        let origin = self.origin();
+        let outcome = parsed.and_then(|command| {
+            self.security
+                .execute_from(&origin, &command, current.as_deref(), &lookup)
+        });
         let result = match outcome {
             Ok(result) => {
                 if changes_own_password {

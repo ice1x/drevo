@@ -253,13 +253,19 @@ pub async fn accept_and_run_session_tls_with_security(
     registry: &Arc<crate::database_registry::DatabaseRegistry>,
     security: crate::security::Security,
 ) -> BoltResult<()> {
+    let client = socket.peer_addr().ok();
     let accepted = accept_handshake_tls(socket, acceptor).await?;
     if accepted.negotiated.is_none() {
         return Ok(());
     }
     let mut stream = accepted.stream;
-    crate::bolt::listener::run_session_on_durable_with_security(&mut stream, registry, security)
-        .await
+    crate::bolt::listener::run_session_on_durable_with_security(
+        &mut stream,
+        registry,
+        security,
+        client,
+    )
+    .await
 }
 
 #[cfg(test)]

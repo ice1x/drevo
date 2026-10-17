@@ -862,8 +862,10 @@ async fn status(State(state): State<NativeApiState>) -> Json<serde_json::Value> 
 async fn cypher(
     State(state): State<NativeApiState>,
     signed_in: Option<axum::Extension<crate::security::SignedIn>>,
+    origin: Option<axum::Extension<crate::security::Origin>>,
     body: Result<Json<CypherRequest>, JsonRejection>,
 ) -> Result<Json<CypherResponse>, ApiError> {
+    let origin = origin.map_or_else(|| crate::security::Origin::new("http"), |o| o.0);
     let Json(CypherRequest { query, params }) = body?;
     let query =
         query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
@@ -886,15 +888,21 @@ async fn cypher(
     }
     if let Some(parsed) = parsed {
         let current = signed_in.as_ref().map(|u| u.name.as_str());
-        return run_security_command(&state, parsed, &params, current).map(Json);
+        return run_security_command(&state, parsed, &params, current, &origin).map(Json);
     }
     // The signed-in user's privileges (#636); `None` checks nothing.
     let context = state.security.context_for(
         signed_in.as_ref().map(|u| u.name.as_str()),
         state.registry.default_name(),
     );
+    let caller = Caller {
+        security: &state.security,
+        origin: &origin,
+        user: signed_in.as_ref().map(|u| u.name.as_str()),
+        context: context.as_ref(),
+    };
     if let Some(command) = crate::cypher::admin::parse(&query) {
-        return handle_admin_cypher(&state, command, params, context.as_ref()).map(Json);
+        return handle_admin_cypher(&state, command, params, &caller).map(Json);
     }
 
     Ok(Json(run_blocking(|| {
@@ -903,7 +911,7 @@ async fn cypher(
             state.registry.default_name(),
             &query,
             params,
-            context.as_ref(),
+            &caller,
         )
     })?))
 }
@@ -933,13 +941,37 @@ pub(crate) fn run_blocking<R>(work: impl FnOnce() -> R) -> R {
 /// Parse and execute `query` (with JSON `params`) against `service`, projecting
 /// the result into the HTTP [`CypherResponse`]. The single execution path for
 /// both the default database and a `USE`-selected one.
+/// The address an HTTP connection comes from, as `axum`'s connect info, for
+/// the audit log (#637). One type for plain and TLS listeners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientAddr(pub std::net::SocketAddr);
+
+impl
+    axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>>
+    for ClientAddr
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
+/// Who sends an HTTP statement: for privilege checks and the audit log.
+struct Caller<'a> {
+    security: &'a crate::security::Security,
+    origin: &'a crate::security::Origin,
+    user: Option<&'a str>,
+    /// The user's privileges; `None` checks nothing.
+    context: Option<&'a drevo_auth::privileges::SecurityContext>,
+}
+
 fn run_cypher_on(
     service: &NativeService,
     database: &str,
     query: &str,
     params: serde_json::Map<String, serde_json::Value>,
-    context: Option<&drevo_auth::privileges::SecurityContext>,
+    caller: &Caller<'_>,
 ) -> Result<CypherResponse, ApiError> {
+    let context = caller.context;
     let params = params
         .into_iter()
         .map(|(k, v)| (k, json_to_cypher_value(v)))
@@ -966,7 +998,12 @@ fn run_cypher_on(
                 reason, ..
             } => unresolved_error(reason, format!("Cypher execution error: {e}")),
             // A missing privilege (#636): 403 with Neo4j's code.
-            crate::cypher::executor::ExecError::Forbidden { message } => forbidden(message),
+            crate::cypher::executor::ExecError::Forbidden { message } => {
+                caller
+                    .security
+                    .record_forbidden(caller.origin, caller.user, &message, Some(query));
+                forbidden(message)
+            }
             e => ApiError::BadRequest(format!("Cypher execution error: {e}")),
         }
     })?;
@@ -1192,9 +1229,10 @@ fn handle_admin_cypher(
     state: &NativeApiState,
     command: crate::cypher::admin::AdminCommand,
     params: serde_json::Map<String, serde_json::Value>,
-    context: Option<&drevo_auth::privileges::SecurityContext>,
+    caller: &Caller<'_>,
 ) -> Result<CypherResponse, ApiError> {
     use crate::cypher::admin::AdminCommand;
+    let context = caller.context;
     match command {
         AdminCommand::ShowDatabases => Ok(show_databases_response(state, context)),
         AdminCommand::CreateDatabase { .. }
@@ -1202,9 +1240,11 @@ fn handle_admin_cypher(
                 !c.has_dbms(drevo_auth::privileges::Action::DatabaseManagement)
             }) =>
         {
-            Err(forbidden(
-                "CREATE DATABASE needs DATABASE MANAGEMENT".to_string(),
-            ))
+            let reason = "CREATE DATABASE needs DATABASE MANAGEMENT";
+            caller
+                .security
+                .record_forbidden(caller.origin, caller.user, reason, None);
+            Err(forbidden(reason.to_string()))
         }
         AdminCommand::CreateDatabase {
             name,
@@ -1222,7 +1262,7 @@ fn handle_admin_cypher(
                 .ok_or_else(|| ApiError::NotFound(format!("database '{name}' not found")))?;
             match query {
                 Some(inner) => {
-                    run_blocking(|| run_cypher_on(&service, &name, &inner, params, context))
+                    run_blocking(|| run_cypher_on(&service, &name, &inner, params, caller))
                 }
                 None => Ok(empty_cypher_response()),
             }
@@ -1237,6 +1277,7 @@ fn run_security_command(
     parsed: Result<crate::cypher::security_admin::SecurityCommand, String>,
     params: &serde_json::Map<String, serde_json::Value>,
     current_user: Option<&str>,
+    origin: &crate::security::Origin,
 ) -> Result<CypherResponse, ApiError> {
     use crate::security::{ParamValue, SecurityError};
     let lookup = |name: &str| {
@@ -1245,9 +1286,11 @@ fn run_security_command(
             _ => ParamValue::Other,
         })
     };
-    let outcome = parsed
-        .map_err(SecurityError::syntax)
-        .and_then(|command| state.security.execute(&command, current_user, &lookup));
+    let outcome = parsed.map_err(SecurityError::syntax).and_then(|command| {
+        state
+            .security
+            .execute_from(origin, &command, current_user, &lookup)
+    });
     match outcome {
         Ok(result) => Ok(exec_result_to_response(result)),
         Err(e) => Err(security_error(e)),
@@ -1317,6 +1360,14 @@ async fn require_login(
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    // Where the request comes from, for the audit log (#637); the handlers
+    // read it from the request's extensions.
+    let origin = crate::security::Origin::new("http").from_client(
+        req.extensions()
+            .get::<axum::extract::ConnectInfo<ClientAddr>>()
+            .map(|c| c.0 .0),
+    );
+    req.extensions_mut().insert(origin.clone());
     if !state.security.requires_login() || is_open_path(req.method(), req.uri().path()) {
         return next.run(req).await;
     }
@@ -1328,7 +1379,7 @@ async fn require_login(
     let cookie = session_cookie(req.headers());
     let user = match state
         .security
-        .login_http(authorization.as_deref(), cookie.as_deref())
+        .login_http(&origin, authorization.as_deref(), cookie.as_deref())
     {
         Ok(user) => user,
         Err(e) => {
@@ -1350,6 +1401,9 @@ async fn require_login(
         return credentials_expired().into_response();
     }
     if let Some(refused) = refuse_route(&state, req.method(), path, &user.name) {
+        state
+            .security
+            .record_forbidden(&origin, Some(&user.name), &refused, None);
         return forbidden(refused).into_response();
     }
     req.extensions_mut().insert(user);
@@ -1451,13 +1505,15 @@ struct LoginRequest {
 /// as the Web UI's `drevo_session` cookie (HttpOnly, SameSite=Strict).
 async fn auth_login(
     State(state): State<NativeApiState>,
+    origin: Option<axum::Extension<crate::security::Origin>>,
     body: Result<Json<LoginRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Json(LoginRequest { username, password }) = body?;
     let security = state.security.clone();
+    let origin = origin.map_or_else(|| crate::security::Origin::new("http"), |o| o.0);
     let (user, token) = run_blocking(move || {
         let user = security
-            .login(Some("basic"), Some(&username), Some(&password))
+            .login(&origin, Some("basic"), Some(&username), Some(&password))
             .map_err(security_error)?;
         let token = security.issue_session(&user.name).ok_or_else(|| {
             security_error(crate::security::SecurityError {
@@ -1488,8 +1544,14 @@ async fn auth_login(
 /// clear the cookie.
 async fn auth_logout(
     State(state): State<NativeApiState>,
+    origin: Option<axum::Extension<crate::security::Origin>>,
+    signed_in: Option<axum::Extension<crate::security::SignedIn>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    if let Some(axum::Extension(user)) = &signed_in {
+        let origin = origin.map_or_else(|| crate::security::Origin::new("http"), |o| o.0);
+        state.security.record_logout(&origin, &user.name);
+    }
     let bearer = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())

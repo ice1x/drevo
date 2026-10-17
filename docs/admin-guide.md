@@ -44,6 +44,8 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
 | `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
 | `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor` or `msgpack`. See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
+| `DREVO_AUDIT_LOG` | `off` | Security audit log: `off`, `stdout`, or a file path. See [Audit log](#audit-log). Needs the `auth` feature. |
+| `DREVO_AUDIT_QUERY_TEXT` | `false` | Add a refused statement's text to its audit event. |
 | `DREVO_BOLT_PORT` | unset (off) | Serve Bolt on this port, same host as HTTP (Neo4j drivers, `cypher-shell`). |
 | `DREVO_TLS_CERT` | unset (off) | PEM certificate chain, leaf first. Together with `DREVO_TLS_KEY` it turns on TLS: HTTP is served as HTTPS and Bolt as `bolt+s://`. See [TLS](#tls). Setting only one of the pair, or a build without the `bolt-tls` feature, is rejected at startup. |
 | `DREVO_TLS_KEY` | unset (off) | PEM private key for `DREVO_TLS_CERT` (PKCS#8, PKCS#1 RSA or SEC1 EC). |
@@ -728,6 +730,31 @@ Either way:
 
 Without TLS, passwords and session tokens travel in clear text: turn TLS on (below) or keep
 the server on a trusted network.
+
+### Audit log
+
+`DREVO_AUDIT_LOG` records security events: `off` (the default), `stdout`, or a file path. A
+file gets one JSON object per line, readable by its owner only. It rotates at 10 MiB, and
+five old files are kept (`audit.log.1` … `audit.log.5`).
+
+```json
+{"time":"2026-10-17T09:12:44.031Z","event":"login_failed","outcome":"failure","user":"ann","client":"10.0.0.7:51234","surface":"bolt","reason":"invalid principal or credentials"}
+```
+
+| `event` | When |
+|---|---|
+| `login_succeeded` | a password login (a reused session token is not logged again) |
+| `login_failed`, `login_locked` | a refused login; a user locked after failed logins |
+| `logout` | `POST /auth/logout` |
+| `password_changed` | `ALTER USER … SET PASSWORD`, `ALTER CURRENT USER SET PASSWORD` |
+| `user_changed`, `role_changed`, `privilege_changed` | the other user, role and privilege commands; `target` names what changed |
+| `forbidden` | a statement, command or route refused for a missing privilege |
+
+`surface` is `bolt`, `http`, `grpc` or `flight`, and `user` is who acted. An event never
+carries a password or token. Set `DREVO_AUDIT_QUERY_TEXT=true` to add the text of a refused
+statement as `query`; the text of user and role commands is never recorded. Failed logins,
+lockouts and refusals are also logged at WARN, so they show in the Web UI's problem feed
+(for admins) even without an audit log.
 
 ### TLS
 
