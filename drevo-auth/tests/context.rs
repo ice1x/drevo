@@ -191,3 +191,23 @@ fn the_context_is_cheap_to_share_across_threads() {
     fn send_sync<T: Send + Sync + Clone>() {}
     send_sync::<SecurityContext>();
 }
+
+#[test]
+fn transaction_management_covers_the_users_it_names() {
+    let admin = role("admin");
+    assert!(admin.can_manage_transactions("tasks", "ann"));
+    assert!(admin.can_manage_transactions("erp", "bob"));
+    let reader = role("reader");
+    assert!(!reader.can_manage_transactions("tasks", "ann"));
+    let qa = holding(&["GRANT TRANSACTION MANAGEMENT (ann) ON DATABASE tasks TO qa"]);
+    assert!(qa.can_manage_transactions("tasks", "ann"));
+    assert!(!qa.can_manage_transactions("tasks", "bob"));
+    assert!(!qa.can_manage_transactions("erp", "ann"));
+    let home = holding(&[
+        "GRANT TRANSACTION MANAGEMENT (*) ON HOME DATABASE TO qa",
+        "DENY TRANSACTION MANAGEMENT (root) ON HOME DATABASE TO qa",
+    ]);
+    assert!(home.can_manage_transactions("tasks", "ann"));
+    assert!(!home.can_manage_transactions("tasks", "root"), "deny wins");
+    assert!(SecurityContext::unrestricted().can_manage_transactions("any", "anyone"));
+}

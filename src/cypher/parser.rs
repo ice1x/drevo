@@ -476,6 +476,8 @@ impl Parser {
             _ if self.is_soft_keyword("SEARCH") => self.parse_search(),
             // `SHOW INDEXES` / `SHOW CONSTRAINTS` (issue #532), also a soft keyword.
             _ if self.is_soft_keyword("SHOW") => self.parse_show(),
+            // `TERMINATE TRANSACTIONS` (issue #639), a soft keyword too.
+            _ if self.is_soft_keyword("TERMINATE") => self.parse_terminate(),
             // `DROP INDEX` (issue #578), a soft keyword too.
             _ if self.is_soft_keyword("DROP") => self.parse_drop(),
             _ => Err(ParseError::Expected {
@@ -1088,7 +1090,14 @@ impl Parser {
     fn parse_show(&mut self) -> ParseResult<Clause> {
         let span = self.peek_span();
         self.consume(); // SHOW
-                        // Type words, joined: `SHOW NODE KEY CONSTRAINTS` filters by "NODE KEY".
+                        // `SHOW TRANSACTION[S] [ids]` (issue #639).
+        if self.is_soft_keyword("TRANSACTION") || self.is_soft_keyword("TRANSACTIONS") {
+            self.consume();
+            let ids = self.parse_transaction_ids()?;
+            let ids = Expression::List { items: ids, span };
+            return self.finish_show_call("dbms", "showTransactions", vec![ids], span);
+        }
+        // Type words, joined: `SHOW NODE KEY CONSTRAINTS` filters by "NODE KEY".
         let mut words: Vec<String> = Vec::new();
         let procedure = loop {
             let word = match self.peek_kind() {
@@ -1115,7 +1124,71 @@ impl Parser {
         } else {
             words.join(" ")
         };
+        self.finish_show_call(
+            "db",
+            procedure,
+            vec![Expression::String(filter, span)],
+            span,
+        )
+    }
 
+    /// `TERMINATE TRANSACTION[S] ids [YIELD …] [WHERE …]` (issue #639), run
+    /// as `CALL dbms.terminateTransactions(ids…)`.
+    fn parse_terminate(&mut self) -> ParseResult<Clause> {
+        let span = self.peek_span();
+        self.consume(); // TERMINATE
+        if self.is_soft_keyword("TRANSACTION") || self.is_soft_keyword("TRANSACTIONS") {
+            self.consume();
+        } else {
+            return Err(ParseError::Expected {
+                expected: "TRANSACTIONS after TERMINATE".to_string(),
+                found: format!("{}", self.peek_kind()),
+                span: self.peek_span(),
+            });
+        }
+        let ids = self.parse_transaction_ids()?;
+        if ids.is_empty() {
+            return Err(ParseError::Expected {
+                expected: "a transaction id after TERMINATE TRANSACTIONS".to_string(),
+                found: format!("{}", self.peek_kind()),
+                span: self.peek_span(),
+            });
+        }
+        let ids = Expression::List { items: ids, span };
+        self.finish_show_call("dbms", "terminateTransactions", vec![ids], span)
+    }
+
+    /// The transaction ids after `SHOW` / `TERMINATE TRANSACTIONS`: none, or
+    /// comma-separated expressions, each a string or a list of strings
+    /// (`'neo4j-transaction-1', 'neo4j-transaction-2'`, `$ids`).
+    fn parse_transaction_ids(&mut self) -> ParseResult<Vec<Expression>> {
+        let starts_id = |kind: &TokenKind| {
+            matches!(
+                kind,
+                TokenKind::String(_) | TokenKind::Parameter(_) | TokenKind::LBracket
+            )
+        };
+        let mut ids = Vec::new();
+        if !starts_id(self.peek_kind()) {
+            return Ok(ids);
+        }
+        ids.push(self.parse_expression()?);
+        while matches!(self.peek_kind(), TokenKind::Comma) {
+            self.consume();
+            ids.push(self.parse_expression()?);
+        }
+        Ok(ids)
+    }
+
+    /// The `[YIELD …] [WHERE …]` tail of a `SHOW`-style command, and the
+    /// procedure call it becomes.
+    fn finish_show_call(
+        &mut self,
+        namespace: &str,
+        procedure: &str,
+        args: Vec<Expression>,
+        span: Span,
+    ) -> ParseResult<Clause> {
         let (yields, where_clause) = if matches!(self.peek_kind(), TokenKind::Yield) {
             self.consume(); // YIELD
             let items = if matches!(self.peek_kind(), TokenKind::Star) {
@@ -1144,8 +1217,8 @@ impl Parser {
         };
 
         Ok(Clause::Call(CallClause {
-            name: vec!["db".to_string(), procedure.to_string()],
-            args: vec![Expression::String(filter, span)],
+            name: vec![namespace.to_string(), procedure.to_string()],
+            args,
             yields,
             where_clause,
             span,

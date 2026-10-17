@@ -155,6 +155,10 @@ pub mod security;
 /// `embeddings-proxy`.
 #[cfg(feature = "http")]
 pub mod text2cypher;
+/// The running statements and open transactions, for `SHOW TRANSACTIONS` and
+/// `TERMINATE TRANSACTIONS`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod transactions;
 /// Compressed-Sparse-Row adjacency snapshot ([`csr::CsrAdjacency`]) — the
 /// cache-friendly, lock-free substrate for whole-graph parallel scans and
 /// algorithms (issue #382, Phase 8). Re-exported from [`drevo-core`](drevo_core).

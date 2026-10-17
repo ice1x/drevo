@@ -8,6 +8,27 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`SHOW TRANSACTIONS` and `TERMINATE TRANSACTIONS`** (issue #639).
+  - The server lists every running statement and open explicit
+    transaction, on every database, under Neo4j's ids
+    (`drevo-transaction-42`). Each entry shows who runs it (user, client,
+    protocol), the current query, and its start and elapsed time.
+  - `TERMINATE TRANSACTIONS 'id', …` stops a statement at its next
+    cancellation check with `Neo.ClientError.Transaction.Terminated`.
+    An explicit transaction refuses its next statement and its commit, and
+    is rolled back.
+  - Over Bolt, HTTP, gRPC and Arrow Flight.
+  - With logins required, users manage their own; `TRANSACTION MANAGEMENT`
+    covers others'.
+
+### Fixed
+
+- **A long statement right after a write no longer holds up every other
+  statement.** The first statement to see the indexes behind the graph
+  brought them up to date and then ran under the same exclusive lock, so
+  every other query waited for it. It now releases the lock before
+  running.
+
 - **Sign in with an identity provider** (issue #638, feature `oidc`, in the
   Docker image). With `DREVO_OIDC_ISSUER` and `DREVO_OIDC_AUDIENCE` set, the
   server accepts an OpenID Connect access token where it accepts a password:

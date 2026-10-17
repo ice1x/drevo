@@ -979,33 +979,44 @@ fn run_cypher_on(
         .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
     let restriction =
         context.map(|context| crate::cypher::executor::Restriction { context, database });
-    let result = service.execute_as(&ast, params, restriction).map_err(|e| {
-        crate::problems::note_exec_error("http", database, query, &e);
-        match e {
-            // Writes paused by a prepared two-phase-commit transaction (#556)
-            // are a retryable 503, not a client error.
-            crate::cypher::executor::ExecError::Storage(
-                err @ crate::error::DrevoError::PreparedTransactionPending(_),
-            ) => ApiError::Db(err),
-            // A declared constraint refused the write (#604): 409 with its code.
-            crate::cypher::executor::ExecError::Storage(
-                err @ crate::error::DrevoError::ConstraintViolation { .. },
-            ) => ApiError::Db(err),
-            // `drevo.tx.*` on an unknown / heuristically rolled-back gid
-            // (#590): the same status and code as the resolve routes.
-            crate::cypher::executor::ExecError::PreparedTransactionUnresolved {
-                reason, ..
-            } => unresolved_error(reason, format!("Cypher execution error: {e}")),
-            // A missing privilege (#636): 403 with Neo4j's code.
-            crate::cypher::executor::ExecError::Forbidden { message } => {
-                caller
-                    .security
-                    .record_forbidden(caller.origin, caller.user, &message, Some(query));
-                forbidden(message)
-            }
-            e => ApiError::BadRequest(format!("Cypher execution error: {e}")),
-        }
-    })?;
+    let who = crate::transactions::Caller {
+        surface: caller.origin.surface,
+        client: caller.origin.client.clone(),
+        user: caller.user.map(str::to_string),
+    };
+    let result =
+        crate::transactions::scope(who, query, || service.execute_as(&ast, params, restriction))
+            .map_err(|e| {
+                crate::problems::note_exec_error("http", database, query, &e);
+                match e {
+                    // Writes paused by a prepared two-phase-commit transaction (#556)
+                    // are a retryable 503, not a client error.
+                    crate::cypher::executor::ExecError::Storage(
+                        err @ crate::error::DrevoError::PreparedTransactionPending(_),
+                    ) => ApiError::Db(err),
+                    // A declared constraint refused the write (#604): 409 with its code.
+                    crate::cypher::executor::ExecError::Storage(
+                        err @ crate::error::DrevoError::ConstraintViolation { .. },
+                    ) => ApiError::Db(err),
+                    // `drevo.tx.*` on an unknown / heuristically rolled-back gid
+                    // (#590): the same status and code as the resolve routes.
+                    crate::cypher::executor::ExecError::PreparedTransactionUnresolved {
+                        reason,
+                        ..
+                    } => unresolved_error(reason, format!("Cypher execution error: {e}")),
+                    // A missing privilege (#636): 403 with Neo4j's code.
+                    crate::cypher::executor::ExecError::Forbidden { message } => {
+                        caller.security.record_forbidden(
+                            caller.origin,
+                            caller.user,
+                            &message,
+                            Some(query),
+                        );
+                        forbidden(message)
+                    }
+                    e => ApiError::BadRequest(format!("Cypher execution error: {e}")),
+                }
+            })?;
     Ok(exec_result_to_response(result))
 }
 

@@ -1461,6 +1461,56 @@ undone by the caller's own rollback, so inside an explicit transaction they
 fail with `Neo.ClientError.Transaction.ForbiddenDueToTransactionType` (Python:
 `CypherError`), and the transaction is rolled back.
 
+### Running transactions
+
+`SHOW TRANSACTIONS` lists what runs now on every database of the server: each
+running statement, and each open explicit transaction, with Neo4j's columns:
+
+- `database`, `transactionId` (`<database>-transaction-<n>`), `username`,
+  `clientAddress`;
+- `currentQuery` (null for an explicit transaction between statements);
+- `startTime` (ISO 8601, UTC), `elapsedTime` (ISO 8601 duration), `status`
+  (`Running`, `Idle` or `Terminated`);
+- `protocol` (`bolt`, `http`, `grpc` or `flight`), `isExplicit`,
+  `elapsedTimeMillis`, `currentQueryElapsedTimeMillis`.
+
+The statement itself is listed too.
+
+```cypher
+SHOW TRANSACTIONS
+YIELD transactionId, username, currentQuery, elapsedTimeMillis
+WHERE elapsedTimeMillis > 10000
+RETURN transactionId, username, currentQuery
+```
+
+`TERMINATE TRANSACTIONS` stops them by id: a string, several, or a list
+parameter.
+
+```cypher
+TERMINATE TRANSACTIONS 'drevo-transaction-42', 'drevo-transaction-43'
+```
+
+It answers one row per id: `transactionId`, `username` and `message`
+(`Transaction terminated.` or `Transaction not found.`).
+
+- A running statement stops at its next cancellation check, like a statement
+  over the timeout. Its client gets `Neo.ClientError.Transaction.Terminated`,
+  which drivers do not retry.
+- An explicit transaction refuses its next statement and its commit with the
+  same code, and is rolled back: none of its writes stay.
+- An auto-commit statement keeps the writes it made before it stopped, as with
+  the statement timeout.
+
+With logins required, users see and stop their own transactions. Someone
+else's needs `TRANSACTION MANAGEMENT` for that user on that database, which
+`admin` holds:
+
+```
+GRANT TRANSACTION MANAGEMENT (*) ON DATABASE * TO ops
+```
+
+Without it, another user's transaction is not listed and reads as not found.
+
 ### Semantic-index control plane (#251, Phase 21)
 
 `CALL drevo.semantic.register(label, text_property, embedding_property, mode)`

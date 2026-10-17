@@ -347,7 +347,14 @@ impl FlightService for DrevoFlight {
                         context,
                         database: &name,
                     });
-            let r = service.execute_as(&ast, params, restriction);
+            let who = crate::transactions::Caller {
+                surface: audit_origin.surface,
+                client: audit_origin.client.clone(),
+                user: audit_user.clone(),
+            };
+            let r = crate::transactions::scope(who, &query, || {
+                service.execute_as(&ast, params, restriction)
+            });
             if let Err(ExecError::Forbidden { message }) = &r {
                 audit_security.record_forbidden(
                     &audit_origin,

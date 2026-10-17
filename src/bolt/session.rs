@@ -390,6 +390,9 @@ mod codes {
     /// A statement ran past the configured statement timeout (#547) — the
     /// code Neo4j drivers already recognise for a timed-out transaction.
     pub const TIMED_OUT: &str = "Neo.ClientError.Transaction.TransactionTimedOut";
+    /// The statement or its transaction was stopped by `TERMINATE
+    /// TRANSACTIONS`. A client error, so drivers do not retry it.
+    pub const TERMINATED: &str = "Neo.ClientError.Transaction.Terminated";
     /// Returned when a `HELLO` carries missing / wrong / unsupported
     /// authentication credentials and the session is bound to an
     /// [`Authenticator`](crate::bolt::auth::Authenticator). Phase 11
@@ -614,6 +617,15 @@ impl<'a> Session<'a> {
     /// Where this connection's requests come from, for the audit log.
     fn origin(&self) -> crate::security::Origin {
         crate::security::Origin::new("bolt").from_client(self.client.as_ref())
+    }
+
+    /// Who runs this session's statements, for `SHOW TRANSACTIONS` (#639).
+    fn caller(&self) -> crate::transactions::Caller {
+        crate::transactions::Caller {
+            surface: "bolt",
+            client: self.client.as_ref().map(ToString::to_string),
+            user: self.signed_in.as_ref().map(|u| u.name.clone()),
+        }
     }
 
     /// Resolve a `db` selector to the concrete service a statement runs on.
@@ -853,7 +865,7 @@ impl<'a> Session<'a> {
         // each open their own instead of one getting `transaction already
         // active`. Nesting on a *single* connection is still rejected above by
         // the `state != Ready` guard.
-        let id = service.begin_tx();
+        let id = crate::transactions::scope(self.caller(), "", || service.begin_tx());
         let database = self.database_name(extract_db(&extra));
         self.native_tx = Some(ActiveTx {
             service,
@@ -894,6 +906,17 @@ impl<'a> Session<'a> {
                 metadata: failure_metadata(codes::STORAGE, "COMMIT without an active transaction"),
             }];
         };
+        // Terminated by `TERMINATE TRANSACTIONS` (#639): rolled back instead.
+        if service.tx_terminated(id) {
+            service.rollback_tx(id);
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::TERMINATED,
+                    "the transaction has been terminated",
+                ),
+            }];
+        }
         match service.commit_tx(id) {
             Ok(()) => {
                 self.state = State::Ready;
@@ -1006,6 +1029,17 @@ impl<'a> Session<'a> {
                 metadata: failure_metadata(codes::STORAGE, "no open transaction to prepare"),
             }];
         };
+        // A terminated transaction (#639) is rolled back, never prepared.
+        if service.tx_terminated(id) {
+            service.rollback_tx(id);
+            self.state = State::Failed;
+            return vec![ServerMessage::Failure {
+                metadata: failure_metadata(
+                    codes::TERMINATED,
+                    "the transaction has been terminated",
+                ),
+            }];
+        }
         match service.prepare_tx(id, &gid) {
             Ok(()) => {
                 self.prepared_gid = Some(gid.clone());
@@ -1117,20 +1151,26 @@ impl<'a> Session<'a> {
         // routes to the database named by its own `db` selector (issue #523),
         // falling back to the session default.
         let context = self.security_context();
+        let caller = self.caller();
         let exec = if in_tx {
             match &self.native_tx {
                 Some(ActiveTx {
                     service,
                     id,
                     database,
-                }) => service.execute_in_tx_as(
-                    *id,
-                    &ast,
-                    cypher_params,
-                    context
-                        .as_ref()
-                        .map(|context| crate::cypher::executor::Restriction { context, database }),
-                ),
+                }) => crate::transactions::scope(caller, &query, || {
+                    service.execute_in_tx_as(
+                        *id,
+                        &ast,
+                        cypher_params,
+                        context
+                            .as_ref()
+                            .map(|context| crate::cypher::executor::Restriction {
+                                context,
+                                database,
+                            }),
+                    )
+                }),
                 None => {
                     self.state = State::Failed;
                     return vec![ServerMessage::Failure {
@@ -1152,16 +1192,18 @@ impl<'a> Session<'a> {
                 }
             };
             let database = self.database_name(extract_db(&extra));
-            service.execute_as(
-                &ast,
-                cypher_params,
-                context
-                    .as_ref()
-                    .map(|context| crate::cypher::executor::Restriction {
-                        context,
-                        database: &database,
-                    }),
-            )
+            crate::transactions::scope(caller, &query, || {
+                service.execute_as(
+                    &ast,
+                    cypher_params,
+                    context
+                        .as_ref()
+                        .map(|context| crate::cypher::executor::Restriction {
+                            context,
+                            database: &database,
+                        }),
+                )
+            })
         };
         let result = match exec {
             Ok(r) => r,
@@ -1847,6 +1889,7 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         }
         ExecError::Storage(_) => codes::STORAGE,
         ExecError::Timeout { .. } => codes::TIMED_OUT,
+        ExecError::Terminated => codes::TERMINATED,
         // A missing privilege (#636).
         ExecError::Forbidden { .. } => codes::FORBIDDEN,
     };
