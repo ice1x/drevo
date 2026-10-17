@@ -567,6 +567,11 @@ ALTER CURRENT USER SET PASSWORD FROM 'old-password' TO 'new-password'
 ```
 
 `SHOW USERS` returns `user`, `roles`, `passwordChangeRequired`, `suspended` and `home`.
+`roles` lists `PUBLIC`, which every user has, then the roles given to the user. The first user
+(from `DREVO_AUTH`) has `admin`. The catalog also holds Neo4j's built-in roles (`PUBLIC`,
+`reader`, `editor`, `publisher`, `architect`, `admin`) with their default privileges. A catalog
+written before roles existed is upgraded on the first start: its users get `admin`, so they keep
+the access they had. An upgraded `security.json` cannot be read by older drevo versions.
 Passwords are string literals or `$parameters`; neither a password nor its hash ever appears in
 a result, an error or a log line. Errors use Neo4j codes: a bad name or password, an existing or
 unknown user is `Neo.ClientError.General.InvalidArguments` (HTTP 400, 409 or 404).

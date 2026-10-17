@@ -15,5 +15,6 @@ pub mod authn;
 pub mod authz;
 #[cfg(feature = "password")]
 pub mod catalog;
+pub mod privileges;
 #[cfg(feature = "password")]
 pub mod users;

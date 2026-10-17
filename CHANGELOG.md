@@ -8,6 +8,27 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Roles and Neo4j-style privileges in drevo-auth** (issue #635). The new
+  `privileges` module holds Neo4j's privilege model, with deny overriding
+  grant:
+  - graph privileges: `TRAVERSE`, `READ {…}`, `MATCH {…}`, `CREATE`, `DELETE`,
+    `SET LABEL`, `REMOVE LABEL`, `SET PROPERTY {…}`, `MERGE {…}`, `WRITE` and
+    `ALL GRAPH PRIVILEGES`, for nodes, relationships or elements;
+  - database privileges: `ACCESS`, `START`, `STOP`, and index, constraint,
+    name and transaction management;
+  - DBMS privileges: user, role, privilege and database management, and
+    `EXECUTE PROCEDURE`, `EXECUTE FUNCTION` and `EXECUTE ADMIN PROCEDURES`.
+
+  The module parses `GRANT` / `DENY` / `REVOKE` commands, writes privileges
+  back as commands, and decides requests. The user catalog (format 2) holds
+  roles with their privileges, starting with Neo4j's built-in roles and
+  their default privileges. Users have roles; `AuthManager` manages roles,
+  role assignments and privileges, and decides requests per user. `SHOW
+  USERS` lists each user's roles.
+  - **Upgrading:** a format-1 `security.json` is upgraded on the first
+    start, and its users get `admin`. Older drevo versions cannot read the
+    upgraded file.
+
 - **TLS for HTTP and Bolt** (issue #634). `DREVO_TLS_CERT` and `DREVO_TLS_KEY`
   (PEM) turn the HTTP port into HTTPS and the Bolt port into `bolt+s://`; the
   Web UI's session cookie is then `Secure`. Setting only one of the two, or a
