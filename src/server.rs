@@ -29,6 +29,8 @@
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
 //! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS and Bolt as `bolt+s://` (`bolt-tls` feature) |
 //! | `DREVO_TLS_KEY`   | (unset)     | PEM private key (PKCS#8, PKCS#1 or SEC1) for `DREVO_TLS_CERT` |
+//! | `DREVO_AUDIT_LOG` | `off`       | Security audit log (`auth` feature): `off`, `stdout`, or a file path (JSON lines, rotated at 10 MiB, 5 old files kept) |
+//! | `DREVO_AUDIT_QUERY_TEXT` | `false` | Put a refused statement's text in its audit event |
 //! | `DREVO_ENGINE`    | `native-durable` | Serving engine. `native-durable` (default) — the WAL-backed native engine IS the store of record (`<data_dir>/native.wal`), no KV. `kv` still parses but its serving mode was removed (epic #444): a `kv` process warns and is served by the native engine. |
 //!
 //! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
@@ -117,11 +119,29 @@ pub struct Config {
     /// set, HTTP is served as HTTPS and Bolt as `bolt+s://`. Needs the
     /// `bolt-tls` feature.
     pub tls: Option<TlsFiles>,
+    /// Where the security audit log goes, from `DREVO_AUDIT_LOG` (#637).
+    pub audit_log: AuditLog,
+    /// Whether a refused statement's text goes into its audit event, from
+    /// `DREVO_AUDIT_QUERY_TEXT`.
+    pub audit_query_text: bool,
     /// How to create the first user, from `DREVO_AUTH` (Neo4j's `NEO4J_AUTH`
     /// format): `user/password`, `none`, or unset for `neo4j` with a generated
     /// password. Its `Debug` output hides the password.
     #[cfg(feature = "auth")]
     pub auth: drevo_auth::users::Bootstrap,
+}
+
+/// Where security audit events go (#637).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AuditLog {
+    /// Nowhere (failed logins and refusals still reach the server log and
+    /// the Web UI's problem feed).
+    #[default]
+    Off,
+    /// JSON lines on standard output.
+    Stdout,
+    /// JSON lines appended to this file, rotated by size.
+    File(PathBuf),
 }
 
 /// The PEM files a TLS-serving server reads at startup.
@@ -232,6 +252,13 @@ pub enum ConfigError {
         "invalid DREVO_WAL_FORMAT: {0}; rebuild with the matching `format-*` feature if needed"
     )]
     InvalidWalFormat(#[from] crate::wal_format::WalFormatError),
+    /// Only one of `DREVO_TLS_CERT` / `DREVO_TLS_KEY` was set, or the build
+    /// has no TLS.
+    #[error("invalid audit settings: {reason}")]
+    InvalidAudit {
+        /// Why they were rejected.
+        reason: String,
+    },
     /// Only one of `DREVO_TLS_CERT` / `DREVO_TLS_KEY` was set, or the build
     /// has no TLS.
     #[error("invalid TLS settings: {reason}")]
@@ -390,6 +417,32 @@ impl Config {
             }
         };
 
+        let audit_log = match getter("DREVO_AUDIT_LOG").as_deref().map(str::trim) {
+            None | Some("") => AuditLog::Off,
+            Some(v) if v.eq_ignore_ascii_case("off") => AuditLog::Off,
+            Some(v) if !cfg!(feature = "auth") => {
+                return Err(ConfigError::InvalidAudit {
+                    reason: format!(
+                        "DREVO_AUDIT_LOG={v}: this build has no user management; rebuild with the `auth` feature"
+                    ),
+                })
+            }
+            Some(v) if v.eq_ignore_ascii_case("stdout") => AuditLog::Stdout,
+            Some(path) => AuditLog::File(PathBuf::from(path)),
+        };
+        let audit_query_text = match getter("DREVO_AUDIT_QUERY_TEXT").as_deref().map(str::trim) {
+            None | Some("") => false,
+            Some(v) => match v.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => {
+                    return Err(ConfigError::InvalidAudit {
+                        reason: format!("DREVO_AUDIT_QUERY_TEXT={v}: expected true or false"),
+                    })
+                }
+            },
+        };
+
         let auth_raw = getter("DREVO_AUTH");
         #[cfg(feature = "auth")]
         let auth = drevo_auth::users::Bootstrap::parse(auth_raw.as_deref()).map_err(|e| {
@@ -421,6 +474,8 @@ impl Config {
             flight_port,
             bolt_port,
             tls,
+            audit_log,
+            audit_query_text,
         })
     }
 
@@ -545,8 +600,35 @@ fn configure_security(cfg: &Config) -> Result<crate::security::Security, RunErro
              login. Set DREVO_AUTH=user/password to choose it instead"
         ),
     }
+    // The security audit log (#637).
+    let security = match &cfg.audit_log {
+        AuditLog::Off => security,
+        AuditLog::Stdout => security.with_audit(
+            std::sync::Arc::new(drevo_auth::audit::Stdout),
+            cfg.audit_query_text,
+        ),
+        AuditLog::File(path) => {
+            let sink =
+                drevo_auth::audit::JsonLinesFile::open(path, AUDIT_FILE_BYTES, AUDIT_FILES_KEPT)
+                    .map_err(|e| {
+                        RunError::Security(format!(
+                            "cannot open the audit log {}: {e}",
+                            path.display()
+                        ))
+                    })?;
+            tracing::info!(path = %path.display(), "security audit log");
+            security.with_audit(std::sync::Arc::new(sink), cfg.audit_query_text)
+        }
+    };
     Ok(security)
 }
+
+/// An audit log file rotates past this size…
+#[cfg(feature = "auth")]
+const AUDIT_FILE_BYTES: u64 = 10 * 1024 * 1024;
+/// …and this many old files are kept.
+#[cfg(feature = "auth")]
+const AUDIT_FILES_KEPT: usize = 5;
 
 /// Without the `auth` feature there is no user management.
 #[cfg(not(feature = "auth"))]
@@ -933,14 +1015,20 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     };
     match tls {
         #[cfg(feature = "bolt-tls")]
-        Some(tls) => axum::serve(crate::https::TlsListener::new(listener, &tls.0), router)
-            .with_graceful_shutdown(drain)
-            .await
-            .map_err(RunError::Serve)?,
-        _ => axum::serve(listener, router)
-            .with_graceful_shutdown(drain)
-            .await
-            .map_err(RunError::Serve)?,
+        Some(tls) => axum::serve(
+            crate::https::TlsListener::new(listener, &tls.0),
+            router.into_make_service_with_connect_info::<crate::native_api::ClientAddr>(),
+        )
+        .with_graceful_shutdown(drain)
+        .await
+        .map_err(RunError::Serve)?,
+        _ => axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<crate::native_api::ClientAddr>(),
+        )
+        .with_graceful_shutdown(drain)
+        .await
+        .map_err(RunError::Serve)?,
     }
 
     tracing::info!("shut down cleanly");

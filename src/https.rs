@@ -108,3 +108,11 @@ impl axum::serve::Listener for TlsListener {
         }
     }
 }
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TlsListener>>
+    for crate::native_api::ClientAddr
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TlsListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}

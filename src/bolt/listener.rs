@@ -185,20 +185,18 @@ pub async fn accept_and_run_session_durable_with_security(
     registry: &std::sync::Arc<crate::database_registry::DatabaseRegistry>,
     security: crate::security::Security,
 ) -> BoltResult<()> {
+    let client = socket.peer_addr().ok();
     let accepted = accept_handshake_on(socket).await?;
     if accepted.negotiated.is_none() {
         return Ok(());
     }
     let mut stream = accepted.stream;
-    run_session_on_inner(
-        &mut stream,
-        Session::new_durable_with_registry(std::sync::Arc::clone(registry)).with_security(security),
-    )
-    .await
+    run_session_on_durable_with_security(&mut stream, registry, security, client).await
 }
 
 /// Post-handshake session loop over every database in `registry`, logging in
-/// against `security`'s users when it requires a login. Drives
+/// against `security`'s users when it requires a login; `client` is the
+/// peer's address for the audit log. Drives
 /// a [`Session`] over any `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS,
 /// etc. The stream must already be past the 20-byte handshake (call
 /// [`accept_handshake_on`] first).
@@ -218,10 +216,13 @@ pub async fn run_session_on_durable_with_security<S: AsyncRead + AsyncWrite + Un
     stream: &mut S,
     registry: &std::sync::Arc<crate::database_registry::DatabaseRegistry>,
     security: crate::security::Security,
+    client: Option<std::net::SocketAddr>,
 ) -> BoltResult<()> {
     run_session_on_inner(
         stream,
-        Session::new_durable_with_registry(std::sync::Arc::clone(registry)).with_security(security),
+        Session::new_durable_with_registry(std::sync::Arc::clone(registry))
+            .with_security(security)
+            .with_client(client),
     )
     .await
 }

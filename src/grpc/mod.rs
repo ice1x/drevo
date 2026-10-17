@@ -93,7 +93,13 @@ impl pb::drevo_server::Drevo for DrevoGrpc {
         &self,
         request: Request<pb::ExecuteRequest>,
     ) -> Result<Response<Self::ExecuteStream>, Status> {
-        let signed_in = crate::rpc_login::require_login(&self.security, request.metadata()).await?;
+        let remote = request.remote_addr();
+        let signed_in = crate::rpc_login::require_login(
+            &self.security,
+            request.metadata(),
+            &crate::security::Origin::new("grpc").from_client(request.remote_addr()),
+        )
+        .await?;
         let pb::ExecuteRequest {
             query,
             params,
@@ -131,6 +137,9 @@ impl pb::drevo_server::Drevo for DrevoGrpc {
             signed_in.as_ref().map(|u| u.name.as_str()),
             self.registry.default_name(),
         );
+        let audit_security = self.security.clone();
+        let audit_origin = crate::security::Origin::new("grpc").from_client(remote);
+        let audit_user = signed_in.as_ref().map(|u| u.name.clone());
         let result = tokio::task::spawn_blocking(move || {
             let restriction =
                 context
@@ -140,6 +149,14 @@ impl pb::drevo_server::Drevo for DrevoGrpc {
                         database: &name,
                     });
             let r = service.execute_as(&ast, params, restriction);
+            if let Err(ExecError::Forbidden { message }) = &r {
+                audit_security.record_forbidden(
+                    &audit_origin,
+                    audit_user.as_deref(),
+                    message,
+                    Some(&query),
+                );
+            }
             if let Err(e) = &r {
                 crate::problems::note_exec_error("grpc", &name, &query, e);
             }

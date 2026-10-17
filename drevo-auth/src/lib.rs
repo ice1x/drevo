@@ -11,6 +11,8 @@
 #![warn(missing_docs)]
 
 #[cfg(feature = "password")]
+pub mod audit;
+#[cfg(feature = "password")]
 pub mod authn;
 #[cfg(feature = "password")]
 pub mod catalog;

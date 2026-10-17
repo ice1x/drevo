@@ -158,6 +158,40 @@ pub struct Security {
     /// it was built at (#636).
     #[cfg(feature = "auth")]
     contexts: Arc<std::sync::Mutex<ContextCache>>,
+    /// Where security events go (#637), if anywhere.
+    #[cfg(feature = "auth")]
+    audit: Option<Arc<dyn drevo_auth::audit::AuditSink>>,
+    /// Whether a refused statement's text goes into its audit event.
+    #[cfg(feature = "auth")]
+    audit_queries: bool,
+}
+
+/// Where a request came from, for the audit log: the protocol and the
+/// client's address.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Origin {
+    /// `bolt`, `http`, `grpc` or `flight`.
+    pub surface: &'static str,
+    /// The client's `host:port`, when known.
+    pub client: Option<String>,
+}
+
+impl Origin {
+    /// A request over `surface` from an unknown address.
+    #[must_use]
+    pub fn new(surface: &'static str) -> Self {
+        Self {
+            surface,
+            client: None,
+        }
+    }
+
+    /// The same origin, from `client`.
+    #[must_use]
+    pub fn from_client(mut self, client: Option<impl ToString>) -> Self {
+        self.client = client.map(|c| c.to_string());
+        self
+    }
 }
 
 #[cfg(feature = "auth")]
@@ -182,6 +216,79 @@ impl Security {
             users: Some(users),
             require_login: true,
             contexts: Arc::default(),
+            audit: None,
+            audit_queries: false,
+        }
+    }
+
+    /// Record security events in `sink` (#637). With `queries`, a refused
+    /// statement's text goes into its event; user and role commands never do,
+    /// since they can carry passwords.
+    #[cfg(feature = "auth")]
+    #[must_use]
+    pub fn with_audit(
+        mut self,
+        sink: Arc<dyn drevo_auth::audit::AuditSink>,
+        queries: bool,
+    ) -> Self {
+        self.audit = Some(sink);
+        self.audit_queries = queries;
+        self
+    }
+
+    /// Record `event` in the audit log. A failed login, a lockout or a
+    /// refusal is also logged at WARN, so it shows in the Web UI's problem
+    /// feed whether or not an audit log is configured.
+    #[cfg(feature = "auth")]
+    pub fn record(&self, event: drevo_auth::audit::AuditEvent) {
+        use drevo_auth::audit::AuditKind;
+        if matches!(
+            event.kind,
+            AuditKind::LoginFailed | AuditKind::LoginLocked | AuditKind::Forbidden
+        ) {
+            tracing::warn!(
+                target: "drevo::security",
+                event = event.kind.name(),
+                user = event.user.as_deref().unwrap_or(""),
+                surface = event.surface.as_deref().unwrap_or(""),
+                client = event.client.as_deref().unwrap_or(""),
+                reason = event.reason.as_deref().unwrap_or(""),
+                "security: {}",
+                event.kind.name()
+            );
+        }
+        if let Some(sink) = &self.audit {
+            sink.record(&event);
+        }
+    }
+
+    /// Record a statement or request refused for a missing privilege.
+    pub fn record_forbidden(
+        &self,
+        origin: &Origin,
+        user: Option<&str>,
+        reason: &str,
+        query: Option<&str>,
+    ) {
+        #[cfg(feature = "auth")]
+        {
+            use drevo_auth::audit::{AuditEvent, AuditKind, Outcome};
+            let mut event = event_from(
+                origin,
+                AuditEvent::new(AuditKind::Forbidden, Outcome::Failure),
+            )
+            .reason(reason);
+            if let Some(user) = user {
+                event = event.user(user);
+            }
+            if let Some(query) = query.filter(|_| self.audit_queries) {
+                event = event.query(query);
+            }
+            self.record(event);
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            let _ = (origin, user, reason, query);
         }
     }
 
@@ -272,12 +379,14 @@ impl Security {
     /// failures, [`SecurityErrorKind::Unavailable`] without user management.
     pub fn login(
         &self,
+        origin: &Origin,
         scheme: Option<&str>,
         principal: Option<&str>,
         credentials: Option<&str>,
     ) -> Result<SignedIn, SecurityError> {
         #[cfg(feature = "auth")]
         {
+            use drevo_auth::audit::{AuditEvent, AuditKind, Outcome};
             use drevo_auth::authn::Credentials;
             use drevo_auth::users::LoginError;
             let Some(users) = &self.users else {
@@ -287,24 +396,60 @@ impl Security {
                 Credentials::from_parts(scheme, principal, credentials).map_err(|e| {
                     SecurityError::new(SecurityErrorKind::Unauthenticated, e.to_string())
                 })?;
+            // A password login is audited either way; reusing a session token
+            // (every HTTP request of a signed-in browser) only when refused.
+            let password = matches!(credentials, Credentials::Basic { .. });
+            let named = |event: AuditEvent| match principal {
+                Some(p) if !p.is_empty() => event.user(p),
+                _ => event,
+            };
             match users.authenticate(&credentials) {
-                Ok(p) => Ok(SignedIn {
-                    name: p.name,
-                    password_change_required: p.password_change_required,
-                }),
-                Err(e @ LoginError::Locked { .. }) => Err(SecurityError::new(
-                    SecurityErrorKind::RateLimited,
-                    e.to_string(),
-                )),
-                Err(_) => Err(SecurityError::new(
-                    SecurityErrorKind::Unauthenticated,
-                    LOGIN_REFUSED,
-                )),
+                Ok(p) => {
+                    if password {
+                        self.record(
+                            event_from(
+                                origin,
+                                AuditEvent::new(AuditKind::LoginSucceeded, Outcome::Success),
+                            )
+                            .user(&p.name),
+                        );
+                    }
+                    Ok(SignedIn {
+                        name: p.name,
+                        password_change_required: p.password_change_required,
+                    })
+                }
+                Err(e @ LoginError::Locked { .. }) => {
+                    self.record(named(
+                        event_from(
+                            origin,
+                            AuditEvent::new(AuditKind::LoginLocked, Outcome::Failure),
+                        )
+                        .reason(e.to_string()),
+                    ));
+                    Err(SecurityError::new(
+                        SecurityErrorKind::RateLimited,
+                        e.to_string(),
+                    ))
+                }
+                Err(e) => {
+                    self.record(named(
+                        event_from(
+                            origin,
+                            AuditEvent::new(AuditKind::LoginFailed, Outcome::Failure),
+                        )
+                        .reason(e.to_string()),
+                    ));
+                    Err(SecurityError::new(
+                        SecurityErrorKind::Unauthenticated,
+                        LOGIN_REFUSED,
+                    ))
+                }
             }
         }
         #[cfg(not(feature = "auth"))]
         {
-            let _ = (scheme, principal, credentials);
+            let _ = (origin, scheme, principal, credentials);
             Err(not_enabled())
         }
     }
@@ -318,6 +463,7 @@ impl Security {
     /// with [`LOGIN_REFUSED`].
     pub fn login_http(
         &self,
+        origin: &Origin,
         authorization: Option<&str>,
         cookie_token: Option<&str>,
     ) -> Result<SignedIn, SecurityError> {
@@ -334,14 +480,14 @@ impl Security {
             };
             match credentials {
                 Credentials::Basic { username, password } => {
-                    self.login(Some("basic"), Some(&username), Some(&password))
+                    self.login(origin, Some("basic"), Some(&username), Some(&password))
                 }
-                Credentials::Token(token) => self.login(Some("bearer"), None, Some(&token)),
+                Credentials::Token(token) => self.login(origin, Some("bearer"), None, Some(&token)),
             }
         }
         #[cfg(not(feature = "auth"))]
         {
-            let _ = (authorization, cookie_token);
+            let _ = (origin, authorization, cookie_token);
             Err(not_enabled())
         }
     }
@@ -387,6 +533,77 @@ impl Security {
         }
     }
 
+    /// [`execute`](Self::execute), recording what it changed — or why it was
+    /// refused — in the audit log (#637). The command's text is never
+    /// recorded: it can carry passwords.
+    ///
+    /// # Errors
+    ///
+    /// As [`execute`](Self::execute).
+    pub fn execute_from(
+        &self,
+        origin: &Origin,
+        command: &SecurityCommand,
+        current_user: Option<&str>,
+        param: &dyn Fn(&str) -> Option<ParamValue>,
+    ) -> Result<ExecResult, SecurityError> {
+        let result = self.execute(command, current_user, param);
+        #[cfg(feature = "auth")]
+        self.record_command(origin, command, current_user, &result);
+        #[cfg(not(feature = "auth"))]
+        let _ = origin;
+        result
+    }
+
+    #[cfg(feature = "auth")]
+    fn record_command(
+        &self,
+        origin: &Origin,
+        command: &SecurityCommand,
+        current_user: Option<&str>,
+        result: &Result<ExecResult, SecurityError>,
+    ) {
+        use drevo_auth::audit::{AuditEvent, Outcome};
+        if let Err(e) = result {
+            if e.kind == SecurityErrorKind::Forbidden {
+                self.record_forbidden(origin, current_user, &e.message, None);
+                return;
+            }
+        }
+        let Some((kind, target)) = audited_change(command, current_user) else {
+            return;
+        };
+        let outcome = if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        let mut event = event_from(origin, AuditEvent::new(kind, outcome));
+        if let Some(user) = current_user {
+            event = event.user(user);
+        }
+        if let Some(target) = target {
+            event = event.target(target);
+        }
+        if let Err(e) = result {
+            event = event.reason(e.message.clone());
+        }
+        self.record(event);
+    }
+
+    /// Record the end of `user`'s session.
+    pub fn record_logout(&self, origin: &Origin, user: &str) {
+        #[cfg(feature = "auth")]
+        {
+            use drevo_auth::audit::{AuditEvent, AuditKind, Outcome};
+            self.record(
+                event_from(origin, AuditEvent::new(AuditKind::Logout, Outcome::Success)).user(user),
+            );
+        }
+        #[cfg(not(feature = "auth"))]
+        let _ = (origin, user);
+    }
+
     /// Run `command` for `current_user` (the signed-in user, if any), reading
     /// `$parameters` through `param`.
     ///
@@ -427,6 +644,62 @@ impl Security {
             Err(not_enabled())
         }
     }
+}
+
+/// `event` with `origin`'s protocol and client address.
+#[cfg(feature = "auth")]
+fn event_from(
+    origin: &Origin,
+    event: drevo_auth::audit::AuditEvent,
+) -> drevo_auth::audit::AuditEvent {
+    let mut event = if origin.surface.is_empty() {
+        event
+    } else {
+        event.surface(origin.surface)
+    };
+    if let Some(client) = &origin.client {
+        event = event.client(client.clone());
+    }
+    event
+}
+
+/// What a user, role or privilege command changes, for the audit log: the
+/// event kind and what it acts on. `None` for commands that only look.
+#[cfg(feature = "auth")]
+fn audited_change(
+    command: &SecurityCommand,
+    current_user: Option<&str>,
+) -> Option<(drevo_auth::audit::AuditKind, Option<String>)> {
+    use drevo_auth::audit::AuditKind;
+    Some(match command {
+        SecurityCommand::CreateUser { name, .. } | SecurityCommand::DropUser { name, .. } => {
+            (AuditKind::UserChanged, Some(name.clone()))
+        }
+        SecurityCommand::AlterUser { name, password, .. } => (
+            if password.is_some() {
+                AuditKind::PasswordChanged
+            } else {
+                AuditKind::UserChanged
+            },
+            Some(name.clone()),
+        ),
+        SecurityCommand::AlterCurrentUserPassword { .. } => {
+            (AuditKind::PasswordChanged, current_user.map(str::to_string))
+        }
+        SecurityCommand::CreateRole { name, .. } | SecurityCommand::DropRole { name, .. } => {
+            (AuditKind::RoleChanged, Some(name.clone()))
+        }
+        SecurityCommand::RenameRole { from, .. } => (AuditKind::RoleChanged, Some(from.clone())),
+        SecurityCommand::GrantRoles { roles, .. } | SecurityCommand::RevokeRoles { roles, .. } => {
+            (AuditKind::RoleChanged, Some(roles.join(",")))
+        }
+        SecurityCommand::Privilege(c) => (AuditKind::PrivilegeChanged, Some(c.roles.join(","))),
+        SecurityCommand::ShowUsers
+        | SecurityCommand::ShowCurrentUser
+        | SecurityCommand::ShowRoles { .. }
+        | SecurityCommand::ShowPrivileges { .. }
+        | SecurityCommand::ShowSupportedPrivileges => return None,
+    })
 }
 
 /// The DBMS privilege `command` needs from `current_user`, or `None` when it
