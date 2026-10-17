@@ -440,3 +440,62 @@ fn auth_without_the_feature_is_a_startup_error_unless_none() {
     assert!(err.to_string().contains("`auth` feature"), "{err}");
     assert!(!err.to_string().contains("s3cret"), "{err}");
 }
+
+// ---------------------------------------------------------------------
+// DREVO_BOLT_PORT, DREVO_TLS_CERT / DREVO_TLS_KEY
+// ---------------------------------------------------------------------
+
+#[test]
+fn bolt_is_off_unless_a_port_is_set() {
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert_eq!(cfg.bolt_port, None);
+    let cfg = Config::from_env(getter(HashMap::from([("DREVO_BOLT_PORT", "7687")]))).unwrap();
+    assert_eq!(cfg.bolt_port, Some(7687));
+}
+
+#[test]
+fn tls_is_off_unless_a_certificate_is_set() {
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert!(cfg.tls.is_none());
+}
+
+#[test]
+fn a_tls_certificate_needs_its_key_and_the_key_its_certificate() {
+    for one in ["DREVO_TLS_CERT", "DREVO_TLS_KEY"] {
+        let err = Config::from_env(getter(HashMap::from([(one, "/etc/drevo/x.pem")])))
+            .expect_err("only one of the pair");
+        assert!(
+            matches!(err, ConfigError::InvalidTls { .. }),
+            "{one}: {err}"
+        );
+        assert!(
+            err.to_string().contains("DREVO_TLS_CERT") && err.to_string().contains("DREVO_TLS_KEY"),
+            "{err}"
+        );
+    }
+}
+
+#[cfg(feature = "bolt-tls")]
+#[test]
+fn tls_files_are_taken_from_the_environment() {
+    let cfg = Config::from_env(getter(HashMap::from([
+        ("DREVO_TLS_CERT", "/etc/drevo/cert.pem"),
+        ("DREVO_TLS_KEY", "/etc/drevo/key.pem"),
+    ])))
+    .expect("bolt-tls compiled in");
+    let tls = cfg.tls.expect("tls on");
+    assert_eq!(tls.cert.to_string_lossy(), "/etc/drevo/cert.pem");
+    assert_eq!(tls.key.to_string_lossy(), "/etc/drevo/key.pem");
+}
+
+#[cfg(not(feature = "bolt-tls"))]
+#[test]
+fn tls_without_the_feature_is_a_startup_error() {
+    let err = Config::from_env(getter(HashMap::from([
+        ("DREVO_TLS_CERT", "/etc/drevo/cert.pem"),
+        ("DREVO_TLS_KEY", "/etc/drevo/key.pem"),
+    ])))
+    .expect_err("not compiled in");
+    assert!(matches!(err, ConfigError::InvalidTls { .. }), "{err}");
+    assert!(err.to_string().contains("`bolt-tls` feature"), "{err}");
+}

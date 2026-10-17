@@ -250,8 +250,8 @@ Bolt needs a login with one of the server's users (the first comes from `DREVO_A
 password must be changed can only run `ALTER CURRENT USER SET PASSWORD FROM … TO …` until they do.
 
 The Cypher accepted over Bolt is exactly the [Cypher Reference](cypher-reference.md) subset.
-TLS is available behind the `bolt-tls` feature, authentication behind `auth`
-(see the [Admin Guide](admin-guide.md#7-authentication)).
+With `DREVO_TLS_CERT` / `DREVO_TLS_KEY` set the Bolt port speaks `bolt+s://` (feature
+`bolt-tls`, in the Docker image); see the [Admin Guide](admin-guide.md#tls).
 
 ---
 
@@ -273,7 +273,7 @@ See that repo's README for the tool list and client setup.
 | `redb-backend` | ✅ | Disk-backed redb storage; `Drevo::open` / `recover`. |
 | `http` | ✅ | Axum HTTP API server **and** the Bolt TCP listener. |
 | `auth` | — | Argon2id user store + session tokens from the `drevo-auth` crate (transport-agnostic auth). `bolt-auth` is the same feature under its earlier name. |
-| `bolt-tls` | — | rustls TLS for Bolt; implies `http`. |
+| `bolt-tls` | — | rustls TLS for HTTPS and `bolt+s://` (`DREVO_TLS_CERT` / `DREVO_TLS_KEY`); implies `http`. |
 | `wasm` | — | WebAssembly build (excludes `bolt`, `ffi`). |
 | `cbindgen` | ✅ | Generate the C header (`drevo.h`) from the FFI surface. |
 

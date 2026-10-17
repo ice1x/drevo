@@ -172,6 +172,11 @@ fn dockerfile_features_are_build_arg_overridable() {
          work: {arg_line}"
     );
     assert!(
+        arg_line.contains("bolt-tls"),
+        "the deploy image must ship TLS (`bolt-tls`) so DREVO_TLS_CERT / DREVO_TLS_KEY serve \
+         HTTPS and bolt+s://: {arg_line}"
+    );
+    assert!(
         content.contains("${CARGO_FEATURES}"),
         "the cargo build must take features from ${{CARGO_FEATURES}}, not a hardcoded list"
     );

@@ -224,6 +224,9 @@ pub mod flight;
 /// gRPC API (issue #583): Cypher over HTTP/2 + protobuf with streamed rows.
 /// Compiled with the `grpc` feature; schema in `proto/drevo.proto`.
 pub mod grpc;
+/// HTTPS for the HTTP API: a listener that completes the TLS handshake
+/// first. Compiled with the `bolt-tls` feature.
+pub mod https;
 /// HTTP surface for the durable-native server mode
 /// (`DREVO_ENGINE=native-durable`, RFC `docs/rfc-native-core.md`, #307,
 /// Phase 4/7) — a minimal router over [`native_service::NativeService`]:

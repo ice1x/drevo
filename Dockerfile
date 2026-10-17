@@ -63,13 +63,14 @@ COPY static/ static/
 # compiled in and served only when `DREVO_GRPC_PORT` is set, and so is the Arrow
 # Flight endpoint (#584) with `DREVO_FLIGHT_PORT`. User management (`auth`,
 # #633) keeps the server's users in `<data dir>/security.json`, seeded from
-# `DREVO_AUTH`. Override to a lean
+# `DREVO_AUTH`. TLS (`bolt-tls`) serves HTTPS and `bolt+s://` once
+# `DREVO_TLS_CERT` / `DREVO_TLS_KEY` name a certificate. Override to a lean
 # build via:
 #   docker build --build-arg CARGO_FEATURES="http" .
 # (The Cargo library default stays dependency-free; this opinionated default is
 # the deploy image only.) Locked by
 # `tests/dockerfile_tests.rs::dockerfile_features_are_build_arg_overridable`.
-ARG CARGO_FEATURES="http,embeddings-proxy,format-cbor,format-msgpack,grpc,arrow-flight,auth"
+ARG CARGO_FEATURES="http,embeddings-proxy,format-cbor,format-msgpack,grpc,arrow-flight,auth,bolt-tls"
 # The version the built server reports (`/`, `/status`, Bolt `server` agent,
 # metrics). `.git` is excluded from the build context, so `build.rs` cannot run
 # `git describe` here and would fall back to `CARGO_PKG_VERSION` (0.0.0, since the

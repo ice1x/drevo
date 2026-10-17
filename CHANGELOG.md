@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **TLS for HTTP and Bolt** (issue #634). `DREVO_TLS_CERT` and `DREVO_TLS_KEY`
+  (PEM) turn the HTTP port into HTTPS and the Bolt port into `bolt+s://`; the
+  Web UI's session cookie is then `Secure`. Setting only one of the two, or a
+  certificate the server cannot read, stops it at startup. `DREVO_BOLT_PORT`
+  is now part of the server configuration. The Docker image is built with
+  `bolt-tls`. New `drevo::https::TlsListener` serves an axum router over TLS.
+
 - **gRPC and Arrow Flight login** (issue #634). With user management on,
   gRPC `Execute` and Flight `DoGet` need `authorization` metadata — `Basic`
   (user:password) or `Bearer <session token>` — else `UNAUTHENTICATED`

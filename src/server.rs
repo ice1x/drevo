@@ -26,6 +26,9 @@
 //! | `DREVO_PORT`      | `8080`      | TCP port (1..=65535)              |
 //! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `native.wal`    |
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
+//! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
+//! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS and Bolt as `bolt+s://` (`bolt-tls` feature) |
+//! | `DREVO_TLS_KEY`   | (unset)     | PEM private key (PKCS#8, PKCS#1 or SEC1) for `DREVO_TLS_CERT` |
 //! | `DREVO_ENGINE`    | `native-durable` | Serving engine. `native-durable` (default) — the WAL-backed native engine IS the store of record (`<data_dir>/native.wal`), no KV. `kv` still parses but its serving mode was removed (epic #444): a `kv` process warns and is served by the native engine. |
 //!
 //! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
@@ -107,11 +110,27 @@ pub struct Config {
     /// Port of the Arrow Flight endpoint from `DREVO_FLIGHT_PORT` (issue
     /// #584); `None` serves none. Needs the `arrow-flight` feature.
     pub flight_port: Option<u16>,
+    /// Port of the Bolt listener from `DREVO_BOLT_PORT`; `None` (unset or not
+    /// a port) serves no Bolt.
+    pub bolt_port: Option<u16>,
+    /// The certificate and key from `DREVO_TLS_CERT` / `DREVO_TLS_KEY`; when
+    /// set, HTTP is served as HTTPS and Bolt as `bolt+s://`. Needs the
+    /// `bolt-tls` feature.
+    pub tls: Option<TlsFiles>,
     /// How to create the first user, from `DREVO_AUTH` (Neo4j's `NEO4J_AUTH`
     /// format): `user/password`, `none`, or unset for `neo4j` with a generated
     /// password. Its `Debug` output hides the password.
     #[cfg(feature = "auth")]
     pub auth: drevo_auth::users::Bootstrap,
+}
+
+/// The PEM files a TLS-serving server reads at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsFiles {
+    /// The certificate chain, leaf first.
+    pub cert: PathBuf,
+    /// The private key.
+    pub key: PathBuf,
 }
 
 /// Cypher execution engine selection, parsed from `DREVO_ENGINE`: the legacy
@@ -213,6 +232,13 @@ pub enum ConfigError {
         "invalid DREVO_WAL_FORMAT: {0}; rebuild with the matching `format-*` feature if needed"
     )]
     InvalidWalFormat(#[from] crate::wal_format::WalFormatError),
+    /// Only one of `DREVO_TLS_CERT` / `DREVO_TLS_KEY` was set, or the build
+    /// has no TLS.
+    #[error("invalid TLS settings: {reason}")]
+    InvalidTls {
+        /// Why they were rejected.
+        reason: String,
+    },
     /// `DREVO_AUTH` was malformed, or the build has no user management. The
     /// message never contains the password.
     #[error("invalid DREVO_AUTH: {reason}")]
@@ -341,6 +367,29 @@ impl Config {
             }
         };
 
+        let bolt_port = getter("DREVO_BOLT_PORT").and_then(|raw| raw.trim().parse::<u16>().ok());
+
+        let tls = match (getter("DREVO_TLS_CERT"), getter("DREVO_TLS_KEY")) {
+            (None, None) => None,
+            (Some(cert), Some(key)) if !cert.is_empty() && !key.is_empty() => {
+                if !cfg!(feature = "bolt-tls") {
+                    return Err(ConfigError::InvalidTls {
+                        reason: "this build has no TLS; rebuild with the `bolt-tls` feature"
+                            .to_string(),
+                    });
+                }
+                Some(TlsFiles {
+                    cert: PathBuf::from(cert),
+                    key: PathBuf::from(key),
+                })
+            }
+            _ => {
+                return Err(ConfigError::InvalidTls {
+                    reason: "set both DREVO_TLS_CERT and DREVO_TLS_KEY, or neither".to_string(),
+                })
+            }
+        };
+
         let auth_raw = getter("DREVO_AUTH");
         #[cfg(feature = "auth")]
         let auth = drevo_auth::users::Bootstrap::parse(auth_raw.as_deref()).map_err(|e| {
@@ -370,6 +419,8 @@ impl Config {
             wal_format,
             grpc_port,
             flight_port,
+            bolt_port,
+            tls,
         })
     }
 
@@ -471,6 +522,9 @@ pub enum RunError {
     #[cfg(feature = "auth")]
     #[error("cannot open the server's users: {0}")]
     Security(String),
+    /// The TLS certificate or key could not be read or used.
+    #[error("cannot set up TLS: {0}")]
+    Tls(String),
 }
 
 /// Open the server's users from `<data_dir>/security.json` and create the
@@ -672,6 +726,9 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
 /// only; `BEGIN` is refused until the executor can drive native
 /// transactions.
 async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunError> {
+    // Read the certificate first, so a bad one stops the server before it
+    // opens anything.
+    let tls = load_tls(&cfg)?;
     let wal = cfg.data_dir.join("native.wal");
     tracing::info!(wal = %wal.display(), "engine=native-durable — opening the durable native store");
     let service = std::sync::Arc::new(
@@ -751,10 +808,7 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // Optional Bolt listener — same opt-in as the KV path, served by the
     // durable-native session; statements route to the database named by their
     // `db` selector via the shared catalog (issue #523).
-    if let Some(bolt_port) = std::env::var("DREVO_BOLT_PORT")
-        .ok()
-        .and_then(|raw| raw.parse::<u16>().ok())
-    {
+    if let Some(bolt_port) = cfg.bolt_port {
         let bolt_addr = SocketAddr::new(addr.ip(), bolt_port);
         let bolt_listener = tokio::net::TcpListener::bind(bolt_addr)
             .await
@@ -762,7 +816,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                 addr: bolt_addr,
                 source,
             })?;
-        tracing::info!(%bolt_addr, "bolt listening (native-durable)");
+        let bolt_tls = tls.as_ref().map(TlsSetup::acceptor);
+        tracing::info!(%bolt_addr, tls = bolt_tls.is_some(), "bolt listening (native-durable)");
         let bolt_registry = std::sync::Arc::clone(&registry);
         let bolt_security = security.clone();
         tokio::spawn(async move {
@@ -771,14 +826,15 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                     Ok((socket, _peer)) => {
                         let conn_registry = std::sync::Arc::clone(&bolt_registry);
                         let conn_security = bolt_security.clone();
+                        let conn_tls = bolt_tls.clone();
                         tokio::spawn(async move {
-                            if let Err(err) =
-                                crate::bolt::listener::accept_and_run_session_durable_with_security(
-                                    socket,
-                                    &conn_registry,
-                                    conn_security,
-                                )
-                                .await
+                            if let Err(err) = serve_bolt_connection(
+                                socket,
+                                conn_tls,
+                                &conn_registry,
+                                conn_security,
+                            )
+                            .await
                             {
                                 if err.is_client_disconnect() {
                                     tracing::debug!(error = %err, "bolt client disconnected");
@@ -851,7 +907,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
 
     let state = crate::native_api::NativeApiState::with_registry(service, registry)
         .with_wire_formats(cfg.http_formats.clone())
-        .with_security(security);
+        .with_security(security)
+        .with_secure_cookies(tls.is_some());
     // Opt-in embeddings proxy, exactly like the KV path — the restart
     // tooling probes POST /v1/embeddings after boot. Store-backed so the key is
     // Web-UI-settable.
@@ -863,23 +920,110 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| RunError::Bind { addr, source })?;
-    tracing::info!(%addr, "listening (native-durable)");
+    tracing::info!(%addr, https = tls.is_some(), "listening (native-durable)");
     tracing::info!(
         formats = ?cfg.http_formats.enabled().iter().map(|f| f.name()).collect::<Vec<_>>(),
         "http body formats"
     );
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            shutdown_state.signal_shutdown();
-            tracing::info!("shutdown signal received, draining");
-        })
-        .await
-        .map_err(RunError::Serve)?;
+    let drain = async move {
+        shutdown_signal().await;
+        shutdown_state.signal_shutdown();
+        tracing::info!("shutdown signal received, draining");
+    };
+    match tls {
+        #[cfg(feature = "bolt-tls")]
+        Some(tls) => axum::serve(crate::https::TlsListener::new(listener, &tls.0), router)
+            .with_graceful_shutdown(drain)
+            .await
+            .map_err(RunError::Serve)?,
+        _ => axum::serve(listener, router)
+            .with_graceful_shutdown(drain)
+            .await
+            .map_err(RunError::Serve)?,
+    }
 
     tracing::info!("shut down cleanly");
     Ok(())
+}
+
+/// The server's certificate, read from `DREVO_TLS_CERT` / `DREVO_TLS_KEY`.
+#[cfg(feature = "bolt-tls")]
+struct TlsSetup(crate::bolt::tls::TlsConfig);
+
+/// Without the `bolt-tls` feature there is never a certificate.
+#[cfg(not(feature = "bolt-tls"))]
+enum TlsSetup {}
+
+impl TlsSetup {
+    #[cfg(feature = "bolt-tls")]
+    fn acceptor(&self) -> BoltTls {
+        self.0.acceptor()
+    }
+
+    #[cfg(not(feature = "bolt-tls"))]
+    fn acceptor(&self) -> BoltTls {
+        match *self {}
+    }
+}
+
+#[cfg(feature = "bolt-tls")]
+type BoltTls = tokio_rustls::TlsAcceptor;
+/// Without the `bolt-tls` feature Bolt is never served over TLS.
+#[cfg(not(feature = "bolt-tls"))]
+#[derive(Clone)]
+enum BoltTls {}
+
+/// Read the certificate and key named by the config, if any.
+#[cfg(feature = "bolt-tls")]
+fn load_tls(cfg: &Config) -> Result<Option<TlsSetup>, RunError> {
+    let Some(files) = &cfg.tls else {
+        return Ok(None);
+    };
+    // rustls needs a process-wide crypto provider; another part of the
+    // process may have installed it already.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let tls =
+        crate::bolt::tls::TlsConfig::from_pem_files(&files.cert, &files.key).map_err(|e| {
+            RunError::Tls(format!(
+                "certificate {} / key {}: {e}",
+                files.cert.display(),
+                files.key.display()
+            ))
+        })?;
+    Ok(Some(TlsSetup(tls)))
+}
+
+#[cfg(not(feature = "bolt-tls"))]
+fn load_tls(_cfg: &Config) -> Result<Option<TlsSetup>, RunError> {
+    Ok(None)
+}
+
+/// One Bolt connection: over TLS (`bolt+s://`) when the server has a
+/// certificate, else plain.
+async fn serve_bolt_connection(
+    socket: tokio::net::TcpStream,
+    tls: Option<BoltTls>,
+    registry: &std::sync::Arc<crate::database_registry::DatabaseRegistry>,
+    security: crate::security::Security,
+) -> crate::bolt::error::BoltResult<()> {
+    match tls {
+        #[cfg(feature = "bolt-tls")]
+        Some(acceptor) => {
+            crate::bolt::tls::accept_and_run_session_tls_with_security(
+                socket, &acceptor, registry, security,
+            )
+            .await
+        }
+        #[cfg(not(feature = "bolt-tls"))]
+        Some(never) => match never {},
+        None => {
+            crate::bolt::listener::accept_and_run_session_durable_with_security(
+                socket, registry, security,
+            )
+            .await
+        }
+    }
 }
 
 /// Future that resolves on the first observed shutdown signal.

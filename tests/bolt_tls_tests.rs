@@ -306,8 +306,11 @@ async fn tls_listener_rejects_plain_tcp_client() {
     // The server task must return an error. We don't pin which
     // exact variant (the underlying tokio_rustls error message
     // varies across versions) — just that it's surfaced.
-    assert!(
-        r.is_err(),
-        "plain-TCP client against TLS listener must fail, got {r:?}"
-    );
+    let err = match r {
+        Err(err) => err,
+        Ok(_) => panic!("plain-TCP client against TLS listener must fail"),
+    };
+    // It is the client's mistake, not a server fault: logged at debug and
+    // kept out of the problem feed, like a client hanging up.
+    assert!(err.is_client_disconnect(), "{err:?}");
 }

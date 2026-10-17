@@ -197,7 +197,8 @@ pub async fn accept_and_run_session_durable_with_security(
     .await
 }
 
-/// Post-handshake session loop over the durable native store of record. Drives
+/// Post-handshake session loop over every database in `registry`, logging in
+/// against `security`'s users when it requires a login. Drives
 /// a [`Session`] over any `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS,
 /// etc. The stream must already be past the 20-byte handshake (call
 /// [`accept_handshake_on`] first).
@@ -213,6 +214,24 @@ pub async fn accept_and_run_session_durable_with_security(
 ///
 /// Propagates I/O failures from the stream. Cypher / protocol errors are
 /// surfaced as Bolt `FAILURE` messages.
+pub async fn run_session_on_durable_with_security<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    registry: &std::sync::Arc<crate::database_registry::DatabaseRegistry>,
+    security: crate::security::Security,
+) -> BoltResult<()> {
+    run_session_on_inner(
+        stream,
+        Session::new_durable_with_registry(std::sync::Arc::clone(registry)).with_security(security),
+    )
+    .await
+}
+
+/// Like [`run_session_on_durable_with_security`], over a single database
+/// and with no users.
+///
+/// # Errors
+///
+/// Propagates I/O failures from the stream.
 pub async fn run_session_on_durable<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     service: &std::sync::Arc<crate::native_service::NativeService>,
