@@ -231,6 +231,7 @@ async fn bolt_hello(server: &Server, extra: BTreeMap<String, Value>) -> u8 {
     }
 }
 
+#[cfg(feature = "auth")]
 fn basic(user: &str, password: &str) -> BTreeMap<String, Value> {
     BTreeMap::from([
         ("scheme".to_string(), Value::String("basic".into())),
