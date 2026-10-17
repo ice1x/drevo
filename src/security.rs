@@ -45,6 +45,8 @@ pub enum SecurityErrorKind {
     RateLimited,
     /// The signed-in user must change the password before anything else.
     CredentialsExpired,
+    /// The signed-in user lacks the privilege the command needs.
+    Forbidden,
     /// User management is not enabled on this server.
     Unavailable,
     /// The security catalog could not be saved or read.
@@ -64,6 +66,7 @@ impl SecurityErrorKind {
             Self::Unauthenticated => "Neo.ClientError.Security.Unauthorized",
             Self::RateLimited => "Neo.ClientError.Security.AuthenticationRateLimit",
             Self::CredentialsExpired => "Neo.ClientError.Security.CredentialsExpired",
+            Self::Forbidden => "Neo.ClientError.Security.Forbidden",
             Self::Unavailable | Self::Internal => "Neo.DatabaseError.General.UnknownError",
         }
     }
@@ -77,7 +80,7 @@ impl SecurityErrorKind {
             Self::NotFound => 404,
             Self::Unauthenticated => 401,
             Self::RateLimited => 429,
-            Self::CredentialsExpired => 403,
+            Self::CredentialsExpired | Self::Forbidden => 403,
             Self::Unavailable => 503,
             Self::Internal => 500,
         }
@@ -402,12 +405,63 @@ impl Security {
             let Some(users) = &self.users else {
                 return Err(not_enabled());
             };
+            // With logins required, managing users, roles and privileges
+            // needs Neo4j's DBMS privileges; looking at and changing oneself
+            // does not.
+            if let (Some(context), Some(action)) = (
+                self.context_for(current_user, ""),
+                required_privilege(command, current_user),
+            ) {
+                if !context.has_dbms(action) {
+                    return Err(SecurityError::new(
+                        SecurityErrorKind::Forbidden,
+                        format!("this command needs {}", action.keyword()),
+                    ));
+                }
+            }
             run(users, command, current_user, param)
         }
         #[cfg(not(feature = "auth"))]
         {
             let _ = (command, current_user, param);
             Err(not_enabled())
+        }
+    }
+}
+
+/// The DBMS privilege `command` needs from `current_user`, or `None` when it
+/// needs none: the commands about the user themselves.
+#[cfg(feature = "auth")]
+fn required_privilege(
+    command: &SecurityCommand,
+    current_user: Option<&str>,
+) -> Option<drevo_auth::privileges::Action> {
+    use crate::cypher::security_admin::PrivilegeScope;
+    use drevo_auth::privileges::Action;
+    match command {
+        SecurityCommand::ShowCurrentUser
+        | SecurityCommand::AlterCurrentUserPassword { .. }
+        | SecurityCommand::ShowSupportedPrivileges => None,
+        SecurityCommand::CreateUser { .. }
+        | SecurityCommand::AlterUser { .. }
+        | SecurityCommand::DropUser { .. }
+        | SecurityCommand::ShowUsers => Some(Action::UserManagement),
+        SecurityCommand::CreateRole { .. }
+        | SecurityCommand::DropRole { .. }
+        | SecurityCommand::RenameRole { .. }
+        | SecurityCommand::GrantRoles { .. }
+        | SecurityCommand::RevokeRoles { .. }
+        | SecurityCommand::ShowRoles { .. } => Some(Action::RoleManagement),
+        SecurityCommand::ShowPrivileges {
+            scope: PrivilegeScope::CurrentUser,
+            ..
+        } => None,
+        SecurityCommand::ShowPrivileges {
+            scope: PrivilegeScope::Users(names),
+            ..
+        } if current_user.is_some_and(|me| names.iter().all(|n| n == me)) => None,
+        SecurityCommand::Privilege(_) | SecurityCommand::ShowPrivileges { .. } => {
+            Some(Action::PrivilegeManagement)
         }
     }
 }

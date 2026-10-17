@@ -268,6 +268,22 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **User, role and privilege commands now need their DBMS privileges** (issue
+  #636). With logins required, any signed-in user could run `CREATE USER`,
+  `GRANT ROLE admin TO …` or `GRANT …` privileges. Now:
+  - the user commands and `SHOW USERS` need `USER MANAGEMENT`;
+  - the role commands and `SHOW ROLES` need `ROLE MANAGEMENT`;
+  - privilege commands and `SHOW PRIVILEGES` need `PRIVILEGE MANAGEMENT`.
+
+  A command without its privilege fails with
+  `Neo.ClientError.Security.Forbidden` (HTTP 403) and changes nothing. Users
+  may still look at and change themselves: `SHOW CURRENT USER`, `ALTER CURRENT
+  USER SET PASSWORD`, and their own `SHOW USER PRIVILEGES`. `admin` holds all
+  three.
+  - `CALL drevo.tx.prepare` inside a Bolt transaction now needs `EXECUTE
+    ADMIN PROCEDURES`, like the other `drevo.tx.*` procedures. A prepared
+    transaction pauses every write until it is resolved.
+
 - **Replica stamps survive a reopen** (issue #612). A durable store keeps
   each live node's and edge's causal stamp in `stamps.jsonl` next to the WAL,
   so after a restart its version vector is intact:
