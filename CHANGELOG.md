@@ -8,6 +8,20 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Role and privilege commands** (issue #635). These are Cypher over HTTP and Bolt, in
+  auto-commit mode:
+  - roles: `CREATE ROLE … [IF NOT EXISTS] [AS COPY OF …]`, `DROP ROLE`,
+    `RENAME ROLE`, `GRANT ROLE[S] … TO …`, `REVOKE ROLE[S] … FROM …` and
+    `SHOW [ALL | POPULATED] ROLES [WITH USERS]`;
+  - privileges: `GRANT` / `DENY` / `REVOKE [GRANT | DENY]` on graphs,
+    databases and the DBMS;
+  - listing: `SHOW [ALL | ROLE r | USER [u]] PRIVILEGES [AS [REVOKE]
+    COMMANDS]` and `SHOW SUPPORTED PRIVILEGES`.
+
+  Running the `AS COMMANDS` output on a server with the same roles recreates
+  the privileges. drevo-auth gains `Entry::to_revoke_command` and
+  `Action::ALL`. The privileges are not enforced yet.
+
 - **Roles and Neo4j-style privileges in drevo-auth** (issue #635). The new
   `privileges` module holds Neo4j's privilege model, with deny overriding
   grant:

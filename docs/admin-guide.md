@@ -531,7 +531,8 @@ assert!(store.verify_basic("neo4j", "secret"));
 let token = store.issue_token("neo4j");       // Some(64 hex characters)
 ```
 
-Roles and the access policy are `drevo::authz` (the crate's `authz` module).
+Roles and privileges live in the user catalog (the crate's `privileges` and `users` modules,
+below); the older generic access policy is `drevo::authz`.
 
 ### Users
 
@@ -575,6 +576,65 @@ the access they had. An upgraded `security.json` cannot be read by older drevo v
 Passwords are string literals or `$parameters`; neither a password nor its hash ever appears in
 a result, an error or a log line. Errors use Neo4j codes: a bad name or password, an existing or
 unknown user is `Neo.ClientError.General.InvalidArguments` (HTTP 400, 409 or 404).
+
+### Roles and privileges
+
+Roles hold privileges in Neo4j's model, and users get roles. Manage them with Cypher, in
+auto-commit mode like the user commands:
+
+```
+CREATE ROLE triage IF NOT EXISTS AS COPY OF reader
+RENAME ROLE triage TO bug_triage
+DROP ROLE bug_triage IF EXISTS
+GRANT ROLES reader, triage TO ann, bob
+REVOKE ROLE triage FROM bob
+SHOW POPULATED ROLES WITH USERS
+
+GRANT MATCH {*} ON GRAPH bugs NODES Bug, Feature TO triage
+DENY READ {reporter} ON GRAPH bugs NODES Bug TO triage
+GRANT SET PROPERTY {status} ON GRAPH bugs NODES Bug TO triage
+GRANT ACCESS ON DATABASE bugs TO triage
+GRANT EXECUTE PROCEDURE apoc.text.* ON DBMS TO triage
+REVOKE DENY READ {reporter} ON GRAPH bugs NODES Bug FROM triage
+
+SHOW ROLE triage PRIVILEGES
+SHOW USER ann PRIVILEGES
+SHOW PRIVILEGES AS COMMANDS
+SHOW SUPPORTED PRIVILEGES
+```
+
+- **Graph privileges**: `TRAVERSE`, `READ {props}`, `MATCH {props}`, `CREATE`, `DELETE`,
+  `SET LABEL labels`, `REMOVE LABEL labels`, `SET PROPERTY {props}`, `MERGE {props}`, `WRITE`
+  and `ALL GRAPH PRIVILEGES`, `ON GRAPH * | name, … | HOME GRAPH`, for `NODES labels`,
+  `RELATIONSHIPS types` or `ELEMENTS …` (every node and relationship when omitted).
+- **Database privileges**: `ACCESS`, `START`, `STOP`, `INDEX`, `CONSTRAINT`, `NAME` and
+  `TRANSACTION [MANAGEMENT] [(users)]`, `ALL DATABASE PRIVILEGES`,
+  `ON DATABASE * | name, … | HOME DATABASE`.
+- **DBMS privileges**: `USER`, `ROLE`, `PRIVILEGE` and `DATABASE MANAGEMENT`,
+  `EXECUTE PROCEDURE globs`, `EXECUTE FUNCTION globs`, `EXECUTE ADMIN PROCEDURES`,
+  `ALL DBMS PRIVILEGES`, `ON DBMS`.
+
+A deny always wins over a grant. `REVOKE GRANT …` or `REVOKE DENY …` takes back one kind;
+`REVOKE …` alone takes back both. `SHOW … PRIVILEGES` returns Neo4j's columns `access`,
+`action`, `resource`, `graph`, `segment`, `role` and `immutable` (plus `user` for user
+privileges). `AS COMMANDS` returns the `GRANT` / `DENY` commands that recreate them, and
+`AS REVOKE COMMANDS` returns the commands that remove them. Run on a server with the same
+roles and no privileges, the `AS COMMANDS` output recreates the same privileges.
+
+Every user has `PUBLIC`, which cannot be dropped, renamed, granted or revoked. The built-in
+roles start with Neo4j's default privileges:
+
+| Role | Privileges |
+|---|---|
+| `PUBLIC` | `ACCESS ON HOME DATABASE`, `EXECUTE PROCEDURE *`, `EXECUTE FUNCTION *` |
+| `reader` | `ACCESS ON DATABASE *`, `MATCH {*}` on every node and relationship |
+| `editor` | `reader`'s, and `WRITE ON GRAPH *` |
+| `publisher` | `editor`'s, and `NAME MANAGEMENT ON DATABASE *` |
+| `architect` | `publisher`'s, and `INDEX` and `CONSTRAINT MANAGEMENT ON DATABASE *` |
+| `admin` | `architect`'s, and `START`, `STOP`, `TRANSACTION MANAGEMENT ON DATABASE *` and `ALL DBMS PRIVILEGES` |
+
+Not supported: `IMMUTABLE` privileges, property-based segments (`WHERE` / `FOR`) and
+`DEFAULT GRAPH`. Roles and privileges are stored and listed; queries do not check them yet.
 
 ### Logging in
 

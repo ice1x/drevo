@@ -113,6 +113,37 @@ pub enum Level {
 }
 
 impl Action {
+    /// Every action, graph actions first, then database, then DBMS.
+    pub const ALL: [Action; 27] = [
+        Action::Traverse,
+        Action::Read,
+        Action::Match,
+        Action::Create,
+        Action::Delete,
+        Action::SetLabel,
+        Action::RemoveLabel,
+        Action::SetProperty,
+        Action::Merge,
+        Action::Write,
+        Action::AllGraph,
+        Action::Access,
+        Action::Start,
+        Action::Stop,
+        Action::IndexManagement,
+        Action::ConstraintManagement,
+        Action::NameManagement,
+        Action::TransactionManagement,
+        Action::AllDatabase,
+        Action::UserManagement,
+        Action::RoleManagement,
+        Action::PrivilegeManagement,
+        Action::DatabaseManagement,
+        Action::ExecuteProcedure,
+        Action::ExecuteFunction,
+        Action::ExecuteAdminProcedures,
+        Action::AllDbms,
+    ];
+
     /// The level the action applies at.
     #[must_use]
     pub fn level(self) -> Level {
@@ -174,8 +205,10 @@ impl Action {
         }
     }
 
-    /// The command words, without their arguments (`SET PROPERTY`).
-    pub(crate) fn keyword(self) -> &'static str {
+    /// The command words, without their arguments: `SET PROPERTY`,
+    /// `EXECUTE PROCEDURE`, `ALL GRAPH PRIVILEGES`.
+    #[must_use]
+    pub fn keyword(self) -> &'static str {
         use Action::*;
         match self {
             Traverse => "TRAVERSE",
@@ -504,6 +537,18 @@ impl Entry {
     pub fn to_command(&self) -> String {
         format!(
             "{} {} TO `{}`",
+            self.access.keyword(),
+            self.privilege,
+            self.role.replace('`', "``")
+        )
+    }
+
+    /// The command that takes this privilege from the role:
+    /// `REVOKE GRANT TRAVERSE ON GRAPH * NODE * FROM `reader``.
+    #[must_use]
+    pub fn to_revoke_command(&self) -> String {
+        format!(
+            "REVOKE {} {} FROM `{}`",
             self.access.keyword(),
             self.privilege,
             self.role.replace('`', "``")

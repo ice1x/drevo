@@ -265,7 +265,6 @@ fn graph_queries_and_other_admin_commands_pass_through() {
         "SHOW DATABASES",
         "CREATE DATABASE users",
         "SHOW INDEXES",
-        "SHOW USER PRIVILEGES",
         "CREATE INDEX FOR (u:User) ON (u.name)",
         "",
         "   ",

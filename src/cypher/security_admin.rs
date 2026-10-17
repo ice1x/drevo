@@ -12,7 +12,22 @@
 //! SHOW USERS
 //! SHOW CURRENT USER
 //! ALTER CURRENT USER SET PASSWORD FROM password TO password
+//!
+//! CREATE ROLE name [IF NOT EXISTS] [AS COPY OF other]
+//! DROP ROLE name [IF EXISTS]
+//! RENAME ROLE name [IF EXISTS] TO new
+//! GRANT ROLE[S] role[, ...] TO user[, ...]
+//! REVOKE ROLE[S] role[, ...] FROM user[, ...]
+//! SHOW [ALL | POPULATED] ROLES [WITH USERS]
+//! GRANT | DENY privilege TO role[, ...]
+//! REVOKE [GRANT | DENY] privilege FROM role[, ...]
+//! SHOW [ALL | ROLE[S] role[, ...] | USER[S] [user[, ...]]] PRIVILEGE[S]
+//!     [AS [REVOKE] COMMAND[S]]
+//! SHOW SUPPORTED PRIVILEGE[S]
 //! ```
+//!
+//! Privileges are read by [`drevo_auth::privileges::parse`], which describes
+//! them.
 //!
 //! A name is a bare word or a backtick-quoted one; a password is a string
 //! literal (`'…'` or `"…"`, with `\` escapes) or a `$parameter`. Keywords are
@@ -49,7 +64,20 @@ impl std::fmt::Debug for Secret {
     }
 }
 
-/// A recognised user-management command.
+/// Whose privileges `SHOW … PRIVILEGES` lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrivilegeScope {
+    /// `SHOW [ALL] PRIVILEGES`: every role's.
+    All,
+    /// `SHOW ROLE r, … PRIVILEGES`.
+    Roles(Vec<String>),
+    /// `SHOW USER u, … PRIVILEGES`: those of the users' roles.
+    Users(Vec<String>),
+    /// `SHOW USER PRIVILEGES`: the signed-in user's.
+    CurrentUser,
+}
+
+/// A recognised user, role or privilege command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecurityCommand {
     /// `CREATE USER`
@@ -96,6 +124,64 @@ pub enum SecurityCommand {
         /// The new password.
         new: Secret,
     },
+    /// `CREATE ROLE`
+    CreateRole {
+        /// The new role's name.
+        name: String,
+        /// `IF NOT EXISTS`
+        if_not_exists: bool,
+        /// `AS COPY OF`: the role whose privileges it starts with.
+        copy_of: Option<String>,
+    },
+    /// `DROP ROLE`
+    DropRole {
+        /// The role to drop.
+        name: String,
+        /// `IF EXISTS`
+        if_exists: bool,
+    },
+    /// `RENAME ROLE`
+    RenameRole {
+        /// The role's name now.
+        from: String,
+        /// Its new name.
+        to: String,
+        /// `IF EXISTS`
+        if_exists: bool,
+    },
+    /// `GRANT ROLE[S] … TO …`
+    GrantRoles {
+        /// The roles to give.
+        roles: Vec<String>,
+        /// The users to give them to.
+        users: Vec<String>,
+    },
+    /// `REVOKE ROLE[S] … FROM …`
+    RevokeRoles {
+        /// The roles to take.
+        roles: Vec<String>,
+        /// The users to take them from.
+        users: Vec<String>,
+    },
+    /// `SHOW [ALL | POPULATED] ROLES [WITH USERS]`
+    ShowRoles {
+        /// `POPULATED`: only roles that some user has.
+        populated: bool,
+        /// `WITH USERS`: one row per role and member.
+        with_users: bool,
+    },
+    /// `GRANT`, `DENY` or `REVOKE` of privileges.
+    Privilege(drevo_auth::privileges::Command),
+    /// `SHOW … PRIVILEGES`
+    ShowPrivileges {
+        /// Whose.
+        scope: PrivilegeScope,
+        /// `AS COMMANDS` (`Some(false)`) or `AS REVOKE COMMANDS`
+        /// (`Some(true)`); `None` for rows.
+        as_commands: Option<bool>,
+    },
+    /// `SHOW SUPPORTED PRIVILEGES`
+    ShowSupportedPrivileges,
 }
 
 /// Classify `input`: `None` when it is not a user-management command (it goes
@@ -103,6 +189,14 @@ pub enum SecurityCommand {
 /// `Some(Ok(command))` otherwise. A message never contains a password.
 #[must_use]
 pub fn parse(input: &str) -> Option<Result<SecurityCommand, String>> {
+    if is_privilege_command(input) {
+        let text = input.trim().trim_end_matches(';');
+        return Some(
+            drevo_auth::privileges::parse(text)
+                .map(SecurityCommand::Privilege)
+                .map_err(|e| e.to_string()),
+        );
+    }
     let tokens = match tokenize(input) {
         Ok(tokens) => tokens,
         // Only report a tokenizer error for something that starts like a user
@@ -122,6 +216,43 @@ enum Kind {
     ShowUsers,
     ShowCurrent,
     AlterCurrent,
+    CreateRole,
+    DropRole,
+    RenameRole,
+    GrantRoles,
+    RevokeRoles,
+    ShowRoles,
+    ShowPrivileges,
+}
+
+/// The first words of `input`, upper-cased.
+fn first_words(input: &str, n: usize) -> Vec<String> {
+    input
+        .split(|c: char| c.is_whitespace() || c == ';' || c == ',')
+        .filter(|w| !w.is_empty())
+        .take(n)
+        .map(str::to_ascii_uppercase)
+        .collect()
+}
+
+/// `GRANT` / `DENY` / `REVOKE` of a privilege, as opposed to `GRANT ROLE r TO
+/// u` (`GRANT ROLE MANAGEMENT …` is a privilege).
+fn is_privilege_command(input: &str) -> bool {
+    let words = first_words(input, 4);
+    let w = |i: usize| words.get(i).map(String::as_str);
+    match w(0) {
+        Some("DENY") => true,
+        Some("GRANT" | "REVOKE") => {
+            // REVOKE GRANT / REVOKE DENY name the privilege after.
+            let at = if matches!(w(1), Some("GRANT" | "DENY")) && w(0) == Some("REVOKE") {
+                2
+            } else {
+                1
+            };
+            !(matches!(w(at), Some("ROLE" | "ROLES")) && w(at + 1) != Some("MANAGEMENT"))
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +277,14 @@ fn starts_like_user_command(input: &str) -> bool {
             .collect::<Vec<_>>()
             .as_slice(),
         ["CREATE" | "ALTER" | "DROP", "USER", ..]
+            | ["CREATE" | "DROP" | "RENAME", "ROLE", ..]
+            | ["GRANT" | "REVOKE", "ROLE" | "ROLES", ..]
+            | [
+                "SHOW",
+                "ROLES" | "ROLE" | "PRIVILEGES" | "PRIVILEGE" | "SUPPORTED" | "POPULATED",
+                ..
+            ]
+            | ["SHOW", "ALL", "ROLES" | "PRIVILEGES" | "PRIVILEGE"]
             | ["SHOW", "USERS" | "USERS;", ..]
             | ["SHOW" | "ALTER", "CURRENT", "USER" | "USER;"]
             | ["CREATE", "OR", "REPLACE"]
@@ -248,7 +387,30 @@ impl Parser {
         let first = self.peek_word(0)?;
         let second = self.peek_word(1);
         let third = self.peek_word(2);
+        let mentions_privileges = self.tokens[self.pos..].iter().any(
+            |t| matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("PRIVILEGES") || w.eq_ignore_ascii_case("PRIVILEGE")),
+        );
         let (kind, len) = match (first.as_str(), second.as_deref(), third.as_deref()) {
+            ("CREATE", Some("ROLE"), _) => (Kind::CreateRole, 2),
+            ("CREATE", Some("OR"), Some("REPLACE"))
+                if self.peek_word(3).as_deref() == Some("ROLE") =>
+            {
+                (Kind::CreateRole, 0)
+            }
+            ("DROP", Some("ROLE"), _) => (Kind::DropRole, 2),
+            ("RENAME", Some("ROLE"), _) => (Kind::RenameRole, 2),
+            ("GRANT", Some("ROLE" | "ROLES"), _) => (Kind::GrantRoles, 2),
+            ("REVOKE", Some("ROLE" | "ROLES"), _) => (Kind::RevokeRoles, 2),
+            ("SHOW", Some("USER" | "USERS" | "ROLE" | "ROLES" | "ALL"), _)
+                if mentions_privileges =>
+            {
+                (Kind::ShowPrivileges, 1)
+            }
+            ("SHOW", Some("PRIVILEGES" | "PRIVILEGE" | "SUPPORTED"), _) => {
+                (Kind::ShowPrivileges, 1)
+            }
+            ("SHOW", Some("ROLES"), _) => (Kind::ShowRoles, 1),
+            ("SHOW", Some("ALL" | "POPULATED"), Some("ROLES")) => (Kind::ShowRoles, 1),
             ("CREATE", Some("USER"), _) => (Kind::Create, 2),
             ("CREATE", Some("OR"), Some("REPLACE")) => (Kind::Create, 0),
             ("ALTER", Some("USER"), _) => (Kind::Alter, 2),
@@ -278,6 +440,59 @@ impl Parser {
                 SecurityCommand::ShowUsers
             }
             Kind::ShowCurrent => SecurityCommand::ShowCurrentUser,
+            Kind::CreateRole => self.create_role()?,
+            Kind::DropRole => {
+                let name = self.role_name()?;
+                let if_exists = self.keywords(&["IF", "EXISTS"]);
+                SecurityCommand::DropRole { name, if_exists }
+            }
+            Kind::RenameRole => {
+                let from = self.role_name()?;
+                let if_exists = self.keywords(&["IF", "EXISTS"]);
+                if !self.keyword("TO") {
+                    return Err("expected TO <new name> after the role name".to_string());
+                }
+                let to = self.role_name()?;
+                SecurityCommand::RenameRole {
+                    from,
+                    to,
+                    if_exists,
+                }
+            }
+            Kind::GrantRoles | Kind::RevokeRoles => {
+                let roles = self.list(Self::role_name)?;
+                let grant = matches!(kind, Kind::GrantRoles);
+                let word = if grant { "TO" } else { "FROM" };
+                if !self.keyword(word) {
+                    return Err(format!("expected {word} and the users after the roles"));
+                }
+                let users = self.list(Self::name)?;
+                if grant {
+                    SecurityCommand::GrantRoles { roles, users }
+                } else {
+                    SecurityCommand::RevokeRoles { roles, users }
+                }
+            }
+            Kind::ShowRoles => {
+                let populated = self.keyword("POPULATED");
+                if !populated {
+                    self.keyword("ALL");
+                }
+                self.keyword("ROLES");
+                let with_users =
+                    self.keywords(&["WITH", "USERS"]) || self.keywords(&["WITH", "USER"]);
+                if self
+                    .peek_word(0)
+                    .is_some_and(|w| w == "YIELD" || w == "WHERE")
+                {
+                    return Err("SHOW ROLES does not support YIELD or WHERE yet".to_string());
+                }
+                SecurityCommand::ShowRoles {
+                    populated,
+                    with_users,
+                }
+            }
+            Kind::ShowPrivileges => self.show_privileges()?,
             Kind::AlterCurrent => {
                 if !self.keywords(&["SET", "PASSWORD", "FROM"]) {
                     return Err(
@@ -297,6 +512,91 @@ impl Parser {
             None => Ok(cmd),
             Some(token) => Err(format!("unexpected {}", describe(token))),
         }
+    }
+
+    fn create_role(&mut self) -> Result<SecurityCommand, String> {
+        if self.peek_word(0).as_deref() == Some("CREATE") {
+            return Err("CREATE OR REPLACE ROLE is not supported; DROP the role first".to_string());
+        }
+        let name = self.role_name()?;
+        let if_not_exists = self.keywords(&["IF", "NOT", "EXISTS"]);
+        let copy_of = if self.keyword("AS") {
+            if !self.keywords(&["COPY", "OF"]) {
+                return Err("expected COPY OF <role> after AS".to_string());
+            }
+            Some(self.role_name()?)
+        } else {
+            None
+        };
+        Ok(SecurityCommand::CreateRole {
+            name,
+            if_not_exists,
+            copy_of,
+        })
+    }
+
+    /// After `SHOW`: `[ALL] PRIVILEGES`, `ROLE[S] … PRIVILEGES`, `USER[S]
+    /// [ …] PRIVILEGES` or `SUPPORTED PRIVILEGES`, then `AS [REVOKE]
+    /// COMMANDS`.
+    fn show_privileges(&mut self) -> Result<SecurityCommand, String> {
+        let privileges = |p: &mut Self| p.keyword("PRIVILEGES") || p.keyword("PRIVILEGE");
+        if self.keyword("SUPPORTED") {
+            if !privileges(self) {
+                return Err("expected PRIVILEGES after SHOW SUPPORTED".to_string());
+            }
+            return Ok(SecurityCommand::ShowSupportedPrivileges);
+        }
+        let scope = if self.keyword("ROLE") || self.keyword("ROLES") {
+            PrivilegeScope::Roles(self.list(Self::role_name)?)
+        } else if self.keyword("USER") || self.keyword("USERS") {
+            if matches!(
+                self.peek_word(0).as_deref(),
+                Some("PRIVILEGES" | "PRIVILEGE")
+            ) {
+                PrivilegeScope::CurrentUser
+            } else {
+                PrivilegeScope::Users(self.list(Self::name)?)
+            }
+        } else {
+            self.keyword("ALL");
+            PrivilegeScope::All
+        };
+        if !privileges(self) {
+            return Err("expected PRIVILEGES".to_string());
+        }
+        let as_commands = if self.keyword("AS") {
+            let revoke = self.keyword("REVOKE");
+            if !(self.keyword("COMMANDS") || self.keyword("COMMAND")) {
+                return Err("expected AS [REVOKE] COMMANDS".to_string());
+            }
+            Some(revoke)
+        } else {
+            None
+        };
+        if self
+            .peek_word(0)
+            .is_some_and(|w| w == "YIELD" || w == "WHERE")
+        {
+            return Err("SHOW PRIVILEGES does not support YIELD or WHERE yet".to_string());
+        }
+        Ok(SecurityCommand::ShowPrivileges { scope, as_commands })
+    }
+
+    /// One or more names separated by commas.
+    fn list(
+        &mut self,
+        item: fn(&mut Self) -> Result<String, String>,
+    ) -> Result<Vec<String>, String> {
+        let mut out = vec![item(self)?];
+        while self.tokens.get(self.pos) == Some(&Token::Other(',')) {
+            self.pos += 1;
+            out.push(item(self)?);
+        }
+        Ok(out)
+    }
+
+    fn role_name(&mut self) -> Result<String, String> {
+        self.name().map_err(|_| "expected a role name".to_string())
     }
 
     fn create(&mut self) -> Result<SecurityCommand, String> {
@@ -500,7 +800,16 @@ enum PasswordClause {
 fn is_clause_keyword(w: &str) -> bool {
     matches!(
         w.to_ascii_uppercase().as_str(),
-        "SET" | "IF" | "FROM" | "TO" | "YIELD" | "WHERE"
+        "SET"
+            | "IF"
+            | "FROM"
+            | "TO"
+            | "YIELD"
+            | "WHERE"
+            | "AS"
+            | "WITH"
+            | "PRIVILEGES"
+            | "PRIVILEGE"
     )
 }
 
