@@ -19,6 +19,10 @@ history and the in-repo issue tracker; format loosely follows
     picks the database.
   - With logins required, the stream leaves out what the user may not
     traverse.
+  - `CALL drevo.events.post(name, payload)` posts a named application
+    event, once per row, delivered as a `posted` event when its statement
+    or transaction commits; `names=` picks events by name. Stream
+    positions read `<cursor>:<n>` once named events exist.
 
 - **`SHOW TRANSACTIONS` and `TERMINATE TRANSACTIONS`** (issue #639).
   - The server lists every running statement and open explicit

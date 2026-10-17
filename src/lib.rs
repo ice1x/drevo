@@ -128,6 +128,8 @@ pub mod embeddings;
 /// alternative.
 pub mod engine;
 pub mod error;
+/// Named application events, delivered on commit (`drevo.events.post`).
+pub mod event_bus;
 /// `GET /events`: committed changes as a Server-Sent Events stream.
 #[cfg(feature = "http")]
 pub mod events;

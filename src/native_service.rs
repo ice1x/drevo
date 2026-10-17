@@ -224,6 +224,13 @@ pub struct NativeService {
     explicit_txs: std::sync::Mutex<
         std::collections::HashMap<crate::native::NativeTxId, crate::transactions::Listed>,
     >,
+    /// Named events posted in open explicit transactions, published when
+    /// they commit.
+    tx_events: std::sync::Mutex<HashMap<crate::native::NativeTxId, Vec<crate::event_bus::Pending>>>,
+    /// Named events of prepared transactions, by global transaction id.
+    prepared_events: std::sync::Mutex<HashMap<String, Vec<crate::event_bus::Pending>>>,
+    /// This database's published named events.
+    event_bus: crate::event_bus::EventBus,
 }
 
 /// A per-target tally of swallowed native auto-embed failures (issue #447;
@@ -395,6 +402,9 @@ impl NativeService {
             database_name: RwLock::new(DEFAULT_DATABASE_NAME.to_string()),
             #[cfg(not(target_arch = "wasm32"))]
             explicit_txs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            tx_events: std::sync::Mutex::new(HashMap::new()),
+            prepared_events: std::sync::Mutex::new(HashMap::new()),
+            event_bus: crate::event_bus::EventBus::new(),
         })
     }
 
@@ -439,6 +449,9 @@ impl NativeService {
             database_name: RwLock::new(DEFAULT_DATABASE_NAME.to_string()),
             #[cfg(not(target_arch = "wasm32"))]
             explicit_txs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            tx_events: std::sync::Mutex::new(HashMap::new()),
+            prepared_events: std::sync::Mutex::new(HashMap::new()),
+            event_bus: crate::event_bus::EventBus::new(),
         }
     }
 
@@ -575,24 +588,44 @@ impl NativeService {
         restriction: Option<Restriction<'_>>,
     ) -> Result<ExecResult, ExecError> {
         let checked_writes = restriction.is_some_and(|r| !r.writes_everything());
-        let result = self.listed(|| {
-            crate::cypher::executor::deadline::with_statement_timeout(
-                self.statement_timeout(),
-                || {
-                    let writes = query_writes(query)
-                        || (checked_writes && query_calls_writing_procedure(query));
-                    if (self.graph.has_existence_constraints() || checked_writes) && writes {
-                        self.execute_as_transaction(query, &params, restriction)
-                    } else {
-                        self.with_fresh_indexes(|idx| {
-                            self.execute_with(idx, query, params, restriction)
-                        })
-                    }
-                },
-            )
+        let (result, events) = crate::event_bus::collect(|| {
+            self.listed(|| {
+                crate::cypher::executor::deadline::with_statement_timeout(
+                    self.statement_timeout(),
+                    || {
+                        let writes = query_writes(query)
+                            || (checked_writes && query_calls_writing_procedure(query));
+                        if (self.graph.has_existence_constraints() || checked_writes) && writes {
+                            self.execute_as_transaction(query, &params, restriction)
+                        } else {
+                            self.with_fresh_indexes(|idx| {
+                                self.execute_with(idx, query, params, restriction)
+                            })
+                        }
+                    },
+                )
+            })
         });
+        if result.is_ok() {
+            self.publish_events(events);
+        }
         self.maybe_compact();
         result
+    }
+
+    /// Publish named events whose statement or transaction committed.
+    fn publish_events(&self, events: Vec<crate::event_bus::Pending>) {
+        self.event_bus.publish(
+            events,
+            || self.graph.change_head(),
+            self.event_history.load(Ordering::Relaxed),
+        );
+    }
+
+    /// This database's published named events (`drevo.events.post`).
+    #[must_use]
+    pub fn event_bus(&self) -> &crate::event_bus::EventBus {
+        &self.event_bus
     }
 
     /// Run a writing statement as one transaction, committed at its end
@@ -619,25 +652,28 @@ impl NativeService {
                     "the statement's transaction closed before it ran",
                 ))));
             };
-            let result = self.with_fresh_indexes(|idx| {
-                let ctx = NativeQueryContext {
-                    fts: Some(&idx.fts),
-                    fts_rel: Some(&idx.fts_rel),
-                    labels: None,
-                    properties: None,
-                    paths: None,
-                    texts: None,
-                    values: None,
-                    #[cfg(feature = "http")]
-                    embedder: self.embedder.get(),
-                    #[cfg(not(feature = "http"))]
-                    embedder: None,
-                    semantic: Some(self),
-                    in_transaction: false,
-                    tx_has_written: false,
-                    restriction,
-                };
-                execute_on_engine_with_context(query, &engine, &ctx, params.clone())
+            // Only the attempt that commits posts its events.
+            let (result, events) = crate::event_bus::collect(|| {
+                self.with_fresh_indexes(|idx| {
+                    let ctx = NativeQueryContext {
+                        fts: Some(&idx.fts),
+                        fts_rel: Some(&idx.fts_rel),
+                        labels: None,
+                        properties: None,
+                        paths: None,
+                        texts: None,
+                        values: None,
+                        #[cfg(feature = "http")]
+                        embedder: self.embedder.get(),
+                        #[cfg(not(feature = "http"))]
+                        embedder: None,
+                        semantic: Some(self),
+                        in_transaction: false,
+                        tx_has_written: false,
+                        restriction,
+                    };
+                    execute_on_engine_with_context(query, &engine, &ctx, params.clone())
+                })
             });
             let rows = match result {
                 Ok(rows) => rows,
@@ -647,7 +683,12 @@ impl NativeService {
                 }
             };
             match self.graph.tx_commit(tx) {
-                Ok(()) => return Ok(rows),
+                Ok(()) => {
+                    for event in events {
+                        crate::event_bus::post(event);
+                    }
+                    return Ok(rows);
+                }
                 Err(crate::native::CommitError::Conflict) if attempt < ATTEMPTS => {}
                 Err(crate::native::CommitError::Constraint(v)) => {
                     return Err(ExecError::Storage(DrevoError::ConstraintViolation {
@@ -823,8 +864,8 @@ impl NativeService {
     }
 
     /// Keep the latest `changes` committed changes in the change feed after
-    /// each compaction, for event subscribers to resume from (default
-    /// [`Self::DEFAULT_EVENT_HISTORY`]).
+    /// each compaction, and as many named events, for event subscribers to
+    /// resume from (default [`Self::DEFAULT_EVENT_HISTORY`]).
     pub fn set_event_history(&self, changes: u64) {
         self.event_history.store(changes, Ordering::Relaxed);
     }
@@ -1022,27 +1063,58 @@ impl NativeService {
         let _idle = Idle(entry);
         #[cfg(target_arch = "wasm32")]
         let flag = None;
-        crate::cypher::executor::deadline::with_cancel(flag, || {
-            crate::cypher::executor::deadline::with_statement_timeout(
-                self.statement_timeout(),
-                || {
-                    self.with_fresh_indexes(|idx| {
-                        let ctx = NativeQueryContext {
-                            fts: Some(&idx.fts),
-                            fts_rel: Some(&idx.fts_rel),
-                            #[cfg(feature = "http")]
-                            embedder: self.embedder.get(),
-                            semantic: Some(self),
-                            in_transaction: true,
-                            tx_has_written,
-                            restriction,
-                            ..NativeQueryContext::default()
-                        };
-                        execute_on_engine_with_context(query, &engine, &ctx, params)
-                    })
-                },
-            )
-        })
+        let (result, events) = crate::event_bus::collect(|| {
+            crate::cypher::executor::deadline::with_cancel(flag, || {
+                crate::cypher::executor::deadline::with_statement_timeout(
+                    self.statement_timeout(),
+                    || {
+                        self.with_fresh_indexes(|idx| {
+                            let ctx = NativeQueryContext {
+                                fts: Some(&idx.fts),
+                                fts_rel: Some(&idx.fts_rel),
+                                #[cfg(feature = "http")]
+                                embedder: self.embedder.get(),
+                                semantic: Some(self),
+                                in_transaction: true,
+                                tx_has_written,
+                                restriction,
+                                ..NativeQueryContext::default()
+                            };
+                            execute_on_engine_with_context(query, &engine, &ctx, params)
+                        })
+                    },
+                )
+            })
+        });
+        // A failed statement's events go with it; the others wait for the
+        // commit.
+        if result.is_ok() && !events.is_empty() {
+            self.tx_events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(tx)
+                .or_default()
+                .extend(events);
+        }
+        result
+    }
+
+    /// The named events explicit transaction `tx` posted, forgotten.
+    fn take_tx_events(&self, tx: crate::native::NativeTxId) -> Vec<crate::event_bus::Pending> {
+        self.tx_events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&tx)
+            .unwrap_or_default()
+    }
+
+    /// The named events of the transaction prepared under `gid`, forgotten.
+    fn take_prepared_events(&self, gid: &str) -> Vec<crate::event_bus::Pending> {
+        self.prepared_events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(gid)
+            .unwrap_or_default()
     }
 
     /// Commit a registered transaction (one fsynced WAL batch, atomic swap),
@@ -1066,7 +1138,9 @@ impl NativeService {
         }
         let result = self.graph.tx_commit(tx);
         self.unlist_tx(tx);
+        let events = self.take_tx_events(tx);
         if result.is_ok() {
+            self.publish_events(events);
             self.maybe_compact();
         }
         result
@@ -1075,6 +1149,7 @@ impl NativeService {
     /// Discard a registered transaction. `false` when it was already closed.
     pub fn rollback_tx(&self, tx: crate::native::NativeTxId) -> bool {
         self.unlist_tx(tx);
+        self.take_tx_events(tx);
         self.graph.tx_rollback(tx)
     }
 
@@ -1092,7 +1167,15 @@ impl NativeService {
         gid: &str,
     ) -> std::result::Result<(), crate::native::PrepareError> {
         self.unlist_tx(tx);
-        self.graph.tx_prepare(tx, gid)
+        let events = self.take_tx_events(tx);
+        let result = self.graph.tx_prepare(tx, gid);
+        if result.is_ok() && !events.is_empty() {
+            self.prepared_events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(gid.to_string(), events);
+        }
+        result
     }
 
     /// Two-phase commit, phase two (#556): apply the write set prepared under
@@ -1109,6 +1192,8 @@ impl NativeService {
     ) -> std::result::Result<(), crate::native::ResolveError> {
         let result = self.graph.commit_prepared(gid);
         if result.is_ok() {
+            let events = self.take_prepared_events(gid);
+            self.publish_events(events);
             self.maybe_compact();
         }
         result
@@ -1124,7 +1209,11 @@ impl NativeService {
         &self,
         gid: &str,
     ) -> std::result::Result<(), crate::native::ResolveError> {
-        self.graph.rollback_prepared(gid)
+        let result = self.graph.rollback_prepared(gid);
+        if result.is_ok() {
+            self.take_prepared_events(gid);
+        }
+        result
     }
 
     /// Two-phase commit (#556): roll back the transaction prepared under
@@ -1141,7 +1230,11 @@ impl NativeService {
         &self,
         gid: &str,
     ) -> std::result::Result<(), crate::native::ResolveError> {
-        self.graph.heuristic_rollback_prepared(gid)
+        let result = self.graph.heuristic_rollback_prepared(gid);
+        if result.is_ok() {
+            self.take_prepared_events(gid);
+        }
+        result
     }
 
     /// Every prepared, unresolved transaction (#556), by ascending `gid`.

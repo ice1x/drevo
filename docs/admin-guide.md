@@ -895,15 +895,48 @@ events.addEventListener("node", (e) => refresh(JSON.parse(e.data)));
 events.addEventListener("lagged", () => reloadEverything());
 ```
 
-- **Resuming.** The SSE `id` is the change's cursor. After a reconnect, a client resumes from
-  `?since=<cursor>` or from the `Last-Event-ID` header, which `EventSource` sends by itself, and
-  misses nothing. Without either, the stream starts at the latest change.
-- **`lagged`.** The server keeps the latest 10 000 changes for resuming. An older cursor, or a
-  cursor from before a restart, gets a `lagged` event carrying the current cursor: reload, then
-  follow from there.
+#### Named events (`drevo.events.post`)
+
+A write can also say what happened, so clients need not work it out from the changed nodes.
+`CALL drevo.events.post(name, payload)` posts a named event, once per row; the payload is any
+value but a node, relationship or path. The event waits for the statement, or its explicit
+transaction, to commit, then arrives as a `posted` event after the changes it committed. A failed
+statement or a rolled-back transaction posts nothing.
+
+```cypher
+CREATE (i:Invoice {no: 'INV-7', status: 'approved'})
+WITH i
+CALL drevo.events.post('invoice_approved', {invoice: i.no}) YIELD name
+RETURN i.no, name
+```
+
+```text
+id: 45:1
+event: posted
+data: {"name":"invoice_approved","payload":{"invoice":"INV-7"},"cursor":45}
+```
+
+```js
+const events = new EventSource("/events?names=invoice_approved");
+events.addEventListener("posted", (e) => notify(JSON.parse(e.data).payload));
+```
+
+#### Stream options
+
+- **Resuming.** The SSE `id` is the stream position: the change cursor, followed by `:<n>` once
+  named events have been posted, where `n` counts them. After a reconnect, a client resumes from
+  `?since=<id>` or from the `Last-Event-ID` header, which `EventSource` sends by itself, and misses
+  nothing. `since` also takes a bare cursor from an event's data. Without either, the stream starts
+  at the latest change.
+- **`lagged`.** The server keeps the latest 10 000 changes and 10 000 named events for resuming;
+  named events are kept in memory only. An older position, or one from before a restart, gets a
+  `lagged` event carrying the current cursor: reload, then follow from there.
 - **`labels`** keeps nodes with any of the listed labels and relationships of any of the listed
-  types. A deletion carries only the id, because what was deleted is gone, so it always passes.
+  types. A deletion carries only the id, because what was deleted is gone, so it passes `labels`.
   Deleting a node removes its relationships with it, without an event for each of them.
+- **`names`** keeps the named events with any of the listed names. Naming one kind (`labels` or
+  `names`) leaves the other out unless it is named too: `?names=invoice_approved` carries only
+  those events, `?labels=Invoice&names=invoice_approved` both.
 - **`db`** follows another database than the default: `?db=erp`.
 - **Logins.** With logins required, the stream needs a login like any other route. It also leaves
   out the nodes and relationships the user may not traverse.

@@ -1370,6 +1370,23 @@ Unlike the reference library, where `valid_until` is written but never set,
 drevo closes superseded facts and filters on the window, so "as of" questions
 get real answers.
 
+### Named events
+
+`CALL drevo.events.post(name, payload) [YIELD name]` posts a named event for
+the subscribers of [`GET /events`](admin-guide.md#named-events-drevoeventspost),
+once per row; the arguments may use the row's variables, and the payload is
+any value but a node, relationship or path (`null` for none). The event is
+published when the statement, or its explicit transaction, commits; a failed
+statement or a rolled-back transaction posts nothing. The rows pass through
+unchanged.
+
+```cypher
+CREATE (b:Bug {key: 'BUG-12', status: 'reopened'})
+WITH b
+CALL drevo.events.post('bug_reopened', {bug: b.key}) YIELD name
+RETURN b.key, name
+```
+
 ### Explicit transactions
 
 An explicit transaction is a group of statements that commit or roll back
