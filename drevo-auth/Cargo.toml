@@ -27,6 +27,9 @@ default = ["password"]
 # the crate is the dependency-free privilege model (`privileges`) alone, which also
 # builds for wasm32-unknown-unknown.
 password = ["dep:argon2", "dep:serde", "dep:serde_json"]
+# OIDC bearer tokens (`oidc`): JWT signature checks (RS256, ES256) with `ring`,
+# the pure-Rust crypto library rustls already uses.
+oidc = ["password", "dep:ring"]
 
 [dependencies]
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash", "rand", "std"], optional = true }
@@ -34,6 +37,7 @@ thiserror = "2"
 # The security catalog is stored as JSON.
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+ring = { version = "0.17", optional = true }
 
 # docs.rs documents every module, including the feature-gated `authn`.
 [package.metadata.docs.rs]

@@ -19,6 +19,11 @@ Authentication and role-based access control for Rust servers:
   Neo4j's default privileges.
   A `SecurityContext` compiles one user's privileges for a session and
   answers each check from a cache.
+- **OIDC** (`oidc`, optional): bearer tokens from an identity provider
+  (Keycloak, Kanidm, Auth0, …). A JWT's RS256 or ES256 signature is checked
+  against the provider's key set, cached by key id; then `iss`, `aud`, `exp`
+  and `nbf` with a clock-skew allowance. The user's groups map to roles. The
+  crate makes no network calls: the caller supplies the key set.
 - **Audit** (`audit`): security events of a fixed shape — logins, logouts,
   password, user, role and privilege changes, refusals — with no field for
   a password or token, written as JSON lines to a size-rotated file, to
@@ -115,6 +120,7 @@ for command in users.as_commands(&PrivilegeFilter::Role("triage".into())) {
 
 ## Features
 
+- `oidc`: the `oidc` module; adds `ring` for signature checks.
 - `password` (default): the `authn`, `catalog` and `users` modules and their
   Argon2id and JSON dependencies. Without it the crate is the access policy
   alone, which needs nothing beyond `std` and builds for

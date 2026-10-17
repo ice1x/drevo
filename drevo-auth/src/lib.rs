@@ -16,6 +16,8 @@ pub mod audit;
 pub mod authn;
 #[cfg(feature = "password")]
 pub mod catalog;
+#[cfg(feature = "oidc")]
+pub mod oidc;
 pub mod privileges;
 #[cfg(feature = "password")]
 pub mod users;

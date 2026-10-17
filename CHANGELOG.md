@@ -8,6 +8,17 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **OIDC token validator in drevo-auth** (issue #638, feature `oidc`).
+  `TokenValidator` checks a provider's JWT: an RS256 or ES256 signature
+  against the provider's key set, then `iss`, `aud` (a string or a list),
+  `exp` and `nbf`, with 60 s leeway. It refuses `none`, HMAC and other
+  algorithms. Keys are cached by `kid`, and an unknown `kid` fetches the set
+  again, at most once a minute. `JwksSource` supplies the key set, so the
+  crate itself makes no network calls. `ClaimMapping` takes the user name
+  from a claim and maps the groups in a list claim to roles
+  (`parse_role_map("admins=admin,devs=editor")`), giving an `OidcPrincipal`
+  with no local user record.
+
 - **Security audit log** (issue #637). `DREVO_AUDIT_LOG=off|stdout|<path>`
   records the following, with time, user, client address, protocol, target,
   outcome and reason:
