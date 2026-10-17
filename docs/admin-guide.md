@@ -452,19 +452,63 @@ an opt-in `tracing-opentelemetry` layer if you want spans exported.
 
 ## 6. Storage, backup, and recovery
 
-Data is a **single redb file**: `${DREVO_DATA_DIR}/drevo.redb`. redb is an embedded,
-ACID, B-tree key-value store; every write commits in its own transaction (synchronous
-durability). There is no separate WAL file to manage.
+Each database is a write-ahead log plus a few sidecars. The default database lives in
+`${DREVO_DATA_DIR}/native.wal`, and every other one in `${DREVO_DATA_DIR}/databases/<name>/`.
+Next to each log sit:
 
-**Backup** — copy the single file (redb allows concurrent readers, so a live copy is safe):
+- `origin.json`, `tombstones.json` and `stamps.jsonl`: replica identity and causal stamps;
+- `semantic.json`: index registrations and constraints.
+
+The users (`security.json`) and the embeddings settings (`embeddings_config.json`) are kept in
+the data directory itself. Every acknowledged write is fsynced to the log before it returns; the
+log is compacted in place as it grows.
+
+### Physical backups
+
+A physical backup copies every database's log and sidecars, plus the server's files, while the
+server keeps serving. Writers pause only for the moment it takes to note where each log ends.
+Each file is recorded with its SHA-256 in a manifest.
 
 ```bash
-cp /data/drevo.redb /backups/drevo-$(date +%Y%m%d-%H%M%S).redb
+curl -X POST http://localhost:8080/admin/backup -H 'content-type: application/json' \
+     -d '{"name": "monday"}'
+curl -X POST http://localhost:8080/admin/backup -H 'content-type: application/json' \
+     -d '{"name": "tuesday", "since": "monday"}'
+curl http://localhost:8080/admin/backups
 ```
 
-**Recover** — `Drevo::recover(path)` opens the file and runs an integrity scan
-(`IntegrityReport`: counter drift, orphaned index entries, dangling edges, corrupt rows),
-repairing counter drift automatically. `Drevo::compact()` reclaims space.
+- **Where.** Backups go to `DREVO_BACKUP_DIR`, `<data_dir>/backups` by default; copy them off
+  the machine as usual. Without a `name`, one is made from the time (`backup-20261017-153012`).
+- **Incremental.** With `since`, each database that continues that backup gets only the log
+  written since. A database created since, or whose log was compacted since, is backed up in
+  full, and the answer says why (`full_because`).
+- **Logins.** With logins required, both routes need `ALL DBMS PRIVILEGES`.
+
+A stopped server is backed up from the command line, with the same environment:
+
+```bash
+DREVO_DATA_DIR=/data drevo-server backup --to /backups/monday
+DREVO_DATA_DIR=/data drevo-server backup --to /backups/tuesday --since /backups/monday
+```
+
+**Restore** into a new, empty data directory, giving the full backup and then each incremental in
+the order they were taken. Every checksum and the chain are checked first; a damaged file or a
+gap stops the restore and leaves nothing behind. Then point the server at the restored directory.
+
+```bash
+drevo-server restore --from /backups/monday --from /backups/tuesday --to /data-restored
+DREVO_DATA_DIR=/data-restored drevo-server
+```
+
+With Docker, the image's entry point is `drevo-server`, so the command follows the image name
+in a container that mounts the volumes (with the server's container stopped, for `backup`):
+
+```bash
+docker run --rm -v drevo_data:/data -v drevo_backups:/backups ice1x/drevo backup --to /backups/monday
+```
+
+A GraphML or JSON export (`GET /export/graphml`, `GET /export/json`) remains the portable,
+logical copy of one database's graph.
 
 ### Storage bloat (#253 slice 1)
 
@@ -994,8 +1038,9 @@ curl -s http://localhost:8080/metrics | grep '^drevo_'
 curl -s http://localhost:8080/storage/bloat | jq
 python -m drevo bloat /data/drevo.redb
 
-# Backup
-cp /data/drevo.redb /backups/drevo-$(date +%F-%H%M%S).redb
+# Backup (physical, online) and restore
+curl -X POST http://localhost:8080/admin/backup -H 'content-type: application/json' -d '{}'
+drevo-server restore --from /data/backups/<name> --to /data-restored
 
 # Full-graph export / import (JSON)
 curl -s http://localhost:8080/export/json > graph.json

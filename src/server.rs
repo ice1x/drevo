@@ -25,6 +25,7 @@
 //! | `DREVO_HOST`      | `0.0.0.0`   | Bind address (IPv4, IPv6, or DNS) |
 //! | `DREVO_PORT`      | `8080`      | TCP port (1..=65535)              |
 //! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `native.wal`    |
+//! | `DREVO_BACKUP_DIR` | `<data_dir>/backups` | Where `POST /admin/backup` writes physical backups |
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
 //! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS and Bolt as `bolt+s://` (`bolt-tls` feature) |
@@ -91,6 +92,9 @@ pub struct Config {
     /// Directory that holds the durable native store (`<data_dir>/native.wal`)
     /// and the persisted embeddings config.
     pub data_dir: PathBuf,
+    /// Where `POST /admin/backup` writes backups (`DREVO_BACKUP_DIR`);
+    /// `<data_dir>/backups` when unset.
+    pub backup_dir: Option<PathBuf>,
     /// Which engine serves Cypher queries (engine flip, RFC #307 Phase 6).
     pub engine: EngineMode,
     /// Per-statement wall-clock limit from `DREVO_QUERY_TIMEOUT_MS` (#547);
@@ -496,6 +500,9 @@ impl Config {
             host,
             port,
             data_dir: PathBuf::from(data_dir_raw),
+            backup_dir: getter("DREVO_BACKUP_DIR")
+                .filter(|d| !d.trim().is_empty())
+                .map(PathBuf::from),
             engine,
             query_timeout,
             prepared_tx_warn,
@@ -1099,6 +1106,10 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
         .with_wire_formats(cfg.http_formats.clone())
         .with_security(security)
         .with_secure_cookies(tls.is_some());
+    let state = match &cfg.backup_dir {
+        Some(dir) => state.with_backup_dir(dir.clone()),
+        None => state,
+    };
     // Opt-in embeddings proxy, exactly like the KV path — the restart
     // tooling probes POST /v1/embeddings after boot. Store-backed so the key is
     // Web-UI-settable.

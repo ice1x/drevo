@@ -276,6 +276,13 @@ impl DatabaseRegistry {
         self.read().contains_key(name)
     }
 
+    /// The data directory durable databases live under; `None` for an
+    /// in-memory catalog.
+    #[must_use]
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.data_dir.as_deref()
+    }
+
     /// Every database name, sorted ascending. Always includes the default.
     #[must_use]
     pub fn list(&self) -> Vec<String> {

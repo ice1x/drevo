@@ -2394,39 +2394,73 @@ impl NativeService {
             let Some(path) = self.semantic_sidecar.as_ref() else {
                 return;
             };
-            let sidecar = SemanticSidecar {
-                node: self
-                    .semantic
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone(),
-                rel: self
-                    .rel_semantic
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone(),
-                vector: self
-                    .vector_indexes
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone(),
-                path: self
-                    .path_indexes
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone(),
-                constraints: self
-                    .constraints
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone(),
-            };
-            let Ok(bytes) = serde_json::to_vec(&sidecar) else {
+            let Ok(bytes) = self.semantic_sidecar_bytes() else {
                 return;
             };
             let tmp = path.with_extension("json.tmp");
             let _ = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, path));
         }
+    }
+
+    /// The `semantic.json` sidecar's contents for the registries as they are
+    /// now.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn semantic_sidecar_bytes(&self) -> serde_json::Result<Vec<u8>> {
+        let sidecar = SemanticSidecar {
+            node: self
+                .semantic
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            rel: self
+                .rel_semantic
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            vector: self
+                .vector_indexes
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            path: self
+                .path_indexes
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            constraints: self
+                .constraints
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+        };
+        serde_json::to_vec(&sidecar)
+    }
+
+    /// Back up this database into `dir` while it keeps serving: the engine's
+    /// log and sidecars, `semantic.json` (the semantic, vector and path index
+    /// registrations and the constraints) and `extra_files`. With `since`,
+    /// only what was logged after that backup. See [`drevo_core::backup`].
+    ///
+    /// # Errors
+    ///
+    /// [`drevo_core::backup::BackupError`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn backup_to(
+        &self,
+        dir: &std::path::Path,
+        since: Option<drevo_core::backup::BackupManifest>,
+        mut extra_files: Vec<(String, Vec<u8>)>,
+    ) -> Result<drevo_core::backup::BackupManifest, drevo_core::backup::BackupError> {
+        if self.semantic_sidecar.is_some() {
+            let bytes = self
+                .semantic_sidecar_bytes()
+                .map_err(|e| drevo_core::backup::BackupError::Io(std::io::Error::other(e)))?;
+            extra_files.push(("semantic.json".to_string(), bytes));
+        }
+        self.graph.backup_to(
+            dir,
+            &drevo_core::backup::BackupOptions { since, extra_files },
+        )
     }
 
     /// Rebuild an in-memory HNSW index over every stored embedding — parity

@@ -186,6 +186,8 @@ async fn database_and_server_administration_need_admin() {
         ("POST", "/storage/shrink"),
         ("GET", "/config/embeddings"),
         ("GET", "/transactions/prepared"),
+        ("POST", "/admin/backup"),
+        ("GET", "/admin/backups"),
     ] {
         let body = (method == "POST").then(|| serde_json::json!({}));
         s.forbidden("ed", method, uri, body).await;
