@@ -206,6 +206,21 @@ mod grpc {
     }
 
     #[tokio::test]
+    async fn a_write_without_the_privilege_is_permission_denied() {
+        let (security, users) = security();
+        let mut c = start(security).await;
+        // ann has only PUBLIC: no graph write.
+        let err = rows(&mut c, "CREATE (:Task)", Some(&basic("ann", ANN_PW)))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::PermissionDenied);
+        users.grant_role("editor", "ann").unwrap();
+        rows(&mut c, "CREATE (:Task)", Some(&basic("ann", ANN_PW)))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn health_needs_no_login() {
         let (security, _) = security();
         let mut c = start(security).await;

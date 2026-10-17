@@ -403,6 +403,13 @@ pub enum ExecError {
         /// Source span of the offending `CALL` or schema command.
         span: Span,
     },
+    /// The signed-in user lacks the privilege for a write, a schema command, a
+    /// procedure or the database itself. Nothing of the statement is kept.
+    #[error("{message}")]
+    Forbidden {
+        /// What was refused, naming the privilege.
+        message: String,
+    },
     /// A full-text procedure (`fts.search`, `db.index.fulltext.queryNodes`,
     /// …) ran after its statement or transaction had written. The full-text
     /// index covers committed data only, so it cannot rank those writes;
@@ -518,6 +525,7 @@ impl ExecError {
             | Self::InvalidMutation(_)
             | Self::EngineCapability { .. }
             | Self::IndexBehindWrites { .. }
+            | Self::Forbidden { .. }
             | Self::Timeout { .. }
             | Self::Storage(_) => None,
         }
@@ -1040,6 +1048,29 @@ pub struct NativeQueryContext<'a> {
     /// statement reads: full-text procedures fail with
     /// [`ExecError::IndexBehindWrites`].
     pub tx_has_written: bool,
+    /// The signed-in user's privileges and the database the statement runs
+    /// in (#636); `None` checks nothing.
+    pub restriction: Option<Restriction<'a>>,
+}
+
+/// Who runs a statement, and where: the session's
+/// [`SecurityContext`](drevo_auth::privileges::SecurityContext) and the name
+/// of the database the statement runs in.
+#[derive(Clone, Copy)]
+pub struct Restriction<'a> {
+    /// The user's compiled privileges.
+    pub context: &'a drevo_auth::privileges::SecurityContext,
+    /// The database the statement runs in.
+    pub database: &'a str,
+}
+
+impl Restriction<'_> {
+    /// Whether every write to this database's graph is allowed, so writes
+    /// need no checks.
+    #[must_use]
+    pub fn writes_everything(&self) -> bool {
+        self.context.writes_everything(self.database)
+    }
 }
 
 /// Execute over any engine with a [`NativeQueryContext`] attached — the
@@ -1053,6 +1084,14 @@ pub fn execute_on_engine_with_context(
     ctx: &NativeQueryContext<'_>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
+    // A database without `ACCESS` cannot be used at all (#636).
+    if let Some(r) = ctx.restriction {
+        if !r.context.can_access(r.database) {
+            return Err(ExecError::Forbidden {
+                message: format!("access to database '{}' is not allowed", r.database),
+            });
+        }
+    }
     execute_inner(query, engine, ctx, params)
 }
 
@@ -1258,6 +1297,7 @@ fn execute_single(
         native_semantic: ctx.semantic,
         in_transaction: ctx.in_transaction,
         tx_has_written: ctx.tx_has_written,
+        restriction: ctx.restriction,
         pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
@@ -2407,6 +2447,8 @@ struct Executor<'a> {
     /// Whether an earlier statement of the explicit transaction wrote
     /// ([`NativeQueryContext::tx_has_written`]).
     tx_has_written: bool,
+    /// The signed-in user's privileges ([`NativeQueryContext::restriction`]).
+    restriction: Option<Restriction<'a>>,
     /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
     /// `WHERE` clause (`variable → [constraint]`), so a term like
     /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
@@ -2429,6 +2471,115 @@ struct Executor<'a> {
 
 // Default initial result fields — Rust struct init helper.
 impl<'a> Executor<'a> {
+    /// Refuse a graph write the signed-in user may not make (#636).
+    fn guard_write(
+        &self,
+        action: drevo_auth::privileges::Action,
+        element: drevo_auth::privileges::Element<'_>,
+        name: Option<&str>,
+    ) -> ExecResultT<()> {
+        let Some(r) = self.restriction else {
+            return Ok(());
+        };
+        if r.writes_everything() || r.context.can_write(action, r.database, element, name) {
+            return Ok(());
+        }
+        let what = match element {
+            drevo_auth::privileges::Element::Node(labels) => format!("node :{}", labels.join(":")),
+            drevo_auth::privileges::Element::Relationship(t) => format!("relationship :{t}"),
+            drevo_auth::privileges::Element::None => "the graph".to_string(),
+        };
+        let name = name.map(|n| format!(" `{n}`")).unwrap_or_default();
+        Err(ExecError::Forbidden {
+            message: format!(
+                "{}{name} on {what} is not allowed in database '{}'",
+                action.keyword(),
+                r.database
+            ),
+        })
+    }
+
+    /// Refuse a write to node `nv` (create, delete, a property or a label).
+    fn guard_node(
+        &self,
+        action: drevo_auth::privileges::Action,
+        labels: &[String],
+        name: Option<&str>,
+    ) -> ExecResultT<()> {
+        if self.restriction.is_none_or(|r| r.writes_everything()) {
+            return Ok(());
+        }
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        self.guard_write(action, drevo_auth::privileges::Element::Node(&labels), name)
+    }
+
+    /// Refuse a write to a relationship of `kind`.
+    fn guard_relationship(
+        &self,
+        action: drevo_auth::privileges::Action,
+        kind: &str,
+        name: Option<&str>,
+    ) -> ExecResultT<()> {
+        self.guard_write(
+            action,
+            drevo_auth::privileges::Element::Relationship(kind),
+            name,
+        )
+    }
+
+    /// Refuse a `CALL` the signed-in user may not make: every procedure needs
+    /// `EXECUTE PROCEDURE`; the two-phase-commit resolvers also need `EXECUTE
+    /// ADMIN PROCEDURES`, and the ones that build vector indexes `INDEX
+    /// MANAGEMENT`.
+    fn guard_procedure(&self, name: &str) -> ExecResultT<()> {
+        use drevo_auth::privileges::Action;
+        let Some(r) = self.restriction else {
+            return Ok(());
+        };
+        if !r.context.can_execute_procedure(name) {
+            return Err(ExecError::Forbidden {
+                message: format!("executing procedure `{name}` is not allowed"),
+            });
+        }
+        match name {
+            "drevo.tx.commitPrepared"
+            | "drevo.tx.rollbackPrepared"
+            | "drevo.tx.heuristicRollback"
+            | "drevo.tx.listPrepared" => {
+                if !r.context.has_dbms(Action::ExecuteAdminProcedures) {
+                    return Err(ExecError::Forbidden {
+                        message: format!(
+                            "`{name}` is an administration procedure and needs EXECUTE ADMIN PROCEDURES"
+                        ),
+                    });
+                }
+                Ok(())
+            }
+            "drevo.semantic.register"
+            | "drevo.semantic.registerRel"
+            | "drevo.semantic.reindex"
+            | "drevo.semantic.reindexRel" => self.guard_database(Action::IndexManagement),
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuse a database privilege (index or constraint management, …).
+    fn guard_database(&self, action: drevo_auth::privileges::Action) -> ExecResultT<()> {
+        let Some(r) = self.restriction else {
+            return Ok(());
+        };
+        if r.context.can_database(action, r.database) {
+            return Ok(());
+        }
+        Err(ExecError::Forbidden {
+            message: format!(
+                "{} is not allowed in database '{}'",
+                action.keyword(),
+                r.database
+            ),
+        })
+    }
+
     /// The graph store viewed through the [`GraphEngine`] seam (RFC
     /// `docs/rfc-native-core.md`, #307). Node/edge/adjacency paths go through
     /// this rather than reaching into a concrete store's inherent methods, so
@@ -2542,7 +2693,13 @@ impl<'a> Executor<'a> {
             Clause::DropIndex(d) => self.run_drop_index(d),
             Clause::CreateConstraint(c) => self.run_create_constraint(c),
             Clause::DropConstraint(d) => self.run_drop_constraint(d),
-            Clause::SchemaNoop(_) => Ok(()), // accepted, no-op (drevo auto-indexes)
+            // Accepted, no-op (drevo auto-indexes), but still a schema
+            // command: it needs the privilege a real one would.
+            Clause::SchemaNoop(n) => self.guard_database(if n.kind == "constraint" {
+                drevo_auth::privileges::Action::ConstraintManagement
+            } else {
+                drevo_auth::privileges::Action::IndexManagement
+            }),
         }
     }
 
@@ -2551,6 +2708,7 @@ impl<'a> Executor<'a> {
     /// Produces no rows, like Neo4j schema commands.
     fn run_create_constraint(&mut self, c: &CreateConstraint) -> ExecResultT<()> {
         self.outside_transaction("CREATE CONSTRAINT", c.span)?;
+        self.guard_database(drevo_auth::privileges::Action::ConstraintManagement)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE CONSTRAINT"))?;
@@ -2567,6 +2725,7 @@ impl<'a> Executor<'a> {
     /// `DROP CONSTRAINT <name> [IF EXISTS]` (issue #604).
     fn run_drop_constraint(&mut self, d: &DropConstraint) -> ExecResultT<()> {
         self.outside_transaction("DROP CONSTRAINT", d.span)?;
+        self.guard_database(drevo_auth::privileges::Action::ConstraintManagement)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("DROP CONSTRAINT"))?;
@@ -2580,6 +2739,7 @@ impl<'a> Executor<'a> {
     /// rows, like Neo4j schema commands.
     fn run_create_path_index(&mut self, c: &CreatePathIndex) -> ExecResultT<()> {
         self.outside_transaction("CREATE INDEX", c.span)?;
+        self.guard_database(drevo_auth::privileges::Action::IndexManagement)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE INDEX"))?;
@@ -2596,6 +2756,7 @@ impl<'a> Executor<'a> {
     /// `DROP INDEX <name> [IF EXISTS]` (issue #578): drop a path or vector index.
     fn run_drop_index(&mut self, d: &DropIndex) -> ExecResultT<()> {
         self.outside_transaction("DROP INDEX", d.span)?;
+        self.guard_database(drevo_auth::privileges::Action::IndexManagement)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("DROP INDEX"))?;
@@ -2609,6 +2770,7 @@ impl<'a> Executor<'a> {
     /// rows (Neo4j schema commands return an empty result), only a registration.
     fn run_create_vector_index(&mut self, c: &CreateVectorIndex) -> ExecResultT<()> {
         self.outside_transaction("CREATE VECTOR INDEX", c.span)?;
+        self.guard_database(drevo_auth::privileges::Action::IndexManagement)?;
         let svc = self
             .native_semantic
             .ok_or_else(|| Self::engine_capability("CREATE VECTOR INDEX"))?;
@@ -3896,6 +4058,18 @@ impl<'a> Executor<'a> {
         let extra_labels: Vec<String> = pattern.labels.iter().skip(1).cloned().collect();
 
         let mut props = self.eval_map(&pattern.properties, row)?;
+        self.guard_node(
+            drevo_auth::privileges::Action::Create,
+            &pattern.labels,
+            None,
+        )?;
+        for key in props.keys() {
+            self.guard_node(
+                drevo_auth::privileges::Action::SetProperty,
+                &pattern.labels,
+                Some(key),
+            )?;
+        }
         let title = match props.remove("title") {
             Some(Value::String(s)) => s,
             Some(Value::Null) | None => String::new(),
@@ -4002,6 +4176,14 @@ impl<'a> Executor<'a> {
         };
         let mut storage_props = std::collections::HashMap::new();
         let rel_props = self.eval_map(&rel.properties, row)?;
+        self.guard_relationship(drevo_auth::privileges::Action::Create, &rel.types[0], None)?;
+        for key in rel_props.keys() {
+            self.guard_relationship(
+                drevo_auth::privileges::Action::SetProperty,
+                &rel.types[0],
+                Some(key),
+            )?;
+        }
         for (k, v) in rel_props.iter() {
             let json = value_to_json(v).ok_or_else(|| {
                 ExecError::InvalidCreate(format!(
@@ -4096,11 +4278,21 @@ impl<'a> Executor<'a> {
                 match v {
                     Value::Node(nv) => {
                         if !node_ids.contains(&nv.id) {
+                            self.guard_node(
+                                drevo_auth::privileges::Action::Delete,
+                                &nv.labels,
+                                None,
+                            )?;
                             node_ids.push(nv.id);
                         }
                     }
                     Value::Relationship(rv) => {
                         if !rel_ids.contains(&rv.id) {
+                            self.guard_relationship(
+                                drevo_auth::privileges::Action::Delete,
+                                &rv.kind,
+                                None,
+                            )?;
                             rel_ids.push(rv.id);
                         }
                     }
@@ -4323,6 +4515,13 @@ impl<'a> Executor<'a> {
                 span: *span,
             });
         };
+        for label in labels {
+            self.guard_node(
+                drevo_auth::privileges::Action::SetLabel,
+                &nv.labels,
+                Some(label),
+            )?;
+        }
         let stored = self
             .engine()
             .get_node(nv.id)?
@@ -4415,6 +4614,13 @@ impl<'a> Executor<'a> {
                 span: *span,
             });
         };
+        for label in labels {
+            self.guard_node(
+                drevo_auth::privileges::Action::RemoveLabel,
+                &nv.labels,
+                Some(label),
+            )?;
+        }
         let stored = self
             .engine()
             .get_node(nv.id)?
@@ -4450,6 +4656,11 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
+        self.guard_node(
+            drevo_auth::privileges::Action::SetProperty,
+            &nv.labels,
+            Some(prop_name),
+        )?;
         let stored = self
             .engine()
             .get_node(nv.id)?
@@ -4513,6 +4724,11 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
+        self.guard_relationship(
+            drevo_auth::privileges::Action::SetProperty,
+            &rv.kind,
+            Some(prop_name),
+        )?;
         let stored = self.engine().get_edge(rv.id)?.ok_or_else(|| {
             ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
         })?;
@@ -4555,6 +4771,18 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
+        // `SET n = {…}` sets the keys it names and removes the others.
+        for key in new_map.keys().chain(
+            nv.properties
+                .keys()
+                .filter(|k| !merge && !new_map.contains_key(*k)),
+        ) {
+            self.guard_node(
+                drevo_auth::privileges::Action::SetProperty,
+                &nv.labels,
+                Some(key),
+            )?;
+        }
         let stored = self
             .engine()
             .get_node(nv.id)?
@@ -4635,6 +4863,17 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
+        for key in new_map.keys().chain(
+            rv.properties
+                .keys()
+                .filter(|k| !merge && !new_map.contains_key(*k)),
+        ) {
+            self.guard_relationship(
+                drevo_auth::privileges::Action::SetProperty,
+                &rv.kind,
+                Some(key),
+            )?;
+        }
         let stored = self.engine().get_edge(rv.id)?.ok_or_else(|| {
             ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
         })?;
@@ -4682,6 +4921,11 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
+        self.guard_node(
+            drevo_auth::privileges::Action::SetProperty,
+            &nv.labels,
+            Some(prop_name),
+        )?;
         let stored = self
             .engine()
             .get_node(nv.id)?
@@ -4710,6 +4954,11 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
         var_name: &str,
     ) -> ExecResultT<()> {
+        self.guard_relationship(
+            drevo_auth::privileges::Action::SetProperty,
+            &rv.kind,
+            Some(prop_name),
+        )?;
         let stored = self.engine().get_edge(rv.id)?.ok_or_else(|| {
             ExecError::InvalidMutation(format!("relationship {} not found", rv.id))
         })?;
@@ -4967,9 +5216,10 @@ impl<'a> Executor<'a> {
             message: "no such procedure".into(),
             span: c.span,
         })?;
+        self.guard_procedure(&name)?;
         // Write procedures mutate the graph, so they run here with `&mut self`
-        // (through the regular CREATE path) rather than in the read-only
-        // `invoke_procedure`.
+        // (through the regular CREATE path, and so its privilege checks)
+        // rather than in the read-only `invoke_procedure`.
         let output = match name.as_str() {
             "drevo.memory.addMessage" => self.proc_memory_add_message(&c.args, c.span)?,
             "drevo.memory.recordReasoning" => self.proc_memory_record_reasoning(&c.args, c.span)?,

@@ -119,6 +119,8 @@ fn exec_status(e: ExecError) -> Status {
         ExecError::Storage(err @ crate::error::DrevoError::PreparedTransactionPending(_)) => {
             Status::unavailable(err.to_string())
         }
+        // A missing privilege (#636).
+        ExecError::Forbidden { message } => Status::permission_denied(message),
         e => Status::invalid_argument(format!("Cypher execution error: {e}")),
     }
 }
@@ -291,7 +293,7 @@ impl FlightService for DrevoFlight {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        crate::rpc_login::require_login(&self.security, request.metadata()).await?;
+        let signed_in = crate::rpc_login::require_login(&self.security, request.metadata()).await?;
         let TicketQuery {
             query,
             params,
@@ -320,8 +322,20 @@ impl FlightService for DrevoFlight {
             .collect();
         let ast = crate::cypher::parser::parse(&query)
             .map_err(|e| Status::invalid_argument(format!("Cypher parse error: {e}")))?;
+        // The signed-in user's privileges (#636); `None` checks nothing.
+        let context = self.security.context_for(
+            signed_in.as_ref().map(|u| u.name.as_str()),
+            self.registry.default_name(),
+        );
         let result = tokio::task::spawn_blocking(move || {
-            let r = service.execute(&ast, params);
+            let restriction =
+                context
+                    .as_ref()
+                    .map(|context| crate::cypher::executor::Restriction {
+                        context,
+                        database: &name,
+                    });
+            let r = service.execute_as(&ast, params, restriction);
             if let Err(e) = &r {
                 crate::problems::note_exec_error("flight", &name, &query, e);
             }

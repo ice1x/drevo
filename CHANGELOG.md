@@ -8,6 +8,27 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Privileges are enforced on writes, schema, procedures and database access**
+  (issue #636). When the server requires a login, every statement on Bolt,
+  HTTP, gRPC and Flight runs with the signed-in user's privileges. A missing
+  privilege fails the statement with `Neo.ClientError.Security.Forbidden`
+  (HTTP 403, gRPC `PERMISSION_DENIED`) and nothing of it is written. Checked:
+  - `ACCESS` to the database, and `DATABASE MANAGEMENT` for `CREATE DATABASE`;
+  - `CREATE`, `DELETE`, `SET PROPERTY`, `SET LABEL` and `REMOVE LABEL`;
+  - `INDEX` / `CONSTRAINT MANAGEMENT` for schema commands;
+  - `EXECUTE PROCEDURE` for every `CALL`, and `EXECUTE ADMIN PROCEDURES` for
+    the two-phase-commit resolvers.
+
+  A writing statement of a user who may not write everywhere runs as one
+  transaction. `NativeService::execute_as` / `execute_in_tx_as` take a
+  `Restriction`, and `Security::context_for` caches each user's compiled
+  context until roles change. Reads are not narrowed yet.
+  - **Upgrading:** users created with `CREATE USER` hold only `PUBLIC`, so they
+    can no longer write until given a role such as `editor`
+    (`GRANT ROLE editor TO …`). Users from before roles existed were made
+    `admin` when the catalog was upgraded. Clients such as drevo-mcp need a
+    user with the roles their work needs.
+
 - **`SecurityContext` in drevo-auth** (issue #636). A session's privileges
   are compiled once from the user's roles, and each check is answered from a
   cache:
