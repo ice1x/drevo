@@ -862,6 +862,52 @@ gRPC and Arrow Flight are not covered by these settings and stay plain text.
 
 ---
 
+### Change events (`GET /events`)
+
+`GET /events` streams committed changes as [Server-Sent
+Events](https://html.spec.whatwg.org/multipage/server-sent-events.html), so an app refreshes when
+the graph changes instead of polling. Each node or relationship that a committed write creates,
+changes or deletes is one event, in commit order. Work that was rolled back never appears.
+
+```bash
+curl -N 'http://localhost:8080/events?labels=Task,DEPENDS_ON'
+```
+
+```text
+id: 42
+event: node
+data: {"op":"upsert","id":7,"uuid":"0192…","labels":["Task"],"cursor":42}
+
+id: 43
+event: relationship
+data: {"op":"upsert","id":3,"uuid":"0192…","type":"DEPENDS_ON","from":7,"to":8,"cursor":43}
+
+id: 44
+event: node
+data: {"op":"delete","id":8,"cursor":44}
+```
+
+An event names what changed, not its values: read them with a query. In a browser:
+
+```js
+const events = new EventSource("/events?labels=Task");
+events.addEventListener("node", (e) => refresh(JSON.parse(e.data)));
+events.addEventListener("lagged", () => reloadEverything());
+```
+
+- **Resuming.** The SSE `id` is the change's cursor. After a reconnect, a client resumes from
+  `?since=<cursor>` or from the `Last-Event-ID` header, which `EventSource` sends by itself, and
+  misses nothing. Without either, the stream starts at the latest change.
+- **`lagged`.** The server keeps the latest 10 000 changes for resuming. An older cursor, or a
+  cursor from before a restart, gets a `lagged` event carrying the current cursor: reload, then
+  follow from there.
+- **`labels`** keeps nodes with any of the listed labels and relationships of any of the listed
+  types. A deletion carries only the id, because what was deleted is gone, so it always passes.
+  Deleting a node removes its relationships with it, without an event for each of them.
+- **`db`** follows another database than the default: `?db=erp`.
+- **Logins.** With logins required, the stream needs a login like any other route. It also leaves
+  out the nodes and relationships the user may not traverse.
+
 ## 8. Replication & streaming (substrate)
 
 These Phase 15 subsystems are **always-compiled library substrate** — the event/log/role model

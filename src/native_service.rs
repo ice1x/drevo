@@ -173,6 +173,9 @@ pub struct NativeService {
     compacting: AtomicBool,
     /// Opt-in statement timeout in milliseconds (#547); `0` = no limit.
     statement_timeout_ms: AtomicU64,
+    /// How many of the latest committed changes compaction keeps in the
+    /// change feed for event subscribers to resume from (`GET /events`).
+    event_history: AtomicU64,
     /// Node-side auto-embedding registry — the native home of what the KV
     /// handle keeps in `Drevo::semantic` (issue #447). Authoritative
     /// control-plane state, persisted to the `semantic.json` sidecar.
@@ -376,6 +379,7 @@ impl NativeService {
             last_compact_head,
             compacting: AtomicBool::new(false),
             statement_timeout_ms: AtomicU64::new(0),
+            event_history: AtomicU64::new(Self::DEFAULT_EVENT_HISTORY),
             semantic: RwLock::new(node),
             rel_semantic: RwLock::new(rel),
             vector_indexes: RwLock::new(vector),
@@ -419,6 +423,7 @@ impl NativeService {
             last_compact_head: AtomicU64::new(0),
             compacting: AtomicBool::new(false),
             statement_timeout_ms: AtomicU64::new(0),
+            event_history: AtomicU64::new(Self::DEFAULT_EVENT_HISTORY),
             semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             rel_semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             vector_indexes: RwLock::new(crate::vector_index_registry::VectorIndexRegistry::new()),
@@ -455,6 +460,10 @@ impl NativeService {
     /// compactions). Large enough that steady write loads compact rarely,
     /// small enough that the log never dwarfs the state.
     pub const DEFAULT_COMPACT_EVERY_OPS: u64 = 4096;
+
+    /// How many of the latest committed changes stay in the change feed
+    /// after compaction, for event subscribers to resume from.
+    pub const DEFAULT_EVENT_HISTORY: u64 = 10_000;
 
     /// The underlying engine — read-side introspection (counts, status).
     pub fn graph(&self) -> &NativeGraph {
@@ -723,7 +732,11 @@ impl NativeService {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .synced_head;
-            self.graph.trim_before(synced);
+            // Keep the latest changes for event subscribers to resume from;
+            // an older cursor is told to reload (`GET /events`).
+            let history = self.event_history.load(Ordering::Relaxed);
+            let keep_from = self.graph.change_head().saturating_sub(history);
+            self.graph.trim_before(synced.min(keep_from));
         }
         self.compacting.store(false, Ordering::SeqCst);
     }
@@ -807,6 +820,26 @@ impl NativeService {
         let dump = GraphEngine::export_dump(&self.graph)?;
         serde_json::to_string_pretty(&dump)
             .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))
+    }
+
+    /// Keep the latest `changes` committed changes in the change feed after
+    /// each compaction, for event subscribers to resume from (default
+    /// [`Self::DEFAULT_EVENT_HISTORY`]).
+    pub fn set_event_history(&self, changes: u64) {
+        self.event_history.store(changes, Ordering::Relaxed);
+    }
+
+    /// The position of the latest committed change in the change feed.
+    #[must_use]
+    pub fn change_head(&self) -> u64 {
+        self.graph.change_head()
+    }
+
+    /// Every committed change after `cursor`, in commit order, with the
+    /// cursor to resume from; `lagged` when history before it was trimmed.
+    #[must_use]
+    pub fn changes_since(&self, cursor: u64) -> crate::native::ChangeBatch {
+        self.graph.changes_since(cursor)
     }
 
     /// The server's running statements and open transactions (see
