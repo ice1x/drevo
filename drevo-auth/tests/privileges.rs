@@ -790,3 +790,39 @@ fn procedure_names_match_globs() {
         );
     }
 }
+
+#[test]
+fn an_entry_is_written_as_the_command_that_takes_it_back() {
+    let c = command("DENY READ {ssn} ON GRAPH hr NODES Employee TO r");
+    let entry = Entry {
+        access: Access::Deny,
+        privilege: c.privileges[0].clone(),
+        role: "hr".to_string(),
+    };
+    let revoke = entry.to_revoke_command();
+    assert_eq!(
+        revoke,
+        "REVOKE DENY READ {ssn} ON GRAPH hr NODE Employee FROM `hr`"
+    );
+    let back = command(&revoke);
+    assert_eq!(back.op, Op::Revoke(Some(Access::Deny)));
+    assert_eq!(back.privileges, c.privileges);
+}
+
+#[test]
+fn every_action_is_listed_once_with_its_level() {
+    use drevo_auth::privileges::Level;
+    assert_eq!(Action::ALL.len(), 27);
+    for (i, a) in Action::ALL.iter().enumerate() {
+        assert!(!Action::ALL[i + 1..].contains(a), "{a:?} twice");
+    }
+    let count = |level| Action::ALL.iter().filter(|a| a.level() == level).count();
+    assert_eq!(
+        (
+            count(Level::Graph),
+            count(Level::Database),
+            count(Level::Dbms)
+        ),
+        (11, 8, 8)
+    );
+}

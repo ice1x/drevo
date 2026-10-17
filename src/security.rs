@@ -487,8 +487,263 @@ fn run(
                 .change_own_password(name, &current, &new)
                 .map_err(manage_error)?;
         }
+        SecurityCommand::CreateRole {
+            name,
+            if_not_exists,
+            copy_of,
+        } => users
+            .create_role(name, *if_not_exists, copy_of.as_deref())
+            .map_err(manage_error)?,
+        SecurityCommand::DropRole { name, if_exists } => {
+            users.drop_role(name, *if_exists).map_err(manage_error)?;
+        }
+        SecurityCommand::RenameRole {
+            from,
+            to,
+            if_exists,
+        } => users
+            .rename_role(from, to, *if_exists)
+            .map_err(manage_error)?,
+        SecurityCommand::GrantRoles {
+            roles,
+            users: names,
+        }
+        | SecurityCommand::RevokeRoles {
+            roles,
+            users: names,
+        } => {
+            // Check every name first, so a typo changes nothing.
+            require_roles(users, roles)?;
+            for name in names {
+                if users.user(name).is_none() {
+                    return Err(manage_error(drevo_auth::users::ManageError::UserNotFound(
+                        name.clone(),
+                    )));
+                }
+            }
+            let grant = matches!(command, SecurityCommand::GrantRoles { .. });
+            for role in roles {
+                for name in names {
+                    if grant {
+                        users.grant_role(role, name)
+                    } else {
+                        users.revoke_role(role, name)
+                    }
+                    .map_err(manage_error)?;
+                }
+            }
+        }
+        SecurityCommand::ShowRoles {
+            populated,
+            with_users,
+        } => return Ok(show_roles(users, *populated, *with_users)),
+        SecurityCommand::Privilege(privilege) => {
+            use drevo_auth::privileges::{Access, Op};
+            require_roles(users, &privilege.roles)?;
+            for role in &privilege.roles {
+                match privilege.op {
+                    Op::Grant => users.grant(Access::Grant, &privilege.privileges, role),
+                    Op::Deny => users.grant(Access::Deny, &privilege.privileges, role),
+                    Op::Revoke(access) => users.revoke(access, &privilege.privileges, role),
+                }
+                .map_err(manage_error)?;
+            }
+        }
+        SecurityCommand::ShowPrivileges { scope, as_commands } => {
+            return show_privileges(users, scope, *as_commands, current_user);
+        }
+        SecurityCommand::ShowSupportedPrivileges => return Ok(supported_privileges()),
     }
     Ok(result(&[], Vec::new()))
+}
+
+/// Refuse the command unless every role in `roles` exists.
+#[cfg(feature = "auth")]
+fn require_roles(
+    users: &drevo_auth::users::AuthManager,
+    roles: &[String],
+) -> Result<(), SecurityError> {
+    let known: std::collections::BTreeSet<String> =
+        users.roles().into_iter().map(|r| r.name).collect();
+    match roles.iter().find(|r| !known.contains(*r)) {
+        Some(missing) => Err(manage_error(drevo_auth::users::ManageError::RoleNotFound(
+            missing.clone(),
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// `SHOW ROLES`: one row per role, or per role and member `WITH USERS` (a
+/// role without members has a null member).
+#[cfg(feature = "auth")]
+fn show_roles(
+    users: &drevo_auth::users::AuthManager,
+    populated: bool,
+    with_users: bool,
+) -> ExecResult {
+    let roles = users
+        .roles()
+        .into_iter()
+        .filter(|r| !populated || !r.users.is_empty());
+    if !with_users {
+        let rows = roles.map(|r| vec![Value::String(r.name)]).collect();
+        return result(&["role"], rows);
+    }
+    let mut rows = Vec::new();
+    for role in roles {
+        if role.users.is_empty() {
+            rows.push(vec![Value::String(role.name.clone()), Value::Null]);
+        }
+        for member in role.users {
+            rows.push(vec![
+                Value::String(role.name.clone()),
+                Value::String(member),
+            ]);
+        }
+    }
+    result(&["role", "member"], rows)
+}
+
+#[cfg(feature = "auth")]
+const PRIVILEGE_COLUMNS: [&str; 7] = [
+    "access",
+    "action",
+    "resource",
+    "graph",
+    "segment",
+    "role",
+    "immutable",
+];
+
+/// `SHOW … PRIVILEGES`: Neo4j's columns, with `user` for user privileges;
+/// or one `command` per privilege `AS [REVOKE] COMMANDS`.
+#[cfg(feature = "auth")]
+fn show_privileges(
+    users: &drevo_auth::users::AuthManager,
+    scope: &crate::cypher::security_admin::PrivilegeScope,
+    as_commands: Option<bool>,
+    current_user: Option<&str>,
+) -> Result<ExecResult, SecurityError> {
+    use crate::cypher::security_admin::PrivilegeScope;
+    use drevo_auth::users::PrivilegeFilter;
+
+    // (entry, user) pairs; `user` is set for user privileges.
+    let entries: Vec<(drevo_auth::privileges::Entry, Option<String>)> = match scope {
+        PrivilegeScope::All => users
+            .privileges(&PrivilegeFilter::All)
+            .into_iter()
+            .map(|e| (e, None))
+            .collect(),
+        PrivilegeScope::Roles(roles) => users
+            .privileges(&PrivilegeFilter::All)
+            .into_iter()
+            .filter(|e| roles.contains(&e.role))
+            .map(|e| (e, None))
+            .collect(),
+        PrivilegeScope::Users(names) => names
+            .iter()
+            .flat_map(|name| {
+                users
+                    .privileges(&PrivilegeFilter::User(name.clone()))
+                    .into_iter()
+                    .map(move |e| (e, Some(name.clone())))
+            })
+            .collect(),
+        PrivilegeScope::CurrentUser => {
+            let Some(name) = current_user else {
+                return Err(SecurityError::new(
+                    SecurityErrorKind::Unauthenticated,
+                    "SHOW USER PRIVILEGES needs a signed-in user",
+                ));
+            };
+            users
+                .privileges(&PrivilegeFilter::User(name.to_string()))
+                .into_iter()
+                .map(|e| (e, Some(name.to_string())))
+                .collect()
+        }
+    };
+    if let Some(revoke) = as_commands {
+        let rows = entries
+            .iter()
+            .map(|(e, _)| {
+                vec![Value::String(if revoke {
+                    e.to_revoke_command()
+                } else {
+                    e.to_command()
+                })]
+            })
+            .collect();
+        return Ok(result(&["command"], rows));
+    }
+    let with_user = matches!(
+        scope,
+        PrivilegeScope::Users(_) | PrivilegeScope::CurrentUser
+    );
+    let rows = entries
+        .into_iter()
+        .map(|(e, user)| {
+            let p = &e.privilege;
+            let mut row = vec![
+                Value::String(e.access.name().to_string()),
+                Value::String(p.action.name().to_string()),
+                Value::String(p.resource_name()),
+                Value::String(p.graph_name()),
+                Value::String(p.segment_name()),
+                Value::String(e.role.clone()),
+                Value::Bool(false),
+            ];
+            if with_user {
+                row.push(user.map_or(Value::Null, Value::String));
+            }
+            row
+        })
+        .collect();
+    let mut columns = PRIVILEGE_COLUMNS.to_vec();
+    if with_user {
+        columns.push("user");
+    }
+    Ok(result(&columns, rows))
+}
+
+/// `SHOW SUPPORTED PRIVILEGES`: every privilege this server reads, with what
+/// it takes and where it applies.
+#[cfg(feature = "auth")]
+fn supported_privileges() -> ExecResult {
+    use drevo_auth::privileges::{Action, Level};
+    let rows = Action::ALL
+        .iter()
+        .map(|action| {
+            let qualifier = match action {
+                Action::Traverse | Action::Create | Action::Delete => "NODES / RELATIONSHIPS",
+                Action::Read | Action::Match | Action::SetProperty | Action::Merge => {
+                    "{properties} NODES / RELATIONSHIPS"
+                }
+                Action::SetLabel | Action::RemoveLabel => "labels",
+                Action::TransactionManagement => "(users)",
+                Action::ExecuteProcedure => "procedures",
+                Action::ExecuteFunction => "functions",
+                _ => "",
+            };
+            let (target, scope) = match action.level() {
+                Level::Graph => ("graph", "ON GRAPH * | name | HOME GRAPH"),
+                Level::Database => ("database", "ON DATABASE * | name | HOME DATABASE"),
+                Level::Dbms => ("dbms", "ON DBMS"),
+            };
+            let keyword = action.keyword().to_ascii_lowercase();
+            vec![
+                Value::String(keyword.clone()),
+                Value::String(qualifier.to_string()),
+                Value::String(target.to_string()),
+                Value::String(scope.to_string()),
+                Value::String(format!("{} privilege `{}`", target, action.name())),
+            ]
+        })
+        .collect();
+    result(
+        &["action", "qualifier", "target", "scope", "description"],
+        rows,
+    )
 }
 
 #[cfg(feature = "auth")]
