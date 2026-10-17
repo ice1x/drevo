@@ -895,6 +895,11 @@ events.addEventListener("node", (e) => refresh(JSON.parse(e.data)));
 events.addEventListener("lagged", () => reloadEverything());
 ```
 
+The Web UI follows this stream when **Live** is ticked in its Graph panel: the overview reloads
+shortly after the graph changes, once for a burst of changes. While a query or search result is
+on screen it stays put and the **Refresh** button is highlighted instead. The browser remembers the
+setting.
+
 #### Named events (`drevo.events.post`)
 
 A write can also say what happened, so clients need not work it out from the changed nodes.

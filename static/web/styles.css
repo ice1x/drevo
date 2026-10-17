@@ -321,6 +321,25 @@ body {
   border-color: var(--accent);
   color: var(--accent);
 }
+/* The graph changed since the canvas was drawn (live overview). */
+.graph-refresh.stale {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.live-control {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8em;
+  color: var(--text-muted);
+  margin-bottom: 0.65rem;
+  cursor: pointer;
+}
+.live-control input {
+  accent-color: var(--accent);
+  margin: 0;
+}
 .limit-control input:focus {
   outline: none;
   border-color: var(--accent);

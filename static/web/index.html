@@ -284,6 +284,11 @@
             Refresh
           </button>
         </label>
+        <label class="live-control"
+               title="Reload the overview when the graph changes (GET /events)">
+          <input type="checkbox" id="graph-live" />
+          Live: refresh when the graph changes
+        </label>
         <label class="color-by-control">
           Colour by
           <select id="color-by" aria-label="Colour nodes by">
@@ -380,6 +385,9 @@
   <!-- Running-transactions helpers for the Storage panel (unit-tested in
        transactions_view.test.js); app.js reads window.DrevoTransactionsView. -->
   <script src="/ui/transactions_view.js"></script>
+  <!-- Live overview helpers (pure, unit-tested under node --test in
+       live_refresh.test.js); app.js reads window.DrevoLiveRefresh. -->
+  <script src="/ui/live_refresh.js"></script>
   <script src="/ui/app.js"></script>
 </body>
 </html>

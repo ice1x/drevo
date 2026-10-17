@@ -2213,6 +2213,17 @@ async fn ui_transactions_view_module_serves_to_client() {
 }
 
 #[tokio::test]
+async fn ui_live_refresh_module_serves_to_client() {
+    // The live-overview helpers, unit-tested by live_refresh.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/live_refresh.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoLiveRefresh"));
+    assert!(body.contains("eventsUrl"));
+}
+
+#[tokio::test]
 async fn ui_report_module_serves_to_client() {
     // The "Report a problem" helpers (#552), unit-tested by report.test.js.
     let app = make_app();
