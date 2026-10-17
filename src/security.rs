@@ -151,7 +151,15 @@ pub struct Security {
     users: Option<Arc<drevo_auth::users::AuthManager>>,
     #[cfg(feature = "auth")]
     require_login: bool,
+    /// Compiled security contexts by user, each with the catalog generation
+    /// it was built at (#636).
+    #[cfg(feature = "auth")]
+    contexts: Arc<std::sync::Mutex<ContextCache>>,
 }
+
+#[cfg(feature = "auth")]
+type ContextCache =
+    std::collections::HashMap<(String, String), (u64, drevo_auth::privileges::SecurityContext)>;
 
 impl std::fmt::Debug for Security {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -170,6 +178,7 @@ impl Security {
         Self {
             users: Some(users),
             require_login: true,
+            contexts: Arc::default(),
         }
     }
 
@@ -206,6 +215,47 @@ impl Security {
         #[cfg(not(feature = "auth"))]
         {
             false
+        }
+    }
+
+    /// The privileges `user` runs a statement with (#636), with `home` as the
+    /// user's home database: `None` when nothing is checked — the server needs
+    /// no login, or has no user management. A signed-in user's context is
+    /// compiled once and reused until the users, roles or privileges change.
+    #[must_use]
+    pub fn context_for(
+        &self,
+        user: Option<&str>,
+        home: &str,
+    ) -> Option<drevo_auth::privileges::SecurityContext> {
+        #[cfg(feature = "auth")]
+        {
+            if !self.requires_login() {
+                return None;
+            }
+            let users = self.users.as_ref()?;
+            // A login is required, so a statement without a user may do
+            // nothing; "" names no user.
+            let name = user.unwrap_or("");
+            let generation = users.generation();
+            let key = (name.to_string(), home.to_string());
+            let mut cache = self.contexts.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((built, context)) = cache.get(&key) {
+                if *built == generation {
+                    return Some(context.clone());
+                }
+            }
+            let context = users.security_context(name, home);
+            if cache.len() > 4096 {
+                cache.clear();
+            }
+            cache.insert(key, (generation, context.clone()));
+            Some(context)
+        }
+        #[cfg(not(feature = "auth"))]
+        {
+            let _ = (user, home);
+            None
         }
     }
 

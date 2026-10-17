@@ -888,8 +888,13 @@ async fn cypher(
         let current = signed_in.as_ref().map(|u| u.name.as_str());
         return run_security_command(&state, parsed, &params, current).map(Json);
     }
+    // The signed-in user's privileges (#636); `None` checks nothing.
+    let context = state.security.context_for(
+        signed_in.as_ref().map(|u| u.name.as_str()),
+        state.registry.default_name(),
+    );
     if let Some(command) = crate::cypher::admin::parse(&query) {
-        return handle_admin_cypher(&state, command, params).map(Json);
+        return handle_admin_cypher(&state, command, params, context.as_ref()).map(Json);
     }
 
     Ok(Json(run_blocking(|| {
@@ -898,6 +903,7 @@ async fn cypher(
             state.registry.default_name(),
             &query,
             params,
+            context.as_ref(),
         )
     })?))
 }
@@ -932,6 +938,7 @@ fn run_cypher_on(
     database: &str,
     query: &str,
     params: serde_json::Map<String, serde_json::Value>,
+    context: Option<&drevo_auth::privileges::SecurityContext>,
 ) -> Result<CypherResponse, ApiError> {
     let params = params
         .into_iter()
@@ -939,7 +946,9 @@ fn run_cypher_on(
         .collect();
     let ast = parser::parse(query)
         .map_err(|e| ApiError::BadRequest(format!("Cypher parse error: {e}")))?;
-    let result = service.execute(&ast, params).map_err(|e| {
+    let restriction =
+        context.map(|context| crate::cypher::executor::Restriction { context, database });
+    let result = service.execute_as(&ast, params, restriction).map_err(|e| {
         crate::problems::note_exec_error("http", database, query, &e);
         match e {
             // Writes paused by a prepared two-phase-commit transaction (#556)
@@ -956,6 +965,8 @@ fn run_cypher_on(
             crate::cypher::executor::ExecError::PreparedTransactionUnresolved {
                 reason, ..
             } => unresolved_error(reason, format!("Cypher execution error: {e}")),
+            // A missing privilege (#636): 403 with Neo4j's code.
+            crate::cypher::executor::ExecError::Forbidden { message } => forbidden(message),
             e => ApiError::BadRequest(format!("Cypher execution error: {e}")),
         }
     })?;
@@ -1181,10 +1192,20 @@ fn handle_admin_cypher(
     state: &NativeApiState,
     command: crate::cypher::admin::AdminCommand,
     params: serde_json::Map<String, serde_json::Value>,
+    context: Option<&drevo_auth::privileges::SecurityContext>,
 ) -> Result<CypherResponse, ApiError> {
     use crate::cypher::admin::AdminCommand;
     match command {
         AdminCommand::ShowDatabases => Ok(show_databases_response(state)),
+        AdminCommand::CreateDatabase { .. }
+            if context.is_some_and(|c| {
+                !c.has_dbms(drevo_auth::privileges::Action::DatabaseManagement)
+            }) =>
+        {
+            Err(forbidden(
+                "CREATE DATABASE needs DATABASE MANAGEMENT".to_string(),
+            ))
+        }
         AdminCommand::CreateDatabase {
             name,
             if_not_exists,
@@ -1200,7 +1221,9 @@ fn handle_admin_cypher(
                 .get(&name)
                 .ok_or_else(|| ApiError::NotFound(format!("database '{name}' not found")))?;
             match query {
-                Some(inner) => run_blocking(|| run_cypher_on(&service, &name, &inner, params)),
+                Some(inner) => {
+                    run_blocking(|| run_cypher_on(&service, &name, &inner, params, context))
+                }
                 None => Ok(empty_cypher_response()),
             }
         }
@@ -1239,6 +1262,15 @@ fn security_error(e: crate::security::SecurityError) -> ApiError {
             .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
         code: e.kind.code(),
         message: e.message,
+    }
+}
+
+/// 403 for a missing privilege, with Neo4j's code (#636).
+fn forbidden(message: String) -> ApiError {
+    ApiError::Coded {
+        status: StatusCode::FORBIDDEN,
+        code: "Neo.ClientError.Security.Forbidden",
+        message,
     }
 }
 

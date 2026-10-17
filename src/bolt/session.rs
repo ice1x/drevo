@@ -412,6 +412,8 @@ mod codes {
     /// retry it.
     pub const FORBIDDEN_DUE_TO_TRANSACTION_TYPE: &str =
         "Neo.ClientError.Transaction.ForbiddenDueToTransactionType";
+    /// The signed-in user lacks the privilege for the statement.
+    pub const FORBIDDEN: &str = "Neo.ClientError.Security.Forbidden";
     /// A commit violated a declared schema constraint.
     pub const CONSTRAINT_FAILED: &str = "Neo.ClientError.Schema.ConstraintValidationFailed";
     /// A `RUN` / `BEGIN` selected a `db` that the catalog does not hold. Matches
@@ -488,6 +490,8 @@ pub struct Session<'a> {
 struct ActiveTx {
     service: std::sync::Arc<crate::native_service::NativeService>,
     id: crate::native::NativeTxId,
+    /// The database the transaction was opened on, for privilege checks.
+    database: String,
 }
 
 /// Maps the optional `db` selector carried on `RUN` / `BEGIN` to the concrete
@@ -603,6 +607,42 @@ impl<'a> Session<'a> {
     /// error message (paired with [`codes::DATABASE_NOT_FOUND`] by the caller)
     /// when a catalog-backed session names a database that does not exist. A
     /// single-database session ignores the selector entirely.
+    /// The name of the database a `db` selector picks, as [`resolve_service`]
+    /// resolves it: the default database when the selector is absent or
+    /// empty, or when there is no catalog.
+    ///
+    /// [`resolve_service`]: Self::resolve_service
+    fn database_name(&self, db: Option<&str>) -> String {
+        // Without `http` there is no catalog, so the selector is ignored.
+        #[cfg(not(feature = "http"))]
+        let _ = db;
+        match &self.resolver {
+            DbResolver::Single => self.home_database().to_string(),
+            #[cfg(feature = "http")]
+            DbResolver::Registry(registry) => match db {
+                Some(name) if !name.is_empty() => name.to_string(),
+                _ => registry.default_name().to_string(),
+            },
+        }
+    }
+
+    /// The default database, which is every user's home database.
+    fn home_database(&self) -> &'static str {
+        match &self.resolver {
+            #[cfg(feature = "http")]
+            DbResolver::Registry(registry) => registry.default_name(),
+            _ => "drevo",
+        }
+    }
+
+    /// The signed-in user's privileges (#636); `None` checks nothing.
+    fn security_context(&self) -> Option<drevo_auth::privileges::SecurityContext> {
+        self.security.context_for(
+            self.signed_in.as_ref().map(|u| u.name.as_str()),
+            self.home_database(),
+        )
+    }
+
     fn resolve_service(
         &self,
         db: Option<&str>,
@@ -732,7 +772,7 @@ impl<'a> Session<'a> {
     /// no-reply teardown paths (`GOODBYE`, connection drop) where there is
     /// no client left to receive a `FAILURE`.
     fn roll_back_own_tx(&mut self) {
-        if let Some(ActiveTx { service, id }) = self.native_tx.take() {
+        if let Some(ActiveTx { service, id, .. }) = self.native_tx.take() {
             let _ = service.rollback_tx(id);
         }
     }
@@ -799,7 +839,12 @@ impl<'a> Session<'a> {
         // active`. Nesting on a *single* connection is still rejected above by
         // the `state != Ready` guard.
         let id = service.begin_tx();
-        self.native_tx = Some(ActiveTx { service, id });
+        let database = self.database_name(extract_db(&extra));
+        self.native_tx = Some(ActiveTx {
+            service,
+            id,
+            database,
+        });
         self.state = State::TxReady;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
@@ -828,7 +873,7 @@ impl<'a> Session<'a> {
         // defensively rather than panicking. Commit the registered
         // transaction, mapping the conflict outcome to the transient class
         // official drivers retry.
-        let Some(ActiveTx { service, id }) = self.native_tx.take() else {
+        let Some(ActiveTx { service, id, .. }) = self.native_tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
                 metadata: failure_metadata(codes::STORAGE, "COMMIT without an active transaction"),
@@ -878,7 +923,7 @@ impl<'a> Session<'a> {
             }];
         }
         // Whatever the outcome, the slot is no longer ours to clean up.
-        let Some(ActiveTx { service, id }) = self.native_tx.take() else {
+        let Some(ActiveTx { service, id, .. }) = self.native_tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
                 metadata: failure_metadata(
@@ -921,7 +966,7 @@ impl<'a> Session<'a> {
                 ),
             }];
         };
-        let Some(ActiveTx { service, id }) = self.native_tx.take() else {
+        let Some(ActiveTx { service, id, .. }) = self.native_tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {
                 metadata: failure_metadata(codes::STORAGE, "no open transaction to prepare"),
@@ -1037,9 +1082,21 @@ impl<'a> Session<'a> {
         // fixed at BEGIN, so a `db` on this RUN is ignored. An autocommit RUN
         // routes to the database named by its own `db` selector (issue #523),
         // falling back to the session default.
+        let context = self.security_context();
         let exec = if in_tx {
             match &self.native_tx {
-                Some(ActiveTx { service, id }) => service.execute_in_tx(*id, &ast, cypher_params),
+                Some(ActiveTx {
+                    service,
+                    id,
+                    database,
+                }) => service.execute_in_tx_as(
+                    *id,
+                    &ast,
+                    cypher_params,
+                    context
+                        .as_ref()
+                        .map(|context| crate::cypher::executor::Restriction { context, database }),
+                ),
                 None => {
                     self.state = State::Failed;
                     return vec![ServerMessage::Failure {
@@ -1060,7 +1117,17 @@ impl<'a> Session<'a> {
                     }];
                 }
             };
-            service.execute(&ast, cypher_params)
+            let database = self.database_name(extract_db(&extra));
+            service.execute_as(
+                &ast,
+                cypher_params,
+                context
+                    .as_ref()
+                    .map(|context| crate::cypher::executor::Restriction {
+                        context,
+                        database: &database,
+                    }),
+            )
         };
         let result = match exec {
             Ok(r) => r,
@@ -1735,6 +1802,8 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         }
         ExecError::Storage(_) => codes::STORAGE,
         ExecError::Timeout { .. } => codes::TIMED_OUT,
+        // A missing privilege (#636).
+        ExecError::Forbidden { .. } => codes::FORBIDDEN,
     };
     failure_metadata(code, &format!("{e}"))
 }

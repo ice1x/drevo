@@ -28,7 +28,7 @@ use std::sync::RwLock;
 
 use crate::cypher::ast::Query;
 use crate::cypher::executor::{
-    execute_on_engine_with_context, ExecError, ExecResult, NativeQueryContext, Value,
+    execute_on_engine_with_context, ExecError, ExecResult, NativeQueryContext, Restriction, Value,
 };
 use crate::error::DrevoError;
 use crate::lww::{OriginId, Stamp};
@@ -517,13 +517,37 @@ impl NativeService {
         query: &Query,
         params: HashMap<String, Value>,
     ) -> Result<ExecResult, ExecError> {
+        self.execute_as(query, params, None)
+    }
+
+    /// [`execute`](Self::execute) for a signed-in user (#636): the statement
+    /// runs with `restriction`'s privileges. A writing statement of a user who
+    /// may not write everywhere runs as one transaction, so a refused write
+    /// leaves nothing of the statement behind.
+    ///
+    /// # Errors
+    ///
+    /// As [`execute`](Self::execute), and
+    /// [`ExecError::Forbidden`]
+    /// for a missing privilege.
+    pub fn execute_as(
+        &self,
+        query: &Query,
+        params: HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+    ) -> Result<ExecResult, ExecError> {
+        let checked_writes = restriction.is_some_and(|r| !r.writes_everything());
         let result = crate::cypher::executor::deadline::with_statement_timeout(
             self.statement_timeout(),
             || {
-                if self.graph.has_existence_constraints() && query_writes(query) {
-                    self.execute_as_transaction(query, &params)
+                let writes =
+                    query_writes(query) || (checked_writes && query_calls_writing_procedure(query));
+                if (self.graph.has_existence_constraints() || checked_writes) && writes {
+                    self.execute_as_transaction(query, &params, restriction)
                 } else {
-                    self.with_fresh_indexes(|idx| self.execute_with(idx, query, params))
+                    self.with_fresh_indexes(|idx| {
+                        self.execute_with(idx, query, params, restriction)
+                    })
                 }
             },
         );
@@ -543,6 +567,7 @@ impl NativeService {
         &self,
         query: &Query,
         params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
     ) -> Result<ExecResult, ExecError> {
         const ATTEMPTS: usize = 8;
         let mut attempt = 0;
@@ -570,6 +595,7 @@ impl NativeService {
                     semantic: Some(self),
                     in_transaction: false,
                     tx_has_written: false,
+                    restriction,
                 };
                 execute_on_engine_with_context(query, &engine, &ctx, params.clone())
             });
@@ -762,6 +788,24 @@ impl NativeService {
         query: &Query,
         params: HashMap<String, Value>,
     ) -> Result<ExecResult, ExecError> {
+        self.execute_in_tx_as(tx, query, params, None)
+    }
+
+    /// [`execute_in_tx`](Self::execute_in_tx) for a signed-in user (#636).
+    /// A refused write fails the statement; the transaction keeps what its
+    /// earlier statements wrote, and the client rolls it back as usual.
+    ///
+    /// # Errors
+    ///
+    /// As [`execute_in_tx`](Self::execute_in_tx), and
+    /// [`ExecError::Forbidden`].
+    pub fn execute_in_tx_as(
+        &self,
+        tx: crate::native::NativeTxId,
+        query: &Query,
+        params: HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+    ) -> Result<ExecResult, ExecError> {
         let Some(engine) = self.graph.tx_engine(tx) else {
             return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(
                 "the transaction has already been closed",
@@ -783,6 +827,7 @@ impl NativeService {
                     semantic: Some(self),
                     in_transaction: true,
                     tx_has_written,
+                    restriction,
                     ..NativeQueryContext::default()
                 };
                 execute_on_engine_with_context(query, &engine, &ctx, params)
@@ -2247,6 +2292,7 @@ impl NativeService {
         idx: &ServiceIndexes,
         query: &Query,
         params: HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
     ) -> Result<ExecResult, ExecError> {
         let ctx = NativeQueryContext {
             fts: Some(&idx.fts),
@@ -2265,6 +2311,7 @@ impl NativeService {
             semantic: Some(self),
             in_transaction: false,
             tx_has_written: false,
+            restriction,
         };
         execute_on_engine_with_context(query, &self.graph, &ctx, params)
     }
@@ -2325,6 +2372,23 @@ impl NativeService {
 
 /// Whether `query` has a clause that writes data (`CREATE`, `MERGE`, `SET`,
 /// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
+/// Whether `query` calls a procedure that writes the graph (`drevo.memory.*`).
+fn query_calls_writing_procedure(query: &Query) -> bool {
+    use crate::cypher::ast::Clause;
+    query.parts.iter().any(|part| {
+        part.query.clauses.iter().any(|c| {
+            matches!(c, Clause::Call(call) if matches!(
+                call.name.join(".").as_str(),
+                "drevo.memory.addMessage"
+                    | "drevo.memory.recordReasoning"
+                    | "drevo.memory.rememberEntity"
+                    | "drevo.memory.assertFact"
+                    | "drevo.memory.retractFact"
+            ))
+        })
+    })
+}
+
 fn query_writes(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {

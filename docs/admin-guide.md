@@ -634,7 +634,31 @@ roles start with Neo4j's default privileges:
 | `admin` | `architect`'s, and `START`, `STOP`, `TRANSACTION MANAGEMENT ON DATABASE *` and `ALL DBMS PRIVILEGES` |
 
 Not supported: `IMMUTABLE` privileges, property-based segments (`WHERE` / `FOR`) and
-`DEFAULT GRAPH`. Roles and privileges are stored and listed; queries do not check them yet.
+`DEFAULT GRAPH`.
+
+#### What is checked
+
+When the server requires a login, every statement on Bolt, HTTP, gRPC and Arrow Flight runs
+with the signed-in user's privileges. A statement that needs a privilege the user lacks fails
+with `Neo.ClientError.Security.Forbidden` (HTTP 403, gRPC `PERMISSION_DENIED`), and nothing of
+it is written:
+
+- **Database**: using a database needs `ACCESS` on it (`PUBLIC` has its home database, the
+  default one); `CREATE DATABASE` needs `DATABASE MANAGEMENT`.
+- **Writes**: `CREATE` needs `CREATE` on the node's labels or the relationship's type, plus
+  `SET PROPERTY` for each property it sets; `DELETE` needs `DELETE`; `SET` / `REMOVE` of a
+  property need `SET PROPERTY` for it; `SET` / `REMOVE` of a label need `SET LABEL` /
+  `REMOVE LABEL`. `MERGE`, `FOREACH` and the `drevo.memory.*` procedures write through the
+  same checks.
+- **Schema**: `CREATE` / `DROP INDEX` need `INDEX MANAGEMENT`, constraints `CONSTRAINT
+  MANAGEMENT`. `SHOW INDEXES` / `SHOW CONSTRAINTS` need only access.
+- **Procedures**: every `CALL` needs `EXECUTE PROCEDURE` (which `PUBLIC` has for every
+  procedure). The two-phase-commit resolvers (`drevo.tx.commitPrepared`, `rollbackPrepared`,
+  `heuristicRollback`, `listPrepared`) also need `EXECUTE ADMIN PROCEDURES`, and
+  `drevo.semantic.register` / `reindex` need `INDEX MANAGEMENT`.
+
+A role change applies from the next statement. A server started with `DREVO_AUTH=none` checks
+nothing. Reads are not yet narrowed: a user with `ACCESS` reads the whole database.
 
 ### Logging in
 
