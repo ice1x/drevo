@@ -283,3 +283,10 @@ harness = false
 [[bench]]
 name = "real_data_baseline_bench"
 harness = false
+
+# Privilege checks (#636): the cost of reading as a restricted user next to
+# reading with no checks. Needs the `auth` feature.
+[[bench]]
+name = "privilege_bench"
+harness = false
+required-features = ["auth"]

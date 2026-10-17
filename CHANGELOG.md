@@ -8,6 +8,19 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Reads filter by privilege** (issue #636). As in Neo4j, a node the
+  signed-in user may not traverse is not matched, expanded, counted
+  (`count(*)` included), returned, or found by search, vector and memory
+  procedures. A relationship is hidden when its type or either of its nodes
+  is. A property without `READ` reads as `null` and does not match in
+  `WHERE` or patterns. `SHOW DATABASES` lists only accessible databases.
+
+  Roles without graph denies (`reader`, `editor`, `admin`) skip filtering at
+  no measurable cost. A role with denies is answered from a per-statement
+  memo, about 1.6× on a 20 000-node scan where every node is filtered; see
+  `benches/privilege_bench.rs`. Graph algorithms filter only their results,
+  and the REST routes outside `/cypher` are not filtered yet.
+
 - **Privileges are enforced on writes, schema, procedures and database access**
   (issue #636). When the server requires a login, every statement on Bolt,
   HTTP, gRPC and Flight runs with the signed-in user's privileges. A missing
