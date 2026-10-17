@@ -1196,7 +1196,7 @@ fn handle_admin_cypher(
 ) -> Result<CypherResponse, ApiError> {
     use crate::cypher::admin::AdminCommand;
     match command {
-        AdminCommand::ShowDatabases => Ok(show_databases_response(state)),
+        AdminCommand::ShowDatabases => Ok(show_databases_response(state, context)),
         AdminCommand::CreateDatabase { .. }
             if context.is_some_and(|c| {
                 !c.has_dbms(drevo_auth::privileges::Action::DatabaseManagement)
@@ -1451,11 +1451,16 @@ async fn auth_me(
 }
 
 /// A `SHOW DATABASES` result: one `name` column, one row per database.
-fn show_databases_response(state: &NativeApiState) -> CypherResponse {
+fn show_databases_response(
+    state: &NativeApiState,
+    context: Option<&drevo_auth::privileges::SecurityContext>,
+) -> CypherResponse {
+    // A database the signed-in user may not access is not listed (#636).
     let rows = state
         .registry
         .list()
         .into_iter()
+        .filter(|name| context.is_none_or(|c| c.can_access(name)))
         .map(|name| vec![serde_json::Value::String(name)])
         .collect();
     CypherResponse {

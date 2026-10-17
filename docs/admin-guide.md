@@ -657,8 +657,30 @@ it is written:
   `heuristicRollback`, `listPrepared`) also need `EXECUTE ADMIN PROCEDURES`, and
   `drevo.semantic.register` / `reindex` need `INDEX MANAGEMENT`.
 
+Reads filter instead of failing, as in Neo4j:
+
+- A node the user may not `TRAVERSE` is not matched, expanded, counted (`count(*)` included),
+  returned or found by `fts.search` and the other search, vector and memory procedures. A
+  relationship is hidden when its type may not be traversed or either of its nodes is hidden,
+  so variable-length and shortest paths route around hidden nodes.
+- A property without `READ` reads as `null`: `n.salary`, `keys(n)`, `properties(n)` and a
+  returned `n` leave it out, and `WHERE n.salary > 0` or `{salary: …}` in a pattern does not
+  match on it.
+- `SHOW DATABASES` lists only the databases the user may access.
+
+Roles with graph-wide grants and no graph denies (`reader`, `editor`, `admin`) skip filtering
+altogether, at no measurable cost. A role with denies costs about 1.6× on a filtered scan of
+20 000 nodes that hides a property on every node (`cargo bench --features auth --bench
+privilege_bench`).
+
+Still not filtered: graph algorithms (`drevo.pagerank`, …) compute over the whole graph, and
+only their results are filtered; `db.labels()` / `db.propertyKeys()` list every name; the REST
+routes outside `/cypher` (`/nodes`, `/export/…`) serve unfiltered data. `MERGE` does not match
+a node the user cannot see, and so may create a second one; constraint checks still see all
+data.
+
 A role change applies from the next statement. A server started with `DREVO_AUTH=none` checks
-nothing. Reads are not yet narrowed: a user with `ACCESS` reads the whole database.
+nothing.
 
 ### Logging in
 

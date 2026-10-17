@@ -1280,8 +1280,15 @@ fn execute_single(
     // Count pushdown (RFC #307): a bare `MATCH (n[:L]) RETURN count(*)`
     // needs no enumeration, no projection, and no row machinery — answer it
     // from the engine's cardinality (and the label index's) directly.
-    if let Some(result) = try_count_pushdown(single, engine, ctx.labels)? {
-        return Ok(result);
+    // Not for a user who may not see everything: the count would include
+    // what they cannot see (#636).
+    let reads_everything = ctx
+        .restriction
+        .is_none_or(|r| r.context.reads_everything(r.database));
+    if reads_everything {
+        if let Some(result) = try_count_pushdown(single, engine, ctx.labels)? {
+            return Ok(result);
+        }
     }
 
     let mut executor = Executor {
@@ -1298,6 +1305,10 @@ fn execute_single(
         in_transaction: ctx.in_transaction,
         tx_has_written: ctx.tx_has_written,
         restriction: ctx.restriction,
+        read_filter: ctx
+            .restriction
+            .filter(|r| !r.context.reads_everything(r.database)),
+        read_memo: std::cell::RefCell::default(),
         pushdown: HashMap::new(),
         params,
         bindings: vec![HashMap::new()],
@@ -2387,6 +2398,20 @@ type KeyedRows = Vec<(Vec<Value>, Bindings)>;
 /// describe. Used by [`Executor::sort_keyed`].
 type SortableRows = Vec<(Vec<(Value, OrderDirection)>, (Vec<Value>, Bindings))>;
 
+/// Per-statement answers of the read filter (#636): for each label set (or
+/// relationship type), whether it may be traversed and which properties may
+/// be read.
+#[derive(Default)]
+struct ReadMemo {
+    nodes: HashMap<Vec<String>, ElementView>,
+    relationships: HashMap<String, ElementView>,
+}
+
+struct ElementView {
+    traversable: bool,
+    readable: HashMap<String, bool>,
+}
+
 struct Executor<'a> {
     /// The graph store viewed through the [`GraphEngine`] seam — the KV-backed
     /// `Drevo` or the native `drevo-core`. All node/edge/adjacency
@@ -2449,6 +2474,13 @@ struct Executor<'a> {
     tx_has_written: bool,
     /// The signed-in user's privileges ([`NativeQueryContext::restriction`]).
     restriction: Option<Restriction<'a>>,
+    /// [`restriction`](Self::restriction) when reads must be narrowed: the
+    /// user may not see every node, relationship or property (#636).
+    read_filter: Option<Restriction<'a>>,
+    /// What [`read_filter`](Self::read_filter) decided, per node label set
+    /// and relationship type, for this statement: one lookup per element
+    /// instead of one privilege check per element and property.
+    read_memo: std::cell::RefCell<ReadMemo>,
     /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
     /// `WHERE` clause (`variable → [constraint]`), so a term like
     /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
@@ -2471,6 +2503,214 @@ struct Executor<'a> {
 
 // Default initial result fields — Rust struct init helper.
 impl<'a> Executor<'a> {
+    /// `nv` as the signed-in user may see it (#636): `None` when the user may
+    /// not traverse it, otherwise without the properties the user may not
+    /// read.
+    fn visible_node(&self, nv: Arc<NodeValue>) -> Option<Arc<NodeValue>> {
+        let Some(r) = self.read_filter else {
+            return Some(nv);
+        };
+        let mut memo = self.read_memo.borrow_mut();
+        if !memo.nodes.contains_key(nv.labels.as_slice()) {
+            let labels: Vec<&str> = nv.labels.iter().map(String::as_str).collect();
+            let traversable = r.context.can_traverse_node(r.database, &labels);
+            memo.nodes.insert(
+                nv.labels.clone(),
+                ElementView {
+                    traversable,
+                    readable: HashMap::new(),
+                },
+            );
+        }
+        let view = memo.nodes.get_mut(nv.labels.as_slice())?;
+        if !view.traversable {
+            return None;
+        }
+        let mut all = true;
+        for key in nv.properties.keys() {
+            let ok = match view.readable.get(key) {
+                Some(&ok) => ok,
+                None => {
+                    let labels: Vec<&str> = nv.labels.iter().map(String::as_str).collect();
+                    let element = drevo_auth::privileges::Element::Node(&labels);
+                    let ok = r.context.can_read_property(r.database, element, key);
+                    view.readable.insert(key.clone(), ok);
+                    ok
+                }
+            };
+            all &= ok;
+        }
+        if all {
+            return Some(nv);
+        }
+        let mut redacted = (*nv).clone();
+        redacted
+            .properties
+            .retain(|k, _| view.readable.get(k).copied().unwrap_or(false));
+        Some(Arc::new(redacted))
+    }
+
+    /// The projection of a stored node, as the signed-in user may see it.
+    fn seen_node(&self, node: &Arc<Node>) -> Option<Arc<NodeValue>> {
+        self.visible_node(self.project_node(node))
+    }
+
+    /// Whether the signed-in user may traverse relationships of `edge`'s
+    /// type. Its two nodes are checked where they are reached.
+    fn edge_traversable(&self, edge: &Edge) -> bool {
+        let Some(r) = self.read_filter else {
+            return true;
+        };
+        let mut memo = self.read_memo.borrow_mut();
+        if let Some(view) = memo.relationships.get(&edge.kind) {
+            return view.traversable;
+        }
+        let traversable = r.context.can_traverse_relationship(r.database, &edge.kind);
+        memo.relationships.insert(
+            edge.kind.clone(),
+            ElementView {
+                traversable,
+                readable: HashMap::new(),
+            },
+        );
+        traversable
+    }
+
+    /// `rv` without the properties the signed-in user may not read.
+    fn redact_relationship(&self, rv: Arc<RelationshipValue>) -> Arc<RelationshipValue> {
+        let Some(r) = self.read_filter else {
+            return rv;
+        };
+        if rv.properties.is_empty() {
+            return rv;
+        }
+        let mut memo = self.read_memo.borrow_mut();
+        let view = memo
+            .relationships
+            .entry(rv.kind.clone())
+            .or_insert_with(|| ElementView {
+                traversable: r.context.can_traverse_relationship(r.database, &rv.kind),
+                readable: HashMap::new(),
+            });
+        let element = drevo_auth::privileges::Element::Relationship(&rv.kind);
+        let mut all = true;
+        for key in rv.properties.keys() {
+            let ok = match view.readable.get(key) {
+                Some(&ok) => ok,
+                None => {
+                    let ok = r.context.can_read_property(r.database, element, key);
+                    view.readable.insert(key.clone(), ok);
+                    ok
+                }
+            };
+            all &= ok;
+        }
+        if all {
+            return rv;
+        }
+        let mut redacted = (*rv).clone();
+        redacted
+            .properties
+            .retain(|k, _| view.readable.get(k).copied().unwrap_or(false));
+        Arc::new(redacted)
+    }
+
+    /// The value of a stored edge, as the signed-in user may see it.
+    fn seen_edge(&self, edge: &Edge) -> Arc<RelationshipValue> {
+        self.redact_relationship(edge_to_value(edge))
+    }
+
+    /// `rv` as the signed-in user may see it: `None` when its type or either
+    /// of its nodes may not be traversed.
+    fn visible_relationship(
+        &self,
+        rv: Arc<RelationshipValue>,
+    ) -> ExecResultT<Option<Arc<RelationshipValue>>> {
+        let Some(r) = self.read_filter else {
+            return Ok(Some(rv));
+        };
+        if !r.context.can_traverse_relationship(r.database, &rv.kind) {
+            return Ok(None);
+        }
+        for id in [rv.from_id, rv.to_id] {
+            match self.engine().get_node(id)? {
+                Some(n) if self.seen_node(&n).is_some() => {}
+                _ => return Ok(None),
+            }
+        }
+        Ok(Some(self.redact_relationship(rv)))
+    }
+
+    /// A value as the signed-in user may see it, for procedure output: `None`
+    /// when it is (or a path through) something hidden; lists drop hidden
+    /// members and maps redact theirs.
+    fn visible_value(&self, v: Value) -> ExecResultT<Option<Value>> {
+        if self.read_filter.is_none() {
+            return Ok(Some(v));
+        }
+        Ok(match v {
+            Value::Node(nv) => self.visible_node(nv).map(Value::Node),
+            Value::Relationship(rv) => self.visible_relationship(rv)?.map(Value::Relationship),
+            Value::Path(p) => {
+                let mut nodes = Vec::with_capacity(p.nodes.len());
+                for n in &p.nodes {
+                    match self.visible_node(n.clone()) {
+                        Some(n) => nodes.push(n),
+                        None => return Ok(None),
+                    }
+                }
+                let mut relationships = Vec::with_capacity(p.relationships.len());
+                for r in &p.relationships {
+                    match self.visible_relationship(r.clone())? {
+                        Some(r) => relationships.push(r),
+                        None => return Ok(None),
+                    }
+                }
+                Some(Value::Path(Arc::new(PathValue {
+                    nodes,
+                    relationships,
+                })))
+            }
+            Value::List(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    if let Some(item) = self.visible_value(item)? {
+                        out.push(item);
+                    }
+                }
+                Some(Value::List(out))
+            }
+            Value::Map(m) => {
+                let mut out = BTreeMap::new();
+                for (k, item) in m {
+                    out.insert(k, self.visible_value(item)?.unwrap_or(Value::Null));
+                }
+                Some(Value::Map(out))
+            }
+            other => Some(other),
+        })
+    }
+
+    /// Procedure output as the signed-in user may see it: a row holding
+    /// something hidden is dropped.
+    fn visible_rows(&self, rows: Vec<Vec<Value>>) -> ExecResultT<Vec<Vec<Value>>> {
+        if self.read_filter.is_none() {
+            return Ok(rows);
+        }
+        let mut out = Vec::with_capacity(rows.len());
+        'rows: for row in rows {
+            let mut kept = Vec::with_capacity(row.len());
+            for v in row {
+                match self.visible_value(v)? {
+                    Some(v) => kept.push(v),
+                    None => continue 'rows,
+                }
+            }
+            out.push(kept);
+        }
+        Ok(out)
+    }
+
     /// Refuse a graph write the signed-in user may not make (#636).
     fn guard_write(
         &self,
@@ -3086,7 +3326,10 @@ impl<'a> Executor<'a> {
                     if !edge_matches_pattern(&edge, rel, existing, self)? {
                         continue;
                     }
-                    let pred = (from, edge_to_value(&edge));
+                    if !self.edge_traversable(&edge) {
+                        continue;
+                    }
+                    let pred = (from, self.seen_edge(&edge));
                     if let Some((_, _, preds)) = seen.get_mut(&to) {
                         preds.push(pred);
                         continue;
@@ -3094,7 +3337,10 @@ impl<'a> Executor<'a> {
                     let Some(node) = self.engine().get_node(to)? else {
                         continue;
                     };
-                    seen.insert(to, (depth, self.project_node(&node), vec![pred]));
+                    let Some(nv) = self.seen_node(&node) else {
+                        continue;
+                    };
+                    seen.insert(to, (depth, nv, vec![pred]));
                     if wanted.contains(&to) {
                         remaining -= 1;
                     }
@@ -3223,6 +3469,9 @@ impl<'a> Executor<'a> {
                     if !edge_matches_pattern(&edge, rel, existing, self)? {
                         continue;
                     }
+                    if !self.edge_traversable(&edge) {
+                        continue;
+                    }
                     match dir {
                         AstDirection::Outgoing if edge.from_id != state.node.id => continue,
                         AstDirection::Incoming if edge.to_id != state.node.id => continue,
@@ -3234,13 +3483,16 @@ impl<'a> Executor<'a> {
                         edge.from_id
                     };
                     let next_node = match self.engine().get_node(other_id)? {
-                        Some(n) => self.project_node(&n),
+                        Some(n) => match self.seen_node(&n) {
+                            Some(v) => v,
+                            None => continue,
+                        },
                         None => continue,
                     };
                     let mut rels = state.rels.clone();
                     let mut nodes = state.nodes.clone();
                     let mut used_ids = state.used_ids.clone();
-                    rels.push(edge_to_value(&edge));
+                    rels.push(self.seen_edge(&edge));
                     nodes.push(next_node.clone());
                     used_ids.push(edge.id);
                     next.push(State {
@@ -3364,7 +3616,9 @@ impl<'a> Executor<'a> {
         if let Some(seeked) = self.id_seek_candidates(pattern, row)? {
             let mut out = Vec::with_capacity(seeked.len());
             for node in &seeked {
-                let nv = self.project_node(node);
+                let Some(nv) = self.seen_node(node) else {
+                    continue;
+                };
                 if !node_matches_pattern(&nv, pattern, row, self)? {
                     continue;
                 }
@@ -3411,7 +3665,9 @@ impl<'a> Executor<'a> {
         let mut out = Vec::with_capacity(nodes.len());
         for node in &nodes {
             deadline::tick()?;
-            let nv = self.project_node(node);
+            let Some(nv) = self.seen_node(node) else {
+                continue;
+            };
             if !node_matches_pattern(&nv, pattern, row, self)? {
                 continue;
             }
@@ -3754,6 +4010,9 @@ impl<'a> Executor<'a> {
             if !edge_matches_pattern(&edge, rel_pattern, existing, self)? {
                 continue;
             }
+            if !self.edge_traversable(&edge) {
+                continue;
+            }
             // Identify the "other" endpoint of this relationship for
             // the segment's target node pattern.
             let other_id = if edge.from_id == prev_node.id {
@@ -3769,7 +4028,10 @@ impl<'a> Executor<'a> {
                 _ => {}
             }
             let target = match self.engine().get_node(other_id)? {
-                Some(n) => self.project_node(&n),
+                Some(n) => match self.seen_node(&n) {
+                    Some(v) => v,
+                    None => continue,
+                },
                 None => continue,
             };
             if !node_matches_pattern(&target, &segment.node, existing, self)? {
@@ -3791,7 +4053,7 @@ impl<'a> Executor<'a> {
                         });
                     }
                 }
-                bindings.insert(name.clone(), Value::Relationship(edge_to_value(&edge)));
+                bindings.insert(name.clone(), Value::Relationship(self.seen_edge(&edge)));
             }
             if let Some(name) = &segment.node.variable {
                 if let Some(existing_val) = existing.get(name) {
@@ -3810,7 +4072,7 @@ impl<'a> Executor<'a> {
                 bindings.insert(name.clone(), Value::Node(target.clone()));
             }
             if build_path {
-                extend_path(&mut bindings, edge_to_value(&edge), target.clone());
+                extend_path(&mut bindings, self.seen_edge(&edge), target.clone());
             }
             out.push((bindings, target));
         }
@@ -3946,6 +4208,9 @@ impl<'a> Executor<'a> {
                     if !edge_matches_pattern(&edge, rel_pattern, existing, self)? {
                         continue;
                     }
+                    if !self.edge_traversable(&edge) {
+                        continue;
+                    }
                     match dir {
                         AstDirection::Outgoing if edge.from_id != state.node.id => continue,
                         AstDirection::Incoming if edge.to_id != state.node.id => continue,
@@ -3957,13 +4222,16 @@ impl<'a> Executor<'a> {
                         edge.from_id
                     };
                     let next_node = match self.engine().get_node(other_id)? {
-                        Some(n) => self.project_node(&n),
+                        Some(n) => match self.seen_node(&n) {
+                            Some(v) => v,
+                            None => continue,
+                        },
                         None => continue,
                     };
                     let mut next_used_edges = state.used_edges.clone();
                     let mut next_used_nodes = state.used_nodes.clone();
                     let mut next_used_ids = state.used_ids.clone();
-                    next_used_edges.push(edge_to_value(&edge));
+                    next_used_edges.push(self.seen_edge(&edge));
                     next_used_nodes.push(next_node.clone());
                     next_used_ids.push(edge.id);
                     next_frontier.push(VarlenState {
@@ -5228,6 +5496,9 @@ impl<'a> Executor<'a> {
             "drevo.memory.retractFact" => self.proc_memory_retract_fact(&c.args, c.span)?,
             _ => self.invoke_procedure(&name, &c.args, c.span)?,
         };
+        // Search, vector, memory and algorithm procedures read storage
+        // directly: drop what the signed-in user may not see (#636).
+        let output = self.visible_rows(output)?;
 
         match &c.yields {
             Some(items) => {
@@ -8968,7 +9239,10 @@ impl<'a> Executor<'a> {
                     Endpoint::End => rv.to_id,
                 };
                 match self.engine().get_node(node_id)? {
-                    Some(node) => Ok(Value::Node(node_to_value(&node))),
+                    // A node the signed-in user may not see is null (#636).
+                    Some(node) => Ok(self
+                        .visible_node(node_to_value(&node))
+                        .map_or(Value::Null, Value::Node)),
                     None => Ok(Value::Null),
                 }
             }
@@ -9830,7 +10104,8 @@ fn edge_matches_pattern(
         return Ok(false);
     }
     if let Some(map) = &pattern.properties {
-        let rv = edge_to_value(edge);
+        // A property the signed-in user may not read compares as null (#636).
+        let rv = executor.seen_edge(edge);
         for (k, expr) in &map.entries {
             // See `node_matches_pattern`: evaluate against the binding row so
             // a relationship-property filter can reference bound variables.

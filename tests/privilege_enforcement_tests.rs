@@ -256,6 +256,10 @@ async fn a_database_without_access_cannot_be_used() {
     // pat has PUBLIC only: the home database, nothing else.
     t.ok("pat", "RETURN 1").await;
     t.forbidden("pat", "USE erp RETURN 1").await;
+    // SHOW DATABASES lists only what the user may use.
+    let listed = |json: serde_json::Value| json["rows"].to_string();
+    assert!(!listed(t.ok("pat", "SHOW DATABASES").await).contains("erp"));
+    assert!(listed(t.ok("rita", "SHOW DATABASES").await).contains("erp"));
     // A reader may use every database.
     t.ok("rita", "USE erp RETURN 1").await;
     t.ok("admin", "DENY ACCESS ON DATABASE erp TO reader").await;
