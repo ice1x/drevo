@@ -1557,6 +1557,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.memory.addMessage, drevo.memory.recordReasoning, \
                           drevo.memory.rememberEntity, drevo.memory.assertFact, \
                           drevo.memory.retractFact, drevo.memory.factsAt, \
+                          drevo.events.post, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
@@ -5560,6 +5561,9 @@ impl<'a> Executor<'a> {
             span: c.span,
         })?;
         self.guard_procedure(&name)?;
+        if name == "drevo.events.post" {
+            return self.run_events_post(c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -5625,6 +5629,78 @@ impl<'a> Executor<'a> {
                 self.result_columns = columns.iter().map(|c| c.to_string()).collect();
                 self.result_rows = output;
             }
+        }
+        Ok(())
+    }
+
+    /// `CALL drevo.events.post(name, payload) [YIELD name]` — post a named
+    /// application event, once per row, published when the statement (or
+    /// its explicit transaction) commits. The arguments may use the row's
+    /// variables; the payload is any value but a node, relationship or path.
+    /// The rows pass through unchanged, with `name` when yielded.
+    fn run_events_post(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
+        let prior = std::mem::take(&mut self.bindings);
+        let mut kept = Vec::with_capacity(prior.len());
+        let mut names = Vec::with_capacity(prior.len());
+        for row in prior {
+            let name = match self.eval(&c.args[0], &row)? {
+                Value::String(name) if !name.trim().is_empty() => name,
+                Value::String(_) => {
+                    return Err(ExecError::InvalidProcedureCall {
+                        name: "drevo.events.post".into(),
+                        message: "the event name is empty".into(),
+                        span: c.span,
+                    });
+                }
+                other => {
+                    return Err(ExecError::TypeMismatch {
+                        expected: "String".into(),
+                        got: other.type_name().into(),
+                        span: c.args[0].span(),
+                    });
+                }
+            };
+            let payload = self.eval(&c.args[1], &row)?;
+            let Some(payload) = value_to_json(&payload) else {
+                return Err(ExecError::TypeMismatch {
+                    expected: "a value without nodes, relationships or paths".into(),
+                    got: payload.type_name().into(),
+                    span: c.args[1].span(),
+                });
+            };
+            if !crate::event_bus::post(crate::event_bus::Pending {
+                name: name.clone(),
+                payload,
+            }) {
+                return Err(Self::engine_capability("drevo.events.post"));
+            }
+            let mut next = row;
+            if let Some(items) = &c.yields {
+                for item in items {
+                    let key = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                    next.insert(key, Value::String(name.clone()));
+                }
+                if let Some(pred) = &c.where_clause {
+                    match self.eval(pred, &next)? {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) | Value::Null => continue,
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Boolean".into(),
+                                got: other.type_name().into(),
+                                span: pred.span(),
+                            });
+                        }
+                    }
+                }
+            }
+            names.push(vec![Value::String(name)]);
+            kept.push(next);
+        }
+        self.bindings = kept;
+        if c.yields.is_none() {
+            self.result_columns = columns.iter().map(|c| c.to_string()).collect();
+            self.result_rows = names;
         }
         Ok(())
     }
@@ -9687,6 +9763,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // embedded" from "writes landed, embeddings missing". #266 adds
         // `target_kind` (node|relationship) so rel targets are distinguishable.
         "drevo.tx.listPrepared" => Some(&["gid", "preparedAt", "opCount"]),
+        // A named application event, published on commit (issue #640).
+        "drevo.events.post" => Some(&["name"]),
         "drevo.tx.commitPrepared"
         | "drevo.tx.rollbackPrepared"
         | "drevo.tx.heuristicRollback"
@@ -9836,6 +9914,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.semantic.status" => 0,
         // Two-phase commit (#556): listPrepared(); the others take the gid.
         "drevo.tx.listPrepared" => 0,
+        // drevo.events.post(name, payload) (issue #640).
+        "drevo.events.post" => 2,
         "drevo.tx.commitPrepared"
         | "drevo.tx.rollbackPrepared"
         | "drevo.tx.heuristicRollback"
