@@ -87,6 +87,10 @@ pub mod algorithms;
 /// `Drevo` calls. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
 pub mod api;
+/// Physical backups of a whole server and restoring them (`POST /admin/backup`,
+/// `drevo-server backup` / `restore`).
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub mod backup;
 /// Privileges from the `drevo-auth` crate: Neo4j's privilege model, the
 /// built-in roles and the per-session [`privileges::SecurityContext`] the
 /// server checks every statement against.

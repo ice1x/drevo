@@ -8,6 +8,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Physical server backups** (issue #641). `POST /admin/backup` backs up
+  every database, its schema sidecar, the users and the embeddings
+  settings while the server keeps serving; `{"since": "<earlier>"}` makes it
+  incremental per database. `GET /admin/backups` lists them;
+  `DREVO_BACKUP_DIR` sets where they go (`<data_dir>/backups` by default).
+  `drevo-server backup --to DIR [--since DIR]` backs up a stopped server and
+  `drevo-server restore --from DIR … --to DATA_DIR` restores, checking every
+  checksum and the chain first.
 - **drevo-core: online physical backups** (issue #641).
   `NativeGraph::backup_to(dir, options)` copies the write-ahead log and its
   sidecars at a commit boundary while the store keeps serving, with a

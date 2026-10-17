@@ -67,6 +67,11 @@
 #define MAX_FACET_KEYWORDS 50
 
 /**
+ * The server manifest format this version writes and reads.
+ */
+#define SERVER_FORMAT 1
+
+/**
  * Maximum bytes carried in a single chunk (the 16-bit length field's
  * max value). Messages longer than this are split across multiple
  * chunks.

@@ -19,6 +19,12 @@
 //!
 //! See [`drevo::server`] for the documented signal-handling caveats
 //! (Unix vs Windows).
+//!
+//! ## Backups
+//!
+//! `drevo-server backup --to DIR [--since DIR]` backs up a stopped server's
+//! data directory, and `drevo-server restore --from DIR [--from DIR …] --to
+//! DATA_DIR` restores one; see [`drevo::backup`].
 
 use std::process::ExitCode;
 
@@ -27,6 +33,20 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // `drevo-server backup …` / `drevo-server restore …` run and exit.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(result) = drevo::backup::command(&args, |key| std::env::var(key).ok()) {
+        return match result {
+            Ok(out) => {
+                println!("{out}");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     init_tracing();
 
     let cfg = match Config::from_env(|key| std::env::var(key).ok()) {

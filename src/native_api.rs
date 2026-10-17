@@ -88,6 +88,9 @@ pub struct NativeApiState {
     /// Whether the session cookie is marked `Secure` (sent over HTTPS only):
     /// set when the server serves HTTPS.
     secure_cookies: bool,
+    /// Where `POST /admin/backup` writes backups; `<data_dir>/backups` when
+    /// unset.
+    backup_dir: Option<std::path::PathBuf>,
 }
 
 impl NativeApiState {
@@ -117,7 +120,27 @@ impl NativeApiState {
             metrics: Arc::new(DrevoMetrics::new()),
             formats: Arc::new(crate::wire_format::WireFormats::default()),
             secure_cookies: false,
+            backup_dir: None,
         }
+    }
+
+    /// Write `POST /admin/backup` backups under `dir` (`DREVO_BACKUP_DIR`)
+    /// instead of `<data_dir>/backups`.
+    #[must_use]
+    pub fn with_backup_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.backup_dir = Some(dir);
+        self
+    }
+
+    /// Where backups go: the configured directory, else `<data_dir>/backups`;
+    /// `None` for a server that keeps its data in memory.
+    fn backup_root(&self) -> Option<std::path::PathBuf> {
+        let data_dir = self.registry.data_dir()?;
+        Some(
+            self.backup_dir
+                .clone()
+                .unwrap_or_else(|| data_dir.join("backups")),
+        )
     }
 
     /// Mark the `drevo_session` cookie `Secure`, so browsers send it over
@@ -253,6 +276,9 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/storage/keyspaces", get(storage_keyspaces))
         .route("/storage/shrink", post(storage_shrink))
         .route("/storage/benchmark", post(storage_benchmark))
+        // Physical backups of every database and the server's files.
+        .route("/admin/backup", post(admin_backup))
+        .route("/admin/backups", get(admin_backups))
         // The Web UI — the same embedded, same-origin assets as the KV
         // server (`crate::web_ui`), pointed at the same-shape endpoints.
         // Committed changes as Server-Sent Events.
@@ -740,6 +766,94 @@ async fn storage_shrink(
     State(state): State<NativeApiState>,
 ) -> Result<Json<crate::report::CompactReport>, ApiError> {
     Ok(Json(state.service.compact()?))
+}
+
+/// The body of `POST /admin/backup`.
+#[derive(Debug, Default, serde::Deserialize)]
+struct BackupRequest {
+    /// The backup's name in the backup directory; made from the time when
+    /// absent.
+    name: Option<String>,
+    /// The name of an earlier backup to continue incrementally.
+    since: Option<String>,
+}
+
+/// `POST /admin/backup` — back up every database and the server's files
+/// into the backup directory while the server keeps serving:
+/// `{"name": "monday", "since": "sunday"}`, both optional. Answers with the
+/// backup's summary (`server.json`) plus its `name` and `path`.
+async fn admin_backup(
+    State(state): State<NativeApiState>,
+    body: Option<Json<BackupRequest>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use crate::backup::{self, ServerBackupError};
+    let request = body.map(|Json(b)| b).unwrap_or_default();
+    let root = state
+        .backup_root()
+        .ok_or_else(|| ApiError::Conflict(ServerBackupError::InMemory.to_string()))?;
+    let name = request
+        .name
+        .unwrap_or_else(|| backup::timestamp_name(crate::model::now_ms()));
+    if !backup::valid_backup_name(&name) {
+        return Err(ApiError::BadRequest(format!(
+            "`{name}` is not a backup name: use letters, digits, `_`, `-` and `.`"
+        )));
+    }
+    let since = match request.since {
+        Some(since) if !backup::valid_backup_name(&since) => {
+            return Err(ApiError::BadRequest(format!(
+                "`{since}` is not a backup name"
+            )));
+        }
+        Some(since) => Some(root.join(since)),
+        None => None,
+    };
+    let dir = root.join(&name);
+    let registry = state.registry();
+    let data_dir = registry
+        .data_dir()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| ApiError::Conflict(ServerBackupError::InMemory.to_string()))?;
+    let summary =
+        run_blocking(|| backup::backup_server(&registry, &data_dir, &dir, since.as_deref()))
+            .map_err(|e| match e {
+                ServerBackupError::Exists(_) => ApiError::Conflict(e.to_string()),
+                ServerBackupError::NoSuchBackup(_) => ApiError::NotFound(e.to_string()),
+                other => ApiError::Db(crate::error::DrevoError::Io(std::io::Error::other(
+                    other.to_string(),
+                ))),
+            })?;
+    let mut out = serde_json::to_value(&summary)
+        .map_err(|e| ApiError::Db(crate::error::DrevoError::Io(std::io::Error::other(e))))?;
+    out["name"] = serde_json::Value::String(name);
+    out["path"] = serde_json::Value::String(dir.display().to_string());
+    Ok(Json(out))
+}
+
+/// `GET /admin/backups` — the backups in the backup directory, newest
+/// first: `{"backups": [{name, created_at_ms, databases, …}]}`.
+async fn admin_backups(
+    State(state): State<NativeApiState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(root) = state.backup_root() else {
+        return Ok(Json(serde_json::json!({ "backups": [] })));
+    };
+    let mut backups = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(summary) = crate::backup::ServerBackup::read(&entry.path()) {
+                let mut item = serde_json::to_value(&summary).unwrap_or_default();
+                item["name"] = serde_json::Value::String(name);
+                backups.push(item);
+            }
+        }
+    }
+    backups.sort_by_key(|b| std::cmp::Reverse(b["created_at_ms"].as_i64().unwrap_or(0)));
+    Ok(Json(serde_json::json!({
+        "directory": root.display().to_string(),
+        "backups": backups,
+    })))
 }
 
 /// `GET /storage/keyspaces` — the KV router breaks its redb file into per-prefix
@@ -1472,6 +1586,7 @@ fn route_need(method: &axum::http::Method, path: &str) -> RouteNeed {
     } else if (path == "/databases" && !read) || path.starts_with("/databases/") {
         RouteNeed::DatabaseManagement
     } else if path.starts_with("/storage/")
+        || path.starts_with("/admin/")
         || path.starts_with("/config/")
         || path.starts_with("/transactions/")
         || path == "/problems"
