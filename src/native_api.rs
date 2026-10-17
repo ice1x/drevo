@@ -1349,8 +1349,94 @@ async fn require_login(
     if user.password_change_required && path != "/cypher" && !path.starts_with("/auth/") {
         return credentials_expired().into_response();
     }
+    if let Some(refused) = refuse_route(&state, req.method(), path, &user.name) {
+        return forbidden(refused).into_response();
+    }
     req.extensions_mut().insert(user);
     next.run(req).await
+}
+
+/// What a route outside `/cypher` needs (#636). These routes serve the graph
+/// as stored, without the per-user filtering of `/cypher`, so they need
+/// privileges under which filtering would change nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteNeed {
+    /// Nothing beyond a login.
+    Login,
+    /// Reading every node, relationship and property.
+    ReadGraph,
+    /// Reading and writing everything.
+    WriteGraph,
+    /// `DATABASE MANAGEMENT`.
+    DatabaseManagement,
+    /// `ALL DBMS PRIVILEGES`: server administration.
+    Admin,
+}
+
+fn route_need(method: &axum::http::Method, path: &str) -> RouteNeed {
+    let read = method == axum::http::Method::GET;
+    if path.starts_with("/export/")
+        || path == "/search/fts"
+        || path == "/facets"
+        || path == "/paths/shortest"
+    {
+        RouteNeed::ReadGraph
+    } else if path == "/nodes" || path == "/edges" || path.starts_with("/nodes/") {
+        if read {
+            RouteNeed::ReadGraph
+        } else {
+            RouteNeed::WriteGraph
+        }
+    } else if path == "/import/json" {
+        RouteNeed::WriteGraph
+    } else if (path == "/databases" && !read) || path.starts_with("/databases/") {
+        RouteNeed::DatabaseManagement
+    } else if path.starts_with("/storage/")
+        || path.starts_with("/config/")
+        || path.starts_with("/transactions/")
+        || path == "/problems"
+        || path == "/report"
+    {
+        RouteNeed::Admin
+    } else {
+        RouteNeed::Login
+    }
+}
+
+/// Why `user` may not use this route, or `None` when they may.
+fn refuse_route(
+    state: &NativeApiState,
+    method: &axum::http::Method,
+    path: &str,
+    user: &str,
+) -> Option<String> {
+    use drevo_auth::privileges::Action;
+    let need = route_need(method, path);
+    if need == RouteNeed::Login {
+        return None;
+    }
+    let database = state.registry.default_name();
+    let context = state.security.context_for(Some(user), database)?;
+    let allowed = match need {
+        RouteNeed::Login => true,
+        RouteNeed::ReadGraph => context.reads_everything(database),
+        RouteNeed::WriteGraph => {
+            context.reads_everything(database) && context.writes_everything(database)
+        }
+        RouteNeed::DatabaseManagement => context.has_dbms(Action::DatabaseManagement),
+        RouteNeed::Admin => context.has_dbms(Action::AllDbms),
+    };
+    (!allowed).then(|| match need {
+        RouteNeed::ReadGraph => format!(
+            "{path} serves the whole graph and needs read access to all of it; \
+             query through /cypher, which shows what you may see"
+        ),
+        RouteNeed::WriteGraph => {
+            format!("{path} writes the graph and needs read and write access to all of it")
+        }
+        RouteNeed::DatabaseManagement => format!("{path} needs DATABASE MANAGEMENT"),
+        _ => format!("{path} is server administration and needs ALL DBMS PRIVILEGES"),
+    })
 }
 
 /// `POST /auth/login` body.
