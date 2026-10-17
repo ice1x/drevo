@@ -468,16 +468,40 @@ fn runtime_compaction_trims_the_change_feed() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("native.wal");
     let service = NativeService::open_with_compact_threshold(&path, 8).expect("open");
+    // Keep only the latest few changes for event subscribers.
+    service.set_event_history(4);
     run(&service, "CREATE (:Counter {title: 'c', v: 0})");
     for i in 1..=40 {
         run(&service, &format!("MATCH (n:Counter) SET n.v = {i}"));
     }
+    let floor = service.graph().change_floor();
+    assert!(floor > 0, "consumed feed history must be trimmed");
     assert!(
-        service.graph().change_floor() > 0,
-        "consumed feed history must be trimmed"
+        service.change_head() - floor <= 4 + 8,
+        "history beyond the kept changes must go: floor {floor}, head {}",
+        service.change_head()
     );
     // Indexed reads stay correct over the trimmed feed.
     assert_eq!(int(&run(&service, "MATCH (n {v: 40}) RETURN count(*)")), 1);
+}
+
+#[test]
+fn runtime_compaction_keeps_the_event_history() {
+    // By default compaction keeps the latest changes for `GET /events`
+    // subscribers to resume from.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native.wal");
+    let service = NativeService::open_with_compact_threshold(&path, 8).expect("open");
+    run(&service, "CREATE (:Counter {title: 'c', v: 0})");
+    for i in 1..=40 {
+        run(&service, &format!("MATCH (n:Counter) SET n.v = {i}"));
+    }
+    assert!(service.change_head() < NativeService::DEFAULT_EVENT_HISTORY);
+    assert_eq!(service.graph().change_floor(), 0);
+    assert_eq!(
+        service.changes_since(0).ops.len() as u64,
+        service.change_head()
+    );
 }
 
 // ── Replica identity + causal clock (issue #389, the multi-writer/P2P

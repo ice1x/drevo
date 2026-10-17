@@ -128,6 +128,9 @@ pub mod embeddings;
 /// alternative.
 pub mod engine;
 pub mod error;
+/// `GET /events`: committed changes as a Server-Sent Events stream.
+#[cfg(feature = "http")]
+pub mod events;
 /// `extern "C"` FFI surface for desktop / mobile embedders. Not built on
 /// `wasm32-unknown-unknown` because the platform has no C ABI.
 #[cfg(not(target_arch = "wasm32"))]

@@ -173,6 +173,12 @@
 #define NativeService_DEFAULT_COMPACT_EVERY_OPS 4096
 
 /**
+ * How many of the latest committed changes stay in the change feed
+ * after compaction, for event subscribers to resume from.
+ */
+#define NativeService_DEFAULT_EVENT_HISTORY 10000
+
+/**
  * A coarse default for the in-memory width of one result row, in bytes, used
  * when a caller has no better figure. One of the planner's documented
  * `DEFAULT_*` magic numbers (see [`crate::planner::cardinality`]): a handful

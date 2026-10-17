@@ -153,6 +153,12 @@ impl NativeApiState {
         Arc::clone(&self.registry)
     }
 
+    /// The server's users and their privileges.
+    #[must_use]
+    pub fn security(&self) -> &crate::security::Security {
+        &self.security
+    }
+
     /// Attach an embeddings backend, enabling `POST /v1/embeddings`.
     #[must_use]
     pub fn with_embeddings_backend(mut self, backend: EmbeddingBackend) -> Self {
@@ -249,6 +255,8 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/storage/benchmark", post(storage_benchmark))
         // The Web UI — the same embedded, same-origin assets as the KV
         // server (`crate::web_ui`), pointed at the same-shape endpoints.
+        // Committed changes as Server-Sent Events.
+        .route("/events", get(crate::events::stream))
         .route("/ui", get(crate::web_ui::serve_index))
         .route("/ui/", get(crate::web_ui::redirect_ui_slash))
         .route("/ui/app.js", get(crate::web_ui::serve_app_js))

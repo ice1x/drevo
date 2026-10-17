@@ -8,6 +8,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Change events over Server-Sent Events: `GET /events`** (issue #640).
+  - Every node or relationship a committed write creates, changes or
+    deletes is one event, in commit order. Rolled-back work never appears.
+  - The SSE id is the change's cursor, so a client resumes from `?since=`
+    or `Last-Event-ID` (which `EventSource` sends) without gaps.
+  - A cursor older than the retained 10 000 changes, or one from before a
+    restart, gets a `lagged` event telling the client to reload.
+  - `labels=` narrows the stream by label or relationship type, and `db=`
+    picks the database.
+  - With logins required, the stream leaves out what the user may not
+    traverse.
+
 - **`SHOW TRANSACTIONS` and `TERMINATE TRANSACTIONS`** (issue #639).
   - The server lists every running statement and open explicit
     transaction, on every database, under Neo4j's ids

@@ -9946,7 +9946,8 @@ fn semantic_status_row(status: &crate::report::SemanticTargetStatus) -> Vec<Valu
     ]
 }
 
-fn node_labels_from_storage(node: &Node) -> Vec<String> {
+/// A stored node's labels: its kind, then its secondary labels.
+pub(crate) fn node_labels_from_storage(node: &Node) -> Vec<String> {
     let mut labels = vec![node.kind.clone()];
     if let Some(serde_json::Value::Array(arr)) = node.properties.get(SECONDARY_LABELS_KEY) {
         for item in arr {
