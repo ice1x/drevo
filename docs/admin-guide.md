@@ -532,7 +532,7 @@ let token = store.issue_token("neo4j");       // Some(64 hex characters)
 ```
 
 Roles and privileges live in the user catalog (the crate's `privileges` and `users` modules,
-below); the older generic access policy is `drevo::authz`.
+below).
 
 ### Users
 
@@ -749,10 +749,6 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj /CN=localhost \
 ```
 
 gRPC and Arrow Flight are not covered by these settings and stay plain text.
-
-> Authorization / RBAC primitives exist at the substrate level but are not yet wired into the
-> HTTP / Bolt request path — treat the network surface as trusted-network or front it with a
-> gateway that enforces authz.
 
 ---
 

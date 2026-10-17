@@ -24,7 +24,7 @@ categories = ["authentication"]
 default = ["password"]
 # Users with Argon2id password hashes and session tokens (`authn`), the stored
 # security catalog (`catalog`) and user management (`users`). Without it
-# the crate is the dependency-free access policy (`authz`) alone, which also
+# the crate is the dependency-free privilege model (`privileges`) alone, which also
 # builds for wasm32-unknown-unknown.
 password = ["dep:argon2", "dep:serde", "dep:serde_json"]
 
