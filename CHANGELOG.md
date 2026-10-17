@@ -8,6 +8,9 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Web UI: physical backups** (issue #641). The Storage panel lists the
+  newest backups (when, full or incremental, databases, size) and takes a
+  full backup, or an incremental one that continues the newest.
 - **Physical server backups** (issue #641). `POST /admin/backup` backs up
   every database, its schema sidecar, the users and the embeddings
   settings while the server keeps serving; `{"since": "<earlier>"}` makes it

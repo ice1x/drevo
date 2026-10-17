@@ -483,6 +483,8 @@ curl http://localhost:8080/admin/backups
   written since. A database created since, or whose log was compacted since, is backed up in
   full, and the answer says why (`full_because`).
 - **Logins.** With logins required, both routes need `ALL DBMS PRIVILEGES`.
+- **Web UI.** The Storage panel (⛁) lists the newest backups and has **Full backup** and
+  **Incremental** buttons; Incremental continues the newest backup in the list.
 
 A stopped server is backed up from the command line, with the same environment:
 
