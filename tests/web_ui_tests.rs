@@ -580,6 +580,40 @@ async fn ui_serves_transactions_view_module_and_the_storage_list() {
     assert!(idx.contains("id=\"storage-transactions\""));
 }
 
+// The Storage panel takes physical backups: the pure helpers are served
+// same-origin before app.js, and the page has the list and both buttons.
+#[tokio::test]
+async fn ui_serves_backups_view_module_and_the_backup_buttons() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/backups_view.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/javascript"), "got {ct:?}");
+    let js = String::from_utf8(bytes).expect("utf-8");
+    for needle in [
+        "DrevoBackupsView",
+        "/admin/backups",
+        "/admin/backup",
+        "backupRequest",
+        "summary",
+    ] {
+        assert!(js.contains(needle), "backups_view.js must define {needle}");
+    }
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let bv = idx
+        .find("/ui/backups_view.js")
+        .expect("index.html must load backups_view.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(bv < appjs, "backups_view.js must load before app.js");
+    for id in [
+        "id=\"storage-backups-list\"",
+        "id=\"storage-backup-full\"",
+        "id=\"storage-backup-incremental\"",
+    ] {
+        assert!(idx.contains(id), "the Storage panel must hold {id}");
+    }
+}
+
 // The live overview: its pure helpers are served same-origin before app.js,
 // the overview panel has the switch, and the stream it follows is served.
 #[tokio::test]

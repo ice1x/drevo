@@ -208,6 +208,20 @@
         <h3 id="storage-transactions-title" class="storage-subhead">Running transactions</h3>
         <div id="storage-transactions-list"></div>
       </section>
+      <!-- Physical backups of every database (POST /admin/backup, listed by
+           GET /admin/backups): a full one, or the log written since the
+           newest backup. Admin only. -->
+      <section id="storage-backups" class="storage-transactions"
+               aria-labelledby="storage-backups-title">
+        <h3 id="storage-backups-title" class="storage-subhead">Physical backups</h3>
+        <div id="storage-backups-list"></div>
+        <div class="storage-backup-actions">
+          <button type="button" id="storage-backup-full" class="storage-refresh"
+                  title="Back up every database and the server's files, whole">Full backup</button>
+          <button type="button" id="storage-backup-incremental" class="storage-refresh"
+                  title="Back up what was written since the newest backup" disabled>Incremental</button>
+        </div>
+      </section>
       <div id="storage-bench" class="storage-bench" hidden></div>
       <footer class="storage-foot">
         <a id="storage-backup" class="storage-backup" href="/export/graphml"
@@ -385,6 +399,9 @@
   <!-- Running-transactions helpers for the Storage panel (unit-tested in
        transactions_view.test.js); app.js reads window.DrevoTransactionsView. -->
   <script src="/ui/transactions_view.js"></script>
+  <!-- Physical-backup helpers for the Storage panel (unit-tested in
+       backups_view.test.js); app.js reads window.DrevoBackupsView. -->
+  <script src="/ui/backups_view.js"></script>
   <!-- Live overview helpers (pure, unit-tested under node --test in
        live_refresh.test.js); app.js reads window.DrevoLiveRefresh. -->
   <script src="/ui/live_refresh.js"></script>

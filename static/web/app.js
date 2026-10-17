@@ -70,6 +70,10 @@
   const $storageRefresh = document.getElementById("storage-refresh");
   const $storageTransactions = document.getElementById("storage-transactions-list");
   const TxView = window.DrevoTransactionsView;
+  const $storageBackups = document.getElementById("storage-backups-list");
+  const $storageBackupFull = document.getElementById("storage-backup-full");
+  const $storageBackupIncr = document.getElementById("storage-backup-incremental");
+  const BackupsView = window.DrevoBackupsView;
   // Settings panel (embeddings config).
   const $settingsToggle = document.getElementById("settings-toggle");
   const $settingsModal = document.getElementById("settings-modal");
@@ -563,7 +567,100 @@
     } catch (e) {
       $storageBody.innerHTML = `<p class="storage-error">Cannot load storage stats: ${e.message}</p>`;
     }
-    await loadTransactions();
+    await Promise.all([loadTransactions(), loadBackups()]);
+  }
+
+  // ── Physical backups (POST /admin/backup, GET /admin/backups) ──────
+  // The newest few backups in the server's backup directory, and buttons
+  // for a full backup or one that continues the newest. Built with
+  // textContent, so a backup's name never becomes markup.
+  const BACKUPS_SHOWN = 5;
+  let backups = [];
+
+  function renderBackups(list, directory) {
+    if (!$storageBackups) return;
+    backups = list;
+    $storageBackups.replaceChildren();
+    if ($storageBackupIncr) $storageBackupIncr.disabled = list.length === 0;
+    if (list.length === 0) {
+      const p = document.createElement("p");
+      p.className = "storage-note";
+      p.textContent = directory
+        ? `No backups in ${directory} yet.`
+        : "No backups yet.";
+      $storageBackups.append(p);
+      return;
+    }
+    const table = document.createElement("table");
+    table.className = "storage-keyspaces";
+    const head = table.createTHead().insertRow();
+    for (const h of ["Backup", "Taken", "Kind", "Databases", "Size"]) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      head.append(th);
+    }
+    const body = table.createTBody();
+    for (const b of list.slice(0, BACKUPS_SHOWN)) {
+      const s = BackupsView.summary(b);
+      const tr = body.insertRow();
+      const name = tr.insertCell();
+      name.className = "ks-name";
+      name.textContent = s.name;
+      name.title = [directory ? `${directory}/${s.name}` : s.name, ...s.notes].join("\n");
+      tr.insertCell().textContent = s.when ? s.when.toLocaleString() : "—";
+      tr.insertCell().textContent = s.kind;
+      const dbs = tr.insertCell();
+      dbs.className = "ks-num";
+      dbs.textContent = String(s.databases);
+      const size = tr.insertCell();
+      size.className = "ks-num";
+      size.textContent = formatBytes(s.bytes);
+    }
+    $storageBackups.append(table);
+    if (list.length > BACKUPS_SHOWN) {
+      const p = document.createElement("p");
+      p.className = "storage-note";
+      p.textContent = `…and ${list.length - BACKUPS_SHOWN} older in ${directory || "the backup directory"}.`;
+      $storageBackups.append(p);
+    }
+  }
+
+  async function loadBackups() {
+    if (!$storageBackups || !BackupsView) return;
+    try {
+      const answer = await apiGet(BackupsView.LIST_PATH);
+      renderBackups(BackupsView.listFrom(answer), answer.directory);
+    } catch (e) {
+      backups = [];
+      if ($storageBackupIncr) $storageBackupIncr.disabled = true;
+      $storageBackups.replaceChildren();
+      const p = document.createElement("p");
+      p.className = "storage-error";
+      p.textContent = `Cannot list backups: ${e.message}`;
+      $storageBackups.append(p);
+    }
+  }
+
+  async function takeBackup(kind) {
+    if (!BackupsView) return;
+    const request = BackupsView.backupRequest(kind, backups);
+    if (request === null) {
+      status("There is no backup to continue; take a full backup first.", "error");
+      return;
+    }
+    const buttons = [$storageBackupFull, $storageBackupIncr].filter(Boolean);
+    for (const b of buttons) b.disabled = true;
+    status(kind === "incremental" ? `Backing up what changed since "${request.since}"…` : "Taking a full backup…");
+    try {
+      const done = await apiPost(BackupsView.BACKUP_PATH, request);
+      const s = BackupsView.summary(done);
+      status(`Backup "${s.name}" done: ${s.databases} database(s), ${formatBytes(s.bytes)} → ${done.path}`, "ok");
+    } catch (e) {
+      status(`Backup failed: ${e.message}`, "error");
+    } finally {
+      if ($storageBackupFull) $storageBackupFull.disabled = false;
+      await loadBackups();
+    }
   }
 
   // ── Running transactions (SHOW / TERMINATE TRANSACTIONS) ───────────
@@ -2577,6 +2674,10 @@
   if ($storageShrink) $storageShrink.addEventListener("click", doShrink);
   if ($storageBenchRun) $storageBenchRun.addEventListener("click", doBenchmark);
   if ($storageRefresh) $storageRefresh.addEventListener("click", loadStorage);
+  if ($storageBackupFull) $storageBackupFull.addEventListener("click", () => takeBackup("full"));
+  if ($storageBackupIncr) {
+    $storageBackupIncr.addEventListener("click", () => takeBackup("incremental"));
+  }
   if ($storageModal) {
     // Click on the dimmed backdrop (outside the dialog) closes.
     $storageModal.addEventListener("click", (e) => {

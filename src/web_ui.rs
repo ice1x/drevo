@@ -14,6 +14,7 @@
 //! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/transactions_view.js` → `transactions_view.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/backups_view.js` → `backups_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/live_refresh.js` → `live_refresh.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/results_view.js` → `results_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/query_history.js` → `query_history.js` (`text/javascript; charset=utf-8`)
@@ -76,6 +77,11 @@ const REPORT_JS: &str = include_str!("../static/web/report.js");
 /// of running transactions, used by `app.js`. Unit-tested by
 /// `transactions_view.test.js` under `node --test`.
 const TRANSACTIONS_VIEW_JS: &str = include_str!("../static/web/transactions_view.js");
+
+/// `backups_view.js` body — pure helpers for the Storage panel's physical
+/// backups, used by `app.js`. Unit-tested by `backups_view.test.js` under
+/// `node --test`.
+const BACKUPS_VIEW_JS: &str = include_str!("../static/web/backups_view.js");
 
 /// `live_refresh.js` body — pure helpers for the live overview (the
 /// `GET /events` URL, change coalescing, the remembered switch), used by
@@ -145,6 +151,12 @@ pub async fn serve_report_js() -> Response {
 /// `app.js` depends on.
 pub async fn serve_transactions_view_js() -> Response {
     asset_response(TRANSACTIONS_VIEW_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/backups_view.js` → serve the physical-backup helpers `app.js`
+/// depends on.
+pub async fn serve_backups_view_js() -> Response {
+    asset_response(BACKUPS_VIEW_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/live_refresh.js` → serve the live-overview helpers `app.js`
@@ -623,6 +635,34 @@ mod tests {
         assert!(
             APP_JS.contains("DrevoTransactionsView") && APP_JS.contains("terminateRequest"),
             "app.js must list and terminate transactions through DrevoTransactionsView"
+        );
+    }
+
+    #[test]
+    fn embedded_backups_view_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(
+            BACKUPS_VIEW_JS.contains("DrevoBackupsView")
+                && BACKUPS_VIEW_JS.contains("backupRequest"),
+            "backups_view.js must export backupRequest on DrevoBackupsView"
+        );
+        assert!(
+            !BACKUPS_VIEW_JS.contains("document") && !BACKUPS_VIEW_JS.contains("window."),
+            "backups_view.js must stay DOM-free so it is unit-testable under node"
+        );
+        let bv = INDEX_HTML
+            .find("/ui/backups_view.js")
+            .expect("index.html must load backups_view.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(bv < appjs, "backups_view.js must load before app.js");
+        assert!(
+            INDEX_HTML.contains("id=\"storage-backups\""),
+            "the Storage panel must hold the physical backups"
+        );
+        assert!(
+            APP_JS.contains("DrevoBackupsView") && APP_JS.contains("backupRequest"),
+            "app.js must take backups through DrevoBackupsView"
         );
     }
 
