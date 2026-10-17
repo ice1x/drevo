@@ -222,6 +222,11 @@ impl DatabaseRegistry {
     ) -> Self {
         let default_name = crate::native_api::DEFAULT_DB;
         dbs.insert(default_name.to_string(), Arc::clone(&default));
+        // One list of running transactions for the whole server.
+        #[cfg(not(target_arch = "wasm32"))]
+        for (name, service) in &dbs {
+            service.join_server(name, default.transactions());
+        }
         Self {
             default_name,
             default,
@@ -308,6 +313,8 @@ impl DatabaseRegistry {
         }
         let service = Arc::new(NativeService::in_memory());
         service.set_statement_timeout(self.default_service().statement_timeout());
+        #[cfg(not(target_arch = "wasm32"))]
+        service.join_server(name, self.default_service().transactions());
         dbs.insert(name.to_string(), Arc::clone(&service));
         Ok(service)
     }
@@ -340,6 +347,8 @@ impl DatabaseRegistry {
         };
         // New databases inherit the server-wide statement timeout (#547).
         service.set_statement_timeout(self.default_service().statement_timeout());
+        #[cfg(not(target_arch = "wasm32"))]
+        service.join_server(name, self.default_service().transactions());
         dbs.insert(name.to_string(), Arc::clone(&service));
         Ok(service)
     }

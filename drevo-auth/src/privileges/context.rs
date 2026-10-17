@@ -181,6 +181,19 @@ impl SecurityContext {
         self.check(action, database, Element::None, None)
     }
 
+    /// Whether the transactions of `user` on `database` may be listed and
+    /// terminated (`TRANSACTION MANAGEMENT (user)`). Everyone may manage
+    /// their own; this is the check for someone else's.
+    #[must_use]
+    pub fn can_manage_transactions(&self, database: &str, user: &str) -> bool {
+        self.check(
+            Action::TransactionManagement,
+            database,
+            Element::None,
+            Some(user),
+        )
+    }
+
     /// Whether the procedure `name` may run.
     #[must_use]
     pub fn can_execute_procedure(&self, name: &str) -> bool {

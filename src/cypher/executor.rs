@@ -468,6 +468,10 @@ pub enum ExecError {
         /// The configured limit, in milliseconds.
         limit_ms: u64,
     },
+    /// The statement or its transaction was stopped by `TERMINATE
+    /// TRANSACTIONS` (see [`crate::transactions`]).
+    #[error("the transaction has been terminated")]
+    Terminated,
 }
 
 /// A [`GraphEngine`] method returns the storage-agnostic
@@ -527,6 +531,7 @@ impl ExecError {
             | Self::IndexBehindWrites { .. }
             | Self::Forbidden { .. }
             | Self::Timeout { .. }
+            | Self::Terminated
             | Self::Storage(_) => None,
         }
     }
@@ -544,7 +549,9 @@ pub type ExecResultT<T> = Result<T, ExecError>;
 /// costs a counter bump and only reads the clock every [`TICK_STRIDE`] calls.
 /// With no deadline set, `tick` is a single thread-local read.
 pub(crate) mod deadline {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use super::{ExecError, ExecResultT};
@@ -556,6 +563,38 @@ pub(crate) mod deadline {
         /// `(deadline, limit in ms)` of the statement running on this thread.
         static DEADLINE: Cell<Option<(Instant, u64)>> = const { Cell::new(None) };
         static TICKS: Cell<u32> = const { Cell::new(0) };
+        /// Set by `TERMINATE TRANSACTIONS` for the statement on this thread.
+        static CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+        /// Whether [`CANCEL`] holds a flag, read without borrowing it.
+        static WATCHING: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Run `work` stopping with [`ExecError::Terminated`] once `flag` is set
+    /// (checked where the deadline is), restoring the previous flag after.
+    pub(crate) fn with_cancel<R>(flag: Option<Arc<AtomicBool>>, work: impl FnOnce() -> R) -> R {
+        let Some(flag) = flag else {
+            return work();
+        };
+        let previous = CANCEL.with(|c| c.replace(Some(flag)));
+        let was_watching = WATCHING.with(|w| w.replace(true));
+        struct Restore(Option<Arc<AtomicBool>>, bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let previous = self.0.take();
+                CANCEL.with(|c| *c.borrow_mut() = previous);
+                WATCHING.with(|w| w.set(self.1));
+            }
+        }
+        let _restore = Restore(previous, was_watching);
+        work()
+    }
+
+    fn cancelled() -> bool {
+        CANCEL.with(|c| {
+            c.borrow()
+                .as_ref()
+                .is_some_and(|f| f.load(Ordering::Relaxed))
+        })
     }
 
     /// Run `work` with a deadline `limit` from now (none when `limit` is
@@ -588,18 +627,28 @@ pub(crate) mod deadline {
     /// Fail with [`ExecError::Timeout`] once the running statement is past
     /// its deadline.
     pub(crate) fn tick() -> ExecResultT<()> {
-        let Some((deadline, limit_ms)) = DEADLINE.with(|d| d.get()) else {
+        let deadline = DEADLINE.with(|d| d.get());
+        let watching = WATCHING.with(|w| w.get());
+        if deadline.is_none() && !watching {
             return Ok(());
-        };
+        }
         let ticks = TICKS.with(|t| {
             let n = t.get().wrapping_add(1);
             t.set(n);
             n
         });
-        if ticks % TICK_STRIDE == 0 && Instant::now() >= deadline {
-            return Err(ExecError::Timeout { limit_ms });
+        if ticks % TICK_STRIDE != 0 {
+            return Ok(());
         }
-        Ok(())
+        if watching && cancelled() {
+            return Err(ExecError::Terminated);
+        }
+        match deadline {
+            Some((deadline, limit_ms)) if Instant::now() >= deadline => {
+                Err(ExecError::Timeout { limit_ms })
+            }
+            _ => Ok(()),
+        }
     }
 
     #[cfg(test)]
@@ -637,6 +686,32 @@ pub(crate) mod deadline {
                 with_statement_timeout(Some(Duration::from_secs(60)), spin_until_timeout)
             });
             assert!(started.elapsed() < Duration::from_secs(5));
+        }
+
+        #[test]
+        fn tick_stops_once_the_flag_is_set_and_the_scope_restores() {
+            let flag = Arc::new(AtomicBool::new(false));
+            with_cancel(Some(Arc::clone(&flag)), || {
+                for _ in 0..(TICK_STRIDE * 2) {
+                    assert!(tick().is_ok(), "not set yet");
+                }
+                flag.store(true, Ordering::Relaxed);
+                let stopped =
+                    (0..=TICK_STRIDE).any(|_| matches!(tick(), Err(ExecError::Terminated)));
+                assert!(stopped, "a stride of ticks sees the flag");
+            });
+            for _ in 0..(TICK_STRIDE * 2) {
+                assert!(tick().is_ok(), "the flag leaked out of its scope");
+            }
+        }
+
+        #[test]
+        fn cancel_and_deadline_work_together() {
+            let flag = Arc::new(AtomicBool::new(false));
+            let limit = with_cancel(Some(flag), || {
+                with_statement_timeout(Some(Duration::from_millis(5)), spin_until_timeout)
+            });
+            assert_eq!(limit, 5);
         }
     }
 }
@@ -5888,6 +5963,117 @@ impl<'a> Executor<'a> {
         self.rel_vector_scan(&index.label, &index.property, &query, k, span)
     }
 
+    /// The transaction ids a `SHOW` / `TERMINATE TRANSACTIONS` names: strings,
+    /// or lists of them, flattened.
+    fn transaction_ids(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<String>> {
+        fn collect(v: Value, out: &mut Vec<String>, span: Span) -> ExecResultT<()> {
+            match v {
+                Value::String(s) => out.push(s),
+                Value::List(items) => {
+                    for item in items {
+                        collect(item, out, span)?;
+                    }
+                }
+                Value::Null => {}
+                other => {
+                    return Err(ExecError::TypeMismatch {
+                        expected: "a transaction id (String)".into(),
+                        got: other.type_name().into(),
+                        span,
+                    })
+                }
+            }
+            Ok(())
+        }
+        let mut ids = Vec::new();
+        collect(self.eval(&args[0], &Bindings::new())?, &mut ids, span)?;
+        Ok(ids)
+    }
+
+    /// Whether the signed-in user may see and terminate `t`: their own, or
+    /// with `TRANSACTION MANAGEMENT` for its user on its database. Everything
+    /// when nothing is checked.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn may_manage(&self, t: &crate::transactions::TransactionInfo) -> bool {
+        let Some(r) = self.restriction else {
+            return true;
+        };
+        let me = crate::transactions::current_caller().and_then(|c| c.user);
+        if me.is_some() && me == t.user {
+            return true;
+        }
+        r.context
+            .can_manage_transactions(&t.database, t.user.as_deref().unwrap_or(""))
+    }
+
+    /// `SHOW TRANSACTION[S] [ids] [YIELD …] [WHERE …]` (issue #639), run as
+    /// `CALL dbms.showTransactions(ids)`: the running statements and open
+    /// transactions of the server that the user may see, oldest first.
+    fn proc_show_transactions(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let ids = self.transaction_ids(args, span)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(svc) = self.native_semantic else {
+                return Ok(Vec::new());
+            };
+            let rows = svc
+                .transactions()
+                .list()
+                .into_iter()
+                .filter(|t| ids.is_empty() || ids.contains(&t.id))
+                .filter(|t| self.may_manage(t))
+                .map(|t| transaction_row(&t))
+                .collect();
+            Ok(rows)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = ids;
+            Ok(Vec::new())
+        }
+    }
+
+    /// `TERMINATE TRANSACTION[S] ids` (issue #639), run as `CALL
+    /// dbms.terminateTransactions(ids)`: one row per id, saying whether it was
+    /// terminated. Someone else's transaction the user may not manage reads
+    /// as not found.
+    fn proc_terminate_transactions(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let ids = self.transaction_ids(args, span)?;
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            // The terminated transaction's user, when one was terminated.
+            #[cfg(not(target_arch = "wasm32"))]
+            let found: Option<Option<String>> = self.native_semantic.and_then(|svc| {
+                let txs = svc.transactions();
+                let t = txs.get(&id).filter(|t| self.may_manage(t))?;
+                txs.terminate(&t.id).map(|t| t.user)
+            });
+            #[cfg(target_arch = "wasm32")]
+            let found: Option<Option<String>> = None;
+            rows.push(match found {
+                Some(user) => vec![
+                    Value::String(id),
+                    user.map_or(Value::Null, Value::String),
+                    Value::String("Transaction terminated.".into()),
+                ],
+                None => vec![
+                    Value::String(id),
+                    Value::Null,
+                    Value::String("Transaction not found.".into()),
+                ],
+            });
+        }
+        Ok(rows)
+    }
+
     /// `SHOW [type] INDEXES [YIELD …] [WHERE …]` (issue #532), run as
     /// `CALL db.showIndexes(type)`: one row per named vector index, in Neo4j's
     /// `SHOW INDEXES` column layout (see [`procedure_columns`]). `type` is the
@@ -7875,6 +8061,8 @@ impl<'a> Executor<'a> {
                 self.proc_db_index_vector_query_relationships(args, span)
             }
             "db.showIndexes" => self.proc_show_indexes(args, span),
+            "dbms.showTransactions" => self.proc_show_transactions(args, span),
+            "dbms.terminateTransactions" => self.proc_terminate_transactions(args, span),
             "db.showConstraints" => self.proc_show_constraints(args, span),
             "db.index.fulltext.queryNodes" => self.proc_db_index_fulltext_query_nodes(args, span),
             "drevo.memory.recall" => self.proc_memory_recall(args, span),
@@ -9550,6 +9738,25 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
         "db.index.vector.queryRelationships" => Some(&["relationship", "score"]),
         // `SHOW INDEXES` / `SHOW CONSTRAINTS` (issue #532), in Neo4j's layout.
+        // `SHOW TRANSACTIONS` (issue #639), Neo4j's columns plus `protocol`,
+        // `isExplicit` and `elapsedTimeMillis`.
+        "dbms.showTransactions" => Some(&[
+            "database",
+            "transactionId",
+            "currentQueryId",
+            "connectionId",
+            "clientAddress",
+            "username",
+            "currentQuery",
+            "startTime",
+            "status",
+            "elapsedTime",
+            "protocol",
+            "isExplicit",
+            "elapsedTimeMillis",
+            "currentQueryElapsedTimeMillis",
+        ]),
+        "dbms.terminateTransactions" => Some(&["transactionId", "username", "message"]),
         "db.showIndexes" => Some(&[
             "id",
             "name",
@@ -9668,6 +9875,8 @@ fn procedure_arity(name: &str) -> usize {
         "db.index.vector.queryRelationships" => 3,
         // SHOW [type] INDEXES / CONSTRAINTS → db.showIndexes(type) (issue #532).
         "db.showIndexes" | "db.showConstraints" => 1,
+        // SHOW / TERMINATE TRANSACTIONS [ids] → a list of ids (issue #639).
+        "dbms.showTransactions" | "dbms.terminateTransactions" => 1,
         // drevo.memory.recall(session, query, k) (issue #533).
         "drevo.memory.recall" => 3,
         // drevo.memory.recallVector(session, vector, k) (issue #533).
@@ -10609,6 +10818,45 @@ fn unix_millis_now() -> i64 {
 /// Format a Unix-epoch millisecond instant as an ISO-8601 UTC string
 /// (`YYYY-MM-DDThh:mm:ss.sssZ`) with no external date dependency — Howard
 /// Hinnant's `civil_from_days` algorithm over the proleptic Gregorian calendar.
+/// One `SHOW TRANSACTIONS` row, in the column order of
+/// [`procedure_columns`].
+#[cfg(not(target_arch = "wasm32"))]
+fn transaction_row(t: &crate::transactions::TransactionInfo) -> Vec<Value> {
+    let millis = |d: std::time::Duration| i64::try_from(d.as_millis()).unwrap_or(i64::MAX);
+    let elapsed = millis(t.elapsed);
+    let opt = |s: &Option<String>| s.clone().map_or(Value::Null, Value::String);
+    let query_id = t
+        .query
+        .as_ref()
+        .map_or(Value::Null, |_| Value::String(format!("{}-query", t.id)));
+    vec![
+        Value::String(t.database.clone()),
+        Value::String(t.id.clone()),
+        query_id,
+        Value::String(format!("{}-connection", t.id)),
+        opt(&t.client),
+        opt(&t.user),
+        opt(&t.query),
+        Value::String(iso8601_utc(t.started_ms)),
+        Value::String(
+            if t.terminated {
+                "Terminated"
+            } else if t.query.is_some() {
+                "Running"
+            } else {
+                "Idle"
+            }
+            .into(),
+        ),
+        Value::String(format!("PT{}.{:03}S", elapsed / 1000, elapsed % 1000)),
+        Value::String(t.surface.to_string()),
+        Value::Bool(t.explicit),
+        Value::Integer(elapsed),
+        t.query_elapsed
+            .map_or(Value::Null, |d| Value::Integer(millis(d))),
+    ]
+}
+
 pub(crate) fn iso8601_utc(epoch_ms: i64) -> String {
     let secs = epoch_ms.div_euclid(1000);
     let millis = epoch_ms.rem_euclid(1000);

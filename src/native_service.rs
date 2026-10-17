@@ -144,6 +144,11 @@ pub(crate) fn node_text<'a>(
     text.filter(|s| !s.is_empty())
 }
 
+/// The name a service is served under until a
+/// [`crate::database_registry::DatabaseRegistry`] names it.
+#[cfg(not(target_arch = "wasm32"))]
+const DEFAULT_DATABASE_NAME: &str = "drevo";
+
 /// A durable native graph serving Cypher with its full index stack. See the
 /// [module docs](self).
 pub struct NativeService {
@@ -204,6 +209,18 @@ pub struct NativeService {
     #[cfg(feature = "http")]
     embed_failures:
         std::sync::Mutex<std::collections::HashMap<(String, String, String), EmbedFailureStat>>,
+    /// The server's running statements and open transactions, shared by
+    /// every database of a [`crate::database_registry::DatabaseRegistry`].
+    #[cfg(not(target_arch = "wasm32"))]
+    transactions: RwLock<std::sync::Arc<crate::transactions::Transactions>>,
+    /// The name this database is served under, for transaction ids.
+    #[cfg(not(target_arch = "wasm32"))]
+    database_name: RwLock<String>,
+    /// The listed explicit transactions, by id.
+    #[cfg(not(target_arch = "wasm32"))]
+    explicit_txs: std::sync::Mutex<
+        std::collections::HashMap<crate::native::NativeTxId, crate::transactions::Listed>,
+    >,
 }
 
 /// A per-target tally of swallowed native auto-embed failures (issue #447;
@@ -368,6 +385,12 @@ impl NativeService {
             semantic_sidecar: Some(sidecar),
             #[cfg(feature = "http")]
             embed_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            transactions: RwLock::new(crate::transactions::Transactions::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            database_name: RwLock::new(DEFAULT_DATABASE_NAME.to_string()),
+            #[cfg(not(target_arch = "wasm32"))]
+            explicit_txs: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -405,6 +428,12 @@ impl NativeService {
             semantic_sidecar: None,
             #[cfg(feature = "http")]
             embed_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            transactions: RwLock::new(crate::transactions::Transactions::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            database_name: RwLock::new(DEFAULT_DATABASE_NAME.to_string()),
+            #[cfg(not(target_arch = "wasm32"))]
+            explicit_txs: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -537,20 +566,22 @@ impl NativeService {
         restriction: Option<Restriction<'_>>,
     ) -> Result<ExecResult, ExecError> {
         let checked_writes = restriction.is_some_and(|r| !r.writes_everything());
-        let result = crate::cypher::executor::deadline::with_statement_timeout(
-            self.statement_timeout(),
-            || {
-                let writes =
-                    query_writes(query) || (checked_writes && query_calls_writing_procedure(query));
-                if (self.graph.has_existence_constraints() || checked_writes) && writes {
-                    self.execute_as_transaction(query, &params, restriction)
-                } else {
-                    self.with_fresh_indexes(|idx| {
-                        self.execute_with(idx, query, params, restriction)
-                    })
-                }
-            },
-        );
+        let result = self.listed(|| {
+            crate::cypher::executor::deadline::with_statement_timeout(
+                self.statement_timeout(),
+                || {
+                    let writes = query_writes(query)
+                        || (checked_writes && query_calls_writing_procedure(query));
+                    if (self.graph.has_existence_constraints() || checked_writes) && writes {
+                        self.execute_as_transaction(query, &params, restriction)
+                    } else {
+                        self.with_fresh_indexes(|idx| {
+                            self.execute_with(idx, query, params, restriction)
+                        })
+                    }
+                },
+            )
+        });
         self.maybe_compact();
         result
     }
@@ -708,13 +739,29 @@ impl NativeService {
             idx.synced_head == self.graph.change_head()
                 && idx.paths_version == self.path_specs_version.load(Ordering::SeqCst)
         };
-        {
-            let idx = self.indexes.read().unwrap_or_else(|e| e.into_inner());
-            if fresh(&idx) {
-                return serve(&idx);
+        // Bring the indexes up to date under the write lock, then serve under
+        // the read lock, so a long statement never holds up the others. Under
+        // a steady stream of writes the indexes may move on again between the
+        // two; after a few rounds the statement is served under the write
+        // lock it caught up with.
+        for _ in 0..3 {
+            {
+                let idx = self.indexes.read().unwrap_or_else(|e| e.into_inner());
+                if fresh(&idx) {
+                    return serve(&idx);
+                }
             }
+            let mut idx = self.indexes.write().unwrap_or_else(|e| e.into_inner());
+            self.catch_up_indexes(&mut idx);
         }
         let mut idx = self.indexes.write().unwrap_or_else(|e| e.into_inner());
+        self.catch_up_indexes(&mut idx);
+        serve(&idx)
+    }
+
+    /// Bring `idx` up to the graph's head and the current path and text
+    /// index definitions.
+    fn catch_up_indexes(&self, idx: &mut ServiceIndexes) {
         let version = self.path_specs_version.load(Ordering::SeqCst);
         if idx.paths_version != version {
             let (specs, text_specs) = {
@@ -728,7 +775,6 @@ impl NativeService {
         if idx.synced_head != self.graph.change_head() {
             idx.catch_up(&self.graph);
         }
-        serve(&idx)
     }
 
     /// Full-text search over the service's BM25 index — the engine of the
@@ -763,11 +809,106 @@ impl NativeService {
             .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))
     }
 
+    /// The server's running statements and open transactions (see
+    /// [`crate::transactions`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn transactions(&self) -> std::sync::Arc<crate::transactions::Transactions> {
+        std::sync::Arc::clone(&self.transactions.read().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Serve this database as `name`, listing its transactions in `shared`
+    /// with the other databases of the server.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "http"))]
+    pub(crate) fn join_server(
+        &self,
+        name: &str,
+        shared: std::sync::Arc<crate::transactions::Transactions>,
+    ) {
+        *self
+            .database_name
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = name.to_string();
+        *self.transactions.write().unwrap_or_else(|e| e.into_inner()) = shared;
+    }
+
+    /// List a statement of this database while it runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn list_statement(&self) -> crate::transactions::Listed {
+        let name = self
+            .database_name
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.transactions().list_new(&name, false)
+    }
+
+    /// Run `work` as a listed statement that `TERMINATE TRANSACTIONS` can
+    /// stop.
+    fn listed<R>(&self, work: impl FnOnce() -> R) -> R {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let listed = self.list_statement();
+            crate::cypher::executor::deadline::with_cancel(
+                Some(listed.entry().terminated_flag()),
+                work,
+            )
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            work()
+        }
+    }
+
+    /// Whether explicit transaction `tx` was terminated (and so must be
+    /// rolled back rather than committed).
+    #[must_use]
+    pub fn tx_terminated(&self, tx: crate::native::NativeTxId) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.explicit_txs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&tx)
+                .is_some_and(|l| l.entry().is_terminated())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = tx;
+            false
+        }
+    }
+
+    /// Stop listing explicit transaction `tx`.
+    fn unlist_tx(&self, tx: crate::native::NativeTxId) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.explicit_txs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&tx);
+        #[cfg(target_arch = "wasm32")]
+        let _ = tx;
+    }
+
     /// Begin a registered transaction on the durable store — the session
     /// keeps the returned id between statements. See
     /// [`crate::native::NativeGraph::tx_begin`].
     pub fn begin_tx(&self) -> crate::native::NativeTxId {
-        self.graph.tx_begin()
+        let tx = self.graph.tx_begin();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let name = self
+                .database_name
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let listed = self.transactions().list_new(&name, true);
+            self.explicit_txs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(tx, listed);
+        }
+        tx
     }
 
     /// Execute one statement inside a registered transaction: the executor
@@ -817,21 +958,57 @@ impl NativeService {
         // and their hits resolve against the snapshot, until the transaction
         // has written (`tx_has_written`).
         let tx_has_written = self.graph.tx_has_writes(tx);
-        crate::cypher::executor::deadline::with_statement_timeout(self.statement_timeout(), || {
-            self.with_fresh_indexes(|idx| {
-                let ctx = NativeQueryContext {
-                    fts: Some(&idx.fts),
-                    fts_rel: Some(&idx.fts_rel),
-                    #[cfg(feature = "http")]
-                    embedder: self.embedder.get(),
-                    semantic: Some(self),
-                    in_transaction: true,
-                    tx_has_written,
-                    restriction,
-                    ..NativeQueryContext::default()
-                };
-                execute_on_engine_with_context(query, &engine, &ctx, params)
-            })
+        // A terminated transaction runs nothing more; its commit is refused.
+        #[cfg(not(target_arch = "wasm32"))]
+        let entry = self
+            .explicit_txs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&tx)
+            .map(|l| std::sync::Arc::clone(l.entry()));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(entry) = &entry {
+            if entry.is_terminated() {
+                return Err(ExecError::Terminated);
+            }
+            entry.set_query(crate::transactions::current_query());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        struct Idle(Option<std::sync::Arc<crate::transactions::Entry>>);
+        #[cfg(not(target_arch = "wasm32"))]
+        impl Drop for Idle {
+            fn drop(&mut self) {
+                if let Some(entry) = &self.0 {
+                    entry.set_query(None);
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let flag = entry.as_ref().map(|e| e.terminated_flag());
+        #[cfg(not(target_arch = "wasm32"))]
+        let _idle = Idle(entry);
+        #[cfg(target_arch = "wasm32")]
+        let flag = None;
+        crate::cypher::executor::deadline::with_cancel(flag, || {
+            crate::cypher::executor::deadline::with_statement_timeout(
+                self.statement_timeout(),
+                || {
+                    self.with_fresh_indexes(|idx| {
+                        let ctx = NativeQueryContext {
+                            fts: Some(&idx.fts),
+                            fts_rel: Some(&idx.fts_rel),
+                            #[cfg(feature = "http")]
+                            embedder: self.embedder.get(),
+                            semantic: Some(self),
+                            in_transaction: true,
+                            tx_has_written,
+                            restriction,
+                            ..NativeQueryContext::default()
+                        };
+                        execute_on_engine_with_context(query, &engine, &ctx, params)
+                    })
+                },
+            )
         })
     }
 
@@ -848,7 +1025,14 @@ impl NativeService {
         &self,
         tx: crate::native::NativeTxId,
     ) -> std::result::Result<(), crate::native::CommitError> {
+        if self.tx_terminated(tx) {
+            self.rollback_tx(tx);
+            return Err(crate::native::CommitError::Io(
+                "the transaction has been terminated".to_string(),
+            ));
+        }
         let result = self.graph.tx_commit(tx);
+        self.unlist_tx(tx);
         if result.is_ok() {
             self.maybe_compact();
         }
@@ -857,6 +1041,7 @@ impl NativeService {
 
     /// Discard a registered transaction. `false` when it was already closed.
     pub fn rollback_tx(&self, tx: crate::native::NativeTxId) -> bool {
+        self.unlist_tx(tx);
         self.graph.tx_rollback(tx)
     }
 
@@ -873,6 +1058,7 @@ impl NativeService {
         tx: crate::native::NativeTxId,
         gid: &str,
     ) -> std::result::Result<(), crate::native::PrepareError> {
+        self.unlist_tx(tx);
         self.graph.tx_prepare(tx, gid)
     }
 
