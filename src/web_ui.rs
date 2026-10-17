@@ -14,6 +14,7 @@
 //! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/transactions_view.js` → `transactions_view.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/live_refresh.js` → `live_refresh.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/results_view.js` → `results_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/query_history.js` → `query_history.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/auth.js` → `auth.js` (`text/javascript; charset=utf-8`)
@@ -75,6 +76,11 @@ const REPORT_JS: &str = include_str!("../static/web/report.js");
 /// of running transactions, used by `app.js`. Unit-tested by
 /// `transactions_view.test.js` under `node --test`.
 const TRANSACTIONS_VIEW_JS: &str = include_str!("../static/web/transactions_view.js");
+
+/// `live_refresh.js` body — pure helpers for the live overview (the
+/// `GET /events` URL, change coalescing, the remembered switch), used by
+/// `app.js`. Unit-tested by `live_refresh.test.js` under `node --test`.
+const LIVE_REFRESH_JS: &str = include_str!("../static/web/live_refresh.js");
 
 /// `results_view.js` body — pure helpers for the Table / JSON result views
 /// (cell formatting, the view a result opens in, CSV), embedded at compile
@@ -139,6 +145,12 @@ pub async fn serve_report_js() -> Response {
 /// `app.js` depends on.
 pub async fn serve_transactions_view_js() -> Response {
     asset_response(TRANSACTIONS_VIEW_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/live_refresh.js` → serve the live-overview helpers `app.js`
+/// depends on.
+pub async fn serve_live_refresh_js() -> Response {
+    asset_response(LIVE_REFRESH_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/results_view.js` → serve the result-view helpers `app.js` depends on.
@@ -555,6 +567,35 @@ mod tests {
             .find("/ui/app.js")
             .expect("index.html must load app.js");
         assert!(qh < appjs, "query_history.js must load before app.js");
+    }
+
+    #[test]
+    fn embedded_live_refresh_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(
+            LIVE_REFRESH_JS.contains("DrevoLiveRefresh")
+                && LIVE_REFRESH_JS.contains("createCoalescer")
+                && LIVE_REFRESH_JS.contains("/events"),
+            "live_refresh.js must export createCoalescer on DrevoLiveRefresh"
+        );
+        assert!(
+            !LIVE_REFRESH_JS.contains("document") && !LIVE_REFRESH_JS.contains("window."),
+            "live_refresh.js must stay DOM-free so it is unit-testable under node"
+        );
+        let live = INDEX_HTML
+            .find("/ui/live_refresh.js")
+            .expect("index.html must load live_refresh.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(live < appjs, "live_refresh.js must load before app.js");
+        assert!(
+            INDEX_HTML.contains("id=\"graph-live\""),
+            "the overview panel must hold the Live switch"
+        );
+        assert!(
+            APP_JS.contains("new EventSource(Live.eventsUrl(currentDb))"),
+            "app.js must follow GET /events for the database being viewed"
+        );
     }
 
     #[test]

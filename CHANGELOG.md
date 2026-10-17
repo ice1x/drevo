@@ -23,6 +23,11 @@ history and the in-repo issue tracker; format loosely follows
     event, once per row, delivered as a `posted` event when its statement
     or transaction commits; `names=` picks events by name. Stream
     positions read `<cursor>:<n>` once named events exist.
+- **Web UI: Live overview** (issue #640). Ticking **Live** in the Graph
+  panel reloads the overview when the graph changes (from any client),
+  once per burst of changes. A query or search result on screen stays put
+  and **Refresh** is highlighted instead. The setting is remembered per
+  browser.
 
 - **`SHOW TRANSACTIONS` and `TERMINATE TRANSACTIONS`** (issue #639).
   - The server lists every running statement and open explicit

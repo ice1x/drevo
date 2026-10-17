@@ -49,6 +49,8 @@
   const $viewMeta = document.getElementById("view-meta");
   const $copyCsv = document.getElementById("copy-csv");
   const $graphRefresh = document.getElementById("graph-refresh");
+  const $graphLive = document.getElementById("graph-live");
+  const Live = window.DrevoLiveRefresh;
   const $kindChips = document.getElementById("kind-chips");
   const $kindFilter = document.getElementById("kind-filter");
   const $colorBy = document.getElementById("color-by");
@@ -92,6 +94,9 @@
   let graphCache = null;
   const degreeById = new Map(); // node id → degree (for top-N sampling)
   let activeKind = null; // null = all kinds
+  // Whether the canvas shows the overview sample (not a query or search
+  // result): live changes reload only the overview.
+  let overviewShown = false;
   let kindsExpanded = false; // show every label chip, not just the top ones
 
   // ── Dynamic node colour (task 00093) ────────────────────────────────
@@ -1857,6 +1862,7 @@
   // Replace the canvas with a fresh subgraph (results-list click).
   function renderSubgraph(subgraph, rootId) {
     if (!cy) return;
+    overviewShown = false;
     stopLiveLayout(); // don't leave a cola sim running on removed elements
     cy.elements().remove();
     const { nodes, edges } = toElements(subgraph, rootId);
@@ -2090,6 +2096,7 @@
 
   /** Fetch the graph once, build the degree map, draw the first sample. */
   async function loadOverview() {
+    markStale(false);
     status("Loading graph overview…");
     try {
       const dump = await apiGet("/export/json");
@@ -2198,6 +2205,7 @@
     const idSet = new Set(sample.map((n) => n.id));
     const edges = inducedEdges(idSet);
     renderSubgraph({ nodes: sample, edges }, null);
+    overviewShown = true;
     const scope = activeKind ? `kind “${activeKind}”` : "all kinds";
     status(
       `Overview: ${sample.length} of ${pool.length} node${
@@ -2237,6 +2245,7 @@
     currentDb = name;
     graphCache = null;
     activeKind = null;
+    if (liveSource) openLiveStream();
     status(`Switched to database “${name}”.`, "ok");
     showView("graph");
     await loadOverview();
@@ -2493,6 +2502,63 @@
     });
   }
 
+  // ── Live overview (GET /events) ──────────────────────────────────
+  // With "Live" on, the overview reloads when the graph changes. A burst
+  // of changes (an import, a long transaction) reloads once; while a query
+  // or search result is on screen it stays put and Refresh is marked stale
+  // instead.
+  let liveSource = null;
+  const liveRefresh = Live.createCoalescer({
+    delayMs: 800,
+    run: () => {
+      if (Live.changeAction(overviewShown) === "refresh") return loadOverview();
+      markStale(true);
+      return Promise.resolve();
+    },
+  });
+
+  function markStale(stale) {
+    if (!$graphRefresh) return;
+    $graphRefresh.classList.toggle("stale", stale);
+    $graphRefresh.title = stale
+      ? "The graph changed since this was drawn: re-fetch it"
+      : "Re-fetch the graph from the server (discard the client-side sample cache)";
+  }
+
+  function openLiveStream() {
+    closeLiveStream();
+    liveSource = new EventSource(Live.eventsUrl(currentDb));
+    for (const type of Live.CHANGE_EVENTS) {
+      liveSource.addEventListener(type, () => liveRefresh.poke());
+    }
+  }
+
+  function closeLiveStream() {
+    if (liveSource) liveSource.close();
+    liveSource = null;
+    liveRefresh.cancel();
+  }
+
+  function setLive(on) {
+    if ($graphLive) $graphLive.checked = on;
+    Live.writeLivePref(safeLocalStorage(), on);
+    if (on) openLiveStream();
+    else closeLiveStream();
+  }
+
+  // localStorage, or null where reading it throws (blocked site data).
+  function safeLocalStorage() {
+    try {
+      return window.localStorage;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  if ($graphLive) {
+    $graphLive.addEventListener("change", () => setLive($graphLive.checked));
+  }
+
   // Light / dark theme toggle.
   if ($themeToggle) {
     $themeToggle.addEventListener("click", () =>
@@ -2567,6 +2633,7 @@
     loadServerInfo();
     loadDatabases();
     loadOverview();
+    if (Live.readLivePref(safeLocalStorage())) setLive(true);
     pollProblems();
   }
   document.addEventListener("DOMContentLoaded", start);
