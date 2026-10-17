@@ -27,14 +27,17 @@
 //! assert_eq!(users.user("ann").unwrap().status, UserStatus::Suspended);
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::authn::{hash_password, new_token, verify_password, Credentials};
-use crate::catalog::{Catalog, CatalogStore, StoreError, User};
+use crate::catalog::{Catalog, CatalogStore, StoreError, User, FORMAT_VERSION};
 
 pub use crate::catalog::UserStatus;
+
+mod roles;
+pub use roles::{PrivilegeFilter, RoleInfo};
 
 /// The longest user name, in characters.
 pub const MAX_NAME_LEN: usize = 65;
@@ -164,6 +167,8 @@ pub struct UserInfo {
     pub password_change_required: bool,
     /// When the user was created, in Unix milliseconds.
     pub created_at_ms: i64,
+    /// The user's roles: `PUBLIC`, then the roles given, by name.
+    pub roles: Vec<String>,
 }
 
 impl From<&User> for UserInfo {
@@ -173,6 +178,7 @@ impl From<&User> for UserInfo {
             status: u.status,
             password_change_required: u.password_change_required,
             created_at_ms: u.created_at_ms,
+            roles: roles::with_public(&u.roles),
         }
     }
 }
@@ -209,6 +215,27 @@ pub enum ManageError {
     /// Hashing the password failed.
     #[error("password hashing failed: {0}")]
     Hash(String),
+    /// The role name breaks the naming rules.
+    #[error("invalid role name '{name}': {reason}")]
+    InvalidRoleName {
+        /// The refused name.
+        name: String,
+        /// Which rule it breaks.
+        reason: &'static str,
+    },
+    /// A role with this name exists.
+    #[error("role '{0}' already exists")]
+    RoleExists(String),
+    /// No role has this name.
+    #[error("role '{0}' does not exist")]
+    RoleNotFound(String),
+    /// `PUBLIC` belongs to every user: it cannot be dropped, renamed,
+    /// granted or revoked.
+    #[error("the PUBLIC role cannot be {action}")]
+    PublicRole {
+        /// What was attempted: `dropped`, `renamed`, `granted` or `revoked`.
+        action: &'static str,
+    },
     /// The catalog could not be loaded or saved.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -443,8 +470,18 @@ impl AuthManager {
     /// # Errors
     ///
     /// [`ManageError::Store`] when the stored catalog cannot be read.
+    ///
+    /// A catalog from before roles (format 1) is upgraded and saved: its
+    /// users, who could do everything then, get the `admin` role.
     pub fn open(store: Arc<dyn CatalogStore>) -> Result<Self, ManageError> {
-        let catalog = store.load()?.unwrap_or_default();
+        let mut catalog = store.load()?.unwrap_or_default();
+        if catalog.format_version < FORMAT_VERSION {
+            for user in catalog.users.values_mut() {
+                user.roles.insert("admin".to_string());
+            }
+            catalog.format_version = FORMAT_VERSION;
+            store.save(&catalog)?;
+        }
         Ok(Self {
             store,
             catalog: Mutex::new(catalog),
@@ -647,6 +684,7 @@ impl AuthManager {
                     password_change_required: new.change_required,
                     created_at_ms: now,
                     password_changed_at_ms: now,
+                    roles: BTreeSet::new(),
                 },
             );
             Ok(true)
@@ -776,11 +814,13 @@ impl AuthManager {
         match spec {
             Bootstrap::Admin { user, password } => {
                 self.create_user(NewUser::new(user, password).change_required(false))?;
+                self.make_admin(user)?;
                 Ok(BootstrapOutcome::Created)
             }
             Bootstrap::Generated => {
                 let password = generate_password();
                 self.create_user(NewUser::new("neo4j", password.clone()))?;
+                self.make_admin("neo4j")?;
                 Ok(BootstrapOutcome::Generated {
                     user: "neo4j".to_string(),
                     password,

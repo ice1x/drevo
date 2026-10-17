@@ -114,7 +114,8 @@ async fn create_then_show_users() {
     assert_eq!(users.keys().collect::<Vec<_>>(), ["ann", "bob"]);
     assert_eq!(users["ann"]["passwordChangeRequired"], true);
     assert_eq!(users["ann"]["suspended"], false);
-    assert_eq!(users["ann"]["roles"], serde_json::json!([]));
+    // Every user has PUBLIC; a new user has no other role.
+    assert_eq!(users["ann"]["roles"], serde_json::json!(["PUBLIC"]));
     assert_eq!(users["ann"]["home"], serde_json::Value::Null);
     assert_eq!(users["bob"]["passwordChangeRequired"], false);
     assert_eq!(users["bob"]["suspended"], true);
@@ -339,6 +340,13 @@ async fn users_are_kept_in_security_json_across_restarts() {
         "the first password holds"
     );
     assert!(users.check_password("ann", PW));
+    // The first user is the administrator.
+    let listed = crate::users(&app_with(security)).await;
+    assert_eq!(
+        listed["admin"]["roles"],
+        serde_json::json!(["PUBLIC", "admin"])
+    );
+    assert_eq!(listed["ann"]["roles"], serde_json::json!(["PUBLIC"]));
 }
 
 #[test]

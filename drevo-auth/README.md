@@ -9,6 +9,14 @@ Authentication and role-based access control for Rust servers:
   a stored catalog — JSON in one file, written atomically and readable by its
   owner only — with a password policy and a first-user bootstrap in the style
   of Neo4j's `NEO4J_AUTH`.
+- **Privileges** (`privileges`): Neo4j's privilege model — `TRAVERSE`, `READ`,
+  `MATCH`, `WRITE`, … on graphs, `ACCESS`, `INDEX MANAGEMENT`, … on
+  databases, `USER MANAGEMENT`, `EXECUTE PROCEDURE`, … on the server — read
+  from and written back as `GRANT` / `DENY` / `REVOKE` commands. Roles in the
+  catalog hold them, users get roles, and a request is decided with a
+  matching deny winning over any grant. The built-in roles `PUBLIC`,
+  `reader`, `editor`, `publisher`, `architect` and `admin` start with
+  Neo4j's default privileges.
 - **Authorization** (`authz`): roles that allow or deny actions on resources,
   roles that inherit other roles, and an access policy that assigns roles to
   users and decides each request. A matching deny always wins over an allow,
@@ -64,6 +72,37 @@ users.create_user(NewUser::new("ann", "first-password")).unwrap();
 users.change_own_password("ann", "first-password", "second-password").unwrap();
 users.alter_user("ann", AlterUser::default().status(UserStatus::Suspended)).unwrap();
 assert_eq!(users.users().len(), 2);
+```
+
+## Roles and privileges
+
+```rust
+use std::sync::Arc;
+use drevo_auth::catalog::MemoryStore;
+use drevo_auth::privileges::{parse, Access, Action, Element, Request};
+use drevo_auth::users::{AuthManager, NewUser, PrivilegeFilter};
+
+let users = AuthManager::open(Arc::new(MemoryStore::new())).unwrap();
+users.create_user(NewUser::new("ann", "first-password")).unwrap();
+users.create_role("triage", false, Some("reader")).unwrap();
+let deny = parse("DENY READ {reporter} ON GRAPH bugs NODES Bug TO triage").unwrap();
+users.grant(Access::Deny, &deny.privileges, "triage").unwrap();
+users.grant_role("triage", "ann").unwrap();
+
+let read = |property| Request {
+    action: Action::Read,
+    database: "bugs",
+    home: "bugs",
+    element: Element::Node(&["Bug"]),
+    name: Some(property),
+};
+assert!(users.decide("ann", &read("title")).is_allowed());
+assert!(!users.decide("ann", &read("reporter")).is_allowed());
+
+// The role's privileges, as the commands that recreate them.
+for command in users.as_commands(&PrivilegeFilter::Role("triage".into())) {
+    println!("{command}");
+}
 ```
 
 ## Features

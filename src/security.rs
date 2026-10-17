@@ -495,8 +495,8 @@ fn run(
 fn user_row(u: &drevo_auth::users::UserInfo) -> Vec<Value> {
     vec![
         Value::String(u.name.clone()),
-        // Roles arrive with role management; until then a user has none.
-        Value::List(Vec::new()),
+        // PUBLIC, then the roles given.
+        Value::List(u.roles.iter().cloned().map(Value::String).collect()),
         Value::Bool(u.password_change_required),
         Value::Bool(u.status == drevo_auth::users::UserStatus::Suspended),
         Value::Null,
@@ -518,11 +518,13 @@ fn manage_error(e: drevo_auth::users::ManageError) -> SecurityError {
     use drevo_auth::users::ManageError as M;
     let kind = match &e {
         M::InvalidName { .. }
+        | M::InvalidRoleName { .. }
+        | M::PublicRole { .. }
         | M::WeakPassword { .. }
         | M::SamePassword
         | M::WrongCurrentPassword => SecurityErrorKind::InvalidArgument,
-        M::UserExists(_) => SecurityErrorKind::AlreadyExists,
-        M::UserNotFound(_) => SecurityErrorKind::NotFound,
+        M::UserExists(_) | M::RoleExists(_) => SecurityErrorKind::AlreadyExists,
+        M::UserNotFound(_) | M::RoleNotFound(_) => SecurityErrorKind::NotFound,
         M::Hash(_) | M::Store(_) => SecurityErrorKind::Internal,
     };
     SecurityError::new(kind, e.to_string())

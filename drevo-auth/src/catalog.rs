@@ -1,7 +1,8 @@
-//! The security catalog: the stored list of users, and where it is kept.
+//! The security catalog: the stored users and roles, and where they are kept.
 //!
-//! A [`Catalog`] holds every user with their Argon2id password hash and
-//! account state. A [`CatalogStore`] loads and saves it:
+//! A [`Catalog`] holds every user with their Argon2id password hash, account
+//! state and roles, and every role with its privileges. A [`CatalogStore`]
+//! loads and saves it:
 //!
 //! - [`FileStore`] keeps it as JSON in one file. A save writes a temporary
 //!   file, flushes it to disk and renames it over the old one, so the file is
@@ -13,15 +14,18 @@
 //! catalog: starting empty would let a server create a new administrator over
 //! a damaged file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::privileges::{builtin_privileges, Access, Privilege, BUILTIN_ROLES};
+
 /// The catalog format this version reads and writes. A file with a higher
-/// `format_version` is refused rather than misread.
-pub const FORMAT_VERSION: u32 = 1;
+/// `format_version` is refused rather than misread. Format 1 had no roles;
+/// [`AuthManager::open`](crate::users::AuthManager::open) upgrades it.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Whether a user may log in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -53,9 +57,48 @@ pub struct User {
     /// When the password was last set, in Unix milliseconds.
     #[serde(default)]
     pub password_changed_at_ms: i64,
+    /// The roles given to the user, besides `PUBLIC`, which every user has.
+    #[serde(default)]
+    pub roles: BTreeSet<String>,
 }
 
-/// Every user, by name.
+/// A privilege a role holds, granted or denied.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct HeldPrivilege {
+    /// Granted or denied.
+    pub access: Access,
+    /// What.
+    pub privilege: Privilege,
+}
+
+/// A stored role.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Role {
+    /// The role's privileges.
+    #[serde(default)]
+    pub privileges: BTreeSet<HeldPrivilege>,
+}
+
+/// The built-in roles with their starting privileges, all granted.
+#[must_use]
+pub fn builtin_roles() -> BTreeMap<String, Role> {
+    BUILTIN_ROLES
+        .iter()
+        .map(|name| {
+            let privileges = builtin_privileges(name)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|privilege| HeldPrivilege {
+                    access: Access::Grant,
+                    privilege,
+                })
+                .collect();
+            ((*name).to_string(), Role { privileges })
+        })
+        .collect()
+}
+
+/// Every user and role, by name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Catalog {
     /// The format the catalog was written in; see [`FORMAT_VERSION`].
@@ -63,13 +106,19 @@ pub struct Catalog {
     /// Users by name.
     #[serde(default)]
     pub users: BTreeMap<String, User>,
+    /// Roles by name. A catalog without roles (format 1) starts with the
+    /// built-in ones.
+    #[serde(default = "builtin_roles")]
+    pub roles: BTreeMap<String, Role>,
 }
 
 impl Default for Catalog {
+    /// No users, and the built-in roles.
     fn default() -> Self {
         Self {
             format_version: FORMAT_VERSION,
             users: BTreeMap::new(),
+            roles: builtin_roles(),
         }
     }
 }
