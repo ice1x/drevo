@@ -895,6 +895,19 @@ body {
 .storage-stats dt { color: var(--text-muted); font-size: 0.85em; }
 .storage-stats dd { margin: 0; font-variant-numeric: tabular-nums; }
 .storage-subhead { font-size: 0.9rem; margin: 0.5rem 0 0.4rem; }
+.storage-transactions { padding: 0 1rem; }
+.storage-tx-table { table-layout: fixed; }
+.storage-tx-table th { white-space: nowrap; }
+.storage-tx-table th:first-child { width: 48%; }
+.storage-tx-table th:nth-child(4) { text-align: right; }
+.storage-tx-table .tx-query {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage-tx-table .tx-terminate { padding: 0.15rem 0.5rem; font-size: 0.8rem; }
 .storage-keyspaces {
   width: 100%;
   border-collapse: collapse;

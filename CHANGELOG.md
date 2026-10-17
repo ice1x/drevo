@@ -20,6 +20,8 @@ history and the in-repo issue tracker; format loosely follows
   - Over Bolt, HTTP, gRPC and Arrow Flight.
   - With logins required, users manage their own; `TRANSACTION MANAGEMENT`
     covers others'.
+  - The Web UI's Storage panel lists them, refreshed every few seconds,
+    with a Terminate button on each.
 
 ### Fixed
 

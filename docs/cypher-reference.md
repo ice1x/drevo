@@ -1511,6 +1511,9 @@ GRANT TRANSACTION MANAGEMENT (*) ON DATABASE * TO ops
 
 Without it, another user's transaction is not listed and reads as not found.
 
+The Web UI's Storage panel (⛁) lists the running transactions, refreshed every
+few seconds, with a Terminate button on each.
+
 ### Semantic-index control plane (#251, Phase 21)
 
 `CALL drevo.semantic.register(label, text_property, embedding_property, mode)`

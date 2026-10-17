@@ -201,6 +201,13 @@
       <div class="storage-body" id="storage-body">
         <p class="storage-loading">Loading storage stats…</p>
       </div>
+      <!-- Running statements and open transactions (SHOW TRANSACTIONS), each
+           with a Terminate button (TERMINATE TRANSACTION). -->
+      <section id="storage-transactions" class="storage-transactions"
+               aria-labelledby="storage-transactions-title">
+        <h3 id="storage-transactions-title" class="storage-subhead">Running transactions</h3>
+        <div id="storage-transactions-list"></div>
+      </section>
       <div id="storage-bench" class="storage-bench" hidden></div>
       <footer class="storage-foot">
         <a id="storage-backup" class="storage-backup" href="/export/graphml"
@@ -370,6 +377,9 @@
   <!-- Problem toasts + "Report a problem" helpers (unit-tested in
        report.test.js); must load before app.js, which reads window.DrevoReport. -->
   <script src="/ui/report.js"></script>
+  <!-- Running-transactions helpers for the Storage panel (unit-tested in
+       transactions_view.test.js); app.js reads window.DrevoTransactionsView. -->
+  <script src="/ui/transactions_view.js"></script>
   <script src="/ui/app.js"></script>
 </body>
 </html>
