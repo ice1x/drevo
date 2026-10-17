@@ -121,11 +121,18 @@ fn at_least_one_runs_on_directive_exists() {
 #[test]
 fn workflow_cargo_test_and_bench_targets_all_exist() {
     // (flag, target directory) — cargo resolves each `--<flag> <name>` to
-    // `<dir>/<name>.rs` in the package.
-    let target_dirs: &[(&str, PathBuf)] = &[
-        ("--test", repo_root().join("tests")),
-        ("--bench", repo_root().join("benches")),
-    ];
+    // `<dir>/<name>.rs` in the package: the root package, or the workspace
+    // member a `-p <name>` selects (its directory is named after it).
+    let target_dirs_for = |package: Option<&str>| -> Vec<(&'static str, PathBuf)> {
+        let root: PathBuf = match package {
+            Some(p) if p != "drevo" => repo_root().join(p),
+            _ => repo_root().to_path_buf(),
+        };
+        vec![
+            ("--test", root.join("tests")),
+            ("--bench", root.join("benches")),
+        ]
+    };
     let mut missing: Vec<String> = Vec::new();
 
     for path in workflow_files() {
@@ -156,7 +163,11 @@ fn workflow_cargo_test_and_bench_targets_all_exist() {
             }
 
             let tokens: Vec<&str> = code.split_whitespace().collect();
-            for (flag, dir) in target_dirs {
+            let package = tokens
+                .iter()
+                .position(|t| *t == "-p" || *t == "--package")
+                .and_then(|i| tokens.get(i + 1).copied());
+            for (flag, dir) in &target_dirs_for(package) {
                 // Match the exact flag (NOT `--tests`, `--test-threads`,
                 // `--benches`, …). Accept both `--flag <name>` and
                 // `--flag=<name>` spellings.

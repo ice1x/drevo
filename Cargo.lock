@@ -715,6 +715,7 @@ name = "drevo-auth"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "ring",
  "serde",
  "serde_json",
  "thiserror",

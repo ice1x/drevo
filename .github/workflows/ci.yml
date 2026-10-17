@@ -335,6 +335,9 @@ jobs:
       # `wal-cbor` / `wal-msgpack`; run its recovery / compaction / tailer
       # tests and the inline unit tests with both on.
       # Issue #583 — the gRPC API lives behind `grpc` (tonic/prost).
+      # drevo-auth's OIDC token validator (`oidc`, issue #638).
+      - name: Run drevo-auth OIDC tests (nextest)
+        run: cargo nextest run --no-fail-fast -p drevo-auth --features oidc --lib --test oidc
       - name: Run gRPC feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features grpc -E 'binary(grpc_api_tests) | binary(server_config_tests)'
       # Issue #584 — the Arrow Flight endpoint lives behind `arrow-flight`.
@@ -392,6 +395,8 @@ jobs:
       # drevo-auth without its default `password` feature: the access
       # policy alone (the build drevo uses when `auth` is off).
       - run: cargo clippy -p drevo-auth --all-targets --no-default-features -- -D warnings
+      # drevo-auth's OIDC token validator (`oidc`, issue #638).
+      - run: cargo clippy -p drevo-auth --all-targets --features oidc -- -D warnings
       # Issue #581 — the CBOR / MessagePack transcoding paths.
       - run: cargo clippy --all-targets --features format-cbor,format-msgpack -- -D warnings
       # Issue #583 — the gRPC service and its tests.
