@@ -13,6 +13,7 @@
 //! - `GET /ui/app.js` → `app.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/transactions_view.js` → `transactions_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/results_view.js` → `results_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/query_history.js` → `query_history.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/auth.js` → `auth.js` (`text/javascript; charset=utf-8`)
@@ -69,6 +70,11 @@ const GRAPH_MATH_JS: &str = include_str!("../static/web/graph_math.js");
 /// problem" GitHub issue (#552), used by `app.js`. Unit-tested by
 /// `report.test.js` under `node --test`.
 const REPORT_JS: &str = include_str!("../static/web/report.js");
+
+/// `transactions_view.js` body — pure helpers for the Storage panel's list
+/// of running transactions, used by `app.js`. Unit-tested by
+/// `transactions_view.test.js` under `node --test`.
+const TRANSACTIONS_VIEW_JS: &str = include_str!("../static/web/transactions_view.js");
 
 /// `results_view.js` body — pure helpers for the Table / JSON result views
 /// (cell formatting, the view a result opens in, CSV), embedded at compile
@@ -127,6 +133,12 @@ pub async fn serve_graph_math_js() -> Response {
 /// `GET /ui/report.js` → serve the problem-report helpers `app.js` depends on.
 pub async fn serve_report_js() -> Response {
     asset_response(REPORT_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/transactions_view.js` → serve the running-transactions helpers
+/// `app.js` depends on.
+pub async fn serve_transactions_view_js() -> Response {
+    asset_response(TRANSACTIONS_VIEW_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/results_view.js` → serve the result-view helpers `app.js` depends on.
@@ -543,6 +555,34 @@ mod tests {
             .find("/ui/app.js")
             .expect("index.html must load app.js");
         assert!(qh < appjs, "query_history.js must load before app.js");
+    }
+
+    #[test]
+    fn embedded_transactions_view_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(
+            TRANSACTIONS_VIEW_JS.contains("DrevoTransactionsView")
+                && TRANSACTIONS_VIEW_JS.contains("terminateRequest"),
+            "transactions_view.js must export terminateRequest on DrevoTransactionsView"
+        );
+        assert!(
+            !TRANSACTIONS_VIEW_JS.contains("document") && !TRANSACTIONS_VIEW_JS.contains("window."),
+            "transactions_view.js must stay DOM-free so it is unit-testable under node"
+        );
+        let tv = INDEX_HTML
+            .find("/ui/transactions_view.js")
+            .expect("index.html must load transactions_view.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(tv < appjs, "transactions_view.js must load before app.js");
+        assert!(
+            INDEX_HTML.contains("id=\"storage-transactions\""),
+            "the Storage panel must hold the running-transactions list"
+        );
+        assert!(
+            APP_JS.contains("DrevoTransactionsView") && APP_JS.contains("terminateRequest"),
+            "app.js must list and terminate transactions through DrevoTransactionsView"
+        );
     }
 
     #[test]

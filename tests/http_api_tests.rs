@@ -2201,6 +2201,18 @@ async fn ui_auth_module_serves_to_client() {
 }
 
 #[tokio::test]
+async fn ui_transactions_view_module_serves_to_client() {
+    // The running-transactions helpers of the Storage panel, unit-tested by
+    // transactions_view.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/transactions_view.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoTransactionsView"));
+    assert!(body.contains("SHOW TRANSACTIONS"));
+}
+
+#[tokio::test]
 async fn ui_report_module_serves_to_client() {
     // The "Report a problem" helpers (#552), unit-tested by report.test.js.
     let app = make_app();

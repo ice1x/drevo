@@ -548,6 +548,38 @@ async fn ui_serves_sign_in_module_and_dialogs() {
     }
 }
 
+// The Storage panel lists running transactions with a Terminate button: the
+// pure helpers are served same-origin before app.js, and the page has the
+// list's container.
+#[tokio::test]
+async fn ui_serves_transactions_view_module_and_the_storage_list() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/transactions_view.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/javascript"), "got {ct:?}");
+    let js = String::from_utf8(bytes).expect("utf-8");
+    for needle in [
+        "DrevoTransactionsView",
+        "SHOW_QUERY",
+        "rowsFrom",
+        "formatElapsed",
+        "terminateRequest",
+    ] {
+        assert!(
+            js.contains(needle),
+            "transactions_view.js must define {needle}"
+        );
+    }
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let tv = idx
+        .find("/ui/transactions_view.js")
+        .expect("index.html must load transactions_view.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(tv < appjs, "transactions_view.js must load before app.js");
+    assert!(idx.contains("id=\"storage-transactions\""));
+}
+
 // Problem notifications + "Report a problem" (#552): the pure report helpers
 // are served same-origin before app.js, the page has the toast stack, the
 // topbar button and the report dialog, and app.js wires them to the server.

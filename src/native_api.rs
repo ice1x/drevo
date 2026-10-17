@@ -255,6 +255,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/ui/graph_math.js", get(crate::web_ui::serve_graph_math_js))
         .route("/ui/report.js", get(crate::web_ui::serve_report_js))
         .route(
+            "/ui/transactions_view.js",
+            get(crate::web_ui::serve_transactions_view_js),
+        )
+        .route(
             "/ui/results_view.js",
             get(crate::web_ui::serve_results_view_js),
         )

@@ -66,6 +66,8 @@
   const $storageBenchRun = document.getElementById("storage-bench-run");
   const $storageBench = document.getElementById("storage-bench");
   const $storageRefresh = document.getElementById("storage-refresh");
+  const $storageTransactions = document.getElementById("storage-transactions-list");
+  const TxView = window.DrevoTransactionsView;
   // Settings panel (embeddings config).
   const $settingsToggle = document.getElementById("settings-toggle");
   const $settingsModal = document.getElementById("settings-modal");
@@ -556,6 +558,85 @@
     } catch (e) {
       $storageBody.innerHTML = `<p class="storage-error">Cannot load storage stats: ${e.message}</p>`;
     }
+    await loadTransactions();
+  }
+
+  // ── Running transactions (SHOW / TERMINATE TRANSACTIONS) ───────────
+  // Listed while the Storage panel is open, refreshed every few seconds;
+  // each row has a Terminate button. Built with textContent, so a query's
+  // text never becomes markup.
+  let txTimer = null;
+
+  function renderTransactions(rows) {
+    if (!$storageTransactions) return;
+    $storageTransactions.replaceChildren();
+    if (rows.length === 0) {
+      const p = document.createElement("p");
+      p.className = "storage-note";
+      p.textContent = "Nothing else is running.";
+      $storageTransactions.append(p);
+      return;
+    }
+    const table = document.createElement("table");
+    table.className = "storage-keyspaces storage-tx-table";
+    const head = table.createTHead().insertRow();
+    for (const h of ["Statement", "User", "Protocol", "Running for", ""]) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      head.append(th);
+    }
+    const body = table.createTBody();
+    for (const t of rows) {
+      const tr = body.insertRow();
+      const query = tr.insertCell();
+      query.className = "tx-query";
+      query.textContent = TxView.queryLabel(t);
+      query.title = `${t.id}${t.client ? " · " + t.client : ""}\n${t.query || ""}`;
+      tr.insertCell().textContent = t.user || "—";
+      tr.insertCell().textContent = t.protocol || "—";
+      const elapsed = tr.insertCell();
+      elapsed.className = "ks-num";
+      elapsed.textContent = TxView.formatElapsed(t.elapsedMs);
+      const action = tr.insertCell();
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "storage-refresh tx-terminate";
+      btn.textContent = t.status === "Terminated" ? "Stopping…" : "Terminate";
+      btn.disabled = t.status === "Terminated";
+      btn.title = `TERMINATE TRANSACTION '${t.id}'`;
+      btn.addEventListener("click", () => terminateTransaction(t, btn));
+      action.append(btn);
+    }
+    $storageTransactions.append(table);
+  }
+
+  async function loadTransactions() {
+    if (!$storageTransactions || !TxView) return;
+    try {
+      const answer = await apiPost("/cypher", { query: TxView.SHOW_QUERY });
+      renderTransactions(TxView.rowsFrom(answer));
+    } catch (e) {
+      $storageTransactions.replaceChildren();
+      const p = document.createElement("p");
+      p.className = "storage-error";
+      p.textContent = `Cannot list transactions: ${e.message}`;
+      $storageTransactions.append(p);
+    }
+  }
+
+  async function terminateTransaction(t, btn) {
+    const what = TxView.queryLabel(t, 80);
+    if (!window.confirm(`Terminate this ${t.explicit ? "transaction" : "statement"}?\n\n${what}`)) {
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Stopping…";
+    try {
+      await apiPost("/cypher", TxView.terminateRequest(t.id));
+    } catch (e) {
+      status(`Terminate failed: ${e.message}`, "error");
+    }
+    await loadTransactions();
   }
 
   async function doShrink() {
@@ -633,11 +714,15 @@
       $storageBench.innerHTML = "";
     }
     loadStorage();
+    clearInterval(txTimer);
+    txTimer = setInterval(loadTransactions, 3000);
   }
   function closeStorage() {
     if (!$storageModal) return;
     $storageModal.hidden = true;
     $storageModal.setAttribute("aria-hidden", "true");
+    clearInterval(txTimer);
+    txTimer = null;
   }
 
   // ── Settings panel: embeddings config (GET/POST /config/embeddings) ──────
