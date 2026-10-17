@@ -61,7 +61,11 @@
 //!   [`native_text_index`].
 //! - Text: [`tokenizer`] and [`levenshtein`] edit distance.
 //! - Replication: [`replica`], [`delta`], [`hlc`], [`lww`].
+//! - Backups: [`backup`], an online physical copy of a durable store and its
+//!   restore.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod backup;
 pub mod bm25;
 pub mod csr;
 pub mod delta;

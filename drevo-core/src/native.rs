@@ -1787,6 +1787,23 @@ pub struct ChangeBatch {
     pub lagged: bool,
 }
 
+/// What [`NativeGraph::log_snapshot`] captures for a backup.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct LogSnapshot {
+    /// A read handle on the log as it was when the snapshot was taken.
+    pub(crate) file: std::fs::File,
+    /// The log's length then: every complete record ends at or before it.
+    pub(crate) len: u64,
+    /// The change-feed head then.
+    pub(crate) change_head: u64,
+    /// `origin.json`, as on disk.
+    pub(crate) origin: Vec<u8>,
+    /// `tombstones.json`, as checkpointing would write it.
+    pub(crate) tombstones: Vec<u8>,
+    /// `stamps.jsonl`, one line per live entity.
+    pub(crate) stamps: Vec<u8>,
+}
+
 /// The write-ahead-log file plus its path (needed so [`compact_wal`] can
 /// atomically rewrite the log in place).
 ///
@@ -3591,6 +3608,61 @@ impl NativeGraph {
             bytes_before,
             bytes_after,
         })
+    }
+
+    /// The log and its sidecars at a commit boundary, for a backup: an open
+    /// handle on the log, the length every complete record fits in, and the
+    /// sidecars as of that moment. The locks are held only while the handle is
+    /// opened and the small tables are copied; the log bytes are read from
+    /// the handle afterwards (the log only grows, and a compaction renames a
+    /// new file over the path, leaving this handle on the old one). `None`
+    /// for an in-memory engine.
+    ///
+    /// # Errors
+    /// [`CoreError::Io`] / [`CoreError::Json`] when the log cannot be opened
+    /// or a sidecar encoded.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn log_snapshot(&self) -> Result<Option<LogSnapshot>> {
+        let Some(wal) = &self.wal else {
+            return Ok(None);
+        };
+        // The same order as compaction: no mutation is half-applied while
+        // both are held, so the log and the in-memory sidecars agree.
+        let inner = write(&self.inner);
+        let sink = wal.lock().unwrap_or_else(|e| e.into_inner());
+        let file = std::fs::File::open(&sink.path)?;
+        let len = file.metadata()?.len();
+        let origin = std::fs::read(origin_sidecar(&sink.path)).unwrap_or_default();
+        let tombstones: Vec<(StampTarget, Tomb)> = self
+            .tombstones
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(t, tomb)| (*t, *tomb))
+            .collect();
+        let stamps: Vec<(StampTarget, Stamp)> = self
+            .stamps
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(t, s)| (*t, *s))
+            .collect();
+        drop(sink);
+        drop(inner);
+        let change_head = self.change_head();
+        let mut stamp_lines = Vec::with_capacity(stamps.len() * 64);
+        for entry in &stamps {
+            serde_json::to_writer(&mut stamp_lines, entry)?;
+            stamp_lines.push(b'\n');
+        }
+        Ok(Some(LogSnapshot {
+            file,
+            len,
+            change_head,
+            origin,
+            tombstones: serde_json::to_vec(&tombstones)?,
+            stamps: stamp_lines,
+        }))
     }
 
     /// Physical on-disk size of the write-ahead log in bytes, or `None` for an
