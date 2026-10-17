@@ -133,10 +133,9 @@ impl pb::drevo_server::Drevo for DrevoGrpc {
         // The executor is synchronous and may run long: keep it off the
         // async workers, as the HTTP API does.
         // The signed-in user's privileges (#636); `None` checks nothing.
-        let context = self.security.context_for(
-            signed_in.as_ref().map(|u| u.name.as_str()),
-            self.registry.default_name(),
-        );
+        let context = self
+            .security
+            .context_for(signed_in.as_ref(), self.registry.default_name());
         let audit_security = self.security.clone();
         let audit_origin = crate::security::Origin::new("grpc").from_client(remote);
         let audit_user = signed_in.as_ref().map(|u| u.name.clone());

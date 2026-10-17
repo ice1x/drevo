@@ -135,6 +135,29 @@ pub struct SignedIn {
     pub name: String,
     /// Whether the user must change the password before anything else.
     pub password_change_required: bool,
+    /// `None` for a user of the server's catalog, whose roles are there.
+    /// `Some` for a user signed in with an identity provider's token: the
+    /// roles its groups map to (without `PUBLIC`, which everyone has). Such a
+    /// user has no record in the catalog, even when one has the same name.
+    pub roles: Option<Vec<String>>,
+}
+
+impl SignedIn {
+    /// A user of the server's catalog.
+    #[must_use]
+    pub fn local(name: impl Into<String>, password_change_required: bool) -> Self {
+        Self {
+            name: name.into(),
+            password_change_required,
+            roles: None,
+        }
+    }
+
+    /// Whether the user signed in with an identity provider's token.
+    #[must_use]
+    pub fn is_external(&self) -> bool {
+        self.roles.is_some()
+    }
 }
 
 /// The message for every refused login: the same whether the user is
@@ -164,6 +187,9 @@ pub struct Security {
     /// Whether a refused statement's text goes into its audit event.
     #[cfg(feature = "auth")]
     audit_queries: bool,
+    /// Checks bearer tokens from an identity provider, when one is set up.
+    #[cfg(feature = "oidc")]
+    oidc: Option<Arc<drevo_auth::oidc::TokenValidator>>,
 }
 
 /// Where a request came from, for the audit log: the protocol and the
@@ -194,9 +220,13 @@ impl Origin {
     }
 }
 
+/// Compiled contexts by (user, home database, the roles of an identity
+/// provider's user).
 #[cfg(feature = "auth")]
-type ContextCache =
-    std::collections::HashMap<(String, String), (u64, drevo_auth::privileges::SecurityContext)>;
+type ContextCache = std::collections::HashMap<
+    (String, String, Option<Vec<String>>),
+    (u64, drevo_auth::privileges::SecurityContext),
+>;
 
 impl std::fmt::Debug for Security {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -218,7 +248,20 @@ impl Security {
             contexts: Arc::default(),
             audit: None,
             audit_queries: false,
+            #[cfg(feature = "oidc")]
+            oidc: None,
         }
+    }
+
+    /// Also accept bearer tokens checked by `validator`. Logins are then
+    /// required even when the server was started with `DREVO_AUTH=none`:
+    /// the users come from the provider.
+    #[cfg(feature = "oidc")]
+    #[must_use]
+    pub fn with_oidc(mut self, validator: Arc<drevo_auth::oidc::TokenValidator>) -> Self {
+        self.oidc = Some(validator);
+        self.require_login = true;
+        self
     }
 
     /// Record security events in `sink` (#637). With `queries`, a refused
@@ -335,7 +378,7 @@ impl Security {
     #[must_use]
     pub fn context_for(
         &self,
-        user: Option<&str>,
+        user: Option<&SignedIn>,
         home: &str,
     ) -> Option<drevo_auth::privileges::SecurityContext> {
         #[cfg(feature = "auth")]
@@ -346,16 +389,20 @@ impl Security {
             let users = self.users.as_ref()?;
             // A login is required, so a statement without a user may do
             // nothing; "" names no user.
-            let name = user.unwrap_or("");
+            let name = user.map_or("", |u| u.name.as_str());
+            let roles = user.and_then(|u| u.roles.clone());
             let generation = users.generation();
-            let key = (name.to_string(), home.to_string());
+            let key = (name.to_string(), home.to_string(), roles);
             let mut cache = self.contexts.lock().unwrap_or_else(|e| e.into_inner());
             if let Some((built, context)) = cache.get(&key) {
                 if *built == generation {
                     return Some(context.clone());
                 }
             }
-            let context = users.security_context(name, home);
+            let context = match &key.2 {
+                Some(roles) => users.security_context_for_roles(roles, home),
+                None => users.security_context(name, home),
+            };
             if cache.len() > 4096 {
                 cache.clear();
             }
@@ -396,6 +443,13 @@ impl Security {
                 Credentials::from_parts(scheme, principal, credentials).map_err(|e| {
                     SecurityError::new(SecurityErrorKind::Unauthenticated, e.to_string())
                 })?;
+            #[cfg(feature = "oidc")]
+            if let (Credentials::Token(token), Some(validator)) = (&credentials, &self.oidc) {
+                // Session tokens are hex, so a JWT is never one.
+                if drevo_auth::oidc::TokenValidator::looks_like_jwt(token) {
+                    return self.login_with_provider(origin, validator, token);
+                }
+            }
             // A password login is audited either way; reusing a session token
             // (every HTTP request of a signed-in browser) only when refused.
             let password = matches!(credentials, Credentials::Basic { .. });
@@ -414,10 +468,7 @@ impl Security {
                             .user(&p.name),
                         );
                     }
-                    Ok(SignedIn {
-                        name: p.name,
-                        password_change_required: p.password_change_required,
-                    })
+                    Ok(SignedIn::local(p.name, p.password_change_required))
                 }
                 Err(e @ LoginError::Locked { .. }) => {
                     self.record(named(
@@ -451,6 +502,39 @@ impl Security {
         {
             let _ = (origin, scheme, principal, credentials);
             Err(not_enabled())
+        }
+    }
+
+    /// Log in with an identity provider's token. Like a session token it is
+    /// audited only when refused, as every HTTP request carries it; the
+    /// reason goes to the audit log, never to the client.
+    #[cfg(feature = "oidc")]
+    fn login_with_provider(
+        &self,
+        origin: &Origin,
+        validator: &drevo_auth::oidc::TokenValidator,
+        token: &str,
+    ) -> Result<SignedIn, SecurityError> {
+        use drevo_auth::audit::{AuditEvent, AuditKind, Outcome};
+        match validator.validate(token) {
+            Ok(principal) => Ok(SignedIn {
+                name: principal.name,
+                password_change_required: false,
+                roles: Some(principal.roles),
+            }),
+            Err(e) => {
+                self.record(
+                    event_from(
+                        origin,
+                        AuditEvent::new(AuditKind::LoginFailed, Outcome::Failure),
+                    )
+                    .reason(format!("identity provider token: {e}")),
+                );
+                Err(SecurityError::new(
+                    SecurityErrorKind::Unauthenticated,
+                    LOGIN_REFUSED,
+                ))
+            }
         }
     }
 
@@ -544,12 +628,17 @@ impl Security {
         &self,
         origin: &Origin,
         command: &SecurityCommand,
-        current_user: Option<&str>,
+        current_user: Option<&SignedIn>,
         param: &dyn Fn(&str) -> Option<ParamValue>,
     ) -> Result<ExecResult, SecurityError> {
         let result = self.execute(command, current_user, param);
         #[cfg(feature = "auth")]
-        self.record_command(origin, command, current_user, &result);
+        self.record_command(
+            origin,
+            command,
+            current_user.map(|u| u.name.as_str()),
+            &result,
+        );
         #[cfg(not(feature = "auth"))]
         let _ = origin;
         result
@@ -614,7 +703,7 @@ impl Security {
     pub fn execute(
         &self,
         command: &SecurityCommand,
-        current_user: Option<&str>,
+        current_user: Option<&SignedIn>,
         param: &dyn Fn(&str) -> Option<ParamValue>,
     ) -> Result<ExecResult, SecurityError> {
         #[cfg(feature = "auth")]
@@ -622,12 +711,13 @@ impl Security {
             let Some(users) = &self.users else {
                 return Err(not_enabled());
             };
+            let name = current_user.map(|u| u.name.as_str());
             // With logins required, managing users, roles and privileges
             // needs Neo4j's DBMS privileges; looking at and changing oneself
             // does not.
             if let (Some(context), Some(action)) = (
                 self.context_for(current_user, ""),
-                required_privilege(command, current_user),
+                required_privilege(command, name),
             ) {
                 if !context.has_dbms(action) {
                     return Err(SecurityError::new(
@@ -636,7 +726,15 @@ impl Security {
                     ));
                 }
             }
-            run(users, command, current_user, param)
+            // An identity provider's user has no record here: the commands
+            // about oneself answer from the token, never from a local user of
+            // the same name.
+            if let Some(me) = current_user.filter(|u| u.is_external()) {
+                if let Some(answer) = run_external(users, command, me) {
+                    return answer;
+                }
+            }
+            run(users, command, name, param)
         }
         #[cfg(not(feature = "auth"))]
         {
@@ -785,6 +883,67 @@ const USER_COLUMNS: [&str; 5] = [
     "suspended",
     "home",
 ];
+
+/// The commands about oneself for an identity provider's user `me`, or
+/// `None` for the others, which run as for anyone.
+#[cfg(feature = "auth")]
+fn run_external(
+    users: &drevo_auth::users::AuthManager,
+    command: &SecurityCommand,
+    me: &SignedIn,
+) -> Option<Result<ExecResult, SecurityError>> {
+    use crate::cypher::security_admin::PrivilegeScope;
+    let roles = me.roles.clone().unwrap_or_default();
+    match command {
+        SecurityCommand::ShowCurrentUser => {
+            let all = std::iter::once(drevo_auth::privileges::PUBLIC.to_string())
+                .chain(roles.iter().cloned());
+            let row = vec![
+                Value::String(me.name.clone()),
+                Value::List(all.map(Value::String).collect()),
+                Value::Bool(false),
+                Value::Bool(false),
+                Value::Null,
+            ];
+            Some(Ok(result(&USER_COLUMNS, vec![row])))
+        }
+        SecurityCommand::AlterCurrentUserPassword { .. } => Some(Err(SecurityError::new(
+            SecurityErrorKind::InvalidArgument,
+            format!(
+                "`{}` signs in with the identity provider and has no password here",
+                me.name
+            ),
+        ))),
+        SecurityCommand::ShowPrivileges {
+            scope: PrivilegeScope::CurrentUser,
+            as_commands,
+        } => Some(own_privileges(users, me, roles, *as_commands)),
+        SecurityCommand::ShowPrivileges {
+            scope: PrivilegeScope::Users(names),
+            as_commands,
+        } if names.iter().all(|n| *n == me.name) => {
+            Some(own_privileges(users, me, roles, *as_commands))
+        }
+        _ => None,
+    }
+}
+
+/// `SHOW USER PRIVILEGES` for an identity provider's user: those of the
+/// token's roles.
+#[cfg(feature = "auth")]
+fn own_privileges(
+    users: &drevo_auth::users::AuthManager,
+    me: &SignedIn,
+    roles: Vec<String>,
+    as_commands: Option<bool>,
+) -> Result<ExecResult, SecurityError> {
+    let entries = users
+        .privileges(&drevo_auth::users::PrivilegeFilter::Roles(roles))
+        .into_iter()
+        .map(|e| (e, Some(me.name.clone())))
+        .collect();
+    Ok(privilege_rows(entries, as_commands, true))
+}
 
 #[cfg(feature = "auth")]
 fn run(
@@ -1040,6 +1199,21 @@ fn show_privileges(
                 .collect()
         }
     };
+    let with_user = matches!(
+        scope,
+        PrivilegeScope::Users(_) | PrivilegeScope::CurrentUser
+    );
+    Ok(privilege_rows(entries, as_commands, with_user))
+}
+
+/// Privilege entries as `SHOW … PRIVILEGES` rows, with a `user` column for
+/// user privileges; or as commands `AS [REVOKE] COMMANDS`.
+#[cfg(feature = "auth")]
+fn privilege_rows(
+    entries: Vec<(drevo_auth::privileges::Entry, Option<String>)>,
+    as_commands: Option<bool>,
+    with_user: bool,
+) -> ExecResult {
     if let Some(revoke) = as_commands {
         let rows = entries
             .iter()
@@ -1051,12 +1225,8 @@ fn show_privileges(
                 })]
             })
             .collect();
-        return Ok(result(&["command"], rows));
+        return result(&["command"], rows);
     }
-    let with_user = matches!(
-        scope,
-        PrivilegeScope::Users(_) | PrivilegeScope::CurrentUser
-    );
     let rows = entries
         .into_iter()
         .map(|(e, user)| {
@@ -1080,7 +1250,7 @@ fn show_privileges(
     if with_user {
         columns.push("user");
     }
-    Ok(result(&columns, rows))
+    result(&columns, rows)
 }
 
 /// `SHOW SUPPORTED PRIVILEGES`: every privilege this server reads, with what

@@ -178,6 +178,10 @@ bolt-tls = ["http", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 auth = ["drevo-auth/password"]
 # The feature's earlier name, kept so existing builds keep working.
 bolt-auth = ["auth"]
+# Logins with a bearer token from an OpenID Connect provider (Keycloak,
+# Kanidm, Auth0, …), configured by `DREVO_OIDC_*`. The provider's keys are
+# fetched over HTTPS through its discovery document.
+oidc = ["auth", "http", "drevo-auth/oidc", "dep:reqwest", "dep:idna_adapter"]
 
 # Phase 19 task `00217` — OpenAI-compatible `/v1/embeddings`. The endpoint,
 # its request/response types, the SSRF-safe config, and the `503
@@ -245,6 +249,8 @@ proptest = { version = "1", default-features = false, features = ["std", "bit-se
 # (which would otherwise need rotation or pin a real authority).
 # Test-only; never compiled into the library, FFI, or WASM artifact.
 rcgen = "0.13"
+# Signs the bearer tokens of the `oidc` login tests. Test-only.
+ring = "0.17"
 
 [[bin]]
 name = "drevo-server"

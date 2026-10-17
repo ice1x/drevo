@@ -32,6 +32,10 @@ pub enum PrivilegeFilter {
     Role(String),
     /// Those of a user's roles, `PUBLIC` included.
     User(String),
+    /// Those of these roles and `PUBLIC`: a user signed in through an
+    /// identity provider, whose token names the roles. Unknown roles give
+    /// nothing.
+    Roles(Vec<String>),
 }
 
 /// `PUBLIC` followed by `roles`.
@@ -298,6 +302,11 @@ impl AuthManager {
                         .map(|u| with_public(&u.roles).into_iter().collect())
                         .unwrap_or_default(),
                 ),
+                PrivilegeFilter::Roles(roles) => Some(
+                    with_public(&roles.iter().cloned().collect())
+                        .into_iter()
+                        .collect(),
+                ),
             };
             c.roles
                 .iter()
@@ -350,6 +359,19 @@ impl AuthManager {
     pub fn security_context(&self, user: &str, home: &str) -> SecurityContext {
         let held: Vec<(Access, Privilege)> = self
             .privileges(&PrivilegeFilter::User(user.to_string()))
+            .into_iter()
+            .map(|e| (e.access, e.privilege))
+            .collect();
+        SecurityContext::new(held, home)
+    }
+
+    /// The security context of a user holding `roles` (and `PUBLIC`), with
+    /// `home` as the home database: a user signed in through an identity
+    /// provider, who has no record here. Unknown roles give nothing.
+    #[must_use]
+    pub fn security_context_for_roles(&self, roles: &[String], home: &str) -> SecurityContext {
+        let held: Vec<(Access, Privilege)> = self
+            .privileges(&PrivilegeFilter::Roles(roles.to_vec()))
             .into_iter()
             .map(|e| (e.access, e.privilege))
             .collect();

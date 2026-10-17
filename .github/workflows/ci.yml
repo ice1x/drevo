@@ -338,6 +338,10 @@ jobs:
       # drevo-auth's OIDC token validator (`oidc`, issue #638).
       - name: Run drevo-auth OIDC tests (nextest)
         run: cargo nextest run --no-fail-fast -p drevo-auth --features oidc --lib --test oidc
+      # Bearer-token logins from an identity provider over HTTP and Bolt,
+      # the key-set discovery and the DREVO_OIDC_* settings (issue #638).
+      - name: Run OIDC login tests (nextest)
+        run: cargo nextest run --no-fail-fast --features oidc --test oidc_login_tests --test server_config_tests
       - name: Run gRPC feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features grpc -E 'binary(grpc_api_tests) | binary(server_config_tests)'
       # Issue #584 — the Arrow Flight endpoint lives behind `arrow-flight`.
@@ -397,6 +401,8 @@ jobs:
       - run: cargo clippy -p drevo-auth --all-targets --no-default-features -- -D warnings
       # drevo-auth's OIDC token validator (`oidc`, issue #638).
       - run: cargo clippy -p drevo-auth --all-targets --features oidc -- -D warnings
+      # Issue #638 — the server's identity provider logins and their tests.
+      - run: cargo clippy --all-targets --features oidc -- -D warnings
       # Issue #581 — the CBOR / MessagePack transcoding paths.
       - run: cargo clippy --all-targets --features format-cbor,format-msgpack -- -D warnings
       # Issue #583 — the gRPC service and its tests.

@@ -544,3 +544,103 @@ fn an_audit_log_without_the_auth_feature_is_a_startup_error() {
         .expect_err("not compiled in");
     assert!(err.to_string().contains("`auth` feature"), "{err}");
 }
+
+// ---------------------------------------------------------------------
+// DREVO_OIDC_*
+// ---------------------------------------------------------------------
+
+#[test]
+fn no_identity_provider_unless_an_issuer_is_set() {
+    let cfg = Config::from_env(getter(HashMap::new())).expect("defaults");
+    assert_eq!(cfg.oidc, None);
+    let cfg = Config::from_env(getter(HashMap::from([("DREVO_OIDC_ISSUER", " ")]))).unwrap();
+    assert_eq!(cfg.oidc, None);
+}
+
+#[cfg(feature = "oidc")]
+#[test]
+fn an_identity_provider_takes_an_issuer_audience_and_claim_mapping() {
+    let cfg = Config::from_env(getter(HashMap::from([
+        (
+            "DREVO_OIDC_ISSUER",
+            "https://login.example.com/realms/drevo",
+        ),
+        ("DREVO_OIDC_AUDIENCE", "drevo"),
+    ])))
+    .unwrap();
+    let oidc = cfg.oidc.expect("configured");
+    assert_eq!(oidc.issuer, "https://login.example.com/realms/drevo");
+    assert_eq!(oidc.audience, "drevo");
+    assert_eq!(oidc.username_claim, "sub");
+    assert_eq!(oidc.roles_claim.as_deref(), Some("groups"));
+    assert!(oidc.role_map.is_empty());
+
+    let cfg = Config::from_env(getter(HashMap::from([
+        (
+            "DREVO_OIDC_ISSUER",
+            "https://login.example.com/realms/drevo",
+        ),
+        ("DREVO_OIDC_AUDIENCE", "drevo"),
+        ("DREVO_OIDC_USERNAME_CLAIM", "preferred_username"),
+        ("DREVO_OIDC_ROLES_CLAIM", "realm_roles"),
+        (
+            "DREVO_OIDC_ROLE_MAP",
+            "admins=admin, devs=editor,devs=publisher",
+        ),
+    ])))
+    .unwrap();
+    let oidc = cfg.oidc.unwrap();
+    assert_eq!(oidc.username_claim, "preferred_username");
+    assert_eq!(oidc.roles_claim.as_deref(), Some("realm_roles"));
+    assert_eq!(oidc.role_map["admins"], ["admin"]);
+    assert_eq!(oidc.role_map["devs"], ["editor", "publisher"]);
+}
+
+#[cfg(feature = "oidc")]
+#[test]
+fn a_bad_identity_provider_setting_is_a_startup_error() {
+    for (vars, needle) in [
+        (
+            vec![("DREVO_OIDC_ISSUER", "https://login.example.com")],
+            "DREVO_OIDC_AUDIENCE",
+        ),
+        (
+            vec![
+                ("DREVO_OIDC_ISSUER", "http://login.example.com"),
+                ("DREVO_OIDC_AUDIENCE", "drevo"),
+            ],
+            "https",
+        ),
+        (
+            vec![
+                ("DREVO_OIDC_ISSUER", "https://login.example.com"),
+                ("DREVO_OIDC_AUDIENCE", "drevo"),
+                ("DREVO_OIDC_ROLE_MAP", "admins"),
+            ],
+            "group=role",
+        ),
+        (
+            vec![
+                ("DREVO_OIDC_ISSUER", "https://login.example.com"),
+                ("DREVO_OIDC_AUDIENCE", "drevo"),
+                ("DREVO_OIDC_USERNAME_CLAIM", " "),
+            ],
+            "DREVO_OIDC_USERNAME_CLAIM",
+        ),
+    ] {
+        let err = Config::from_env(getter(vars.into_iter().collect())).expect_err(needle);
+        assert!(matches!(err, ConfigError::InvalidOidc { .. }), "{err}");
+        assert!(err.to_string().contains(needle), "{needle}: {err}");
+    }
+}
+
+#[cfg(not(feature = "oidc"))]
+#[test]
+fn an_identity_provider_without_the_oidc_feature_is_a_startup_error() {
+    let err = Config::from_env(getter(HashMap::from([
+        ("DREVO_OIDC_ISSUER", "https://login.example.com"),
+        ("DREVO_OIDC_AUDIENCE", "drevo"),
+    ])))
+    .expect_err("not compiled in");
+    assert!(err.to_string().contains("`oidc` feature"), "{err}");
+}
