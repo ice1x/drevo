@@ -456,6 +456,9 @@ struct Session {
 pub struct AuthManager {
     store: Arc<dyn CatalogStore>,
     catalog: Mutex<Catalog>,
+    /// Moves on with every saved change, so a cached security context can
+    /// tell it is out of date.
+    generation: std::sync::atomic::AtomicU64,
     policy: PasswordPolicy,
     lockout: LockoutPolicy,
     session_policy: SessionPolicy,
@@ -485,6 +488,7 @@ impl AuthManager {
         Ok(Self {
             store,
             catalog: Mutex::new(catalog),
+            generation: std::sync::atomic::AtomicU64::new(0),
             policy: PasswordPolicy::default(),
             lockout: LockoutPolicy::default(),
             session_policy: SessionPolicy::default(),
@@ -856,8 +860,18 @@ impl AuthManager {
         if edit(&mut next)? {
             self.store.save(&next)?;
             *guard = next;
+            self.generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         Ok(())
+    }
+
+    /// A number that moves on with every change to the users, roles or
+    /// privileges: a [`SecurityContext`](crate::privileges::SecurityContext)
+    /// built at one generation is current until it moves.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
