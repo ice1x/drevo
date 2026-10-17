@@ -216,3 +216,51 @@ async fn without_logins_nothing_is_checked() {
         .unwrap();
     assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK);
 }
+
+/// Preparing a two-phase-commit transaction pauses every write on the
+/// database until it is resolved, so it is an administration procedure like
+/// the resolvers: an editor may not, an admin may.
+#[test]
+fn preparing_a_transaction_needs_execute_admin_procedures() {
+    use drevo::bolt::packstream::Value;
+    use drevo::bolt::session::{ClientMessage, ServerMessage, Session};
+    use std::collections::BTreeMap;
+
+    let s = Server::new();
+    let dict = |e: Vec<(&str, Value)>| -> BTreeMap<String, Value> {
+        e.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+    };
+    let prepare_as = |user: &str| -> Option<Value> {
+        let mut session = Session::new_durable(Arc::new(NativeService::in_memory()))
+            .with_security(Security::new(Arc::clone(&s.users)));
+        session.handle(ClientMessage::Hello {
+            extra: dict(vec![
+                ("scheme", Value::String("basic".into())),
+                ("principal", Value::String(user.into())),
+                ("credentials", Value::String("long-password".into())),
+            ]),
+        });
+        session.handle(ClientMessage::Begin {
+            extra: dict(vec![]),
+        });
+        session.handle(ClientMessage::Run {
+            query: "CREATE (:Order)".into(),
+            parameters: dict(vec![]),
+            extra: dict(vec![]),
+        });
+        session.handle(ClientMessage::Pull {
+            extra: dict(vec![("n", Value::Integer(-1))]),
+        });
+        let replies = session.handle(ClientMessage::Run {
+            query: "CALL drevo.tx.prepare('order-1')".into(),
+            parameters: dict(vec![]),
+            extra: dict(vec![]),
+        });
+        replies.iter().find_map(|m| match m {
+            ServerMessage::Failure { metadata } => metadata.get("code").cloned(),
+            _ => None,
+        })
+    };
+    assert_eq!(prepare_as("ed"), Some(Value::String(FORBIDDEN.into())));
+    assert_eq!(prepare_as("admin"), None);
+}

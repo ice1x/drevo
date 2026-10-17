@@ -280,6 +280,9 @@ history and the in-repo issue tracker; format loosely follows
   may still look at and change themselves: `SHOW CURRENT USER`, `ALTER CURRENT
   USER SET PASSWORD`, and their own `SHOW USER PRIVILEGES`. `admin` holds all
   three.
+  - `CALL drevo.tx.prepare` inside a Bolt transaction now needs `EXECUTE
+    ADMIN PROCEDURES`, like the other `drevo.tx.*` procedures. A prepared
+    transaction pauses every write until it is resolved.
 
 - **Replica stamps survive a reopen** (issue #612). A durable store keeps
   each live node's and edge's causal stamp in `stamps.jsonl` next to the WAL,

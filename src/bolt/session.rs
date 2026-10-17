@@ -966,6 +966,21 @@ impl<'a> Session<'a> {
                 ),
             }];
         };
+        // A prepared transaction pauses every write on the database until it
+        // is resolved: an administration procedure, like the resolvers (#636).
+        if let Some(context) = self.security_context() {
+            if !(context.can_execute_procedure("drevo.tx.prepare")
+                && context.has_dbms(drevo_auth::privileges::Action::ExecuteAdminProcedures))
+            {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(
+                        codes::FORBIDDEN,
+                        "`drevo.tx.prepare` is an administration procedure and needs EXECUTE ADMIN PROCEDURES",
+                    ),
+                }];
+            }
+        }
         let Some(ActiveTx { service, id, .. }) = self.native_tx.take() else {
             self.state = State::Failed;
             return vec![ServerMessage::Failure {

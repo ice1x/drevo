@@ -658,8 +658,9 @@ it is written:
   `SHOW CURRENT USER`, `ALTER CURRENT USER SET PASSWORD`, `SHOW USER PRIVILEGES` (their own)
   and `SHOW SUPPORTED PRIVILEGES`.
 - **Procedures**: every `CALL` needs `EXECUTE PROCEDURE` (which `PUBLIC` has for every
-  procedure). The two-phase-commit resolvers (`drevo.tx.commitPrepared`, `rollbackPrepared`,
-  `heuristicRollback`, `listPrepared`) also need `EXECUTE ADMIN PROCEDURES`, and
+  procedure). The two-phase-commit procedures (`drevo.tx.prepare`, which pauses every write
+  until resolved, and `commitPrepared`, `rollbackPrepared`, `heuristicRollback`,
+  `listPrepared`) also need `EXECUTE ADMIN PROCEDURES`, and
   `drevo.semantic.register` / `reindex` need `INDEX MANAGEMENT`.
 
 Reads filter instead of failing, as in Neo4j:
