@@ -653,10 +653,8 @@ impl<'a> Session<'a> {
 
     /// The signed-in user's privileges (#636); `None` checks nothing.
     fn security_context(&self) -> Option<drevo_auth::privileges::SecurityContext> {
-        self.security.context_for(
-            self.signed_in.as_ref().map(|u| u.name.as_str()),
-            self.home_database(),
-        )
+        self.security
+            .context_for(self.signed_in.as_ref(), self.home_database())
     }
 
     fn resolve_service(
@@ -1251,7 +1249,7 @@ impl<'a> Session<'a> {
                 _ => ParamValue::Other,
             })
         };
-        let current = self.signed_in.as_ref().map(|u| u.name.clone());
+        let current = self.signed_in.clone();
         let parsed = parsed.map_err(SecurityError::syntax);
         let changes_own_password = matches!(
             parsed,
@@ -1260,7 +1258,7 @@ impl<'a> Session<'a> {
         let origin = self.origin();
         let outcome = parsed.and_then(|command| {
             self.security
-                .execute_from(&origin, &command, current.as_deref(), &lookup)
+                .execute_from(&origin, &command, current.as_ref(), &lookup)
         });
         let result = match outcome {
             Ok(result) => {

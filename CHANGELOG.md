@@ -8,6 +8,23 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Sign in with an identity provider** (issue #638, feature `oidc`, in the
+  Docker image). With `DREVO_OIDC_ISSUER` and `DREVO_OIDC_AUDIENCE` set, the
+  server accepts an OpenID Connect access token where it accepts a password:
+  - HTTP `Authorization: Bearer`;
+  - the Bolt `bearer` scheme (`neo4j.bearer_auth`);
+  - gRPC and Arrow Flight `authorization` metadata.
+
+  The provider's keys come from its discovery document over HTTPS.
+  `DREVO_OIDC_USERNAME_CLAIM` (default `sub`) names the user, and
+  `DREVO_OIDC_ROLES_CLAIM` (default `groups`) with `DREVO_OIDC_ROLE_MAP`
+  (`admins=admin,devs=editor`) gives the roles. Such a user has no record in
+  `security.json` and never gets a local user's privileges or password, even
+  under the same name. `SHOW CURRENT USER` and `SHOW USER PRIVILEGES` answer
+  from the token's roles. A refused token is audited with its reason. A
+  provider makes logins required even with `DREVO_AUTH=none`. drevo-auth
+  gains `PrivilegeFilter::Roles` and `AuthManager::security_context_for_roles`.
+
 - **OIDC token validator in drevo-auth** (issue #638, feature `oidc`).
   `TokenValidator` checks a provider's JWT: an RS256 or ES256 signature
   against the provider's key set, then `iss`, `aud` (a string or a list),

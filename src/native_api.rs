@@ -887,14 +887,13 @@ async fn cypher(
         return Err(credentials_expired());
     }
     if let Some(parsed) = parsed {
-        let current = signed_in.as_ref().map(|u| u.name.as_str());
-        return run_security_command(&state, parsed, &params, current, &origin).map(Json);
+        return run_security_command(&state, parsed, &params, signed_in.as_ref(), &origin)
+            .map(Json);
     }
     // The signed-in user's privileges (#636); `None` checks nothing.
-    let context = state.security.context_for(
-        signed_in.as_ref().map(|u| u.name.as_str()),
-        state.registry.default_name(),
-    );
+    let context = state
+        .security
+        .context_for(signed_in.as_ref(), state.registry.default_name());
     let caller = Caller {
         security: &state.security,
         origin: &origin,
@@ -1276,7 +1275,7 @@ fn run_security_command(
     state: &NativeApiState,
     parsed: Result<crate::cypher::security_admin::SecurityCommand, String>,
     params: &serde_json::Map<String, serde_json::Value>,
-    current_user: Option<&str>,
+    current_user: Option<&crate::security::SignedIn>,
     origin: &crate::security::Origin,
 ) -> Result<CypherResponse, ApiError> {
     use crate::security::{ParamValue, SecurityError};
@@ -1400,7 +1399,7 @@ async fn require_login(
     if user.password_change_required && path != "/cypher" && !path.starts_with("/auth/") {
         return credentials_expired().into_response();
     }
-    if let Some(refused) = refuse_route(&state, req.method(), path, &user.name) {
+    if let Some(refused) = refuse_route(&state, req.method(), path, &user) {
         state
             .security
             .record_forbidden(&origin, Some(&user.name), &refused, None);
@@ -1462,7 +1461,7 @@ fn refuse_route(
     state: &NativeApiState,
     method: &axum::http::Method,
     path: &str,
-    user: &str,
+    user: &crate::security::SignedIn,
 ) -> Option<String> {
     use drevo_auth::privileges::Action;
     let need = route_need(method, path);

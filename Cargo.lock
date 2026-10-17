@@ -692,6 +692,7 @@ dependencies = [
  "rayon",
  "rcgen",
  "reqwest",
+ "ring",
  "rmp-serde",
  "rustls",
  "rustls-pemfile",

@@ -529,3 +529,46 @@ fn every_change_moves_the_generation_on() {
         .security_context("ann", "tasks")
         .can_traverse_node("tasks", &["Secret"]));
 }
+
+// ── Principals from an identity provider ─────────────────────────────
+
+#[test]
+fn a_set_of_roles_holds_those_roles_privileges_and_publics() {
+    // A user signed in through an identity provider has no record here: the
+    // token names the roles. Unknown roles give nothing.
+    let m = manager();
+    let held = m.privileges(&PrivilegeFilter::Roles(vec![
+        "reader".into(),
+        "no_such_role".into(),
+    ]));
+    let roles: std::collections::BTreeSet<&str> = held.iter().map(|e| e.role.as_str()).collect();
+    assert_eq!(roles.into_iter().collect::<Vec<_>>(), [PUBLIC, "reader"]);
+    let none = m.privileges(&PrivilegeFilter::Roles(Vec::new()));
+    assert!(none.iter().all(|e| e.role == PUBLIC));
+    assert!(!none.is_empty(), "PUBLIC always applies");
+}
+
+#[test]
+fn a_security_context_for_roles_follows_those_roles() {
+    let m = with_users();
+    let editor = m.security_context_for_roles(&["editor".to_string()], "tasks");
+    assert!(editor.reads_everything("tasks"));
+    assert!(editor.writes_everything("tasks"));
+    assert!(!editor.has_dbms(Action::UserManagement));
+    let nothing = m.security_context_for_roles(&[], "tasks");
+    assert!(
+        nothing.can_access("tasks"),
+        "PUBLIC reaches the home database"
+    );
+    assert!(!nothing.can_traverse_node("tasks", &["Task"]));
+    // A local user of the same name changes nothing.
+    m.grant_role("admin", "ann").unwrap();
+    let as_reader = m.security_context_for_roles(&["reader".to_string()], "tasks");
+    assert!(!as_reader.writes_everything("tasks"));
+    assert!(!as_reader.has_dbms(Action::UserManagement));
+    // A role's change applies at once.
+    apply(&m, "DENY TRAVERSE ON GRAPH * NODES Secret TO editor");
+    assert!(!m
+        .security_context_for_roles(&["editor".to_string()], "tasks")
+        .can_traverse_node("tasks", &["Secret"]));
+}

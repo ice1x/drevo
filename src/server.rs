@@ -31,6 +31,11 @@
 //! | `DREVO_TLS_KEY`   | (unset)     | PEM private key (PKCS#8, PKCS#1 or SEC1) for `DREVO_TLS_CERT` |
 //! | `DREVO_AUDIT_LOG` | `off`       | Security audit log (`auth` feature): `off`, `stdout`, or a file path (JSON lines, rotated at 10 MiB, 5 old files kept) |
 //! | `DREVO_AUDIT_QUERY_TEXT` | `false` | Put a refused statement's text in its audit event |
+//! | `DREVO_OIDC_ISSUER` | (unset) | Accept bearer tokens from this OpenID Connect provider (`oidc` feature): its exact `iss`, `https://` (or `http://` on this machine). Logins are then required |
+//! | `DREVO_OIDC_AUDIENCE` | (required with an issuer) | A value the token's `aud` must hold, usually the client id |
+//! | `DREVO_OIDC_USERNAME_CLAIM` | `sub` | The claim naming the user (`preferred_username`, `email`, …) |
+//! | `DREVO_OIDC_ROLES_CLAIM` | `groups` | The claim listing the user's groups |
+//! | `DREVO_OIDC_ROLE_MAP` | (none) | Groups to roles, `group=role` pairs: `admins=admin,devs=editor`. Unlisted groups give no role |
 //! | `DREVO_ENGINE`    | `native-durable` | Serving engine. `native-durable` (default) — the WAL-backed native engine IS the store of record (`<data_dir>/native.wal`), no KV. `kv` still parses but its serving mode was removed (epic #444): a `kv` process warns and is served by the native engine. |
 //!
 //! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
@@ -124,6 +129,9 @@ pub struct Config {
     /// Whether a refused statement's text goes into its audit event, from
     /// `DREVO_AUDIT_QUERY_TEXT`.
     pub audit_query_text: bool,
+    /// The identity provider whose bearer tokens sign users in, from
+    /// `DREVO_OIDC_*`; `None` without `DREVO_OIDC_ISSUER`.
+    pub oidc: Option<OidcSettings>,
     /// How to create the first user, from `DREVO_AUTH` (Neo4j's `NEO4J_AUTH`
     /// format): `user/password`, `none`, or unset for `neo4j` with a generated
     /// password. Its `Debug` output hides the password.
@@ -142,6 +150,21 @@ pub enum AuditLog {
     Stdout,
     /// JSON lines appended to this file, rotated by size.
     File(PathBuf),
+}
+
+/// An OpenID Connect provider, from `DREVO_OIDC_*`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OidcSettings {
+    /// The tokens' exact `iss`; the discovery document is under it.
+    pub issuer: String,
+    /// A value the tokens' `aud` must hold.
+    pub audience: String,
+    /// The claim naming the user.
+    pub username_claim: String,
+    /// The claim listing the user's groups.
+    pub roles_claim: Option<String>,
+    /// Group → roles.
+    pub role_map: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// The PEM files a TLS-serving server reads at startup.
@@ -256,6 +279,13 @@ pub enum ConfigError {
     /// has no TLS.
     #[error("invalid audit settings: {reason}")]
     InvalidAudit {
+        /// Why they were rejected.
+        reason: String,
+    },
+    /// A `DREVO_OIDC_*` setting is missing or malformed, or the build has
+    /// no `oidc` feature.
+    #[error("invalid identity provider settings: {reason}")]
+    InvalidOidc {
         /// Why they were rejected.
         reason: String,
     },
@@ -443,6 +473,8 @@ impl Config {
             },
         };
 
+        let oidc = oidc_settings(&getter)?;
+
         let auth_raw = getter("DREVO_AUTH");
         #[cfg(feature = "auth")]
         let auth = drevo_auth::users::Bootstrap::parse(auth_raw.as_deref()).map_err(|e| {
@@ -476,6 +508,7 @@ impl Config {
             tls,
             audit_log,
             audit_query_text,
+            oidc,
         })
     }
 
@@ -620,7 +653,82 @@ fn configure_security(cfg: &Config) -> Result<crate::security::Security, RunErro
             security.with_audit(std::sync::Arc::new(sink), cfg.audit_query_text)
         }
     };
+    #[cfg(feature = "oidc")]
+    let security = with_identity_provider(security, cfg.oidc.as_ref())?;
     Ok(security)
+}
+
+/// The identity provider from `DREVO_OIDC_*`, or `None` without an issuer.
+fn oidc_settings<F>(getter: &F) -> Result<Option<OidcSettings>, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let invalid = |reason: String| ConfigError::InvalidOidc { reason };
+    let value = |name: &str| getter(name).map(|v| v.trim().to_string());
+    let Some(issuer) = value("DREVO_OIDC_ISSUER").filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    if !cfg!(feature = "oidc") {
+        return Err(invalid(
+            "DREVO_OIDC_ISSUER is set, but this build has no identity provider logins; rebuild \
+             with the `oidc` feature"
+                .to_string(),
+        ));
+    }
+    #[cfg(feature = "oidc")]
+    crate::oidc::HttpJwks::new(&issuer).map_err(|e| invalid(format!("DREVO_OIDC_ISSUER: {e}")))?;
+    let audience = value("DREVO_OIDC_AUDIENCE")
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| invalid("DREVO_OIDC_AUDIENCE is required with DREVO_OIDC_ISSUER".into()))?;
+    let username_claim = match value("DREVO_OIDC_USERNAME_CLAIM") {
+        None => "sub".to_string(),
+        Some(v) if v.is_empty() => {
+            return Err(invalid("DREVO_OIDC_USERNAME_CLAIM is empty".to_string()))
+        }
+        Some(v) => v,
+    };
+    let roles_claim = Some(
+        value("DREVO_OIDC_ROLES_CLAIM")
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "groups".to_string()),
+    );
+    #[cfg(feature = "oidc")]
+    let role_map =
+        drevo_auth::oidc::parse_role_map(&value("DREVO_OIDC_ROLE_MAP").unwrap_or_default())
+            .map_err(|e| invalid(format!("DREVO_OIDC_ROLE_MAP: {e}")))?;
+    #[cfg(not(feature = "oidc"))]
+    let role_map = std::collections::BTreeMap::new();
+    Ok(Some(OidcSettings {
+        issuer,
+        audience,
+        username_claim,
+        roles_claim,
+        role_map,
+    }))
+}
+
+/// Accept the identity provider's bearer tokens (`DREVO_OIDC_*`).
+#[cfg(feature = "oidc")]
+fn with_identity_provider(
+    security: crate::security::Security,
+    oidc: Option<&OidcSettings>,
+) -> Result<crate::security::Security, RunError> {
+    use drevo_auth::oidc::{ClaimMapping, TokenValidator, ValidatorConfig};
+    let Some(oidc) = oidc else {
+        return Ok(security);
+    };
+    let source = crate::oidc::HttpJwks::new(&oidc.issuer).map_err(RunError::Security)?;
+    let validator = TokenValidator::new(
+        ValidatorConfig::new(&oidc.issuer, &oidc.audience),
+        ClaimMapping {
+            username_claim: oidc.username_claim.clone(),
+            roles_claim: oidc.roles_claim.clone(),
+            role_map: oidc.role_map.clone(),
+        },
+        std::sync::Arc::new(source),
+    );
+    tracing::info!(issuer = %oidc.issuer, audience = %oidc.audience, "identity provider logins");
+    Ok(security.with_oidc(std::sync::Arc::new(validator)))
 }
 
 /// An audit log file rotates past this size…

@@ -314,7 +314,8 @@ fn show_user_privileges_without_a_name_is_the_signed_in_users() {
         .create_user(drevo_auth::users::NewUser::new("ann", PW))
         .unwrap();
     let cmd = parse("SHOW USER PRIVILEGES").unwrap().unwrap();
-    let result = security.execute(&cmd, Some("ann"), &|_| None).unwrap();
+    let ann = drevo::security::SignedIn::local("ann", false);
+    let result = security.execute(&cmd, Some(&ann), &|_| None).unwrap();
     assert!(!result.rows.is_empty());
     let err = security.execute(&cmd, None, &|_| None).unwrap_err();
     assert_eq!(err.kind, SecurityErrorKind::Unauthenticated);

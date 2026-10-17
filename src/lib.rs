@@ -138,6 +138,9 @@ pub mod fts;
 /// (KV-backed `Drevo` ⇄ native [`native::NativeGraph`]) over the shared
 /// `drevo-json-v1` dump interchange, preserving every node/edge id.
 pub mod migrate;
+/// An identity provider's signing keys over HTTPS, for bearer-token logins.
+#[cfg(feature = "oidc")]
+pub mod oidc;
 /// Engine-independent storage & semantic report DTOs (`CompactReport`,
 /// `BloatReport`, `KeyspaceStat`, `SemanticReindexReport`,
 /// `SemanticTargetStatus`) — relocated out of `db` so they outlive the KV

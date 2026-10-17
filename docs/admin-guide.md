@@ -46,6 +46,11 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor` or `msgpack`. See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
 | `DREVO_AUDIT_LOG` | `off` | Security audit log: `off`, `stdout`, or a file path. See [Audit log](#audit-log). Needs the `auth` feature. |
 | `DREVO_AUDIT_QUERY_TEXT` | `false` | Add a refused statement's text to its audit event. |
+| `DREVO_OIDC_ISSUER` | unset (off) | Accept bearer tokens from this OpenID Connect provider: its exact `iss`. See [Identity provider (OIDC)](#identity-provider-oidc). Needs the `oidc` feature. |
+| `DREVO_OIDC_AUDIENCE` | required with an issuer | A value the token's `aud` must hold, usually the client id. |
+| `DREVO_OIDC_USERNAME_CLAIM` | `sub` | The claim naming the user, such as `preferred_username` or `email`. |
+| `DREVO_OIDC_ROLES_CLAIM` | `groups` | The claim listing the user's groups. |
+| `DREVO_OIDC_ROLE_MAP` | unset | Groups to roles: `admins=admin,devs=editor`. A group not listed gives no role. |
 | `DREVO_BOLT_PORT` | unset (off) | Serve Bolt on this port, same host as HTTP (Neo4j drivers, `cypher-shell`). |
 | `DREVO_TLS_CERT` | unset (off) | PEM certificate chain, leaf first. Together with `DREVO_TLS_KEY` it turns on TLS: HTTP is served as HTTPS and Bolt as `bolt+s://`. See [TLS](#tls). Setting only one of the pair, or a build without the `bolt-tls` feature, is rejected at startup. |
 | `DREVO_TLS_KEY` | unset (off) | PEM private key for `DREVO_TLS_CERT` (PKCS#8, PKCS#1 RSA or SEC1 EC). |
@@ -730,6 +735,78 @@ Either way:
 
 Without TLS, passwords and session tokens travel in clear text: turn TLS on (below) or keep
 the server on a trusted network.
+
+### Identity provider (OIDC)
+
+drevo accepts access tokens from an OpenID Connect provider, such as Keycloak, Kanidm,
+Auth0, Entra ID or Dex. A client sends the token where it would send a password:
+
+- HTTP: `Authorization: Bearer <token>` on any request.
+- Bolt: the `bearer` scheme, e.g. `neo4j.bearer_auth(token)` in the Python driver.
+- gRPC and Arrow Flight: `authorization: Bearer <token>` metadata.
+
+```bash
+docker run -d --name drevo -p 8080:8080 -p 7687:7687 -v drevo_data:/data \
+  -e DREVO_BOLT_PORT=7687 \
+  -e DREVO_OIDC_ISSUER=https://login.example.com/realms/drevo \
+  -e DREVO_OIDC_AUDIENCE=drevo \
+  -e DREVO_OIDC_USERNAME_CLAIM=preferred_username \
+  -e DREVO_OIDC_ROLE_MAP='drevo-admins=admin,drevo-devs=editor,staff=reader' \
+  ice1x/drevo:latest
+```
+
+```python
+from neo4j import GraphDatabase, bearer_auth
+
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=bearer_auth(access_token))
+driver.execute_query("MATCH (t:Task) RETURN t.title")
+```
+
+drevo checks each token as follows:
+
+1. The server fetches the provider's keys from `<issuer>/.well-known/openid-configuration`
+   and caches them. A token signed with an unknown key fetches them again, at most once a
+   minute, so key rotation needs no restart.
+2. The signature must be RS256 or ES256 and verify against those keys. `none`, HMAC and
+   other algorithms are refused.
+3. `iss` must equal `DREVO_OIDC_ISSUER`, and `aud` must hold `DREVO_OIDC_AUDIENCE`.
+4. `exp` must be in the future and `nbf`, if present, in the past, with 60 seconds of clock
+   skew allowed.
+
+A refused token gets the same `Neo.ClientError.Security.Unauthorized` answer as a wrong
+password. The audit log records why it was refused (`login_failed`).
+
+The provider and its key set must be served over HTTPS, except from the same machine
+(`localhost`, `127.0.0.1`, `::1`).
+
+The user is the value of `DREVO_OIDC_USERNAME_CLAIM`, and their roles come from the groups in
+`DREVO_OIDC_ROLES_CLAIM` through `DREVO_OIDC_ROLE_MAP`. Everyone also has `PUBLIC`. The
+roles and their privileges are the server's own: create and grant them as for local users,
+and a change applies to the next statement.
+
+Such a user has no record in `security.json`, even when a local user has the same name. Their
+token never gives them that local user's roles or password. For them:
+
+- `SHOW CURRENT USER` shows the token's name and roles.
+- `SHOW USER PRIVILEGES` shows the privileges of those roles.
+- `ALTER CURRENT USER SET PASSWORD` is refused: the password lives with the provider.
+
+Local users keep working next to the provider: passwords, session tokens and the Web UI's
+sign-in. A provider also makes logins required when the server was started with
+`DREVO_AUTH=none`. In that case no first local user is created, and the users come from the
+provider.
+
+Typical settings:
+
+| Provider | `DREVO_OIDC_ISSUER` | Username claim | Groups claim |
+|---|---|---|---|
+| Keycloak | `https://<host>/realms/<realm>` | `preferred_username` | `groups` (add the *Group Membership* mapper to the client) |
+| Kanidm | `https://<host>/oauth2/openid/<client>` | `preferred_username` | `groups` |
+| Auth0 | `https://<tenant>.auth0.com/` (with the trailing slash) | `sub` or `email` | a namespaced claim added by an Action, e.g. `https://drevo/groups` |
+
+The token must be an access token whose `aud` names drevo. With Keycloak, add an
+*Audience* mapper; with Auth0, request it for an API whose identifier is
+`DREVO_OIDC_AUDIENCE`.
 
 ### Audit log
 
