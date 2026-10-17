@@ -342,7 +342,9 @@ jobs:
       # Logging in to gRPC and Arrow Flight (issue #634): needs the users
       # (`auth`) and both services.
       - name: Run gRPC / Arrow Flight login tests (nextest)
-        run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight -E 'binary(rpc_login_tests) | (kind(lib) & test(rpc_login))'
+        # Build only these targets: a filter alone still compiles every test
+        # binary for this feature set, which ran the runner out of disk.
+        run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight --lib --test rpc_login_tests -E 'binary(rpc_login_tests) | (kind(lib) & test(rpc_login))'
       - name: Run drevo-core WAL format feature tests (nextest)
         run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack -E 'binary(wal_formats) | (kind(lib) & test(wal_format))'
       - name: Run doctests
