@@ -17,13 +17,11 @@ Authentication and role-based access control for Rust servers:
   matching deny winning over any grant. The built-in roles `PUBLIC`,
   `reader`, `editor`, `publisher`, `architect` and `admin` start with
   Neo4j's default privileges.
-- **Authorization** (`authz`): roles that allow or deny actions on resources,
-  roles that inherit other roles, and an access policy that assigns roles to
-  users and decides each request. A matching deny always wins over an allow,
-  and anything not allowed is denied.
+  A `SecurityContext` compiles one user's privileges for a session and
+  answers each check from a cache.
 
-It knows nothing about the data it protects or the network, so it fits any
-server: authenticate the connection, then ask the policy before each action.
+It knows nothing about the network, so it fits any server: authenticate the
+connection, then ask the user's security context before each action.
 It is the security layer of [drevo](https://github.com/ice1x/drevo), a graph
 database.
 
@@ -31,25 +29,31 @@ database.
 
 ```rust
 use drevo_auth::authn::{Credentials, UserStore};
-use drevo_auth::authz::{AccessPolicy, Action, Resource, Role, Scope};
+use drevo_auth::privileges::{parse, Access, Action, Element, Op, SecurityContext};
 
 let mut users = UserStore::new();
 users.add_user("ann", "s3cret").unwrap();
-
-let mut policy = AccessPolicy::new();
-policy
-    .define_role(
-        Role::reader("planner")
-            .allow(Action::CreateNode, Scope::kind("Task"))
-            .deny(Action::DeleteNode, Scope::All),
-    )
-    .unwrap();
-policy.assign_role("ann", "planner").unwrap();
-
 let login = Credentials::Basic { username: "ann".into(), password: "s3cret".into() };
 let user = users.authenticate(&login).unwrap();
-assert!(policy.is_allowed(&user, Action::CreateNode, &Resource::kind("Task")));
-assert!(!policy.is_allowed(&user, Action::DeleteNode, &Resource::kind("Task")));
+assert_eq!(user, "ann");
+
+// A planner may create tasks but delete nothing.
+let held: Vec<_> = [
+    "GRANT MATCH {*} ON GRAPH tasks TO planner",
+    "GRANT CREATE ON GRAPH tasks NODES Task TO planner",
+    "DENY DELETE ON GRAPH tasks TO planner",
+]
+.iter()
+.flat_map(|text| {
+    let c = parse(text).unwrap();
+    let access = if c.op == Op::Deny { Access::Deny } else { Access::Grant };
+    c.privileges.into_iter().map(move |p| (access, p))
+})
+.collect();
+let ann = SecurityContext::new(held, "tasks");
+let task = Element::Node(&["Task"]);
+assert!(ann.can_write(Action::Create, "tasks", task, None));
+assert!(!ann.can_write(Action::Delete, "tasks", task, None));
 
 // A session token lets the client reconnect without the password.
 let token = users.issue_token(&user).unwrap();

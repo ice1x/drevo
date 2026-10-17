@@ -336,6 +336,11 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Removed
 
+- **drevo-auth's generic `authz` module** (and the `drevo::authz`
+  re-export). The `privileges` module replaces its action/scope model with
+  Neo4j's privilege model, which drevo enforces through `SecurityContext`.
+  `drevo::privileges` re-exports it.
+
 - **Duplicate CSR PageRank and weakly-connected-components** that had been added
   to `drevo_core::csr` in #409 and #410. **This was my (the assistant's)
   mistake:** I built second implementations of PageRank and WCC over the CSR

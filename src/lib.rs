@@ -87,15 +87,10 @@ pub mod algorithms;
 /// `Drevo` calls. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
 pub mod api;
-/// Authorization: role-based access control from the `drevo-auth` crate.
-/// [`authz::Action`]s scoped by [`authz::Scope`], bundled into reusable
-/// [`authz::Role`]s (with inheritance and `reader`/`editor`/`admin` presets),
-/// evaluated by the [`authz::AccessPolicy`] engine under deny-overrides,
-/// closed-world semantics into an authorization [`authz::Decision`]. The
-/// authorization half that pairs with the Bolt authentication layer
-/// ([`bolt::auth`]). Not yet wired into the executor / HTTP API / Bolt
-/// session. WASM-safe.
-pub use drevo_auth::authz;
+/// Privileges from the `drevo-auth` crate: Neo4j's privilege model, the
+/// built-in roles and the per-session [`privileges::SecurityContext`] the
+/// server checks every statement against.
+pub use drevo_auth::privileges;
 /// Bolt wire protocol — Phase 11. Task `00070` ships the bytes-on-the-
 /// wire layer (PackStream codec, chunked framing, handshake + async
 /// TCP listener). The session layer (HELLO / RUN / PULL / DISCARD /

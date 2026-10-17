@@ -246,14 +246,15 @@ fn issued_bearer_token_authenticates() {
     assert_eq!(tags[3], SUCCESS);
 }
 
-/// `drevo::bolt::auth::UserStore` and `drevo::authz` are the `drevo-auth`
-/// crate's types, not copies: a value built through one path is accepted
-/// where the other is expected.
+/// `drevo::bolt::auth::UserStore` and `drevo::privileges` are the
+/// `drevo-auth` crate's types, not copies: a value built through one path is
+/// accepted where the other is expected.
 #[test]
 fn drevo_paths_are_the_drevo_auth_types() {
     let mut store: drevo_auth::authn::UserStore = UserStore::new();
     store.add_user("neo4j", "s3cret").unwrap();
-    let policy: drevo_auth::authz::AccessPolicy = drevo::authz::AccessPolicy::new();
-    assert!(policy.role_names().is_empty());
+    let context: drevo_auth::privileges::SecurityContext =
+        drevo::privileges::SecurityContext::unrestricted();
+    assert!(context.is_unrestricted());
     assert!(store.verify_basic("neo4j", "s3cret"));
 }

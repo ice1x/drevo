@@ -3,7 +3,7 @@
 #![cfg_attr(feature = "password", doc = include_str!("../README.md"))]
 #![cfg_attr(
     not(feature = "password"),
-    doc = "Role-based access control: the [`authz`] module. The default \
+    doc = "Privileges in the style of Neo4j: the [`privileges`] module. The default \
            `password` feature adds authentication (`authn`): users with \
            Argon2id password hashes, and session tokens."
 )]
@@ -12,7 +12,6 @@
 
 #[cfg(feature = "password")]
 pub mod authn;
-pub mod authz;
 #[cfg(feature = "password")]
 pub mod catalog;
 pub mod privileges;

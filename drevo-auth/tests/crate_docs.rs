@@ -120,7 +120,7 @@ fn crate_page_is_the_readme_with_a_runnable_example() {
     assert!(
         readme.contains("```rust")
             && readme.contains("UserStore::new()")
-            && readme.contains("AccessPolicy::new()"),
+            && readme.contains("SecurityContext::new("),
         "the README should show authentication and authorization in use"
     );
 }
