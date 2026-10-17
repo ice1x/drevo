@@ -85,6 +85,9 @@ pub struct NativeApiState {
     metrics: Arc<DrevoMetrics>,
     /// Body formats offered next to JSON (issue #581); JSON only by default.
     formats: Arc<crate::wire_format::WireFormats>,
+    /// Whether the session cookie is marked `Secure` (sent over HTTPS only):
+    /// set when the server serves HTTPS.
+    secure_cookies: bool,
 }
 
 impl NativeApiState {
@@ -113,7 +116,16 @@ impl NativeApiState {
             security: crate::security::Security::default(),
             metrics: Arc::new(DrevoMetrics::new()),
             formats: Arc::new(crate::wire_format::WireFormats::default()),
+            secure_cookies: false,
         }
+    }
+
+    /// Mark the `drevo_session` cookie `Secure`, so browsers send it over
+    /// HTTPS only. The server sets this when it serves HTTPS.
+    #[must_use]
+    pub fn with_secure_cookies(mut self, secure: bool) -> Self {
+        self.secure_cookies = secure;
+        self
     }
 
     /// Offer `formats` (from `DREVO_HTTP_FORMATS`) next to JSON for request
@@ -1343,7 +1355,10 @@ async fn auth_login(
         "passwordChangeRequired": user.password_change_required,
     }))
     .into_response();
-    let cookie = format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/");
+    let cookie = format!(
+        "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/{}",
+        secure_flag(&state)
+    );
     if let Ok(value) = axum::http::HeaderValue::from_str(&cookie) {
         resp.headers_mut()
             .insert(axum::http::header::SET_COOKIE, value);
@@ -1369,13 +1384,24 @@ async fn auth_logout(
         state.security.revoke_session(&token);
     }
     let mut resp = Json(serde_json::json!({})).into_response();
-    resp.headers_mut().insert(
-        axum::http::header::SET_COOKIE,
-        axum::http::HeaderValue::from_static(
-            "drevo_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
-        ),
+    let cleared = format!(
+        "{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{}",
+        secure_flag(&state)
     );
+    if let Ok(value) = axum::http::HeaderValue::from_str(&cleared) {
+        resp.headers_mut()
+            .insert(axum::http::header::SET_COOKIE, value);
+    }
     resp
+}
+
+/// `; Secure` when the server serves HTTPS, else nothing.
+fn secure_flag(state: &NativeApiState) -> &'static str {
+    if state.secure_cookies {
+        "; Secure"
+    } else {
+        ""
+    }
 }
 
 /// `GET /auth/me` — the signed-in user: `{user, passwordChangeRequired}`;

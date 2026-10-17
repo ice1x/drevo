@@ -164,6 +164,8 @@ fn bolt_hang_ups_are_disconnects_not_problems() {
         assert!(BoltError::Io(std::io::Error::new(kind, "early eof")).is_client_disconnect());
     }
     assert!(!BoltError::Io(std::io::Error::other("disk on fire")).is_client_disconnect());
+    // A TLS failure other than a client's failed handshake is a fault.
+    assert!(!BoltError::Tls("rustls config build failed: bad key".into()).is_client_disconnect());
 }
 
 async fn get(app: &axum::Router, uri: &str) -> (StatusCode, String) {

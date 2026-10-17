@@ -70,12 +70,14 @@ pub enum BoltError {
 
 impl BoltError {
     /// Whether this is the peer simply going away (an EOF, reset or broken
-    /// pipe mid-session) rather than a fault. Drivers drop pooled
+    /// pipe mid-session) or failing the TLS handshake (a plain-text client on
+    /// a `bolt+s://` port) rather than a server fault. Drivers drop pooled
     /// connections without `GOODBYE` all the time, so the server logs these
     /// at debug instead of raising a problem (#552).
     pub fn is_client_disconnect(&self) -> bool {
         match self {
             Self::Eof => true,
+            Self::Tls(message) => message.starts_with(TLS_HANDSHAKE_FAILED),
             Self::Io(e) => matches!(
                 e.kind(),
                 io::ErrorKind::UnexpectedEof
@@ -87,6 +89,10 @@ impl BoltError {
         }
     }
 }
+
+/// How the message of a [`BoltError::Tls`] for a failed client handshake
+/// starts.
+pub(crate) const TLS_HANDSHAKE_FAILED: &str = "TLS handshake failed";
 
 /// Convenience `Result` alias used throughout the Bolt module.
 pub type BoltResult<T> = Result<T, BoltError>;

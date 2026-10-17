@@ -208,10 +208,9 @@ pub async fn accept_handshake_tls(
     socket: TcpStream,
     acceptor: &TlsAcceptor,
 ) -> BoltResult<AcceptedConnectionOn<TlsStream<TcpStream>>> {
-    let tls_stream = acceptor
-        .accept(socket)
-        .await
-        .map_err(|e| BoltError::Tls(format!("TLS handshake failed: {e}")))?;
+    let tls_stream = acceptor.accept(socket).await.map_err(|e| {
+        BoltError::Tls(format!("{}: {e}", crate::bolt::error::TLS_HANDSHAKE_FAILED))
+    })?;
     accept_handshake_on(tls_stream).await
 }
 
@@ -237,6 +236,30 @@ pub async fn accept_and_run_session_tls(
     }
     let mut stream = accepted.stream;
     run_session_on_durable(&mut stream, service).await
+}
+
+/// Like [`accept_and_run_session_tls`], over every database in `registry`
+/// and with the server's users: `HELLO` logs in against them when
+/// `security` requires a login. This is what a `bolt+s://` listener of the
+/// server runs per connection.
+///
+/// # Errors
+///
+/// Propagates errors from [`accept_handshake_tls`]; Cypher errors are
+/// surfaced as `FAILURE` messages and do *not* abort the loop.
+pub async fn accept_and_run_session_tls_with_security(
+    socket: TcpStream,
+    acceptor: &TlsAcceptor,
+    registry: &Arc<crate::database_registry::DatabaseRegistry>,
+    security: crate::security::Security,
+) -> BoltResult<()> {
+    let accepted = accept_handshake_tls(socket, acceptor).await?;
+    if accepted.negotiated.is_none() {
+        return Ok(());
+    }
+    let mut stream = accepted.stream;
+    crate::bolt::listener::run_session_on_durable_with_security(&mut stream, registry, security)
+        .await
 }
 
 #[cfg(test)]

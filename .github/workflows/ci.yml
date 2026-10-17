@@ -316,7 +316,8 @@ jobs:
       # tests; the rest of the suite is already covered by the
       # full-suite step above.
       - name: Run bolt-tls feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features bolt-tls -E 'binary(bolt_tls_tests) | (kind(lib) & test(bolt::tls))'
+        # Named targets: a filter alone compiles every test binary.
+        run: cargo nextest run --no-fail-fast --features bolt-tls,auth --lib --test bolt_tls_tests --test server_tls_tests --test server_config_tests -E 'binary(bolt_tls_tests) | binary(server_tls_tests) | binary(server_config_tests) | (kind(lib) & test(bolt::tls))'
       # Phase 11 task `00074` — Bolt authentication. The argon2-backed
       # `UserStore` lives behind the `bolt-auth` Cargo feature (NOT in
       # the default set), so re-run nextest with the feature on over the
@@ -382,6 +383,8 @@ jobs:
       # invocation with the feature enabled is the only way to catch
       # warnings in those files before merge.
       - run: cargo clippy --all-targets --features bolt-tls -- -D warnings
+      # HTTPS / bolt+s:// with logins (issue #634).
+      - run: cargo clippy --all-targets --features bolt-tls,auth -- -D warnings
       # Guard the `auth`-gated code paths (the `drevo-auth` UserStore as a
       # Bolt authenticator + `tests/bolt_auth_tests.rs`) against clippy
       # regressions the default-feature pass can't see.

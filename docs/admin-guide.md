@@ -44,6 +44,9 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
 | `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
 | `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor` or `msgpack`. See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
+| `DREVO_BOLT_PORT` | unset (off) | Serve Bolt on this port, same host as HTTP (Neo4j drivers, `cypher-shell`). |
+| `DREVO_TLS_CERT` | unset (off) | PEM certificate chain, leaf first. Together with `DREVO_TLS_KEY` it turns on TLS: HTTP is served as HTTPS and Bolt as `bolt+s://`. See [TLS](#tls). Setting only one of the pair, or a build without the `bolt-tls` feature, is rejected at startup. |
+| `DREVO_TLS_KEY` | unset (off) | PEM private key for `DREVO_TLS_CERT` (PKCS#8, PKCS#1 RSA or SEC1 EC). |
 | `DREVO_GRPC_PORT` | unset (off) | Serve the gRPC API on this port, same host as HTTP. See [gRPC API](#grpc-api-opt-in). Rejected at startup by a build without the `grpc` feature. |
 | `DREVO_FLIGHT_PORT` | unset (off) | Serve the Arrow Flight endpoint on this port, same host as HTTP. See [Arrow Flight](#arrow-flight-opt-in). Rejected at startup by a build without the `arrow-flight` feature. |
 | `DREVO_AUTO_COMPACT` | `off` | Opt-in auto-compaction on open (`1`/`true`/`yes`/`on`). See §6. |
@@ -594,14 +597,35 @@ Either way:
 - `SHOW CURRENT USER` and `ALTER CURRENT USER` act on the logged-in user.
 - Changing a user's password, suspending or dropping the user ends their session tokens.
 
-Credentials travel in clear text over plain HTTP and Bolt; put the server behind TLS or on a
-trusted network.
+Without TLS, passwords and session tokens travel in clear text: turn TLS on (below) or keep
+the server on a trusted network.
 
-TLS for Bolt is provided by the **`bolt-tls`** feature (pure-Rust rustls, no OpenSSL):
+### TLS
 
-```rust
-let tls = TlsConfig::from_pem_files("/etc/drevo/cert.pem", "/etc/drevo/key.pem")?;
+With `DREVO_TLS_CERT` and `DREVO_TLS_KEY` set, the HTTP port serves **HTTPS** and the Bolt
+port serves **`bolt+s://`**; plain-text clients on those ports are turned away. The Web UI's
+session cookie is then marked `Secure`. The Docker image is built with TLS (Cargo feature
+`bolt-tls`, pure-Rust rustls); a certificate the server cannot read stops it at startup.
+
+```bash
+docker run -d --name drevo -p 8443:8080 -p 7687:7687 \
+  -v drevo_data:/data -v /etc/drevo/tls:/tls:ro \
+  -e DREVO_AUTH=admin/change-me-now -e DREVO_BOLT_PORT=7687 \
+  -e DREVO_TLS_CERT=/tls/cert.pem -e DREVO_TLS_KEY=/tls/key.pem \
+  ice1x/drevo:latest
+
+curl --cacert /etc/drevo/tls/cert.pem -u admin:change-me-now https://localhost:8443/auth/me
 ```
+
+Drivers connect with `bolt+s://host:7687`, or `bolt+ssc://` for a self-signed certificate.
+For a test certificate:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj /CN=localhost \
+  -addext subjectAltName=DNS:localhost -keyout key.pem -out cert.pem
+```
+
+gRPC and Arrow Flight are not covered by these settings and stay plain text.
 
 > Authorization / RBAC primitives exist at the substrate level but are not yet wired into the
 > HTTP / Bolt request path — treat the network surface as trusted-network or front it with a
