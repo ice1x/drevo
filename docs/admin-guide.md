@@ -652,6 +652,11 @@ it is written:
   same checks.
 - **Schema**: `CREATE` / `DROP INDEX` need `INDEX MANAGEMENT`, constraints `CONSTRAINT
   MANAGEMENT`. `SHOW INDEXES` / `SHOW CONSTRAINTS` need only access.
+- **Users, roles and privileges**: `CREATE` / `ALTER` / `DROP USER` and `SHOW USERS` need
+  `USER MANAGEMENT`; the role commands and `SHOW ROLES` need `ROLE MANAGEMENT`; `GRANT` /
+  `DENY` / `REVOKE` and `SHOW PRIVILEGES` need `PRIVILEGE MANAGEMENT`. Every user may run
+  `SHOW CURRENT USER`, `ALTER CURRENT USER SET PASSWORD`, `SHOW USER PRIVILEGES` (their own)
+  and `SHOW SUPPORTED PRIVILEGES`.
 - **Procedures**: every `CALL` needs `EXECUTE PROCEDURE` (which `PUBLIC` has for every
   procedure). The two-phase-commit resolvers (`drevo.tx.commitPrepared`, `rollbackPrepared`,
   `heuristicRollback`, `listPrepared`) also need `EXECUTE ADMIN PROCEDURES`, and
