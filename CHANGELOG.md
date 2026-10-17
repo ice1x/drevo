@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **drevo-core: online physical backups** (issue #641).
+  `NativeGraph::backup_to(dir, options)` copies the write-ahead log and its
+  sidecars at a commit boundary while the store keeps serving, with a
+  `manifest.json` of sizes and SHA-256 checksums. With `since`, only the log
+  bytes written after that backup are copied; after a compaction the backup
+  is taken in full and the manifest says why. `backup::restore(chain, wal)`
+  checks every file and the chain, then writes a new store.
 - **Change events over Server-Sent Events: `GET /events`** (issue #640).
   - Every node or relationship a committed write creates, changes or
     deletes is one event, in commit order. Rolled-back work never appears.

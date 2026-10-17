@@ -56,11 +56,14 @@ assert_eq!(blockers[0].title, "Review release notes");
 - `replica`, `delta`, `hlc`, `lww` — WAL-shipping read replicas and
   multi-writer merge (hybrid logical clocks, last-writer-wins CRDTs).
 - `dump` — the whole graph as one serde value, for backup and transfer.
+- `backup` — online physical backups of a durable store (full, or the log
+  bytes since the previous one) with checksummed manifests, and `restore`.
 
 ## Design notes
 
 - **Few dependencies.** `serde` / `serde_json` / `bincode` for
-  (de)serialization, `thiserror` for the error type, `uuid` for identifiers.
+  (de)serialization, `thiserror` for the error type, `uuid` for identifiers,
+  `sha2` for backup checksums.
 - **Builds for `wasm32-unknown-unknown`.** The clock comes from the browser
   there; enable the `wasm` feature so uuid generation gets its random source.
 
