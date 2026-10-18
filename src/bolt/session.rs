@@ -417,6 +417,9 @@ mod codes {
         "Neo.ClientError.Transaction.ForbiddenDueToTransactionType";
     /// The signed-in user lacks the privilege for the statement.
     pub const FORBIDDEN: &str = "Neo.ClientError.Security.Forbidden";
+    /// A write to a read-only database; not retried by drivers.
+    pub const FORBIDDEN_ON_READ_ONLY_DATABASE: &str =
+        "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase";
     /// A commit violated a declared schema constraint.
     pub const CONSTRAINT_FAILED: &str = "Neo.ClientError.Schema.ConstraintValidationFailed";
     /// A `RUN` / `BEGIN` selected a `db` that the catalog does not hold. Matches
@@ -929,6 +932,7 @@ impl<'a> Session<'a> {
                     crate::native::CommitError::Conflict => codes::TRANSIENT_OUTDATED,
                     crate::native::CommitError::Constraint(_) => codes::CONSTRAINT_FAILED,
                     crate::native::CommitError::Io(_) => codes::STORAGE,
+                    crate::native::CommitError::ReadOnly => codes::FORBIDDEN_ON_READ_ONLY_DATABASE,
                     crate::native::CommitError::PreparedPending(_) => {
                         codes::TRANSIENT_PREPARED_PENDING
                     }
@@ -1066,6 +1070,7 @@ impl<'a> Session<'a> {
                     P::Constraint(_) => codes::CONSTRAINT_FAILED,
                     P::DuplicateGid(_) | P::UnknownTransaction => codes::SEMANTIC_ERROR,
                     P::Io(_) => codes::STORAGE,
+                    P::ReadOnly => codes::FORBIDDEN_ON_READ_ONLY_DATABASE,
                 };
                 self.state = State::Failed;
                 vec![ServerMessage::Failure {
@@ -1887,6 +1892,10 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         ExecError::Storage(crate::error::DrevoError::ConstraintViolation { .. }) => {
             codes::CONSTRAINT_FAILED
         }
+        // A write to a read-only database (#642).
+        ExecError::Storage(crate::error::DrevoError::ReadOnly) => {
+            codes::FORBIDDEN_ON_READ_ONLY_DATABASE
+        }
         ExecError::Storage(_) => codes::STORAGE,
         ExecError::Timeout { .. } => codes::TIMED_OUT,
         ExecError::Terminated => codes::TERMINATED,
@@ -2199,6 +2208,21 @@ mod tests {
     fn cypher_to_pack_roundtrips_simple_types() {
         assert_eq!(cypher_to_pack(CypherValue::Null), Value::Null);
         assert_eq!(cypher_to_pack(CypherValue::Integer(42)), Value::Integer(42));
+    }
+
+    #[test]
+    fn a_write_to_a_read_only_database_fails_with_neo4js_code() {
+        let md = exec_error_metadata(&ExecError::Storage(crate::error::DrevoError::ReadOnly));
+        assert_eq!(
+            md.get("code"),
+            Some(&Value::String(
+                "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase".to_string()
+            ))
+        );
+        assert!(
+            matches!(md.get("message"), Some(Value::String(m)) if m.ends_with("the database is read-only")),
+            "{md:?}"
+        );
     }
 
     #[test]

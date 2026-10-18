@@ -8,6 +8,16 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **drevo-core: read-only stores** (issue #642).
+  `NativeGraph::open_read_only(path)` replays a durable store without ever
+  writing to it: no sidecar is created or rewritten and a torn tail stays in
+  place, so it opens on read-only media or in a directory the process cannot
+  write to. Read-only handles share a store; a writer and a read-only handle
+  exclude each other. `set_read_only(true)` refuses writes on a writable
+  store until it is switched back. Every write fails with
+  `CoreError::ReadOnly` (and `ReadOnly` on the commit, prepare and resolve
+  errors); the server answers it with HTTP 403 and Bolt
+  `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase`.
 - **Web UI: physical backups** (issue #641). The Storage panel lists the
   newest backups (when, full or incremental, databases, size) and takes a
   full backup, or an incremental one that continues the newest.

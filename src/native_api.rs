@@ -1132,6 +1132,10 @@ fn run_cypher_on(
                     crate::cypher::executor::ExecError::Storage(
                         err @ crate::error::DrevoError::ConstraintViolation { .. },
                     ) => ApiError::Db(err),
+                    // A write to a read-only database (#642): 403 with Neo4j's code.
+                    crate::cypher::executor::ExecError::Storage(
+                        err @ crate::error::DrevoError::ReadOnly,
+                    ) => ApiError::Db(err),
                     // `drevo.tx.*` on an unknown / heuristically rolled-back gid
                     // (#590): the same status and code as the resolve routes.
                     crate::cypher::executor::ExecError::PreparedTransactionUnresolved {
@@ -1185,6 +1189,7 @@ fn resolve_error(e: crate::native::ResolveError) -> ApiError {
         crate::native::ResolveError::Io(msg) => {
             ApiError::Db(crate::error::DrevoError::Io(std::io::Error::other(msg)))
         }
+        crate::native::ResolveError::ReadOnly => ApiError::Db(crate::error::DrevoError::ReadOnly),
     }
 }
 
