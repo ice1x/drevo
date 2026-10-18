@@ -3076,6 +3076,71 @@ impl NativeGraph {
             .is_some_and(|slot| !slot.ops.is_empty())
     }
 
+    /// What registered transaction `id` has changed so far: the committed and
+    /// the in-transaction version of every node and relationship it created,
+    /// updated or deleted, including relationships removed together with a
+    /// deleted node. `None` for an unknown or closed id. Several writes to one
+    /// record fold into one [`Change`]; nothing is copied.
+    ///
+    /// ```
+    /// use drevo_core::engine::GraphEngine;
+    /// use drevo_core::model::{NewNode, Properties};
+    /// use drevo_core::native::NativeGraph;
+    ///
+    /// let g = NativeGraph::new();
+    /// let tx = g.tx_begin();
+    /// let node = NewNode {
+    ///     kind: "Task".to_string(),
+    ///     title: "write docs".to_string(),
+    ///     body: String::new(),
+    ///     body_html: String::new(),
+    ///     properties: Properties::default(),
+    /// };
+    /// let created = g.tx_engine(tx).unwrap().create_node(node).unwrap();
+    ///
+    /// let changes = g.tx_changes(tx).unwrap();
+    /// assert_eq!(changes.nodes.len(), 1);
+    /// assert!(changes.nodes[0].before.is_none());
+    /// assert_eq!(changes.nodes[0].after.as_deref(), Some(&created));
+    /// ```
+    pub fn tx_changes(&self, id: NativeTxId) -> Option<TxChanges> {
+        let txs = self.reg_txs.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = txs.get(&id.0)?;
+        let (base, working) = (&slot.base, &slot.working);
+        let mut node_ids = std::collections::BTreeSet::new();
+        let mut edge_ids = std::collections::BTreeSet::new();
+        for op in &slot.ops {
+            match op {
+                WalOp::UpsertNode(n) => {
+                    node_ids.insert(n.id);
+                }
+                WalOp::DeleteNode(node) => {
+                    node_ids.insert(*node);
+                    // A node's relationships go with it without ops of their own.
+                    base.for_each_incident(*node, Direction::Both, |e| {
+                        edge_ids.insert(e.edge_id);
+                    });
+                }
+                WalOp::UpsertEdge(e) => {
+                    edge_ids.insert(e.id);
+                }
+                WalOp::DeleteEdge(edge) => {
+                    edge_ids.insert(*edge);
+                }
+                _ => {}
+            }
+        }
+        let nodes = node_ids
+            .into_iter()
+            .filter_map(|n| change(base.get_node_arc(n), working.get_node_arc(n)))
+            .collect();
+        let edges = edge_ids
+            .into_iter()
+            .filter_map(|e| change(base.get_edge_arc(e), working.get_edge_arc(e)))
+            .collect();
+        Some(TxChanges { nodes, edges })
+    }
+
     /// Commit a registered transaction: apply its buffered writes
     /// atomically (one fsynced WAL batch) if the graph has not changed
     /// since [`Self::tx_begin`] and the result satisfies every declared
@@ -3988,6 +4053,49 @@ struct TxSlot {
 /// [`NativeGraph::tx_begin`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeTxId(u64);
+
+/// One record a transaction changed: its committed version (`before`, `None`
+/// if the transaction created it) and its version in the transaction
+/// (`after`, `None` if the transaction deleted it). Both are the stored
+/// records, shared rather than copied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Change<T> {
+    /// The record as committed before the transaction began.
+    pub before: Option<Arc<T>>,
+    /// The record as the transaction leaves it.
+    pub after: Option<Arc<T>>,
+}
+
+/// Everything a registered transaction has changed so far — see
+/// [`NativeGraph::tx_changes`]. Each list is in id order and holds one entry
+/// per record whose `before` and `after` differ; a record created and deleted
+/// within the transaction does not appear.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TxChanges {
+    /// Changed nodes.
+    pub nodes: Vec<Change<Node>>,
+    /// Changed relationships, including those removed with a deleted node.
+    pub edges: Vec<Change<Edge>>,
+}
+
+/// The [`Change`] between two versions of a record, or `None` when they are
+/// the same (both absent, or equal).
+fn change<T: PartialEq>(before: Option<Arc<T>>, after: Option<Arc<T>>) -> Option<Change<T>> {
+    let same = match (&before, &after) {
+        (None, None) => true,
+        (Some(b), Some(a)) => Arc::ptr_eq(b, a) || b == a,
+        _ => false,
+    };
+    (!same).then_some(Change { before, after })
+}
+
+impl TxChanges {
+    /// Whether the transaction has changed nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.edges.is_empty()
+    }
+}
 
 /// A per-statement [`GraphEngine`] view of one registered transaction:
 /// reads serve the transaction's working copy (read-your-writes), writes
