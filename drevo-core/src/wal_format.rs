@@ -275,6 +275,163 @@ pub fn read_record(format: WalFormat, bytes: &[u8], pos: usize) -> Record {
     }
 }
 
+/// What [`replay`] found in a log.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Replayed {
+    /// The file holds only the beginning of a binary header; nothing in it
+    /// was ever acknowledged.
+    TornHeader,
+    /// The log is empty.
+    Empty,
+    /// A log in `format`. Its valid records end at byte `valid_end`; `torn`
+    /// says whether an unacknowledged tail follows them.
+    Log {
+        /// The log's format.
+        format: WalFormat,
+        /// Byte offset just past the last valid record.
+        valid_end: u64,
+        /// Whether bytes after `valid_end` form a torn tail to drop.
+        torn: bool,
+    },
+}
+
+/// The bytes [`replay`] reads at a time.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const REPLAY_CHUNK: usize = 4 << 20;
+
+/// Read a log from `reader` record by record, `chunk` bytes at a time, and
+/// hand every op of every valid record to `apply`, in order. Memory stays
+/// at about one chunk plus the largest record, whatever the size of the log.
+///
+/// The recovery rule is that of reading the whole log at once: an incomplete
+/// or invalid **last** record is a torn tail; an invalid record with data
+/// after it (anything but whitespace, for JSON Lines) is corruption.
+///
+/// # Errors
+/// [`CoreError::Io`] on a read failure, an unreadable header (see
+/// [`detect`]) or a corrupt record; `path` names the log in the message.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn replay<R: std::io::Read>(
+    mut reader: R,
+    chunk: usize,
+    path: &std::path::Path,
+    mut apply: impl FnMut(WalOp),
+) -> Result<Replayed> {
+    let chunk = chunk.max(1);
+    let mut buf: Vec<u8> = Vec::new();
+    // Absolute offset of `buf[0]` in the log.
+    let mut base: u64 = 0;
+    let mut eof = false;
+    // Append up to `chunk` more bytes; `false` once the log is exhausted.
+    let mut fill = |buf: &mut Vec<u8>, eof: &mut bool| -> Result<bool> {
+        if *eof {
+            return Ok(false);
+        }
+        let start = buf.len();
+        buf.resize(start + chunk, 0);
+        let mut got = 0;
+        while got < chunk {
+            let n = reader.read(&mut buf[start + got..])?;
+            if n == 0 {
+                *eof = true;
+                break;
+            }
+            got += n;
+        }
+        buf.truncate(start + got);
+        Ok(got > 0)
+    };
+    while buf.len() < HEADER_LEN && fill(&mut buf, &mut eof)? {}
+    let (format, body_start) = match detect(&buf)? {
+        Detected::TornHeader => return Ok(Replayed::TornHeader),
+        Detected::Log { .. } if buf.is_empty() => return Ok(Replayed::Empty),
+        Detected::Log { format, body_start } => (format, body_start),
+    };
+    let mut pos = body_start;
+    let mut valid_end = body_start as u64;
+    loop {
+        if pos >= buf.len() {
+            buf.clear();
+            base += pos as u64;
+            pos = 0;
+            if !fill(&mut buf, &mut eof)? {
+                return Ok(Replayed::Log {
+                    format,
+                    valid_end,
+                    torn: false,
+                });
+            }
+            continue;
+        }
+        // A JSON record ends at a newline: without one in the window, the
+        // record may continue in the next chunk.
+        if format == WalFormat::Json && !eof && !buf[pos..].contains(&b'\n') {
+            buf.drain(..pos);
+            base += pos as u64;
+            pos = 0;
+            fill(&mut buf, &mut eof)?;
+            continue;
+        }
+        match read_record(format, &buf, pos) {
+            Record::Ops { ops, next } => {
+                for op in ops {
+                    apply(op);
+                }
+                valid_end = base + next as u64;
+                pos = next;
+            }
+            Record::Incomplete if !eof => {
+                buf.drain(..pos);
+                base += pos as u64;
+                pos = 0;
+                fill(&mut buf, &mut eof)?;
+            }
+            Record::Incomplete => {
+                return Ok(Replayed::Log {
+                    format,
+                    valid_end,
+                    torn: true,
+                })
+            }
+            Record::Invalid { next } => {
+                // A torn tail only if nothing follows: look at the rest of the
+                // window, then at the rest of the log.
+                let follows = |bytes: &[u8]| match format {
+                    WalFormat::Json => !bytes.iter().all(u8::is_ascii_whitespace),
+                    _ => !bytes.is_empty(),
+                };
+                let mut more = follows(&buf[next.min(buf.len())..]);
+                while !more {
+                    buf.clear();
+                    if !fill(&mut buf, &mut eof)? {
+                        break;
+                    }
+                    more = follows(&buf);
+                }
+                if !more {
+                    return Ok(Replayed::Log {
+                        format,
+                        valid_end,
+                        torn: true,
+                    });
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "corrupt write-ahead-log record at byte {} of {} \
+                         (valid records follow it, so this is not a torn tail); \
+                         refusing to open rather than drop acknowledged writes",
+                        base + pos as u64,
+                        path.display()
+                    ),
+                )
+                .into());
+            }
+        }
+    }
+}
+
 /// Parse one JSON Lines record: a bare [`WalOp`] object or a JSON array of
 /// ops. A blank line parses as zero ops; `None` means the bytes are not a
 /// complete valid record.
@@ -359,6 +516,127 @@ pub fn crc32(bytes: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn op(i: u64) -> WalOp {
+        WalOp::DeleteEdge(i)
+    }
+
+    /// A log of `n` records in `format`, one op each.
+    fn log(format: WalFormat, n: u64) -> Vec<u8> {
+        let mut bytes = format.header();
+        for i in 0..n {
+            bytes.extend(format.encode_record(&[op(i)]).unwrap());
+        }
+        bytes
+    }
+
+    fn replay_all(bytes: &[u8], chunk: usize) -> Result<(Replayed, Vec<WalOp>)> {
+        let mut ops = Vec::new();
+        let r = replay(
+            std::io::Cursor::new(bytes),
+            chunk,
+            std::path::Path::new("test.wal"),
+            |o| ops.push(o),
+        )?;
+        Ok((r, ops))
+    }
+
+    fn formats() -> Vec<WalFormat> {
+        [WalFormat::Json, WalFormat::Cbor, WalFormat::MsgPack]
+            .into_iter()
+            .filter(|f| f.compiled_in())
+            .collect()
+    }
+
+    #[test]
+    fn replay_reads_every_record_whatever_the_chunk() {
+        for format in formats() {
+            let bytes = log(format, 40);
+            for chunk in [1, 3, 7, 64, REPLAY_CHUNK] {
+                let (r, ops) = replay_all(&bytes, chunk).unwrap();
+                assert_eq!(
+                    ops,
+                    (0..40).map(op).collect::<Vec<_>>(),
+                    "{format} chunk {chunk}"
+                );
+                assert_eq!(
+                    r,
+                    Replayed::Log {
+                        format,
+                        valid_end: bytes.len() as u64,
+                        torn: false
+                    },
+                    "{format} chunk {chunk}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replay_drops_a_torn_tail() {
+        for format in formats() {
+            let whole = log(format, 10);
+            let nine = log(format, 9).len();
+            // Cut inside the last record.
+            let bytes = &whole[..whole.len() - 2];
+            for chunk in [1, 5, 4096] {
+                let (r, ops) = replay_all(bytes, chunk).unwrap();
+                assert_eq!(ops.len(), 9, "{format} chunk {chunk}");
+                assert_eq!(
+                    r,
+                    Replayed::Log {
+                        format,
+                        valid_end: nine as u64,
+                        torn: true
+                    },
+                    "{format} chunk {chunk}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replay_refuses_a_corrupt_record_with_records_after_it() {
+        for format in formats() {
+            let mut bytes = log(format, 10);
+            // Inside the fifth record's payload, past a binary frame's length
+            // and checksum (a damaged length reads as a cut-off record).
+            let frame = if format == WalFormat::Json {
+                0
+            } else {
+                FRAME_LEN
+            };
+            let at = log(format, 4).len() + frame + 2;
+            bytes[at] ^= 0x5a;
+            for chunk in [1, 6, 4096] {
+                let err = replay_all(&bytes, chunk).unwrap_err();
+                assert!(
+                    err.to_string().contains("corrupt"),
+                    "{format} chunk {chunk}: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replay_treats_trailing_whitespace_after_a_bad_json_line_as_torn() {
+        let mut bytes = log(WalFormat::Json, 3);
+        bytes.extend_from_slice(b"{\"DeleteEd");
+        bytes.extend_from_slice(b"\n   \n");
+        for chunk in [1, 2, 4096] {
+            let (r, ops) = replay_all(&bytes, chunk).unwrap();
+            assert_eq!(ops.len(), 3);
+            assert!(matches!(r, Replayed::Log { torn: true, .. }), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn replay_of_nothing_and_of_a_partial_header() {
+        assert_eq!(replay_all(b"", 3).unwrap().0, Replayed::Empty);
+        if WalFormat::Cbor.compiled_in() {
+            assert_eq!(replay_all(b"DRVW", 3).unwrap().0, Replayed::TornHeader);
+        }
+    }
 
     #[test]
     fn crc32_matches_the_standard_check_value() {

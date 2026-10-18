@@ -775,41 +775,53 @@ impl Inner {
     /// snapshot form used by `dump_wal` and WAL compaction.
     fn to_wal_ops(&self) -> Vec<WalOp> {
         let mut ops = Vec::with_capacity(self.nodes.len() + self.edges.len());
+        let _ = self.for_each_wal_op(|op| {
+            ops.push(op);
+            Ok(())
+        });
+        ops
+    }
+
+    /// Hand the snapshot form of the state to `f` one op at a time, in the
+    /// order [`to_wal_ops`](Self::to_wal_ops) lists them, so a caller that
+    /// writes them out (compaction) never holds a copy of the whole graph.
+    /// Stops at the first error `f` returns.
+    fn for_each_wal_op(&self, mut f: impl FnMut(WalOp) -> Result<()>) -> Result<()> {
         let mut nodes: Vec<&Arc<Node>> = self.nodes.values().collect();
         nodes.sort_by_key(|n| n.id);
         for n in nodes {
-            ops.push(WalOp::UpsertNode((**n).clone()));
+            f(WalOp::UpsertNode((**n).clone()))?;
         }
         let mut edges: Vec<&Arc<Edge>> = self.edges.values().collect();
         edges.sort_by_key(|e| e.id);
         for e in edges {
-            ops.push(WalOp::UpsertEdge((**e).clone()));
+            f(WalOp::UpsertEdge((**e).clone()))?;
         }
         // Embeddings last, id-ascending, so compaction/dump preserves the
         // durable embedding store (issue #446).
         let mut embs: Vec<(&u64, &Vec<f32>)> = self.embeddings.iter().collect();
         embs.sort_by_key(|(id, _)| **id);
         for (id, vec) in embs {
-            ops.push(WalOp::SetEmbedding(*id, vec.clone()));
+            f(WalOp::SetEmbedding(*id, vec.clone()))?;
         }
         // Unresolved prepared transactions last (#556), so a compaction or a
         // dump never forgets an in-doubt transaction.
         for (gid, entry) in &self.prepared {
-            ops.push(WalOp::Prepare {
+            f(WalOp::Prepare {
                 gid: gid.clone(),
                 prepared_at_ms: entry.prepared_at_ms,
                 ops: entry.ops.clone(),
-            });
+            })?;
         }
         // Heuristic outcomes too, so a late commit is still told after a
         // compaction.
         for gid in &self.heuristic {
-            ops.push(WalOp::RollbackPrepared {
+            f(WalOp::RollbackPrepared {
                 gid: gid.clone(),
                 heuristic: true,
-            });
+            })?;
         }
-        ops
+        Ok(())
     }
 
     /// Apply one [`WalOp`] during replay. Upserts re-insert a stored record
@@ -1780,12 +1792,17 @@ fn stamp_log_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
 /// file reads as empty and an unparseable line (a torn tail) is skipped.
 #[cfg(not(target_arch = "wasm32"))]
 fn load_stamp_log(path: &std::path::Path) -> HashMap<StampTarget, Stamp> {
+    use std::io::BufRead;
     let mut map: HashMap<StampTarget, Stamp> = HashMap::new();
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(file) = std::fs::File::open(path) else {
         return map;
     };
-    for line in text.lines() {
-        if let Ok((target, stamp)) = serde_json::from_str::<(StampTarget, Stamp)>(line) {
+    // Line by line: the log can be tens of megabytes.
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        if let Ok((target, stamp)) = serde_json::from_str::<(StampTarget, Stamp)>(&line) {
             let slot = map.entry(target).or_insert(stamp);
             if stamp > *slot {
                 *slot = stamp;
@@ -1806,16 +1823,22 @@ fn recover_stamps(
     origin: OriginId,
 ) -> HashMap<StampTarget, Stamp> {
     let lowest = Stamp::new(crate::hlc::Hlc::default(), origin);
-    let mut stamps = HashMap::with_capacity(inner.nodes.len() + inner.edges.len());
+    // In place: keep the logged stamps of entities that exist, then add the
+    // lowest stamp for those with none — one table, not two.
+    logged.retain(|target, _| match target {
+        StampTarget::Node(id) => inner.nodes.contains_key(id),
+        StampTarget::Edge(id) => inner.edges.contains_key(id),
+    });
     let targets = inner
         .nodes
         .keys()
         .map(|&id| StampTarget::Node(id))
         .chain(inner.edges.keys().map(|&id| StampTarget::Edge(id)));
     for target in targets {
-        stamps.insert(target, logged.remove(&target).unwrap_or(lowest));
+        logged.entry(target).or_insert(lowest);
     }
-    stamps
+    logged.shrink_to_fit();
+    logged
 }
 
 /// The open stamp log of a durable store: its path, an append handle and the
@@ -1835,13 +1858,16 @@ impl StampLog {
         path: std::path::PathBuf,
         stamps: &HashMap<StampTarget, Stamp>,
     ) -> std::io::Result<Self> {
-        let mut text = Vec::with_capacity(stamps.len() * 64);
-        for entry in stamps {
-            serde_json::to_writer(&mut text, &entry).map_err(std::io::Error::other)?;
-            text.push(b'\n');
-        }
+        use std::io::Write;
         let tmp = path.with_extension("jsonl.tmp");
-        std::fs::write(&tmp, &text)?;
+        {
+            let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            for entry in stamps {
+                serde_json::to_writer(&mut out, &entry).map_err(std::io::Error::other)?;
+                out.write_all(b"\n")?;
+            }
+            out.flush()?;
+        }
         std::fs::rename(&tmp, &path)?;
         let file = std::fs::OpenOptions::new().append(true).open(&path)?;
         Ok(Self {
@@ -3608,8 +3634,8 @@ impl NativeGraph {
         format: crate::wal_format::WalFormat,
         read_only: bool,
     ) -> Result<Self> {
-        use crate::wal_format::{detect, read_record, Detected, Record};
-        use std::io::{Read, Write};
+        use crate::wal_format::Replayed;
+        use std::io::Write;
         // Take the exclusive-open lock BEFORE reading/replaying the WAL (#455):
         // a second handle on the same store must be turned away up front, so two
         // writers never interleave appends into one log. The lock lives on a
@@ -3628,15 +3654,22 @@ impl NativeGraph {
             Some(acquire_exclusive_lock(&lock_sidecar(path))?)
         };
         let mut inner = Inner::default();
-        let mut bytes = Vec::new();
-        if read_only || path.exists() {
-            std::fs::File::open(path)?.read_to_end(&mut bytes)?;
-        }
-        let file_format = match detect(&bytes)? {
+        // Replay the log record by record, a chunk at a time, so opening a
+        // store never holds the whole log in memory.
+        let replayed = if read_only || path.exists() {
+            crate::wal_format::replay(
+                std::fs::File::open(path)?,
+                crate::wal_format::REPLAY_CHUNK,
+                path,
+                |op| inner.apply_wal_op(op),
+            )?
+        } else {
+            Replayed::Empty
+        };
+        let file_format = match replayed {
             // A crash while a fresh binary log was being created: nothing in
             // it was acknowledged, so start over as a new log.
-            Detected::TornHeader => {
-                bytes.clear();
+            Replayed::TornHeader => {
                 if !read_only {
                     std::fs::OpenOptions::new()
                         .write(true)
@@ -3645,59 +3678,18 @@ impl NativeGraph {
                 }
                 None
             }
-            Detected::Log { .. } if bytes.is_empty() => None,
-            Detected::Log { format, body_start } => {
-                let mut valid_end = body_start; // just past the last valid record
-                let mut pos = body_start;
-                let mut torn = false;
-                while pos < bytes.len() {
-                    match read_record(format, &bytes, pos) {
-                        Record::Ops { ops, next } => {
-                            for op in ops {
-                                inner.apply_wal_op(op);
-                            }
-                            valid_end = next;
-                            pos = next;
-                        }
-                        // Cut off by the end of the log: an unacknowledged tail.
-                        Record::Incomplete => {
-                            torn = true;
-                            break;
-                        }
-                        // Invalid record: a torn tail only if nothing follows
-                        // it (nothing but whitespace, for JSON Lines);
-                        // otherwise acknowledged history is corrupt — refuse.
-                        Record::Invalid { next } => {
-                            let rest = &bytes[next.min(bytes.len())..];
-                            let nothing_follows = match format {
-                                crate::wal_format::WalFormat::Json => {
-                                    rest.iter().all(u8::is_ascii_whitespace)
-                                }
-                                _ => rest.is_empty(),
-                            };
-                            if nothing_follows {
-                                torn = true;
-                                break;
-                            }
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                format!(
-                                    "corrupt write-ahead-log record at byte {pos} of {} \
-                                     (valid records follow it, so this is not a torn tail); \
-                                     refusing to open rather than drop acknowledged writes",
-                                    path.display()
-                                ),
-                            )
-                            .into());
-                        }
-                    }
-                }
+            Replayed::Empty => None,
+            Replayed::Log {
+                format,
+                valid_end,
+                torn,
+            } => {
                 if torn && !read_only {
                     // Drop the unacknowledged tail so the log is clean for append.
                     std::fs::OpenOptions::new()
                         .write(true)
                         .open(path)?
-                        .set_len(valid_end as u64)?;
+                        .set_len(valid_end)?;
                 }
                 Some(format)
             }
@@ -3828,7 +3820,6 @@ impl NativeGraph {
         };
         // Hold the write lock so no mutation appends to the log mid-compaction.
         let inner = self.write_unless_read_only()?;
-        let ops = inner.to_wal_ops();
         let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
         let bytes_before = std::fs::metadata(&sink.path).ok().map(|m| m.len());
 
@@ -3837,9 +3828,11 @@ impl NativeGraph {
         {
             let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
             f.write_all(&target.header())?;
-            for op in &ops {
-                f.write_all(&target.encode_record(std::slice::from_ref(op))?)?;
-            }
+            // One record at a time: the snapshot is never held in full.
+            inner.for_each_wal_op(|op| {
+                f.write_all(&target.encode_record(std::slice::from_ref(&op))?)?;
+                Ok(())
+            })?;
             f.into_inner()
                 .map_err(|e| std::io::Error::other(e.to_string()))?
                 .sync_all()?;
