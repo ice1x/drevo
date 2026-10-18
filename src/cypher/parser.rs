@@ -1479,7 +1479,9 @@ impl Parser {
         let mut name = vec![first];
         while matches!(self.peek_kind(), TokenKind::Dot) {
             self.consume(); // .
-            let (segment, _) = self.consume_strict_identifier()?;
+                            // A namespaced segment may be a keyword: `apoc.trigger.add`,
+                            // `apoc.create.node`.
+            let (segment, _) = self.consume_name()?;
             name.push(segment);
         }
         self.eat(&TokenKind::LParen, "( after procedure name")?;
@@ -3069,6 +3071,23 @@ mod tests {
         assert!(c.args.is_empty());
         assert!(c.yields.is_none());
         assert!(c.where_clause.is_none());
+    }
+
+    #[test]
+    fn namespaced_procedure_segments_may_be_keywords() {
+        assert_eq!(
+            first_call("CALL apoc.trigger.add('t', 'RETURN 1', {})").name,
+            vec!["apoc", "trigger", "add"]
+        );
+        assert_eq!(
+            first_call("CALL apoc.create.node(['A'], {})").name,
+            vec!["apoc", "create", "node"]
+        );
+        // The written casing is kept.
+        assert_eq!(
+            first_call("CALL apoc.trigger.removeAll()").name,
+            vec!["apoc", "trigger", "removeAll"]
+        );
     }
 
     #[test]

@@ -386,6 +386,7 @@ impl DatabaseRegistry {
         #[cfg(not(target_arch = "wasm32"))]
         for (name, service) in &dbs {
             service.join_server(name, default.transactions());
+            service.start_trigger_worker();
         }
         Self {
             default_name,
@@ -482,7 +483,10 @@ impl DatabaseRegistry {
         let service = Arc::new(NativeService::in_memory());
         service.set_statement_timeout(self.default_service().statement_timeout());
         #[cfg(not(target_arch = "wasm32"))]
-        service.join_server(name, self.default_service().transactions());
+        {
+            service.join_server(name, self.default_service().transactions());
+            service.start_trigger_worker();
+        }
         dbs.insert(name.to_string(), Arc::clone(&service));
         Ok(service)
     }
@@ -519,7 +523,10 @@ impl DatabaseRegistry {
         // New databases inherit the server-wide statement timeout (#547).
         service.set_statement_timeout(self.default_service().statement_timeout());
         #[cfg(not(target_arch = "wasm32"))]
-        service.join_server(name, self.default_service().transactions());
+        {
+            service.join_server(name, self.default_service().transactions());
+            service.start_trigger_worker();
+        }
         dbs.insert(name.to_string(), Arc::clone(&service));
         Ok(service)
     }

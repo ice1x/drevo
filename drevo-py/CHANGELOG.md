@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — triggers (issue #643)
+
+* `apoc.trigger.*` work through `Drevo.execute` and `Transaction`: a
+  trigger's statement runs on every commit that changes something. A failing
+  `before` trigger makes `Transaction.commit()` raise `drevo.TransactionError`
+  (and an autocommit `execute` raise `drevo.CypherError`) with nothing
+  written; `afterAsync` triggers run on a background thread of the handle.
+
 ### Added — weighted paths for routing (issue #680)
 
 * `Drevo.weighted_path(from_id, to_id, *, rel_types, direction, cost,

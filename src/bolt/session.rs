@@ -420,6 +420,9 @@ mod codes {
     /// A write to a read-only database; not retried by drivers.
     pub const FORBIDDEN_ON_READ_ONLY_DATABASE: &str =
         "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase";
+    /// A trigger that runs before the commit failed, so the transaction was
+    /// rolled back.
+    pub const TRANSACTION_HOOK_FAILED: &str = "Neo.ClientError.Transaction.TransactionHookFailed";
     /// A commit violated a declared schema constraint.
     pub const CONSTRAINT_FAILED: &str = "Neo.ClientError.Schema.ConstraintValidationFailed";
     /// A `RUN` / `BEGIN` selected a `db` that the catalog does not hold. Matches
@@ -933,6 +936,7 @@ impl<'a> Session<'a> {
                     crate::native::CommitError::Constraint(_) => codes::CONSTRAINT_FAILED,
                     crate::native::CommitError::Io(_) => codes::STORAGE,
                     crate::native::CommitError::ReadOnly => codes::FORBIDDEN_ON_READ_ONLY_DATABASE,
+                    crate::native::CommitError::Rejected(_) => codes::TRANSACTION_HOOK_FAILED,
                     crate::native::CommitError::PreparedPending(_) => {
                         codes::TRANSIENT_PREPARED_PENDING
                     }
@@ -1071,6 +1075,7 @@ impl<'a> Session<'a> {
                     P::DuplicateGid(_) | P::UnknownTransaction => codes::SEMANTIC_ERROR,
                     P::Io(_) => codes::STORAGE,
                     P::ReadOnly => codes::FORBIDDEN_ON_READ_ONLY_DATABASE,
+                    P::Rejected(_) => codes::TRANSACTION_HOOK_FAILED,
                 };
                 self.state = State::Failed;
                 vec![ServerMessage::Failure {
@@ -1899,6 +1904,8 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         ExecError::Storage(_) => codes::STORAGE,
         ExecError::Timeout { .. } => codes::TIMED_OUT,
         ExecError::Terminated => codes::TERMINATED,
+        // A trigger that runs before the commit failed (#643).
+        ExecError::TriggerFailed { .. } => codes::TRANSACTION_HOOK_FAILED,
         // A missing privilege (#636).
         ExecError::Forbidden { .. } => codes::FORBIDDEN,
     };

@@ -1170,6 +1170,10 @@ pub enum CommitError {
     /// The store is read-only ([`NativeGraph::is_read_only`]); nothing was
     /// written.
     ReadOnly,
+    /// The committing code refused the transaction before handing it to the
+    /// engine — for example because a database trigger that runs before the
+    /// commit failed. Nothing was written; carries the reason.
+    Rejected(String),
 }
 
 impl std::fmt::Display for CommitError {
@@ -1187,6 +1191,7 @@ impl std::fmt::Display for CommitError {
                 gids.join(", ")
             ),
             CommitError::ReadOnly => write!(f, "{READ_ONLY_MESSAGE}"),
+            CommitError::Rejected(reason) => write!(f, "commit refused: {reason}"),
         }
     }
 }
@@ -1215,6 +1220,9 @@ pub enum PrepareError {
     Io(String),
     /// The store is read-only ([`NativeGraph::is_read_only`]).
     ReadOnly,
+    /// The preparing code refused the transaction before handing it to the
+    /// engine, as [`CommitError::Rejected`]; carries the reason.
+    Rejected(String),
 }
 
 impl std::fmt::Display for PrepareError {
@@ -1238,6 +1246,7 @@ impl std::fmt::Display for PrepareError {
             ),
             PrepareError::Io(e) => write!(f, "write-ahead log write failed: {e}"),
             PrepareError::ReadOnly => write!(f, "{READ_ONLY_MESSAGE}"),
+            PrepareError::Rejected(reason) => write!(f, "prepare refused: {reason}"),
         }
     }
 }
