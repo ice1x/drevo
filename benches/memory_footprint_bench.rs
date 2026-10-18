@@ -16,7 +16,8 @@
 //!    and over relationships;
 //! 4. the whole service reopened over the same log after one query — what a
 //!    server holds after a restart — with every index, and with the
-//!    secondary indexes turned off (`drevo.indexes.setSecondary(false)`).
+//!    secondary indexes turned off (`drevo.indexes.setSecondary(false)`),
+//!    each followed by the resident set size of the whole process.
 //!
 //! # Running
 //!
@@ -26,6 +27,15 @@
 //!
 //! See `benches/sofia_routing_bench.rs` for how to download the extract.
 //! Without the variable the bench prints that and exits.
+//!
+//! To read the resident set size of a restarted server without the loader
+//! in the same process, keep the store and reopen it in a second run:
+//!
+//! ```sh
+//! DREVO_OSM_JSON=sofia-roads.json DREVO_MEMORY_KEEP=/tmp/sofia \
+//!     cargo bench --bench memory_footprint_bench
+//! DREVO_MEMORY_REOPEN=/tmp/sofia/native.wal cargo bench --bench memory_footprint_bench
+//! ```
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
@@ -156,7 +166,62 @@ fn report(what: &str, bytes: isize, nodes: usize, edges: usize) {
     );
 }
 
+/// The process's resident set size in MB as `ps` reports it — the number an
+/// operator sees; `None` where `ps` is unavailable.
+fn rss_mb() -> Option<f64> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    let kb: f64 = String::from_utf8(out.stdout).ok()?.trim().parse().ok()?;
+    Some(kb / 1024.0)
+}
+
+fn report_rss(what: &str) {
+    if let Some(rss) = rss_mb() {
+        println!("{what:<44} {rss:>9.1} MB RSS");
+    }
+}
+
+/// Open the service over an existing log in a fresh process and report its
+/// heap and resident set size — the restart a server goes through, without
+/// the loader's memory in the picture.
+fn reopen_only(wal: &str) {
+    let before = live();
+    let svc = drevo::native_service::NativeService::open(wal).expect("open service");
+    svc.execute(
+        &drevo::cypher::parser::parse("MATCH (n) RETURN count(n)").expect("parse"),
+        HashMap::new(),
+    )
+    .expect("query");
+    let entities = svc.graph().node_count() + svc.graph().edge_count();
+    let lean = if svc.secondary_indexes() {
+        "all indexes"
+    } else {
+        "secondary indexes off"
+    };
+    report(
+        &format!("service over {wal} ({lean})"),
+        live() - before,
+        entities as usize,
+        0,
+    );
+    report_rss("  process");
+}
+
 fn main() {
+    if let Ok(wal) = std::env::var("DREVO_MEMORY_REOPEN") {
+        // `DREVO_MEMORY_SECONDARY=on|off` only switches the stored setting,
+        // so the next reopen run measures that configuration.
+        if let Ok(setting) = std::env::var("DREVO_MEMORY_SECONDARY") {
+            let svc = drevo::native_service::NativeService::open(&wal).expect("open service");
+            svc.set_secondary_indexes(setting == "on")
+                .expect("switch secondary indexes");
+            return;
+        }
+        reopen_only(&wal);
+        return;
+    }
     let Ok(path) = std::env::var("DREVO_OSM_JSON") else {
         eprintln!(
             "memory_footprint_bench skipped: set DREVO_OSM_JSON to an Overpass JSON extract \
@@ -173,7 +238,13 @@ fn main() {
     };
     let (n, m) = (junctions.len(), roads.len());
     println!("{n} junctions, {m} roads\n");
-    let dir = std::env::temp_dir().join(format!("drevo_memory_{}", std::process::id()));
+    // `DREVO_MEMORY_KEEP=<dir>` writes the store there and keeps it, for a
+    // later `DREVO_MEMORY_REOPEN=<dir>/native.wal` run.
+    let keep = std::env::var("DREVO_MEMORY_KEEP").ok();
+    let dir = keep.as_ref().map_or_else(
+        || std::env::temp_dir().join(format!("drevo_memory_{}", std::process::id())),
+        std::path::PathBuf::from,
+    );
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
     let wal = dir.join("native.wal");
@@ -285,6 +356,7 @@ fn main() {
     )
     .expect("query");
     report("service reopened, all indexes", live() - before, n, m);
+    report_rss("  process");
     svc.set_secondary_indexes(false).expect("lean");
     drop(svc);
 
@@ -302,6 +374,9 @@ fn main() {
         n,
         m,
     );
+    report_rss("  process");
     drop(svc);
-    let _ = std::fs::remove_dir_all(&dir);
+    if keep.is_none() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
