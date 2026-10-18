@@ -15,7 +15,8 @@
 //!    graph: labels, property values, the value cache, full-text over nodes
 //!    and over relationships;
 //! 4. the whole service reopened over the same log after one query — what a
-//!    server holds after a restart.
+//!    server holds after a restart — with every index, and with the
+//!    secondary indexes turned off (`drevo.indexes.setSecondary(false)`).
 //!
 //! # Running
 //!
@@ -284,6 +285,23 @@ fn main() {
     )
     .expect("query");
     report("service reopened, all indexes", live() - before, n, m);
+    svc.set_secondary_indexes(false).expect("lean");
+    drop(svc);
+
+    // The same, for a database that turned its secondary indexes off.
+    let before = live();
+    let svc = drevo::native_service::NativeService::open(&wal).expect("open lean service");
+    svc.execute(
+        &drevo::cypher::parser::parse("MATCH (n:Junction) RETURN count(n)").expect("parse"),
+        HashMap::new(),
+    )
+    .expect("query");
+    report(
+        "service reopened, secondary indexes off",
+        live() - before,
+        n,
+        m,
+    );
     drop(svc);
     let _ = std::fs::remove_dir_all(&dir);
 }

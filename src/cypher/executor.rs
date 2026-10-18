@@ -1571,6 +1571,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           apoc.trigger.install, apoc.trigger.list, apoc.trigger.drop, \
                           apoc.trigger.dropAll, apoc.trigger.stop, apoc.trigger.start, \
                           drevo.sequence.create, drevo.sequence.drop, drevo.sequence.list, \
+                          drevo.indexes.secondary, drevo.indexes.setSecondary, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
@@ -2916,7 +2917,8 @@ impl<'a> Executor<'a> {
             "drevo.semantic.register"
             | "drevo.semantic.registerRel"
             | "drevo.semantic.reindex"
-            | "drevo.semantic.reindexRel" => self.guard_database(Action::IndexManagement),
+            | "drevo.semantic.reindexRel"
+            | "drevo.indexes.setSecondary" => self.guard_database(Action::IndexManagement),
             "drevo.sequence.create" | "drevo.sequence.drop" => {
                 if !r.context.has_dbms(Action::ExecuteAdminProcedures) {
                     return Err(ExecError::Forbidden {
@@ -7644,6 +7646,38 @@ impl<'a> Executor<'a> {
         Ok(vec![row(&seq, info)])
     }
 
+    /// `CALL drevo.indexes.secondary() YIELD enabled` reports whether this
+    /// database keeps its secondary indexes (property index, value cache,
+    /// full-text); `CALL drevo.indexes.setSecondary(false)` drops them and
+    /// frees their memory, `setSecondary(true)` rebuilds them. The setting
+    /// survives a restart. Changing it is refused in an explicit
+    /// transaction.
+    fn proc_secondary_indexes(
+        &self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability(name))?;
+        if name == "drevo.indexes.setSecondary" {
+            self.outside_transaction(name, span)?;
+            let on = match self.eval(&args[0], &Bindings::new())? {
+                Value::Bool(b) => b,
+                other => {
+                    return Err(ExecError::InvalidProcedureCall {
+                        name: name.to_string(),
+                        message: format!("expected true or false, got {other:?}"),
+                        span,
+                    })
+                }
+            };
+            svc.set_secondary_indexes(on)?;
+        }
+        Ok(vec![vec![Value::Bool(svc.secondary_indexes())]])
+    }
+
     /// `CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount` (#556) —
     /// the prepared, unresolved two-phase-commit transactions, by ascending
     /// gid; `preparedAt` is ISO-8601 UTC.
@@ -8547,6 +8581,9 @@ impl<'a> Executor<'a> {
             name if name.starts_with("apoc.trigger.") => self.proc_trigger(name, args, span),
             "drevo.sequence.create" | "drevo.sequence.drop" | "drevo.sequence.list" => {
                 self.proc_sequence(name, args, span)
+            }
+            "drevo.indexes.secondary" | "drevo.indexes.setSecondary" => {
+                self.proc_secondary_indexes(name, args, span)
             }
             "drevo.tx.commitPrepared" => self.proc_tx_resolve(name, args, span, true),
             "drevo.tx.rollbackPrepared" => self.proc_tx_resolve(name, args, span, false),
@@ -10399,6 +10436,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // embedded" from "writes landed, embeddings missing". #266 adds
         // `target_kind` (node|relationship) so rel targets are distinguishable.
         "drevo.tx.listPrepared" => Some(&["gid", "preparedAt", "opCount"]),
+        "drevo.indexes.secondary" | "drevo.indexes.setSecondary" => Some(&["enabled"]),
         "drevo.sequence.create" | "drevo.sequence.drop" | "drevo.sequence.list" => {
             Some(&["name", "start", "step", "current"])
         }
@@ -10599,6 +10637,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.semantic.status" => 0,
         // Two-phase commit (#556): listPrepared(); the others take the gid.
         "drevo.tx.listPrepared" => 0,
+        "drevo.indexes.secondary" => 0,
+        "drevo.indexes.setSecondary" => 1,
         // install(db, name, statement, selector[, config]) / add(name,
         // statement, selector[, config]): the config is optional.
         "apoc.trigger.install" => 5,

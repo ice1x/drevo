@@ -16,6 +16,12 @@ history and the in-repo issue tracker; format loosely follows
   the log with block reservation, so a restart never reissues a value; included
   in backups. In Rust: `NativeGraph::sequences()` / `sequence_next`
   (`drevo_core::sequence`).
+- **Lean databases** (issue #687). `CALL drevo.indexes.setSecondary(false)`
+  drops a database's property-value index, value cache and full-text indexes
+  and frees their memory; queries stay correct (property lookups scan,
+  full-text procedures are unavailable) and the choice survives a restart.
+  `setSecondary(true)` rebuilds them, `drevo.indexes.secondary()` reports
+  it. The Sofia road graph after a restart: ~1 GB → ~450 MB.
 - **Triggers** (issue #643). `CALL apoc.trigger.install(db, name, statement,
   {phase: 'before'|'after'|'afterAsync'}[, {params}])`, `apoc.trigger.list`,
   `stop` / `start`, `drop` / `dropAll`, and the APOC 4 `add` / `remove` /
