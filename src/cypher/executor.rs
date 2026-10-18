@@ -472,6 +472,15 @@ pub enum ExecError {
     /// TRANSACTIONS` (see [`crate::transactions`]).
     #[error("the transaction has been terminated")]
     Terminated,
+    /// A trigger that runs before the commit (`apoc.trigger.install` with
+    /// `phase: 'before'`) failed, so the statement's writes were rolled back.
+    #[error("trigger `{name}` failed: {message}")]
+    TriggerFailed {
+        /// The trigger's name.
+        name: String,
+        /// Why its statement failed.
+        message: String,
+    },
 }
 
 /// A [`GraphEngine`] method returns the storage-agnostic
@@ -532,6 +541,7 @@ impl ExecError {
             | Self::Forbidden { .. }
             | Self::Timeout { .. }
             | Self::Terminated
+            | Self::TriggerFailed { .. }
             | Self::Storage(_) => None,
         }
     }
@@ -791,7 +801,7 @@ impl Value {
 
 // ===== JSON <-> Value =======================================================
 
-fn json_to_value(v: &serde_json::Value) -> Value {
+pub(crate) fn json_to_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(*b),
@@ -886,7 +896,7 @@ pub(crate) fn node_to_value(node: &Node) -> Arc<NodeValue> {
     })
 }
 
-fn edge_to_value(edge: &Edge) -> Arc<RelationshipValue> {
+pub(crate) fn edge_to_value(edge: &Edge) -> Arc<RelationshipValue> {
     let mut properties = BTreeMap::new();
     for (k, v) in edge.properties.iter() {
         properties.insert(k.clone(), json_to_value(v));
@@ -1558,15 +1568,23 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.memory.rememberEntity, drevo.memory.assertFact, \
                           drevo.memory.retractFact, drevo.memory.factsAt, \
                           drevo.events.post, \
+                          apoc.trigger.install, apoc.trigger.list, apoc.trigger.drop, \
+                          apoc.trigger.dropAll, apoc.trigger.stop, apoc.trigger.start, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
                 })?;
             let expected_args = procedure_arity(&name);
-            if c.args.len() != expected_args {
+            let required_args = expected_args - procedure_optional_args(&name);
+            if !(required_args..=expected_args).contains(&c.args.len()) {
+                let expected = if required_args == expected_args {
+                    expected_args.to_string()
+                } else {
+                    format!("{required_args} or {expected_args}")
+                };
                 return Err(ExecError::InvalidProcedureCall {
                     name,
-                    message: format!("expected {expected_args} arguments, got {}", c.args.len()),
+                    message: format!("expected {expected} arguments, got {}", c.args.len()),
                     span: c.span,
                 });
             }
@@ -2875,6 +2893,18 @@ impl<'a> Executor<'a> {
             | "drevo.semantic.registerRel"
             | "drevo.semantic.reindex"
             | "drevo.semantic.reindexRel" => self.guard_database(Action::IndexManagement),
+            // A trigger runs its statement for every later commit, so
+            // changing triggers is administration, as in APOC.
+            name if name.starts_with("apoc.trigger.") && name != "apoc.trigger.list" => {
+                if !r.context.has_dbms(Action::ExecuteAdminProcedures) {
+                    return Err(ExecError::Forbidden {
+                        message: format!(
+                            "`{name}` changes triggers and needs EXECUTE ADMIN PROCEDURES"
+                        ),
+                    });
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -7331,6 +7361,163 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
+    /// `apoc.trigger.*` (#643): install, list, stop, start and drop the
+    /// database's triggers. Every procedure yields one row per affected
+    /// trigger with the columns of [`TRIGGER_COLUMNS`]. The APOC 5 forms name
+    /// the database first (`install(db, name, statement, selector, config)`,
+    /// `drop(db, name)`, `dropAll(db)`, `stop(db, name)`, `start(db, name)`);
+    /// the older `add`, `remove`, `removeAll`, `pause` and `resume` act on the
+    /// current database. All but `list` are refused in an explicit
+    /// transaction.
+    fn proc_trigger(
+        &self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        use crate::trigger::{Trigger, TriggerPhase};
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability(name))?;
+        let invalid = |message: String| ExecError::InvalidProcedureCall {
+            name: name.to_string(),
+            message,
+            span,
+        };
+        let string_at = |i: usize, what: &str| -> ExecResultT<String> {
+            match self.eval(&args[i], &Bindings::new())? {
+                Value::String(s) => Ok(s),
+                other => Err(invalid(format!(
+                    "the {what} must be a string, got {other:?}"
+                ))),
+            }
+        };
+        let map_at = |i: usize, what: &str| -> ExecResultT<BTreeMap<String, Value>> {
+            match args
+                .get(i)
+                .map(|a| self.eval(a, &Bindings::new()))
+                .transpose()?
+            {
+                None | Some(Value::Null) => Ok(BTreeMap::new()),
+                Some(Value::Map(m)) => Ok(m),
+                Some(other) => Err(invalid(format!("the {what} must be a map, got {other:?}"))),
+            }
+        };
+        // The APOC 5 procedures name the database they act on; it must be
+        // the one the statement runs against.
+        let apoc5 = matches!(
+            name,
+            "apoc.trigger.install"
+                | "apoc.trigger.drop"
+                | "apoc.trigger.dropAll"
+                | "apoc.trigger.stop"
+                | "apoc.trigger.start"
+        );
+        let first = usize::from(apoc5);
+        if apoc5 {
+            let database = string_at(0, "database name")?;
+            let current = svc.database_name();
+            if !database.eq_ignore_ascii_case(&current) {
+                return Err(invalid(format!(
+                    "triggers of database `{database}` are managed on that database; \
+                     this statement runs on `{current}`"
+                )));
+            }
+        }
+        if name != "apoc.trigger.list" {
+            self.outside_transaction(name, span)?;
+        }
+        let rows = |triggers: Vec<Trigger>, installed: bool| -> Vec<Vec<Value>> {
+            triggers
+                .into_iter()
+                .map(|t| trigger_row(&t, installed))
+                .collect()
+        };
+        match name {
+            "apoc.trigger.list" => Ok(rows(svc.trigger_list(), true)),
+            "apoc.trigger.install" | "apoc.trigger.add" => {
+                let trigger_name = string_at(first, "trigger name")?;
+                let statement = string_at(first + 1, "statement")?;
+                let mut phase = TriggerPhase::Before;
+                for (key, value) in map_at(first + 2, "selector")? {
+                    match (key.as_str(), value) {
+                        ("phase", Value::String(p)) => {
+                            phase = TriggerPhase::parse(&p).ok_or_else(|| {
+                                invalid(format!(
+                                    "unknown phase `{p}`; use before, after or afterAsync"
+                                ))
+                            })?;
+                        }
+                        (key, _) => {
+                            return Err(invalid(format!(
+                                "unsupported selector key `{key}`; the selector takes `phase`"
+                            )))
+                        }
+                    }
+                }
+                let mut params = BTreeMap::new();
+                for (key, value) in map_at(first + 3, "config")? {
+                    match (key.as_str(), value) {
+                        ("params", Value::Map(m)) => {
+                            for (k, v) in m {
+                                let json = value_to_json(&v).ok_or_else(|| {
+                                    invalid(format!(
+                                        "trigger parameter `{k}` must be a plain value, not a \
+                                         node, relationship or path"
+                                    ))
+                                })?;
+                                params.insert(k, json);
+                            }
+                        }
+                        ("params", Value::Null) => {}
+                        (key, _) => {
+                            return Err(invalid(format!(
+                                "unsupported config key `{key}`; the config takes `params`"
+                            )))
+                        }
+                    }
+                }
+                let installed = svc
+                    .trigger_install(Trigger {
+                        name: trigger_name,
+                        statement,
+                        phase,
+                        params,
+                        paused: false,
+                    })
+                    .map_err(|e| match e {
+                        DrevoError::InvalidArgument(m) => invalid(m),
+                        other => ExecError::Storage(other),
+                    })?;
+                Ok(rows(vec![installed], true))
+            }
+            "apoc.trigger.drop" | "apoc.trigger.remove" => {
+                let trigger_name = string_at(first, "trigger name")?;
+                Ok(rows(
+                    svc.trigger_drop(&trigger_name).into_iter().collect(),
+                    false,
+                ))
+            }
+            "apoc.trigger.dropAll" | "apoc.trigger.removeAll" => {
+                Ok(rows(svc.trigger_drop_all(), false))
+            }
+            "apoc.trigger.stop"
+            | "apoc.trigger.pause"
+            | "apoc.trigger.start"
+            | "apoc.trigger.resume" => {
+                let trigger_name = string_at(first, "trigger name")?;
+                let paused = matches!(name, "apoc.trigger.stop" | "apoc.trigger.pause");
+                Ok(rows(
+                    svc.trigger_set_paused(&trigger_name, paused)
+                        .into_iter()
+                        .collect(),
+                    true,
+                ))
+            }
+            _ => Err(invalid("no such procedure".to_string())),
+        }
+    }
+
     /// `CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount` (#556) —
     /// the prepared, unresolved two-phase-commit transactions, by ascending
     /// gid; `preparedAt` is ISO-8601 UTC.
@@ -8231,6 +8418,7 @@ impl<'a> Executor<'a> {
             "drevo.semantic.reindexRel" => self.proc_semantic_reindex_rel(args, span),
             "drevo.semantic.status" => self.proc_semantic_status(args, span),
             "drevo.tx.listPrepared" => self.proc_tx_list_prepared(span),
+            name if name.starts_with("apoc.trigger.") => self.proc_trigger(name, args, span),
             "drevo.tx.commitPrepared" => self.proc_tx_resolve(name, args, span, true),
             "drevo.tx.rollbackPrepared" => self.proc_tx_resolve(name, args, span, false),
             "drevo.tx.heuristicRollback" => self.proc_tx_heuristic_rollback(name, args, span),
@@ -10021,6 +10209,17 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // embedded" from "writes landed, embeddings missing". #266 adds
         // `target_kind` (node|relationship) so rel targets are distinguishable.
         "drevo.tx.listPrepared" => Some(&["gid", "preparedAt", "opCount"]),
+        "apoc.trigger.install"
+        | "apoc.trigger.add"
+        | "apoc.trigger.list"
+        | "apoc.trigger.drop"
+        | "apoc.trigger.remove"
+        | "apoc.trigger.dropAll"
+        | "apoc.trigger.removeAll"
+        | "apoc.trigger.stop"
+        | "apoc.trigger.pause"
+        | "apoc.trigger.start"
+        | "apoc.trigger.resume" => Some(TRIGGER_COLUMNS),
         // A named application event, published on commit (issue #640).
         "drevo.events.post" => Some(&["name"]),
         "drevo.tx.commitPrepared"
@@ -10145,6 +10344,39 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
 /// Number of positional arguments each built-in procedure takes. Used by
 /// the upfront validation sweep to reject a mis-arity `CALL` before any
 /// side effects run.
+/// How many of a procedure's trailing arguments ([`procedure_arity`] counts
+/// them) may be left out.
+fn procedure_optional_args(name: &str) -> usize {
+    match name {
+        "apoc.trigger.install" | "apoc.trigger.add" => 1,
+        _ => 0,
+    }
+}
+
+/// The columns every `apoc.trigger.*` procedure yields, as in APOC.
+const TRIGGER_COLUMNS: &[&str] = &["name", "query", "selector", "params", "installed", "paused"];
+
+/// One `apoc.trigger.*` row for `trigger`.
+fn trigger_row(trigger: &crate::trigger::Trigger, installed: bool) -> Vec<Value> {
+    vec![
+        Value::String(trigger.name.clone()),
+        Value::String(trigger.statement.clone()),
+        Value::Map(BTreeMap::from([(
+            "phase".to_string(),
+            Value::String(trigger.phase.name().to_string()),
+        )])),
+        Value::Map(
+            trigger
+                .params
+                .iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect(),
+        ),
+        Value::Bool(installed),
+        Value::Bool(trigger.paused),
+    ]
+}
+
 fn procedure_arity(name: &str) -> usize {
     match name {
         // db.vector.query(label, property, query, k)
@@ -10174,6 +10406,16 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.semantic.status" => 0,
         // Two-phase commit (#556): listPrepared(); the others take the gid.
         "drevo.tx.listPrepared" => 0,
+        // install(db, name, statement, selector[, config]) / add(name,
+        // statement, selector[, config]): the config is optional.
+        "apoc.trigger.install" => 5,
+        "apoc.trigger.add" => 4,
+        "apoc.trigger.drop" | "apoc.trigger.stop" | "apoc.trigger.start" => 2,
+        "apoc.trigger.dropAll"
+        | "apoc.trigger.remove"
+        | "apoc.trigger.pause"
+        | "apoc.trigger.resume" => 1,
+        "apoc.trigger.list" | "apoc.trigger.removeAll" => 0,
         // drevo.events.post(name, payload) (issue #640).
         "drevo.events.post" => 2,
         "drevo.tx.commitPrepared"

@@ -582,8 +582,9 @@ FOREACH (n IN tasks | SET n.status = 'done')
 
 drevo ships a small set of read-only, built-in procedures invoked with the `CALL` clause.
 These mirror Neo4j's schema-introspection procedures so existing tooling and drivers can
-discover a graph's shape. There is no support for user-defined, `apoc.*`, or `gds.*`
-procedures.
+discover a graph's shape. Of APOC, the trigger procedures `apoc.trigger.*` are
+built in (see [Triggers](#triggers)); there is no support for user-defined, other
+`apoc.*`, or `gds.*` procedures.
 
 | Procedure | Output column | Returns |
 |-----------|---------------|---------|
@@ -603,6 +604,7 @@ procedures.
 | `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale–Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
 | `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra — see [Weighted paths](#weighted-paths) |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
+| `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
 
 ### Stable matching (#541)
 
@@ -1213,6 +1215,81 @@ DROP CONSTRAINT customer_email IF EXISTS
 
 Relationship constraints and property-type constraints (`IS :: INTEGER`) are
 accepted and not enforced.
+
+### Triggers
+
+A trigger is a Cypher statement the database runs every time a transaction
+commits a change. Triggers keep derived data in the database instead of in
+every client: timestamps, counters, audit trails. They are installed with
+APOC's `apoc.trigger` procedures:
+
+```cypher
+CALL apoc.trigger.install('drevo', 'stamp_updated_at',
+  'UNWIND keys($assignedNodeProperties) AS k
+   UNWIND $assignedNodeProperties[k] AS change
+   WITH k, change WHERE k <> "updated_at"
+   WITH DISTINCT change.node AS n WHERE n:Task
+   SET n.updated_at = timestamp()',
+  {phase: 'before'})
+```
+
+```cypher
+CALL apoc.trigger.install('drevo', 'audit_new_tasks',
+  'UNWIND $createdNodes AS n WITH n WHERE n:Task
+   CREATE (:Audit {task: n.title, at: timestamp()})',
+  {phase: 'after'})
+```
+
+The statement sees what the transaction changed as parameters, named and
+shaped as in APOC:
+
+| Parameter | Shape |
+|-----------|-------|
+| `$createdNodes`, `$deletedNodes` | list of nodes (a deleted node as it was) |
+| `$createdRelationships`, `$deletedRelationships` | list of relationships |
+| `$assignedLabels`, `$removedLabels` | `{label: [node, …]}` |
+| `$assignedNodeProperties` | `{key: [{key, old, new, node}, …]}` |
+| `$removedNodeProperties` | `{key: [{key, old, node}, …]}` |
+| `$assignedRelationshipProperties` | `{key: [{key, old, new, relationship}, …]}` |
+| `$removedRelationshipProperties` | `{key: [{key, old, relationship}, …]}` |
+
+The labels and properties of a created node count as assigned, and those of a
+deleted node as removed. Parameters given at install time,
+`{params: {team: 'core'}}` as the fifth argument, are visible next to them.
+
+The **phase** in the selector says when the trigger runs:
+
+- `before` (the default) — inside the transaction, just before it commits.
+  The trigger's writes commit with the transaction, and a failing trigger
+  rolls the whole transaction back: the client gets
+  `Neo.ClientError.Transaction.TransactionHookFailed`.
+- `after` — right after the commit, in a transaction of its own. A failure
+  is logged; the committed transaction stands.
+- `afterAsync` — like `after`, on a background thread, so the commit does
+  not wait for it.
+
+A trigger's own writes do not fire triggers. Statements that change nothing
+fire nothing. Triggers run for Cypher statements and transactions over Bolt,
+HTTP, gRPC and the Python package, including two-phase commit: `before`
+triggers run at prepare, `after` triggers once the transaction is committed.
+
+| Procedure | Does |
+|-----------|------|
+| `apoc.trigger.install(db, name, statement, selector[, config])` | install or replace a trigger |
+| `apoc.trigger.list()` | list the triggers |
+| `apoc.trigger.stop(db, name)` / `apoc.trigger.start(db, name)` | pause / resume one |
+| `apoc.trigger.drop(db, name)` / `apoc.trigger.dropAll(db)` | remove one / all |
+| `apoc.trigger.add(name, statement, selector[, config])`, `remove(name)`, `removeAll()`, `pause(name)`, `resume(name)` | the APOC 4 forms, acting on the current database |
+
+Each yields `name, query, selector, params, installed, paused`. `db` names
+the database the statement runs on. Triggers are kept per database and
+survive a restart. Changing them needs `EXECUTE ADMIN PROCEDURES`, is refused
+inside an explicit transaction and on a read-only database; the trigger's
+statement runs with the database's own rights, whoever committed.
+
+```cypher
+CALL apoc.trigger.list() YIELD name, selector, paused RETURN name, selector.phase, paused
+```
 
 ### Fuzzy matching (#593)
 

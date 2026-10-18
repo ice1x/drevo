@@ -8,6 +8,16 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Triggers** (issue #643). `CALL apoc.trigger.install(db, name, statement,
+  {phase: 'before'|'after'|'afterAsync'}[, {params}])`, `apoc.trigger.list`,
+  `stop` / `start`, `drop` / `dropAll`, and the APOC 4 `add` / `remove` /
+  `removeAll` / `pause` / `resume`. The statement runs on every commit that
+  changes something and sees `$createdNodes`, `$deletedNodes`,
+  `$assignedNodeProperties`, `$removedLabels`, … as in APOC. A failing `before`
+  trigger rolls the transaction back (Bolt
+  `Neo.ClientError.Transaction.TransactionHookFailed`); a trigger's own writes
+  do not fire triggers. Kept per database in `semantic.json`. Procedure names
+  may now use keywords after a dot (`apoc.trigger.add`).
 - **Weighted paths for routing** (issue #680). `CALL
   drevo.path.weighted(start, end, {relTypes, direction, cost, heuristic,
   maxCost}) YIELD path, cost` returns the path with the lowest summed cost of

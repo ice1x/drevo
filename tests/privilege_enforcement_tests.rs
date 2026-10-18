@@ -396,3 +396,46 @@ mod bolt {
         );
     }
 }
+
+// ── Triggers ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn changing_triggers_needs_admin_procedures() {
+    let t = Tracker::seeded().await;
+    for user in ["ed", "archie", "rita"] {
+        t.forbidden(
+            user,
+            "CALL apoc.trigger.add('audit', 'RETURN 1', {phase: 'after'})",
+        )
+        .await;
+    }
+    t.ok("admin", "CALL apoc.trigger.add('audit', 'UNWIND $createdNodes AS n CREATE (:Audit)', {phase: 'after'})")
+        .await;
+    for user in ["ed", "archie"] {
+        t.forbidden(user, "CALL apoc.trigger.pause('audit')").await;
+        t.forbidden(user, "CALL apoc.trigger.remove('audit')").await;
+    }
+    // Listing is not administration.
+    let listed = t
+        .ok("ed", "CALL apoc.trigger.list() YIELD name RETURN name")
+        .await;
+    assert_eq!(listed["rows"][0][0], "audit");
+}
+
+#[tokio::test]
+async fn a_trigger_runs_with_its_own_rights_for_any_writer() {
+    let t = Tracker::seeded().await;
+    t.ok(
+        "admin",
+        "CALL apoc.trigger.add('audit', 'UNWIND $createdNodes AS n CREATE (:Audit {of: n.title})', {phase: 'after'})",
+    )
+    .await;
+    // The editor may create bugs but has no grant for Audit nodes beyond
+    // that; the trigger's write is the database's, not the editor's.
+    t.ok("ed", "CREATE (:Bug {title: 'flaky test'})").await;
+    assert_eq!(
+        t.count("MATCH (a:Audit {of: 'flaky test'}) RETURN count(a)")
+            .await,
+        1
+    );
+}

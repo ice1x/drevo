@@ -39,6 +39,8 @@ fn map_commit_err(e: CommitError) -> PyErr {
         // Writes are paused while a two-phase-commit transaction is prepared
         // (#556); retryable once it is resolved, like an optimistic conflict.
         e @ CommitError::PreparedPending(_) => TransactionConflict::new_err(e.to_string()),
+        // A trigger that runs before the commit failed; the writes are gone.
+        e @ CommitError::Rejected(_) => TransactionError::new_err(e.to_string()),
     }
 }
 
@@ -53,6 +55,7 @@ fn map_prepare_err(e: PrepareError) -> PyErr {
         PrepareError::UnknownTransaction => TransactionError::new_err("transaction is closed"),
         PrepareError::Io(msg) => StorageError::new_err(msg),
         e @ PrepareError::ReadOnly => StorageError::new_err(e.to_string()),
+        e @ PrepareError::Rejected(_) => TransactionError::new_err(e.to_string()),
     }
 }
 

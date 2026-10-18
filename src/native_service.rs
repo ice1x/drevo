@@ -146,7 +146,6 @@ pub(crate) fn node_text<'a>(
 
 /// The name a service is served under until a
 /// [`crate::database_registry::DatabaseRegistry`] names it.
-#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_DATABASE_NAME: &str = "drevo";
 
 /// A durable native graph serving Cypher with its full index stack. See the
@@ -194,6 +193,8 @@ pub struct NativeService {
     /// Named UNIQUE constraints (issue #604). The graph enforces them; this
     /// keeps their names and is persisted in the same sidecar.
     constraints: RwLock<crate::constraint_registry::ConstraintRegistry>,
+    /// Installed triggers (`apoc.trigger.*`), persisted in the same sidecar.
+    triggers: RwLock<crate::trigger::TriggerRegistry>,
     /// Bumped on every path- or text-index DDL, so the next statement rebuilds
     /// [`ServiceIndexes::paths`] and [`ServiceIndexes::texts`] over the new
     /// definitions.
@@ -229,6 +230,13 @@ pub struct NativeService {
     tx_events: std::sync::Mutex<HashMap<crate::native::NativeTxId, Vec<crate::event_bus::Pending>>>,
     /// Named events of prepared transactions, by global transaction id.
     prepared_events: std::sync::Mutex<HashMap<String, Vec<crate::event_bus::Pending>>>,
+    /// The change parameters of prepared transactions whose `after` and
+    /// `afterAsync` triggers run once they are committed, by gid.
+    prepared_triggers: std::sync::Mutex<HashMap<String, HashMap<String, Value>>>,
+    /// Runs `afterAsync` triggers off the committing thread, once
+    /// [`start_trigger_worker`](Self::start_trigger_worker) has been called.
+    #[cfg(not(target_arch = "wasm32"))]
+    trigger_worker: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<AsyncTriggers>>>,
     /// This database's published named events.
     event_bus: crate::event_bus::EventBus,
 }
@@ -242,6 +250,14 @@ struct EmbedFailureStat {
     count: u64,
     /// The most recent failure message, for the `last_error` column.
     last_error: String,
+}
+
+/// `afterAsync` triggers queued for the trigger worker, with the change
+/// parameters of the transaction that fired them.
+#[cfg(not(target_arch = "wasm32"))]
+struct AsyncTriggers {
+    triggers: Vec<crate::trigger::Trigger>,
+    params: HashMap<String, Value>,
 }
 
 /// On-disk shape of the `semantic.json` sidecar: both registries in one file,
@@ -263,6 +279,9 @@ struct SemanticSidecar {
     /// UNIQUE constraint definitions (issue #604); absent in older sidecars.
     #[serde(default)]
     constraints: crate::constraint_registry::ConstraintRegistry,
+    /// Installed triggers; absent in older sidecars.
+    #[serde(default)]
+    triggers: crate::trigger::TriggerRegistry,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -388,6 +407,7 @@ impl NativeService {
             vector,
             path: path_indexes,
             constraints,
+            triggers,
         } = load_semantic_sidecar(&sidecar);
         // Constraints are schema, not WAL data: install them over the replayed
         // graph. Data written through drevo already satisfies them; if a
@@ -420,6 +440,7 @@ impl NativeService {
             vector_indexes: RwLock::new(vector),
             path_indexes: RwLock::new(path_indexes),
             constraints: RwLock::new(constraints),
+            triggers: RwLock::new(triggers),
             path_specs_version: AtomicU64::new(0),
             semantic_sidecar: Some(sidecar),
             #[cfg(feature = "http")]
@@ -432,6 +453,9 @@ impl NativeService {
             explicit_txs: std::sync::Mutex::new(std::collections::HashMap::new()),
             tx_events: std::sync::Mutex::new(HashMap::new()),
             prepared_events: std::sync::Mutex::new(HashMap::new()),
+            prepared_triggers: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            trigger_worker: std::sync::OnceLock::new(),
             event_bus: crate::event_bus::EventBus::new(),
         })
     }
@@ -467,6 +491,7 @@ impl NativeService {
             vector_indexes: RwLock::new(crate::vector_index_registry::VectorIndexRegistry::new()),
             path_indexes: RwLock::new(crate::path_index_registry::PathIndexRegistry::default()),
             constraints: RwLock::new(crate::constraint_registry::ConstraintRegistry::default()),
+            triggers: RwLock::new(crate::trigger::TriggerRegistry::default()),
             path_specs_version: AtomicU64::new(0),
             semantic_sidecar: None,
             #[cfg(feature = "http")]
@@ -479,6 +504,9 @@ impl NativeService {
             explicit_txs: std::sync::Mutex::new(std::collections::HashMap::new()),
             tx_events: std::sync::Mutex::new(HashMap::new()),
             prepared_events: std::sync::Mutex::new(HashMap::new()),
+            prepared_triggers: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            trigger_worker: std::sync::OnceLock::new(),
             event_bus: crate::event_bus::EventBus::new(),
         }
     }
@@ -638,15 +666,23 @@ impl NativeService {
             return Err(ExecError::Storage(DrevoError::ReadOnly));
         }
         let checked_writes = restriction.is_some_and(|r| !r.writes_everything());
+        let triggers = self.triggers_active();
+        let fired = std::cell::RefCell::new(None);
         let (result, events) = crate::event_bus::collect(|| {
             self.listed(|| {
                 crate::cypher::executor::deadline::with_statement_timeout(
                     self.statement_timeout(),
                     || {
                         let writes = query_writes(query)
-                            || (checked_writes && query_calls_writing_procedure(query));
-                        if (self.graph.has_existence_constraints() || checked_writes) && writes {
-                            self.execute_as_transaction(query, &params, restriction)
+                            || ((checked_writes || triggers)
+                                && query_calls_writing_procedure(query));
+                        if (self.graph.has_existence_constraints() || checked_writes || triggers)
+                            && writes
+                        {
+                            let (rows, params) =
+                                self.execute_as_transaction(query, &params, restriction)?;
+                            *fired.borrow_mut() = params;
+                            Ok(rows)
                         } else {
                             self.with_fresh_indexes(|idx| {
                                 self.execute_with(idx, query, params, restriction)
@@ -658,6 +694,9 @@ impl NativeService {
         });
         if result.is_ok() {
             self.publish_events(events);
+            if let Some(params) = fired.into_inner() {
+                self.fire_after(params);
+            }
         }
         self.maybe_compact();
         result
@@ -686,12 +725,16 @@ impl NativeService {
     /// the statement see its own writes and are not narrowed by the
     /// property, label, path or text indexes, which describe the committed
     /// graph. A commit that lost a race with another writer is retried.
+    ///
+    /// While triggers are installed every writing statement runs this way:
+    /// the `before` triggers run in the transaction ahead of the commit, and
+    /// the change parameters are returned for the `after` phases.
     fn execute_as_transaction(
         &self,
         query: &Query,
         params: &HashMap<String, Value>,
         restriction: Option<Restriction<'_>>,
-    ) -> Result<ExecResult, ExecError> {
+    ) -> Result<(ExecResult, Option<HashMap<String, Value>>), ExecError> {
         const ATTEMPTS: usize = 8;
         let mut attempt = 0;
         loop {
@@ -732,12 +775,22 @@ impl NativeService {
                     return Err(e);
                 }
             };
+            let fired = match self.fire_before(tx) {
+                Ok(fired) => fired,
+                Err(failure) => {
+                    self.graph.tx_rollback(tx);
+                    return Err(ExecError::TriggerFailed {
+                        name: failure.name,
+                        message: failure.message,
+                    });
+                }
+            };
             match self.graph.tx_commit(tx) {
                 Ok(()) => {
                     for event in events {
                         crate::event_bus::post(event);
                     }
-                    return Ok(rows);
+                    return Ok((rows, fired));
                 }
                 Err(crate::native::CommitError::Conflict) if attempt < ATTEMPTS => {}
                 Err(crate::native::CommitError::Constraint(v)) => {
@@ -1159,6 +1212,172 @@ impl NativeService {
     }
 
     /// The named events of the transaction prepared under `gid`, forgotten.
+    fn take_prepared_triggers(&self, gid: &str) -> Option<HashMap<String, Value>> {
+        self.prepared_triggers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(gid)
+    }
+
+    /// Whether a writing statement must run as a transaction so triggers see
+    /// its changes: some trigger is installed and running, and this is not a
+    /// trigger's own statement.
+    fn triggers_active(&self) -> bool {
+        !crate::trigger::in_trigger()
+            && self
+                .triggers
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .has_active()
+    }
+
+    /// The running triggers of `phase`, in installation order.
+    fn triggers_of(&self, phase: crate::trigger::TriggerPhase) -> Vec<crate::trigger::Trigger> {
+        self.triggers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .active(phase)
+            .cloned()
+            .collect()
+    }
+
+    /// Run the `before` triggers in transaction `tx`, ahead of its commit,
+    /// with the parameters describing what it changed. Returns those
+    /// parameters for the `after` phases, or `None` when no trigger runs
+    /// (none is installed, the transaction changed nothing, or this is a
+    /// trigger's own transaction).
+    ///
+    /// # Errors
+    ///
+    /// The first trigger that fails; the caller rolls `tx` back.
+    fn fire_before(
+        &self,
+        tx: crate::native::NativeTxId,
+    ) -> Result<Option<HashMap<String, Value>>, crate::trigger::TriggerFailure> {
+        if !self.triggers_active() {
+            return Ok(None);
+        }
+        let Some(changes) = self.graph.tx_changes(tx) else {
+            return Ok(None);
+        };
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        let params = crate::trigger::change_params(&changes);
+        for trigger in self.triggers_of(crate::trigger::TriggerPhase::Before) {
+            let Some(engine) = self.graph.tx_engine(tx) else {
+                break;
+            };
+            crate::trigger::run(&trigger, &params, |query, params| {
+                self.with_fresh_indexes(|idx| {
+                    let ctx = NativeQueryContext {
+                        fts: Some(&idx.fts),
+                        fts_rel: Some(&idx.fts_rel),
+                        labels: None,
+                        properties: None,
+                        paths: None,
+                        texts: None,
+                        values: None,
+                        #[cfg(feature = "http")]
+                        embedder: self.embedder.get(),
+                        #[cfg(not(feature = "http"))]
+                        embedder: None,
+                        semantic: Some(self),
+                        in_transaction: true,
+                        tx_has_written: true,
+                        restriction: None,
+                    };
+                    execute_on_engine_with_context(query, &engine, &ctx, params)
+                })
+            })?;
+        }
+        Ok(Some(params))
+    }
+
+    /// Run the `after` triggers for a committed transaction's change
+    /// parameters, each as a transaction of its own, and hand the
+    /// `afterAsync` ones to the trigger worker (or run them next when there
+    /// is none). A failing trigger is logged; the committed transaction
+    /// stands.
+    fn fire_after(&self, params: HashMap<String, Value>) {
+        for trigger in self.triggers_of(crate::trigger::TriggerPhase::After) {
+            self.run_after_trigger(&trigger, &params);
+        }
+        let deferred = self.triggers_of(crate::trigger::TriggerPhase::AfterAsync);
+        if deferred.is_empty() {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(worker) = self.trigger_worker.get() {
+            let job = AsyncTriggers {
+                triggers: deferred,
+                params,
+            };
+            let sent = worker.lock().unwrap_or_else(|e| e.into_inner()).send(job);
+            match sent {
+                Ok(()) => return,
+                // The worker is gone: run them here instead.
+                Err(std::sync::mpsc::SendError(job)) => {
+                    for trigger in &job.triggers {
+                        self.run_after_trigger(trigger, &job.params);
+                    }
+                    return;
+                }
+            }
+        }
+        for trigger in &deferred {
+            self.run_after_trigger(trigger, &params);
+        }
+    }
+
+    /// Run one `after` / `afterAsync` trigger as its own statement; its writes
+    /// do not fire triggers.
+    fn run_after_trigger(
+        &self,
+        trigger: &crate::trigger::Trigger,
+        params: &HashMap<String, Value>,
+    ) {
+        let outcome =
+            crate::trigger::run(trigger, params, |query, params| self.execute(query, params));
+        if let Err(failure) = outcome {
+            #[cfg(feature = "http")]
+            tracing::warn!(trigger = %failure.name, error = %failure.message, "trigger failed after commit");
+            #[cfg(not(feature = "http"))]
+            let _ = failure;
+        }
+    }
+
+    /// Run `afterAsync` triggers on a thread of their own from now on, so a
+    /// commit does not wait for them. Without it they run right after the
+    /// `after` triggers, on the committing thread. Calling it again does
+    /// nothing; the thread ends when the service is dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn start_trigger_worker(self: &std::sync::Arc<Self>) {
+        let (tx, rx) = std::sync::mpsc::channel::<AsyncTriggers>();
+        if self.trigger_worker.set(std::sync::Mutex::new(tx)).is_err() {
+            return;
+        }
+        let service = std::sync::Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("drevo-triggers".to_string())
+            .spawn(move || {
+                while let Ok(job) = rx.recv() {
+                    let Some(service) = service.upgrade() else {
+                        return;
+                    };
+                    for trigger in &job.triggers {
+                        service.run_after_trigger(trigger, &job.params);
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            #[cfg(feature = "http")]
+            tracing::error!(error = %e, "cannot start the trigger worker; afterAsync triggers run inline");
+            #[cfg(not(feature = "http"))]
+            let _ = e;
+        }
+    }
+
     fn take_prepared_events(&self, gid: &str) -> Vec<crate::event_bus::Pending> {
         self.prepared_events
             .lock()
@@ -1186,11 +1405,21 @@ impl NativeService {
                 "the transaction has been terminated".to_string(),
             ));
         }
+        let fired = match self.fire_before(tx) {
+            Ok(fired) => fired,
+            Err(failure) => {
+                self.rollback_tx(tx);
+                return Err(crate::native::CommitError::Rejected(failure.to_string()));
+            }
+        };
         let result = self.graph.tx_commit(tx);
         self.unlist_tx(tx);
         let events = self.take_tx_events(tx);
         if result.is_ok() {
             self.publish_events(events);
+            if let Some(params) = fired {
+                self.fire_after(params);
+            }
             self.maybe_compact();
         }
         result
@@ -1216,6 +1445,13 @@ impl NativeService {
         tx: crate::native::NativeTxId,
         gid: &str,
     ) -> std::result::Result<(), crate::native::PrepareError> {
+        let fired = match self.fire_before(tx) {
+            Ok(fired) => fired,
+            Err(failure) => {
+                self.rollback_tx(tx);
+                return Err(crate::native::PrepareError::Rejected(failure.to_string()));
+            }
+        };
         self.unlist_tx(tx);
         let events = self.take_tx_events(tx);
         let result = self.graph.tx_prepare(tx, gid);
@@ -1224,6 +1460,12 @@ impl NativeService {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(gid.to_string(), events);
+        }
+        if let (Ok(()), Some(params)) = (&result, fired) {
+            self.prepared_triggers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(gid.to_string(), params);
         }
         result
     }
@@ -1244,6 +1486,9 @@ impl NativeService {
         if result.is_ok() {
             let events = self.take_prepared_events(gid);
             self.publish_events(events);
+            if let Some(params) = self.take_prepared_triggers(gid) {
+                self.fire_after(params);
+            }
             self.maybe_compact();
         }
         result
@@ -1262,6 +1507,7 @@ impl NativeService {
         let result = self.graph.rollback_prepared(gid);
         if result.is_ok() {
             self.take_prepared_events(gid);
+            self.take_prepared_triggers(gid);
         }
         result
     }
@@ -1283,6 +1529,7 @@ impl NativeService {
         let result = self.graph.heuristic_rollback_prepared(gid);
         if result.is_ok() {
             self.take_prepared_events(gid);
+            self.take_prepared_triggers(gid);
         }
         result
     }
@@ -1931,6 +2178,105 @@ impl NativeService {
         }
     }
 
+    /// Install `trigger`, replacing an installed trigger of the same name, and
+    /// persist it. The statement is parsed first, so a trigger that could
+    /// never run is refused.
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::InvalidArgument`] for an empty name or a statement that
+    /// does not parse.
+    pub fn trigger_install(
+        &self,
+        trigger: crate::trigger::Trigger,
+    ) -> Result<crate::trigger::Trigger, DrevoError> {
+        if trigger.name.trim().is_empty() {
+            return Err(DrevoError::InvalidArgument(
+                "a trigger needs a name".to_string(),
+            ));
+        }
+        crate::cypher::parser::parse(&trigger.statement).map_err(|e| {
+            DrevoError::InvalidArgument(format!(
+                "the statement of trigger `{}` does not parse: {e}",
+                trigger.name
+            ))
+        })?;
+        self.triggers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .install(trigger.clone());
+        self.persist_semantic();
+        Ok(trigger)
+    }
+
+    /// Remove the trigger named `name`, returning it; `None` if there is none.
+    pub fn trigger_drop(&self, name: &str) -> Option<crate::trigger::Trigger> {
+        let removed = self
+            .triggers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name);
+        if removed.is_some() {
+            self.persist_semantic();
+        }
+        removed
+    }
+
+    /// Remove every trigger, returning them in installation order.
+    pub fn trigger_drop_all(&self) -> Vec<crate::trigger::Trigger> {
+        let removed = self
+            .triggers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        if !removed.is_empty() {
+            self.persist_semantic();
+        }
+        removed
+    }
+
+    /// Stop (`paused = true`) or start the trigger named `name`, returning it
+    /// as updated; `None` if there is none.
+    pub fn trigger_set_paused(&self, name: &str, paused: bool) -> Option<crate::trigger::Trigger> {
+        let updated = self
+            .triggers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_paused(name, paused)
+            .cloned();
+        if updated.is_some() {
+            self.persist_semantic();
+        }
+        updated
+    }
+
+    /// The name this database is served under: the name the server gave it,
+    /// or `drevo` for a database opened on its own.
+    #[must_use]
+    pub fn database_name(&self) -> String {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.database_name
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            DEFAULT_DATABASE_NAME.to_string()
+        }
+    }
+
+    /// Every installed trigger, in installation order.
+    #[must_use]
+    pub fn trigger_list(&self) -> Vec<crate::trigger::Trigger> {
+        self.triggers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+            .to_vec()
+    }
+
     /// Every declared constraint, in creation order (for `SHOW CONSTRAINTS`).
     #[must_use]
     pub fn constraint_list(&self) -> Vec<crate::constraint_registry::SchemaConstraint> {
@@ -2482,6 +2828,11 @@ impl NativeService {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            triggers: self
+                .triggers
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         };
         serde_json::to_vec(&sidecar)
     }
@@ -2810,8 +3161,9 @@ fn query_calls_writing_procedure(query: &Query) -> bool {
     })
 }
 
-/// Whether `query` creates or drops an index or constraint, or registers a
-/// semantic index: schema kept in `semantic.json`, beside the log.
+/// Whether `query` creates or drops an index or constraint, registers a
+/// semantic index or changes a trigger: schema kept in `semantic.json`,
+/// beside the log.
 fn query_changes_schema(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
@@ -2821,10 +3173,13 @@ fn query_changes_schema(query: &Query) -> bool {
             | Clause::DropIndex(_)
             | Clause::CreateConstraint(_)
             | Clause::DropConstraint(_) => true,
-            Clause::Call(call) => matches!(
-                call.name.join(".").as_str(),
-                "drevo.semantic.register" | "drevo.semantic.registerRel"
-            ),
+            Clause::Call(call) => {
+                let name = call.name.join(".");
+                matches!(
+                    name.as_str(),
+                    "drevo.semantic.register" | "drevo.semantic.registerRel"
+                ) || (name.starts_with("apoc.trigger.") && name != "apoc.trigger.list")
+            }
             _ => false,
         })
     })

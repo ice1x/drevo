@@ -31,7 +31,8 @@ type Result<T> = std::result::Result<T, DrevoError>;
 /// The native engine behind the Python `Drevo` handle. Presents the KV handle's
 /// inherent API over [`NativeService`].
 pub struct NativeBackend {
-    svc: NativeService,
+    /// Shared so the service's `afterAsync` trigger worker can reach it.
+    svc: std::sync::Arc<NativeService>,
 }
 
 impl NativeBackend {
@@ -39,16 +40,18 @@ impl NativeBackend {
 
     /// Open (or create) the durable native store — the WAL at `path`.
     pub fn open(path: &Path) -> Result<Self> {
-        Ok(Self {
-            svc: NativeService::open(path)?,
-        })
+        Ok(Self::serving(NativeService::open(path)?))
     }
 
     /// An ephemeral in-memory store (lost on drop).
     pub fn in_memory() -> Self {
-        Self {
-            svc: NativeService::in_memory(),
-        }
+        Self::serving(NativeService::in_memory())
+    }
+
+    fn serving(svc: NativeService) -> Self {
+        let svc = std::sync::Arc::new(svc);
+        svc.start_trigger_worker();
+        Self { svc }
     }
 
     /// Parse and execute one Cypher statement in autocommit mode (#553): a

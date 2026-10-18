@@ -326,6 +326,9 @@ pub mod server;
 /// HTTP / Bolt request path.
 pub mod streaming;
 pub mod traversal;
+/// Triggers: Cypher statements a database runs when a transaction commits,
+/// installed with `apoc.trigger.*`.
+pub mod trigger;
 /// Phase 12 task `00075` — vector value type + similarity / distance
 /// functions (cosine, euclidean, dot product) over `f32` embeddings.
 /// Dependency-free and always compiled; the building block the HNSW
