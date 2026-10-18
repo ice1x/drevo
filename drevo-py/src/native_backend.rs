@@ -24,6 +24,7 @@ use drevo::model::{
 use drevo::native_service::NativeService;
 use drevo::report::{BloatReport, CompactReport};
 use drevo::vector::{HnswConfig, HnswIndex, Vector};
+use drevo::weighted_path::{WeightedPath, WeightedPathOptions};
 
 type Result<T> = std::result::Result<T, DrevoError>;
 
@@ -293,6 +294,15 @@ impl NativeBackend {
         edge_kind: Option<&str>,
     ) -> Result<Option<Vec<u64>>> {
         self.svc.shortest_path_filtered(from, to, edge_kind)
+    }
+
+    pub fn weighted_path(
+        &self,
+        from: u64,
+        to: u64,
+        options: &WeightedPathOptions,
+    ) -> Result<Option<WeightedPath>> {
+        self.svc.weighted_path(from, to, options)
     }
 
     pub fn subgraph_filtered(

@@ -233,6 +233,26 @@ class SubGraph:
 
     def __repr__(self) -> str: ...
 
+class GeoHeuristic:
+    """Node coordinates and a top speed that make `Drevo.weighted_path` an
+    A* search."""
+
+    lat: str
+    lon: str
+    max_speed_mps: float
+
+    def __init__(self, *, lat: str, lon: str, max_speed_mps: float) -> None: ...
+    def __repr__(self) -> str: ...
+
+class WeightedPath:
+    """The cheapest route found by `Drevo.weighted_path`."""
+
+    nodes: list[int]
+    edges: list[int]
+    cost: float
+
+    def __repr__(self) -> str: ...
+
 class CompactReport:
     """Result of `Drevo.compact` — operator-facing storage metrics."""
 
@@ -433,6 +453,20 @@ class Drevo:
     def shortest_path(
         self, from_id: int, to_id: int, edge_kind: Optional[str] = ...
     ) -> Optional[list[int]]: ...
+    def weighted_path(
+        self,
+        from_id: int,
+        to_id: int,
+        *,
+        rel_types: Optional[list[str]] = ...,
+        direction: Direction = ...,
+        cost: Optional[str] = ...,
+        heuristic: Optional[GeoHeuristic] = ...,
+        max_cost: Optional[float] = ...,
+    ) -> Optional[WeightedPath]:
+        """The cheapest route by a relationship cost, or `None`."""
+        ...
+
     def subgraph(self, root: int, depth: int, edge_kind: Optional[str] = ...) -> SubGraph: ...
     def neighbors(
         self,
