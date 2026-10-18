@@ -2832,6 +2832,7 @@ impl NativeGraph {
         }
         let drop = (target - feed.start_seq) as usize;
         feed.ops.drain(..drop);
+        feed.ops.shrink_to_fit();
         feed.start_seq = target;
         feed.start_seq
     }
