@@ -3179,6 +3179,10 @@ fn query_changes_schema(query: &Query) -> bool {
                     name.as_str(),
                     "drevo.semantic.register" | "drevo.semantic.registerRel"
                 ) || (name.starts_with("apoc.trigger.") && name != "apoc.trigger.list")
+                    || matches!(
+                        name.as_str(),
+                        "drevo.sequence.create" | "drevo.sequence.drop"
+                    )
             }
             _ => false,
         })

@@ -1438,6 +1438,9 @@ pub struct NativeGraph {
     /// dead-code lint quiet without an `allow`.
     #[cfg(not(target_arch = "wasm32"))]
     _lock: Option<std::fs::File>,
+    /// Named sequences ([`crate::sequence`]); `sequences.json` next to the
+    /// WAL for a durable store.
+    sequences: crate::sequence::Sequences,
     /// The format compaction writes the log in. An existing log
     /// keeps its own format for appends until compaction rewrites it.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1567,6 +1570,12 @@ fn persist_origin(sidecar: &std::path::Path, origin: OriginId) -> std::io::Resul
     let tmp = sidecar.with_extension("json.tmp");
     std::fs::write(&tmp, json.as_bytes())?;
     std::fs::rename(&tmp, sidecar)
+}
+
+/// The sequences sidecar path, next to the WAL file.
+#[cfg(not(target_arch = "wasm32"))]
+fn sequence_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
+    wal_path.with_file_name("sequences.json")
 }
 
 /// The tombstone-checkpoint sidecar path, next to the WAL file.
@@ -1896,6 +1905,8 @@ pub(crate) struct LogSnapshot {
     pub(crate) tombstones: Vec<u8>,
     /// `stamps.jsonl`, one line per live entity.
     pub(crate) stamps: Vec<u8>,
+    /// `sequences.json`, as it stands.
+    pub(crate) sequences: Vec<u8>,
 }
 
 /// The write-ahead-log file plus its path (needed so [`compact_wal`] can
@@ -3505,6 +3516,7 @@ impl NativeGraph {
             stamp_log: std::sync::Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             _lock: None,
+            sequences: crate::sequence::Sequences::in_memory(),
             #[cfg(not(target_arch = "wasm32"))]
             wal_target: crate::wal_format::WalFormat::Json,
             #[cfg(not(target_arch = "wasm32"))]
@@ -3736,6 +3748,11 @@ impl NativeGraph {
             // Never issue a stamp below one already handed out.
             let _ = clock.observe(latest.hlc());
         }
+        // A damaged sequence file fails the open: starting over could hand
+        // out values again.
+        let sequences = crate::sequence::Sequences::open(&sequence_sidecar(path))
+            .map_err(|e| CoreError::Backend(e.to_string()))?;
+        sequences.set_read_only(read_only);
         Ok(NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
             wal: Some(std::sync::Mutex::new(WalSink {
@@ -3760,6 +3777,7 @@ impl NativeGraph {
             stamp_log: std::sync::Mutex::new(stamp_log),
             // Hold the exclusive-open lock for this handle's lifetime (#455).
             _lock: lock,
+            sequences,
             wal_target: format,
             wal_file_format: std::sync::atomic::AtomicU8::new(wal_format_to_u8(file_format)),
             read_only: std::sync::atomic::AtomicBool::new(read_only),
@@ -3898,6 +3916,7 @@ impl NativeGraph {
             origin,
             tombstones: serde_json::to_vec(&tombstones)?,
             stamps: stamp_lines,
+            sequences: self.sequences.snapshot_bytes(),
         }))
     }
 
@@ -4435,7 +4454,37 @@ impl NativeGraph {
         let _guard = write(&self.inner);
         self.read_only
             .store(on, std::sync::atomic::Ordering::Release);
+        self.sequences.set_read_only(on);
         Ok(())
+    }
+
+    /// This store's named sequences: unique, increasing numbers handed out
+    /// outside transactions, never handed out twice — not after a rollback
+    /// (the value is skipped) and not after a restart.
+    ///
+    /// ```
+    /// use drevo_core::native::NativeGraph;
+    ///
+    /// let g = NativeGraph::new();
+    /// g.sequences().create("bug", 1000, 1).unwrap();
+    /// assert_eq!(g.sequence_next("bug").unwrap(), 1000);
+    /// assert_eq!(g.sequence_next("bug").unwrap(), 1001);
+    /// ```
+    pub fn sequences(&self) -> &crate::sequence::Sequences {
+        &self.sequences
+    }
+
+    /// The next value of sequence `name` — see [`Self::sequences`].
+    ///
+    /// # Errors
+    ///
+    /// [`crate::sequence::SequenceError`]: no such sequence, exhausted,
+    /// read-only, or the next block could not be reserved.
+    pub fn sequence_next(
+        &self,
+        name: &str,
+    ) -> std::result::Result<i64, crate::sequence::SequenceError> {
+        self.sequences.next(name)
     }
 
     /// The writer lock for an ordinary write — refused while a transaction is

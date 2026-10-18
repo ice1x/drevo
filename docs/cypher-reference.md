@@ -605,6 +605,7 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra — see [Weighted paths](#weighted-paths) |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 | `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
+| `drevo.sequence.create(name[, {start, step}])`, `drevo.sequence.drop(name)`, `drevo.sequence.list()` | `name, start, step, current` | Create, drop and list sequences; draw values with `drevo.sequence.next(name)` — see [Sequences](#sequences) |
 
 ### Stable matching (#541)
 
@@ -1289,6 +1290,44 @@ statement runs with the database's own rights, whoever committed.
 
 ```cypher
 CALL apoc.trigger.list() YIELD name, selector, paused RETURN name, selector.phase, paused
+```
+
+### Sequences
+
+A sequence hands out unique, increasing numbers for human-readable ids such
+as `BUG-1042` or invoice numbers:
+
+```cypher
+CALL drevo.sequence.create('bug', {start: 1000, step: 1})
+```
+
+```cypher
+CREATE (b:Bug {title: 'crash on save', key: 'BUG-' + toString(drevo.sequence.next('bug'))})
+RETURN b.key
+```
+
+- `drevo.sequence.next(name)` returns the next value; `drevo.sequence.current(name)`
+  the last one handed out, or `null` before the first.
+- Values live outside transactions. Concurrent writers never wait for each
+  other or conflict over a number, and a rolled-back transaction or a failed
+  statement leaves a gap: its value is not handed out again.
+- A sequence counts from `start` (default 1) by `step` (default 1; negative
+  counts down).
+- Sequences are kept in `sequences.json` next to the database's log. Values are
+  reserved in blocks of 1000, and a restart resumes after the reserved block:
+  it may skip numbers but never repeats one. Backups include the file.
+
+| Procedure | Yields | Does |
+|-----------|--------|------|
+| `drevo.sequence.create(name[, {start, step}])` | `name, start, step, current` | create a sequence |
+| `drevo.sequence.drop(name)` | `name, start, step, current` | remove it (no row when there was none) |
+| `drevo.sequence.list()` | `name, start, step, current` | every sequence, by name |
+
+Creating and dropping need `EXECUTE ADMIN PROCEDURES` and are refused inside an
+explicit transaction; on a read-only database no value is handed out.
+
+```cypher
+CALL drevo.sequence.list() YIELD name, current RETURN name, current
 ```
 
 ### Fuzzy matching (#593)

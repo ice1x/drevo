@@ -227,6 +227,9 @@ pub use drevo_core::native_path_index;
 /// Opt-in trigram text indexes for `CONTAINS` / `STARTS WITH` / `ENDS WITH`
 /// (issue #589), re-exported from `drevo-core`.
 pub use drevo_core::native_text_index;
+/// Named sequences: unique, increasing numbers handed out outside
+/// transactions (`drevo.sequence.*`).
+pub use drevo_core::sequence;
 /// Write-ahead-log encodings (issue #582), re-exported from `drevo-core`.
 pub use drevo_core::wal_format;
 /// Arrow Flight endpoint (issue #584): Cypher results as Arrow record

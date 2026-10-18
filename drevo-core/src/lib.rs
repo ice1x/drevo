@@ -63,6 +63,8 @@
 //! - Replication: [`replica`], [`delta`], [`hlc`], [`lww`].
 //! - Backups: [`backup`], an online physical copy of a durable store and its
 //!   restore.
+//! - Counters: [`sequence`], named sequences that hand out unique, increasing
+//!   numbers outside transactions.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod backup;
@@ -84,6 +86,7 @@ pub mod native_path_index;
 pub mod native_property_index;
 pub mod native_text_index;
 pub mod replica;
+pub mod sequence;
 pub mod tokenizer;
 pub mod value_encoding;
 pub mod wal_format;

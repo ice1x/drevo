@@ -50,6 +50,7 @@ const WAL_TAIL_FILE: &str = "native.wal.tail";
 const ORIGIN_FILE: &str = "origin.json";
 const TOMBSTONES_FILE: &str = "tombstones.json";
 const STAMPS_FILE: &str = "stamps.jsonl";
+const SEQUENCES_FILE: &str = "sequences.json";
 
 /// Names an extra file may not take.
 const RESERVED: &[&str] = &[
@@ -59,6 +60,7 @@ const RESERVED: &[&str] = &[
     ORIGIN_FILE,
     TOMBSTONES_FILE,
     STAMPS_FILE,
+    SEQUENCES_FILE,
     "native.wal.lock",
 ];
 
@@ -355,6 +357,7 @@ impl NativeGraph {
         files.push(write_file(dir, ORIGIN_FILE, &snapshot.origin)?);
         files.push(write_file(dir, TOMBSTONES_FILE, &snapshot.tombstones)?);
         files.push(write_file(dir, STAMPS_FILE, &snapshot.stamps)?);
+        files.push(write_file(dir, SEQUENCES_FILE, &snapshot.sequences)?);
         for (name, bytes) in &options.extra_files {
             files.push(write_file(dir, name, bytes)?);
         }
