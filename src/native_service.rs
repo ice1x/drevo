@@ -425,7 +425,7 @@ impl NativeService {
             path_indexes.specs(),
             path_indexes.text_specs(),
         ));
-        Ok(Self {
+        let service = Self {
             graph,
             indexes,
             #[cfg(feature = "http")]
@@ -457,7 +457,11 @@ impl NativeService {
             #[cfg(not(target_arch = "wasm32"))]
             trigger_worker: std::sync::OnceLock::new(),
             event_bus: crate::event_bus::EventBus::new(),
-        })
+        };
+        // The engine seeds the feed with a copy of the whole graph; the
+        // indexes have consumed it, so keep only the event history.
+        service.trim_feed();
+        Ok(service)
     }
 
     /// Install the server-side query embedder (once; later calls return
@@ -871,16 +875,7 @@ impl NativeService {
             // feed. (A cursor below the new floor would only mean a lagged
             // rebuild — every index handles that — but by construction the
             // service's indexes never lag past their own synced head.)
-            let synced = self
-                .indexes
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .synced_head;
-            // Keep the latest changes for event subscribers to resume from;
-            // an older cursor is told to reload (`GET /events`).
-            let history = self.event_history.load(Ordering::Relaxed);
-            let keep_from = self.graph.change_head().saturating_sub(history);
-            self.graph.trim_before(synced.min(keep_from));
+            self.trim_feed();
         }
         self.compacting.store(false, Ordering::SeqCst);
     }
@@ -966,11 +961,27 @@ impl NativeService {
             .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))
     }
 
-    /// Keep the latest `changes` committed changes in the change feed after
-    /// each compaction, and as many named events, for event subscribers to
-    /// resume from (default [`Self::DEFAULT_EVENT_HISTORY`]).
+    /// Keep the latest `changes` committed changes in the change feed, and as
+    /// many named events, for event subscribers to resume from (default
+    /// [`Self::DEFAULT_EVENT_HISTORY`]). Older history is dropped now and
+    /// after each compaction.
     pub fn set_event_history(&self, changes: u64) {
         self.event_history.store(changes, Ordering::Relaxed);
+        self.trim_feed();
+    }
+
+    /// Drop change-feed history older than the event history, never past
+    /// what the indexes have consumed. An older cursor is told to reload
+    /// (`GET /events`).
+    fn trim_feed(&self) {
+        let synced = self
+            .indexes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .synced_head;
+        let history = self.event_history.load(Ordering::Relaxed);
+        let keep_from = self.graph.change_head().saturating_sub(history);
+        self.graph.trim_before(synced.min(keep_from));
     }
 
     /// The position of the latest committed change in the change feed.

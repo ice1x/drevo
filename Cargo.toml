@@ -297,6 +297,13 @@ name = "privilege_bench"
 harness = false
 required-features = ["auth"]
 
+# Heap bytes per node and per relationship for the engine and each secondary
+# index, on an OpenStreetMap road network. Custom `main` with a counting
+# allocator; reads the extract named by `DREVO_OSM_JSON`, no-ops without it.
+[[bench]]
+name = "memory_footprint_bench"
+harness = false
+
 # Routing on a real road network: weighted path search over an
 # OpenStreetMap extract. Custom `main`; reads the extract named by
 # `DREVO_OSM_JSON` and no-ops without it.
