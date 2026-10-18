@@ -356,6 +356,7 @@ async fn alter_database_over_http_switches_access_and_show_databases_reports_it(
 
     let (_, body) = call(&app, "GET", "/databases", None).await;
     assert_eq!(body["databases"], serde_json::json!(["drevo", "erp"]));
+    assert_eq!(body["read_only_server"], false);
     assert_eq!(
         body["access"],
         serde_json::json!({"drevo": "read-write", "erp": "read-only"})
@@ -423,6 +424,9 @@ async fn a_read_only_server_answers_catalog_changes_with_403() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     let (status, body) = call(&app, "POST", "/storage/shrink", Some("{}")).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (_, body) = call(&app, "GET", "/databases", None).await;
+    assert_eq!(body["read_only_server"], true);
 
     let (status, body) = call(&app, "GET", "/export/graphml", None).await;
     assert_eq!(status, StatusCode::OK, "export works: {body}");

@@ -2213,6 +2213,18 @@ async fn ui_transactions_view_module_serves_to_client() {
 }
 
 #[tokio::test]
+async fn ui_db_access_module_serves_to_client() {
+    // The database-access helpers of the top bar, unit-tested by
+    // db_access.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/db_access.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoDbAccess"));
+    assert!(body.contains("read_only_server"));
+}
+
+#[tokio::test]
 async fn ui_backups_view_module_serves_to_client() {
     // The physical-backup helpers of the Storage panel, unit-tested by
     // backups_view.test.js.

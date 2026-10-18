@@ -646,6 +646,9 @@ pub struct DatabaseListResponse {
     pub default: &'static str,
     /// Each database's access, `read-write` or `read-only`, by name.
     pub access: std::collections::BTreeMap<String, &'static str>,
+    /// The whole server is read-only (`DREVO_READ_ONLY`): no database can be
+    /// created or dropped.
+    pub read_only_server: bool,
 }
 
 /// Request body for `POST /databases` — create a new named database.

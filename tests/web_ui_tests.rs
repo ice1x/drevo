@@ -580,6 +580,37 @@ async fn ui_serves_transactions_view_module_and_the_storage_list() {
     assert!(idx.contains("id=\"storage-transactions\""));
 }
 
+// The top bar marks read-only databases: the pure helpers are served
+// same-origin before app.js, and the picker has the badge.
+#[tokio::test]
+async fn ui_serves_db_access_module_and_the_read_only_badge() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/db_access.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/javascript"), "got {ct:?}");
+    let js = String::from_utf8(bytes).expect("utf-8");
+    for needle in [
+        "DrevoDbAccess",
+        "isReadOnly",
+        "optionLabel",
+        "canCreateDatabases",
+        "writeBlockedReason",
+    ] {
+        assert!(js.contains(needle), "db_access.js must define {needle}");
+    }
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let da = idx
+        .find("/ui/db_access.js")
+        .expect("index.html must load db_access.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(da < appjs, "db_access.js must load before app.js");
+    assert!(
+        idx.contains("id=\"db-access\""),
+        "the picker must hold the badge"
+    );
+}
+
 // The Storage panel takes physical backups: the pure helpers are served
 // same-origin before app.js, and the page has the list and both buttons.
 #[tokio::test]

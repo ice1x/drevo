@@ -253,6 +253,18 @@ body {
   transition: border-color 0.12s ease;
 }
 .db-new:hover { border-color: var(--accent); }
+.db-new:disabled { opacity: 0.45; cursor: not-allowed; }
+.db-new:disabled:hover { border-color: var(--border-strong); }
+/* The active database refuses writes. */
+.db-access {
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: 0.75em;
+  white-space: nowrap;
+}
+.db-access[hidden] { display: none; }
 
 /* Three-column layout: results | canvas | inspector. */
 .layout {
