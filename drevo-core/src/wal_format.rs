@@ -276,8 +276,9 @@ pub fn read_record(format: WalFormat, bytes: &[u8], pos: usize) -> Record {
 }
 
 /// What [`replay`] found in a log.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Replayed {
+pub(crate) enum Replayed {
     /// The file holds only the beginning of a binary header; nothing in it
     /// was ever acknowledged.
     TornHeader,
@@ -296,6 +297,7 @@ pub enum Replayed {
 }
 
 /// The bytes [`replay`] reads at a time.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const REPLAY_CHUNK: usize = 4 << 20;
 
 /// Read a log from `reader` record by record, `chunk` bytes at a time, and
@@ -309,6 +311,7 @@ pub(crate) const REPLAY_CHUNK: usize = 4 << 20;
 /// # Errors
 /// [`CoreError::Io`] on a read failure, an unreadable header (see
 /// [`detect`]) or a corrupt record; `path` names the log in the message.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn replay<R: std::io::Read>(
     mut reader: R,
     chunk: usize,
