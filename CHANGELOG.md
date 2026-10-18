@@ -8,6 +8,15 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Weighted paths for routing** (issue #680). `CALL
+  drevo.path.weighted(start, end, {relTypes, direction, cost, heuristic,
+  maxCost}) YIELD path, cost` returns the path with the lowest summed cost of
+  a numeric relationship property (`car_s`, `walk_s`, …), over several
+  relationship types and one direction, once per input row. With
+  `heuristic: {lat, lon, maxSpeedMps}` it is an A* search, otherwise a
+  bidirectional Dijkstra; `maxCost` stops it at a budget, and a negative cost
+  is an error. `NativeService::weighted_path` and
+  `drevo::weighted_path::weighted_path` do the same in Rust.
 - **Read-only databases** (issue #642). `ALTER DATABASE <name> SET ACCESS
   READ ONLY | READ WRITE` switches one database and is remembered across
   restarts (`<data_dir>/database_access.json`). `DREVO_READ_ONLY=true` serves
