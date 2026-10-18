@@ -101,12 +101,12 @@ struct Inner {
     // pointer-bump handle (`get_node_arc`/`neighbors_arc`) instead of deep-
     // cloning the record, and so copy-on-write of `Inner` for a snapshot clones
     // `Arc`s rather than every node body/property map.
-    nodes: HashMap<u64, Arc<Node>>,
-    edges: HashMap<u64, Arc<Edge>>,
+    nodes: crate::dense_map::DenseMap<Arc<Node>>,
+    edges: crate::dense_map::DenseMap<Arc<Edge>>,
     /// `from_id → entries` (neighbour = the edge's `to_id`), insertion order.
-    out_adj: HashMap<u64, Vec<AdjEntry>>,
+    out_adj: crate::dense_map::DenseMap<Vec<AdjEntry>>,
     /// `to_id → entries` (neighbour = the edge's `from_id`), insertion order.
-    in_adj: HashMap<u64, Vec<AdjEntry>>,
+    in_adj: crate::dense_map::DenseMap<Vec<AdjEntry>>,
     /// `title → ids of the nodes with that title`, ascending. Titles are
     /// ordinary values; any number of nodes may share one.
     titles: HashMap<String, crate::id_set::IdSet>,
@@ -700,7 +700,7 @@ impl Inner {
         let edge = new_edge.into_edge(id);
         let kind_id = self.intern_kind(&edge.kind);
         insert_adj_sorted(
-            self.out_adj.entry(edge.from_id).or_default(),
+            self.out_adj.entry_or_default(edge.from_id),
             AdjEntry {
                 edge_id: id,
                 neighbor_id: edge.to_id,
@@ -708,7 +708,7 @@ impl Inner {
             },
         );
         insert_adj_sorted(
-            self.in_adj.entry(edge.to_id).or_default(),
+            self.in_adj.entry_or_default(edge.to_id),
             AdjEntry {
                 edge_id: id,
                 neighbor_id: edge.from_id,
@@ -873,7 +873,7 @@ impl Inner {
                 }
                 let kind_id = self.intern_kind(&edge.kind);
                 insert_adj_sorted(
-                    self.out_adj.entry(edge.from_id).or_default(),
+                    self.out_adj.entry_or_default(edge.from_id),
                     AdjEntry {
                         edge_id: edge.id,
                         neighbor_id: edge.to_id,
@@ -881,7 +881,7 @@ impl Inner {
                     },
                 );
                 insert_adj_sorted(
-                    self.in_adj.entry(edge.to_id).or_default(),
+                    self.in_adj.entry_or_default(edge.to_id),
                     AdjEntry {
                         edge_id: edge.id,
                         neighbor_id: edge.from_id,
@@ -1419,7 +1419,7 @@ pub struct NativeGraph {
     ///
     /// [`tombstones`]: Self::tombstones
     /// [`stamp_log`]: Self::stamp_log
-    stamps: RwLock<HashMap<StampTarget, Stamp>>,
+    stamps: RwLock<StampTable>,
     /// The [`Tomb`] of each **deleted** node/edge — its causal [`Stamp`] plus the
     /// entity's `uuid`. Kept disjoint from [`stamps`]: a target is
     /// either live (in `stamps`) or deleted (here), and the greater stamp wins.
@@ -1535,6 +1535,63 @@ pub enum StampTarget {
     Node(u64),
     /// The edge with this id.
     Edge(u64),
+}
+
+/// The live [`Stamp`] of every node and edge, in id-indexed tables (see
+/// [`crate::dense_map::DenseMap`]) — one slot per entity instead of a hash
+/// table entry.
+#[derive(Debug, Clone, Default)]
+struct StampTable {
+    nodes: crate::dense_map::DenseMap<Stamp>,
+    edges: crate::dense_map::DenseMap<Stamp>,
+}
+
+impl StampTable {
+    fn side(&self, target: StampTarget) -> (&crate::dense_map::DenseMap<Stamp>, u64) {
+        match target {
+            StampTarget::Node(id) => (&self.nodes, id),
+            StampTarget::Edge(id) => (&self.edges, id),
+        }
+    }
+
+    fn side_mut(&mut self, target: StampTarget) -> (&mut crate::dense_map::DenseMap<Stamp>, u64) {
+        match target {
+            StampTarget::Node(id) => (&mut self.nodes, id),
+            StampTarget::Edge(id) => (&mut self.edges, id),
+        }
+    }
+
+    fn get(&self, target: &StampTarget) -> Option<&Stamp> {
+        let (side, id) = self.side(*target);
+        side.get(&id)
+    }
+
+    fn insert(&mut self, target: StampTarget, stamp: Stamp) -> Option<Stamp> {
+        let (side, id) = self.side_mut(target);
+        side.insert(id, stamp)
+    }
+
+    fn remove(&mut self, target: &StampTarget) -> Option<Stamp> {
+        let (side, id) = self.side_mut(*target);
+        side.remove(&id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn len(&self) -> usize {
+        self.nodes.len() + self.edges.len()
+    }
+
+    /// Every `(target, stamp)`: nodes, then edges.
+    fn iter(&self) -> impl Iterator<Item = (StampTarget, &Stamp)> {
+        self.nodes
+            .iter()
+            .map(|(id, s)| (StampTarget::Node(id), s))
+            .chain(self.edges.iter().map(|(id, s)| (StampTarget::Edge(id), s)))
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Stamp> {
+        self.iter().map(|(_, s)| s)
+    }
 }
 
 /// Mint a fresh random replica [`OriginId`] from the random bits of a UUIDv7
@@ -1821,24 +1878,18 @@ fn recover_stamps(
     inner: &Inner,
     mut logged: HashMap<StampTarget, Stamp>,
     origin: OriginId,
-) -> HashMap<StampTarget, Stamp> {
+) -> StampTable {
     let lowest = Stamp::new(crate::hlc::Hlc::default(), origin);
-    // In place: keep the logged stamps of entities that exist, then add the
-    // lowest stamp for those with none — one table, not two.
-    logged.retain(|target, _| match target {
-        StampTarget::Node(id) => inner.nodes.contains_key(id),
-        StampTarget::Edge(id) => inner.edges.contains_key(id),
-    });
+    let mut stamps = StampTable::default();
     let targets = inner
         .nodes
         .keys()
-        .map(|&id| StampTarget::Node(id))
-        .chain(inner.edges.keys().map(|&id| StampTarget::Edge(id)));
+        .map(StampTarget::Node)
+        .chain(inner.edges.keys().map(StampTarget::Edge));
     for target in targets {
-        logged.entry(target).or_insert(lowest);
+        stamps.insert(target, logged.remove(&target).unwrap_or(lowest));
     }
-    logged.shrink_to_fit();
-    logged
+    stamps
 }
 
 /// The open stamp log of a durable store: its path, an append handle and the
@@ -1854,15 +1905,12 @@ struct StampLog {
 impl StampLog {
     /// Write `stamps` to `path` as one line per entry, atomically (temp file,
     /// then rename; no `fsync`), and open it for appends.
-    fn rewrite(
-        path: std::path::PathBuf,
-        stamps: &HashMap<StampTarget, Stamp>,
-    ) -> std::io::Result<Self> {
+    fn rewrite(path: std::path::PathBuf, stamps: &StampTable) -> std::io::Result<Self> {
         use std::io::Write;
         let tmp = path.with_extension("jsonl.tmp");
         {
             let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-            for entry in stamps {
+            for entry in stamps.iter() {
                 serde_json::to_writer(&mut out, &entry).map_err(std::io::Error::other)?;
                 out.write_all(b"\n")?;
             }
@@ -2258,7 +2306,7 @@ impl NativeGraph {
             stamps
                 .iter()
                 .filter(|(_, stamp)| !remote.dominates(**stamp))
-                .map(|(target, stamp)| (*target, *stamp))
+                .map(|(target, stamp)| (target, *stamp))
                 .collect()
         };
         // Tombstones carry the deleted entity's uuid so the receiver can remap.
@@ -2607,11 +2655,12 @@ impl NativeGraph {
     /// Fetch a node by its globally-unique `uuid`.
     pub fn get_node_by_uuid(&self, uuid: [u8; 16]) -> Option<Node> {
         let inner = read(&self.inner);
-        inner
+        let found = inner
             .nodes
             .values()
             .find(|n| n.uuid == uuid)
-            .map(|a| (**a).clone())
+            .map(|a| (**a).clone());
+        found
     }
 
     /// The oldest node (lowest id) whose `title` is `title`. Titles are not
@@ -3537,7 +3586,7 @@ impl NativeGraph {
             group: GroupCommit::default(),
             origin: mint_origin(),
             clock: std::sync::Mutex::new(HlcClock::new()),
-            stamps: RwLock::new(HashMap::new()),
+            stamps: RwLock::new(StampTable::default()),
             tombstones: RwLock::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             stamp_log: std::sync::Mutex::new(None),
@@ -3897,7 +3946,7 @@ impl NativeGraph {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|(t, s)| (*t, *s))
+            .map(|(t, s)| (t, *s))
             .collect();
         drop(sink);
         drop(inner);
@@ -4822,7 +4871,7 @@ impl GraphSnapshot {
     /// consistent one-version view with no locking.
     #[must_use]
     pub fn csr_out(&self) -> CsrAdjacency {
-        let mut vertices: Vec<u64> = self.inner.nodes.keys().copied().collect();
+        let mut vertices: Vec<u64> = self.inner.nodes.keys().collect();
         vertices.sort_unstable();
         CsrAdjacency::from_out_neighbors(vertices, |id| {
             self.inner.neighbor_ids(id, Direction::Outgoing, None)
@@ -4837,7 +4886,7 @@ impl GraphSnapshot {
     /// run over it exactly as forward ones run over `csr_out`.
     #[must_use]
     pub fn csr_in(&self) -> CsrAdjacency {
-        let mut vertices: Vec<u64> = self.inner.nodes.keys().copied().collect();
+        let mut vertices: Vec<u64> = self.inner.nodes.keys().collect();
         vertices.sort_unstable();
         CsrAdjacency::from_out_neighbors(vertices, |id| {
             self.inner.neighbor_ids(id, Direction::Incoming, None)

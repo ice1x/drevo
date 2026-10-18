@@ -71,6 +71,7 @@ pub mod backup;
 pub mod bm25;
 pub mod csr;
 pub mod delta;
+mod dense_map;
 pub mod dump;
 pub mod engine;
 pub mod error;
