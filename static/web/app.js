@@ -59,6 +59,10 @@
   const $themeToggle = document.getElementById("theme-toggle");
   const $dbSelect = document.getElementById("db-select");
   const $dbNew = document.getElementById("db-new");
+  const $dbAccess = document.getElementById("db-access");
+  const DbAccess = window.DrevoDbAccess;
+  // The last GET /databases answer: names, default, each one's access.
+  let databasesInfo = null;
   const $storageToggle = document.getElementById("storage-toggle");
   const $storageModal = document.getElementById("storage-modal");
   const $storageClose = document.getElementById("storage-close");
@@ -771,6 +775,7 @@
         $storageShrink.disabled = false;
         $storageShrink.textContent = "Shrink";
       }
+      showAccess();
     }
   }
 
@@ -2319,18 +2324,42 @@
     if (!$dbSelect) return;
     try {
       const info = await apiGet("/databases");
+      databasesInfo = info;
       const names = info.databases || ["drevo"];
       if (!names.includes(currentDb)) currentDb = info.default || "drevo";
       $dbSelect.innerHTML = "";
       for (const name of names) {
         const opt = document.createElement("option");
         opt.value = name;
-        opt.textContent = name;
+        opt.textContent = DbAccess ? DbAccess.optionLabel(info, name) : name;
         if (name === currentDb) opt.selected = true;
         $dbSelect.appendChild(opt);
       }
+      showAccess();
     } catch (e) {
       status(`Could not load databases: ${e.message}`, "error");
+    }
+  }
+
+  // Mark the active database read-only, and turn off what would write: the
+  // read-only badge next to the picker, the New database button on a
+  // read-only server, and Shrink.
+  function showAccess() {
+    if (!DbAccess) return;
+    const reason = DbAccess.writeBlockedReason(databasesInfo, currentDb);
+    if ($dbAccess) {
+      $dbAccess.hidden = reason === null;
+      if (reason) $dbAccess.title = `${reason} Reads, search and export work.`;
+    }
+    if ($dbNew) {
+      const canCreate = DbAccess.canCreateDatabases(databasesInfo);
+      $dbNew.disabled = !canCreate;
+      $dbNew.title = canCreate ? "Create a new database" : "The server is read-only.";
+    }
+    if ($storageShrink) {
+      $storageShrink.disabled = reason !== null;
+      $storageShrink.title =
+        reason || "Rebuild the database file in place to reclaim bloat (online, no restart)";
     }
   }
 
@@ -2340,6 +2369,7 @@
   async function switchDatabase(name) {
     if (!name || name === currentDb) return;
     currentDb = name;
+    showAccess();
     graphCache = null;
     activeKind = null;
     if (liveSource) openLiveStream();

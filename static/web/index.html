@@ -72,6 +72,8 @@
     <div class="db-picker" title="Active database">
       <label for="db-select" class="db-label">db</label>
       <select id="db-select" class="db-select" aria-label="Active database"></select>
+      <span id="db-access" class="db-access" hidden
+            title="Writes and schema changes are refused">read-only</span>
       <button type="button" id="db-new" class="db-new"
               title="Create a new database" aria-label="New database">+</button>
     </div>
@@ -402,6 +404,9 @@
   <!-- Physical-backup helpers for the Storage panel (unit-tested in
        backups_view.test.js); app.js reads window.DrevoBackupsView. -->
   <script src="/ui/backups_view.js"></script>
+  <!-- Database-access helpers for the top bar (unit-tested in
+       db_access.test.js); app.js reads window.DrevoDbAccess. -->
+  <script src="/ui/db_access.js"></script>
   <!-- Live overview helpers (pure, unit-tested under node --test in
        live_refresh.test.js); app.js reads window.DrevoLiveRefresh. -->
   <script src="/ui/live_refresh.js"></script>

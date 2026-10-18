@@ -15,6 +15,7 @@
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/transactions_view.js` → `transactions_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/backups_view.js` → `backups_view.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/db_access.js` → `db_access.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/live_refresh.js` → `live_refresh.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/results_view.js` → `results_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/query_history.js` → `query_history.js` (`text/javascript; charset=utf-8`)
@@ -82,6 +83,11 @@ const TRANSACTIONS_VIEW_JS: &str = include_str!("../static/web/transactions_view
 /// backups, used by `app.js`. Unit-tested by `backups_view.test.js` under
 /// `node --test`.
 const BACKUPS_VIEW_JS: &str = include_str!("../static/web/backups_view.js");
+
+/// `db_access.js` body — pure helpers for marking read-only databases in the
+/// top bar, used by `app.js`. Unit-tested by `db_access.test.js` under
+/// `node --test`.
+const DB_ACCESS_JS: &str = include_str!("../static/web/db_access.js");
 
 /// `live_refresh.js` body — pure helpers for the live overview (the
 /// `GET /events` URL, change coalescing, the remembered switch), used by
@@ -157,6 +163,12 @@ pub async fn serve_transactions_view_js() -> Response {
 /// depends on.
 pub async fn serve_backups_view_js() -> Response {
     asset_response(BACKUPS_VIEW_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/db_access.js` → serve the database-access helpers `app.js`
+/// depends on.
+pub async fn serve_db_access_js() -> Response {
+    asset_response(DB_ACCESS_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/live_refresh.js` → serve the live-overview helpers `app.js`
@@ -635,6 +647,29 @@ mod tests {
         assert!(
             APP_JS.contains("DrevoTransactionsView") && APP_JS.contains("terminateRequest"),
             "app.js must list and terminate transactions through DrevoTransactionsView"
+        );
+    }
+
+    #[test]
+    fn embedded_db_access_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(
+            DB_ACCESS_JS.contains("DrevoDbAccess") && DB_ACCESS_JS.contains("isReadOnly"),
+            "db_access.js must export isReadOnly on DrevoDbAccess"
+        );
+        assert!(
+            !DB_ACCESS_JS.contains("document") && !DB_ACCESS_JS.contains("window."),
+            "db_access.js must stay DOM-free so it is unit-testable under node"
+        );
+        let da = INDEX_HTML
+            .find("/ui/db_access.js")
+            .expect("index.html must load db_access.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(da < appjs, "db_access.js must load before app.js");
+        assert!(
+            APP_JS.contains("DrevoDbAccess") && APP_JS.contains("writeBlockedReason"),
+            "app.js must mark read-only databases through DrevoDbAccess"
         );
     }
 

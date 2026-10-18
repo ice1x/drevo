@@ -530,7 +530,8 @@ curl -X POST http://localhost:8080/cypher -H 'content-type: application/json' \
 
 The setting is kept in `<data_dir>/database_access.json`, so it survives a restart.
 `SHOW DATABASES` has an `access` column (`read-only` or `read-write`), and `GET /databases` an
-`access` map. With logins required, `ALTER DATABASE` needs `DATABASE MANAGEMENT`.
+`access` map and `read_only_server`. The Web UI marks a read-only database in its picker. With
+logins required, `ALTER DATABASE` needs `DATABASE MANAGEMENT`.
 
 `DREVO_READ_ONLY=true` makes the whole server read-only:
 
