@@ -50,6 +50,7 @@ use drevo::native::NativeGraph;
 struct Counting;
 
 static LIVE: AtomicIsize = AtomicIsize::new(0);
+static PEAK: AtomicIsize = AtomicIsize::new(0);
 
 // SAFETY: every call is forwarded to `System` unchanged; the counter is only
 // bookkeeping.
@@ -58,7 +59,9 @@ unsafe impl GlobalAlloc for Counting {
         // SAFETY: forwarded with the caller's layout.
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
-            LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
+            let now =
+                LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed) + layout.size() as isize;
+            PEAK.fetch_max(now, Ordering::Relaxed);
         }
         p
     }
@@ -189,6 +192,11 @@ fn report_rss(what: &str) {
 fn reopen_only(wal: &str) {
     let before = live();
     let svc = drevo::native_service::NativeService::open(wal).expect("open service");
+    report_rss("  process after open, before any query");
+    println!(
+        "  peak heap during open {:.1} MB",
+        mb(PEAK.load(Ordering::Relaxed) - before)
+    );
     svc.execute(
         &drevo::cypher::parser::parse("MATCH (n) RETURN count(n)").expect("parse"),
         HashMap::new(),
