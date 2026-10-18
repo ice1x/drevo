@@ -26,6 +26,7 @@
 //! | `DREVO_PORT`      | `8080`      | TCP port (1..=65535)              |
 //! | `DREVO_DATA_DIR`  | `/data`     | Directory holding `native.wal`    |
 //! | `DREVO_BACKUP_DIR` | `<data_dir>/backups` | Where `POST /admin/backup` writes physical backups |
+//! | `DREVO_READ_ONLY` | `false`     | Serve every database read-only: reads, search and export work, writes and schema changes fail with `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase`, and nothing in the data directory is written |
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
 //! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS and Bolt as `bolt+s://` (`bolt-tls` feature) |
@@ -133,6 +134,8 @@ pub struct Config {
     /// Whether a refused statement's text goes into its audit event, from
     /// `DREVO_AUDIT_QUERY_TEXT`.
     pub audit_query_text: bool,
+    /// Serve every database read-only, from `DREVO_READ_ONLY`.
+    pub read_only: bool,
     /// The identity provider whose bearer tokens sign users in, from
     /// `DREVO_OIDC_*`; `None` without `DREVO_OIDC_ISSUER`.
     pub oidc: Option<OidcSettings>,
@@ -285,6 +288,12 @@ pub enum ConfigError {
     InvalidAudit {
         /// Why they were rejected.
         reason: String,
+    },
+    /// `DREVO_READ_ONLY` is not a boolean.
+    #[error("invalid DREVO_READ_ONLY value `{value}`: expected true or false")]
+    InvalidReadOnly {
+        /// The value as given.
+        value: String,
     },
     /// A `DREVO_OIDC_*` setting is missing or malformed, or the build has
     /// no `oidc` feature.
@@ -477,6 +486,19 @@ impl Config {
             },
         };
 
+        let read_only = match getter("DREVO_READ_ONLY").as_deref().map(str::trim) {
+            None | Some("") => false,
+            Some(v) => match v.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => {
+                    return Err(ConfigError::InvalidReadOnly {
+                        value: v.to_string(),
+                    })
+                }
+            },
+        };
+
         let oidc = oidc_settings(&getter)?;
 
         let auth_raw = getter("DREVO_AUTH");
@@ -515,6 +537,7 @@ impl Config {
             tls,
             audit_log,
             audit_query_text,
+            read_only,
             oidc,
         })
     }
@@ -927,10 +950,13 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // opens anything.
     let tls = load_tls(&cfg)?;
     let wal = cfg.data_dir.join("native.wal");
-    tracing::info!(wal = %wal.display(), "engine=native-durable — opening the durable native store");
-    let service = std::sync::Arc::new(
-        crate::native_service::NativeService::open(&wal).map_err(RunError::NativeOpen)?,
-    );
+    tracing::info!(wal = %wal.display(), read_only = cfg.read_only, "engine=native-durable — opening the durable native store");
+    let opened = if cfg.read_only {
+        crate::native_service::NativeService::open_read_only(&wal)
+    } else {
+        crate::native_service::NativeService::open(&wal)
+    };
+    let service = std::sync::Arc::new(opened.map_err(RunError::NativeOpen)?);
     tracing::info!("durable native store ready");
     // Shared, persisted embeddings config store (Web-UI-settable), same as the
     // KV path: file wins over `DREVO_EMBEDDINGS_*`.
@@ -946,17 +972,22 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // which protocol created them. Durable: non-default databases persist in
     // `<data_dir>/databases/<name>/`, and every one from a previous run is
     // re-opened here on startup.
-    let registry = std::sync::Arc::new(
+    let opened = if cfg.read_only {
+        crate::database_registry::DatabaseRegistry::with_durable_dir_read_only(
+            std::sync::Arc::clone(&service),
+            cfg.data_dir.clone(),
+        )
+    } else {
         crate::database_registry::DatabaseRegistry::with_durable_dir(
             std::sync::Arc::clone(&service),
             cfg.data_dir.clone(),
         )
-        .map_err(|e| {
-            RunError::NativeOpen(crate::error::DrevoError::Io(std::io::Error::other(
-                e.to_string(),
-            )))
-        })?,
-    );
+    };
+    let registry = std::sync::Arc::new(opened.map_err(|e| {
+        RunError::NativeOpen(crate::error::DrevoError::Io(std::io::Error::other(
+            e.to_string(),
+        )))
+    })?);
     // Opt-in statement timeout (#547): every database, including ones created
     // later through the catalog, stops a statement past this limit.
     registry.set_statement_timeout(cfg.query_timeout);

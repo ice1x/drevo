@@ -344,14 +344,42 @@ impl NativeService {
         path: impl AsRef<std::path::Path>,
         compact_every_ops: u64,
     ) -> Result<Self, DrevoError> {
+        Self::open_store(path.as_ref(), compact_every_ops, false)
+    }
+
+    /// Open the durable store at `path` for reading only: queries, search
+    /// and export work, and every write or schema change fails with
+    /// [`DrevoError::ReadOnly`]. Nothing next to the log is written, so the
+    /// store can sit in a directory the process cannot write to.
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::Io`] when there is no log at `path`,
+    /// [`DrevoError::Locked`] while a writer has it open, and as
+    /// [`Self::open`] for a corrupt log.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_read_only(path: impl AsRef<std::path::Path>) -> Result<Self, DrevoError> {
+        Self::open_store(path.as_ref(), Self::DEFAULT_COMPACT_EVERY_OPS, true)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_store(
+        path: &std::path::Path,
+        compact_every_ops: u64,
+        read_only: bool,
+    ) -> Result<Self, DrevoError> {
         // The replica identity (issue #389) lives on the store of record:
         // `NativeGraph::open_durable` loads/mints+persists `origin.json` next to
         // the WAL, reused across restarts.
-        let path = path.as_ref();
-        let graph = NativeGraph::open_durable_with(path, Self::default_wal_format())?;
-        // Compaction also rewrites a log written in another format in the
-        // configured one (issue #582).
-        graph.compact_wal()?;
+        let graph = if read_only {
+            NativeGraph::open_read_only(path)?
+        } else {
+            let graph = NativeGraph::open_durable_with(path, Self::default_wal_format())?;
+            // Compaction also rewrites a log written in another format in the
+            // configured one (issue #582).
+            graph.compact_wal()?;
+            graph
+        };
         let last_compact_head = AtomicU64::new(graph.change_head());
         let sidecar = semantic_sidecar_path(path);
         let SemanticSidecar {
@@ -478,6 +506,23 @@ impl NativeService {
     /// after compaction, for event subscribers to resume from.
     pub const DEFAULT_EVENT_HISTORY: u64 = 10_000;
 
+    /// Whether writes and schema changes are refused: opened with
+    /// [`Self::open_read_only`] or switched with [`Self::set_read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.graph.is_read_only()
+    }
+
+    /// Refuse every write and schema change from now on (`true`), or accept
+    /// them again (`false`).
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::ReadOnly`] to make a store opened with
+    /// [`Self::open_read_only`] writable.
+    pub fn set_read_only(&self, on: bool) -> Result<(), DrevoError> {
+        Ok(self.graph.set_read_only(on)?)
+    }
+
     /// The underlying engine — read-side introspection (counts, status).
     pub fn graph(&self) -> &NativeGraph {
         &self.graph
@@ -587,6 +632,11 @@ impl NativeService {
         params: HashMap<String, Value>,
         restriction: Option<Restriction<'_>>,
     ) -> Result<ExecResult, ExecError> {
+        // Schema lives beside the log, not in it, so the engine cannot refuse
+        // it; data writes are refused by the engine itself.
+        if self.is_read_only() && query_changes_schema(query) {
+            return Err(ExecError::Storage(DrevoError::ReadOnly));
+        }
         let checked_writes = restriction.is_some_and(|r| !r.writes_everything());
         let (result, events) = crate::event_bus::collect(|| {
             self.listed(|| {
@@ -2731,6 +2781,26 @@ fn query_calls_writing_procedure(query: &Query) -> bool {
                     | "drevo.memory.assertFact"
                     | "drevo.memory.retractFact"
             ))
+        })
+    })
+}
+
+/// Whether `query` creates or drops an index or constraint, or registers a
+/// semantic index: schema kept in `semantic.json`, beside the log.
+fn query_changes_schema(query: &Query) -> bool {
+    use crate::cypher::ast::Clause;
+    query.parts.iter().any(|part| {
+        part.query.clauses.iter().any(|c| match c {
+            Clause::CreateVectorIndex(_)
+            | Clause::CreatePathIndex(_)
+            | Clause::DropIndex(_)
+            | Clause::CreateConstraint(_)
+            | Clause::DropConstraint(_) => true,
+            Clause::Call(call) => matches!(
+                call.name.join(".").as_str(),
+                "drevo.semantic.register" | "drevo.semantic.registerRel"
+            ),
+            _ => false,
         })
     })
 }

@@ -250,6 +250,18 @@ async fn writing_procedures_need_write() {
 // ── Database access ──────────────────────────────────────────────────
 
 #[tokio::test]
+async fn switching_a_database_read_only_needs_database_management() {
+    let t = Tracker::seeded().await;
+    t.ok("admin", "CREATE DATABASE erp").await;
+    t.forbidden("ed", "ALTER DATABASE erp SET ACCESS READ ONLY")
+        .await;
+    t.ok("admin", "ALTER DATABASE erp SET ACCESS READ ONLY")
+        .await;
+    let rows = t.ok("admin", "SHOW DATABASES").await["rows"].to_string();
+    assert!(rows.contains(r#"["erp","read-only"]"#), "{rows}");
+}
+
+#[tokio::test]
 async fn a_database_without_access_cannot_be_used() {
     let t = Tracker::seeded().await;
     t.ok("admin", "CREATE DATABASE erp").await;

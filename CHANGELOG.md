@@ -8,6 +8,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Read-only databases** (issue #642). `ALTER DATABASE <name> SET ACCESS
+  READ ONLY | READ WRITE` switches one database and is remembered across
+  restarts (`<data_dir>/database_access.json`). `DREVO_READ_ONLY=true` serves
+  every database read-only and writes nothing in the data directory, so it
+  can be mounted read-only. Writes and schema changes fail with
+  `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase` (HTTP 403);
+  `SHOW DATABASES` gains an `access` column and `GET /databases` an `access`
+  map.
 - **drevo-core: read-only stores** (issue #642).
   `NativeGraph::open_read_only(path)` replays a durable store without ever
   writing to it: no sidecar is created or rewritten and a torn tail stays in

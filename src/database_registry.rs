@@ -27,6 +27,17 @@
 //! routing to a chosen database — the HTTP selector, the Bolt `db` field, and
 //! Cypher `USE` — landed in the routing slices; this closes the persistence gap
 //! that made non-default databases ephemeral.
+//!
+//! # Access
+//!
+//! A database is read-write or read-only. A registry opened with
+//! [`with_durable_dir_read_only`](crate::database_registry::DatabaseRegistry::with_durable_dir_read_only)
+//! (`DREVO_READ_ONLY=1`) holds only read-only databases and refuses to create,
+//! drop or switch any. Otherwise
+//! [`set_access`](crate::database_registry::DatabaseRegistry::set_access)
+//! switches one database (`ALTER DATABASE … SET ACCESS`) and the read-only
+//! ones are listed in `<data_dir>/database_access.json`, so they stay
+//! read-only after a restart.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -42,6 +53,18 @@ const DATABASES_SUBDIR: &str = "databases";
 /// WAL filename inside each per-database directory — the same basename the
 /// default store uses under the data dir, so the layout is uniform.
 const DB_WAL_FILE: &str = "native.wal";
+
+/// The file, under a durable registry's data dir, that lists the databases
+/// switched read-only: `{"read_only": ["erp"]}`.
+const ACCESS_FILE: &str = "database_access.json";
+
+/// What [`ACCESS_FILE`] holds.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct AccessFile {
+    /// The read-only databases, by name.
+    #[serde(default)]
+    read_only: Vec<String>,
+}
 
 /// Longest permitted database name, in bytes. Matches the conservative bound a
 /// per-database on-disk directory (a later slice) can carry on every target
@@ -87,6 +110,11 @@ pub enum RegistryError {
         /// The underlying I/O / WAL error, rendered.
         detail: String,
     },
+
+    /// The server is read-only (`DREVO_READ_ONLY`): no database can be
+    /// created, dropped or switched.
+    #[error("the server is read-only")]
+    ReadOnly,
 }
 
 /// Validate a database name.
@@ -137,6 +165,9 @@ pub struct DatabaseRegistry {
     /// WAL under `<data_dir>/databases/<name>/` and [`remove`](Self::remove)
     /// deletes it.
     data_dir: Option<PathBuf>,
+    /// Every database is read-only and the catalog cannot change
+    /// (`DREVO_READ_ONLY`).
+    read_only: bool,
 }
 
 // `NativeService` is not `Debug`, so derive would not apply; print the catalog
@@ -179,7 +210,32 @@ impl DatabaseRegistry {
         default: Arc<NativeService>,
         data_dir: impl Into<PathBuf>,
     ) -> Result<Self, RegistryError> {
-        let data_dir = data_dir.into();
+        Self::open_dir(default, data_dir.into(), false)
+    }
+
+    /// [`with_durable_dir`](Self::with_durable_dir) for a read-only server
+    /// (`DREVO_READ_ONLY`): every database is opened with
+    /// [`NativeService::open_read_only`], nothing in `data_dir` is written,
+    /// and the catalog cannot change. `default` should be opened read-only
+    /// too.
+    ///
+    /// # Errors
+    ///
+    /// As [`with_durable_dir`](Self::with_durable_dir).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_durable_dir_read_only(
+        default: Arc<NativeService>,
+        data_dir: impl Into<PathBuf>,
+    ) -> Result<Self, RegistryError> {
+        Self::open_dir(default, data_dir.into(), true)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_dir(
+        default: Arc<NativeService>,
+        data_dir: PathBuf,
+        read_only: bool,
+    ) -> Result<Self, RegistryError> {
         let default_name = crate::native_api::DEFAULT_DB;
         let mut restored = BTreeMap::new();
         let root = data_dir.join(DATABASES_SUBDIR);
@@ -203,14 +259,118 @@ impl DatabaseRegistry {
                     continue;
                 }
                 let wal = entry.path().join(DB_WAL_FILE);
-                let service = NativeService::open(&wal).map_err(|e| RegistryError::Storage {
+                let opened = if read_only {
+                    NativeService::open_read_only(&wal)
+                } else {
+                    NativeService::open(&wal)
+                };
+                let service = opened.map_err(|e| RegistryError::Storage {
                     name: name.clone(),
                     detail: e.to_string(),
                 })?;
                 restored.insert(name, Arc::new(service));
             }
         }
-        Ok(Self::build(default, restored, Some(data_dir)))
+        let access = Self::load_access(&data_dir)?;
+        let mut registry = Self::build(default, restored, Some(data_dir));
+        registry.read_only = read_only;
+        for (name, service) in registry.read().iter() {
+            if access.read_only.contains(name) {
+                service
+                    .set_read_only(true)
+                    .map_err(|e| RegistryError::Storage {
+                        name: name.clone(),
+                        detail: e.to_string(),
+                    })?;
+            }
+        }
+        Ok(registry)
+    }
+
+    /// The read-only databases listed in `data_dir`, or none without a list.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_access(data_dir: &Path) -> Result<AccessFile, RegistryError> {
+        let unreadable = |detail: String| RegistryError::Storage {
+            name: ACCESS_FILE.to_string(),
+            detail,
+        };
+        match std::fs::read(data_dir.join(ACCESS_FILE)) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| unreadable(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AccessFile::default()),
+            Err(e) => Err(unreadable(e.to_string())),
+        }
+    }
+
+    /// Write the list of read-only databases in `dbs` to the data dir
+    /// (temp file, then rename). Nothing to write for an in-memory registry.
+    fn persist_access(
+        &self,
+        dbs: &BTreeMap<String, Arc<NativeService>>,
+    ) -> Result<(), RegistryError> {
+        let Some(data_dir) = &self.data_dir else {
+            return Ok(());
+        };
+        let file = AccessFile {
+            read_only: dbs
+                .iter()
+                .filter(|(_, service)| service.is_read_only())
+                .map(|(name, _)| name.clone())
+                .collect(),
+        };
+        let failed = |detail: String| RegistryError::Storage {
+            name: ACCESS_FILE.to_string(),
+            detail,
+        };
+        let path = data_dir.join(ACCESS_FILE);
+        if file.read_only.is_empty() && !path.exists() {
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec_pretty(&file).map_err(|e| failed(e.to_string()))?;
+        let tmp = data_dir.join(format!("{ACCESS_FILE}.tmp"));
+        std::fs::write(&tmp, bytes).map_err(|e| failed(e.to_string()))?;
+        std::fs::rename(&tmp, &path).map_err(|e| failed(e.to_string()))
+    }
+
+    /// Whether the database named `name` refuses writes; `false` for an
+    /// unknown name.
+    #[must_use]
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.read().get(name).is_some_and(|s| s.is_read_only())
+    }
+
+    /// Whether the whole server is read-only (`DREVO_READ_ONLY`).
+    #[must_use]
+    pub fn server_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Make the database named `name` read-only (`true`) or read-write
+    /// (`false`) — `ALTER DATABASE name SET ACCESS READ ONLY | READ WRITE`.
+    /// A durable registry remembers it across restarts.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistryError::ReadOnly`] on a read-only server.
+    /// - [`RegistryError::NotFound`] for an unknown name.
+    /// - [`RegistryError::Storage`] if the access list cannot be written; the
+    ///   database keeps its previous access.
+    pub fn set_access(&self, name: &str, read_only: bool) -> Result<(), RegistryError> {
+        if self.read_only {
+            return Err(RegistryError::ReadOnly);
+        }
+        let dbs = self.write();
+        let service = dbs
+            .get(name)
+            .ok_or_else(|| RegistryError::NotFound(name.to_string()))?;
+        let before = service.is_read_only();
+        service
+            .set_read_only(read_only)
+            .map_err(|_| RegistryError::ReadOnly)?;
+        if let Err(e) = self.persist_access(&dbs) {
+            let _ = service.set_read_only(before);
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Shared constructor: seed the catalog with the default plus any
@@ -232,6 +392,7 @@ impl DatabaseRegistry {
             default,
             dbs: RwLock::new(dbs),
             data_dir,
+            read_only: false,
         }
     }
 
@@ -343,6 +504,9 @@ impl DatabaseRegistry {
     ///   the default) is already registered.
     /// - [`RegistryError::Storage`] if a durable WAL cannot be created / opened.
     pub fn create(&self, name: &str) -> Result<Arc<NativeService>, RegistryError> {
+        if self.read_only {
+            return Err(RegistryError::ReadOnly);
+        }
         validate_db_name(name)?;
         let mut dbs = self.write();
         if dbs.contains_key(name) {
@@ -406,6 +570,9 @@ impl DatabaseRegistry {
     ///   deleted (the catalog entry is already gone at that point — the database
     ///   is unreachable, but its files lingered).
     pub fn remove(&self, name: &str) -> Result<(), RegistryError> {
+        if self.read_only {
+            return Err(RegistryError::ReadOnly);
+        }
         if name == self.default_name {
             return Err(RegistryError::ProtectedDefault(name.to_string()));
         }
@@ -413,6 +580,8 @@ impl DatabaseRegistry {
         let Some(service) = dbs.remove(name) else {
             return Err(RegistryError::NotFound(name.to_string()));
         };
+        // A database created later under the same name starts read-write.
+        let forgotten = self.persist_access(&dbs);
         // Close this handle before touching the files. Other threads may still
         // hold an `Arc` (an in-flight routed query); on Unix that keeps the
         // now-unlinked WAL readable until they finish, which is the intended
@@ -428,7 +597,7 @@ impl DatabaseRegistry {
                 })?;
             }
         }
-        Ok(())
+        forgotten
     }
 
     /// Read-lock the catalog, recovering from a poisoned lock rather than

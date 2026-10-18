@@ -428,6 +428,12 @@ impl From<RegistryError> for ApiError {
             RegistryError::Storage { .. } => ApiError::Db(crate::error::DrevoError::Io(
                 std::io::Error::other(err.to_string()),
             )),
+            // A read-only server (#642): 403 with Neo4j's read-only code.
+            RegistryError::ReadOnly => ApiError::Coded {
+                status: StatusCode::FORBIDDEN,
+                code: crate::api::FORBIDDEN_ON_READ_ONLY_DATABASE,
+                message: err.to_string(),
+            },
         }
     }
 }
@@ -437,10 +443,7 @@ impl From<RegistryError> for ApiError {
 /// default database present this is `{ "databases": ["drevo"], "default":
 /// "drevo" }`, exactly as before.
 async fn list_databases(State(state): State<NativeApiState>) -> Json<DatabaseListResponse> {
-    Json(DatabaseListResponse {
-        databases: state.registry.list(),
-        default: state.registry.default_name(),
-    })
+    Json(database_list(&state.registry))
 }
 
 /// `POST /databases` — create a new named database (issue #523). The body is
@@ -457,13 +460,7 @@ async fn create_database(
 ) -> Result<(StatusCode, Json<DatabaseListResponse>), ApiError> {
     let Json(CreateDatabaseRequest { name }) = body?;
     state.registry.create(&name)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(DatabaseListResponse {
-            databases: state.registry.list(),
-            default: state.registry.default_name(),
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(database_list(&state.registry))))
 }
 
 /// `DELETE /databases/{name}` — drop a named database (issue #523). Dropping the
@@ -474,10 +471,7 @@ async fn drop_database(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<Json<DatabaseListResponse>, ApiError> {
     state.registry.remove(&name)?;
-    Ok(Json(DatabaseListResponse {
-        databases: state.registry.list(),
-        default: state.registry.default_name(),
-    }))
+    Ok(Json(database_list(&state.registry)))
 }
 
 /// `GET /nodes/{id}` — one node, the KV route's shape (the Web UI's detail
@@ -1404,6 +1398,21 @@ fn handle_admin_cypher(
             Err(RegistryError::AlreadyExists(_)) if if_not_exists => Ok(empty_cypher_response()),
             Err(e) => Err(e.into()),
         },
+        AdminCommand::AlterDatabaseAccess { .. }
+            if context.is_some_and(|c| {
+                !c.has_dbms(drevo_auth::privileges::Action::DatabaseManagement)
+            }) =>
+        {
+            let reason = "ALTER DATABASE needs DATABASE MANAGEMENT";
+            caller
+                .security
+                .record_forbidden(caller.origin, caller.user, reason, None);
+            Err(forbidden(reason.to_string()))
+        }
+        AdminCommand::AlterDatabaseAccess { name, read_only } => {
+            state.registry.set_access(&name, read_only)?;
+            Ok(empty_cypher_response())
+        }
         AdminCommand::Use { name, query } => {
             let service = state
                 .registry
@@ -1759,13 +1768,43 @@ fn show_databases_response(
         .list()
         .into_iter()
         .filter(|name| context.is_none_or(|c| c.can_access(name)))
-        .map(|name| vec![serde_json::Value::String(name)])
+        .map(|name| {
+            let access = access_of(&state.registry, &name);
+            vec![
+                serde_json::Value::String(name),
+                serde_json::Value::String(access.to_string()),
+            ]
+        })
         .collect();
     CypherResponse {
-        columns: vec!["name".to_string()],
+        columns: vec!["name".to_string(), "access".to_string()],
         rows,
         stats: crate::api::CypherStats::default(),
         graph: crate::api::CypherGraph::default(),
+    }
+}
+
+/// The `/databases` answer: every name, the default and each one's access.
+fn database_list(registry: &DatabaseRegistry) -> DatabaseListResponse {
+    let databases = registry.list();
+    let access = databases
+        .iter()
+        .map(|name| (name.clone(), access_of(registry, name)))
+        .collect();
+    DatabaseListResponse {
+        databases,
+        default: registry.default_name(),
+        access,
+    }
+}
+
+/// A database's access as `SHOW DATABASES` reports it: `read-only` or
+/// `read-write`.
+fn access_of(registry: &DatabaseRegistry, name: &str) -> &'static str {
+    if registry.is_read_only(name) {
+        "read-only"
+    } else {
+        "read-write"
     }
 }
 
