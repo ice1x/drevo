@@ -1167,6 +1167,9 @@ pub enum CommitError {
     /// write is refused until it is resolved (the prepared fence). Retryable;
     /// carries the pending global transaction ids.
     PreparedPending(Vec<String>),
+    /// The store is read-only ([`NativeGraph::is_read_only`]); nothing was
+    /// written.
+    ReadOnly,
 }
 
 impl std::fmt::Display for CommitError {
@@ -1183,11 +1186,15 @@ impl std::fmt::Display for CommitError {
                 "writes are paused while prepared transaction(s) {} await resolution; retry",
                 gids.join(", ")
             ),
+            CommitError::ReadOnly => write!(f, "{READ_ONLY_MESSAGE}"),
         }
     }
 }
 
 impl std::error::Error for CommitError {}
+
+/// What [`CoreError::ReadOnly`] and the transaction errors' `ReadOnly` say.
+const READ_ONLY_MESSAGE: &str = "the database is read-only";
 
 /// Why [`NativeGraph::tx_prepare`] failed. Every case closes the
 /// transaction and leaves nothing prepared.
@@ -1206,6 +1213,8 @@ pub enum PrepareError {
     PreparedPending(Vec<String>),
     /// Writing the `Prepare` record failed; nothing was prepared.
     Io(String),
+    /// The store is read-only ([`NativeGraph::is_read_only`]).
+    ReadOnly,
 }
 
 impl std::fmt::Display for PrepareError {
@@ -1228,6 +1237,7 @@ impl std::fmt::Display for PrepareError {
                 gids.join(", ")
             ),
             PrepareError::Io(e) => write!(f, "write-ahead log write failed: {e}"),
+            PrepareError::ReadOnly => write!(f, "{READ_ONLY_MESSAGE}"),
         }
     }
 }
@@ -1248,6 +1258,9 @@ pub enum ResolveError {
     /// Writing the resolution record failed; the transaction stays prepared
     /// and the call can be retried.
     Io(String),
+    /// The store is read-only ([`NativeGraph::is_read_only`]); the
+    /// transaction stays prepared.
+    ReadOnly,
 }
 
 impl std::fmt::Display for ResolveError {
@@ -1260,6 +1273,7 @@ impl std::fmt::Display for ResolveError {
                  timeout; it cannot be committed"
             ),
             ResolveError::Io(e) => write!(f, "write-ahead log write failed: {e}"),
+            ResolveError::ReadOnly => write!(f, "{READ_ONLY_MESSAGE}"),
         }
     }
 }
@@ -1425,6 +1439,11 @@ pub struct NativeGraph {
     /// in the old format.
     #[cfg(not(target_arch = "wasm32"))]
     wal_file_format: std::sync::atomic::AtomicU8,
+    /// Every write is refused ([`set_read_only`](Self::set_read_only)).
+    read_only: std::sync::atomic::AtomicBool,
+    /// Opened with [`open_read_only`](Self::open_read_only): the log was
+    /// opened for reading only, so the store can never be made writable.
+    opened_read_only: bool,
 }
 
 /// [`crate::wal_format::WalFormat`] ⇄ `u8`, for [`NativeGraph::wal_file_format`].
@@ -1515,14 +1534,19 @@ fn origin_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
 /// write failure only means a new id on the next boot, never a hard error).
 #[cfg(not(target_arch = "wasm32"))]
 fn load_or_mint_origin(sidecar: &std::path::Path) -> OriginId {
-    if let Ok(text) = std::fs::read_to_string(sidecar) {
-        if let Ok(id) = serde_json::from_str::<OriginId>(text.trim()) {
-            return id;
-        }
+    if let Some(id) = load_origin(sidecar) {
+        return id;
     }
     let id = mint_origin();
     let _ = persist_origin(sidecar, id);
     id
+}
+
+/// The persisted replica origin in `sidecar`, if it is there and readable.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_origin(sidecar: &std::path::Path) -> Option<OriginId> {
+    let text = std::fs::read_to_string(sidecar).ok()?;
+    serde_json::from_str::<OriginId>(text.trim()).ok()
 }
 
 /// Persist `origin` to `sidecar` atomically (temp file, then rename). The origin
@@ -1585,6 +1609,67 @@ fn acquire_exclusive_lock(lock_path: &std::path::Path) -> Result<std::fs::File> 
         return Err(CoreError::Io(err));
     }
     Ok(file)
+}
+
+/// Take a shared, non-blocking advisory lock on `lock_path` for a read-only
+/// handle, without creating it: read-only handles share the store, and a
+/// writer's exclusive lock and this one exclude each other
+/// ([`CoreError::Locked`]). `None` when there is no lock file, as on
+/// read-only media where no writer can run either.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn acquire_shared_lock(lock_path: &std::path::Path) -> Result<Option<std::fs::File>> {
+    use std::os::unix::io::AsRawFd;
+    let file = match std::fs::File::open(lock_path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(CoreError::Io(e)),
+    };
+    // SAFETY: as in `acquire_exclusive_lock`.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Err(CoreError::Locked);
+        }
+        return Err(CoreError::Io(err));
+    }
+    Ok(Some(file))
+}
+
+/// Windows counterpart of [`acquire_shared_lock`]: `LockFileEx` without
+/// `LOCKFILE_EXCLUSIVE_LOCK` takes a shared lock.
+#[cfg(all(windows, not(target_arch = "wasm32")))]
+fn acquire_shared_lock(lock_path: &std::path::Path) -> Result<Option<std::fs::File>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_FAIL_IMMEDIATELY};
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+    let file = match std::fs::File::open(lock_path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(CoreError::Io(e)),
+    };
+    // SAFETY: as in `acquire_exclusive_lock`.
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as _,
+            LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if ok == 0 {
+        return Err(CoreError::Locked);
+    }
+    Ok(Some(file))
+}
+
+/// Fallback for targets without an OS lock: no cross-handle guard.
+#[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
+fn acquire_shared_lock(_lock_path: &std::path::Path) -> Result<Option<std::fs::File>> {
+    Ok(None)
 }
 
 /// Windows counterpart of [`acquire_exclusive_lock`] using `LockFileEx` with
@@ -2037,6 +2122,9 @@ impl NativeGraph {
     /// ([`persist_stamp`](Self::persist_stamp)).
     #[cfg(not(target_arch = "wasm32"))]
     fn checkpoint_tombstones(&self) {
+        if self.is_read_only() {
+            return;
+        }
         let Some(path) = self
             .wal
             .as_ref()
@@ -3044,6 +3132,9 @@ impl NativeGraph {
             .remove(&id.0)
             .ok_or(PrepareError::UnknownTransaction)?;
         let mut live = write(&self.inner);
+        if self.is_read_only() {
+            return Err(PrepareError::ReadOnly);
+        }
         if live.prepared.contains_key(gid) {
             return Err(PrepareError::DuplicateGid(gid.to_string()));
         }
@@ -3092,6 +3183,9 @@ impl NativeGraph {
     /// transaction stays prepared — retry).
     pub fn commit_prepared(&self, gid: &str) -> std::result::Result<(), ResolveError> {
         let mut live = write(&self.inner);
+        if self.is_read_only() {
+            return Err(ResolveError::ReadOnly);
+        }
         let Some(ops) = live.prepared.get(gid).map(|entry| entry.ops.clone()) else {
             return Err(if live.heuristic.contains(gid) {
                 ResolveError::HeuristicRollback(gid.to_string())
@@ -3141,6 +3235,9 @@ impl NativeGraph {
         heuristic: bool,
     ) -> std::result::Result<(), ResolveError> {
         let mut live = write(&self.inner);
+        if self.is_read_only() {
+            return Err(ResolveError::ReadOnly);
+        }
         if !live.prepared.contains_key(gid) {
             // Rolling back what the server already rolled back heuristically
             // agrees with the outcome.
@@ -3190,6 +3287,9 @@ impl NativeGraph {
             return Ok(());
         }
         let mut live = write(&self.inner);
+        if self.is_read_only() {
+            return Err(CommitError::ReadOnly);
+        }
         // The two-phase-commit fence (#556): no other write commits while a
         // transaction is prepared.
         if !live.prepared.is_empty() {
@@ -3285,7 +3385,7 @@ impl NativeGraph {
             return Ok(());
         }
         {
-            let mut guard = write(&self.inner);
+            let mut guard = self.write_unless_read_only()?;
             let inner = Arc::make_mut(&mut guard);
             for op in ops {
                 inner.apply_wal_op(op.clone());
@@ -3335,6 +3435,8 @@ impl NativeGraph {
             wal_target: crate::wal_format::WalFormat::Json,
             #[cfg(not(target_arch = "wasm32"))]
             wal_file_format: std::sync::atomic::AtomicU8::new(0),
+            read_only: std::sync::atomic::AtomicBool::new(false),
+            opened_read_only: false,
         }
     }
 
@@ -3383,9 +3485,44 @@ impl NativeGraph {
         path: impl AsRef<std::path::Path>,
         format: crate::wal_format::WalFormat,
     ) -> Result<Self> {
+        Self::open_log(path.as_ref(), format, false)
+    }
+
+    /// Open a durable store for reading only. The log is replayed as by
+    /// [`open_durable`](Self::open_durable) but never written: a torn tail
+    /// stays in place, no sidecar is created or rewritten, and every write
+    /// fails with [`CoreError::ReadOnly`]. The process needs no write
+    /// permission on the store's directory or files.
+    ///
+    /// Read-only handles share the store; a writer and a read-only handle
+    /// exclude each other ([`CoreError::Locked`]).
+    ///
+    /// ```no_run
+    /// use drevo_core::native::NativeGraph;
+    ///
+    /// let g = NativeGraph::open_read_only("/srv/published/native.wal")?;
+    /// assert!(g.is_read_only());
+    /// println!("{} nodes", g.node_count());
+    /// # Ok::<(), drevo_core::error::CoreError>(())
+    /// ```
+    ///
+    /// # Errors
+    /// [`CoreError::Io`] (`NotFound`) when there is no log at `path`,
+    /// [`CoreError::Locked`] while a writer has the store open, and as
+    /// [`open_durable`](Self::open_durable) for a corrupt log.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_read_only(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::open_log(path.as_ref(), crate::wal_format::WalFormat::Json, true)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_log(
+        path: &std::path::Path,
+        format: crate::wal_format::WalFormat,
+        read_only: bool,
+    ) -> Result<Self> {
         use crate::wal_format::{detect, read_record, Detected, Record};
         use std::io::{Read, Write};
-        let path = path.as_ref();
         // Take the exclusive-open lock BEFORE reading/replaying the WAL (#455):
         // a second handle on the same store must be turned away up front, so two
         // writers never interleave appends into one log. The lock lives on a
@@ -3394,10 +3531,18 @@ impl NativeGraph {
         // WAL inode would be silently defeated when the inode is swapped, letting
         // a second opener lock the new inode and slip through. The sidecar is
         // never renamed, so the guard holds across compaction.
-        let lock = acquire_exclusive_lock(&lock_sidecar(path))?;
+        //
+        // A read-only handle takes the same lock shared, so it and a writer
+        // exclude each other; without a lock file (read-only media) it takes
+        // none.
+        let lock = if read_only {
+            acquire_shared_lock(&lock_sidecar(path))?
+        } else {
+            Some(acquire_exclusive_lock(&lock_sidecar(path))?)
+        };
         let mut inner = Inner::default();
         let mut bytes = Vec::new();
-        if path.exists() {
+        if read_only || path.exists() {
             std::fs::File::open(path)?.read_to_end(&mut bytes)?;
         }
         let file_format = match detect(&bytes)? {
@@ -3405,10 +3550,12 @@ impl NativeGraph {
             // it was acknowledged, so start over as a new log.
             Detected::TornHeader => {
                 bytes.clear();
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(path)?
-                    .set_len(0)?;
+                if !read_only {
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(path)?
+                        .set_len(0)?;
+                }
                 None
             }
             Detected::Log { .. } if bytes.is_empty() => None,
@@ -3458,7 +3605,7 @@ impl NativeGraph {
                         }
                     }
                 }
-                if torn {
+                if torn && !read_only {
                     // Drop the unacknowledged tail so the log is clean for append.
                     std::fs::OpenOptions::new()
                         .write(true)
@@ -3468,13 +3615,18 @@ impl NativeGraph {
                 Some(format)
             }
         };
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let mut file = if read_only {
+            std::fs::File::open(path)?
+        } else {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?
+        };
         // A new (or emptied) log is created in the requested format.
         let file_format = match file_format {
             Some(f) => f,
+            None if read_only => format,
             None => {
                 let header = format.header();
                 if !header.is_empty() {
@@ -3490,13 +3642,21 @@ impl NativeGraph {
         let seed = inner.to_wal_ops();
         // Stable replica identity persisted next to the WAL (issue #389),
         // reused across restarts so a peer's writes keep a stable provenance.
-        let origin = load_or_mint_origin(&origin_sidecar(path));
+        let origin = if read_only {
+            load_origin(&origin_sidecar(path)).unwrap_or_else(mint_origin)
+        } else {
+            load_or_mint_origin(&origin_sidecar(path))
+        };
         // Live stamps from the stamp log (issue #612), restricted to the entities
         // that exist; an entity without one gets the lowest stamp. Then compact
         // the log and keep it open for appends (best-effort: without it, stamps
         // set from now on only live in memory).
         let stamps = recover_stamps(&inner, load_stamp_log(&stamp_log_sidecar(path)), origin);
-        let stamp_log = StampLog::rewrite(stamp_log_sidecar(path), &stamps).ok();
+        let stamp_log = if read_only {
+            None
+        } else {
+            StampLog::rewrite(stamp_log_sidecar(path), &stamps).ok()
+        };
         let mut clock = HlcClock::new();
         if let Some(latest) = stamps.values().max() {
             // Never issue a stamp below one already handed out.
@@ -3525,9 +3685,11 @@ impl NativeGraph {
             tombstones: RwLock::new(load_tombstones(&tombstone_sidecar(path))),
             stamp_log: std::sync::Mutex::new(stamp_log),
             // Hold the exclusive-open lock for this handle's lifetime (#455).
-            _lock: Some(lock),
+            _lock: lock,
             wal_target: format,
             wal_file_format: std::sync::atomic::AtomicU8::new(wal_format_to_u8(file_format)),
+            read_only: std::sync::atomic::AtomicBool::new(read_only),
+            opened_read_only: read_only,
         })
     }
 
@@ -3568,7 +3730,7 @@ impl NativeGraph {
             return Ok(CompactWalStats::default());
         };
         // Hold the write lock so no mutation appends to the log mid-compaction.
-        let inner = write(&self.inner);
+        let inner = self.write_unless_read_only()?;
         let ops = inner.to_wal_ops();
         let mut sink = wal.lock().unwrap_or_else(|e| e.into_inner());
         let bytes_before = std::fs::metadata(&sink.path).ok().map(|m| m.len());
@@ -4103,6 +4265,62 @@ fn write(inner: &RwLock<Arc<Inner>>) -> std::sync::RwLockWriteGuard<'_, Arc<Inne
 }
 
 impl NativeGraph {
+    /// The writer lock, refused on a read-only store. Checked under the lock,
+    /// so a write that passes runs before [`set_read_only`](Self::set_read_only)
+    /// returns.
+    fn write_unless_read_only(&self) -> Result<std::sync::RwLockWriteGuard<'_, Arc<Inner>>> {
+        let guard = write(&self.inner);
+        if self.is_read_only() {
+            return Err(CoreError::ReadOnly);
+        }
+        Ok(guard)
+    }
+
+    /// Whether every write is refused: the store was opened with
+    /// [`open_read_only`](Self::open_read_only) or switched with
+    /// [`set_read_only`](Self::set_read_only). Reads, search and backups work.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Refuse every write from now on (`true`), or accept them again
+    /// (`false`). Writes already past the check finish first. Not persisted:
+    /// the store opens writable again unless opened read-only.
+    ///
+    /// ```
+    /// use drevo_core::engine::GraphEngine;
+    /// use drevo_core::error::CoreError;
+    /// use drevo_core::model::{NewNode, Properties};
+    /// use drevo_core::native::NativeGraph;
+    ///
+    /// let g = NativeGraph::new();
+    /// let task = || NewNode {
+    ///     kind: "Task".into(),
+    ///     title: "BUG-1".into(),
+    ///     body: String::new(),
+    ///     body_html: String::new(),
+    ///     properties: Properties(Default::default()),
+    /// };
+    /// g.set_read_only(true)?;
+    /// assert!(matches!(g.create_node(task()), Err(CoreError::ReadOnly)));
+    /// g.set_read_only(false)?;
+    /// g.create_node(task())?;
+    /// # Ok::<(), CoreError>(())
+    /// ```
+    ///
+    /// # Errors
+    /// [`CoreError::ReadOnly`] to make a store opened with
+    /// [`open_read_only`](Self::open_read_only) writable.
+    pub fn set_read_only(&self, on: bool) -> Result<()> {
+        if !on && self.opened_read_only {
+            return Err(CoreError::ReadOnly);
+        }
+        let _guard = write(&self.inner);
+        self.read_only
+            .store(on, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
     /// The writer lock for an ordinary write — refused while a transaction is
     /// prepared (the two-phase-commit fence). The check runs *after*
     /// taking the lock, and `tx_prepare` raises the fence under the same lock,
@@ -4110,7 +4328,7 @@ impl NativeGraph {
     /// replica application, constraint declaration, compaction and the 2PC
     /// resolvers take the plain lock.
     fn write_for_commit(&self) -> Result<std::sync::RwLockWriteGuard<'_, Arc<Inner>>> {
-        let guard = write(&self.inner);
+        let guard = self.write_unless_read_only()?;
         if !guard.prepared.is_empty() {
             return Err(CoreError::PreparedTransactionPending(
                 guard.prepared.keys().cloned().collect(),

@@ -122,6 +122,14 @@ impl IntoResponse for ApiError {
                     (StatusCode::SERVICE_UNAVAILABLE, err.to_string())
                 }
                 DrevoError::NoActiveTransaction => (StatusCode::CONFLICT, err.to_string()),
+                DrevoError::ReadOnly => {
+                    return ApiError::Coded {
+                        status: StatusCode::FORBIDDEN,
+                        code: FORBIDDEN_ON_READ_ONLY_DATABASE,
+                        message: err.to_string(),
+                    }
+                    .into_response();
+                }
                 DrevoError::ConstraintViolation { .. } => {
                     return ApiError::Coded {
                         status: StatusCode::CONFLICT,
@@ -160,6 +168,10 @@ impl IntoResponse for ApiError {
 /// The status code reported for a write that breaks a declared constraint:
 /// Neo4j's, used for the Bolt `FAILURE` and the HTTP error body alike (#604).
 pub const CONSTRAINT_VALIDATION_FAILED: &str = "Neo.ClientError.Schema.ConstraintValidationFailed";
+
+/// The Neo4j code of a write to a read-only database, the `code` of its 403.
+pub const FORBIDDEN_ON_READ_ONLY_DATABASE: &str =
+    "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase";
 
 /// Build a unified JSON error response with both `error` (message) and
 /// `status` (numeric HTTP status code) fields.  Every error response
@@ -730,6 +742,11 @@ mod error_mapping_tests {
             "Locked → 503",
         );
         assert_eq!(
+            status_of(DrevoError::ReadOnly),
+            StatusCode::FORBIDDEN,
+            "ReadOnly → 403",
+        );
+        assert_eq!(
             status_of(DrevoError::PreparedTransactionPending(vec!["g".into()])),
             StatusCode::SERVICE_UNAVAILABLE,
             "PreparedTransactionPending → 503 (retry once resolved, #556)",
@@ -756,6 +773,7 @@ mod error_mapping_tests {
                 DrevoError::DuplicateTitle(_) => "DuplicateTitle",
                 DrevoError::InvalidWeight(_) => "InvalidWeight",
                 DrevoError::Locked => "Locked",
+                DrevoError::ReadOnly => "ReadOnly",
                 DrevoError::Encode(_) => "Encode",
                 DrevoError::Decode(_) => "Decode",
                 DrevoError::Io(_) => "Io",

@@ -66,6 +66,14 @@ pub enum CoreError {
     #[error("database locked")]
     Locked,
 
+    /// The store is read-only: opened with
+    /// [`NativeGraph::open_read_only`](crate::native::NativeGraph::open_read_only)
+    /// or switched with
+    /// [`NativeGraph::set_read_only`](crate::native::NativeGraph::set_read_only).
+    /// Nothing was written.
+    #[error("the database is read-only")]
+    ReadOnly,
+
     /// A failure from a layer built on top — a vector-index error, a
     /// transaction-state error — that has no structured variant here. Carries
     /// the lower layer's

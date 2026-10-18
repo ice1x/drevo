@@ -35,6 +35,7 @@ fn map_commit_err(e: CommitError) -> PyErr {
         CommitError::Conflict => TransactionConflict::new_err(e.to_string()),
         CommitError::Constraint(v) => ConstraintViolation::new_err((v.message.clone(), v.kind)),
         CommitError::Io(msg) => StorageError::new_err(msg),
+        e @ CommitError::ReadOnly => StorageError::new_err(e.to_string()),
         // Writes are paused while a two-phase-commit transaction is prepared
         // (#556); retryable once it is resolved, like an optimistic conflict.
         e @ CommitError::PreparedPending(_) => TransactionConflict::new_err(e.to_string()),
@@ -51,6 +52,7 @@ fn map_prepare_err(e: PrepareError) -> PyErr {
         PrepareError::DuplicateGid(_) => PreparedTransactionError::new_err(e.to_string()),
         PrepareError::UnknownTransaction => TransactionError::new_err("transaction is closed"),
         PrepareError::Io(msg) => StorageError::new_err(msg),
+        e @ PrepareError::ReadOnly => StorageError::new_err(e.to_string()),
     }
 }
 
@@ -60,6 +62,7 @@ pub(crate) fn map_resolve_err(e: ResolveError) -> PyErr {
         ResolveError::UnknownGid(_) => UnknownGidError::new_err(e.to_string()),
         ResolveError::HeuristicRollback(_) => HeuristicRollbackError::new_err(e.to_string()),
         ResolveError::Io(msg) => StorageError::new_err(msg),
+        e @ ResolveError::ReadOnly => StorageError::new_err(e.to_string()),
     }
 }
 

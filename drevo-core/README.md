@@ -45,7 +45,9 @@ assert_eq!(blockers[0].title, "Review release notes");
 
 - `native::NativeGraph` — the engine: CRUD on nodes and edges, traversal,
   O(1) snapshots, transactions (`begin` / `commit`) and two-phase commit,
-  durable mode via `open_durable`.
+  durable mode via `open_durable`, and read-only stores via `open_read_only`
+  (the log is never written, so it can sit on read-only media) or
+  `set_read_only`.
 - `engine::GraphEngine` — the trait the operations are written against;
   implemented by the graph and by each open transaction.
 - `model` — `Node`, `Edge`, and their create/patch inputs.

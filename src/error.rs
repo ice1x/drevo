@@ -41,6 +41,11 @@ pub enum DrevoError {
     #[error("database locked")]
     Locked,
 
+    /// The database is read-only (`DREVO_READ_ONLY`, or
+    /// `ALTER DATABASE … SET ACCESS READ ONLY`); nothing was written.
+    #[error("the database is read-only")]
+    ReadOnly,
+
     /// An edge weight failed validation: it is not a finite `f32`
     /// (NaN, +Inf, or -Inf are rejected at `create_edge` / `update_edge`).
     ///
@@ -161,6 +166,7 @@ impl From<drevo_core::error::CoreError> for DrevoError {
             C::Io(e) => DrevoError::Io(e),
             C::Json(e) => DrevoError::Json(e),
             C::Locked => DrevoError::Locked,
+            C::ReadOnly => DrevoError::ReadOnly,
             C::Backend(msg) => DrevoError::Io(std::io::Error::other(msg)),
             C::PreparedTransactionPending(gids) => DrevoError::PreparedTransactionPending(gids),
             C::ConstraintViolation(v) => DrevoError::ConstraintViolation {
@@ -194,6 +200,7 @@ impl From<DrevoError> for drevo_core::error::CoreError {
             DrevoError::Io(e) => C::Io(e),
             DrevoError::Json(e) => C::Json(e),
             DrevoError::Locked => C::Locked,
+            DrevoError::ReadOnly => C::ReadOnly,
             DrevoError::PreparedTransactionPending(gids) => C::PreparedTransactionPending(gids),
             DrevoError::ConstraintViolation { kind, message } => {
                 C::ConstraintViolation(drevo_core::native::ConstraintViolation { kind, message })
@@ -220,6 +227,7 @@ mod tests {
             CoreError::DuplicateTitle("Existing".into()),
             CoreError::InvalidWeight(1.5),
             CoreError::Locked,
+            CoreError::ReadOnly,
         ];
         for original in cases {
             let rendered = original.to_string();
@@ -251,6 +259,10 @@ mod tests {
         assert!(matches!(
             DrevoError::from(CoreError::Locked),
             DrevoError::Locked
+        ));
+        assert!(matches!(
+            DrevoError::from(CoreError::ReadOnly),
+            DrevoError::ReadOnly
         ));
     }
 

@@ -7257,6 +7257,9 @@ impl<'a> Executor<'a> {
             Err(crate::native::ResolveError::Io(msg)) => Err(ExecError::Storage(DrevoError::Io(
                 std::io::Error::other(msg),
             ))),
+            Err(crate::native::ResolveError::ReadOnly) => {
+                Err(ExecError::Storage(DrevoError::ReadOnly))
+            }
             Err(e) => Err(unresolved_prepared(name, &e, span)),
         }
     }
@@ -7288,6 +7291,9 @@ impl<'a> Executor<'a> {
             Err(crate::native::ResolveError::Io(msg)) => Err(ExecError::Storage(DrevoError::Io(
                 std::io::Error::other(msg),
             ))),
+            Err(crate::native::ResolveError::ReadOnly) => {
+                Err(ExecError::Storage(DrevoError::ReadOnly))
+            }
             Err(e) => Err(unresolved_prepared(name, &e, span)),
         }
     }
@@ -12209,13 +12215,13 @@ fn boolean(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<Valu
 }
 
 /// The error for a `drevo.tx.*` resolve call the engine refused (#590). `Io`
-/// is handled by the caller as a storage error.
+/// and `ReadOnly` are handled by the caller as storage errors.
 fn unresolved_prepared(name: &str, e: &crate::native::ResolveError, span: Span) -> ExecError {
     let reason = match e {
         crate::native::ResolveError::HeuristicRollback(_) => UnresolvedPrepared::HeuristicRollback,
-        crate::native::ResolveError::UnknownGid(_) | crate::native::ResolveError::Io(_) => {
-            UnresolvedPrepared::UnknownGid
-        }
+        crate::native::ResolveError::UnknownGid(_)
+        | crate::native::ResolveError::Io(_)
+        | crate::native::ResolveError::ReadOnly => UnresolvedPrepared::UnknownGid,
     };
     ExecError::PreparedTransactionUnresolved {
         name: name.to_string(),
