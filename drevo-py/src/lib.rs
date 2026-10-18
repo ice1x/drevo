@@ -57,6 +57,8 @@ fn _drevo(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<types::EdgePatch>()?;
     m.add_class::<types::ScoredNode>()?;
     m.add_class::<types::SubGraph>()?;
+    m.add_class::<types::GeoHeuristic>()?;
+    m.add_class::<types::WeightedPath>()?;
     m.add_class::<types::CompactReport>()?;
     m.add_class::<types::ImportReport>()?;
     m.add_class::<types::BloatReport>()?;

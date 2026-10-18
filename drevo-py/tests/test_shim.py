@@ -63,6 +63,8 @@ def test_all_lists_every_public_symbol():
         "NodePatch",
         "ScoredNode",
         "SubGraph",
+        "GeoHeuristic",
+        "WeightedPath",
         # Exception hierarchy.
         "ConflictError",
         "DrevoError",
@@ -282,6 +284,7 @@ def test_drevo_class_has_every_rfc_method():
         "bfs",
         "dfs",
         "shortest_path",
+        "weighted_path",
         "subgraph",
         "neighbors",
         "search_fts",

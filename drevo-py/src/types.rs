@@ -549,6 +549,100 @@ impl SubGraph {
     }
 }
 
+// ── GeoHeuristic / WeightedPath ────────────────────────────────────────
+
+/// Node coordinates and a top speed that turn
+/// [`crate::handle::Drevo::weighted_path`] into an A* search.
+#[pyclass(frozen, name = "GeoHeuristic")]
+#[derive(Clone)]
+pub struct GeoHeuristic {
+    pub(crate) inner: drevo::weighted_path::GeoHeuristic,
+}
+
+#[pymethods]
+impl GeoHeuristic {
+    #[new]
+    #[pyo3(signature = (*, lat, lon, max_speed_mps))]
+    fn new(lat: String, lon: String, max_speed_mps: f64) -> Self {
+        Self {
+            inner: drevo::weighted_path::GeoHeuristic {
+                lat,
+                lon,
+                max_speed_mps,
+            },
+        }
+    }
+
+    /// Node property holding the latitude in degrees.
+    #[getter]
+    fn lat(&self) -> &str {
+        &self.inner.lat
+    }
+
+    /// Node property holding the longitude in degrees.
+    #[getter]
+    fn lon(&self) -> &str {
+        &self.inner.lon
+    }
+
+    /// The fastest speed any relationship allows, in metres per second.
+    #[getter]
+    fn max_speed_mps(&self) -> f64 {
+        self.inner.max_speed_mps
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "GeoHeuristic(lat={:?}, lon={:?}, max_speed_mps={})",
+            self.inner.lat, self.inner.lon, self.inner.max_speed_mps
+        )
+    }
+}
+
+/// The cheapest route found by [`crate::handle::Drevo::weighted_path`]:
+/// node ids from start to end, the relationship ids between them, and the
+/// summed cost.
+#[pyclass(frozen, name = "WeightedPath")]
+#[derive(Clone)]
+pub struct WeightedPath {
+    inner: drevo::weighted_path::WeightedPath,
+}
+
+impl WeightedPath {
+    pub(crate) fn new(inner: drevo::weighted_path::WeightedPath) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl WeightedPath {
+    /// Node ids from the start to the end, both included.
+    #[getter]
+    fn nodes(&self) -> Vec<u64> {
+        self.inner.nodes.clone()
+    }
+
+    /// Relationship ids, one fewer than `nodes`.
+    #[getter]
+    fn edges(&self) -> Vec<u64> {
+        self.inner.edges.clone()
+    }
+
+    /// The summed cost of the relationships.
+    #[getter]
+    fn cost(&self) -> f64 {
+        self.inner.cost
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "WeightedPath(nodes={}, cost={})",
+            self.inner.nodes.len(),
+            self.inner.cost
+        )
+    }
+}
+
 // ── CompactReport ──────────────────────────────────────────────────────
 
 /// Result of [`crate::handle::Drevo::compact`] — operator-facing

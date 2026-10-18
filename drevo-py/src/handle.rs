@@ -59,6 +59,7 @@ use pyo3::types::PyBytes;
 
 use drevo::model as dmodel;
 use drevo::vector::{HnswConfig, Vector};
+use drevo::weighted_path::{EdgeCost, WeightedPathOptions};
 
 use crate::errors::{map_err, panic_to_pyerr};
 use crate::native_backend::NativeBackend;
@@ -651,6 +652,49 @@ impl Drevo {
             with_db(&self.inner, |db| {
                 py.allow_threads(|| db.shortest_path_filtered(from_id, to_id, edge_kind))
                     .map_err(map_err)
+            })
+        })
+    }
+
+    /// The cheapest route from `from_id` to `to_id` by a relationship cost,
+    /// or `None` when there is none (or it costs more than `max_cost`).
+    /// `cost` names a numeric relationship property; without it each
+    /// relationship costs its weight. A `heuristic` makes the search A*.
+    #[pyo3(signature = (
+        from_id,
+        to_id,
+        *,
+        rel_types = None,
+        direction = types::Direction::Out,
+        cost = None,
+        heuristic = None,
+        max_cost = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn weighted_path(
+        &self,
+        py: Python<'_>,
+        from_id: u64,
+        to_id: u64,
+        rel_types: Option<Vec<String>>,
+        direction: types::Direction,
+        cost: Option<String>,
+        heuristic: Option<types::GeoHeuristic>,
+        max_cost: Option<f64>,
+    ) -> PyResult<Option<types::WeightedPath>> {
+        let options = WeightedPathOptions {
+            kinds: rel_types.unwrap_or_default(),
+            direction: direction.into(),
+            cost: cost.map_or(EdgeCost::Weight, EdgeCost::Property),
+            heuristic: heuristic.map(|h| h.inner),
+            max_cost,
+        };
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                let path = py
+                    .allow_threads(|| db.weighted_path(from_id, to_id, &options))
+                    .map_err(map_err)?;
+                Ok(path.map(types::WeightedPath::new))
             })
         })
     }

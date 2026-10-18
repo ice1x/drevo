@@ -64,6 +64,7 @@ fn bfs(&self, start: u64, max_depth: u8, direction: Direction, edge_kind: Option
 fn dfs(&self, start: u64, max_depth: u8, direction: Direction, edge_kind: Option<&str>) -> Result<Vec<Node>>
 fn shortest_path(&self, from: u64, to: u64) -> Result<Option<Vec<u64>>>
 fn shortest_path_filtered(&self, from: u64, to: u64, edge_kind: Option<&str>) -> Result<Option<Vec<u64>>>
+fn weighted_path(&self, from: u64, to: u64, options: &WeightedPathOptions) -> Result<Option<WeightedPath>>
 fn subgraph(&self, root: u64, depth: u8) -> Result<SubGraph>
 fn subgraph_filtered(&self, root: u64, depth: u8, edge_kind: Option<&str>) -> Result<SubGraph>
 fn neighbors(&self, node_id: u64, direction: Direction, kind: Option<&str>) -> Result<Vec<Node>>
@@ -71,6 +72,12 @@ fn neighbors(&self, node_id: u64, direction: Direction, kind: Option<&str>) -> R
 
 `Direction` is `Outgoing | Incoming | Both`. `shortest_path` is weighted (Dijkstra over
 `Edge::weight`).
+
+`weighted_path` returns the cheapest route by a relationship cost — node ids, relationship ids
+and the summed cost. `WeightedPathOptions` picks the relationship kinds, the direction, the cost
+(`EdgeCost::Weight` or `EdgeCost::Property("car_s")`), an optional `max_cost`, and an optional
+`GeoHeuristic { lat, lon, max_speed_mps }` that turns the search into A* over node coordinates.
+It is the engine of the Cypher procedure `drevo.path.weighted`.
 
 ### Full-text search
 
@@ -142,6 +149,15 @@ with drevo.Drevo.open("graph.redb") as db:        # or Drevo.open_in_memory()
     # Traversal — Direction is an IntEnum: OUT / IN / BOTH
     neighbours = db.bfs(n.id, max_depth=2, direction=drevo.Direction.OUT)
 
+    # Cheapest route by a relationship cost; A* with a GeoHeuristic
+    route = db.weighted_path(
+        a.id, b.id,
+        rel_types=["ROAD"], direction=drevo.Direction.OUT, cost="car_s",
+        heuristic=drevo.GeoHeuristic(lat="lat", lon="lon", max_speed_mps=22.0),
+    )                                              # -> WeightedPath | None
+    if route is not None:
+        print(route.nodes, route.edges, route.cost)
+
     # Search
     hits = db.search_fts("docs", limit=10)         # -> list[ScoredNode]
 
@@ -151,7 +167,7 @@ with drevo.Drevo.open("graph.redb") as db:        # or Drevo.open_in_memory()
 ```
 
 Classes mirror the Rust model: `Node`, `Edge`, `NewNode`, `NewEdge`, `NodePatch`, `EdgePatch`,
-`Direction`, `ScoredNode`, `SubGraph`, `CompactReport`. The exception hierarchy is rooted at
+`Direction`, `ScoredNode`, `SubGraph`, `GeoHeuristic`, `WeightedPath`, `CompactReport`. The exception hierarchy is rooted at
 `DrevoError`, with `NodeNotFoundError`, `EdgeNotFoundError`, `StorageError`, and friends.
 Titles are not unique: two nodes may share one, and `get_node_by_title` returns the
 oldest. `DuplicateTitleError` remains for existing `except` clauses but is no longer

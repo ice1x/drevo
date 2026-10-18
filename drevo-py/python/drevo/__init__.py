@@ -61,6 +61,7 @@ from ._drevo import (  # type: ignore[attr-defined]
     Edge,
     EdgeNotFoundError,
     EdgePatch,
+    GeoHeuristic,
     ImportReport,
     LockedError,
     NewEdge,
@@ -86,6 +87,7 @@ from ._drevo import (  # type: ignore[attr-defined]
     TransactionError,
     UnknownGidError,
     HeuristicRollbackError,
+    WeightedPath,
 )
 
 # Pure-Python `InvalidWeightError(ValueError)` — see RFC §12.3. The
@@ -110,6 +112,7 @@ __all__ = [
     "Direction",
     "Edge",
     "EdgePatch",
+    "GeoHeuristic",
     "ImportReport",
     "NewEdge",
     "NewNode",
@@ -118,6 +121,7 @@ __all__ = [
     "ScoredNode",
     "SubGraph",
     "Transaction",
+    "WeightedPath",
     "PreparedTransaction",
     # Cypher results (#553).
     "CypherNode",

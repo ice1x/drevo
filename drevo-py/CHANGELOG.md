@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — weighted paths for routing (issue #680)
+
+* `Drevo.weighted_path(from_id, to_id, *, rel_types, direction, cost,
+  heuristic, max_cost)` returns the cheapest route by a numeric relationship
+  property as a `WeightedPath` (`nodes`, `edges`, `cost`), or `None`. Pass a
+  `drevo.GeoHeuristic(lat=..., lon=..., max_speed_mps=...)` for an A* search
+  over node coordinates. A negative cost or a bad option raises `ValueError`.
+
 ### Added — UNIQUE constraints (issue #604)
 
 * After `CREATE CONSTRAINT … REQUIRE n.prop IS UNIQUE`, a write that would
