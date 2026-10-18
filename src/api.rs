@@ -112,9 +112,9 @@ impl IntoResponse for ApiError {
                     (StatusCode::NOT_FOUND, err.to_string())
                 }
                 DrevoError::DuplicateTitle(_) => (StatusCode::CONFLICT, err.to_string()),
-                DrevoError::InvalidWeight(_) | DrevoError::Vector(_) => {
-                    (StatusCode::BAD_REQUEST, err.to_string())
-                }
+                DrevoError::InvalidWeight(_)
+                | DrevoError::InvalidArgument(_)
+                | DrevoError::Vector(_) => (StatusCode::BAD_REQUEST, err.to_string()),
                 DrevoError::Locked
                 | DrevoError::TransactionAlreadyActive
                 | DrevoError::NeedsMigration { .. }
@@ -742,6 +742,11 @@ mod error_mapping_tests {
             "InvalidWeight → 400",
         );
         assert_eq!(
+            status_of(DrevoError::InvalidArgument("maxCost".into())),
+            StatusCode::BAD_REQUEST,
+            "InvalidArgument → 400",
+        );
+        assert_eq!(
             status_of(DrevoError::Locked),
             StatusCode::SERVICE_UNAVAILABLE,
             "Locked → 503",
@@ -789,6 +794,7 @@ mod error_mapping_tests {
                 DrevoError::Vector(_) => "Vector",
                 DrevoError::PreparedTransactionPending(_) => "PreparedTransactionPending",
                 DrevoError::ConstraintViolation { .. } => "ConstraintViolation",
+                DrevoError::InvalidArgument(_) => "InvalidArgument",
             }
         }
     }

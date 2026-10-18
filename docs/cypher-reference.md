@@ -157,6 +157,65 @@ RETURN length(p) AS degrees_of_separation, [x IN nodes(p) | x.name] AS via
 The wrapped relationship must be variable-length (`-[*]-`, `-[:KNOWS*..5]-`, …) and there
 must be exactly one of it; anything else is a recoverable `ExecError::InvalidFunctionCall`.
 
+`shortestPath` counts hops. For the path with the lowest summed cost (seconds,
+metres, …) use [`drevo.path.weighted`](#weighted-paths).
+
+### Weighted paths
+
+`CALL drevo.path.weighted(start, end, options) YIELD path, cost` finds the path
+from `start` to `end` whose relationships cost the least in total, which is what
+routing needs: the quickest drive or walk, not the fewest streets. It yields one
+row with the `path` and its total `cost`, or no row when `end` can't be reached.
+It runs once per input row, so both ends can come from a preceding `MATCH`; a
+`null` end yields no row.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `relTypes` | every type | list of relationship types the path may use |
+| `direction` | `'OUTGOING'` | `'OUTGOING'`, `'INCOMING'` or `'BOTH'`; one-way streets are relationships in one direction |
+| `cost` | built-in weight (`1.0` for relationships created in Cypher) | numeric relationship property holding the cost; a relationship without it (or with `null`) is not used |
+| `heuristic` | none | `{lat: 'lat', lon: 'lon', maxSpeedMps: 13.9}`: node position properties in degrees and the fastest speed in metres per second, for an A* search |
+| `maxCost` | none | paths costing more are not returned, and the search stops there |
+
+Without `heuristic` the search is a bidirectional Dijkstra. With it, the search
+is A*: the straight-line distance to `end` divided by `maxSpeedMps` is a lower
+bound on the remaining cost, so the search heads for `end` and explores less.
+The path is still the cheapest as long as `maxSpeedMps` is at least as fast as
+any relationship allows (no relationship costs less than its straight-line
+length at that speed). A node without a position gets a bound of zero. Costs
+must be non-negative numbers: a negative cost, or a `cost` property that holds
+something other than a number, fails the call.
+
+Several travel modes can share one road graph, each with its own cost property:
+
+```cypher
+CREATE (a:RoadNode {name: 'A', lat: 42.698, lon: 23.320}),
+       (b:RoadNode {name: 'B', lat: 42.698, lon: 23.321}),
+       (c:RoadNode {name: 'C', lat: 42.697, lon: 23.321}),
+       (a)-[:ROAD {car_s: 60, walk_s: 300}]->(b),
+       (b)-[:ROAD {car_s: 60, walk_s: 300}]->(c),
+       (a)-[:PATH {walk_s: 100}]->(c)
+WITH a, c
+CALL drevo.path.weighted(a, c, {relTypes: ['ROAD', 'PATH'], direction: 'BOTH', cost: 'walk_s'})
+YIELD path, cost
+RETURN [n IN nodes(path) | n.name] AS route, cost
+```
+
+On foot the route is `['A', 'C']` over the footpath at cost `100.0`; with
+`cost: 'car_s'` the footpath has no cost, so the car goes `['A', 'B', 'C']` at
+`120.0`. With positions on the nodes, A* gives the same routes:
+
+```cypher
+MATCH (a:RoadNode {name: 'A'}), (c:RoadNode {name: 'C'})
+CALL drevo.path.weighted(a, c, {
+  relTypes: ['ROAD'], cost: 'car_s',
+  heuristic: {lat: 'lat', lon: 'lon', maxSpeedMps: 30},
+  maxCost: 600
+})
+YIELD path, cost
+RETURN cost, [n IN nodes(path) | [n.lat, n.lon]] AS coords
+```
+
 ---
 
 ## Filtering — WHERE
@@ -542,6 +601,7 @@ procedures.
 | `drevo.closeness()` | `node, score` | Harmonic closeness centrality over the directed, unweighted graph; `score` is `Σ 1/d` over all nodes reachable along edge direction (stays finite when disconnected), rows most-central first (RFC #307 Phase 8) |
 | `drevo.ricciCurvature()` | `from, to, curvature` | Ollivier–Ricci curvature of every undirected edge over the unweighted projection (edge direction and weight ignored): `curvature ≤ 1` is negative on bridge-like edges between communities (good cut candidates) and positive inside dense clusters; each edge returned once with `from` the smaller-id endpoint, ascending by `(from, to)` (issue #526) |
 | `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale–Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
+| `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra — see [Weighted paths](#weighted-paths) |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 
 ### Stable matching (#541)

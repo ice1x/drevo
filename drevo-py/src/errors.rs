@@ -123,6 +123,7 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
             required_major,
         } => NeedsMigrationError::new_err((found_major, required_major)),
         D::Vector(err) => PyValueError::new_err(err.to_string()),
+        e @ D::InvalidArgument(_) => PyValueError::new_err(e.to_string()),
         // Writes are paused while a two-phase-commit transaction is prepared
         // (#556): retryable once it is resolved, like an optimistic conflict.
         e @ D::PreparedTransactionPending(_) => TransactionConflict::new_err(e.to_string()),
@@ -175,6 +176,7 @@ mod tests {
             DrevoError::InvalidWeight(f32::NAN),
             DrevoError::Locked,
             DrevoError::ReadOnly,
+            DrevoError::InvalidArgument("maxCost".into()),
             DrevoError::Vector(drevo::vector::VectorError::Empty),
             DrevoError::Json(serde_json::from_str::<i32>("not json").unwrap_err()),
         ];

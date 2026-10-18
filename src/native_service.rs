@@ -2620,6 +2620,31 @@ impl NativeService {
         )
     }
 
+    /// The lowest-cost path `from → to` under `options`, read from one
+    /// snapshot: A* when `options.heuristic` is set, a bidirectional Dijkstra
+    /// otherwise. `None` when either node is missing, `to` is unreachable, or
+    /// every path costs more than `options.max_cost`.
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::InvalidArgument`] for out-of-range options or a
+    /// relationship whose cost is negative or not a number.
+    pub fn weighted_path(
+        &self,
+        from: u64,
+        to: u64,
+        options: &crate::weighted_path::WeightedPathOptions,
+    ) -> Result<Option<crate::weighted_path::WeightedPath>, DrevoError> {
+        let snap = self.graph.snapshot();
+        crate::weighted_path::weighted_path(
+            from,
+            to,
+            options,
+            &|id| Ok(snap.get_node_arc(id)),
+            &|id, dir| Ok(snap.edges_of(id, dir)),
+        )
+    }
+
     /// The connected subgraph within `depth` hops of `root` — parity with
     /// `Drevo::subgraph_filtered`.
     pub fn subgraph_filtered(

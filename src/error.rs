@@ -127,6 +127,12 @@ pub enum DrevoError {
     )]
     PreparedTransactionPending(Vec<String>),
 
+    /// A request argument is out of range or has the wrong type, e.g. a
+    /// negative relationship cost in a weighted path search. Nothing was
+    /// changed. Maps to HTTP 400 and Python's `ValueError`.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+
     /// A write would break a declared schema constraint (#604), e.g. a second
     /// node with the same value under a UNIQUE constraint. Nothing was
     /// written. Maps to HTTP 409, the Bolt status

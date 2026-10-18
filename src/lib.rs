@@ -348,3 +348,7 @@ pub mod wasm;
 /// `http` feature.
 #[cfg(feature = "http")]
 pub mod web_ui;
+/// Lowest-cost paths over weighted relationships for routing: A* with a
+/// straight-line bound, or a bidirectional Dijkstra, over a chosen cost
+/// property, relationship kinds and direction.
+pub mod weighted_path;

@@ -5564,6 +5564,9 @@ impl<'a> Executor<'a> {
         if name == "drevo.events.post" {
             return self.run_events_post(c, columns);
         }
+        if name == WEIGHTED_PATH {
+            return self.run_weighted_path(c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -5703,6 +5706,121 @@ impl<'a> Executor<'a> {
             self.result_rows = names;
         }
         Ok(())
+    }
+
+    /// `CALL drevo.path.weighted(start, end, options) YIELD path, cost` — the
+    /// lowest-cost path from `start` to `end`, once per row, so both ends may
+    /// come from the row (`MATCH (a …), (b …) CALL drevo.path.weighted(a, b,
+    /// {…})`). A row with a `null` end, or whose ends are not connected within
+    /// the options, yields nothing. The options map is described at
+    /// [`weighted_path_options`].
+    fn run_weighted_path(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
+        let prior = std::mem::take(&mut self.bindings);
+        let mut kept = Vec::new();
+        let mut standalone = Vec::new();
+        let items = match &c.yields {
+            Some(items) if items.is_empty() => Some(yield_all(columns, c.span)),
+            Some(items) => Some(items.clone()),
+            None => None,
+        };
+        for row in prior {
+            let start = path_endpoint(&self.eval(&c.args[0], &row)?, c.span)?;
+            let end = path_endpoint(&self.eval(&c.args[1], &row)?, c.span)?;
+            let options = weighted_path_options(&self.eval(&c.args[2], &row)?, c.span)?;
+            let (Some(start), Some(end)) = (start, end) else {
+                continue;
+            };
+            let Some(found) = self.find_weighted_path(start, end, &options, c.span)? else {
+                continue;
+            };
+            for out_row in self.visible_rows(vec![found])? {
+                let Some(items) = &items else {
+                    standalone.push(out_row);
+                    continue;
+                };
+                let mut next = row.clone();
+                for item in items {
+                    let idx = columns
+                        .iter()
+                        .position(|col| *col == item.name)
+                        .unwrap_or(0);
+                    let key = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                    next.insert(key, out_row[idx].clone());
+                }
+                if let Some(pred) = &c.where_clause {
+                    match self.eval(pred, &next)? {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) | Value::Null => continue,
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Boolean".into(),
+                                got: other.type_name().into(),
+                                span: pred.span(),
+                            });
+                        }
+                    }
+                }
+                kept.push(next);
+            }
+        }
+        self.bindings = kept;
+        if c.yields.is_none() {
+            self.result_columns = columns.iter().map(|c| c.to_string()).collect();
+            self.result_rows = standalone;
+        }
+        Ok(())
+    }
+
+    /// One `drevo.path.weighted` search over the statement's view of the
+    /// graph, as a `[path, cost]` row.
+    fn find_weighted_path(
+        &self,
+        start: u64,
+        end: u64,
+        options: &crate::weighted_path::WeightedPathOptions,
+        span: Span,
+    ) -> ExecResultT<Option<Vec<Value>>> {
+        let engine = self.engine();
+        let found = crate::weighted_path::weighted_path(
+            start,
+            end,
+            options,
+            &|id| engine.get_node(id).map_err(DrevoError::from),
+            &|id, dir| engine.edges_of(id, dir).map_err(DrevoError::from),
+        );
+        let found = match found {
+            Ok(Some(found)) => found,
+            Ok(None) => return Ok(None),
+            Err(DrevoError::InvalidArgument(message)) => {
+                return Err(ExecError::InvalidProcedureCall {
+                    name: WEIGHTED_PATH.into(),
+                    message,
+                    span,
+                });
+            }
+            Err(e) => return Err(ExecError::Storage(e)),
+        };
+        let mut nodes = Vec::with_capacity(found.nodes.len());
+        for id in &found.nodes {
+            let node = engine
+                .get_node(*id)?
+                .ok_or(ExecError::Storage(DrevoError::NodeNotFound(*id)))?;
+            nodes.push(node_to_value(&node));
+        }
+        let mut relationships = Vec::with_capacity(found.edges.len());
+        for id in &found.edges {
+            let edge = engine
+                .get_edge(*id)?
+                .ok_or(ExecError::Storage(DrevoError::EdgeNotFound(*id)))?;
+            relationships.push(edge_to_value(&edge));
+        }
+        Ok(Some(vec![
+            Value::Path(Arc::new(PathValue {
+                nodes,
+                relationships,
+            })),
+            Value::Float(found.cost),
+        ]))
     }
 
     /// `SEARCH var IN (VECTOR INDEX Label.property FOR expr [WHERE pred]
@@ -9733,6 +9851,140 @@ const MEMORY_ENTITY_TYPES: [(&str, &str); 5] = [
 /// returns a single column; the slice order defines the positional layout
 /// [`Executor::invoke_procedure`] produces and the standalone (`YIELD`-less)
 /// result columns.
+/// The weighted path procedure, `drevo.path.weighted`.
+const WEIGHTED_PATH: &str = "drevo.path.weighted";
+
+/// A `drevo.path.weighted` end: a node's id, or `None` for `null`.
+fn path_endpoint(value: &Value, span: Span) -> ExecResultT<Option<u64>> {
+    match value {
+        Value::Node(n) => Ok(Some(n.id)),
+        Value::Null => Ok(None),
+        other => Err(ExecError::InvalidProcedureCall {
+            name: WEIGHTED_PATH.into(),
+            message: format!("the start and end must be nodes, got {}", other.type_name()),
+            span,
+        }),
+    }
+}
+
+/// The options map of `drevo.path.weighted`:
+///
+/// - `relTypes` — list of relationship types to follow; all when absent;
+/// - `direction` — `'OUTGOING'` (default), `'INCOMING'` or `'BOTH'`;
+/// - `cost` — numeric relationship property holding the cost; a relationship
+///   without it is not used; the built-in weight when absent;
+/// - `heuristic` — `{lat, lon, maxSpeedMps}` for A*: node position properties
+///   (default `'lat'` / `'lon'`) and the fastest speed in metres per second;
+/// - `maxCost` — paths costing more are not returned.
+fn weighted_path_options(
+    value: &Value,
+    span: Span,
+) -> ExecResultT<crate::weighted_path::WeightedPathOptions> {
+    use crate::weighted_path::{EdgeCost, GeoHeuristic, WeightedPathOptions};
+    let refuse = |message: String| ExecError::InvalidProcedureCall {
+        name: WEIGHTED_PATH.into(),
+        message,
+        span,
+    };
+    let number = |v: &Value| match v {
+        Value::Integer(i) => Some(*i as f64),
+        Value::Float(f) => Some(*f),
+        _ => None,
+    };
+    let Value::Map(map) = value else {
+        return Err(refuse(format!(
+            "the options must be a map, got {}",
+            value.type_name()
+        )));
+    };
+    let mut options = WeightedPathOptions::default();
+    for (key, v) in map {
+        match (key.as_str(), v) {
+            (_, Value::Null) => {}
+            ("relTypes", Value::List(items)) => {
+                for item in items {
+                    match item {
+                        Value::String(kind) => options.kinds.push(kind.clone()),
+                        other => {
+                            return Err(refuse(format!(
+                                "relTypes must list relationship types as strings, got {}",
+                                other.type_name()
+                            )));
+                        }
+                    }
+                }
+            }
+            ("relTypes", other) => {
+                return Err(refuse(format!(
+                    "relTypes must be a list of relationship types, got {}",
+                    other.type_name()
+                )));
+            }
+            ("direction", Value::String(d)) => {
+                options.direction = match d.to_ascii_uppercase().as_str() {
+                    "OUTGOING" => ModelDirection::Outgoing,
+                    "INCOMING" => ModelDirection::Incoming,
+                    "BOTH" => ModelDirection::Both,
+                    _ => {
+                        return Err(refuse(format!(
+                            "direction must be 'OUTGOING', 'INCOMING' or 'BOTH', got '{d}'"
+                        )));
+                    }
+                };
+            }
+            ("cost", Value::String(name)) => options.cost = EdgeCost::Property(name.clone()),
+            ("maxCost", v) if number(v).is_some() => options.max_cost = number(v),
+            ("heuristic", Value::Map(h)) => {
+                let name = |key: &str, default: &str| match h.get(key) {
+                    None | Some(Value::Null) => Ok(default.to_string()),
+                    Some(Value::String(s)) => Ok(s.clone()),
+                    Some(other) => Err(refuse(format!(
+                        "heuristic {key} must be a property name, got {}",
+                        other.type_name()
+                    ))),
+                };
+                if let Some(unknown) = h
+                    .keys()
+                    .find(|k| !matches!(k.as_str(), "lat" | "lon" | "maxSpeedMps"))
+                {
+                    return Err(refuse(format!(
+                        "unknown heuristic option `{unknown}`; expected lat, lon or maxSpeedMps"
+                    )));
+                }
+                let max_speed_mps = h.get("maxSpeedMps").and_then(number).ok_or_else(|| {
+                    refuse(
+                        "heuristic needs maxSpeedMps, the fastest speed in metres per second"
+                            .into(),
+                    )
+                })?;
+                options.heuristic = Some(GeoHeuristic {
+                    lat: name("lat", "lat")?,
+                    lon: name("lon", "lon")?,
+                    max_speed_mps,
+                });
+            }
+            (key @ ("direction" | "cost" | "maxCost" | "heuristic"), other) => {
+                let expected = match key {
+                    "direction" => "a string",
+                    "cost" => "the name of a numeric relationship property",
+                    "maxCost" => "a number",
+                    _ => "a map",
+                };
+                return Err(refuse(format!(
+                    "{key} must be {expected}, got {}",
+                    other.type_name()
+                )));
+            }
+            (other, _) => {
+                return Err(refuse(format!(
+                    "unknown option `{other}`; expected relTypes, direction, cost, heuristic or maxCost"
+                )));
+            }
+        }
+    }
+    Ok(options)
+}
+
 fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "db.labels" => Some(&["label"]),
@@ -9802,6 +10054,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.ricciCurvature" => Some(&["from", "to", "curvature"]),
         // Gale–Shapley stable matching (issue #541): matched pairs + mutual ranks.
         "drevo.stableMatching" => Some(&["proposer", "acceptor", "proposerRank", "acceptorRank"]),
+        // drevo.path.weighted(start, end, options): the lowest-cost path.
+        WEIGHTED_PATH => Some(&["path", "cost"]),
         // Fuzzy lookup through a text index (issue #593): node + edit distance.
         "drevo.text.fuzzy" => Some(&["node", "distance"]),
         // Engine-flip observability: engine mode + mirror routing counters.
@@ -9947,6 +10201,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.ricciCurvature" => 0,
         // drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty).
         "drevo.stableMatching" => 4,
+        // drevo.path.weighted(start, end, options).
+        WEIGHTED_PATH => 3,
         // drevo.text.fuzzy(indexName, query, maxEdits) (issue #593).
         "drevo.text.fuzzy" => 3,
         // drevo.engine.status() — no arguments.
