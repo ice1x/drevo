@@ -109,7 +109,7 @@ struct Inner {
     in_adj: HashMap<u64, Vec<AdjEntry>>,
     /// `title → ids of the nodes with that title`, ascending. Titles are
     /// ordinary values; any number of nodes may share one.
-    titles: HashMap<String, BTreeSet<u64>>,
+    titles: HashMap<String, crate::id_set::IdSet>,
     /// `node kind → ids of that kind`: the primary-kind index, so
     /// `nodes_by_kind` is `O(matches · log)` instead of a full `O(n)` scan.
     /// The `BTreeSet` keeps ids ascending, the order `nodes_by_kind` returns

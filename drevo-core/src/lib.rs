@@ -75,6 +75,7 @@ pub mod dump;
 pub mod engine;
 pub mod error;
 pub mod hlc;
+mod id_set;
 pub mod labels;
 pub mod levenshtein;
 pub mod lww;

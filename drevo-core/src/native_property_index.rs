@@ -57,6 +57,8 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use crate::id_set::IdSet;
 use std::ops::Bound;
 
 use serde_json::Value as JsonValue;
@@ -139,16 +141,16 @@ enum NumEntry {
 #[derive(Default)]
 pub struct NativePropertyIndex {
     /// property key → (canonical value bytes → ids carrying it, ascending).
-    postings: HashMap<String, HashMap<Vec<u8>, BTreeSet<u64>>>,
+    postings: HashMap<String, HashMap<Vec<u8>, IdSet>>,
     /// node id → the `(key, value-bytes)` pairs it was indexed under (the
     /// forward index, so a node can be removed or re-indexed cheaply).
     docs: HashMap<u64, Vec<(String, Vec<u8>)>>,
     /// `key → (integer value → ids)`, ordered, for range scans over integer
     /// property values.
-    numeric_int: HashMap<String, BTreeMap<i64, BTreeSet<u64>>>,
+    numeric_int: HashMap<String, BTreeMap<i64, IdSet>>,
     /// `key → (float value → ids)`, ordered, for range scans over floating-point
     /// property values.
-    numeric_float: HashMap<String, BTreeMap<TotalF64, BTreeSet<u64>>>,
+    numeric_float: HashMap<String, BTreeMap<TotalF64, IdSet>>,
     /// node id → the numeric `(key, value)` entries it was indexed under, so a
     /// node's contributions to the ordered maps can be removed.
     numeric_docs: HashMap<u64, Vec<(String, NumEntry)>>,
@@ -460,7 +462,7 @@ impl NativePropertyIndex {
 /// Remove `id` from `maps[key][value]`, dropping the value entry and then the
 /// key's map when they empty.
 fn remove_from_ordered<K: Ord>(
-    maps: &mut HashMap<String, BTreeMap<K, BTreeSet<u64>>>,
+    maps: &mut HashMap<String, BTreeMap<K, IdSet>>,
     key: &str,
     value: &K,
     id: u64,
