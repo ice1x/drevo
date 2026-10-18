@@ -89,6 +89,61 @@ is a separate axis from the cross-engine *query* comparison this workload target
 Benchmark persistence separately with batched transactions if that is the axis
 you care about.
 
+## Routing on a real road network
+
+[`benches/sofia_routing_bench.rs`](https://github.com/ice1x/drevo/tree/main/benches/sofia_routing_bench.rs)
+loads the streets of Sofia from OpenStreetMap and times
+[`drevo.path.weighted`](cypher-reference.md#weighted-paths) between fixed pairs
+of junctions 3 km or more apart. Every OSM node on a street or footway is a
+`Junction` with `lat`/`lon`; every stretch between two of them is a `ROAD`
+(with `car_s`, and `walk_s` unless it is a motorway, in each direction cars may
+drive it) or a `PATH` (`walk_s` only). Driving routes follow `ROAD`s
+`OUTGOING` by `car_s`; walking routes follow `ROAD`s and `PATH`s in `BOTH`
+directions by `walk_s`. Download the extract, then run:
+
+```sh
+curl -A drevo-bench -o sofia-roads.json --data-urlencode \
+  'data=[out:json][timeout:600];way["highway"](42.62,23.20,42.77,23.42);(._;>;);out body;' \
+  https://overpass-api.de/api/interpreter
+DREVO_OSM_JSON=sofia-roads.json cargo bench --bench sofia_routing_bench
+```
+
+Before timing, the bench routes every pair with A* and with Dijkstra and stops
+if the costs differ. Map data © OpenStreetMap contributors, ODbL.
+
+### Reference run
+
+Apple Silicon, `--release`, in-memory `NativeService`, OSM data of 2026-10-18:
+240,451 junctions, 396,534 relationships (143,777 junctions drivable), loaded
+in 3.5 s. Times are per route, the mean over 8 routes of 165–531 junctions.
+**Illustrative — re-run on your hardware before quoting them.**
+
+| Workload | Time per route |
+|----------|---------------:|
+| Driving, A* (`maxSpeedMps` 38.9, the fastest road) | ~176 ms |
+| Driving, bidirectional Dijkstra | ~126 ms |
+| Driving, A* through `CALL drevo.path.weighted` | ~169 ms |
+| Driving, `shortest_path` (one-directional Dijkstra over `weight`) | ~155 ms |
+| Walking, A* (`maxSpeedMps` 1.4) | ~155 ms |
+| Walking, bidirectional Dijkstra | ~324 ms |
+
+| Adjacency read, every drivable junction once | Time |
+|----------------------------------------------|-----:|
+| Outgoing relationships as full records (`edges_of`) | ~182 ms |
+| Outgoing neighbour ids only (`neighbor_ids`) | ~51 ms |
+
+What the numbers show:
+
+- **A* pays off when the speed bound is tight.** On foot every relationship
+  moves at the bound, the estimate is close to the real remaining cost, and A*
+  takes half the time. For cars the bound has to be the fastest road in the city; most streets
+  are much slower, the estimate is weak, and the bidirectional Dijkstra is
+  faster. Leave `heuristic` out for networks whose speeds vary a lot.
+- **Cypher adds nothing measurable** on top of the native call.
+- **A cross-city route reads a large share of the graph.** One route costs
+  about as much as reading every drivable junction's relationships once, and
+  reading full relationship records costs 3.5× reading neighbour ids.
+
 ## Reproducing against competitors
 
 Each competitor runs the **same** graph and the **same** eight operations. Use a

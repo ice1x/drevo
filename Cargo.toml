@@ -296,3 +296,10 @@ harness = false
 name = "privilege_bench"
 harness = false
 required-features = ["auth"]
+
+# Routing on a real road network: weighted path search over an
+# OpenStreetMap extract. Custom `main`; reads the extract named by
+# `DREVO_OSM_JSON` and no-ops without it.
+[[bench]]
+name = "sofia_routing_bench"
+harness = false
