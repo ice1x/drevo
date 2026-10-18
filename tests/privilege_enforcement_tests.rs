@@ -439,3 +439,29 @@ async fn a_trigger_runs_with_its_own_rights_for_any_writer() {
         1
     );
 }
+
+// ── Sequences ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn changing_sequences_needs_admin_procedures() {
+    let t = Tracker::seeded().await;
+    for user in ["ed", "archie", "rita"] {
+        t.forbidden(user, "CALL drevo.sequence.create('bug', {start: 1000})")
+            .await;
+    }
+    t.ok("admin", "CALL drevo.sequence.create('bug', {start: 1000})")
+        .await;
+    t.forbidden("ed", "CALL drevo.sequence.drop('bug')").await;
+    // Drawing numbers and listing are not administration.
+    let drawn = t
+        .ok(
+            "ed",
+            "CREATE (b:Bug {title: 'numbered', n: drevo.sequence.next('bug')}) RETURN b.n",
+        )
+        .await;
+    assert_eq!(drawn["rows"][0][0], 1000);
+    let listed = t
+        .ok("rita", "CALL drevo.sequence.list() YIELD name RETURN name")
+        .await;
+    assert_eq!(listed["rows"][0][0], "bug");
+}

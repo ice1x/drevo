@@ -8,6 +8,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Sequences** (issue #644). `CALL drevo.sequence.create('bug', {start: 1000,
+  step: 1})`, `drevo.sequence.drop`, `drevo.sequence.list`, and the functions
+  `drevo.sequence.next(name)` / `drevo.sequence.current(name)`: unique,
+  increasing numbers handed out outside transactions, so writers never
+  conflict over them; a rollback leaves a gap. Kept in `sequences.json` next to
+  the log with block reservation, so a restart never reissues a value; included
+  in backups. In Rust: `NativeGraph::sequences()` / `sequence_next`
+  (`drevo_core::sequence`).
 - **Triggers** (issue #643). `CALL apoc.trigger.install(db, name, statement,
   {phase: 'before'|'after'|'afterAsync'}[, {params}])`, `apoc.trigger.list`,
   `stop` / `start`, `drop` / `dropAll`, and the APOC 4 `add` / `remove` /

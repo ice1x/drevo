@@ -1570,6 +1570,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.events.post, \
                           apoc.trigger.install, apoc.trigger.list, apoc.trigger.drop, \
                           apoc.trigger.dropAll, apoc.trigger.stop, apoc.trigger.start, \
+                          drevo.sequence.create, drevo.sequence.drop, drevo.sequence.list, \
                           fts.search, fts.searchRelationships"
                         .into(),
                     span: c.span,
@@ -2025,8 +2026,10 @@ enum Endpoint {
 
 fn is_scalar_function_name(name: &[String]) -> bool {
     if name.len() != 1 {
-        // Namespaced built-ins (`apoc.text.levenshteinDistance`, #593).
-        return is_builtin_scalar_function(&name.join(".").to_ascii_lowercase());
+        // Namespaced built-ins (`apoc.text.levenshteinDistance`, #593), and
+        // the sequence functions, which read the store.
+        let lower = name.join(".").to_ascii_lowercase();
+        return is_sequence_function(&lower) || is_builtin_scalar_function(&lower);
     }
     let lower = name[0].to_ascii_lowercase();
     // `startnode` / `endnode` (issue #232) are DB-aware like `similar` /
@@ -2038,6 +2041,27 @@ fn is_scalar_function_name(name: &[String]) -> bool {
         || lower == "startnode"
         || lower == "endnode"
         || is_builtin_scalar_function(&lower)
+}
+
+/// `drevo.sequence.next` / `drevo.sequence.current` (#644), lowercased.
+fn is_sequence_function(lower: &str) -> bool {
+    matches!(lower, "drevo.sequence.next" | "drevo.sequence.current")
+}
+
+/// A sequence failure as the executor reports it: a read-only store as a
+/// storage error (so clients see the read-only code), a missing or exhausted
+/// sequence and bad arguments as an invalid call of `name`.
+fn sequence_error(name: &str, e: crate::sequence::SequenceError, span: Span) -> ExecError {
+    use crate::sequence::SequenceError as S;
+    match e {
+        S::ReadOnly => ExecError::Storage(DrevoError::ReadOnly),
+        S::Io(m) => ExecError::Storage(DrevoError::Io(std::io::Error::other(m))),
+        other => ExecError::InvalidProcedureCall {
+            name: name.to_string(),
+            message: other.to_string(),
+            span,
+        },
+    }
 }
 
 /// `true` when `lower` (an already-lowercased function name) is one of the
@@ -2893,6 +2917,16 @@ impl<'a> Executor<'a> {
             | "drevo.semantic.registerRel"
             | "drevo.semantic.reindex"
             | "drevo.semantic.reindexRel" => self.guard_database(Action::IndexManagement),
+            "drevo.sequence.create" | "drevo.sequence.drop" => {
+                if !r.context.has_dbms(Action::ExecuteAdminProcedures) {
+                    return Err(ExecError::Forbidden {
+                        message: format!(
+                            "`{name}` changes sequences and needs EXECUTE ADMIN PROCEDURES"
+                        ),
+                    });
+                }
+                Ok(())
+            }
             // A trigger runs its statement for every later commit, so
             // changing triggers is administration, as in APOC.
             name if name.starts_with("apoc.trigger.") && name != "apoc.trigger.list" => {
@@ -7518,6 +7552,98 @@ impl<'a> Executor<'a> {
         }
     }
 
+    /// `drevo.sequence.create(name[, {start, step}])`, `drevo.sequence.drop(name)`
+    /// and `drevo.sequence.list()` (#644). Each yields `name, start, step,
+    /// current` for the sequences it touched (`drop` the removed one, nothing
+    /// when there was none). `start` defaults to 1, `step` to 1. Creating and
+    /// dropping are refused inside an explicit transaction.
+    fn proc_sequence(
+        &self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability(name))?;
+        let sequences = svc.graph().sequences();
+        let invalid = |message: String| ExecError::InvalidProcedureCall {
+            name: name.to_string(),
+            message,
+            span,
+        };
+        let row = |seq: &str, info: crate::sequence::SequenceInfo| {
+            vec![
+                Value::String(seq.to_string()),
+                Value::Integer(info.start),
+                Value::Integer(info.step),
+                info.current.map_or(Value::Null, Value::Integer),
+            ]
+        };
+        if name == "drevo.sequence.list" {
+            return Ok(sequences
+                .list()
+                .into_iter()
+                .map(|(seq, info)| row(&seq, info))
+                .collect());
+        }
+        self.outside_transaction(name, span)?;
+        let seq = match self.eval(&args[0], &Bindings::new())? {
+            Value::String(s) => s,
+            other => {
+                return Err(invalid(format!(
+                    "the sequence name must be a string, got {other:?}"
+                )))
+            }
+        };
+        if name == "drevo.sequence.drop" {
+            let info = sequences.get(&seq);
+            let dropped = sequences
+                .drop_sequence(&seq)
+                .map_err(|e| sequence_error(name, e, span))?;
+            return Ok(match info {
+                Some(info) if dropped => vec![row(&seq, info)],
+                _ => Vec::new(),
+            });
+        }
+        let (mut start, mut step) = (1_i64, 1_i64);
+        match args
+            .get(1)
+            .map(|a| self.eval(a, &Bindings::new()))
+            .transpose()?
+        {
+            None | Some(Value::Null) => {}
+            Some(Value::Map(options)) => {
+                for (key, value) in options {
+                    match (key.as_str(), value) {
+                        ("start", Value::Integer(v)) => start = v,
+                        ("step", Value::Integer(v)) => step = v,
+                        ("start" | "step", other) => {
+                            return Err(invalid(format!(
+                                "`{key}` must be an integer, got {other:?}"
+                            )))
+                        }
+                        (other, _) => {
+                            return Err(invalid(format!(
+                                "unknown option `{other}`; a sequence takes `start` and `step`"
+                            )))
+                        }
+                    }
+                }
+            }
+            Some(other) => {
+                return Err(invalid(format!("the options must be a map, got {other:?}")))
+            }
+        }
+        sequences
+            .create(&seq, start, step)
+            .map_err(|e| sequence_error(name, e, span))?;
+        let info = sequences
+            .get(&seq)
+            .ok_or_else(|| invalid(format!("sequence `{seq}` vanished after it was created")))?;
+        Ok(vec![row(&seq, info)])
+    }
+
     /// `CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount` (#556) —
     /// the prepared, unresolved two-phase-commit transactions, by ascending
     /// gid; `preparedAt` is ISO-8601 UTC.
@@ -8419,6 +8545,9 @@ impl<'a> Executor<'a> {
             "drevo.semantic.status" => self.proc_semantic_status(args, span),
             "drevo.tx.listPrepared" => self.proc_tx_list_prepared(span),
             name if name.starts_with("apoc.trigger.") => self.proc_trigger(name, args, span),
+            "drevo.sequence.create" | "drevo.sequence.drop" | "drevo.sequence.list" => {
+                self.proc_sequence(name, args, span)
+            }
             "drevo.tx.commitPrepared" => self.proc_tx_resolve(name, args, span, true),
             "drevo.tx.rollbackPrepared" => self.proc_tx_resolve(name, args, span, false),
             "drevo.tx.heuristicRollback" => self.proc_tx_heuristic_rollback(name, args, span),
@@ -9765,6 +9894,9 @@ impl<'a> Executor<'a> {
             return self.eval_endpoint_node("endNode", Endpoint::End, args, row, span);
         }
         let lower = name.join(".").to_ascii_lowercase();
+        if is_sequence_function(&lower) {
+            return self.eval_sequence_function(&lower, args, row, span);
+        }
         if is_builtin_scalar_function(&lower) {
             let mut values = Vec::with_capacity(args.len());
             for arg in args {
@@ -9777,6 +9909,64 @@ impl<'a> Executor<'a> {
             task: "future Phase 10 follow-up".into(),
             span,
         })
+    }
+
+    /// `drevo.sequence.next(name)` hands out the sequence's next value;
+    /// `drevo.sequence.current(name)` is the last one handed out, or `null`
+    /// before the first (#644). Values are outside transactions: a rolled
+    /// back statement leaves a gap.
+    fn eval_sequence_function(
+        &self,
+        lower: &str,
+        args: &[Expression],
+        row: &Bindings,
+        span: Span,
+    ) -> ExecResultT<Value> {
+        let shown = if lower.ends_with("next") {
+            "drevo.sequence.next"
+        } else {
+            "drevo.sequence.current"
+        };
+        let [arg] = args else {
+            return Err(ExecError::InvalidFunctionCall {
+                name: shown.to_string(),
+                message: format!(
+                    "expected 1 argument (the sequence name), got {}",
+                    args.len()
+                ),
+                span,
+            });
+        };
+        let name = match self.eval(arg, row)? {
+            Value::String(s) => s,
+            Value::Null => return Ok(Value::Null),
+            other => {
+                return Err(ExecError::InvalidFunctionCall {
+                    name: shown.to_string(),
+                    message: format!("the sequence name must be a string, got {other:?}"),
+                    span,
+                })
+            }
+        };
+        let svc = self
+            .native_semantic
+            .ok_or_else(|| Self::engine_capability(shown))?;
+        let sequences = svc.graph().sequences();
+        if shown == "drevo.sequence.next" {
+            sequences
+                .next(&name)
+                .map(Value::Integer)
+                .map_err(|e| sequence_error(shown, e, span))
+        } else {
+            match sequences.get(&name) {
+                Some(info) => Ok(info.current.map_or(Value::Null, Value::Integer)),
+                None => Err(sequence_error(
+                    shown,
+                    crate::sequence::SequenceError::NotFound(name),
+                    span,
+                )),
+            }
+        }
     }
 
     /// Evaluate `startNode(rel)` / `endNode(rel)` (issue #232) — the source /
@@ -10209,6 +10399,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // embedded" from "writes landed, embeddings missing". #266 adds
         // `target_kind` (node|relationship) so rel targets are distinguishable.
         "drevo.tx.listPrepared" => Some(&["gid", "preparedAt", "opCount"]),
+        "drevo.sequence.create" | "drevo.sequence.drop" | "drevo.sequence.list" => {
+            Some(&["name", "start", "step", "current"])
+        }
         "apoc.trigger.install"
         | "apoc.trigger.add"
         | "apoc.trigger.list"
@@ -10348,7 +10541,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
 /// them) may be left out.
 fn procedure_optional_args(name: &str) -> usize {
     match name {
-        "apoc.trigger.install" | "apoc.trigger.add" => 1,
+        "apoc.trigger.install" | "apoc.trigger.add" | "drevo.sequence.create" => 1,
         _ => 0,
     }
 }
@@ -10416,6 +10609,10 @@ fn procedure_arity(name: &str) -> usize {
         | "apoc.trigger.pause"
         | "apoc.trigger.resume" => 1,
         "apoc.trigger.list" | "apoc.trigger.removeAll" => 0,
+        // create(name[, {start, step}]): the options are optional.
+        "drevo.sequence.create" => 2,
+        "drevo.sequence.drop" => 1,
+        "drevo.sequence.list" => 0,
         // drevo.events.post(name, payload) (issue #640).
         "drevo.events.post" => 2,
         "drevo.tx.commitPrepared"
