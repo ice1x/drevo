@@ -17,6 +17,10 @@ history and the in-repo issue tracker; format loosely follows
   bidirectional Dijkstra; `maxCost` stops it at a budget, and a negative cost
   is an error. `NativeService::weighted_path` and
   `drevo::weighted_path::weighted_path` do the same in Rust.
+- **Web UI: read-only databases** (issue #642). The database picker labels
+  read-only databases and shows a `read-only` badge for the active one;
+  Shrink is turned off there, and New database on a read-only server.
+  `GET /databases` reports `read_only_server`.
 - **Read-only databases** (issue #642). `ALTER DATABASE <name> SET ACCESS
   READ ONLY | READ WRITE` switches one database and is remembered across
   restarts (`<data_dir>/database_access.json`). `DREVO_READ_ONLY=true` serves

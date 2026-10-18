@@ -296,6 +296,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             "/ui/backups_view.js",
             get(crate::web_ui::serve_backups_view_js),
         )
+        .route("/ui/db_access.js", get(crate::web_ui::serve_db_access_js))
         .route(
             "/ui/live_refresh.js",
             get(crate::web_ui::serve_live_refresh_js),
@@ -1795,6 +1796,7 @@ fn database_list(registry: &DatabaseRegistry) -> DatabaseListResponse {
         databases,
         default: registry.default_name(),
         access,
+        read_only_server: registry.server_read_only(),
     }
 }
 
