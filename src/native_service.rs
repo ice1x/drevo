@@ -62,13 +62,56 @@ struct ServiceIndexes {
     fts_rel: NativeFtsRelIndex,
     /// [`crate::native::NativeGraph::change_head`] at the last sync.
     synced_head: u64,
+    /// Whether the secondary indexes — `props`, `values`, `fts`, `fts_rel` —
+    /// are kept. Off, they stay empty and statements scan instead.
+    secondary: bool,
 }
 
 impl ServiceIndexes {
+    /// The property-equality index, when secondary indexes are kept.
+    fn props(&self) -> Option<&NativePropertyIndex> {
+        self.secondary.then_some(&self.props)
+    }
+
+    /// The value cache, when secondary indexes are kept.
+    fn values(&self) -> Option<&NativeValueCache> {
+        self.secondary.then_some(&self.values)
+    }
+
+    /// The node full-text index, when secondary indexes are kept.
+    fn fts(&self) -> Option<&NativeFtsIndex> {
+        self.secondary.then_some(&self.fts)
+    }
+
+    /// The relationship full-text index, when secondary indexes are kept.
+    fn fts_rel(&self) -> Option<&NativeFtsRelIndex> {
+        self.secondary.then_some(&self.fts_rel)
+    }
+
+    /// Keep (`true`) or drop (`false`) the secondary indexes. Dropping frees
+    /// their memory at once; keeping them again rebuilds them from the graph.
+    fn set_secondary(&mut self, on: bool, graph: &NativeGraph) {
+        if on == self.secondary {
+            return;
+        }
+        self.props = NativePropertyIndex::new();
+        self.values = NativeValueCache::new();
+        self.fts = NativeFtsIndex::new();
+        self.fts_rel = NativeFtsRelIndex::new();
+        self.secondary = on;
+        if on {
+            self.props.sync(graph);
+            self.values.sync(graph);
+            self.fts.sync(graph);
+            self.fts_rel.sync(graph);
+        }
+    }
+
     fn synced_over(
         graph: &NativeGraph,
         path_specs: Vec<PathIndexSpec>,
         text_specs: Vec<TextIndexSpec>,
+        secondary: bool,
     ) -> Self {
         let mut idx = ServiceIndexes {
             labels: NativeLabelIndex::new(),
@@ -80,6 +123,7 @@ impl ServiceIndexes {
             fts: NativeFtsIndex::new(),
             fts_rel: NativeFtsRelIndex::new(),
             synced_head: 0,
+            secondary,
         };
         idx.catch_up(graph);
         idx
@@ -87,12 +131,14 @@ impl ServiceIndexes {
 
     fn catch_up(&mut self, graph: &NativeGraph) {
         self.labels.sync(graph);
-        self.props.sync(graph);
         self.paths.sync(graph);
         self.texts.sync(graph);
-        self.values.sync(graph);
-        self.fts.sync(graph);
-        self.fts_rel.sync(graph);
+        if self.secondary {
+            self.props.sync(graph);
+            self.values.sync(graph);
+            self.fts.sync(graph);
+            self.fts_rel.sync(graph);
+        }
         self.synced_head = graph.change_head();
     }
 }
@@ -195,6 +241,10 @@ pub struct NativeService {
     constraints: RwLock<crate::constraint_registry::ConstraintRegistry>,
     /// Installed triggers (`apoc.trigger.*`), persisted in the same sidecar.
     triggers: RwLock<crate::trigger::TriggerRegistry>,
+    /// Whether the secondary indexes should be kept (persisted in the same
+    /// sidecar). The index stack follows it at its next sync, so a statement
+    /// can change it while it holds the indexes.
+    secondary_wanted: AtomicBool,
     /// Bumped on every path- or text-index DDL, so the next statement rebuilds
     /// [`ServiceIndexes::paths`] and [`ServiceIndexes::texts`] over the new
     /// definitions.
@@ -264,7 +314,7 @@ struct AsyncTriggers {
 /// atomically rewritten on every control-plane mutation (the native
 /// counterpart of the KV `meta:semantic_registry` / `..._rel_registry` blobs).
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct SemanticSidecar {
     node: crate::semantic_index::SemanticIndexRegistry,
     rel: crate::semantic_index::SemanticIndexRegistry,
@@ -282,6 +332,31 @@ struct SemanticSidecar {
     /// Installed triggers; absent in older sidecars.
     #[serde(default)]
     triggers: crate::trigger::TriggerRegistry,
+    /// Whether the secondary indexes are kept; absent (kept) in older
+    /// sidecars.
+    #[serde(default = "secondary_indexes_default")]
+    secondary_indexes: bool,
+}
+
+/// Secondary indexes are kept unless a database turned them off.
+#[cfg(not(target_arch = "wasm32"))]
+fn secondary_indexes_default() -> bool {
+    true
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for SemanticSidecar {
+    fn default() -> Self {
+        Self {
+            node: Default::default(),
+            rel: Default::default(),
+            vector: Default::default(),
+            path: Default::default(),
+            constraints: Default::default(),
+            triggers: Default::default(),
+            secondary_indexes: true,
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -408,6 +483,7 @@ impl NativeService {
             path: path_indexes,
             constraints,
             triggers,
+            secondary_indexes,
         } = load_semantic_sidecar(&sidecar);
         // Constraints are schema, not WAL data: install them over the replayed
         // graph. Data written through drevo already satisfies them; if a
@@ -424,6 +500,7 @@ impl NativeService {
             &graph,
             path_indexes.specs(),
             path_indexes.text_specs(),
+            secondary_indexes,
         ));
         let service = Self {
             graph,
@@ -441,6 +518,7 @@ impl NativeService {
             path_indexes: RwLock::new(path_indexes),
             constraints: RwLock::new(constraints),
             triggers: RwLock::new(triggers),
+            secondary_wanted: AtomicBool::new(secondary_indexes),
             path_specs_version: AtomicU64::new(0),
             semantic_sidecar: Some(sidecar),
             #[cfg(feature = "http")]
@@ -479,7 +557,12 @@ impl NativeService {
     /// in-memory graph, for tests and embedded use.
     pub fn in_memory() -> Self {
         let graph = NativeGraph::new();
-        let indexes = RwLock::new(ServiceIndexes::synced_over(&graph, Vec::new(), Vec::new()));
+        let indexes = RwLock::new(ServiceIndexes::synced_over(
+            &graph,
+            Vec::new(),
+            Vec::new(),
+            true,
+        ));
         Self {
             graph,
             indexes,
@@ -496,6 +579,7 @@ impl NativeService {
             path_indexes: RwLock::new(crate::path_index_registry::PathIndexRegistry::default()),
             constraints: RwLock::new(crate::constraint_registry::ConstraintRegistry::default()),
             triggers: RwLock::new(crate::trigger::TriggerRegistry::default()),
+            secondary_wanted: AtomicBool::new(true),
             path_specs_version: AtomicU64::new(0),
             semantic_sidecar: None,
             #[cfg(feature = "http")]
@@ -753,8 +837,8 @@ impl NativeService {
             let (result, events) = crate::event_bus::collect(|| {
                 self.with_fresh_indexes(|idx| {
                     let ctx = NativeQueryContext {
-                        fts: Some(&idx.fts),
-                        fts_rel: Some(&idx.fts_rel),
+                        fts: idx.fts(),
+                        fts_rel: idx.fts_rel(),
                         labels: None,
                         properties: None,
                         paths: None,
@@ -890,6 +974,7 @@ impl NativeService {
         let fresh = |idx: &ServiceIndexes| {
             idx.synced_head == self.graph.change_head()
                 && idx.paths_version == self.path_specs_version.load(Ordering::SeqCst)
+                && idx.secondary == self.secondary_indexes()
         };
         // Bring the indexes up to date under the write lock, then serve under
         // the read lock, so a long statement never holds up the others. Under
@@ -924,9 +1009,38 @@ impl NativeService {
             idx.texts.set_specs(text_specs, &self.graph);
             idx.paths_version = version;
         }
+        idx.set_secondary(self.secondary_indexes(), &self.graph);
         if idx.synced_head != self.graph.change_head() {
             idx.catch_up(&self.graph);
         }
+    }
+
+    /// Whether this database keeps its secondary indexes: the property index,
+    /// the value cache and the full-text indexes. On by default.
+    #[must_use]
+    pub fn secondary_indexes(&self) -> bool {
+        self.secondary_wanted.load(Ordering::SeqCst)
+    }
+
+    /// Keep (`true`) or drop (`false`) this database's secondary indexes —
+    /// the property-equality index, the value cache and the node and
+    /// relationship full-text indexes — and remember the choice across
+    /// restarts. Off, their memory is freed before the next statement runs:
+    /// lookups by property scan instead, and `fts.*` /
+    /// `db.index.fulltext.*` are unavailable. Labels, adjacency, ids and the
+    /// declared path, text and vector indexes are unaffected. On again, they
+    /// are rebuilt from the graph before the next statement.
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::ReadOnly`] on a read-only database.
+    pub fn set_secondary_indexes(&self, on: bool) -> Result<(), DrevoError> {
+        if self.is_read_only() {
+            return Err(DrevoError::ReadOnly);
+        }
+        self.secondary_wanted.store(on, Ordering::SeqCst);
+        self.persist_semantic();
+        Ok(())
     }
 
     /// Full-text search over the service's BM25 index — the engine of the
@@ -1184,8 +1298,8 @@ impl NativeService {
                     || {
                         self.with_fresh_indexes(|idx| {
                             let ctx = NativeQueryContext {
-                                fts: Some(&idx.fts),
-                                fts_rel: Some(&idx.fts_rel),
+                                fts: idx.fts(),
+                                fts_rel: idx.fts_rel(),
                                 #[cfg(feature = "http")]
                                 embedder: self.embedder.get(),
                                 semantic: Some(self),
@@ -1282,8 +1396,8 @@ impl NativeService {
             crate::trigger::run(&trigger, &params, |query, params| {
                 self.with_fresh_indexes(|idx| {
                     let ctx = NativeQueryContext {
-                        fts: Some(&idx.fts),
-                        fts_rel: Some(&idx.fts_rel),
+                        fts: idx.fts(),
+                        fts_rel: idx.fts_rel(),
                         labels: None,
                         properties: None,
                         paths: None,
@@ -2844,6 +2958,7 @@ impl NativeService {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            secondary_indexes: self.secondary_indexes(),
         };
         serde_json::to_vec(&sidecar)
     }
@@ -3078,13 +3193,13 @@ impl NativeService {
         restriction: Option<Restriction<'_>>,
     ) -> Result<ExecResult, ExecError> {
         let ctx = NativeQueryContext {
-            fts: Some(&idx.fts),
-            fts_rel: Some(&idx.fts_rel),
+            fts: idx.fts(),
+            fts_rel: idx.fts_rel(),
             labels: Some(&idx.labels),
-            properties: Some(&idx.props),
+            properties: idx.props(),
             paths: Some(&idx.paths),
             texts: Some(&idx.texts),
-            values: Some(&idx.values),
+            values: idx.values(),
             #[cfg(feature = "http")]
             embedder: self.embedder.get(),
             #[cfg(not(feature = "http"))]
@@ -3194,6 +3309,7 @@ fn query_changes_schema(query: &Query) -> bool {
                         name.as_str(),
                         "drevo.sequence.create" | "drevo.sequence.drop"
                     )
+                    || name == "drevo.indexes.setSecondary"
             }
             _ => false,
         })

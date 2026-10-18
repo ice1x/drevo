@@ -604,6 +604,7 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale–Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
 | `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra — see [Weighted paths](#weighted-paths) |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
+| `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes — see [Secondary indexes](#secondary-indexes) |
 | `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
 | `drevo.sequence.create(name[, {start, step}])`, `drevo.sequence.drop(name)`, `drevo.sequence.list()` | `name, start, step, current` | Create, drop and list sequences; draw values with `drevo.sequence.next(name)` — see [Sequences](#sequences) |
 
@@ -1329,6 +1330,32 @@ explicit transaction; on a read-only database no value is handed out.
 ```cypher
 CALL drevo.sequence.list() YIELD name, current RETURN name, current
 ```
+### Secondary indexes
+
+Besides adjacency, ids and labels, a database keeps three indexes of its own
+for every node and relationship: a property-value index (fast `{key: value}`
+and range lookups), a value cache, and full-text indexes over every string
+(`fts.search`, `db.index.fulltext.*`). They can take more memory than the
+graph itself. A database that does not need them — a road network that is
+only routed over, say — can turn them off:
+
+```cypher
+CALL drevo.indexes.setSecondary(false) YIELD enabled RETURN enabled
+```
+
+Their memory is freed before the next statement. Queries stay correct:
+lookups by property scan the label or the graph instead, and the full-text
+procedures report that they are unavailable. Ids, adjacency, labels,
+`drevo.path.weighted` and the indexes you declare (`CREATE INDEX`,
+`CREATE TEXT INDEX`, vector indexes) keep working. The choice is kept across
+restarts; `CALL drevo.indexes.setSecondary(true)` rebuilds the indexes from
+the graph, and `CALL drevo.indexes.secondary()` reports the setting. Changing
+it needs index management rights and is refused in an explicit transaction
+and on a read-only database.
+
+On the Sofia road graph (240,451 junctions, 278,377 roads with two numbers
+each) a restarted server holds about 1 GB with the secondary indexes and
+about 450 MB without.
 
 ### Fuzzy matching (#593)
 

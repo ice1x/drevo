@@ -465,3 +465,23 @@ async fn changing_sequences_needs_admin_procedures() {
         .await;
     assert_eq!(listed["rows"][0][0], "bug");
 }
+
+// ── Secondary indexes ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dropping_secondary_indexes_needs_index_management() {
+    let t = Tracker::seeded().await;
+    for user in ["ed", "rita"] {
+        t.forbidden(user, "CALL drevo.indexes.setSecondary(false)")
+            .await;
+    }
+    t.ok("archie", "CALL drevo.indexes.setSecondary(false)")
+        .await;
+    let state = t
+        .ok(
+            "rita",
+            "CALL drevo.indexes.secondary() YIELD enabled RETURN enabled",
+        )
+        .await;
+    assert_eq!(state["rows"][0][0], false);
+}
