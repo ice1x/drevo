@@ -26,29 +26,63 @@ fn retained(svc: &NativeService) -> u64 {
 }
 
 #[test]
-fn a_reopened_store_keeps_only_the_event_history() {
+fn a_reopened_store_does_not_copy_the_graph_into_the_feed() {
     let dir = tempfile::tempdir().unwrap();
     let wal = dir.path().join("native.wal");
-    let total = NativeService::DEFAULT_EVENT_HISTORY as usize + 500;
+    let total = 1_500;
     {
         let svc = NativeService::open(&wal).unwrap();
         svc.create_nodes(junctions(total)).unwrap();
     }
     let svc = NativeService::open(&wal).unwrap();
     assert_eq!(svc.graph().node_count() as usize, total);
-    assert_eq!(retained(&svc), NativeService::DEFAULT_EVENT_HISTORY);
+    assert_eq!(retained(&svc), 0);
 }
 
 #[test]
-fn a_small_store_keeps_its_whole_history() {
+fn indexes_serve_the_recovered_graph_after_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let wal = dir.path().join("native.wal");
-    NativeService::open(&wal)
-        .unwrap()
-        .create_nodes(junctions(30))
+    {
+        let svc = NativeService::open(&wal).unwrap();
+        svc.execute(
+            &drevo::cypher::parser::parse(
+                "UNWIND range(1, 30) AS i CREATE (:Junction {title: 'stop ' + toString(i), osm_id: i})",
+            )
+            .unwrap(),
+            std::collections::HashMap::new(),
+        )
         .unwrap();
+    }
     let svc = NativeService::open(&wal).unwrap();
-    assert_eq!(retained(&svc), 30);
+    let run = |q: &str| {
+        svc.execute(
+            &drevo::cypher::parser::parse(q).unwrap(),
+            std::collections::HashMap::new(),
+        )
+        .unwrap()
+        .rows
+    };
+    // The property index, the label index and full-text all see it.
+    assert_eq!(
+        run("MATCH (j:Junction {osm_id: 17}) RETURN j.title"),
+        vec![vec![drevo::cypher::executor::Value::String(
+            "stop 17".into()
+        )]]
+    );
+    assert_eq!(
+        run("MATCH (j:Junction) WHERE j.osm_id > 25 RETURN j").len(),
+        5
+    );
+    assert_eq!(
+        run("CALL fts.search('stop 23', 1) YIELD node RETURN node.title"),
+        vec![vec![drevo::cypher::executor::Value::String(
+            "stop 23".into()
+        )]]
+    );
+    // New writes after the reopen flow through the feed as usual.
+    run("CREATE (:Junction {title: 'new stop', osm_id: 99})");
+    assert_eq!(run("MATCH (j {osm_id: 99}) RETURN j").len(), 1);
 }
 
 #[test]

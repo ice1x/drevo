@@ -3723,10 +3723,14 @@ impl NativeGraph {
                 format
             }
         };
-        // Seed the change-feed with the recovered state so feed-tailing
-        // subscribers (indexes, value cache) see recovered data — see
-        // [`Self::replay`].
-        let seed = inner.to_wal_ops();
+        // The change feed starts empty, positioned after the recovered state:
+        // a feed-tailing subscriber (an index, the value cache) starts before
+        // it, finds itself lagged and builds from the graph. Seeding the feed
+        // with a copy of the whole graph instead would double the memory a
+        // restart needs.
+        let recovered =
+            (inner.nodes.len() + inner.edges.len() + inner.embeddings.len() + inner.prepared.len())
+                as u64;
         // Stable replica identity persisted next to the WAL (issue #389),
         // reused across restarts so a peer's writes keep a stable provenance.
         let origin = if read_only {
@@ -3764,8 +3768,8 @@ impl NativeGraph {
             reg_txs: std::sync::Mutex::new(HashMap::new()),
             next_reg_tx: std::sync::atomic::AtomicU64::new(0),
             feed: std::sync::Mutex::new(ChangeFeed {
-                start_seq: 0,
-                ops: seed,
+                start_seq: recovered,
+                ops: Vec::new(),
             }),
             #[cfg(not(target_arch = "wasm32"))]
             group: GroupCommit::default(),
