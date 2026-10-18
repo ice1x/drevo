@@ -218,6 +218,8 @@ pub fn note_exec_error(protocol: &str, database: &str, query: &str, err: &ExecEr
                 "statement exceeded the statement timeout"
             );
         }
+        // A write to a read-only database is the client's mistake (#642).
+        ExecError::Storage(crate::error::DrevoError::ReadOnly) => {}
         ExecError::Storage(e) => {
             tracing::error!(
                 target: "drevo::query",

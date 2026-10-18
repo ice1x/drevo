@@ -1,5 +1,5 @@
-//! Catalog-level Cypher admin commands — `SHOW DATABASES`, `USE`, and
-//! `CREATE DATABASE`.
+//! Catalog-level Cypher admin commands — `SHOW DATABASES`, `USE`,
+//! `CREATE DATABASE` and `ALTER DATABASE … SET ACCESS`.
 //!
 //! These are *not* graph queries: they list, select, and create the named
 //! databases the process serves (see `catalog`). The graph executor
@@ -16,6 +16,7 @@
 //! ```text
 //! SHOW DATABASES
 //! CREATE DATABASE <name> [IF NOT EXISTS]
+//! ALTER DATABASE <name> SET ACCESS READ ONLY | READ WRITE
 //! USE <name>                 -- select only
 //! USE <name> <query>         -- run <query> against <name>
 //! ```
@@ -34,6 +35,13 @@ pub enum AdminCommand {
         /// `IF NOT EXISTS` present — a pre-existing name is a no-op, not an
         /// error.
         if_not_exists: bool,
+    },
+    /// `ALTER DATABASE <name> SET ACCESS READ ONLY | READ WRITE`.
+    AlterDatabaseAccess {
+        /// The database (validated by the catalog, not here).
+        name: String,
+        /// `READ ONLY` (`true`) or `READ WRITE` (`false`).
+        read_only: bool,
     },
     /// `USE <name>` optionally followed by a query to run against it. With
     /// no trailing query the command just names a database to select.
@@ -80,6 +88,23 @@ pub fn parse(input: &str) -> Option<AdminCommand> {
             Some(AdminCommand::CreateDatabase {
                 name,
                 if_not_exists,
+            })
+        }
+        "ALTER" => {
+            let words: Vec<String> = words
+                .map(|w| w.trim_end_matches(';').to_string())
+                .filter(|w| !w.is_empty())
+                .collect();
+            let upper: Vec<String> = words.iter().map(|w| w.to_ascii_uppercase()).collect();
+            let upper: Vec<&str> = upper.iter().map(String::as_str).collect();
+            let read_only = match upper.as_slice() {
+                ["DATABASE", _, "SET", "ACCESS", "READ", "ONLY"] => true,
+                ["DATABASE", _, "SET", "ACCESS", "READ", "WRITE"] => false,
+                _ => return None,
+            };
+            Some(AdminCommand::AlterDatabaseAccess {
+                name: words[1].clone(),
+                read_only,
             })
         }
         "USE" => {
@@ -198,6 +223,42 @@ mod tests {
                 query: Some("RETURN 1".into())
             })
         );
+    }
+
+    #[test]
+    fn alter_database_set_access() {
+        assert_eq!(
+            parse("ALTER DATABASE crm SET ACCESS READ ONLY"),
+            Some(AdminCommand::AlterDatabaseAccess {
+                name: "crm".into(),
+                read_only: true,
+            })
+        );
+        assert_eq!(
+            parse("alter database crm set access read write;"),
+            Some(AdminCommand::AlterDatabaseAccess {
+                name: "crm".into(),
+                read_only: false,
+            })
+        );
+        assert_eq!(
+            parse("  ALTER   DATABASE drevo  SET ACCESS  READ ONLY  "),
+            Some(AdminCommand::AlterDatabaseAccess {
+                name: "drevo".into(),
+                read_only: true,
+            })
+        );
+    }
+
+    #[test]
+    fn other_alter_statements_are_not_access_commands() {
+        assert_eq!(parse("ALTER USER ann SET PASSWORD 'x'"), None);
+        assert_eq!(parse("ALTER DATABASE crm"), None);
+        assert_eq!(parse("ALTER DATABASE crm SET ACCESS"), None);
+        assert_eq!(parse("ALTER DATABASE crm SET ACCESS READ"), None);
+        assert_eq!(parse("ALTER DATABASE crm SET ACCESS WRITE ONLY"), None);
+        assert_eq!(parse("ALTER DATABASE crm SET ACCESS READ ONLY NOW"), None);
+        assert_eq!(parse("ALTER DATABASE crm SET TOPOLOGY 1 PRIMARY"), None);
     }
 
     #[test]

@@ -2470,8 +2470,11 @@ async fn cypher_show_databases_lists_the_registry() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    assert_eq!(body["columns"], json!(["name"]));
-    assert_eq!(body["rows"], json!([["b"], ["drevo"]]));
+    assert_eq!(body["columns"], json!(["name", "access"]));
+    assert_eq!(
+        body["rows"],
+        json!([["b", "read-write"], ["drevo", "read-write"]])
+    );
 }
 
 #[tokio::test]

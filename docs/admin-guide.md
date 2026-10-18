@@ -44,6 +44,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
 | `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
 | `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor` or `msgpack`. See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
+| `DREVO_READ_ONLY` | `false` | Serve every database read-only. See [Read-only databases](#read-only-databases). |
 | `DREVO_AUDIT_LOG` | `off` | Security audit log: `off`, `stdout`, or a file path. See [Audit log](#audit-log). Needs the `auth` feature. |
 | `DREVO_AUDIT_QUERY_TEXT` | `false` | Add a refused statement's text to its audit event. |
 | `DREVO_OIDC_ISSUER` | unset (off) | Accept bearer tokens from this OpenID Connect provider: its exact `iss`. See [Identity provider (OIDC)](#identity-provider-oidc). Needs the `oidc` feature. |
@@ -511,6 +512,39 @@ docker run --rm -v drevo_data:/data -v drevo_backups:/backups ice1x/drevo backup
 
 A GraphML or JSON export (`GET /export/graphml`, `GET /export/json`) remains the portable,
 logical copy of one database's graph.
+
+### Read-only databases
+
+A read-only database answers queries, search and exports, and refuses every write and schema
+change with Neo4j's `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase` (HTTP 403). Drivers do
+not retry it.
+
+Make one database read-only, and back:
+
+```bash
+curl -X POST http://localhost:8080/cypher -H 'content-type: application/json' \
+     -d '{"query": "ALTER DATABASE erp SET ACCESS READ ONLY"}'
+curl -X POST http://localhost:8080/cypher -H 'content-type: application/json' \
+     -d '{"query": "ALTER DATABASE erp SET ACCESS READ WRITE"}'
+```
+
+The setting is kept in `<data_dir>/database_access.json`, so it survives a restart.
+`SHOW DATABASES` has an `access` column (`read-only` or `read-write`), and `GET /databases` an
+`access` map. With logins required, `ALTER DATABASE` needs `DATABASE MANAGEMENT`.
+
+`DREVO_READ_ONLY=true` makes the whole server read-only:
+
+- every database is opened read-only;
+- no database can be created, dropped or switched;
+- nothing in the data directory is written, so it can be mounted read-only. This suits a
+  reporting replica, a published snapshot or a demo copy.
+
+The server still writes its users and settings files when they change. Create the users
+beforehand, or set `DREVO_AUTH=none`.
+
+```bash
+docker run -d -p 8080:8080 -e DREVO_READ_ONLY=true -v drevo_data:/data:ro ice1x/drevo
+```
 
 ### Storage bloat (#253 slice 1)
 
@@ -1043,6 +1077,11 @@ python -m drevo bloat /data/drevo.redb
 # Backup (physical, online) and restore
 curl -X POST http://localhost:8080/admin/backup -H 'content-type: application/json' -d '{}'
 drevo-server restore --from /data/backups/<name> --to /data-restored
+
+# Read-only: one database, or the whole server
+curl -X POST http://localhost:8080/cypher -H 'content-type: application/json' \
+     -d '{"query": "ALTER DATABASE erp SET ACCESS READ ONLY"}'
+DREVO_READ_ONLY=true drevo-server
 
 # Full-graph export / import (JSON)
 curl -s http://localhost:8080/export/json > graph.json

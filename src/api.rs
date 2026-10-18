@@ -644,6 +644,8 @@ pub struct DatabaseListResponse {
     pub databases: Vec<String>,
     /// The name selected when a request specifies none.
     pub default: &'static str,
+    /// Each database's access, `read-write` or `read-only`, by name.
+    pub access: std::collections::BTreeMap<String, &'static str>,
 }
 
 /// Request body for `POST /databases` — create a new named database.

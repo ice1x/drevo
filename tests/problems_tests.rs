@@ -139,6 +139,13 @@ fn a_statement_timeout_is_an_error_problem_and_is_counted() {
             "RETURN $missing",
             &ExecError::MissingParameter("missing".into()),
         );
+        // Nor is a write to a read-only database.
+        note_exec_error(
+            "bolt",
+            "drevo",
+            "CREATE (:Bug)",
+            &ExecError::Storage(drevo::error::DrevoError::ReadOnly),
+        );
     });
     assert!(statement_timeouts() > before);
     let (all, _) = log.since(0);
