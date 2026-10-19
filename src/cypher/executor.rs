@@ -468,6 +468,13 @@ pub enum ExecError {
         /// The configured limit, in milliseconds.
         limit_ms: u64,
     },
+    /// The statement or its transaction ran past the timeout the client set
+    /// for it (Bolt `tx_timeout`, HTTP `timeout_ms`) and was stopped.
+    #[error("the transaction exceeded the {limit_ms} ms timeout the client set")]
+    ClientTimeout {
+        /// The client's limit, in milliseconds.
+        limit_ms: u64,
+    },
     /// The statement or its transaction was stopped by `TERMINATE
     /// TRANSACTIONS` (see [`crate::transactions`]).
     #[error("the transaction has been terminated")]
@@ -540,6 +547,7 @@ impl ExecError {
             | Self::IndexBehindWrites { .. }
             | Self::Forbidden { .. }
             | Self::Timeout { .. }
+            | Self::ClientTimeout { .. }
             | Self::Terminated
             | Self::TriggerFailed { .. }
             | Self::Storage(_) => None,
@@ -570,8 +578,8 @@ pub(crate) mod deadline {
     const TICK_STRIDE: u32 = 1024;
 
     thread_local! {
-        /// `(deadline, limit in ms)` of the statement running on this thread.
-        static DEADLINE: Cell<Option<(Instant, u64)>> = const { Cell::new(None) };
+        /// The deadline of the statement running on this thread.
+        static DEADLINE: Cell<Option<Deadline>> = const { Cell::new(None) };
         static TICKS: Cell<u32> = const { Cell::new(0) };
         /// Set by `TERMINATE TRANSACTIONS` for the statement on this thread.
         static CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
@@ -607,24 +615,96 @@ pub(crate) mod deadline {
         })
     }
 
-    /// Run `work` with a deadline `limit` from now (none when `limit` is
-    /// `None`), restoring whatever deadline was active before — so a nested
-    /// statement cannot clear or extend its caller's.
-    pub(crate) fn with_statement_timeout<R>(
-        limit: Option<Duration>,
-        work: impl FnOnce() -> R,
-    ) -> R {
-        let Some(limit) = limit else {
+    /// Who set a [`Deadline`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Source {
+        /// The server's statement timeout (`DREVO_QUERY_TIMEOUT_MS`).
+        Server,
+        /// The client, for its statement or transaction (Bolt and HTTP only).
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+        Client,
+    }
+
+    /// When a statement or transaction has to stop, and whose limit that is.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct Deadline {
+        at: Instant,
+        limit_ms: u64,
+        source: Source,
+    }
+
+    fn millis(limit: Duration) -> u64 {
+        u64::try_from(limit.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    impl Deadline {
+        /// The server's statement timeout, `limit` from now.
+        pub(crate) fn server(limit: Duration) -> Self {
+            Self {
+                at: Instant::now() + limit,
+                limit_ms: millis(limit),
+                source: Source::Server,
+            }
+        }
+
+        /// The timeout a client asked for, `limit` from now. The server's
+        /// own limit caps it: a client cannot ask for more time than the
+        /// server gives a statement.
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+        pub(crate) fn client(limit: Duration, server: Option<Duration>) -> Self {
+            match server {
+                Some(server) if server < limit => Self::server(server),
+                _ => Self {
+                    at: Instant::now() + limit,
+                    limit_ms: millis(limit),
+                    source: Source::Client,
+                },
+            }
+        }
+
+        /// Whose limit it is.
+        #[cfg(test)]
+        pub(crate) fn source(&self) -> Source {
+            self.source
+        }
+
+        /// Whether it has passed.
+        pub(crate) fn expired(&self) -> bool {
+            Instant::now() >= self.at
+        }
+
+        /// How long until it passes; zero once it has.
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+        pub(crate) fn remaining(&self) -> Duration {
+            self.at.saturating_duration_since(Instant::now())
+        }
+
+        /// The error of a statement that ran into it.
+        pub(crate) fn error(&self) -> ExecError {
+            let limit_ms = self.limit_ms;
+            match self.source {
+                Source::Server => ExecError::Timeout { limit_ms },
+                Source::Client => ExecError::ClientTimeout { limit_ms },
+            }
+        }
+    }
+
+    /// Run `work` stopping at `deadline` (none when `None`), restoring
+    /// whatever deadline was active before. The earlier of `deadline` and an
+    /// active one applies, so a nested statement cannot clear or extend its
+    /// caller's.
+    pub(crate) fn with_deadline<R>(deadline: Option<Deadline>, work: impl FnOnce() -> R) -> R {
+        let Some(mut deadline) = deadline else {
             return work();
         };
-        let mut deadline = Instant::now() + limit;
-        let limit_ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX);
         let previous = DEADLINE.with(|d| d.get());
-        if let Some((outer, _)) = previous {
-            deadline = deadline.min(outer);
+        if let Some(outer) = previous {
+            if outer.at <= deadline.at {
+                deadline = outer;
+            }
         }
-        DEADLINE.with(|d| d.set(Some((deadline, limit_ms))));
-        struct Restore(Option<(Instant, u64)>);
+        DEADLINE.with(|d| d.set(Some(deadline)));
+        struct Restore(Option<Deadline>);
         impl Drop for Restore {
             fn drop(&mut self) {
                 DEADLINE.with(|d| d.set(self.0));
@@ -634,8 +714,17 @@ pub(crate) mod deadline {
         work()
     }
 
-    /// Fail with [`ExecError::Timeout`] once the running statement is past
-    /// its deadline.
+    /// Run `work` with the server's statement timeout `limit` from now (none
+    /// when `limit` is `None`); see [`with_deadline`].
+    pub(crate) fn with_statement_timeout<R>(
+        limit: Option<Duration>,
+        work: impl FnOnce() -> R,
+    ) -> R {
+        with_deadline(limit.map(Deadline::server), work)
+    }
+
+    /// Fail with [`ExecError::Timeout`] (or [`ExecError::ClientTimeout`])
+    /// once the running statement is past its deadline.
     pub(crate) fn tick() -> ExecResultT<()> {
         let deadline = DEADLINE.with(|d| d.get());
         let watching = WATCHING.with(|w| w.get());
@@ -654,9 +743,7 @@ pub(crate) mod deadline {
             return Err(ExecError::Terminated);
         }
         match deadline {
-            Some((deadline, limit_ms)) if Instant::now() >= deadline => {
-                Err(ExecError::Timeout { limit_ms })
-            }
+            Some(deadline) if deadline.expired() => Err(deadline.error()),
             _ => Ok(()),
         }
     }
@@ -722,6 +809,59 @@ pub(crate) mod deadline {
                 with_statement_timeout(Some(Duration::from_millis(5)), spin_until_timeout)
             });
             assert_eq!(limit, 5);
+        }
+
+        fn spin_until_error() -> ExecError {
+            loop {
+                if let Err(e) = tick() {
+                    return e;
+                }
+            }
+        }
+
+        #[test]
+        fn a_client_deadline_fails_with_the_client_timeout() {
+            let deadline = Deadline::client(Duration::from_millis(5), None);
+            assert_eq!(deadline.source(), Source::Client);
+            let err = with_deadline(Some(deadline), spin_until_error);
+            assert!(
+                matches!(err, ExecError::ClientTimeout { limit_ms: 5 }),
+                "{err:?}"
+            );
+            assert!(deadline.expired());
+            assert_eq!(deadline.remaining(), Duration::ZERO);
+        }
+
+        #[test]
+        fn the_server_limit_caps_a_longer_client_timeout() {
+            let capped = Deadline::client(Duration::from_secs(60), Some(Duration::from_millis(5)));
+            assert_eq!(capped.source(), Source::Server);
+            assert!(matches!(capped.error(), ExecError::Timeout { limit_ms: 5 }));
+            let shorter = Deadline::client(Duration::from_millis(5), Some(Duration::from_secs(60)));
+            assert_eq!(shorter.source(), Source::Client);
+            assert!(!shorter.expired());
+            assert!(shorter.remaining() <= Duration::from_millis(5));
+        }
+
+        #[test]
+        fn the_earlier_deadline_and_its_source_win() {
+            // The client's short limit inside the server's long one…
+            let err = with_statement_timeout(Some(Duration::from_secs(60)), || {
+                with_deadline(
+                    Some(Deadline::client(Duration::from_millis(5), None)),
+                    spin_until_error,
+                )
+            });
+            assert!(matches!(err, ExecError::ClientTimeout { .. }), "{err:?}");
+            // …and the server's short limit inside the client's long one.
+            let err = with_deadline(
+                Some(Deadline::client(Duration::from_secs(60), None)),
+                || with_statement_timeout(Some(Duration::from_millis(5)), spin_until_error),
+            );
+            assert!(matches!(err, ExecError::Timeout { limit_ms: 5 }), "{err:?}");
+            for _ in 0..10 * TICK_STRIDE {
+                assert!(tick().is_ok(), "deadline leaked out of its scope");
+            }
         }
     }
 }

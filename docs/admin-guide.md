@@ -53,6 +53,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_OIDC_ROLES_CLAIM` | `groups` | The claim listing the user's groups. |
 | `DREVO_OIDC_ROLE_MAP` | unset | Groups to roles: `admins=admin,devs=editor`. A group not listed gives no role. |
 | `DREVO_BOLT_PORT` | unset (off) | Serve Bolt on this port, same host as HTTP (Neo4j drivers, `cypher-shell`). |
+| `DREVO_IDLE_SESSION_TIMEOUT_MS` | `0` (off) | Close a Bolt connection that holds an open transaction and sends nothing for this many milliseconds, and roll the transaction back. Connections without a transaction may stay idle. See [Client timeouts](#client-timeouts). |
 | `DREVO_TLS_CERT` | unset (off) | PEM certificate chain, leaf first. Together with `DREVO_TLS_KEY` it turns on TLS: HTTP is served as HTTPS and Bolt as `bolt+s://`. See [TLS](#tls). Setting only one of the pair, or a build without the `bolt-tls` feature, is rejected at startup. |
 | `DREVO_TLS_KEY` | unset (off) | PEM private key for `DREVO_TLS_CERT` (PKCS#8, PKCS#1 RSA or SEC1 EC). |
 | `DREVO_GRPC_PORT` | unset (off) | Serve the gRPC API on this port, same host as HTTP. See [gRPC API](#grpc-api-opt-in). Rejected at startup by a build without the `grpc` feature. |
@@ -62,6 +63,34 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
 
 Invalid configuration exits with code `2`; a runtime failure exits with `1`.
+
+### Client timeouts
+
+A client can give its own statement or transaction a time limit, in milliseconds:
+
+- **Bolt:** the `tx_timeout` that Neo4j drivers send on `BEGIN` and on an auto-commit `RUN`.
+  In Python that is `session.run(Query(q, timeout=1))` or `@unit_of_work(timeout=1)`. For an
+  explicit transaction the limit covers the whole transaction from `BEGIN`.
+- **HTTP:** `timeout_ms` in the `POST /cypher` body:
+
+  ```sh
+  curl -s localhost:8080/cypher -H 'Content-Type: application/json' \
+    -d '{"query": "MATCH (t:Ticket) RETURN count(t)", "timeout_ms": 2000}'
+  ```
+
+Past the limit the statement stops and an explicit transaction is rolled back. Over Bolt the error is
+`Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration`, which drivers do not retry.
+A transaction that runs past its limit while the client sends nothing is rolled back at once. The
+connection stays open, and the next `RUN` or `COMMIT` reports the timeout. `0` means no limit.
+
+`DREVO_QUERY_TIMEOUT_MS` caps a client's limit: a client cannot ask for more time than the server
+gives a statement. When the server's limit is the shorter one, the error is the server's
+`Neo.ClientError.Transaction.TransactionTimedOut`.
+
+`DREVO_IDLE_SESSION_TIMEOUT_MS` deals with clients that open a transaction and go silent, such as a
+crashed script or a paused debugger. Their connection is closed and the transaction rolled back,
+so it stops holding its snapshot of the graph and any locks. The driver sees a closed connection and
+opens a new one.
 
 ### Binary HTTP bodies (CBOR, MessagePack, opt-in)
 

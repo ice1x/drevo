@@ -171,6 +171,9 @@ pub struct DatabaseRegistry {
     /// Every database is read-only and the catalog cannot change
     /// (`DREVO_READ_ONLY`).
     read_only: bool,
+    /// How long a Bolt connection holding an open transaction may stay
+    /// silent, in milliseconds (`0`: no limit).
+    idle_session_timeout_ms: std::sync::atomic::AtomicU64,
 }
 
 // `NativeService` is not `Debug`, so derive would not apply; print the catalog
@@ -399,6 +402,7 @@ impl DatabaseRegistry {
             dbs: RwLock::new(dbs),
             data_dir,
             read_only: false,
+            idle_session_timeout_ms: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -428,6 +432,28 @@ impl DatabaseRegistry {
         self.default.set_statement_timeout(limit);
         for service in self.read().values() {
             service.set_statement_timeout(limit);
+        }
+    }
+
+    /// Close a Bolt connection that has held an open transaction for `limit`
+    /// without sending anything, rolling the transaction back
+    /// (`DREVO_IDLE_SESSION_TIMEOUT_MS`). `None` removes the limit.
+    pub fn set_idle_session_timeout(&self, limit: Option<std::time::Duration>) {
+        let ms = limit.map_or(0, |l| u64::try_from(l.as_millis()).unwrap_or(u64::MAX));
+        self.idle_session_timeout_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The limit set by
+    /// [`set_idle_session_timeout`](Self::set_idle_session_timeout), if any.
+    #[must_use]
+    pub fn idle_session_timeout(&self) -> Option<std::time::Duration> {
+        match self
+            .idle_session_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            ms => Some(std::time::Duration::from_millis(ms)),
         }
     }
 

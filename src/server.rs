@@ -29,6 +29,7 @@
 //! | `DREVO_READ_ONLY` | `false`     | Serve every database read-only: reads, search and export work, writes and schema changes fail with `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase`, and nothing in the data directory is written |
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
+//! | `DREVO_IDLE_SESSION_TIMEOUT_MS` | `0` (off) | Close a Bolt connection that holds an open transaction and sends nothing for this long, rolling the transaction back |
 //! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS and Bolt as `bolt+s://` (`bolt-tls` feature) |
 //! | `DREVO_TLS_KEY`   | (unset)     | PEM private key (PKCS#8, PKCS#1 or SEC1) for `DREVO_TLS_CERT` |
 //! | `DREVO_ENCRYPTION_KEY_FILE` | (unset) | File holding a 256-bit key as 64 hex digits; every database's log and sidecars are encrypted with it (`encryption` feature) |
@@ -103,6 +104,10 @@ pub struct Config {
     /// Per-statement wall-clock limit from `DREVO_QUERY_TIMEOUT_MS` (#547);
     /// `None` (unset or `0`) means no limit.
     pub query_timeout: Option<std::time::Duration>,
+    /// How long a Bolt connection holding an open transaction may send
+    /// nothing before it is closed and the transaction rolled back, from
+    /// `DREVO_IDLE_SESSION_TIMEOUT_MS`; `None` (unset or `0`) means no limit.
+    pub idle_session_timeout: Option<std::time::Duration>,
     /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
     /// `0` disables the alert).
@@ -272,6 +277,14 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_IDLE_SESSION_TIMEOUT_MS` was not a non-negative integer.
+    #[error(
+        "invalid DREVO_IDLE_SESSION_TIMEOUT_MS value `{value}`: expected milliseconds (0 = no limit)"
+    )]
+    InvalidIdleSessionTimeout {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_HTTP_FORMATS` named an unknown format or one not compiled in.
     #[error("invalid DREVO_HTTP_FORMATS: {0}")]
     InvalidHttpFormats(#[from] crate::wire_format::FormatsError),
@@ -383,6 +396,15 @@ impl Config {
                 Ok(0) => None,
                 Ok(ms) => Some(std::time::Duration::from_millis(ms)),
                 Err(_) => return Err(ConfigError::InvalidQueryTimeout { value: raw }),
+            },
+        };
+
+        let idle_session_timeout = match getter("DREVO_IDLE_SESSION_TIMEOUT_MS") {
+            None => None,
+            Some(raw) => match raw.trim().parse::<u64>() {
+                Ok(0) => None,
+                Ok(ms) => Some(std::time::Duration::from_millis(ms)),
+                Err(_) => return Err(ConfigError::InvalidIdleSessionTimeout { value: raw }),
             },
         };
 
@@ -551,6 +573,7 @@ impl Config {
                 .map(PathBuf::from),
             engine,
             query_timeout,
+            idle_session_timeout,
             prepared_tx_warn,
             prepared_tx_timeout,
             http_formats,
@@ -1062,6 +1085,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     // Opt-in statement timeout (#547): every database, including ones created
     // later through the catalog, stops a statement past this limit.
     registry.set_statement_timeout(cfg.query_timeout);
+    // Bolt connections that hold a transaction open and go silent.
+    registry.set_idle_session_timeout(cfg.idle_session_timeout);
     // The server's users, shared by HTTP, Bolt, gRPC and Flight (issue #633).
     let security = configure_security(&cfg)?;
     // Two-phase commit (#556): a prepared transaction blocks every write, so

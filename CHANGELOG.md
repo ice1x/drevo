@@ -20,6 +20,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Per-transaction and idle timeouts** (issue #646). Bolt honours the
+  `tx_timeout` Neo4j drivers send on `BEGIN` and auto-commit `RUN`, and
+  `POST /cypher` takes `timeout_ms`. Past it the statement stops and an
+  explicit transaction is rolled back with
+  `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration`;
+  `DREVO_QUERY_TIMEOUT_MS` caps the client's value.
+  `DREVO_IDLE_SESSION_TIMEOUT_MS` closes a Bolt connection that holds an
+  open transaction and sends nothing, rolling the transaction back.
 - **Encryption at rest on the server** (issue #645). Built with the
   `encryption` feature (now in the Docker image), `drevo-server` encrypts
   every database's log and sidecars, `database_access.json` and physical

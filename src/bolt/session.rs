@@ -66,6 +66,17 @@
 //!   transaction is rolled back on the way out so the next session
 //!   isn't left holding the journal slot.
 //!
+//! ## Timeouts
+//!
+//! A `tx_timeout` (milliseconds) on `BEGIN` limits the whole transaction, on
+//! an autocommit `RUN` that statement; the server's statement timeout caps
+//! it. Past it the statement stops, the transaction is rolled back and the
+//! client gets `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration`.
+//! While the client is silent the connection loop wakes at
+//! [`Session::wake_in`](crate::bolt::session::Session::wake_in) and calls [`Session::on_quiet`](crate::bolt::session::Session::on_quiet), which rolls back a
+//! transaction past its `tx_timeout` and closes a connection that held one
+//! open past the idle timeout ([`Session::with_idle_timeout`](crate::bolt::session::Session::with_idle_timeout)).
+//!
 //! ## Authentication (task `00074`)
 //!
 //! [`Session::new_durable`](crate::bolt::session::Session::new_durable) accepts
@@ -100,6 +111,7 @@ use crate::bolt::auth::{string_field, AuthOutcome, Authenticator};
 use crate::bolt::chunked::{read_message, write_message};
 use crate::bolt::error::{BoltError, BoltResult};
 use crate::bolt::packstream::{decode, encode, Value};
+use crate::cypher::executor::deadline::{with_deadline, Deadline};
 use crate::cypher::executor::{ExecError, Value as CypherValue};
 use crate::cypher::parser::{self, ParseError};
 
@@ -390,6 +402,9 @@ mod codes {
     /// A statement ran past the configured statement timeout (#547) — the
     /// code Neo4j drivers already recognise for a timed-out transaction.
     pub const TIMED_OUT: &str = "Neo.ClientError.Transaction.TransactionTimedOut";
+    /// A statement or transaction ran past the `tx_timeout` the client set.
+    pub const TIMED_OUT_CLIENT: &str =
+        "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration";
     /// The statement or its transaction was stopped by `TERMINATE
     /// TRANSACTIONS`. A client error, so drivers do not retry it.
     pub const TERMINATED: &str = "Neo.ClientError.Transaction.Terminated";
@@ -493,6 +508,16 @@ pub struct Session<'a> {
     /// single-database session ignores it (embedded / sync entry points), a
     /// catalog-backed one resolves it against the shared registry (issue #523).
     resolver: DbResolver,
+    /// The deadline of an explicit transaction that ran past its
+    /// `tx_timeout` while the client sent nothing: the transaction is rolled
+    /// back, and the next `RUN` or `COMMIT` in it fails with the timeout.
+    timed_out: Option<Deadline>,
+    /// How long a connection holding an open transaction may stay silent
+    /// before it is closed and the transaction rolled back
+    /// (`DREVO_IDLE_SESSION_TIMEOUT_MS`).
+    idle_timeout: Option<std::time::Duration>,
+    /// When the last client message arrived.
+    last_message: std::time::Instant,
 }
 
 /// An explicit transaction and the [`NativeService`] it was opened on. Bundled
@@ -503,6 +528,9 @@ struct ActiveTx {
     id: crate::native::NativeTxId,
     /// The database the transaction was opened on, for privilege checks.
     database: String,
+    /// When the transaction has to finish: the client's `tx_timeout` from
+    /// `BEGIN`, capped by the server's statement timeout.
+    deadline: Option<Deadline>,
 }
 
 /// Maps the optional `db` selector carried on `RUN` / `BEGIN` to the concrete
@@ -602,7 +630,67 @@ impl<'a> Session<'a> {
             security: crate::security::Security::default(),
             signed_in: None,
             client: None,
+            timed_out: None,
+            idle_timeout: None,
+            last_message: std::time::Instant::now(),
         }
+    }
+
+    /// Close the connection, rolling its transaction back, once it has held
+    /// an open transaction for `limit` without sending anything (`None`: never).
+    #[must_use]
+    pub fn with_idle_timeout(mut self, limit: Option<std::time::Duration>) -> Self {
+        self.idle_timeout = limit;
+        self
+    }
+
+    /// How long the connection loop may wait for the next message before
+    /// calling [`on_quiet`](Self::on_quiet): until the open transaction's
+    /// `tx_timeout` or the idle timeout, whichever comes first. `None` when
+    /// no transaction is open or neither limit is set.
+    #[must_use]
+    pub fn wake_in(&self) -> Option<std::time::Duration> {
+        let tx = self.native_tx.as_ref()?;
+        let idle = self
+            .idle_timeout
+            .map(|limit| limit.saturating_sub(self.last_message.elapsed()));
+        let deadline = tx.deadline.map(|d| d.remaining());
+        match (idle, deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The client sent nothing for [`wake_in`](Self::wake_in). An open
+    /// transaction past its `tx_timeout` is rolled back (the next `RUN` or
+    /// `COMMIT` reports the timeout); a connection idle past the idle timeout
+    /// with a transaction open is closed and the transaction rolled back.
+    /// Returns whether the connection stays open.
+    pub fn on_quiet(&mut self) -> bool {
+        let Some(tx) = &self.native_tx else {
+            return true;
+        };
+        if let Some(deadline) = tx.deadline.filter(Deadline::expired) {
+            self.roll_back_own_tx();
+            self.timed_out = Some(deadline);
+            return true;
+        }
+        let idle = self
+            .idle_timeout
+            .is_some_and(|limit| self.last_message.elapsed() >= limit);
+        if idle {
+            #[cfg(feature = "http")]
+            tracing::info!(
+                target: "drevo::bolt",
+                connection = %self.connection_id,
+                "closing a connection that held a transaction open without sending anything"
+            );
+            self.roll_back_own_tx();
+            self.pending = None;
+            self.state = State::Defunct;
+            return false;
+        }
+        true
     }
 
     /// Run the Cypher user-management commands against `security`.
@@ -718,6 +806,7 @@ impl<'a> Session<'a> {
     /// order. An empty `Vec` means "no reply" (only `GOODBYE` produces
     /// this).
     pub fn handle(&mut self, msg: ClientMessage) -> Vec<ServerMessage> {
+        self.last_message = std::time::Instant::now();
         if self.state == State::Defunct {
             return vec![ServerMessage::Ignored];
         }
@@ -833,6 +922,7 @@ impl<'a> Session<'a> {
         // on one connection never disturbs one in flight on another (issue
         // #236).
         self.roll_back_own_tx();
+        self.timed_out = None;
         self.state = State::Ready;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
@@ -865,6 +955,15 @@ impl<'a> Session<'a> {
                 }];
             }
         };
+        let deadline = match extract_tx_timeout(&extra) {
+            Ok(limit) => limit.map(|limit| Deadline::client(limit, service.statement_timeout())),
+            Err(msg) => {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::REQUEST_INVALID, &msg),
+                }];
+            }
+        };
         // Per-connection transactions (issue #298): `begin_tx` allocates a
         // fresh id and never collides with another connection's in-flight
         // transaction, so a pooled driver's concurrent `execute_write` calls
@@ -877,7 +976,9 @@ impl<'a> Session<'a> {
             service,
             id,
             database,
+            deadline,
         });
+        self.timed_out = None;
         self.state = State::TxReady;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
@@ -901,6 +1002,10 @@ impl<'a> Session<'a> {
             return vec![ServerMessage::Success {
                 metadata: BTreeMap::new(),
             }];
+        }
+        // Past its `tx_timeout`: rolled back instead.
+        if let Some(failure) = self.check_tx_deadline() {
+            return failure;
         }
         // The TxReady state guarantees an id is present; treat its absence
         // defensively rather than panicking. Commit the registered
@@ -968,6 +1073,13 @@ impl<'a> Session<'a> {
                 metadata: BTreeMap::new(),
             }];
         }
+        // Already rolled back when it ran past its `tx_timeout`.
+        if self.timed_out.take().is_some() {
+            self.state = State::Ready;
+            return vec![ServerMessage::Success {
+                metadata: BTreeMap::new(),
+            }];
+        }
         // Whatever the outcome, the slot is no longer ours to clean up.
         let Some(ActiveTx { service, id, .. }) = self.native_tx.take() else {
             self.state = State::Failed;
@@ -1030,6 +1142,9 @@ impl<'a> Session<'a> {
                     metadata: failure_metadata(codes::FORBIDDEN, reason),
                 }];
             }
+        }
+        if let Some(failure) = self.check_tx_deadline() {
+            return failure;
         }
         let Some(ActiveTx { service, id, .. }) = self.native_tx.take() else {
             self.state = State::Failed;
@@ -1119,6 +1234,24 @@ impl<'a> Session<'a> {
         {
             return self.credentials_expired();
         }
+        // An explicit transaction past its `tx_timeout` runs nothing more; an
+        // autocommit RUN carries its own.
+        let autocommit_deadline = if in_tx {
+            if let Some(failure) = self.check_tx_deadline() {
+                return failure;
+            }
+            None
+        } else {
+            match extract_tx_timeout(&extra) {
+                Ok(limit) => limit,
+                Err(msg) => {
+                    self.state = State::Failed;
+                    return vec![ServerMessage::Failure {
+                        metadata: failure_metadata(codes::REQUEST_INVALID, &msg),
+                    }];
+                }
+            }
+        };
         // Convert PackStream parameters into Cypher executor values.
         let cypher_params = match params_to_cypher(parameters) {
             Ok(p) => p,
@@ -1162,59 +1295,64 @@ impl<'a> Session<'a> {
         // falling back to the session default.
         let context = self.security_context();
         let caller = self.caller();
-        let exec = if in_tx {
-            match &self.native_tx {
-                Some(ActiveTx {
-                    service,
-                    id,
-                    database,
-                }) => crate::transactions::scope(caller, &query, || {
-                    service.execute_in_tx_as(
-                        *id,
-                        &ast,
-                        cypher_params,
-                        context
-                            .as_ref()
-                            .map(|context| crate::cypher::executor::Restriction {
-                                context,
-                                database,
-                            }),
-                    )
-                }),
-                None => {
-                    self.state = State::Failed;
-                    return vec![ServerMessage::Failure {
-                        metadata: failure_metadata(
-                            codes::STORAGE,
-                            "RUN in transaction state without an open transaction",
-                        ),
-                    }];
+        let exec =
+            if in_tx {
+                match &self.native_tx {
+                    Some(ActiveTx {
+                        service,
+                        id,
+                        database,
+                        deadline,
+                    }) => crate::transactions::scope(caller, &query, || {
+                        with_deadline(*deadline, || {
+                            service.execute_in_tx_as(
+                                *id,
+                                &ast,
+                                cypher_params,
+                                context.as_ref().map(|context| {
+                                    crate::cypher::executor::Restriction { context, database }
+                                }),
+                            )
+                        })
+                    }),
+                    None => {
+                        self.state = State::Failed;
+                        return vec![ServerMessage::Failure {
+                            metadata: failure_metadata(
+                                codes::STORAGE,
+                                "RUN in transaction state without an open transaction",
+                            ),
+                        }];
+                    }
                 }
-            }
-        } else {
-            let service = match self.resolve_service(extract_db(&extra)) {
-                Ok(service) => service,
-                Err(msg) => {
-                    self.state = State::Failed;
-                    return vec![ServerMessage::Failure {
-                        metadata: failure_metadata(codes::DATABASE_NOT_FOUND, &msg),
-                    }];
-                }
+            } else {
+                let service = match self.resolve_service(extract_db(&extra)) {
+                    Ok(service) => service,
+                    Err(msg) => {
+                        self.state = State::Failed;
+                        return vec![ServerMessage::Failure {
+                            metadata: failure_metadata(codes::DATABASE_NOT_FOUND, &msg),
+                        }];
+                    }
+                };
+                let database = self.database_name(extract_db(&extra));
+                let deadline = autocommit_deadline
+                    .map(|limit| Deadline::client(limit, service.statement_timeout()));
+                crate::transactions::scope(caller, &query, || {
+                    with_deadline(deadline, || {
+                        service.execute_as(
+                            &ast,
+                            cypher_params,
+                            context
+                                .as_ref()
+                                .map(|context| crate::cypher::executor::Restriction {
+                                    context,
+                                    database: &database,
+                                }),
+                        )
+                    })
+                })
             };
-            let database = self.database_name(extract_db(&extra));
-            crate::transactions::scope(caller, &query, || {
-                service.execute_as(
-                    &ast,
-                    cypher_params,
-                    context
-                        .as_ref()
-                        .map(|context| crate::cypher::executor::Restriction {
-                            context,
-                            database: &database,
-                        }),
-                )
-            })
-        };
         let result = match exec {
             Ok(r) => r,
             Err(e) => {
@@ -1227,6 +1365,15 @@ impl<'a> Session<'a> {
                     &query,
                     &e,
                 );
+                // A transaction stopped by its own `tx_timeout` is rolled back.
+                if self
+                    .native_tx
+                    .as_ref()
+                    .and_then(|tx| tx.deadline)
+                    .is_some_and(|d| d.expired())
+                {
+                    self.roll_back_own_tx();
+                }
                 if let ExecError::Forbidden { message } = &e {
                     self.security.record_forbidden(
                         &self.origin(),
@@ -1257,6 +1404,26 @@ impl<'a> Session<'a> {
             Value::List(cols.into_iter().map(Value::String).collect()),
         );
         vec![ServerMessage::Success { metadata: md }]
+    }
+
+    /// A `FAILURE` when this session's explicit transaction ran past its
+    /// `tx_timeout`, now or while the client was silent; the transaction is
+    /// rolled back and the session fails until `RESET`.
+    fn check_tx_deadline(&mut self) -> Option<Vec<ServerMessage>> {
+        let expired = self
+            .native_tx
+            .as_ref()
+            .and_then(|tx| tx.deadline)
+            .filter(Deadline::expired);
+        if let Some(deadline) = expired {
+            self.roll_back_own_tx();
+            self.timed_out = Some(deadline);
+        }
+        let deadline = self.timed_out.take()?;
+        self.state = State::Failed;
+        Some(vec![ServerMessage::Failure {
+            metadata: exec_error_metadata(&deadline.error()),
+        }])
     }
 
     /// Whether the signed-in user must change the password before anything
@@ -1903,6 +2070,7 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         }
         ExecError::Storage(_) => codes::STORAGE,
         ExecError::Timeout { .. } => codes::TIMED_OUT,
+        ExecError::ClientTimeout { .. } => codes::TIMED_OUT_CLIENT,
         ExecError::Terminated => codes::TERMINATED,
         // A trigger that runs before the commit failed (#643).
         ExecError::TriggerFailed { .. } => codes::TRANSACTION_HOOK_FAILED,
@@ -1916,6 +2084,22 @@ fn extract_n(extra: &BTreeMap<String, Value>) -> i64 {
     match extra.get("n") {
         Some(Value::Integer(i)) => *i,
         _ => -1,
+    }
+}
+
+/// Read the `tx_timeout` (milliseconds) from a `RUN` / `BEGIN` extra map.
+/// Absent, null or `0` means no client timeout, as for Neo4j.
+fn extract_tx_timeout(
+    extra: &BTreeMap<String, Value>,
+) -> Result<Option<std::time::Duration>, String> {
+    match extra.get("tx_timeout") {
+        None | Some(Value::Null) | Some(Value::Integer(0)) => Ok(None),
+        Some(Value::Integer(ms)) if *ms > 0 => {
+            Ok(Some(std::time::Duration::from_millis(ms.unsigned_abs())))
+        }
+        Some(other) => Err(format!(
+            "tx_timeout must be a non-negative number of milliseconds, got {other:?}"
+        )),
     }
 }
 
