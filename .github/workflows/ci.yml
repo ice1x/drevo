@@ -207,6 +207,13 @@ jobs:
     # that ONE cold warm-up complete (cold compile + run) and populate the
     # isolated cache; it still caps a true hang well under the 6h default.
     timeout-minutes: 240
+    env:
+      # This job builds ten feature combinations into one target dir; with
+      # incremental compilation each also keeps an incremental cache, and
+      # the runner ran out of disk at the last step (`cargo test --doc
+      # --all-features`, "No space left on device"). CI builds gain
+      # nothing from incremental caches.
+      CARGO_INCREMENTAL: "0"
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -355,6 +362,13 @@ jobs:
         run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight --lib --test rpc_login_tests -E 'binary(rpc_login_tests) | (kind(lib) & test(rpc_login))'
       - name: Run drevo-core WAL format feature tests (nextest)
         run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack -E 'binary(wal_formats) | (kind(lib) & test(wal_format))'
+      - name: Free disk before doctests
+        # Incremental caches left by earlier runs of this persistent target
+        # dir are not used with CARGO_INCREMENTAL=0; drop them and log the
+        # space left.
+        run: |
+          rm -rf "$CARGO_TARGET_DIR/debug/incremental"
+          df -h "$CARGO_TARGET_DIR"
       - name: Run doctests
         run: cargo test --doc --all-features
 
