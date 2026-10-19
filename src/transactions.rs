@@ -1,5 +1,6 @@
-//! The running statements and open transactions of a server, for `SHOW
-//! TRANSACTIONS` and `TERMINATE TRANSACTIONS`.
+//! The running statements, open transactions and client connections of a
+//! server, for `SHOW TRANSACTIONS` / `TERMINATE TRANSACTIONS` and `SHOW
+//! CONNECTIONS` / `TERMINATE CONNECTIONS`.
 //!
 //! Every statement a [`NativeService`](crate::native_service::NativeService)
 //! runs is listed while it runs, and every explicit transaction while it is
@@ -14,7 +15,13 @@
 //!
 //! Who runs a statement comes from [`scope`](crate::transactions::scope), which each protocol sets around
 //! the statements it runs: `bolt`, `http`, `grpc` or `flight`, the client's
-//! address and the signed-in user.
+//! address, the signed-in user and its connection.
+//!
+//! A Bolt connection is listed from its handshake until it closes, under an
+//! id such as `bolt-7`, with the driver's user agent and the user it logged
+//! in as. The Web UI's signed-in sessions are listed as `http-N`; see
+//! [`Transactions::set_http_sessions`](crate::transactions::Transactions::set_http_sessions).
+//! Terminating a connection closes it and rolls back its transaction.
 //!
 //! ```
 //! use std::collections::HashMap;
@@ -23,7 +30,7 @@
 //!
 //! let svc = NativeService::in_memory();
 //! let q = "SHOW TRANSACTIONS YIELD username, currentQuery";
-//! let caller = Caller { surface: "http", client: None, user: Some("ann".into()) };
+//! let caller = Caller { surface: "http", user: Some("ann".into()), ..Caller::default() };
 //! let rows = scope(caller, q, || {
 //!     svc.execute(&drevo::cypher::parser::parse(q).unwrap(), HashMap::new())
 //! })
@@ -47,6 +54,8 @@ pub struct Caller {
     pub client: Option<String>,
     /// The signed-in user, when logins are required.
     pub user: Option<String>,
+    /// The connection the statement came in on (`bolt-7`), when listed.
+    pub connection: Option<String>,
 }
 
 thread_local! {
@@ -100,6 +109,8 @@ pub struct TransactionInfo {
     pub client: Option<String>,
     /// The protocol: `bolt`, `http`, `grpc`, `flight`, or empty.
     pub surface: &'static str,
+    /// The connection it came in on, when listed (`bolt-7`).
+    pub connection: Option<String>,
     /// An explicit transaction (`BEGIN` … `COMMIT`), not a single statement.
     pub explicit: bool,
     /// When it began, in milliseconds since the Unix epoch.
@@ -151,6 +162,7 @@ impl Entry {
             user: self.caller.user.clone(),
             client: self.caller.client.clone(),
             surface: self.caller.surface,
+            connection: self.caller.connection.clone(),
             explicit: self.explicit,
             started_ms: self.started_ms,
             elapsed: self.started.elapsed(),
@@ -161,11 +173,151 @@ impl Entry {
     }
 }
 
-/// The running statements and open transactions of one server.
-#[derive(Debug, Default)]
+/// The running statements, open transactions and connections of one server.
+#[derive(Default)]
 pub struct Transactions {
     next: AtomicU64,
     running: Mutex<BTreeMap<u64, Arc<Entry>>>,
+    next_connection: AtomicU64,
+    connections: Mutex<BTreeMap<u64, Arc<Connection>>>,
+    http_sessions: std::sync::RwLock<Option<Arc<dyn HttpSessions>>>,
+}
+
+impl std::fmt::Debug for Transactions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Transactions")
+            .field("running", &self.lock().len())
+            .field("connections", &self.connections_lock().len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A listed client connection, as `SHOW CONNECTIONS` shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionInfo {
+    /// `bolt-7`, `http-3`.
+    pub id: String,
+    /// `bolt` or `http`.
+    pub connector: &'static str,
+    /// When it was opened, in milliseconds since the Unix epoch.
+    pub connected_ms: i64,
+    /// The user it is logged in as.
+    pub user: Option<String>,
+    /// The driver or browser that opened it.
+    pub user_agent: Option<String>,
+    /// The client's address.
+    pub client: Option<String>,
+}
+
+/// The Web UI's signed-in sessions, listed as `http` connections.
+pub trait HttpSessions: Send + Sync {
+    /// The live sessions, by number.
+    fn list(&self) -> Vec<ConnectionInfo>;
+    /// End session `number`; its user, or `None` when there is no such
+    /// session.
+    fn end(&self, number: u64) -> Option<Option<String>>;
+}
+
+/// One open connection.
+pub(crate) struct Connection {
+    number: u64,
+    connector: &'static str,
+    connected_ms: i64,
+    details: Mutex<ConnectionDetails>,
+    closed: AtomicBool,
+    /// Wakes the connection's loop to close it.
+    closer: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+}
+
+#[derive(Default)]
+struct ConnectionDetails {
+    user: Option<String>,
+    user_agent: Option<String>,
+    client: Option<String>,
+}
+
+impl Connection {
+    /// `bolt-7`.
+    pub(crate) fn id(&self) -> String {
+        format!("{}-{}", self.connector, self.number)
+    }
+
+    /// Record who logged in on it (`None` after a log-off).
+    pub(crate) fn set_user(&self, user: Option<String>) {
+        self.details().user = user;
+    }
+
+    /// Record the driver's user agent.
+    pub(crate) fn set_user_agent(&self, agent: Option<String>) {
+        self.details().user_agent = agent;
+    }
+
+    /// Record the client's address.
+    pub(crate) fn set_client(&self, client: Option<String>) {
+        self.details().client = client;
+    }
+
+    /// Call `close` when the connection is terminated.
+    #[cfg(feature = "http")]
+    pub(crate) fn on_close(&self, close: impl Fn() + Send + Sync + 'static) {
+        *self.closer.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(close));
+        if self.is_closed() {
+            self.wake();
+        }
+    }
+
+    /// Whether `TERMINATE CONNECTIONS` closed it.
+    #[cfg(feature = "http")]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+
+    fn wake(&self) {
+        if let Some(close) = self
+            .closer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            close();
+        }
+    }
+
+    fn details(&self) -> std::sync::MutexGuard<'_, ConnectionDetails> {
+        self.details.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn info(&self) -> ConnectionInfo {
+        let d = self.details();
+        ConnectionInfo {
+            id: self.id(),
+            connector: self.connector,
+            connected_ms: self.connected_ms,
+            user: d.user.clone(),
+            user_agent: d.user_agent.clone(),
+            client: d.client.clone(),
+        }
+    }
+}
+
+/// Removes its connection from the list when dropped.
+pub(crate) struct ListedConnection {
+    owner: Arc<Transactions>,
+    connection: Arc<Connection>,
+}
+
+impl ListedConnection {
+    pub(crate) fn connection(&self) -> &Arc<Connection> {
+        &self.connection
+    }
+}
+
+impl Drop for ListedConnection {
+    fn drop(&mut self) {
+        self.owner
+            .connections_lock()
+            .remove(&self.connection.number);
+    }
 }
 
 /// Removes its entry from the list when dropped.
@@ -241,6 +393,89 @@ impl Transactions {
         let entry = self.lock().get(&number).cloned()?;
         let info = entry.info();
         (info.id == id).then_some(info)
+    }
+
+    /// List a `connector` connection (`bolt`) until the returned guard drops.
+    pub(crate) fn open_connection(self: &Arc<Self>, connector: &'static str) -> ListedConnection {
+        let number = self.next_connection.fetch_add(1, Ordering::Relaxed) + 1;
+        let connection = Arc::new(Connection {
+            number,
+            connector,
+            connected_ms: now_ms(),
+            details: Mutex::new(ConnectionDetails::default()),
+            closed: AtomicBool::new(false),
+            closer: Mutex::new(None),
+        });
+        self.connections_lock()
+            .insert(number, Arc::clone(&connection));
+        ListedConnection {
+            owner: Arc::clone(self),
+            connection,
+        }
+    }
+
+    /// List the Web UI's signed-in sessions as `http` connections.
+    pub fn set_http_sessions(&self, sessions: Arc<dyn HttpSessions>) {
+        *self
+            .http_sessions
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(sessions);
+    }
+
+    fn http(&self) -> Option<Arc<dyn HttpSessions>> {
+        self.http_sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn connections_lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Arc<Connection>>> {
+        self.connections.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The open connections: Bolt connections oldest first, then the Web
+    /// UI's sessions.
+    #[must_use]
+    pub fn connections(&self) -> Vec<ConnectionInfo> {
+        let open: Vec<Arc<Connection>> = self.connections_lock().values().cloned().collect();
+        let mut out: Vec<ConnectionInfo> = open.iter().map(|c| c.info()).collect();
+        if let Some(http) = self.http() {
+            out.extend(http.list());
+        }
+        out
+    }
+
+    /// The connection `id`, if it is open.
+    #[must_use]
+    pub fn connection(&self, id: &str) -> Option<ConnectionInfo> {
+        self.connections().into_iter().find(|c| c.id == id)
+    }
+
+    /// Close connection `id`: a Bolt connection is closed and its
+    /// transaction rolled back (a running statement stops), a Web UI session
+    /// ends. Returns what it was, or `None` when no connection has that id.
+    pub fn terminate_connection(&self, id: &str) -> Option<ConnectionInfo> {
+        let (connector, number) = id.rsplit_once('-')?;
+        let number: u64 = number.parse().ok()?;
+        if connector == "http" {
+            let info = self.connection(id)?;
+            self.http()?.end(number)?;
+            return Some(info);
+        }
+        let connection = self.connections_lock().get(&number).cloned()?;
+        if connection.id() != id {
+            return None;
+        }
+        connection.closed.store(true, Ordering::Relaxed);
+        // Its running statement and open transaction stop too.
+        let entries: Vec<Arc<Entry>> = self.lock().values().cloned().collect();
+        for entry in entries {
+            if entry.caller.connection.as_deref() == Some(id) {
+                entry.terminated.store(true, Ordering::Relaxed);
+            }
+        }
+        connection.wake();
+        Some(connection.info())
     }
 
     /// Terminate `id`: a running statement stops, an explicit transaction is

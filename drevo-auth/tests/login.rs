@@ -318,3 +318,42 @@ fn errors_say_what_happened_without_secrets() {
         "too many failed logins; try again in 3 s"
     );
 }
+
+#[test]
+fn live_sessions_are_listed_by_number_and_end_by_number() {
+    let (m, clock) = setup();
+    let m = m.with_sessions(SessionPolicy {
+        idle: Duration::from_secs(60),
+        lifetime: Duration::from_secs(300),
+    });
+    let first = m.issue_session("ann").unwrap();
+    clock.advance(Duration::from_secs(10));
+    let second = m.issue_session("ann").unwrap();
+
+    let listed = m.sessions();
+    assert_eq!(listed.len(), 2);
+    assert!(listed[0].number < listed[1].number);
+    assert!(listed.iter().all(|s| s.user == "ann"));
+    assert_eq!(listed[1].created_ms - listed[0].created_ms, 10_000);
+    let shown = format!("{listed:?}");
+    assert!(
+        !shown.contains(&first) && !shown.contains(&second),
+        "tokens stay hidden"
+    );
+
+    // Ending one by number logs it out; the other still works.
+    assert_eq!(
+        m.revoke_session_number(listed[0].number),
+        Some("ann".into())
+    );
+    assert_eq!(m.revoke_session_number(listed[0].number), None);
+    assert_eq!(
+        m.authenticate(&Credentials::Token(first)),
+        Err(LoginError::InvalidToken)
+    );
+    assert!(m.authenticate(&Credentials::Token(second)).is_ok());
+
+    // An expired session is not listed.
+    clock.advance(Duration::from_secs(61));
+    assert!(m.sessions().is_empty());
+}

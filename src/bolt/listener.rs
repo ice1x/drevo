@@ -265,20 +265,37 @@ async fn run_session_on_inner<S: AsyncRead + AsyncWrite + Unpin>(
     // bytes already read: `fill_buf` keeps them for the read that follows.
     let mut stream = BufReader::new(stream);
     let stream = &mut stream;
+    // `TERMINATE CONNECTIONS` wakes the loop, which closes the connection;
+    // dropping the session rolls its transaction back.
+    let closed = std::sync::Arc::new(tokio::sync::Notify::new());
+    {
+        let closed = std::sync::Arc::clone(&closed);
+        session
+            .listed_connection()
+            .on_close(move || closed.notify_one());
+    }
     loop {
-        // An open transaction with a `tx_timeout` or an idle limit: wait for
-        // the client only that long.
-        if let Some(wait) = session.wake_in() {
-            match tokio::time::timeout(wait, stream.fill_buf()).await {
-                Ok(Ok([])) => return Ok(()),
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => return Err(BoltError::Io(e)),
-                Err(_) => {
-                    if crate::native_api::run_blocking(|| session.on_quiet()) {
-                        continue;
-                    }
-                    return Ok(());
+        // Wait for the next message; with an open transaction that has a
+        // `tx_timeout` or an idle limit, only that long.
+        let wait = session.wake_in();
+        let quiet = async {
+            match wait {
+                Some(wait) => tokio::time::sleep(wait).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            ready = async { stream.fill_buf().await.map(|buf| buf.is_empty()) } => match ready {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(e) => return Err(BoltError::Io(e)),
+            },
+            () = closed.notified() => return Ok(()),
+            () = quiet => {
+                if crate::native_api::run_blocking(|| session.on_quiet()) {
+                    continue;
                 }
+                return Ok(());
             }
         }
         let payload = match read_message_async(stream).await {
@@ -308,7 +325,7 @@ async fn run_session_on_inner<S: AsyncRead + AsyncWrite + Unpin>(
         for reply in &replies {
             write_server_async(reply, stream).await?;
         }
-        if session.state() == State::Defunct {
+        if session.state() == State::Defunct || session.listed_connection().is_closed() {
             return Ok(());
         }
     }

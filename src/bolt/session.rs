@@ -113,7 +113,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bolt::auth::{string_field, AuthOutcome, Authenticator};
 use crate::bolt::chunked::{read_message, write_message};
@@ -496,11 +495,6 @@ mod codes {
 // Session.
 // -------------------------------------------------------------------------
 
-/// Connection identifier generator — incremented per session.
-/// Wrapped in an `AtomicU64` so concurrent sessions get distinct ids
-/// without taking a lock.
-static CONNECTION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
 /// Per-connection Bolt session over the durable native store of record.
 ///
 /// The session holds an [`Arc`](std::sync::Arc) of the shared
@@ -566,6 +560,8 @@ pub struct Session<'a> {
     last_message: std::time::Instant,
     /// The Bolt version negotiated in the handshake.
     version: BoltVersion,
+    /// This connection in the server's list, for `SHOW CONNECTIONS`.
+    listed: crate::transactions::ListedConnection,
 }
 
 /// An explicit transaction and the [`NativeService`] it was opened on. Bundled
@@ -659,7 +655,9 @@ impl<'a> Session<'a> {
         authenticator: Option<&'a dyn Authenticator>,
         resolver: DbResolver,
     ) -> Self {
-        let id = CONNECTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // The connection is listed until the session is dropped.
+        let listed = service.transactions().open_connection("bolt");
+        let connection_id = listed.connection().id();
         Self {
             service,
             state: State::Connected,
@@ -669,7 +667,7 @@ impl<'a> Session<'a> {
             // we report a Neo4j-version-prefixed agent (drevo's own version is
             // kept as a suffix and remains available via the HTTP `/status`).
             server_agent: format!("Neo4j/5.26.0-drevo-{}", crate::VERSION),
-            connection_id: format!("drevo-bolt-{id}"),
+            connection_id,
             pending: None,
             authenticator,
             native_tx: None,
@@ -682,7 +680,15 @@ impl<'a> Session<'a> {
             idle_timeout: None,
             last_message: std::time::Instant::now(),
             version: BoltVersion { major: 4, minor: 4 },
+            listed,
         }
+    }
+
+    /// This connection in the server's list (`SHOW CONNECTIONS`), which
+    /// `TERMINATE CONNECTIONS` closes.
+    #[cfg(feature = "http")]
+    pub(crate) fn listed_connection(&self) -> &std::sync::Arc<crate::transactions::Connection> {
+        self.listed.connection()
     }
 
     /// Speak Bolt `version`, as negotiated in the handshake (the default is
@@ -774,6 +780,7 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn with_client(mut self, client: Option<impl ToString>) -> Self {
         self.client = client.map(|c| c.to_string());
+        self.listed.connection().set_client(self.client.clone());
         self
     }
 
@@ -788,6 +795,7 @@ impl<'a> Session<'a> {
             surface: "bolt",
             client: self.client.as_ref().map(ToString::to_string),
             user: self.signed_in.as_ref().map(|u| u.name.clone()),
+            connection: Some(self.connection_id.clone()),
         }
     }
 
@@ -955,7 +963,10 @@ impl<'a> Session<'a> {
                 string_field(auth, "principal"),
                 string_field(auth, "credentials"),
             ) {
-                Ok(user) => self.signed_in = Some(user),
+                Ok(user) => {
+                    self.listed.connection().set_user(Some(user.name.clone()));
+                    self.signed_in = Some(user);
+                }
                 Err(e) => {
                     self.state = State::Defunct;
                     return Err(vec![ServerMessage::Failure {
@@ -988,6 +999,7 @@ impl<'a> Session<'a> {
             return self.request_invalid("LOGOFF is only accepted outside a transaction");
         }
         self.signed_in = None;
+        self.listed.connection().set_user(None);
         self.state = State::Authentication;
         vec![ServerMessage::Success {
             metadata: BTreeMap::new(),
@@ -1019,6 +1031,9 @@ impl<'a> Session<'a> {
         // marks the connection Defunct after the FAILURE is written — the
         // Bolt contract is to close the socket on a failed auth, and the
         // session loops return once they observe `Defunct`.
+        self.listed
+            .connection()
+            .set_user_agent(string_field(&extra, "user_agent").map(str::to_string));
         if self.logs_in_with_logon() {
             self.state = State::Authentication;
         } else {

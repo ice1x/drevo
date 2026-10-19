@@ -1361,3 +1361,30 @@ pub fn open_server_security(
     };
     Ok((security, outcome))
 }
+
+/// The Web UI's signed-in sessions as `http` connections, for `SHOW
+/// CONNECTIONS` / `TERMINATE CONNECTIONS`.
+#[cfg(all(feature = "auth", not(target_arch = "wasm32")))]
+impl crate::transactions::HttpSessions for Security {
+    fn list(&self) -> Vec<crate::transactions::ConnectionInfo> {
+        let Some(users) = &self.users else {
+            return Vec::new();
+        };
+        users
+            .sessions()
+            .into_iter()
+            .map(|s| crate::transactions::ConnectionInfo {
+                id: format!("http-{}", s.number),
+                connector: "http",
+                connected_ms: s.created_ms,
+                user: Some(s.user),
+                user_agent: None,
+                client: None,
+            })
+            .collect()
+    }
+
+    fn end(&self, number: u64) -> Option<Option<String>> {
+        self.users.as_ref()?.revoke_session_number(number).map(Some)
+    }
+}

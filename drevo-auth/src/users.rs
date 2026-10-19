@@ -443,9 +443,24 @@ struct Failures {
 
 #[derive(Debug, Clone)]
 struct Session {
+    number: u64,
     user: String,
     created_ms: i64,
     last_used_ms: i64,
+}
+
+/// A live session token, as an administrator may see it: a number instead
+/// of the token itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    /// The session's number, unique on the server since it started.
+    pub number: u64,
+    /// Whose session it is.
+    pub user: String,
+    /// When it was issued, in milliseconds since the Unix epoch.
+    pub created_ms: i64,
+    /// When it was last used.
+    pub last_used_ms: i64,
 }
 
 /// The users of one server, stored in a [`CatalogStore`], with their
@@ -465,6 +480,7 @@ pub struct AuthManager {
     clock: Arc<dyn Clock>,
     failures: Mutex<HashMap<String, Failures>>,
     sessions: Mutex<HashMap<String, Session>>,
+    next_session: std::sync::atomic::AtomicU64,
 }
 
 impl AuthManager {
@@ -495,6 +511,7 @@ impl AuthManager {
             clock: Arc::new(SystemClock),
             failures: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            next_session: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -616,6 +633,10 @@ impl AuthManager {
         self.lock(&self.sessions).insert(
             token.clone(),
             Session {
+                number: self
+                    .next_session
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1,
                 user: name.to_string(),
                 created_ms: now,
                 last_used_ms: now,
@@ -627,6 +648,39 @@ impl AuthManager {
     /// End a session. Returns whether the token existed.
     pub fn revoke_session(&self, token: &str) -> bool {
         self.lock(&self.sessions).remove(token).is_some()
+    }
+
+    /// The sessions that are still valid, by number. The tokens are not
+    /// shown.
+    #[must_use]
+    pub fn sessions(&self) -> Vec<SessionInfo> {
+        let now = self.clock.now_ms();
+        let idle = i64::try_from(self.session_policy.idle.as_millis()).unwrap_or(i64::MAX);
+        let lifetime = i64::try_from(self.session_policy.lifetime.as_millis()).unwrap_or(i64::MAX);
+        let mut out: Vec<SessionInfo> = self
+            .lock(&self.sessions)
+            .values()
+            .filter(|s| now - s.last_used_ms <= idle && now - s.created_ms <= lifetime)
+            .map(|s| SessionInfo {
+                number: s.number,
+                user: s.user.clone(),
+                created_ms: s.created_ms,
+                last_used_ms: s.last_used_ms,
+            })
+            .collect();
+        out.sort_unstable_by_key(|s| s.number);
+        out
+    }
+
+    /// End session `number` (see [`sessions`](Self::sessions)). Returns its
+    /// user, or `None` when there is no such session.
+    pub fn revoke_session_number(&self, number: u64) -> Option<String> {
+        let mut sessions = self.lock(&self.sessions);
+        let token = sessions
+            .iter()
+            .find(|(_, s)| s.number == number)
+            .map(|(t, _)| t.clone())?;
+        sessions.remove(&token).map(|s| s.user)
     }
 
     /// End every session of `name`. Returns how many were ended.

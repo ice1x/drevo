@@ -1097,6 +1097,11 @@ impl Parser {
             let ids = Expression::List { items: ids, span };
             return self.finish_show_call("dbms", "showTransactions", vec![ids], span);
         }
+        // `SHOW CONNECTION[S]` (issue #669).
+        if self.is_soft_keyword("CONNECTION") || self.is_soft_keyword("CONNECTIONS") {
+            self.consume();
+            return self.finish_show_call("dbms", "listConnections", Vec::new(), span);
+        }
         // Type words, joined: `SHOW NODE KEY CONSTRAINTS` filters by "NODE KEY".
         let mut words: Vec<String> = Vec::new();
         let procedure = loop {
@@ -1133,29 +1138,34 @@ impl Parser {
     }
 
     /// `TERMINATE TRANSACTION[S] ids [YIELD …] [WHERE …]` (issue #639), run
-    /// as `CALL dbms.terminateTransactions(ids…)`.
+    /// as `CALL dbms.terminateTransactions(ids…)`, and `TERMINATE
+    /// CONNECTION[S] ids` (issue #669) as `CALL dbms.killConnections(ids…)`.
     fn parse_terminate(&mut self) -> ParseResult<Clause> {
         let span = self.peek_span();
         self.consume(); // TERMINATE
-        if self.is_soft_keyword("TRANSACTION") || self.is_soft_keyword("TRANSACTIONS") {
-            self.consume();
-        } else {
-            return Err(ParseError::Expected {
-                expected: "TRANSACTIONS after TERMINATE".to_string(),
-                found: format!("{}", self.peek_kind()),
-                span: self.peek_span(),
-            });
-        }
+        let (what, procedure) =
+            if self.is_soft_keyword("TRANSACTION") || self.is_soft_keyword("TRANSACTIONS") {
+                ("TRANSACTIONS", "terminateTransactions")
+            } else if self.is_soft_keyword("CONNECTION") || self.is_soft_keyword("CONNECTIONS") {
+                ("CONNECTIONS", "killConnections")
+            } else {
+                return Err(ParseError::Expected {
+                    expected: "TRANSACTIONS or CONNECTIONS after TERMINATE".to_string(),
+                    found: format!("{}", self.peek_kind()),
+                    span: self.peek_span(),
+                });
+            };
+        self.consume();
         let ids = self.parse_transaction_ids()?;
         if ids.is_empty() {
             return Err(ParseError::Expected {
-                expected: "a transaction id after TERMINATE TRANSACTIONS".to_string(),
+                expected: format!("an id after TERMINATE {what}"),
                 found: format!("{}", self.peek_kind()),
                 span: self.peek_span(),
             });
         }
         let ids = Expression::List { items: ids, span };
-        self.finish_show_call("dbms", "terminateTransactions", vec![ids], span)
+        self.finish_show_call("dbms", procedure, vec![ids], span)
     }
 
     /// The transaction ids after `SHOW` / `TERMINATE TRANSACTIONS`: none, or

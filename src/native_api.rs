@@ -1121,6 +1121,7 @@ fn run_cypher_on(
         surface: caller.origin.surface,
         client: caller.origin.client.clone(),
         user: caller.user.map(str::to_string),
+        connection: None,
     };
     let deadline = caller.timeout.map(|limit| {
         crate::cypher::executor::deadline::Deadline::client(limit, service.statement_timeout())
