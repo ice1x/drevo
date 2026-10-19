@@ -231,11 +231,11 @@ pub async fn accept_and_run_session_tls(
     service: &Arc<crate::native_service::NativeService>,
 ) -> BoltResult<()> {
     let accepted = accept_handshake_tls(socket, acceptor).await?;
-    if accepted.negotiated.is_none() {
+    let Some(version) = accepted.negotiated else {
         return Ok(());
-    }
+    };
     let mut stream = accepted.stream;
-    run_session_on_durable(&mut stream, service).await
+    run_session_on_durable(&mut stream, service, version).await
 }
 
 /// Like [`accept_and_run_session_tls`], over every database in `registry`
@@ -255,15 +255,16 @@ pub async fn accept_and_run_session_tls_with_security(
 ) -> BoltResult<()> {
     let client = socket.peer_addr().ok();
     let accepted = accept_handshake_tls(socket, acceptor).await?;
-    if accepted.negotiated.is_none() {
+    let Some(version) = accepted.negotiated else {
         return Ok(());
-    }
+    };
     let mut stream = accepted.stream;
     crate::bolt::listener::run_session_on_durable_with_security(
         &mut stream,
         registry,
         security,
         client,
+        version,
     )
     .await
 }

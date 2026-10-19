@@ -20,6 +20,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Bolt 5.0–5.4** (issue #651). The handshake takes version ranges and
+  picks the highest version both sides speak, so Neo4j 5.x drivers get
+  Bolt 5.4; 4.4 / 4.3 clients are unchanged. Nodes and relationships carry
+  `element_id`, `LOGON` / `LOGOFF` log a connection in and out (so
+  `driver.verify_authentication()` and per-session `auth` work), and
+  `TELEMETRY` is acknowledged.
 - **Per-transaction and idle timeouts** (issue #646). Bolt honours the
   `tx_timeout` Neo4j drivers send on `BEGIN` and auto-commit `RUN`, and
   `POST /cypher` takes `timeout_ms`. Past it the statement stops and an

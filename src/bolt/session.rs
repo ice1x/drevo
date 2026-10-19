@@ -33,11 +33,19 @@
 //!
 //! ## Scope
 //!
-//! Nine client message families decode through this layer and drive the
+//! Twelve client message families decode through this layer and drive the
 //! state machine end-to-end:
 //!
 //! - `HELLO` (`0x01`) — connection setup; replies with `SUCCESS` carrying
-//!   `server` + `connection_id` metadata.
+//!   `server` + `connection_id` metadata. Up to Bolt 5.0 it carries the
+//!   credentials; from 5.1 the session then waits in
+//!   [`State::Authentication`](crate::bolt::session::State::Authentication)
+//!   for them.
+//! - `LOGON` (`0x6A`, Bolt 5.1+) — logs in with `scheme` / `principal` /
+//!   `credentials`; `LOGOFF` (`0x6B`) logs out again, outside a transaction.
+//! - `TELEMETRY` (`0x54`, Bolt 5.4+) — acknowledged with `SUCCESS`.
+//! - From Bolt 5.0 nodes and relationships in records carry `element_id`
+//!   strings (the ids as text).
 //! - `RUN` (`0x10`) — parses + executes a Cypher query through the graph
 //!   engine (`NativeService` on the durable path, or the KV store via
 //!   [`crate::cypher::executor::execute_on_engine`]), materialises the result, and
@@ -110,6 +118,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::bolt::auth::{string_field, AuthOutcome, Authenticator};
 use crate::bolt::chunked::{read_message, write_message};
 use crate::bolt::error::{BoltError, BoltResult};
+use crate::bolt::handshake::BoltVersion;
 use crate::bolt::packstream::{decode, encode, Value};
 use crate::cypher::executor::deadline::{with_deadline, Deadline};
 use crate::cypher::executor::{ExecError, Value as CypherValue};
@@ -137,6 +146,12 @@ pub const ROLLBACK: u8 = 0x13;
 pub const DISCARD: u8 = 0x2F;
 /// `PULL` request: stream pending rows as `RECORD` messages.
 pub const PULL: u8 = 0x3F;
+/// `LOGON` request (Bolt 5.1+): authenticate the connection.
+pub const LOGON: u8 = 0x6A;
+/// `LOGOFF` request (Bolt 5.1+): drop the connection's login.
+pub const LOGOFF: u8 = 0x6B;
+/// `TELEMETRY` request (Bolt 5.4+): which driver API the client uses.
+pub const TELEMETRY: u8 = 0x54;
 /// `SUCCESS` response.
 pub const SUCCESS: u8 = 0x70;
 /// `RECORD` response: a single row from a streaming result set.
@@ -196,6 +211,19 @@ pub enum ClientMessage {
         /// Spec field carries `n` (`-1` = all, `N` = at most N).
         extra: BTreeMap<String, Value>,
     },
+    /// `LOGON` (Bolt 5.1+) — `scheme` / `principal` / `credentials`.
+    Logon {
+        /// The authentication token.
+        auth: BTreeMap<String, Value>,
+    },
+    /// `LOGOFF` (Bolt 5.1+) — no fields.
+    Logoff,
+    /// `TELEMETRY` (Bolt 5.4+) — the driver API in use, as an integer.
+    Telemetry {
+        /// `0` managed transaction, `1` explicit, `2` auto-commit, `3`
+        /// driver-level `execute_query`.
+        api: Value,
+    },
 }
 
 /// Server → client messages produced by this layer.
@@ -232,6 +260,8 @@ pub enum ServerMessage {
 pub enum State {
     /// Handshake complete, no `HELLO` yet.
     Connected,
+    /// Bolt 5.1+: `HELLO` accepted, waiting for `LOGON`.
+    Authentication,
     /// `HELLO` accepted; ready to receive `RUN` (autocommit) or `BEGIN`.
     Ready,
     /// Autocommit `RUN` succeeded; `PULL` / `DISCARD` drain the pending
@@ -316,6 +346,22 @@ pub fn decode_client(value: &Value) -> BoltResult<ClientMessage> {
         PULL => Ok(ClientMessage::Pull {
             extra: take_dict_field(fields, 0, "PULL.extra")?,
         }),
+        LOGON => {
+            require_arity(fields, 1, "LOGON")?;
+            Ok(ClientMessage::Logon {
+                auth: take_dict_field(fields, 0, "LOGON.auth")?,
+            })
+        }
+        LOGOFF => {
+            require_arity(fields, 0, "LOGOFF")?;
+            Ok(ClientMessage::Logoff)
+        }
+        TELEMETRY => {
+            require_arity(fields, 1, "TELEMETRY")?;
+            Ok(ClientMessage::Telemetry {
+                api: fields[0].clone(),
+            })
+        }
         other => Err(BoltError::UnknownMarker(other)),
     }
 }
@@ -518,6 +564,8 @@ pub struct Session<'a> {
     idle_timeout: Option<std::time::Duration>,
     /// When the last client message arrived.
     last_message: std::time::Instant,
+    /// The Bolt version negotiated in the handshake.
+    version: BoltVersion,
 }
 
 /// An explicit transaction and the [`NativeService`] it was opened on. Bundled
@@ -633,7 +681,28 @@ impl<'a> Session<'a> {
             timed_out: None,
             idle_timeout: None,
             last_message: std::time::Instant::now(),
+            version: BoltVersion { major: 4, minor: 4 },
         }
+    }
+
+    /// Speak Bolt `version`, as negotiated in the handshake (the default is
+    /// 4.4). From 5.0 nodes and relationships carry `element_id`; from 5.1
+    /// `HELLO` carries no credentials and `LOGON` / `LOGOFF` log in and out.
+    #[must_use]
+    pub fn with_version(mut self, version: BoltVersion) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// The Bolt version this session speaks.
+    #[must_use]
+    pub fn version(&self) -> BoltVersion {
+        self.version
+    }
+
+    /// Whether the client logs in with `LOGON` rather than in `HELLO`.
+    fn logs_in_with_logon(&self) -> bool {
+        self.version >= BoltVersion { major: 5, minor: 1 }
     }
 
     /// Close the connection, rolling its transaction back, once it has held
@@ -810,6 +879,22 @@ impl<'a> Session<'a> {
         if self.state == State::Defunct {
             return vec![ServerMessage::Ignored];
         }
+        // Bolt 5.1+: nothing but LOGON (or GOODBYE) before logging in.
+        if self.state == State::Authentication {
+            return match msg {
+                ClientMessage::Logon { auth } => self.handle_logon(auth),
+                ClientMessage::Goodbye => self.handle_goodbye(),
+                _ => {
+                    self.state = State::Defunct;
+                    vec![ServerMessage::Failure {
+                        metadata: failure_metadata(
+                            codes::REQUEST_INVALID,
+                            "log in with LOGON before sending anything else",
+                        ),
+                    }]
+                }
+            };
+        }
         // Failed → IGNORE everything except RESET / GOODBYE.
         if self.state == State::Failed {
             return match msg {
@@ -832,7 +917,91 @@ impl<'a> Session<'a> {
             ClientMessage::Begin { extra } => self.handle_begin(extra),
             ClientMessage::Commit => self.handle_commit(),
             ClientMessage::Rollback => self.handle_rollback(),
+            ClientMessage::Logon { .. } => self.request_invalid(if self.logs_in_with_logon() {
+                "LOGON is only accepted right after HELLO or LOGOFF"
+            } else {
+                "LOGON needs Bolt 5.1 or later"
+            }),
+            ClientMessage::Logoff => self.handle_logoff(),
+            ClientMessage::Telemetry { .. } => self.handle_telemetry(),
         }
+    }
+
+    /// Fail the session with `Neo.ClientError.Request.Invalid`.
+    fn request_invalid(&mut self, message: &str) -> Vec<ServerMessage> {
+        self.state = State::Failed;
+        vec![ServerMessage::Failure {
+            metadata: failure_metadata(codes::REQUEST_INVALID, message),
+        }]
+    }
+
+    /// Check `auth` (`scheme` / `principal` / `credentials`) against the
+    /// bound authenticator or the server's users, and remember who logged
+    /// in. A denial is the `FAILURE` to send; the connection is then closed.
+    fn log_in(&mut self, auth: &BTreeMap<String, Value>) -> Result<(), Vec<ServerMessage>> {
+        if let Some(authenticator) = self.authenticator {
+            if let AuthOutcome::Denied(reason) = authenticator.authenticate(auth) {
+                self.state = State::Defunct;
+                return Err(vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::UNAUTHORIZED, &reason),
+                }]);
+            }
+        } else if self.security.requires_login() {
+            // The server's users (issue #634): log in with a password or a
+            // session token, and remember who for the current-user commands.
+            match self.security.login(
+                &self.origin(),
+                string_field(auth, "scheme"),
+                string_field(auth, "principal"),
+                string_field(auth, "credentials"),
+            ) {
+                Ok(user) => self.signed_in = Some(user),
+                Err(e) => {
+                    self.state = State::Defunct;
+                    return Err(vec![ServerMessage::Failure {
+                        metadata: failure_metadata(e.kind.code(), &e.message),
+                    }]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `LOGON` (Bolt 5.1+), in the authentication state.
+    fn handle_logon(&mut self, auth: BTreeMap<String, Value>) -> Vec<ServerMessage> {
+        if let Err(failure) = self.log_in(&auth) {
+            return failure;
+        }
+        self.state = State::Ready;
+        vec![ServerMessage::Success {
+            metadata: BTreeMap::new(),
+        }]
+    }
+
+    /// `LOGOFF` (Bolt 5.1+): forget the login; the next message must be
+    /// `LOGON`. Only outside a transaction and a result stream.
+    fn handle_logoff(&mut self) -> Vec<ServerMessage> {
+        if !self.logs_in_with_logon() {
+            return self.request_invalid("LOGOFF needs Bolt 5.1 or later");
+        }
+        if self.state != State::Ready {
+            return self.request_invalid("LOGOFF is only accepted outside a transaction");
+        }
+        self.signed_in = None;
+        self.state = State::Authentication;
+        vec![ServerMessage::Success {
+            metadata: BTreeMap::new(),
+        }]
+    }
+
+    /// `TELEMETRY` (Bolt 5.4+): acknowledged; drevo keeps no usage data.
+    fn handle_telemetry(&mut self) -> Vec<ServerMessage> {
+        if self.version < (BoltVersion { major: 5, minor: 4 }) {
+            return self.request_invalid("TELEMETRY needs Bolt 5.4 or later");
+        }
+        vec![ServerMessage::Success {
+            metadata: BTreeMap::new(),
+        }]
     }
 
     fn handle_hello(&mut self, extra: BTreeMap<String, Value>) -> Vec<ServerMessage> {
@@ -845,37 +1014,19 @@ impl<'a> Session<'a> {
                 ),
             }];
         }
-        // Validate the `scheme` / `principal` / `credentials` tuple when
-        // an authenticator is bound (Phase 11 task `00074`). A denial
-        // marks the connection Defunct after the FAILURE is written —
-        // the Bolt contract is to close the socket on a failed auth, and
-        // the session loops return once they observe `Defunct`.
-        if let Some(auth) = self.authenticator {
-            if let AuthOutcome::Denied(reason) = auth.authenticate(&extra) {
-                self.state = State::Defunct;
-                return vec![ServerMessage::Failure {
-                    metadata: failure_metadata(codes::UNAUTHORIZED, &reason),
-                }];
+        // Up to Bolt 5.0 `HELLO` carries the `scheme` / `principal` /
+        // `credentials` tuple; from 5.1 a `LOGON` follows instead. A denial
+        // marks the connection Defunct after the FAILURE is written — the
+        // Bolt contract is to close the socket on a failed auth, and the
+        // session loops return once they observe `Defunct`.
+        if self.logs_in_with_logon() {
+            self.state = State::Authentication;
+        } else {
+            if let Err(failure) = self.log_in(&extra) {
+                return failure;
             }
-        } else if self.security.requires_login() {
-            // The server's users (issue #634): log in with a password or a
-            // session token, and remember who for the current-user commands.
-            match self.security.login(
-                &self.origin(),
-                string_field(&extra, "scheme"),
-                string_field(&extra, "principal"),
-                string_field(&extra, "credentials"),
-            ) {
-                Ok(user) => self.signed_in = Some(user),
-                Err(e) => {
-                    self.state = State::Defunct;
-                    return vec![ServerMessage::Failure {
-                        metadata: failure_metadata(e.kind.code(), &e.message),
-                    }];
-                }
-            }
+            self.state = State::Ready;
         }
-        self.state = State::Ready;
         let mut md: BTreeMap<String, Value> = BTreeMap::new();
         md.insert(
             "server".to_string(),
@@ -1542,7 +1693,12 @@ impl<'a> Session<'a> {
             }
             match pending.rows.next() {
                 Some(row) => {
-                    let pack_row: Vec<Value> = row.into_iter().map(cypher_to_pack).collect();
+                    let element_ids = self.version.major >= 5;
+                    let pack_row: Vec<Value> = row
+                        .into_iter()
+                        .map(cypher_to_pack)
+                        .map(|v| if element_ids { with_element_ids(v) } else { v })
+                        .collect();
                     out.push(ServerMessage::Record { fields: pack_row });
                     emitted += 1;
                 }
@@ -1904,6 +2060,42 @@ fn cypher_to_pack(v: CypherValue) -> Value {
             }
         }
         CypherValue::Path(path) => cypher_path_to_pack(&path),
+    }
+}
+
+/// Add the Bolt 5 `element_id` fields to the nodes and relationships in
+/// `v`: a node's id, and a relationship's id and its endpoints' ids, as
+/// strings.
+fn with_element_ids(v: Value) -> Value {
+    let id = |field: &Value| match field {
+        Value::Integer(i) => Value::String(i.to_string()),
+        other => other.clone(),
+    };
+    match v {
+        Value::Structure { tag, mut fields } => {
+            match (tag, fields.len()) {
+                (NODE_TAG, 3) | (UNBOUND_RELATIONSHIP_TAG, 3) => {
+                    let element_id = id(&fields[0]);
+                    fields.push(element_id);
+                }
+                (RELATIONSHIP_TAG, 5) => {
+                    let ids = [id(&fields[0]), id(&fields[1]), id(&fields[2])];
+                    fields.extend(ids);
+                }
+                (PATH_TAG, _) => {
+                    fields = fields.into_iter().map(with_element_ids).collect();
+                }
+                _ => {}
+            }
+            Value::Structure { tag, fields }
+        }
+        Value::List(items) => Value::List(items.into_iter().map(with_element_ids).collect()),
+        Value::Dictionary(map) => Value::Dictionary(
+            map.into_iter()
+                .map(|(k, v)| (k, with_element_ids(v)))
+                .collect(),
+        ),
+        other => other,
     }
 }
 

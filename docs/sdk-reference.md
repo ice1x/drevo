@@ -249,8 +249,16 @@ curl -H "Authorization: Bearer $token" http://localhost:8080/databases
 
 drevo speaks the **Bolt** wire protocol, so official Neo4j drivers (Python, JavaScript, Go,
 Java) connect out of the box. The TCP listener is enabled by the `http` feature; the standard
-port is `7687`. The session understands `HELLO`, `RUN`, `PULL`, `DISCARD`, `RESET`, and
-`GOODBYE`, replying with `SUCCESS` / `RECORD` / `FAILURE` / `IGNORED`.
+port is `7687`. drevo speaks Bolt 5.4 down to 5.0, and 4.4 / 4.3; a driver gets the highest
+version both sides know. The session understands `HELLO`, `LOGON`, `LOGOFF`, `RUN`, `PULL`,
+`DISCARD`, `BEGIN`, `COMMIT`, `ROLLBACK`, `RESET`, `TELEMETRY` and `GOODBYE`, replying with
+`SUCCESS` / `RECORD` / `FAILURE` / `IGNORED`.
+
+On Bolt 5 nodes and relationships carry an `element_id`: the node's or relationship's id as a
+string (`node.element_id == "42"`). From Bolt 5.1 the credentials come in `LOGON` after `HELLO`,
+so a driver can log a pooled connection in again as another user: `driver.verify_authentication()`
+and `driver.session(auth=…)` work. A wrong password fails with
+`Neo.ClientError.Security.Unauthorized`.
 
 ```python
 from neo4j import GraphDatabase

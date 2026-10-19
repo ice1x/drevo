@@ -59,9 +59,9 @@ fn parse_rejects_truncated_handshake() {
 
 #[test]
 fn select_picks_first_supported_version_in_proposal_order() {
-    // Bolt 5.0 is unsupported by drevo today; Bolt 4.4 must win.
+    // Bolt 6.0 is unsupported by drevo; Bolt 4.4 must win.
     let bytes = raw_handshake(
-        [0x00, 0x00, 0x00, 0x05],
+        [0x00, 0x00, 0x00, 0x06],
         [0x00, 0x00, 0x04, 0x04],
         [0x00, 0x00, 0x00, 0x00],
         [0x00, 0x00, 0x00, 0x00],
@@ -74,7 +74,7 @@ fn select_picks_first_supported_version_in_proposal_order() {
 #[test]
 fn select_returns_none_when_no_proposal_is_supported() {
     let bytes = raw_handshake(
-        [0x00, 0x00, 0x00, 0x05],
+        [0x00, 0x00, 0x09, 0x05],
         [0x00, 0x00, 0x00, 0x06],
         [0x00, 0x00, 0x00, 0x00],
         [0x00, 0x00, 0x00, 0x00],
