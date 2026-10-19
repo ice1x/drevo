@@ -304,3 +304,75 @@ fn a_backup_carries_encrypted_sidecars() {
     let g = NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key()).unwrap();
     assert!(g.sequence_next("invoice_numbers").unwrap() > 100);
 }
+
+#[test]
+fn a_store_is_encrypted_rotated_and_decrypted_in_place() {
+    let tmp = TmpDir::new();
+    let wal = tmp.path("native.wal");
+    {
+        let g = NativeGraph::open_durable(&wal).unwrap();
+        g.create_node(secret_note(0)).unwrap();
+        let gone = g.create_node(secret_note(1)).unwrap();
+        g.delete_node(gone.id).unwrap();
+        g.sequences().create("invoice_numbers", 10, 1).unwrap();
+        g.sequence_next("invoice_numbers").unwrap();
+    }
+    let plain_origin = NativeGraph::open_durable(&wal).unwrap().origin_id();
+
+    NativeGraph::reencrypt(&wal, WalFormat::Json, None, Some(key())).unwrap();
+    assert!(NativeGraph::open_durable(&wal).is_err());
+    for name in [
+        "native.wal",
+        "stamps.jsonl",
+        "sequences.json",
+        "origin.json",
+    ] {
+        let bytes = fs::read(tmp.path(name)).unwrap();
+        assert!(
+            !contains(&bytes, SECRET) && !contains(&bytes, "invoice_numbers"),
+            "{name}"
+        );
+    }
+    {
+        let g = NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key()).unwrap();
+        assert_eq!(g.node_count(), 1);
+        assert_eq!(g.origin_id(), plain_origin, "the replica identity survives");
+        assert!(g.sequence_next("invoice_numbers").unwrap() > 10);
+    }
+
+    let rotated = Key::from_bytes([0x77; 32]);
+    NativeGraph::reencrypt(&wal, WalFormat::Json, Some(key()), Some(rotated.clone())).unwrap();
+    assert!(NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key()).is_err());
+    assert_eq!(
+        NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, rotated.clone())
+            .unwrap()
+            .node_count(),
+        1
+    );
+
+    NativeGraph::reencrypt(&wal, WalFormat::Json, Some(rotated), None).unwrap();
+    let g = NativeGraph::open_durable(&wal).unwrap();
+    assert_eq!(g.node_count(), 1);
+    assert_eq!(g.origin_id(), plain_origin);
+    assert!(
+        contains(&fs::read(&wal).unwrap(), SECRET),
+        "decrypted back to plain text"
+    );
+}
+
+#[test]
+fn reencrypting_with_the_wrong_key_changes_nothing() {
+    let tmp = TmpDir::new();
+    let wal = tmp.path("native.wal");
+    NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key())
+        .unwrap()
+        .create_node(secret_note(0))
+        .unwrap();
+    let before = fs::read(&wal).unwrap();
+    assert!(
+        NativeGraph::reencrypt(&wal, WalFormat::Json, Some(Key::from_bytes([2; 32])), None)
+            .is_err()
+    );
+    assert_eq!(fs::read(&wal).unwrap(), before);
+    assert!(NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key()).is_ok());
+}

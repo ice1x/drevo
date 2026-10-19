@@ -142,6 +142,48 @@ pub fn open(key: &Key, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, Encrypt
         .map_err(|_| EncryptionError::Authentication)
 }
 
+/// Write `bytes` to `path` atomically, sealed with `key` under `context`
+/// (as `DRVSEAL1` and the sealed bytes), or in the clear without a key — the
+/// form a store's sidecar files take.
+///
+/// ```
+/// use drevo_core::encryption::{read_file, write_file, Key};
+///
+/// let path = std::env::temp_dir().join(format!("drevo_seal_doc_{}.json", std::process::id()));
+/// let key = Key::from_bytes([1; 32]);
+/// write_file(&path, Some(&key), b"settings", b"{\"a\":1}").unwrap();
+/// assert_eq!(read_file(&path, Some(&key), b"settings").unwrap().unwrap(), b"{\"a\":1}");
+/// assert!(read_file(&path, None, b"settings").is_err());
+/// # std::fs::remove_file(&path).unwrap();
+/// ```
+///
+/// # Errors
+/// A write or rename failure, or no randomness for a nonce.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn write_file(
+    path: &std::path::Path,
+    key: Option<&Key>,
+    context: &[u8],
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    crate::sealed_file::write(path, key, context, bytes)
+}
+
+/// Read a file [`write_file`] wrote with the same `key` and `context`;
+/// `None` when there is none.
+///
+/// # Errors
+/// An encrypted file without a key, a plain one with a key, one that does
+/// not decrypt, or a read failure.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_file(
+    path: &std::path::Path,
+    key: Option<&Key>,
+    context: &[u8],
+) -> std::io::Result<Option<Vec<u8>>> {
+    crate::sealed_file::read(path, key, context)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
