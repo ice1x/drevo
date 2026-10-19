@@ -19,6 +19,10 @@ pub(crate) struct DenseMap<T> {
     slots: Vec<Option<T>>,
     /// Ids too far past the vector to be stored in it.
     sparse: HashMap<u64, T>,
+    /// The smallest id in `sparse` (`u64::MAX` when it is empty). Every id
+    /// below `slots.len()` is in `slots`: once the vector grows past this
+    /// one, the outliers it reaches move into the vector.
+    sparse_min: u64,
     len: usize,
 }
 
@@ -27,6 +31,7 @@ impl<T> Default for DenseMap<T> {
         Self {
             slots: Vec::new(),
             sparse: HashMap::new(),
+            sparse_min: u64::MAX,
             len: 0,
         }
     }
@@ -51,6 +56,18 @@ impl<T> DenseMap<T> {
         }
         let i = usize::try_from(id).ok()?;
         self.slots.resize_with(i + 1, || None);
+        // An id below the vector's end is looked up in the vector only, so
+        // the outliers the vector now reaches move into it.
+        let end = self.slots.len() as u64;
+        if self.sparse_min < end {
+            let reached: Vec<u64> = self.sparse.keys().copied().filter(|&k| k < end).collect();
+            for k in reached {
+                if let Some(value) = self.sparse.remove(&k) {
+                    self.slots[k as usize] = Some(value);
+                }
+            }
+            self.sparse_min = self.sparse.keys().copied().min().unwrap_or(u64::MAX);
+        }
         Some(i)
     }
 
@@ -84,7 +101,10 @@ impl<T> DenseMap<T> {
     pub(crate) fn insert(&mut self, id: u64, value: T) -> Option<T> {
         let old = match self.dense_slot(id) {
             Some(i) => self.slots[i].replace(value),
-            None => self.sparse.insert(id, value),
+            None => {
+                self.sparse_min = self.sparse_min.min(id);
+                self.sparse.insert(id, value)
+            }
         };
         if old.is_none() {
             self.len += 1;
@@ -96,7 +116,13 @@ impl<T> DenseMap<T> {
     pub(crate) fn remove(&mut self, id: &u64) -> Option<T> {
         let old = match self.slot(*id) {
             Some(i) => self.slots[i].take(),
-            None => self.sparse.remove(id),
+            None => {
+                let old = self.sparse.remove(id);
+                if *id == self.sparse_min {
+                    self.sparse_min = self.sparse.keys().copied().min().unwrap_or(u64::MAX);
+                }
+                old
+            }
         };
         if old.is_some() {
             self.len -= 1;
@@ -176,6 +202,63 @@ mod tests {
         let mut expected: Vec<(u64, u64)> = reference.into_iter().collect();
         expected.sort_unstable();
         assert_eq!(all, expected);
+    }
+
+    #[test]
+    fn an_outlier_stays_visible_once_the_vector_grows_past_it() {
+        let mut m = DenseMap::default();
+        m.insert(10_000, "far");
+        assert!(m.slots.len() < 10_000, "first stored as an outlier");
+        // Ids that grow the vector step by step until it covers 10_000.
+        let mut id = 0;
+        while (m.slots.len() as u64) <= 10_000 {
+            m.insert(id, "near");
+            id = m.slots.len() as u64 * 2;
+        }
+        assert_eq!(m.get(&10_000), Some(&"far"));
+        assert_eq!(m.get_mut(&10_000).copied(), Some("far"));
+        assert!(m.contains_key(&10_000));
+        assert!(m.keys().any(|k| k == 10_000));
+        *m.entry_or_default(10_000) = "updated";
+        assert_eq!(m.get(&10_000), Some(&"updated"));
+        assert_eq!(m.remove(&10_000), Some("updated"));
+        assert_eq!(m.get(&10_000), None);
+        assert!(m.sparse.is_empty());
+    }
+
+    #[test]
+    fn far_apart_ids_in_an_empty_map_behave_like_a_hash_map() {
+        // Adjacency of a fresh store: random endpoints over a wide id range.
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut ours: DenseMap<u64> = DenseMap::default();
+        let mut reference: HashMap<u64, u64> = HashMap::new();
+        for step in 0..20_000u64 {
+            let id = next() % 200_000;
+            match next() % 5 {
+                0 => assert_eq!(ours.remove(&id), reference.remove(&id), "step {step}"),
+                1 | 2 => {
+                    *ours.entry_or_default(id) += 1;
+                    *reference.entry(id).or_default() += 1;
+                }
+                _ => assert_eq!(ours.insert(id, step), reference.insert(id, step)),
+            }
+            assert_eq!(ours.len(), reference.len(), "step {step}");
+        }
+        for (id, value) in &reference {
+            assert_eq!(ours.get(id), Some(value), "id {id}");
+        }
+        assert_eq!(ours.iter().count(), reference.len());
+        let end = ours.slots.len() as u64;
+        assert!(
+            ours.sparse.keys().all(|&k| k >= end),
+            "no outlier below the vector's end"
+        );
     }
 
     #[test]
