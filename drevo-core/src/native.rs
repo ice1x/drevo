@@ -1453,6 +1453,9 @@ pub struct NativeGraph {
     /// Named sequences ([`crate::sequence`]); `sequences.json` next to the
     /// WAL for a durable store.
     sequences: crate::sequence::Sequences,
+    /// The key every log record is sealed with, for an encrypted store.
+    #[cfg(not(target_arch = "wasm32"))]
+    seal_key: Option<Arc<crate::wal_format::SealKey>>,
     /// The format compaction writes the log in. An existing log
     /// keeps its own format for appends until compaction rewrites it.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1478,17 +1481,6 @@ fn wal_format_to_u8(f: crate::wal_format::WalFormat) -> u8 {
         WalFormat::Json => 0,
         WalFormat::Cbor => 1,
         WalFormat::MsgPack => 2,
-    }
-}
-
-/// Decode a record [`crate::wal_format::WalFormat::encode_record`] produced.
-#[cfg(not(target_arch = "wasm32"))]
-fn decode_single_record(format: crate::wal_format::WalFormat, bytes: &[u8]) -> Result<Vec<WalOp>> {
-    match crate::wal_format::read_record(format, bytes, 0) {
-        crate::wal_format::Record::Ops { ops, .. } => Ok(ops),
-        _ => Err(CoreError::Backend(
-            "could not re-encode a queued WAL record".to_string(),
-        )),
     }
 }
 
@@ -2973,7 +2965,8 @@ impl NativeGraph {
             self.wal_file_format
                 .load(std::sync::atomic::Ordering::Acquire),
         );
-        let line = format.encode_record(wal_ops)?;
+        let line =
+            crate::wal_format::encode_record_with(format, self.seal_key.as_deref(), wal_ops)?;
 
         let my_seq = {
             let mut q = self.group.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -3047,8 +3040,9 @@ impl NativeGraph {
                 } else {
                     // Compaction switched the log's format after this record
                     // was encoded: re-encode it so the file never mixes formats.
-                    let ops = decode_single_record(pc.format, &pc.line)?;
-                    let line = sink.format.encode_record(&ops)?;
+                    let key = self.seal_key.as_deref();
+                    let ops = crate::wal_format::decode_record_with(pc.format, key, &pc.line)?;
+                    let line = crate::wal_format::encode_record_with(sink.format, key, &ops)?;
                     sink.file.write_all(&line)?;
                 }
             }
@@ -3594,6 +3588,8 @@ impl NativeGraph {
             _lock: None,
             sequences: crate::sequence::Sequences::in_memory(),
             #[cfg(not(target_arch = "wasm32"))]
+            seal_key: None,
+            #[cfg(not(target_arch = "wasm32"))]
             wal_target: crate::wal_format::WalFormat::Json,
             #[cfg(not(target_arch = "wasm32"))]
             wal_file_format: std::sync::atomic::AtomicU8::new(0),
@@ -3647,7 +3643,58 @@ impl NativeGraph {
         path: impl AsRef<std::path::Path>,
         format: crate::wal_format::WalFormat,
     ) -> Result<Self> {
-        Self::open_log(path.as_ref(), format, false)
+        Self::open_log(path.as_ref(), format, false, None)
+    }
+
+    /// Open (or create) a durable store whose log is encrypted with `key`
+    /// ([`crate::encryption`]): every record is sealed, a new log starts
+    /// with a key check, and a wrong key fails the open instead of reading
+    /// the log as torn. A log that is not encrypted is refused.
+    ///
+    /// ```
+    /// use drevo_core::encryption::Key;
+    /// use drevo_core::native::NativeGraph;
+    /// use drevo_core::wal_format::WalFormat;
+    ///
+    /// let dir = std::env::temp_dir().join(format!("drevo_enc_doc_{}", std::process::id()));
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let wal = dir.join("native.wal");
+    /// let key = Key::from_bytes([7; 32]);
+    /// drop(NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key.clone()).unwrap());
+    /// assert!(NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, Key::from_bytes([8; 32])).is_err());
+    /// assert!(NativeGraph::open_durable(&wal).is_err());
+    /// # std::fs::remove_dir_all(&dir).unwrap();
+    /// ```
+    ///
+    /// # Errors
+    /// As [`open_durable_with`](Self::open_durable_with); also
+    /// [`CoreError::Io`] for a wrong key, a changed record, or a log that is
+    /// not encrypted.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "encryption"))]
+    pub fn open_durable_encrypted(
+        path: impl AsRef<std::path::Path>,
+        format: crate::wal_format::WalFormat,
+        key: crate::encryption::Key,
+    ) -> Result<Self> {
+        Self::open_log(path.as_ref(), format, false, Some(Arc::new(key)))
+    }
+
+    /// [`open_read_only`](Self::open_read_only) for an encrypted store.
+    ///
+    /// # Errors
+    /// As [`open_read_only`](Self::open_read_only) and
+    /// [`open_durable_encrypted`](Self::open_durable_encrypted).
+    #[cfg(all(not(target_arch = "wasm32"), feature = "encryption"))]
+    pub fn open_read_only_encrypted(
+        path: impl AsRef<std::path::Path>,
+        key: crate::encryption::Key,
+    ) -> Result<Self> {
+        Self::open_log(
+            path.as_ref(),
+            crate::wal_format::WalFormat::Json,
+            true,
+            Some(Arc::new(key)),
+        )
     }
 
     /// Open a durable store for reading only. The log is replayed as by
@@ -3674,7 +3721,12 @@ impl NativeGraph {
     /// [`open_durable`](Self::open_durable) for a corrupt log.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_read_only(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        Self::open_log(path.as_ref(), crate::wal_format::WalFormat::Json, true)
+        Self::open_log(
+            path.as_ref(),
+            crate::wal_format::WalFormat::Json,
+            true,
+            None,
+        )
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3682,6 +3734,7 @@ impl NativeGraph {
         path: &std::path::Path,
         format: crate::wal_format::WalFormat,
         read_only: bool,
+        seal_key: Option<Arc<crate::wal_format::SealKey>>,
     ) -> Result<Self> {
         use crate::wal_format::Replayed;
         use std::io::Write;
@@ -3710,6 +3763,7 @@ impl NativeGraph {
                 std::fs::File::open(path)?,
                 crate::wal_format::REPLAY_CHUNK,
                 path,
+                seal_key.as_deref(),
                 |op| inner.apply_wal_op(op),
             )?
         } else {
@@ -3732,6 +3786,7 @@ impl NativeGraph {
                 format,
                 valid_end,
                 torn,
+                ..
             } => {
                 if torn && !read_only {
                     // Drop the unacknowledged tail so the log is clean for append.
@@ -3756,7 +3811,7 @@ impl NativeGraph {
             Some(f) => f,
             None if read_only => format,
             None => {
-                let header = format.header();
+                let header = crate::wal_format::log_header(format, seal_key.as_deref())?;
                 if !header.is_empty() {
                     file.write_all(&header)?;
                     file.sync_all()?;
@@ -3824,6 +3879,7 @@ impl NativeGraph {
             // Hold the exclusive-open lock for this handle's lifetime (#455).
             _lock: lock,
             sequences,
+            seal_key,
             wal_target: format,
             wal_file_format: std::sync::atomic::AtomicU8::new(wal_format_to_u8(file_format)),
             read_only: std::sync::atomic::AtomicBool::new(read_only),
@@ -3876,10 +3932,15 @@ impl NativeGraph {
         let target = self.wal_target;
         {
             let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-            f.write_all(&target.header())?;
+            let key = self.seal_key.as_deref();
+            f.write_all(&crate::wal_format::log_header(target, key)?)?;
             // One record at a time: the snapshot is never held in full.
             inner.for_each_wal_op(|op| {
-                f.write_all(&target.encode_record(std::slice::from_ref(&op))?)?;
+                f.write_all(&crate::wal_format::encode_record_with(
+                    target,
+                    key,
+                    std::slice::from_ref(&op),
+                )?)?;
                 Ok(())
             })?;
             f.into_inner()
@@ -4001,7 +4062,12 @@ impl NativeGraph {
         let encoded = self.wal_target.encode_record(std::slice::from_ref(op));
         #[cfg(target_arch = "wasm32")]
         let encoded = crate::wal_format::WalFormat::Json.encode_record(std::slice::from_ref(op));
-        encoded.map(|b| b.len() as u64).unwrap_or(0)
+        // An encrypted record also carries its frame, nonce and tag.
+        #[cfg(not(target_arch = "wasm32"))]
+        let sealing = if self.seal_key.is_some() { 48 } else { 0 };
+        #[cfg(target_arch = "wasm32")]
+        let sealing = 0;
+        encoded.map(|b| b.len() as u64 + sealing).unwrap_or(0)
     }
 
     /// Per-structure breakdown of the live index stack for the storage panel's

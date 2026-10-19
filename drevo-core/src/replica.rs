@@ -234,7 +234,18 @@ impl WalTailer {
                     Detected::TornHeader => return Ok(Vec::new()),
                     // Nothing written yet.
                     Detected::Log { .. } if head.is_empty() => return Ok(Vec::new()),
-                    Detected::Log { format, body_start } => {
+                    Detected::Log { sealed: true, .. } => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            "following an encrypted write-ahead log is not supported",
+                        )
+                        .into())
+                    }
+                    Detected::Log {
+                        format,
+                        body_start,
+                        sealed: false,
+                    } => {
                         self.offset = self.offset.max(body_start as u64);
                         self.format = Some(format);
                         format
@@ -258,7 +269,9 @@ impl WalTailer {
                         pos = next;
                     }
                     // Like an unparseable JSON line, a corrupt record is skipped.
-                    Record::Invalid { next } => pos = next,
+                    // (`read_record` never reports `Undecryptable`: encrypted
+                    // logs are refused when following starts.)
+                    Record::Invalid { next } | Record::Undecryptable { next } => pos = next,
                     // An append still in flight: wait for the next poll.
                     Record::Incomplete => break,
                 }

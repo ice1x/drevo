@@ -361,7 +361,7 @@ jobs:
         # binary for this feature set, which ran the runner out of disk.
         run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight --lib --test rpc_login_tests -E 'binary(rpc_login_tests) | (kind(lib) & test(rpc_login))'
       - name: Run drevo-core WAL format feature tests (nextest)
-        run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack -E 'binary(wal_formats) | (kind(lib) & test(wal_format))'
+        run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack,encryption -E 'binary(wal_formats) | binary(encryption) | (kind(lib) & (test(wal_format) | test(encryption)))'
       - name: Free disk before doctests
         # Incremental caches left by earlier runs of this persistent target
         # dir are not used with CARGO_INCREMENTAL=0; drop them and log the
@@ -426,7 +426,7 @@ jobs:
       # Issue #634 — the gRPC / Flight login paths and their tests.
       - run: cargo clippy --all-targets --features auth,grpc,arrow-flight -- -D warnings
       # Issue #582 — drevo-core's binary WAL paths and their tests.
-      - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack -- -D warnings
+      - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack,encryption -- -D warnings
 
   fmt:
     name: Format
