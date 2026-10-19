@@ -20,6 +20,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Encrypted write-ahead log in drevo-core** (issue #645, first part).
+  With the `encryption` feature, `NativeGraph::open_durable_encrypted(path,
+  format, key)` seals every log record with XChaCha20-Poly1305 under a
+  caller-supplied `drevo_core::encryption::Key`: the log starts with a key
+  check, so a wrong or missing key fails the open (never read as a torn
+  tail), a changed record is refused, and compaction, transactions and
+  backups stay encrypted. Sidecars and the server's key handling follow.
 - **Sequences** (issue #644). `CALL drevo.sequence.create('bug', {start: 1000,
   step: 1})`, `drevo.sequence.drop`, `drevo.sequence.list`, and the functions
   `drevo.sequence.next(name)` / `drevo.sequence.current(name)`: unique,

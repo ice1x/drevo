@@ -36,6 +36,40 @@ pub const HEADER_LEN: usize = 8;
 /// Length of a binary record's frame (length + checksum).
 const FRAME_LEN: usize = 8;
 
+/// The header version of an encrypted log: the tag names the encoding of
+/// the records inside the encryption (JSON included), every record is
+/// sealed, and the first one is the key check.
+const SEALED_VERSION: u8 = 2;
+/// Authenticated context of every sealed record, so a sealed sidecar can
+/// never pass for a log record.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+const RECORD_CONTEXT: &[u8] = b"drevo wal record";
+/// Context and text of the key-check record that opens an encrypted log: a
+/// wrong key fails on it before any record is read.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+const CHECK_CONTEXT: &[u8] = b"drevo wal key check";
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+const CHECK_TEXT: &[u8] = b"drevo";
+
+/// The key an encrypted log is sealed with ([`crate::encryption::Key`]).
+#[cfg(feature = "encryption")]
+pub type SealKey = crate::encryption::Key;
+
+/// The key an encrypted log is sealed with. Without the `encryption`
+/// feature there is none, so no log is ever sealed.
+#[cfg(not(feature = "encryption"))]
+#[derive(Debug)]
+pub enum SealKey {}
+
 /// How the write-ahead log encodes its records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum WalFormat {
@@ -162,10 +196,13 @@ impl FromStr for WalFormat {
 pub enum Detected {
     /// A log in `format`; records start at byte `body_start`.
     Log {
-        /// The log's format.
+        /// The log's format (for an encrypted log, the encoding inside the
+        /// encryption).
         format: WalFormat,
         /// Where the first record starts (after the header, if any).
         body_start: usize,
+        /// Whether the records are encrypted.
+        sealed: bool,
     },
     /// The file holds only the beginning of a binary header — a crash while a
     /// fresh log was being created. Nothing in it was ever acknowledged.
@@ -185,23 +222,28 @@ pub fn detect(bytes: &[u8]) -> Result<Detected> {
         return Ok(Detected::Log {
             format: WalFormat::Json,
             body_start: 0,
+            sealed: false,
         });
     }
     if &bytes[..MAGIC.len()] != MAGIC {
         return Ok(Detected::Log {
             format: WalFormat::Json,
             body_start: 0,
+            sealed: false,
         });
     }
     let (version, tag) = (bytes[MAGIC.len()], bytes[MAGIC.len() + 1]);
+    let sealed = match version {
+        HEADER_VERSION => false,
+        SEALED_VERSION => true,
+        _ => return Err(invalid(format!("unsupported WAL header version {version}"))),
+    };
     let format = match tag {
+        b'J' if sealed => WalFormat::Json,
         b'C' => WalFormat::Cbor,
         b'M' => WalFormat::MsgPack,
         _ => return Err(invalid(format!("unknown WAL format tag {tag:#04x}"))),
     };
-    if version != HEADER_VERSION {
-        return Err(invalid(format!("unsupported WAL header version {version}")));
-    }
     if !format.compiled_in() {
         return Err(invalid(format!(
             "this write-ahead log is in {format} format, which this build was compiled without"
@@ -210,6 +252,7 @@ pub fn detect(bytes: &[u8]) -> Result<Detected> {
     Ok(Detected::Log {
         format,
         body_start: HEADER_LEN,
+        sealed,
     })
 }
 
@@ -240,6 +283,12 @@ pub enum Record {
     },
     /// The record is cut off by the end of the log.
     Incomplete,
+    /// An encrypted record whose checksum holds but which does not decrypt:
+    /// a wrong key or a changed log — never a torn tail.
+    Undecryptable {
+        /// Byte offset just past the record.
+        next: usize,
+    },
 }
 
 /// Read the record of a `format` log starting at `pos`.
@@ -275,6 +324,196 @@ pub fn read_record(format: WalFormat, bytes: &[u8], pos: usize) -> Record {
     }
 }
 
+/// A record payload framed as `length · CRC-32 · payload`.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+fn frame(payload: &[u8]) -> Result<Vec<u8>> {
+    let len = u32::try_from(payload.len())
+        .map_err(|_| CoreError::Backend("WAL record over 4 GiB".into()))?;
+    let mut out = Vec::with_capacity(FRAME_LEN + payload.len());
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&crc32(payload).to_le_bytes());
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
+/// The frame at `pos`: `Ok((payload, next))`, or the [`Record`] saying why
+/// there is none.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+fn read_frame(bytes: &[u8], pos: usize) -> std::result::Result<(&[u8], usize), Record> {
+    let rest = &bytes[pos..];
+    if rest.len() < FRAME_LEN {
+        return Err(Record::Incomplete);
+    }
+    let len = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+    let crc = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]);
+    let Some(end) = FRAME_LEN.checked_add(len).filter(|e| *e <= rest.len()) else {
+        return Err(Record::Incomplete);
+    };
+    let payload = &rest[FRAME_LEN..end];
+    if crc32(payload) != crc {
+        return Err(Record::Invalid { next: pos + end });
+    }
+    Ok((payload, pos + end))
+}
+
+/// The encoding of `ops` in `format`, before framing or encryption.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+fn record_payload(format: WalFormat, ops: &[WalOp]) -> Result<Vec<u8>> {
+    if format == WalFormat::Json {
+        return Ok(serde_json::to_vec(ops)?);
+    }
+    let value = serde_json::to_value(ops)?;
+    encode_value(format, &value)
+}
+
+#[cfg(feature = "encryption")]
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+fn seal_with(key: &SealKey, context: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+    crate::encryption::seal(key, context, plaintext).map_err(|e| CoreError::Backend(e.to_string()))
+}
+
+#[cfg(not(feature = "encryption"))]
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+fn seal_with(key: &SealKey, _context: &[u8], _plaintext: &[u8]) -> Result<Vec<u8>> {
+    match *key {}
+}
+
+#[cfg(feature = "encryption")]
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+fn open_with(key: &SealKey, context: &[u8], sealed: &[u8]) -> Option<Vec<u8>> {
+    crate::encryption::open(key, context, sealed).ok()
+}
+
+#[cfg(not(feature = "encryption"))]
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+fn open_with(key: &SealKey, _context: &[u8], _sealed: &[u8]) -> Option<Vec<u8>> {
+    match *key {}
+}
+
+/// The bytes a new log in `format` starts with: its header, and with `key`
+/// the encrypted header followed by the key-check record.
+///
+/// # Errors
+/// [`CoreError::Backend`] when no nonce can be drawn.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+pub(crate) fn log_header(format: WalFormat, key: Option<&SealKey>) -> Result<Vec<u8>> {
+    let Some(key) = key else {
+        return Ok(format.header());
+    };
+    let mut header = MAGIC.to_vec();
+    header.push(SEALED_VERSION);
+    header.push(format.tag());
+    header.extend(frame(&seal_with(key, CHECK_CONTEXT, CHECK_TEXT)?)?);
+    Ok(header)
+}
+
+/// Encode one record holding `ops` — sealed with `key` when there is one.
+///
+/// # Errors
+/// As [`WalFormat::encode_record`], and [`CoreError::Backend`] when no
+/// nonce can be drawn.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+pub(crate) fn encode_record_with(
+    format: WalFormat,
+    key: Option<&SealKey>,
+    ops: &[WalOp],
+) -> Result<Vec<u8>> {
+    match key {
+        None => format.encode_record(ops),
+        Some(_) if ops.is_empty() => Ok(Vec::new()),
+        Some(key) => frame(&seal_with(
+            key,
+            RECORD_CONTEXT,
+            &record_payload(format, ops)?,
+        )?),
+    }
+}
+
+/// Read the record at `pos` of an encrypted `format` log.
+#[must_use]
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+pub(crate) fn read_sealed_record(
+    format: WalFormat,
+    key: &SealKey,
+    bytes: &[u8],
+    pos: usize,
+) -> Record {
+    let (sealed, next) = match read_frame(bytes, pos) {
+        Ok(found) => found,
+        Err(record) => return record,
+    };
+    let Some(plain) = open_with(key, RECORD_CONTEXT, sealed) else {
+        return Record::Undecryptable { next };
+    };
+    match decode_ops(format, &plain) {
+        Some(ops) => Record::Ops { ops, next },
+        None => Record::Invalid { next },
+    }
+}
+
+/// Read the record at `pos` of a log: sealed with `key` when `sealed`.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+fn read_any(format: WalFormat, sealed: Option<&SealKey>, bytes: &[u8], pos: usize) -> Record {
+    match sealed {
+        Some(key) => read_sealed_record(format, key, bytes, pos),
+        None => read_record(format, bytes, pos),
+    }
+}
+
+/// Decode a record [`encode_record_with`] produced (a single record).
+///
+/// # Errors
+/// [`CoreError::Io`] when the bytes are not one valid record.
+#[cfg_attr(
+    any(not(feature = "encryption"), target_arch = "wasm32"),
+    allow(dead_code)
+)]
+pub(crate) fn decode_record_with(
+    format: WalFormat,
+    key: Option<&SealKey>,
+    bytes: &[u8],
+) -> Result<Vec<WalOp>> {
+    match read_any(format, key, bytes, 0) {
+        Record::Ops { ops, .. } => Ok(ops),
+        _ => Err(invalid(
+            "a queued write-ahead-log record does not decode".to_string(),
+        )),
+    }
+}
+
 /// What [`replay`] found in a log.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +532,8 @@ pub(crate) enum Replayed {
         valid_end: u64,
         /// Whether bytes after `valid_end` form a torn tail to drop.
         torn: bool,
+        /// Whether the log is encrypted.
+        sealed: bool,
     },
 }
 
@@ -316,6 +557,7 @@ pub(crate) fn replay<R: std::io::Read>(
     mut reader: R,
     chunk: usize,
     path: &std::path::Path,
+    key: Option<&SealKey>,
     mut apply: impl FnMut(WalOp),
 ) -> Result<Replayed> {
     let chunk = chunk.max(1);
@@ -343,13 +585,65 @@ pub(crate) fn replay<R: std::io::Read>(
         Ok(got > 0)
     };
     while buf.len() < HEADER_LEN && fill(&mut buf, &mut eof)? {}
-    let (format, body_start) = match detect(&buf)? {
+    let (format, body_start, sealed) = match detect(&buf)? {
         Detected::TornHeader => return Ok(Replayed::TornHeader),
         Detected::Log { .. } if buf.is_empty() => return Ok(Replayed::Empty),
-        Detected::Log { format, body_start } => (format, body_start),
+        Detected::Log {
+            format,
+            body_start,
+            sealed,
+        } => (format, body_start, sealed),
+    };
+    let refuse = |message: String| -> CoreError {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {message}", path.display()),
+        )
+        .into()
+    };
+    // The key a sealed log is read with; a sealed log needs one, and a key
+    // never opens a log that is not sealed.
+    let seal: Option<&SealKey> = match (sealed, key) {
+        (true, Some(key)) => Some(key),
+        (true, None) => {
+            return Err(refuse(
+                "the write-ahead log is encrypted; open it with its encryption key".to_string(),
+            ))
+        }
+        (false, Some(_)) => {
+            return Err(refuse(
+                "the write-ahead log is not encrypted; encrypt the store first, or open it \
+                 without a key"
+                    .to_string(),
+            ))
+        }
+        (false, None) => None,
     };
     let mut pos = body_start;
-    let mut valid_end = body_start as u64;
+    if let Some(key) = seal {
+        // The key check: a crash while the log was being created leaves it
+        // incomplete (nothing was ever acknowledged); a wrong key fails it.
+        while buf.len() < pos + FRAME_LEN && fill(&mut buf, &mut eof)? {}
+        loop {
+            match read_frame(&buf, pos) {
+                Err(Record::Incomplete) if !eof => {
+                    fill(&mut buf, &mut eof)?;
+                }
+                Err(Record::Incomplete) => return Ok(Replayed::TornHeader),
+                Err(_) => return Err(refuse("the encryption key check is damaged".to_string())),
+                Ok((check, next)) => {
+                    if open_with(key, CHECK_CONTEXT, check).as_deref() != Some(CHECK_TEXT) {
+                        return Err(refuse(
+                            "wrong encryption key for this write-ahead log".to_string(),
+                        ));
+                    }
+                    pos = next;
+                    break;
+                }
+            }
+        }
+    }
+    let mut valid_end = pos as u64;
     loop {
         if pos >= buf.len() {
             buf.clear();
@@ -360,26 +654,34 @@ pub(crate) fn replay<R: std::io::Read>(
                     format,
                     valid_end,
                     torn: false,
+                    sealed,
                 });
             }
             continue;
         }
         // A JSON record ends at a newline: without one in the window, the
         // record may continue in the next chunk.
-        if format == WalFormat::Json && !eof && !buf[pos..].contains(&b'\n') {
+        if seal.is_none() && format == WalFormat::Json && !eof && !buf[pos..].contains(&b'\n') {
             buf.drain(..pos);
             base += pos as u64;
             pos = 0;
             fill(&mut buf, &mut eof)?;
             continue;
         }
-        match read_record(format, &buf, pos) {
+        match read_any(format, seal, &buf, pos) {
             Record::Ops { ops, next } => {
                 for op in ops {
                     apply(op);
                 }
                 valid_end = base + next as u64;
                 pos = next;
+            }
+            Record::Undecryptable { .. } => {
+                return Err(refuse(format!(
+                    "the encrypted record at byte {} does not decrypt: the key is wrong or \
+                     the log was changed",
+                    base + pos as u64
+                )))
             }
             Record::Incomplete if !eof => {
                 buf.drain(..pos);
@@ -392,13 +694,14 @@ pub(crate) fn replay<R: std::io::Read>(
                     format,
                     valid_end,
                     torn: true,
+                    sealed,
                 })
             }
             Record::Invalid { next } => {
                 // A torn tail only if nothing follows: look at the rest of the
                 // window, then at the rest of the log.
                 let follows = |bytes: &[u8]| match format {
-                    WalFormat::Json => !bytes.iter().all(u8::is_ascii_whitespace),
+                    WalFormat::Json if seal.is_none() => !bytes.iter().all(u8::is_ascii_whitespace),
                     _ => !bytes.is_empty(),
                 };
                 let mut more = follows(&buf[next.min(buf.len())..]);
@@ -414,6 +717,7 @@ pub(crate) fn replay<R: std::io::Read>(
                         format,
                         valid_end,
                         torn: true,
+                        sealed,
                     });
                 }
                 return Err(std::io::Error::new(
@@ -536,6 +840,7 @@ mod tests {
             std::io::Cursor::new(bytes),
             chunk,
             std::path::Path::new("test.wal"),
+            None,
             |o| ops.push(o),
         )?;
         Ok((r, ops))
@@ -564,7 +869,8 @@ mod tests {
                     Replayed::Log {
                         format,
                         valid_end: bytes.len() as u64,
-                        torn: false
+                        torn: false,
+                        sealed: false
                     },
                     "{format} chunk {chunk}"
                 );
@@ -587,7 +893,8 @@ mod tests {
                     Replayed::Log {
                         format,
                         valid_end: nine as u64,
-                        torn: true
+                        torn: true,
+                        sealed: false
                     },
                     "{format} chunk {chunk}"
                 );
@@ -638,6 +945,123 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "encryption")]
+    mod sealed {
+        use super::*;
+        use crate::encryption::Key;
+
+        fn key() -> Key {
+            Key::from_bytes([9; 32])
+        }
+
+        fn sealed_log(format: WalFormat, n: u64) -> Vec<u8> {
+            let k = key();
+            let mut bytes = log_header(format, Some(&k)).unwrap();
+            for i in 0..n {
+                bytes.extend(encode_record_with(format, Some(&k), &[op(i)]).unwrap());
+            }
+            bytes
+        }
+
+        fn replay_sealed(
+            bytes: &[u8],
+            chunk: usize,
+            k: Option<&Key>,
+        ) -> Result<(Replayed, Vec<WalOp>)> {
+            let mut ops = Vec::new();
+            let r = replay(
+                std::io::Cursor::new(bytes),
+                chunk,
+                std::path::Path::new("test.wal"),
+                k,
+                |o| ops.push(o),
+            )?;
+            Ok((r, ops))
+        }
+
+        #[test]
+        fn sealed_logs_round_trip_whatever_the_chunk() {
+            for format in formats() {
+                let bytes = sealed_log(format, 25);
+                for chunk in [1, 5, 64, REPLAY_CHUNK] {
+                    let (r, ops) = replay_sealed(&bytes, chunk, Some(&key())).unwrap();
+                    assert_eq!(ops, (0..25).map(op).collect::<Vec<_>>(), "{format} {chunk}");
+                    assert_eq!(
+                        r,
+                        Replayed::Log {
+                            format,
+                            valid_end: bytes.len() as u64,
+                            torn: false,
+                            sealed: true
+                        }
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn plaintext_never_appears_in_a_sealed_log() {
+            let k = key();
+            let node = WalOp::DeleteNode(424_242);
+            let mut bytes = log_header(WalFormat::Json, Some(&k)).unwrap();
+            bytes.extend(encode_record_with(WalFormat::Json, Some(&k), &[node]).unwrap());
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(!text.contains("DeleteNode"), "{text}");
+            assert!(!text.contains("424242"), "{text}");
+        }
+
+        #[test]
+        fn a_wrong_or_missing_key_is_refused_never_read_as_torn() {
+            let bytes = sealed_log(WalFormat::Json, 3);
+            let wrong = replay_sealed(&bytes, 4096, Some(&Key::from_bytes([1; 32]))).unwrap_err();
+            assert!(
+                wrong.to_string().contains("wrong encryption key"),
+                "{wrong}"
+            );
+            let missing = replay_sealed(&bytes, 4096, None).unwrap_err();
+            assert!(missing.to_string().contains("encrypted"), "{missing}");
+            let plain = log(WalFormat::Json, 3);
+            let keyed = replay_sealed(&plain, 4096, Some(&key())).unwrap_err();
+            assert!(keyed.to_string().contains("not encrypted"), "{keyed}");
+        }
+
+        #[test]
+        fn a_changed_record_is_refused() {
+            let mut bytes = sealed_log(WalFormat::Json, 6);
+            // Inside the third record's sealed payload, past its frame header;
+            // fix the checksum so the change reaches decryption.
+            let start = sealed_log(WalFormat::Json, 2).len();
+            let len = u32::from_le_bytes(bytes[start..start + 4].try_into().unwrap()) as usize;
+            bytes[start + FRAME_LEN + 30] ^= 1;
+            let crc = crc32(&bytes[start + FRAME_LEN..start + FRAME_LEN + len]);
+            bytes[start + 4..start + 8].copy_from_slice(&crc.to_le_bytes());
+            let err = replay_sealed(&bytes, 4096, Some(&key())).unwrap_err();
+            assert!(err.to_string().contains("does not decrypt"), "{err}");
+        }
+
+        #[test]
+        fn a_torn_tail_and_a_torn_key_check_recover() {
+            let whole = sealed_log(WalFormat::Cbor, 5);
+            let four = sealed_log(WalFormat::Cbor, 4).len();
+            if WalFormat::Cbor.compiled_in() {
+                let (r, ops) = replay_sealed(&whole[..whole.len() - 3], 7, Some(&key())).unwrap();
+                assert_eq!(ops.len(), 4);
+                assert_eq!(
+                    r,
+                    Replayed::Log {
+                        format: WalFormat::Cbor,
+                        valid_end: four as u64,
+                        torn: true,
+                        sealed: true
+                    }
+                );
+            }
+            let header = log_header(WalFormat::Json, Some(&key())).unwrap();
+            let (r, _) = replay_sealed(&header[..HEADER_LEN + 10], 3, Some(&key())).unwrap();
+            assert_eq!(r, Replayed::TornHeader);
+        }
+    }
+
     #[test]
     fn crc32_matches_the_standard_check_value() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
@@ -651,14 +1075,16 @@ mod tests {
             detect(b"{\"UpsertNode\":{}}\n").unwrap(),
             Detected::Log {
                 format: WalFormat::Json,
-                body_start: 0
+                body_start: 0,
+                sealed: false
             }
         );
         assert_eq!(
             detect(b"").unwrap(),
             Detected::Log {
                 format: WalFormat::Json,
-                body_start: 0
+                body_start: 0,
+                sealed: false
             }
         );
     }

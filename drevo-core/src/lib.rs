@@ -73,6 +73,8 @@ pub mod csr;
 pub mod delta;
 mod dense_map;
 pub mod dump;
+#[cfg(feature = "encryption")]
+pub mod encryption;
 pub mod engine;
 pub mod error;
 pub mod hlc;
