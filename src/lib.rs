@@ -265,6 +265,9 @@ pub mod native_service;
 /// `authorization` metadata.
 #[cfg(any(feature = "grpc", feature = "arrow-flight"))]
 pub(crate) mod rpc_login;
+/// TLS for the gRPC API and Arrow Flight. Compiled with `bolt-tls` and
+/// `grpc` or `arrow-flight`.
+pub mod rpc_tls;
 /// Optional CBOR / MessagePack bodies for the HTTP API, next to JSON
 /// (issue #581). Compiled with the `http` feature; the formats themselves
 /// behind `format-cbor` / `format-msgpack`.

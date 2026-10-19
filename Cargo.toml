@@ -252,6 +252,8 @@ proptest = { version = "1", default-features = false, features = ["std", "bit-se
 # (which would otherwise need rotation or pin a real authority).
 # Test-only; never compiled into the library, FFI, or WASM artifact.
 rcgen = "0.13"
+# A TLS connector for the gRPC / Flight TLS tests' tonic channels.
+hyper-util = { version = "0.1", features = ["tokio"] }
 # Signs the bearer tokens of the `oidc` login tests. Test-only.
 ring = "0.17"
 

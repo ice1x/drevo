@@ -30,7 +30,7 @@
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
 //! | `DREVO_IDLE_SESSION_TIMEOUT_MS` | `0` (off) | Close a Bolt connection that holds an open transaction and sends nothing for this long, rolling the transaction back |
-//! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS and Bolt as `bolt+s://` (`bolt-tls` feature) |
+//! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS, Bolt as `bolt+s://`, and gRPC and Arrow Flight over TLS (`bolt-tls` feature) |
 //! | `DREVO_TLS_KEY`   | (unset)     | PEM private key (PKCS#8, PKCS#1 or SEC1) for `DREVO_TLS_CERT` |
 //! | `DREVO_ENCRYPTION_KEY_FILE` | (unset) | File holding a 256-bit key as 64 hex digits; every database's log and sidecars are encrypted with it (`encryption` feature) |
 //! | `DREVO_ENCRYPTION_KEY` | (unset) | The 64 hex digits themselves, instead of `DREVO_ENCRYPTION_KEY_FILE` |
@@ -1184,18 +1184,37 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                 addr: grpc_addr,
                 source,
             })?;
-        tracing::info!(%grpc_addr, "grpc listening");
+        // Over TLS with the HTTPS certificate when there is one.
+        let grpc_tls = tls.as_ref().map(TlsSetup::rpc);
+        tracing::info!(%grpc_addr, tls = grpc_tls.is_some(), "grpc listening");
         let grpc_registry = std::sync::Arc::clone(&registry);
         let grpc_security = security.clone();
         tokio::spawn(async move {
-            if let Err(err) = crate::grpc::serve_with_security(
-                grpc_registry,
-                grpc_security,
-                grpc_listener,
-                shutdown_signal(),
-            )
-            .await
-            {
+            let served = match grpc_tls {
+                #[cfg(feature = "bolt-tls")]
+                Some(tls) => {
+                    crate::grpc::serve_tls_with_security(
+                        grpc_registry,
+                        grpc_security,
+                        grpc_listener,
+                        &tls,
+                        shutdown_signal(),
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "bolt-tls"))]
+                Some(never) => match never {},
+                None => {
+                    crate::grpc::serve_with_security(
+                        grpc_registry,
+                        grpc_security,
+                        grpc_listener,
+                        shutdown_signal(),
+                    )
+                    .await
+                }
+            };
+            if let Err(err) = served {
                 tracing::error!(error = %err, "grpc server stopped");
             }
         });
@@ -1212,18 +1231,37 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                     addr: flight_addr,
                     source,
                 })?;
-        tracing::info!(%flight_addr, "arrow flight listening");
+        // Over TLS with the HTTPS certificate when there is one.
+        let flight_tls = tls.as_ref().map(TlsSetup::rpc);
+        tracing::info!(%flight_addr, tls = flight_tls.is_some(), "arrow flight listening");
         let flight_registry = std::sync::Arc::clone(&registry);
         let flight_security = security.clone();
         tokio::spawn(async move {
-            if let Err(err) = crate::flight::serve_with_security(
-                flight_registry,
-                flight_security,
-                flight_listener,
-                shutdown_signal(),
-            )
-            .await
-            {
+            let served = match flight_tls {
+                #[cfg(feature = "bolt-tls")]
+                Some(tls) => {
+                    crate::flight::serve_tls_with_security(
+                        flight_registry,
+                        flight_security,
+                        flight_listener,
+                        &tls,
+                        shutdown_signal(),
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "bolt-tls"))]
+                Some(never) => match never {},
+                None => {
+                    crate::flight::serve_with_security(
+                        flight_registry,
+                        flight_security,
+                        flight_listener,
+                        shutdown_signal(),
+                    )
+                    .await
+                }
+            };
+            if let Err(err) = served {
                 tracing::error!(error = %err, "arrow flight server stopped");
             }
         });
@@ -1299,7 +1337,30 @@ impl TlsSetup {
     fn acceptor(&self) -> BoltTls {
         match *self {}
     }
+
+    /// The certificate for the gRPC API and Arrow Flight.
+    #[cfg(all(feature = "bolt-tls", any(feature = "grpc", feature = "arrow-flight")))]
+    fn rpc(&self) -> RpcTls {
+        self.0.clone()
+    }
+
+    #[cfg(all(
+        not(feature = "bolt-tls"),
+        any(feature = "grpc", feature = "arrow-flight")
+    ))]
+    fn rpc(&self) -> RpcTls {
+        match *self {}
+    }
 }
+
+#[cfg(all(feature = "bolt-tls", any(feature = "grpc", feature = "arrow-flight")))]
+type RpcTls = crate::bolt::tls::TlsConfig;
+/// Without the `bolt-tls` feature gRPC and Flight are never served over TLS.
+#[cfg(all(
+    not(feature = "bolt-tls"),
+    any(feature = "grpc", feature = "arrow-flight")
+))]
+enum RpcTls {}
 
 #[cfg(feature = "bolt-tls")]
 type BoltTls = tokio_rustls::TlsAcceptor;

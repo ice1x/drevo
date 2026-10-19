@@ -136,6 +136,17 @@ impl TlsConfig {
         Self::from_pem(&cert_pem, &key_pem)
     }
 
+    /// The same certificate offering `protocols` in ALPN, such as `h2`,
+    /// which gRPC clients require.
+    #[must_use]
+    pub fn with_alpn(&self, protocols: &[&[u8]]) -> Self {
+        let mut config = (*self.config).clone();
+        config.alpn_protocols = protocols.iter().map(|p| p.to_vec()).collect();
+        TlsConfig {
+            config: Arc::new(config),
+        }
+    }
+
     /// Borrow the underlying `Arc<ServerConfig>` — exposed so
     /// embedders that already drive their own `TlsAcceptor` can
     /// reuse the same parsed certs.
