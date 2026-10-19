@@ -21,7 +21,7 @@ pub const SECONDARY_LABELS_KEY: &str = "_labels";
 /// Empty when the property is absent or malformed.
 pub fn secondary_labels(node: &Node) -> Vec<String> {
     let mut out = Vec::new();
-    if let Some(serde_json::Value::Array(arr)) = node.properties.0.get(SECONDARY_LABELS_KEY) {
+    if let Some(serde_json::Value::Array(arr)) = node.properties.get(SECONDARY_LABELS_KEY) {
         for item in arr {
             if let serde_json::Value::String(s) = item {
                 out.push(s.clone());
@@ -54,7 +54,7 @@ mod tests {
             body_html: String::new(),
             created_at: 0,
             updated_at: 0,
-            properties: Properties(map),
+            properties: Properties::from(map),
         }
     }
 

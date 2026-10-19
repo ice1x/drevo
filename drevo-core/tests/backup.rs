@@ -56,7 +56,7 @@ fn task(title: &str) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 
@@ -100,7 +100,7 @@ fn task_board(g: &NativeGraph) {
         to_id: spec.id,
         kind: "DEPENDS_ON".into(),
         weight: 1.0,
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     })
     .unwrap();
     g.delete_node(scrap.id).unwrap();

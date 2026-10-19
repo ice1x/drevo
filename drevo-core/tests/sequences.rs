@@ -99,8 +99,7 @@ fn a_rolled_back_transaction_leaves_a_gap() {
     let tx = g.tx_begin();
     let id = g.sequence_next("bug").unwrap();
     let mut node = bug();
-    node.properties
-        .insert("number".to_string(), serde_json::json!(id));
+    node.properties.insert("number", serde_json::json!(id));
     g.tx_engine(tx).unwrap().create_node(node).unwrap();
     g.tx_rollback(tx);
     assert_eq!(

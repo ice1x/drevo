@@ -29,7 +29,7 @@ fn new_edge(from_id: u64, to_id: u64) -> NewEdge {
 
 fn status(value: &str) -> Properties {
     let mut p = Properties::default();
-    p.insert("status".to_string(), serde_json::json!(value));
+    p.insert("status", serde_json::json!(value));
     p
 }
 

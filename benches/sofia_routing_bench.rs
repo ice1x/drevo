@@ -149,7 +149,7 @@ struct Network {
 fn props(pairs: &[(&str, Json)]) -> Properties {
     let mut p = Properties::default();
     for (k, v) in pairs {
-        p.insert((*k).to_string(), v.clone());
+        p.insert(*k, v.clone());
     }
     p
 }

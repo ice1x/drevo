@@ -78,13 +78,13 @@ fn new_node(kind: &str, title: &str, text: Option<&str>) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(props),
+        properties: Properties::from(props),
     }
 }
 
 fn embedding_of(db: &NativeService, title: &str) -> Option<JsonValue> {
     let node = db.get_node_by_title(title).expect("exists");
-    node.properties.0.get("embedding").cloned()
+    node.properties.get("embedding").cloned()
 }
 
 /// Run `drevo.semantic.reindex` and return (scanned, embedded, skipped, remaining).

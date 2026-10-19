@@ -29,7 +29,7 @@ fn node(kind: &str, title: &str, props: &[(&str, serde_json::Value)]) -> NewNode
         title: title.into(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(map),
+        properties: Properties::from(map),
     }
 }
 
@@ -105,7 +105,7 @@ fn reflects_value_changes_and_deletes_after_sync() {
     g.update_node(
         a.id,
         NodePatch {
-            properties: Some(Properties(HashMap::from([(
+            properties: Some(Properties::from(HashMap::from([(
                 "status".to_string(),
                 serde_json::json!("done"),
             )]))),

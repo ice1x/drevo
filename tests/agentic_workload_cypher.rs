@@ -361,7 +361,7 @@ fn make_node(rng: &mut Rng, seq: u64) -> NewNode {
         title: format!("{w1} {w2} {w3} item {seq:08}"),
         body: format!("{w1} {w2} {w3} body for node {seq}, agentic workload corpus"),
         body_html: String::new(),
-        properties: Properties(props),
+        properties: Properties::from(props),
     }
 }
 

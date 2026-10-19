@@ -31,14 +31,10 @@ fn app(formats: &str) -> axum::Router {
             title: format!("task-{i}"),
             body: String::new(),
             body_html: String::new(),
-            properties: Properties(
-                [
-                    ("done".to_string(), json!(i % 2 == 0)),
-                    ("embedding".to_string(), json!(embedding)),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            properties: Properties::from_iter([
+                ("done".to_string(), json!(i % 2 == 0)),
+                ("embedding".to_string(), json!(embedding)),
+            ]),
         })
         .unwrap();
     }

@@ -47,7 +47,7 @@ fn node(title: &str) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 
@@ -89,7 +89,7 @@ fn reopen_replays_the_log_to_the_same_state() {
             to_id: b.id,
             kind: "links".into(),
             weight: 1.0,
-            properties: Properties(Default::default()),
+            properties: Properties::default(),
         })
         .unwrap();
         (g.node_count(), g.edge_count())

@@ -281,7 +281,7 @@ fn native_tx_detects_write_conflict() {
 
 fn node_with_prop(kind: &str, title: &str, prop: &str, val: &str) -> NewNode {
     let mut nn = new_node(kind, title);
-    nn.properties = drevo::model::Properties(std::collections::HashMap::from([(
+    nn.properties = drevo::model::Properties::from(std::collections::HashMap::from([(
         prop.to_string(),
         serde_json::Value::String(val.to_string()),
     )]));
@@ -565,12 +565,10 @@ fn compact_wal_shrinks_log_and_preserves_state() {
 
 fn node_with_props(kind: &str, title: &str, props: &[(&str, &str)]) -> NewNode {
     let mut nn = new_node(kind, title);
-    nn.properties = drevo::model::Properties(
-        props
-            .iter()
-            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
-            .collect(),
-    );
+    nn.properties = props
+        .iter()
+        .map(|(k, v)| (*k, serde_json::Value::String(v.to_string())))
+        .collect();
     nn
 }
 

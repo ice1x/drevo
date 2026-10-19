@@ -27,9 +27,7 @@
 //!     kind: "ROAD".into(),
 //!     weight: 1.0,
 //!     created_at: 0,
-//!     properties: drevo::model::Properties(
-//!         [("walk_s".to_string(), serde_json::json!(cost))].into(),
-//!     ),
+//!     properties: drevo::model::Properties::from([("walk_s", serde_json::json!(cost))]),
 //! };
 //! let edges = vec![edge(10, 1, 2, 2.0), edge(11, 2, 3, 2.0), edge(12, 1, 3, 5.0)];
 //! let node = |id: u64| Arc::new(Node {
@@ -522,8 +520,8 @@ mod tests {
         fn node_at(&mut self, id: u64, pos: Option<(f64, f64)>) -> &mut Self {
             let mut properties = crate::model::Properties::default();
             if let Some((lat, lon)) = pos {
-                properties.insert("lat".into(), json!(lat));
-                properties.insert("lon".into(), json!(lon));
+                properties.insert("lat", json!(lat));
+                properties.insert("lon", json!(lon));
             }
             self.nodes.insert(
                 id,
@@ -555,7 +553,7 @@ mod tests {
         ) -> &mut Self {
             let mut properties = crate::model::Properties::default();
             if let Some(c) = cost {
-                properties.insert("cost".into(), c);
+                properties.insert("cost", c);
             }
             self.edges.push(Edge {
                 id,

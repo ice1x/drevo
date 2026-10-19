@@ -21,7 +21,7 @@ fn node(title: &str) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 

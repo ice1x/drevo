@@ -44,7 +44,7 @@ fn entry(title: &str, seed: f32) -> NewNode {
         title: title.into(),
         body: "felt anxious before the meeting".into(),
         body_html: String::new(),
-        properties: Properties(HashMap::from([
+        properties: Properties::from(HashMap::from([
             (
                 "mood".to_string(),
                 json!({"score": 4, "tags": ["work", "sleep"]}),

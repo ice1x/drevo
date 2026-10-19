@@ -146,7 +146,7 @@ fn node(kind: &str, title: &str, labels: &[&str]) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(props),
+        properties: Properties::from(props),
     }
 }
 

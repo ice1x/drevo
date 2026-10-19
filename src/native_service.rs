@@ -179,7 +179,7 @@ pub(crate) fn node_text<'a>(
     fields: NodeTextFields<'a>,
     text_property: &str,
 ) -> Option<&'a str> {
-    let text = match properties.0.get(text_property) {
+    let text = match properties.get(text_property) {
         Some(value) => value.as_str(),
         None => match text_property {
             "title" if !fields.title.starts_with(SYNTHETIC_TITLE_PREFIX) => Some(fields.title),
@@ -2500,7 +2500,7 @@ impl NativeService {
         for node in self.graph.snapshot().all_nodes() {
             let matches_label = node.kind == label
                 || matches!(
-                    node.properties.0.get("_labels"),
+                    node.properties.get("_labels"),
                     Some(serde_json::Value::Array(arr))
                         if arr.iter().any(|v| v.as_str() == Some(label))
                 );
@@ -2509,7 +2509,7 @@ impl NativeService {
             }
             let has_text =
                 node_text(&node.properties, NodeTextFields::of(&node), text_property).is_some();
-            let has_embedding = node.properties.0.contains_key(embedding_property);
+            let has_embedding = node.properties.contains_key(embedding_property);
             if has_text && !has_embedding {
                 pending += 1;
             }
@@ -2532,11 +2532,10 @@ impl NativeService {
             }
             let has_text = edge
                 .properties
-                .0
                 .get(text_property)
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|s| !s.is_empty());
-            let has_embedding = edge.properties.0.contains_key(embedding_property);
+            let has_embedding = edge.properties.contains_key(embedding_property);
             if has_text && !has_embedding {
                 pending += 1;
             }
@@ -2638,7 +2637,7 @@ impl NativeService {
             return;
         }
         let mut labels = vec![kind.to_string()];
-        if let Some(serde_json::Value::Array(arr)) = properties.0.get("_labels") {
+        if let Some(serde_json::Value::Array(arr)) = properties.get("_labels") {
             for item in arr {
                 if let serde_json::Value::String(s) = item {
                     if !labels.iter().any(|l| l == s) {
@@ -2656,7 +2655,7 @@ impl NativeService {
             };
             if let Some((old_props, old_fields)) = old {
                 let unchanged = node_text(old_props, old_fields, &text_prop) == Some(text.as_str());
-                if unchanged && properties.0.contains_key(&emb_prop) {
+                if unchanged && properties.contains_key(&emb_prop) {
                     continue;
                 }
             }
@@ -2665,7 +2664,7 @@ impl NativeService {
                     let arr = serde_json::Value::Array(
                         vector.into_iter().map(|f| serde_json::json!(f)).collect(),
                     );
-                    properties.0.insert(emb_prop, arr);
+                    properties.insert(emb_prop, arr);
                 }
                 Err(error) => {
                     tracing::warn!(label = %label, %error, "native auto-embed failed (ignored)");
@@ -2719,7 +2718,6 @@ impl NativeService {
         };
         for (rel, text_prop, emb_prop) in targets {
             let Some(text) = properties
-                .0
                 .get(&text_prop)
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
@@ -2730,9 +2728,9 @@ impl NativeService {
                 continue;
             }
             if let Some(old) = old {
-                let unchanged = old.0.get(&text_prop).and_then(serde_json::Value::as_str)
-                    == Some(text.as_str());
-                if unchanged && properties.0.contains_key(&emb_prop) {
+                let unchanged =
+                    old.get(&text_prop).and_then(serde_json::Value::as_str) == Some(text.as_str());
+                if unchanged && properties.contains_key(&emb_prop) {
                     continue;
                 }
             }
@@ -2741,7 +2739,7 @@ impl NativeService {
                     let arr = serde_json::Value::Array(
                         vector.into_iter().map(|f| serde_json::json!(f)).collect(),
                     );
-                    properties.0.insert(emb_prop, arr);
+                    properties.insert(emb_prop, arr);
                 }
                 Err(error) => {
                     tracing::warn!(rel_type = %rel, %error, "native auto-embed (rel) failed (ignored)");
@@ -2788,7 +2786,7 @@ impl NativeService {
             // Match the primary kind plus any secondary `_labels` (same as KV).
             let matches_label = node.kind == label
                 || matches!(
-                    node.properties.0.get("_labels"),
+                    node.properties.get("_labels"),
                     Some(serde_json::Value::Array(arr))
                         if arr.iter().any(|v| v.as_str() == Some(label))
                 );
@@ -2798,7 +2796,7 @@ impl NativeService {
             report.scanned += 1;
             let text = node_text(&node.properties, NodeTextFields::of(&node), text_property)
                 .map(str::to_string);
-            let already_embedded = node.properties.0.contains_key(embedding_property);
+            let already_embedded = node.properties.contains_key(embedding_property);
             let Some(text) = text.filter(|_| !already_embedded) else {
                 report.skipped += 1;
                 continue;
@@ -2814,8 +2812,8 @@ impl NativeService {
             match embedder.embed_query(&text) {
                 Ok(vector) => {
                     let mut props = node.properties.clone();
-                    props.0.insert(
-                        embedding_property.to_string(),
+                    props.insert(
+                        embedding_property,
                         serde_json::Value::Array(
                             vector.into_iter().map(|f| serde_json::json!(f)).collect(),
                         ),
@@ -2862,12 +2860,11 @@ impl NativeService {
             report.scanned += 1;
             let text = edge
                 .properties
-                .0
                 .get(text_property)
                 .and_then(serde_json::Value::as_str)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
-            let already_embedded = edge.properties.0.contains_key(embedding_property);
+            let already_embedded = edge.properties.contains_key(embedding_property);
             let Some(text) = text.filter(|_| !already_embedded) else {
                 report.skipped += 1;
                 continue;
@@ -2883,8 +2880,8 @@ impl NativeService {
             match embedder.embed_query(&text) {
                 Ok(vector) => {
                     let mut props = edge.properties.clone();
-                    props.0.insert(
-                        embedding_property.to_string(),
+                    props.insert(
+                        embedding_property,
                         serde_json::Value::Array(
                             vector.into_iter().map(|f| serde_json::json!(f)).collect(),
                         ),
@@ -3348,7 +3345,7 @@ mod traversal_parity_tests {
             title: title.into(),
             body: String::new(),
             body_html: String::new(),
-            properties: Properties(Default::default()),
+            properties: Properties::default(),
         }
     }
     fn ne(from_id: u64, to_id: u64, kind: &str) -> NewEdge {
@@ -3357,7 +3354,7 @@ mod traversal_parity_tests {
             to_id,
             kind: kind.into(),
             weight: 1.0,
-            properties: Properties(Default::default()),
+            properties: Properties::default(),
         }
     }
     fn titles(nodes: &[crate::model::Node]) -> Vec<String> {
@@ -3441,7 +3438,7 @@ mod crud_parity_tests {
             title: title.into(),
             body: String::new(),
             body_html: String::new(),
-            properties: Properties(Default::default()),
+            properties: Properties::default(),
         }
     }
 
@@ -3485,7 +3482,7 @@ mod crud_parity_tests {
                 to_id: b,
                 kind: "link".into(),
                 weight: 1.0,
-                properties: Properties(Default::default()),
+                properties: Properties::default(),
             })
             .unwrap();
         // get_edge returns the stored edge; a missing id is Ok(None).
@@ -3522,7 +3519,7 @@ mod crud_parity_tests {
             to_id: b,
             kind: "link".into(),
             weight: 1.0,
-            properties: Properties(Default::default()),
+            properties: Properties::default(),
         })
         .unwrap();
         svc.create_edge(NewEdge {
@@ -3530,7 +3527,7 @@ mod crud_parity_tests {
             to_id: c,
             kind: "link".into(),
             weight: 1.0,
-            properties: Properties(Default::default()),
+            properties: Properties::default(),
         })
         .unwrap();
         // depth 1 from a reaches b (and the a→b edge), not c.
@@ -3555,7 +3552,7 @@ mod embedding_store_tests {
             title: title.into(),
             body: String::new(),
             body_html: String::new(),
-            properties: Properties(Default::default()),
+            properties: Properties::default(),
         }
     }
 
@@ -3606,7 +3603,7 @@ mod health_and_batch_tests {
             title: title.into(),
             body: String::new(),
             body_html: String::new(),
-            properties: Properties(Default::default()),
+            properties: Properties::default(),
         }
     }
 
@@ -3704,7 +3701,7 @@ mod node_text_tests {
     use std::collections::HashMap;
 
     fn props(pairs: &[(&str, serde_json::Value)]) -> Properties {
-        Properties(
+        Properties::from(
             pairs
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), v.clone()))

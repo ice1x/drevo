@@ -42,9 +42,7 @@ struct NodeSpec {
 fn add_node(db: &NativeService, collector: &mut StatisticsCollector, spec: NodeSpec) -> u64 {
     let mut properties = Properties::default();
     if let Some(status) = spec.status {
-        properties
-            .0
-            .insert("status".to_string(), serde_json::json!(status));
+        properties.insert("status", serde_json::json!(status));
         collector.record_property(spec.kind, "status", status);
     }
     static TITLE_SEQ: AtomicU64 = AtomicU64::new(0);

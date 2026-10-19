@@ -24,7 +24,7 @@ fn node(g: &NativeGraph, kind: &str, title: &str, props: Value) -> u64 {
         title: title.into(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(map.into_iter().collect::<HashMap<_, _>>()),
+        properties: Properties::from(map.into_iter().collect::<HashMap<_, _>>()),
     })
     .expect("create node")
     .id
@@ -201,7 +201,7 @@ fn updates_and_deletes_follow_the_change_feed() {
     g.update_node(
         crash,
         NodePatch {
-            properties: Some(Properties(HashMap::from([(
+            properties: Some(Properties::from(HashMap::from([(
                 "meta".to_string(),
                 json!({"severity": "high", "assignee": {"name": "bob"}}),
             )]))),

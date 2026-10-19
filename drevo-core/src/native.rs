@@ -992,7 +992,7 @@ fn has_label(node: &Node, label: &str) -> bool {
 /// or `None` when it has none: the property-map entry (unless `null`), else
 /// a non-empty `title` / `body` field. JSON text keeps the type (`1` vs `"1"`).
 fn unique_key(node: &Node, property: &str) -> Option<String> {
-    match node.properties.0.get(property) {
+    match node.properties.get(property) {
         Some(serde_json::Value::Null) => None,
         Some(value) => Some(value.to_string()),
         None => {
@@ -4433,7 +4433,7 @@ impl NativeGraph {
     ///     title: "BUG-1".into(),
     ///     body: String::new(),
     ///     body_html: String::new(),
-    ///     properties: Properties(Default::default()),
+    ///     properties: Properties::default(),
     /// };
     /// g.set_read_only(true)?;
     /// assert!(matches!(g.create_node(task()), Err(CoreError::ReadOnly)));

@@ -16,7 +16,7 @@ fn nn(title: &str) -> NewNode {
         title: title.into(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 

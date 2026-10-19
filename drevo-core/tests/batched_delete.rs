@@ -42,7 +42,7 @@ fn node(title: &str) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 
@@ -52,7 +52,7 @@ fn edge(from_id: u64, to_id: u64) -> NewEdge {
         to_id,
         kind: "child_of".to_string(),
         weight: 1.0,
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 

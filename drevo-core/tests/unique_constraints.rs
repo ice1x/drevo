@@ -26,7 +26,7 @@ fn node(kind: &str, title: &str, props: Value) -> NewNode {
         title: title.into(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(map.into_iter().collect::<HashMap<_, _>>()),
+        properties: Properties::from(map.into_iter().collect::<HashMap<_, _>>()),
     }
 }
 
@@ -74,13 +74,10 @@ fn updates_are_checked_against_other_nodes_only() {
     g.update_node(
         a.id,
         NodePatch {
-            properties: Some(Properties(
-                [
-                    ("email".to_string(), json!("a@x")),
-                    ("n".to_string(), json!(1)),
-                ]
-                .into(),
-            )),
+            properties: Some(Properties::from_iter([
+                ("email".to_string(), json!("a@x")),
+                ("n".to_string(), json!(1)),
+            ])),
             ..NodePatch::default()
         },
     )
@@ -88,13 +85,13 @@ fn updates_are_checked_against_other_nodes_only() {
     let clash = g.update_node(
         b.id,
         NodePatch {
-            properties: Some(Properties([("email".to_string(), json!("a@x"))].into())),
+            properties: Some(Properties::from_iter([("email".to_string(), json!("a@x"))])),
             ..NodePatch::default()
         },
     );
     assert!(is_violation(&clash), "{clash:?}");
     assert_eq!(
-        g.get_node(b.id).unwrap().unwrap().properties.0["email"],
+        g.get_node(b.id).unwrap().unwrap().properties["email"],
         json!("b@x"),
         "the rejected update changed nothing"
     );
@@ -126,7 +123,7 @@ fn deleting_or_changing_frees_the_value() {
     g.update_node(
         b.id,
         NodePatch {
-            properties: Some(Properties([("email".to_string(), json!("c@x"))].into())),
+            properties: Some(Properties::from_iter([("email".to_string(), json!("c@x"))])),
             ..NodePatch::default()
         },
     )

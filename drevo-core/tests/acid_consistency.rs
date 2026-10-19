@@ -25,13 +25,13 @@ fn node(kind: &str, title: &str) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 
 fn node_with_props(kind: &str, title: &str, props: &[(&str, &str)]) -> NewNode {
     let mut nn = node(kind, title);
-    nn.properties = Properties(
+    nn.properties = Properties::from(
         props
             .iter()
             .map(|(k, v)| (k.to_string(), serde_json::Value::String((*v).to_string())))
@@ -46,7 +46,7 @@ fn edge(from_id: u64, to_id: u64, kind: &str, weight: f32) -> NewEdge {
         to_id,
         kind: kind.to_string(),
         weight,
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 

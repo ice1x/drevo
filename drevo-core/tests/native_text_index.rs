@@ -23,7 +23,7 @@ fn node(g: &NativeGraph, kind: &str, title: &str, props: Value) -> u64 {
         title: title.into(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(map.into_iter().collect::<HashMap<_, _>>()),
+        properties: Properties::from(map.into_iter().collect::<HashMap<_, _>>()),
     })
     .expect("create node")
     .id
@@ -48,7 +48,7 @@ fn set_props(g: &NativeGraph, id: u64, props: Value) {
     g.update_node(
         id,
         NodePatch {
-            properties: Some(Properties(map.into_iter().collect())),
+            properties: Some(Properties::from_iter(map)),
             ..NodePatch::default()
         },
     )

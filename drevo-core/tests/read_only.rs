@@ -52,7 +52,7 @@ fn task(title: &str) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 
@@ -77,7 +77,7 @@ fn seeded(tmp: &TmpDir) {
         to_id: b.id,
         kind: "blocks".to_string(),
         weight: 1.0,
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     })
     .unwrap();
 }

@@ -344,7 +344,7 @@ pub(crate) fn graphml_records(
 /// kept for forward-compatibility with future Cypher-shaped property types.
 #[allow(dead_code)]
 fn properties_from_object(obj: serde_json::Map<String, serde_json::Value>) -> Properties {
-    Properties(obj.into_iter().collect())
+    Properties::from_iter(obj)
 }
 
 // ---------------------------------------------------------------------
@@ -850,15 +850,12 @@ fn parse_weight_value(s: &str) -> f32 {
 fn merge_properties(properties: &mut Properties, value: &str) {
     match serde_json::from_str::<Properties>(value) {
         Ok(parsed) => {
-            for (k, v) in parsed.0 {
-                properties.0.insert(k, v);
+            for (k, v) in parsed {
+                properties.insert(k, v);
             }
         }
         Err(_) => {
-            properties.0.insert(
-                "properties".to_string(),
-                serde_json::Value::String(value.to_string()),
-            );
+            properties.insert("properties", serde_json::Value::String(value.to_string()));
         }
     }
 }
@@ -869,7 +866,7 @@ fn merge_properties(properties: &mut Properties, value: &str) {
 fn fold_unknown_property(properties: &mut Properties, name: &str, value: &str) {
     let parsed = serde_json::from_str::<serde_json::Value>(value)
         .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
-    properties.0.insert(name.to_string(), parsed);
+    properties.insert(name, parsed);
 }
 
 /// Helper used by `NewEdge::from(&Edge)` round-trips in tests / external
