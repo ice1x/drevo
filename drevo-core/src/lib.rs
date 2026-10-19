@@ -91,6 +91,8 @@ pub mod native_property_index;
 pub mod native_text_index;
 mod properties;
 pub mod replica;
+#[cfg(not(target_arch = "wasm32"))]
+mod sealed_file;
 pub mod sequence;
 pub mod tokenizer;
 pub mod value_encoding;

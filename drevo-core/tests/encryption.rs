@@ -223,3 +223,84 @@ fn a_read_only_open_needs_the_key_too() {
     assert!(g.is_read_only());
     assert_eq!(g.node_count(), 1);
 }
+
+#[test]
+fn every_sidecar_is_encrypted_too() {
+    let tmp = TmpDir::new();
+    let wal = tmp.path("native.wal");
+    {
+        let g = NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key()).unwrap();
+        let kept = g.create_node(secret_note(0)).unwrap();
+        let gone = g.create_node(secret_note(1)).unwrap();
+        g.delete_node(gone.id).unwrap();
+        g.sequences().create("invoice_numbers", 1, 1).unwrap();
+        assert_eq!(g.sequence_next("invoice_numbers").unwrap(), 1);
+        let _ = kept;
+        g.compact_wal().unwrap();
+    }
+    let mut seen = Vec::new();
+    for entry in fs::read_dir(&tmp.0).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if name.ends_with(".lock") {
+            continue;
+        }
+        let bytes = fs::read(&path).unwrap();
+        seen.push(name.clone());
+        if bytes.is_empty() {
+            continue;
+        }
+        assert!(
+            bytes.starts_with(b"DRVWAL") || bytes.starts_with(b"DRVSEAL1"),
+            "{name} is not encrypted"
+        );
+        for needle in [SECRET, "invoice_numbers", "Node", "hlc"] {
+            assert!(
+                !contains(&bytes, needle),
+                "`{needle}` is readable in {name}"
+            );
+        }
+    }
+    for expected in [
+        "native.wal",
+        "origin.json",
+        "stamps.jsonl",
+        "sequences.json",
+    ] {
+        assert!(
+            seen.iter().any(|n| n == expected),
+            "{expected} missing: {seen:?}"
+        );
+    }
+    let g = NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key()).unwrap();
+    assert_eq!(g.node_count(), 1);
+    assert!(g.sequence_next("invoice_numbers").unwrap() > 1);
+}
+
+#[test]
+fn a_backup_carries_encrypted_sidecars() {
+    let tmp = TmpDir::new();
+    fs::create_dir_all(tmp.path("live")).unwrap();
+    let g =
+        NativeGraph::open_durable_encrypted(tmp.path("live/native.wal"), WalFormat::Json, key())
+            .unwrap();
+    g.create_node(secret_note(0)).unwrap();
+    g.sequences().create("invoice_numbers", 100, 1).unwrap();
+    g.sequence_next("invoice_numbers").unwrap();
+    g.backup_to(&tmp.path("backup"), &BackupOptions::default())
+        .unwrap();
+    drop(g);
+    for name in ["stamps.jsonl", "sequences.json", "tombstones.json"] {
+        let bytes = fs::read(tmp.path("backup").join(name)).unwrap();
+        assert!(
+            bytes.starts_with(b"DRVSEAL1"),
+            "{name} in the backup is not encrypted"
+        );
+        assert!(!contains(&bytes, "invoice_numbers"));
+    }
+    fs::create_dir_all(tmp.path("restored")).unwrap();
+    let wal = tmp.path("restored/native.wal");
+    restore(&[tmp.path("backup")], &wal).unwrap();
+    let g = NativeGraph::open_durable_encrypted(&wal, WalFormat::Json, key()).unwrap();
+    assert!(g.sequence_next("invoice_numbers").unwrap() > 100);
+}

@@ -102,6 +102,9 @@ pub struct Sequences {
     /// `sequences.json` of a durable store.
     file: Option<PathBuf>,
     read_only: std::sync::atomic::AtomicBool,
+    /// The key an encrypted store seals the file with.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    key: Option<std::sync::Arc<crate::wal_format::SealKey>>,
 }
 
 impl Sequences {
@@ -112,6 +115,7 @@ impl Sequences {
             state: Mutex::new(BTreeMap::new()),
             file: None,
             read_only: std::sync::atomic::AtomicBool::new(false),
+            key: None,
         }
     }
 
@@ -124,11 +128,37 @@ impl Sequences {
     /// [`SequenceError::Io`] when the file exists but cannot be read or
     /// parsed: starting from nothing could reissue values.
     pub fn open(file: &Path) -> Result<Self, SequenceError> {
-        let mut state: BTreeMap<String, State> = match std::fs::read(file) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+        Self::load(file, None)
+    }
+
+    /// [`open`](Self::open) for an encrypted store: the file is sealed with
+    /// `key` ([`crate::encryption`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn open_sealed(
+        file: &Path,
+        key: Option<std::sync::Arc<crate::wal_format::SealKey>>,
+    ) -> Result<Self, SequenceError> {
+        Self::load(file, key)
+    }
+
+    fn load(
+        file: &Path,
+        key: Option<std::sync::Arc<crate::wal_format::SealKey>>,
+    ) -> Result<Self, SequenceError> {
+        let io = |e: std::io::Error| SequenceError::Io(format!("{}: {e}", file.display()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let bytes = crate::sealed_file::read(file, key.as_deref(), crate::sealed_file::SEQUENCES)
+            .map_err(io)?;
+        #[cfg(target_arch = "wasm32")]
+        let bytes = match std::fs::read(file) {
+            Ok(b) => Some(b),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(io(e)),
+        };
+        let mut state: BTreeMap<String, State> = match bytes {
+            Some(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|e| SequenceError::Io(format!("{}: {e}", file.display())))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(e) => return Err(SequenceError::Io(format!("{}: {e}", file.display()))),
+            None => BTreeMap::new(),
         };
         for s in state.values_mut() {
             // Anything up to the reservation may have been handed out.
@@ -140,6 +170,7 @@ impl Sequences {
             state: Mutex::new(state),
             file: Some(file.to_path_buf()),
             read_only: std::sync::atomic::AtomicBool::new(false),
+            key,
         })
     }
 
@@ -166,7 +197,8 @@ impl Sequences {
             return Ok(());
         };
         let io = |e: std::io::Error| SequenceError::Io(e.to_string());
-        let bytes = serde_json::to_vec(state).map_err(|e| SequenceError::Io(e.to_string()))?;
+        let json = serde_json::to_vec(state).map_err(|e| SequenceError::Io(e.to_string()))?;
+        let bytes = self.stored(&json).map_err(io)?;
         let tmp = file.with_extension("json.tmp");
         {
             use std::io::Write;
@@ -298,10 +330,23 @@ impl Sequences {
             .collect()
     }
 
+    /// `json` as the file stores it: sealed for an encrypted store.
+    fn stored(&self, json: &[u8]) -> std::io::Result<Vec<u8>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::sealed_file::encode(self.key.as_deref(), crate::sealed_file::SEQUENCES, json)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(json.to_vec())
+        }
+    }
+
     /// The bytes of `sequences.json` as it stands, for a backup.
     #[must_use]
     pub fn snapshot_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(&*self.lock()).unwrap_or_default()
+        let json = serde_json::to_vec(&*self.lock()).unwrap_or_default();
+        self.stored(&json).unwrap_or_default()
     }
 }
 

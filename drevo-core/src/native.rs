@@ -1606,31 +1606,40 @@ fn origin_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
 /// one. A missing or unparseable file mints a fresh id (best-effort persist: a
 /// write failure only means a new id on the next boot, never a hard error).
 #[cfg(not(target_arch = "wasm32"))]
-fn load_or_mint_origin(sidecar: &std::path::Path) -> OriginId {
-    if let Some(id) = load_origin(sidecar) {
+fn load_or_mint_origin(
+    sidecar: &std::path::Path,
+    key: Option<&crate::wal_format::SealKey>,
+) -> OriginId {
+    if let Some(id) = load_origin(sidecar, key) {
         return id;
     }
     let id = mint_origin();
-    let _ = persist_origin(sidecar, id);
+    let _ = persist_origin(sidecar, id, key);
     id
 }
 
 /// The persisted replica origin in `sidecar`, if it is there and readable.
 #[cfg(not(target_arch = "wasm32"))]
-fn load_origin(sidecar: &std::path::Path) -> Option<OriginId> {
-    let text = std::fs::read_to_string(sidecar).ok()?;
+fn load_origin(
+    sidecar: &std::path::Path,
+    key: Option<&crate::wal_format::SealKey>,
+) -> Option<OriginId> {
+    let bytes = crate::sealed_file::read(sidecar, key, crate::sealed_file::ORIGIN).ok()??;
+    let text = String::from_utf8(bytes).ok()?;
     serde_json::from_str::<OriginId>(text.trim()).ok()
 }
 
 /// Persist `origin` to `sidecar` atomically (temp file, then rename). The origin
 /// is not a secret, so no restrictive mode is applied.
 #[cfg(not(target_arch = "wasm32"))]
-fn persist_origin(sidecar: &std::path::Path, origin: OriginId) -> std::io::Result<()> {
+fn persist_origin(
+    sidecar: &std::path::Path,
+    origin: OriginId,
+    key: Option<&crate::wal_format::SealKey>,
+) -> std::io::Result<()> {
     // `OriginId` is a transparent newtype: it serializes as the bare u64.
     let json = origin.0.to_string();
-    let tmp = sidecar.with_extension("json.tmp");
-    std::fs::write(&tmp, json.as_bytes())?;
-    std::fs::rename(&tmp, sidecar)
+    crate::sealed_file::write(sidecar, key, crate::sealed_file::ORIGIN, json.as_bytes())
 }
 
 /// The sequences sidecar path, next to the WAL file.
@@ -1806,9 +1815,13 @@ fn acquire_exclusive_lock(lock_path: &std::path::Path) -> Result<std::fs::File> 
 /// resurrection on the next sync, which a full re-sync heals). Stored as a flat
 /// list of pairs because a JSON object cannot key on the [`StampTarget`] enum.
 #[cfg(not(target_arch = "wasm32"))]
-fn load_tombstones(sidecar: &std::path::Path) -> HashMap<StampTarget, Tomb> {
+fn load_tombstones(
+    sidecar: &std::path::Path,
+    key: Option<&crate::wal_format::SealKey>,
+) -> HashMap<StampTarget, Tomb> {
     let mut map = HashMap::new();
-    if let Ok(bytes) = std::fs::read(sidecar) {
+    if let Ok(Some(bytes)) = crate::sealed_file::read(sidecar, key, crate::sealed_file::TOMBSTONES)
+    {
         if let Ok(entries) = serde_json::from_slice::<Vec<(StampTarget, Tomb)>>(&bytes) {
             for (target, tomb) in entries {
                 map.insert(target, tomb);
@@ -1824,11 +1837,10 @@ fn load_tombstones(sidecar: &std::path::Path) -> HashMap<StampTarget, Tomb> {
 fn persist_tombstones(
     sidecar: &std::path::Path,
     entries: &[(StampTarget, Tomb)],
+    key: Option<&crate::wal_format::SealKey>,
 ) -> std::io::Result<()> {
     let json = serde_json::to_vec(entries).map_err(std::io::Error::other)?;
-    let tmp = sidecar.with_extension("json.tmp");
-    std::fs::write(&tmp, &json)?;
-    std::fs::rename(&tmp, sidecar)
+    crate::sealed_file::write(sidecar, key, crate::sealed_file::TOMBSTONES, &json)
 }
 
 /// The stamp-log sidecar path, next to the WAL file.
@@ -1840,9 +1852,36 @@ fn stamp_log_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
 /// Read the stamp log at `path`: the greatest stamp per target. A missing
 /// file reads as empty and an unparseable line (a torn tail) is skipped.
 #[cfg(not(target_arch = "wasm32"))]
-fn load_stamp_log(path: &std::path::Path) -> HashMap<StampTarget, Stamp> {
+fn load_stamp_log(
+    path: &std::path::Path,
+    key: Option<&crate::wal_format::SealKey>,
+) -> HashMap<StampTarget, Stamp> {
     use std::io::BufRead;
     let mut map: HashMap<StampTarget, Stamp> = HashMap::new();
+    let mut take = |line: &[u8]| {
+        if let Ok((target, stamp)) = serde_json::from_slice::<(StampTarget, Stamp)>(line) {
+            let slot = map.entry(target).or_insert(stamp);
+            if stamp > *slot {
+                *slot = stamp;
+            }
+        }
+    };
+    if let Some(key) = key {
+        // Encrypted: sealed records of one or more lines each.
+        let Ok(bytes) = std::fs::read(path) else {
+            return map;
+        };
+        if let Ok(records) =
+            crate::sealed_file::records(path, &bytes, key, crate::sealed_file::STAMPS)
+        {
+            for record in records {
+                for line in record.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+                    take(line);
+                }
+            }
+        }
+        return map;
+    }
     let Ok(file) = std::fs::File::open(path) else {
         return map;
     };
@@ -1851,14 +1890,51 @@ fn load_stamp_log(path: &std::path::Path) -> HashMap<StampTarget, Stamp> {
         let Ok(line) = line else {
             break;
         };
-        if let Ok((target, stamp)) = serde_json::from_str::<(StampTarget, Stamp)>(&line) {
-            let slot = map.entry(target).or_insert(stamp);
-            if stamp > *slot {
-                *slot = stamp;
-            }
-        }
+        take(line.as_bytes());
     }
     map
+}
+
+/// Write the stamp log's entries in its stored form: one JSON line each, or
+/// for an encrypted store the sealed header and records of up to 512 lines.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_stamp_entries<W: std::io::Write>(
+    out: &mut W,
+    entries: impl Iterator<Item = (StampTarget, Stamp)>,
+    key: Option<&crate::wal_format::SealKey>,
+) -> std::io::Result<()> {
+    let Some(key) = key else {
+        for entry in entries {
+            serde_json::to_writer(&mut *out, &entry).map_err(std::io::Error::other)?;
+            out.write_all(b"\n")?;
+        }
+        return Ok(());
+    };
+    out.write_all(crate::sealed_file::MAGIC)?;
+    let mut batch = Vec::new();
+    let mut lines = 0;
+    for entry in entries {
+        serde_json::to_writer(&mut batch, &entry).map_err(std::io::Error::other)?;
+        batch.push(b'\n');
+        lines += 1;
+        if lines == 512 {
+            out.write_all(&crate::sealed_file::record(
+                key,
+                crate::sealed_file::STAMPS,
+                &batch,
+            )?)?;
+            batch.clear();
+            lines = 0;
+        }
+    }
+    if !batch.is_empty() {
+        out.write_all(&crate::sealed_file::record(
+            key,
+            crate::sealed_file::STAMPS,
+            &batch,
+        )?)?;
+    }
+    Ok(())
 }
 
 /// The live stamp table of a reopened store: the logged stamps of the entities
@@ -1891,21 +1967,28 @@ struct StampLog {
     path: std::path::PathBuf,
     file: std::fs::File,
     lines: usize,
+    /// The key an encrypted store seals the log's records with.
+    key: Option<Arc<crate::wal_format::SealKey>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl StampLog {
     /// Write `stamps` to `path` as one line per entry, atomically (temp file,
     /// then rename; no `fsync`), and open it for appends.
-    fn rewrite(path: std::path::PathBuf, stamps: &StampTable) -> std::io::Result<Self> {
+    fn rewrite(
+        path: std::path::PathBuf,
+        stamps: &StampTable,
+        key: Option<Arc<crate::wal_format::SealKey>>,
+    ) -> std::io::Result<Self> {
         use std::io::Write;
         let tmp = path.with_extension("jsonl.tmp");
         {
             let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-            for entry in stamps.iter() {
-                serde_json::to_writer(&mut out, &entry).map_err(std::io::Error::other)?;
-                out.write_all(b"\n")?;
-            }
+            write_stamp_entries(
+                &mut out,
+                stamps.iter().map(|(t, s)| (t, *s)),
+                key.as_deref(),
+            )?;
             out.flush()?;
         }
         std::fs::rename(&tmp, &path)?;
@@ -1914,6 +1997,7 @@ impl StampLog {
             path,
             file,
             lines: stamps.len(),
+            key,
         })
     }
 
@@ -1922,7 +2006,14 @@ impl StampLog {
         use std::io::Write;
         let mut line = serde_json::to_vec(&(target, stamp)).map_err(std::io::Error::other)?;
         line.push(b'\n');
-        self.file.write_all(&line)?;
+        match self.key.as_deref() {
+            None => self.file.write_all(&line)?,
+            Some(key) => self.file.write_all(&crate::sealed_file::record(
+                key,
+                crate::sealed_file::STAMPS,
+                &line,
+            )?)?,
+        }
         self.lines += 1;
         Ok(())
     }
@@ -2186,7 +2277,7 @@ impl NativeGraph {
         }
         let live = self.stamps.read().unwrap_or_else(|e| e.into_inner());
         if log.lines > (2 * live.len()).max(1024) {
-            if let Ok(fresh) = StampLog::rewrite(log.path.clone(), &live) {
+            if let Ok(fresh) = StampLog::rewrite(log.path.clone(), &live, log.key.clone()) {
                 *log = fresh;
             }
         }
@@ -2225,7 +2316,11 @@ impl NativeGraph {
             .iter()
             .map(|(target, tomb)| (*target, *tomb))
             .collect();
-        let _ = persist_tombstones(&tombstone_sidecar(&path), &entries);
+        let _ = persist_tombstones(
+            &tombstone_sidecar(&path),
+            &entries,
+            self.seal_key.as_deref(),
+        );
     }
 
     /// No durable sidecar on wasm (no WAL); tombstones are in-memory only.
@@ -3830,19 +3925,23 @@ impl NativeGraph {
         // Stable replica identity persisted next to the WAL (issue #389),
         // reused across restarts so a peer's writes keep a stable provenance.
         let origin = if read_only {
-            load_origin(&origin_sidecar(path)).unwrap_or_else(mint_origin)
+            load_origin(&origin_sidecar(path), seal_key.as_deref()).unwrap_or_else(mint_origin)
         } else {
-            load_or_mint_origin(&origin_sidecar(path))
+            load_or_mint_origin(&origin_sidecar(path), seal_key.as_deref())
         };
         // Live stamps from the stamp log (issue #612), restricted to the entities
         // that exist; an entity without one gets the lowest stamp. Then compact
         // the log and keep it open for appends (best-effort: without it, stamps
         // set from now on only live in memory).
-        let stamps = recover_stamps(&inner, load_stamp_log(&stamp_log_sidecar(path)), origin);
+        let stamps = recover_stamps(
+            &inner,
+            load_stamp_log(&stamp_log_sidecar(path), seal_key.as_deref()),
+            origin,
+        );
         let stamp_log = if read_only {
             None
         } else {
-            StampLog::rewrite(stamp_log_sidecar(path), &stamps).ok()
+            StampLog::rewrite(stamp_log_sidecar(path), &stamps, seal_key.clone()).ok()
         };
         let mut clock = HlcClock::new();
         if let Some(latest) = stamps.values().max() {
@@ -3851,8 +3950,9 @@ impl NativeGraph {
         }
         // A damaged sequence file fails the open: starting over could hand
         // out values again.
-        let sequences = crate::sequence::Sequences::open(&sequence_sidecar(path))
-            .map_err(|e| CoreError::Backend(e.to_string()))?;
+        let sequences =
+            crate::sequence::Sequences::open_sealed(&sequence_sidecar(path), seal_key.clone())
+                .map_err(|e| CoreError::Backend(e.to_string()))?;
         sequences.set_read_only(read_only);
         Ok(NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
@@ -3874,7 +3974,10 @@ impl NativeGraph {
             stamps: RwLock::new(stamps),
             // Restore the tombstone checkpoint so deletes survive a restart and a
             // peer cannot resurrect a deleted entity on the next sync (issue #389).
-            tombstones: RwLock::new(load_tombstones(&tombstone_sidecar(path))),
+            tombstones: RwLock::new(load_tombstones(
+                &tombstone_sidecar(path),
+                seal_key.as_deref(),
+            )),
             stamp_log: std::sync::Mutex::new(stamp_log),
             // Hold the exclusive-open lock for this handle's lifetime (#455).
             _lock: lock,
@@ -3962,7 +4065,7 @@ impl NativeGraph {
         let mut log = self.stamp_log.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(current) = log.as_mut() {
             let live = self.stamps.read().unwrap_or_else(|e| e.into_inner());
-            if let Ok(fresh) = StampLog::rewrite(current.path.clone(), &live) {
+            if let Ok(fresh) = StampLog::rewrite(current.path.clone(), &live, current.key.clone()) {
                 *current = fresh;
             }
         }
@@ -4012,17 +4115,20 @@ impl NativeGraph {
         drop(sink);
         drop(inner);
         let change_head = self.change_head();
+        let key = self.seal_key.as_deref();
         let mut stamp_lines = Vec::with_capacity(stamps.len() * 64);
-        for entry in &stamps {
-            serde_json::to_writer(&mut stamp_lines, entry)?;
-            stamp_lines.push(b'\n');
-        }
+        write_stamp_entries(&mut stamp_lines, stamps.into_iter(), key)?;
+        let tombstones = crate::sealed_file::encode(
+            key,
+            crate::sealed_file::TOMBSTONES,
+            &serde_json::to_vec(&tombstones)?,
+        )?;
         Ok(Some(LogSnapshot {
             file,
             len,
             change_head,
             origin,
-            tombstones: serde_json::to_vec(&tombstones)?,
+            tombstones,
             stamps: stamp_lines,
             sequences: self.sequences.snapshot_bytes(),
         }))
