@@ -953,14 +953,18 @@ impl NativeService {
             // Only the attempt that commits posts its events.
             let (result, events) = crate::event_bus::collect(|| {
                 self.with_fresh_indexes(|idx| {
+                    // A fresh transaction: the indexes describe its snapshot
+                    // unless another writer committed since it began.
+                    let overlay = self.graph.tx_index_overlay(tx);
+                    let indexed = overlay.is_some();
                     let ctx = NativeQueryContext {
                         fts: idx.fts(),
                         fts_rel: idx.fts_rel(),
-                        labels: None,
-                        properties: None,
-                        paths: None,
-                        texts: None,
-                        values: None,
+                        labels: indexed.then_some(&idx.labels),
+                        properties: idx.props().filter(|_| indexed),
+                        paths: indexed.then_some(&idx.paths),
+                        texts: indexed.then_some(&idx.texts),
+                        values: idx.values(),
                         #[cfg(feature = "http")]
                         embedder: self.embedder.get(),
                         #[cfg(not(feature = "http"))]
@@ -968,6 +972,7 @@ impl NativeService {
                         semantic: Some(self),
                         in_transaction: false,
                         tx_has_written: false,
+                        tx_written: overlay.as_ref(),
                         restriction,
                     };
                     execute_on_engine_with_context(query, &engine, &ctx, params.clone())
@@ -1332,8 +1337,10 @@ impl NativeService {
 
     /// Execute one statement inside a registered transaction: the executor
     /// runs over the transaction's working copy (read-your-writes, invisible
-    /// to concurrent statements) **without** index narrowing — the service's
-    /// indexes describe the committed graph, not this transaction's view.
+    /// to concurrent statements). While nothing was committed since the
+    /// transaction began, the label, property, path and text indexes narrow
+    /// `MATCH` as in auto-commit mode, completed with the nodes the
+    /// transaction wrote; after another writer's commit the statement scans.
     /// Search, vector, `SHOW INDEXES` and auto-embed work as in auto-commit
     /// mode; full-text search fails once the transaction has written, and
     /// schema commands fail with `ForbiddenInTransaction`.
@@ -1414,16 +1421,29 @@ impl NativeService {
                     self.statement_timeout(),
                     || {
                         self.with_fresh_indexes(|idx| {
+                            // With nothing committed since the transaction
+                            // began, the indexes describe its snapshot except
+                            // for the nodes it wrote, which complete every
+                            // index lookup.
+                            let overlay = self.graph.tx_index_overlay(tx);
+                            let indexed = overlay.is_some();
                             let ctx = NativeQueryContext {
                                 fts: idx.fts(),
                                 fts_rel: idx.fts_rel(),
+                                labels: indexed.then_some(&idx.labels),
+                                properties: idx.props().filter(|_| indexed),
+                                paths: indexed.then_some(&idx.paths),
+                                texts: indexed.then_some(&idx.texts),
+                                values: idx.values(),
+                                tx_written: overlay.as_ref(),
                                 #[cfg(feature = "http")]
                                 embedder: self.embedder.get(),
+                                #[cfg(not(feature = "http"))]
+                                embedder: None,
                                 semantic: Some(self),
                                 in_transaction: true,
                                 tx_has_written,
                                 restriction,
-                                ..NativeQueryContext::default()
                             };
                             execute_on_engine_with_context(query, &engine, &ctx, params)
                         })
@@ -1527,6 +1547,7 @@ impl NativeService {
                         semantic: Some(self),
                         in_transaction: true,
                         tx_has_written: true,
+                        tx_written: None,
                         restriction: None,
                     };
                     execute_on_engine_with_context(query, &engine, &ctx, params)
@@ -3324,6 +3345,7 @@ impl NativeService {
             semantic: Some(self),
             in_transaction: false,
             tx_has_written: false,
+            tx_written: None,
             restriction,
         };
         execute_on_engine_with_context(query, &self.graph, &ctx, params)
