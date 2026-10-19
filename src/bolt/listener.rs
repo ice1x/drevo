@@ -31,7 +31,7 @@
 
 use std::io;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use super::chunked::MAX_CHUNK_SIZE;
@@ -222,7 +222,8 @@ pub async fn run_session_on_durable_with_security<S: AsyncRead + AsyncWrite + Un
         stream,
         Session::new_durable_with_registry(std::sync::Arc::clone(registry))
             .with_security(security)
-            .with_client(client),
+            .with_client(client)
+            .with_idle_timeout(registry.idle_session_timeout()),
     )
     .await
 }
@@ -244,7 +245,26 @@ async fn run_session_on_inner<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     mut session: Session<'_>,
 ) -> BoltResult<()> {
+    // Buffered, so waiting for the next message with a timeout never loses
+    // bytes already read: `fill_buf` keeps them for the read that follows.
+    let mut stream = BufReader::new(stream);
+    let stream = &mut stream;
     loop {
+        // An open transaction with a `tx_timeout` or an idle limit: wait for
+        // the client only that long.
+        if let Some(wait) = session.wake_in() {
+            match tokio::time::timeout(wait, stream.fill_buf()).await {
+                Ok(Ok([])) => return Ok(()),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(BoltError::Io(e)),
+                Err(_) => {
+                    if crate::native_api::run_blocking(|| session.on_quiet()) {
+                        continue;
+                    }
+                    return Ok(());
+                }
+            }
+        }
         let payload = match read_message_async(stream).await {
             Ok(p) => p,
             Err(BoltError::Eof) => return Ok(()),

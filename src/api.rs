@@ -375,6 +375,10 @@ pub struct CypherRequest {
     /// Optional query parameters (`$name` placeholders), JSON scalars/containers.
     #[serde(default)]
     pub params: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Stop the statement after this many milliseconds (`0`: no limit). The
+    /// server's statement timeout caps it.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 /// Mutation counters surfaced from [`executor::ExecStats`].
