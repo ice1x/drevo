@@ -9,7 +9,7 @@ fn junctions(n: usize) -> Vec<NewNode> {
     (0..n)
         .map(|i| {
             let mut properties = Properties::default();
-            properties.insert("osm_id".to_string(), serde_json::json!(i));
+            properties.insert("osm_id", serde_json::json!(i));
             NewNode {
                 kind: "Junction".to_string(),
                 title: String::new(),

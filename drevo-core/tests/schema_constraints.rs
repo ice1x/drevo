@@ -24,7 +24,7 @@ fn node(kind: &str, title: &str, props: Value) -> NewNode {
         title: title.into(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(map.into_iter().collect::<HashMap<_, _>>()),
+        properties: Properties::from(map.into_iter().collect::<HashMap<_, _>>()),
     }
 }
 
@@ -32,7 +32,7 @@ fn props(v: Value) -> Properties {
     let Value::Object(map) = v else {
         panic!("props must be an object")
     };
-    Properties(map.into_iter().collect())
+    Properties::from_iter(map)
 }
 
 fn exists(kind: &str, property: &str) -> Constraint {
@@ -132,7 +132,7 @@ fn existence_rejects_a_write_outside_a_transaction() {
     );
     assert!(is_violation(&removed), "{removed:?}");
     assert_eq!(
-        g.get_node(u.id).unwrap().unwrap().properties.0["email"],
+        g.get_node(u.id).unwrap().unwrap().properties["email"],
         json!("a@x")
     );
     // Other labels are not constrained.

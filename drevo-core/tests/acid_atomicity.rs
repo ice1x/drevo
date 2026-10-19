@@ -49,14 +49,14 @@ fn node(title: &str) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 
 fn node_with_email(title: &str, email: &str) -> NewNode {
     let mut nn = node(title);
     nn.kind = "user".to_string();
-    nn.properties = Properties(std::collections::HashMap::from([(
+    nn.properties = Properties::from(std::collections::HashMap::from([(
         "email".to_string(),
         serde_json::Value::String(email.to_string()),
     )]));
@@ -69,7 +69,7 @@ fn edge(from_id: u64, to_id: u64) -> NewEdge {
         to_id,
         kind: "links".to_string(),
         weight: 1.0,
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 

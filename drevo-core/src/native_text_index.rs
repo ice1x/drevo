@@ -455,7 +455,7 @@ pub fn text_at<'n>(node: &'n Node, path: &[String]) -> Option<&'n str> {
 
 /// What `node` holds at `path`.
 fn resolve<'n>(node: &'n Node, path: &[String]) -> Resolved<'n> {
-    let props = &node.properties.0;
+    let props = &node.properties;
     let Some((first, rest)) = path.split_first() else {
         return Resolved::Absent;
     };

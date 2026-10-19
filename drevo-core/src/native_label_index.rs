@@ -34,7 +34,7 @@
 //! let g = NativeGraph::new();
 //! // A node whose primary kind is `person` and which also carries the
 //! // secondary label `employee` (as `SET n:Employee` would store it).
-//! let props = Properties(HashMap::from([(
+//! let props = Properties::from(HashMap::from([(
 //!     "_labels".to_string(),
 //!     serde_json::json!(["employee"]),
 //! )]));

@@ -6,6 +6,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ## [Unreleased]
 
+### Changed
+
+- **drevo-core 0.2: `Properties` is a compact map** (issue #687). It is no
+  longer a public `HashMap<String, serde_json::Value>` newtype: entries are
+  a vector sorted by name and names are shared across every record, which
+  cuts the heap of the restarted Sofia road graph by 11% (RSS by 14%). The
+  map keeps the familiar methods (`get`, `insert`, `remove`,
+  `contains_key`, `iter`, `keys`, `values`, `len`, …) with `&str` keys;
+  build one with `Properties::new()`, `Properties::from(hash_map)`,
+  `Properties::from([("k", value)])` or `collect()`. Serialized forms (WAL,
+  dumps, HTTP) are unchanged.
+
 ### Added
 
 - **Sequences** (issue #644). `CALL drevo.sequence.create('bug', {start: 1000,

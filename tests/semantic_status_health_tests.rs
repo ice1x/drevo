@@ -84,7 +84,7 @@ fn doc(title: &str, text: &str) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(props),
+        properties: Properties::from(props),
     }
 }
 
@@ -124,7 +124,7 @@ fn outage_during_ingest_is_surfaced_as_degraded() {
         .create_node(doc("d1", "hello"))
         .expect("write must not fail");
     assert!(
-        !node.properties.0.contains_key("embedding"),
+        !node.properties.contains_key("embedding"),
         "no embedding was written during the outage"
     );
 

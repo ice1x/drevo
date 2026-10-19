@@ -251,7 +251,7 @@ impl NativeFtsIndex {
     /// value.
     fn node_trigrams(node: &Node) -> Vec<String> {
         let mut fields: Vec<&str> = vec![node.title.as_str(), node.body.as_str()];
-        for value in node.properties.0.values() {
+        for value in node.properties.values() {
             if let Some(s) = value.as_str() {
                 fields.push(s);
             }
@@ -511,11 +511,10 @@ impl NativeFtsRelIndex {
 /// string elements of array-valued properties, in sorted-key order, so the
 /// same edge always yields the same document.
 fn collect_edge_property_text(properties: &Properties) -> Vec<String> {
-    let mut keys: Vec<&String> = properties.0.keys().collect();
-    keys.sort();
+    // Keys come in sorted order.
     let mut out = Vec::new();
-    for key in keys {
-        match properties.0.get(key) {
+    for key in properties.keys() {
+        match properties.get(key) {
             Some(serde_json::Value::String(s)) => out.push(s.clone()),
             Some(serde_json::Value::Array(items)) => {
                 for item in items {
@@ -557,7 +556,7 @@ mod rel_tests {
             to_id: to,
             kind: "MENTIONS".into(),
             weight: 1.0,
-            properties: Properties(props),
+            properties: Properties::from(props),
         })
         .expect("edge")
         .id

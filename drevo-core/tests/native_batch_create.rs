@@ -41,7 +41,7 @@ fn nn(title: &str) -> NewNode {
         title: title.into(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 fn ne(from_id: u64, to_id: u64) -> NewEdge {
@@ -50,7 +50,7 @@ fn ne(from_id: u64, to_id: u64) -> NewEdge {
         to_id,
         kind: "link".into(),
         weight: 1.0,
-        properties: Properties(Default::default()),
+        properties: Properties::default(),
     }
 }
 

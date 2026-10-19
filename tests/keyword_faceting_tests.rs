@@ -48,7 +48,7 @@ fn note_props(kind: &str, title: &str, props: &[(&str, serde_json::Value)]) -> N
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(map),
+        properties: Properties::from(map),
     }
 }
 

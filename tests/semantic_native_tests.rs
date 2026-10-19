@@ -165,14 +165,14 @@ fn new_node(kind: &str, title: &str, text: Option<&str>) -> NewNode {
         title: title.to_string(),
         body: String::new(),
         body_html: String::new(),
-        properties: Properties(props),
+        properties: Properties::from(props),
     }
 }
 
 /// The `embedding` property of the node with `title`, if any.
 fn embedding_of(svc: &NativeService, title: &str) -> Option<JsonValue> {
     let node = svc.get_node_by_title(title).expect("node exists");
-    node.properties.0.get("embedding").cloned()
+    node.properties.get("embedding").cloned()
 }
 
 fn run(svc: &NativeService, src: &str) -> Vec<Vec<Value>> {
@@ -584,7 +584,7 @@ fn a_body_target_auto_embeds_on_create() {
         title: "d3".to_string(),
         body: "via the API".to_string(),
         body_html: String::new(),
-        properties: Properties(HashMap::new()),
+        properties: Properties::from(HashMap::new()),
     })
     .expect("create");
     assert!(

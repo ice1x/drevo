@@ -403,7 +403,7 @@ mod tests {
     fn node(id: u64, kind: &str, props: &[(&str, serde_json::Value)]) -> Arc<Node> {
         let mut properties = Properties::default();
         for (k, v) in props {
-            properties.insert((*k).to_string(), v.clone());
+            properties.insert(*k, v.clone());
         }
         Arc::new(Node {
             id,
@@ -421,7 +421,7 @@ mod tests {
     fn edge(id: u64, props: &[(&str, serde_json::Value)]) -> Arc<Edge> {
         let mut properties = Properties::default();
         for (k, v) in props {
-            properties.insert((*k).to_string(), v.clone());
+            properties.insert(*k, v.clone());
         }
         Arc::new(Edge {
             id,

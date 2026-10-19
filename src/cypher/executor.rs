@@ -884,7 +884,7 @@ pub(crate) fn node_to_value(node: &Node) -> Arc<NodeValue> {
         if k == SECONDARY_LABELS_KEY {
             continue; // surfaced as labels below, never as a user property
         }
-        properties.insert(k.clone(), json_to_value(v));
+        properties.insert(k.to_string(), json_to_value(v));
     }
     let mut labels = vec![node.kind.clone()];
     labels.extend(secondary_labels(node));
@@ -899,7 +899,7 @@ pub(crate) fn node_to_value(node: &Node) -> Arc<NodeValue> {
 pub(crate) fn edge_to_value(edge: &Edge) -> Arc<RelationshipValue> {
     let mut properties = BTreeMap::new();
     for (k, v) in edge.properties.iter() {
-        properties.insert(k.clone(), json_to_value(v));
+        properties.insert(k.to_string(), json_to_value(v));
     }
     Arc::new(RelationshipValue {
         id: edge.id,
@@ -5095,7 +5095,7 @@ impl<'a> Executor<'a> {
                             prop_name
                         ))
                     })?;
-                    props.insert(prop_name.to_string(), json);
+                    props.insert(prop_name, json);
                 }
             }
         }
@@ -5153,7 +5153,7 @@ impl<'a> Executor<'a> {
                     prop_name
                 ))
             })?;
-            props.insert(prop_name.to_string(), json);
+            props.insert(prop_name, json);
         }
         // Native re-embed on update (#447), mirroring `Drevo::update_edge`.
         if let Some(svc) = self.native_semantic {
@@ -5205,7 +5205,7 @@ impl<'a> Executor<'a> {
         } else {
             let mut p = crate::model::Properties::default();
             if let Some(v) = stored.properties.get(SECONDARY_LABELS_KEY) {
-                p.insert(SECONDARY_LABELS_KEY.to_string(), v.clone());
+                p.insert(SECONDARY_LABELS_KEY, v.clone());
             }
             p
         };
@@ -5395,7 +5395,7 @@ impl<'a> Executor<'a> {
             props.remove(SECONDARY_LABELS_KEY);
         } else {
             props.insert(
-                SECONDARY_LABELS_KEY.to_string(),
+                SECONDARY_LABELS_KEY,
                 serde_json::Value::Array(
                     secondary
                         .iter()

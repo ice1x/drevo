@@ -5,64 +5,8 @@
 //! ([`NodePatch`], [`EdgePatch`]) structs.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
 
-/// JSON-compatible properties map that works with both bincode and serde_json.
-///
-/// Bincode v2 does not support `serde_json::Value` directly (no `deserialize_any`).
-/// This wrapper serializes properties as a JSON byte string for bincode,
-/// while remaining transparent for JSON serialization.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Properties(pub HashMap<String, serde_json::Value>);
-
-impl From<HashMap<String, serde_json::Value>> for Properties {
-    fn from(map: HashMap<String, serde_json::Value>) -> Self {
-        Self(map)
-    }
-}
-
-impl std::ops::Deref for Properties {
-    type Target = HashMap<String, serde_json::Value>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for Properties {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Serialize for Properties {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Collect into BTreeMap so the output is deterministic across HashMap
-        // iteration orders — required by drevo-rust §"Serialization"
-        // ("bincode v2 — compact, fast, deterministic"). Inner `serde_json::Value`
-        // objects already use `serde_json::Map` (BTreeMap-backed by default), so
-        // only the outer HashMap iteration needed normalising.
-        let sorted: BTreeMap<&String, &serde_json::Value> = self.0.iter().collect();
-        if serializer.is_human_readable() {
-            sorted.serialize(serializer)
-        } else {
-            let json = serde_json::to_vec(&sorted).map_err(serde::ser::Error::custom)?;
-            json.serialize(serializer)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for Properties {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        if deserializer.is_human_readable() {
-            let map = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
-            Ok(Self(map))
-        } else {
-            let json = Vec::<u8>::deserialize(deserializer)?;
-            let map = serde_json::from_slice(&json).map_err(serde::de::Error::custom)?;
-            Ok(Self(map))
-        }
-    }
-}
+pub use crate::properties::Properties;
 
 /// A node in the graph.
 ///
@@ -393,6 +337,7 @@ impl NewEdge {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn sample_new_node() -> NewNode {
         let mut props = HashMap::new();

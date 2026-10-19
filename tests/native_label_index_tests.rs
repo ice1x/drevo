@@ -24,7 +24,7 @@ fn labeled(kind: &str, title: &str, secondary: &[&str]) -> NewNode {
     let props = if secondary.is_empty() {
         Properties::default()
     } else {
-        Properties(HashMap::from([(
+        Properties::from(HashMap::from([(
             "_labels".to_string(),
             serde_json::json!(secondary),
         )]))
@@ -79,7 +79,7 @@ fn reflects_label_changes_and_deletes_after_sync() {
     g.update_node(
         a.id,
         NodePatch {
-            properties: Some(Properties(HashMap::from([(
+            properties: Some(Properties::from(HashMap::from([(
                 "_labels".to_string(),
                 serde_json::json!(["contractor"]),
             )]))),

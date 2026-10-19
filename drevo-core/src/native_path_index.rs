@@ -35,7 +35,7 @@
 //!     title: "spec".into(),
 //!     body: String::new(),
 //!     body_html: String::new(),
-//!     properties: Properties([("meta".to_string(), json!({"author": "ann"}))].into()),
+//!     properties: Properties::from_iter([("meta".to_string(), json!({"author": "ann"}))]),
 //! })?;
 //!
 //! let author = vec!["meta".to_string(), "author".to_string()];
@@ -349,13 +349,13 @@ fn collect_leaves<'n>(
     path: &PropertyPath,
     out: &mut Vec<(Vec<String>, &'n JsonValue)>,
 ) {
-    let props = &node.properties.0;
+    let props = &node.properties;
     let Some((first, rest)) = path.segments.split_first() else {
         // `*`: everything nested in every top-level map property.
         for (key, value) in props {
             if key != SECONDARY_LABELS_KEY {
                 if let JsonValue::Object(_) = value {
-                    walk(value, &mut vec![key.clone()], out);
+                    walk(value, &mut vec![key.to_string()], out);
                 }
             }
         }

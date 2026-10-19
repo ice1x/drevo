@@ -87,6 +87,7 @@ pub mod native_label_index;
 pub mod native_path_index;
 pub mod native_property_index;
 pub mod native_text_index;
+mod properties;
 pub mod replica;
 pub mod sequence;
 pub mod tokenizer;

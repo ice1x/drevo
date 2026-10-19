@@ -40,7 +40,7 @@
 //!
 //! # fn main() -> drevo_core::error::Result<()> {
 //! let g = NativeGraph::new();
-//! let props = Properties(HashMap::from([(
+//! let props = Properties::from(HashMap::from([(
 //!     "status".to_string(),
 //!     serde_json::json!("open"),
 //! )]));
@@ -322,9 +322,9 @@ impl NativePropertyIndex {
         // way, or `MATCH (n {title: ...})` through this index would wrongly
         // drop every node whose title lives only in the model field — a false
         // negative, which the superset contract forbids.
-        let title_alias = (!node.title.is_empty() && !node.properties.0.contains_key("title"))
+        let title_alias = (!node.title.is_empty() && !node.properties.contains_key("title"))
             .then(|| JsonValue::String(node.title.clone()));
-        let body_alias = (!node.body.is_empty() && !node.properties.0.contains_key("body"))
+        let body_alias = (!node.body.is_empty() && !node.properties.contains_key("body"))
             .then(|| JsonValue::String(node.body.clone()));
         let entries = title_alias
             .as_ref()
@@ -333,10 +333,9 @@ impl NativePropertyIndex {
             .chain(body_alias.as_ref().map(|v| ("body".to_string(), v)))
             .chain(
                 node.properties
-                    .0
                     .iter()
-                    .filter(|(k, _)| k.as_str() != SECONDARY_LABELS_KEY)
-                    .map(|(k, v)| (k.clone(), v)),
+                    .filter(|(k, _)| *k != SECONDARY_LABELS_KEY)
+                    .map(|(k, v)| (k.to_string(), v)),
             );
         self.insert_entries(node.id, entries);
     }
@@ -581,7 +580,7 @@ mod alias_tests {
     fn an_explicit_title_property_overrides_the_model_alias() {
         // `node_to_value` lets an explicit properties entry shadow the model
         // field; the index must agree on which value wins.
-        let props = Properties(std::collections::HashMap::from([(
+        let props = Properties::from(std::collections::HashMap::from([(
             "title".to_string(),
             serde_json::json!("shadow"),
         )]));

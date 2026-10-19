@@ -143,9 +143,10 @@ fn the_service_api_is_covered_too() {
             title: "Ann again".into(),
             body: String::new(),
             body_html: String::new(),
-            properties: drevo::model::Properties(
-                [("email".to_string(), serde_json::json!("ann@x"))].into(),
-            ),
+            properties: drevo::model::Properties::from_iter([(
+                "email".to_string(),
+                serde_json::json!("ann@x"),
+            )]),
         })
         .expect_err("violation");
     assert!(

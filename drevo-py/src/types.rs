@@ -72,7 +72,7 @@ pub(crate) fn props_to_py<'py>(
     py: Python<'py>,
     props: &model::Properties,
 ) -> PyResult<Bound<'py, PyAny>> {
-    pythonize(py, &props.0).map_err(|e| {
+    pythonize(py, props).map_err(|e| {
         pyo3::exceptions::PyTypeError::new_err(format!(
             "failed to convert node/edge properties to Python: {e}"
         ))
@@ -94,7 +94,7 @@ pub(crate) fn props_from_py(obj: Option<&Bound<'_, PyAny>>) -> PyResult<model::P
                         "properties must be a dict[str, Any]: {e}"
                     ))
                 })?;
-            Ok(model::Properties(map))
+            Ok(model::Properties::from(map))
         }
     }
 }
