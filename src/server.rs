@@ -1089,6 +1089,12 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     registry.set_idle_session_timeout(cfg.idle_session_timeout);
     // The server's users, shared by HTTP, Bolt, gRPC and Flight (issue #633).
     let security = configure_security(&cfg)?;
+    // The Web UI's signed-in sessions are listed by `SHOW CONNECTIONS`.
+    #[cfg(feature = "auth")]
+    registry
+        .default_service()
+        .transactions()
+        .set_http_sessions(std::sync::Arc::new(security.clone()));
     // Two-phase commit (#556): a prepared transaction blocks every write, so
     // one left waiting too long is reported at ERROR (and thus in the Web UI's
     // problem feed). Checked every 10 s across every database.

@@ -351,6 +351,7 @@ impl FlightService for DrevoFlight {
                 surface: audit_origin.surface,
                 client: audit_origin.client.clone(),
                 user: audit_user.clone(),
+                connection: None,
             };
             let r = crate::transactions::scope(who, &query, || {
                 service.execute_as(&ast, params, restriction)

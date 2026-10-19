@@ -32,6 +32,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`SHOW CONNECTIONS` / `TERMINATE CONNECTIONS`** (issue #669). Lists the
+  open Bolt connections (with the driver's user agent and the logged-in
+  user, idle ones included) and the Web UI's signed-in sessions;
+  terminating closes a Bolt connection and rolls back its transaction, or
+  logs a Web UI session out. Users see their own; admins see all.
+  `SHOW TRANSACTIONS` now names the real `connectionId`.
+
 - **TLS for the gRPC API and Arrow Flight** (issue #655). With
   `DREVO_TLS_CERT` / `DREVO_TLS_KEY` set, `DREVO_GRPC_PORT` and
   `DREVO_FLIGHT_PORT` serve gRPC over TLS (ALPN `h2`) with the HTTPS

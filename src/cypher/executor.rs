@@ -6474,6 +6474,90 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// Whether the signed-in user may see and close connection `c`: their
+    /// own, or any with `ALL DBMS PRIVILEGES` (the `admin` role). Everything
+    /// when nothing is checked.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn may_manage_connection(&self, c: &crate::transactions::ConnectionInfo) -> bool {
+        let Some(r) = self.restriction else {
+            return true;
+        };
+        let me = crate::transactions::current_caller().and_then(|c| c.user);
+        (me.is_some() && me == c.user)
+            || r.context.has_dbms(drevo_auth::privileges::Action::AllDbms)
+    }
+
+    /// `SHOW CONNECTION[S] [YIELD …] [WHERE …]` (issue #669), run as `CALL
+    /// dbms.listConnections()`: the server's open Bolt connections and the
+    /// Web UI's signed-in sessions that the user may see.
+    fn proc_list_connections(&self) -> Vec<Vec<Value>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(svc) = self.native_semantic else {
+                return Vec::new();
+            };
+            let opt = |s: &Option<String>| s.clone().map_or(Value::Null, Value::String);
+            svc.transactions()
+                .connections()
+                .into_iter()
+                .filter(|c| self.may_manage_connection(c))
+                .map(|c| {
+                    vec![
+                        Value::String(c.id.clone()),
+                        Value::String(iso8601_utc(c.connected_ms)),
+                        Value::String(c.connector.to_string()),
+                        opt(&c.user),
+                        opt(&c.user_agent),
+                        opt(&c.client),
+                    ]
+                })
+                .collect()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Vec::new()
+        }
+    }
+
+    /// `TERMINATE CONNECTION[S] ids` (issue #669), run as `CALL
+    /// dbms.killConnections(ids)`: one row per id, saying whether it was
+    /// closed. A Bolt connection is closed and its transaction rolled back;
+    /// a Web UI session ends. Someone else's the user may not manage reads
+    /// as not found.
+    fn proc_kill_connections(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let ids = self.transaction_ids(args, span)?;
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            #[cfg(not(target_arch = "wasm32"))]
+            let found: Option<Option<String>> = self.native_semantic.and_then(|svc| {
+                let txs = svc.transactions();
+                let c = txs
+                    .connection(&id)
+                    .filter(|c| self.may_manage_connection(c))?;
+                txs.terminate_connection(&c.id).map(|c| c.user)
+            });
+            #[cfg(target_arch = "wasm32")]
+            let found: Option<Option<String>> = None;
+            rows.push(match found {
+                Some(user) => vec![
+                    Value::String(id),
+                    user.map_or(Value::Null, Value::String),
+                    Value::String("Connection found".into()),
+                ],
+                None => vec![
+                    Value::String(id),
+                    Value::Null,
+                    Value::String("No connection found".into()),
+                ],
+            });
+        }
+        Ok(rows)
+    }
+
     /// `SHOW [type] INDEXES [YIELD …] [WHERE …]` (issue #532), run as
     /// `CALL db.showIndexes(type)`: one row per named vector index, in Neo4j's
     /// `SHOW INDEXES` column layout (see [`procedure_columns`]). `type` is the
@@ -8757,6 +8841,8 @@ impl<'a> Executor<'a> {
             "db.showIndexes" => self.proc_show_indexes(args, span),
             "dbms.showTransactions" => self.proc_show_transactions(args, span),
             "dbms.terminateTransactions" => self.proc_terminate_transactions(args, span),
+            "dbms.listConnections" => Ok(self.proc_list_connections()),
+            "dbms.killConnections" => self.proc_kill_connections(args, span),
             "db.showConstraints" => self.proc_show_constraints(args, span),
             "db.index.fulltext.queryNodes" => self.proc_db_index_fulltext_query_nodes(args, span),
             "drevo.memory.recall" => self.proc_memory_recall(args, span),
@@ -10665,6 +10751,17 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "currentQueryElapsedTimeMillis",
         ]),
         "dbms.terminateTransactions" => Some(&["transactionId", "username", "message"]),
+        // `SHOW CONNECTIONS` / `TERMINATE CONNECTIONS` (issue #669), after
+        // Neo4j's `dbms.listConnections()` / `dbms.killConnections()`.
+        "dbms.listConnections" => Some(&[
+            "connectionId",
+            "connectTime",
+            "connector",
+            "username",
+            "userAgent",
+            "clientAddress",
+        ]),
+        "dbms.killConnections" => Some(&["connectionId", "username", "message"]),
         "db.showIndexes" => Some(&[
             "id",
             "name",
@@ -10838,6 +10935,9 @@ fn procedure_arity(name: &str) -> usize {
         "db.showIndexes" | "db.showConstraints" => 1,
         // SHOW / TERMINATE TRANSACTIONS [ids] → a list of ids (issue #639).
         "dbms.showTransactions" | "dbms.terminateTransactions" => 1,
+        // SHOW CONNECTIONS → no arguments; TERMINATE CONNECTIONS ids (issue #669).
+        "dbms.listConnections" => 0,
+        "dbms.killConnections" => 1,
         // drevo.memory.recall(session, query, k) (issue #533).
         "drevo.memory.recall" => 3,
         // drevo.memory.recallVector(session, vector, k) (issue #533).
@@ -11795,7 +11895,11 @@ fn transaction_row(t: &crate::transactions::TransactionInfo) -> Vec<Value> {
         Value::String(t.database.clone()),
         Value::String(t.id.clone()),
         query_id,
-        Value::String(format!("{}-connection", t.id)),
+        Value::String(
+            t.connection
+                .clone()
+                .unwrap_or_else(|| format!("{}-connection", t.id)),
+        ),
         opt(&t.client),
         opt(&t.user),
         opt(&t.query),

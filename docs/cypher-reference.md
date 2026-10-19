@@ -1687,7 +1687,8 @@ fail with `Neo.ClientError.Transaction.ForbiddenDueToTransactionType` (Python:
 running statement, and each open explicit transaction, with Neo4j's columns:
 
 - `database`, `transactionId` (`<database>-transaction-<n>`), `username`,
-  `clientAddress`;
+  `clientAddress`, `connectionId` (the Bolt connection, as `SHOW CONNECTIONS`
+  lists it);
 - `currentQuery` (null for an explicit transaction between statements);
 - `startTime` (ISO 8601, UTC), `elapsedTime` (ISO 8601 duration), `status`
   (`Running`, `Idle` or `Terminated`);
@@ -1728,6 +1729,38 @@ else's needs `TRANSACTION MANAGEMENT` for that user on that database, which
 ```
 GRANT TRANSACTION MANAGEMENT (*) ON DATABASE * TO ops
 ```
+
+### Connections
+
+`SHOW CONNECTIONS` lists the server's open client connections, including idle
+ones that run nothing and so do not show in `SHOW TRANSACTIONS`:
+
+- every Bolt connection, from its handshake until it closes, as `bolt-<n>`;
+- every signed-in Web UI session, as `http-<n>` (HTTP itself keeps no
+  connection open between requests).
+
+Columns: `connectionId`, `connectTime` (ISO 8601, UTC), `connector` (`bolt`
+or `http`), `username`, `userAgent` (the driver's, from `HELLO`) and
+`clientAddress`.
+
+```cypher
+SHOW CONNECTIONS
+YIELD connectionId, userAgent, connectTime
+WHERE userAgent STARTS WITH 'neo4j-python'
+RETURN connectionId, connectTime
+```
+
+`TERMINATE CONNECTIONS` closes them by id. A Bolt connection is closed and its
+open transaction rolled back (a running statement stops); a Web UI session is
+logged out. It answers one row per id: `connectionId`, `username` and
+`message` (`Connection found` or `No connection found`).
+
+```cypher
+TERMINATE CONNECTIONS 'bolt-7', 'http-3'
+```
+
+With logins required, users see and close their own connections; everyone's
+needs `ALL DBMS PRIVILEGES`, which `admin` holds.
 
 Without it, another user's transaction is not listed and reads as not found.
 

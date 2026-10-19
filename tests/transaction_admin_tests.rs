@@ -39,6 +39,7 @@ fn caller(user: &str) -> Caller {
         surface: "bolt",
         client: Some("10.0.0.7:51234".into()),
         user: Some(user.into()),
+        connection: None,
     }
 }
 
