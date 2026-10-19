@@ -3261,6 +3261,56 @@ impl NativeGraph {
             .is_some_and(|slot| !slot.ops.is_empty())
     }
 
+    /// The nodes registered transaction `id` has created, updated or deleted,
+    /// when nothing was committed since it began; `None` otherwise, and for a
+    /// closed id.
+    ///
+    /// Indexes kept over the committed graph then describe the transaction's
+    /// snapshot except for these nodes, so a caller can use them for the
+    /// transaction: look candidates up in the index, add these nodes, and
+    /// check every candidate against the transaction's view.
+    ///
+    /// ```
+    /// use drevo_core::engine::GraphEngine;
+    /// use drevo_core::model::{NewNode, Properties};
+    /// use drevo_core::native::NativeGraph;
+    ///
+    /// let note = |title: &str| NewNode {
+    ///     kind: "note".to_string(),
+    ///     title: title.to_string(),
+    ///     body: String::new(),
+    ///     body_html: String::new(),
+    ///     properties: Properties::default(),
+    /// };
+    /// let g = NativeGraph::new();
+    /// let tx = g.tx_begin();
+    /// assert_eq!(g.tx_index_overlay(tx).map(|s| s.len()), Some(0));
+    /// let draft = g.tx_engine(tx).unwrap().create_node(note("draft")).unwrap();
+    /// assert!(g.tx_index_overlay(tx).unwrap().contains(&draft.id));
+    /// // Another writer commits: the indexes have moved past the snapshot.
+    /// g.create_node(note("elsewhere")).unwrap();
+    /// assert_eq!(g.tx_index_overlay(tx), None);
+    /// ```
+    pub fn tx_index_overlay(&self, id: NativeTxId) -> Option<std::collections::HashSet<u64>> {
+        // The live graph first, then the transaction list, one lock at a time.
+        let live = Arc::clone(&read(&self.inner));
+        let txs = self.reg_txs.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = txs.get(&id.0)?;
+        if !Arc::ptr_eq(&slot.base, &live) {
+            return None;
+        }
+        Some(
+            slot.ops
+                .iter()
+                .filter_map(|op| match op {
+                    WalOp::UpsertNode(n) => Some(n.id),
+                    WalOp::DeleteNode(id) => Some(*id),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
     /// What registered transaction `id` has changed so far: the committed and
     /// the in-transaction version of every node and relationship it created,
     /// updated or deleted, including relationships removed together with a

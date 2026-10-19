@@ -8,6 +8,15 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **`MATCH` by an indexed property inside a transaction scanned every
+  node** (issue #686). In an explicit transaction (a driver's
+  `execute_write`), and in auto-commit statements run as one transaction
+  (triggers, existence constraints, restricted users), `MATCH (n:L {key:
+  r.x})` read all nodes per row: 30 ms a row on 20,000 nodes. The label,
+  property, path and text indexes now serve these statements whenever
+  nothing was committed since the transaction began, completed with the
+  nodes the transaction wrote; 300 `UNWIND` rows on 20,000 nodes take
+  milliseconds instead of seconds.
 - **Relationships lost in a fresh database** (issue #708). In a database
   that had never held relationships, the first ones created between nodes
   far apart in the id space (about 100 of 2,000 with 112,000 nodes) were

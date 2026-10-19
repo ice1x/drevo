@@ -1273,6 +1273,12 @@ pub struct NativeQueryContext<'a> {
     /// statement reads: full-text procedures fail with
     /// [`ExecError::IndexBehindWrites`].
     pub tx_has_written: bool,
+    /// Inside an explicit transaction, the nodes it wrote in earlier
+    /// statements, when the label / property / path / text indexes are given
+    /// for it: they describe the committed graph, which is the transaction's
+    /// snapshot except for these nodes, so every index lookup is completed
+    /// with them.
+    pub tx_written: Option<&'a std::collections::HashSet<u64>>,
     /// The signed-in user's privileges and the database the statement runs
     /// in (#636); `None` checks nothing.
     pub restriction: Option<Restriction<'a>>,
@@ -1511,7 +1517,11 @@ fn execute_single(
         .restriction
         .is_none_or(|r| r.context.reads_everything(r.database));
     if reads_everything {
-        if let Some(result) = try_count_pushdown(single, engine, ctx.labels)? {
+        // The label count needs the index to describe the engine exactly.
+        let labels = ctx
+            .labels
+            .filter(|_| ctx.tx_written.is_none_or(|w| w.is_empty()));
+        if let Some(result) = try_count_pushdown(single, engine, labels)? {
             return Ok(result);
         }
     }
@@ -1525,6 +1535,7 @@ fn execute_single(
         native_paths: ctx.paths,
         native_texts: ctx.texts,
         native_values: ctx.values,
+        native_tx_written: ctx.tx_written,
         native_embedder: ctx.embedder,
         native_semantic: ctx.semantic,
         in_transaction: ctx.in_transaction,
@@ -2712,6 +2723,9 @@ struct Executor<'a> {
     /// `Arc::ptr_eq`-validated against the live node, so staleness can only
     /// cost speed, never correctness.
     native_values: Option<&'a crate::native_value_cache::NativeValueCache>,
+    /// The nodes an explicit transaction wrote in earlier statements, added
+    /// to every index lookup (see [`NativeQueryContext::tx_written`]).
+    native_tx_written: Option<&'a std::collections::HashSet<u64>>,
     /// A server-side text embedder for the native path (RFC #307 Phase
     /// 4/7): lets `drevo.semantic.embed` / `.query` / `.queryRel` run
     /// without a KV secondary store. `None` on the KV path (which uses the
@@ -3938,6 +3952,8 @@ impl<'a> Executor<'a> {
             }
             _ => None,
         };
+        let label_cands = label_cands.map(|c| self.with_tx_written(c)).transpose()?;
+        let prop_cands = prop_cands.map(|c| self.with_tx_written(c)).transpose()?;
         let nodes: Vec<Arc<Node>> = match (label_cands, prop_cands) {
             (Some(l), Some(p)) => intersect_nodes_by_id(l, p),
             (Some(l), None) => l,
@@ -3956,6 +3972,28 @@ impl<'a> Executor<'a> {
             out.push(nv);
         }
         Ok(out)
+    }
+
+    /// Index candidates `nodes`, completed with the nodes the explicit
+    /// transaction wrote in earlier statements, as the transaction sees them.
+    fn with_tx_written(&self, mut nodes: Vec<Arc<Node>>) -> ExecResultT<Vec<Arc<Node>>> {
+        let Some(written) = self.native_tx_written.filter(|w| !w.is_empty()) else {
+            return Ok(nodes);
+        };
+        let have: std::collections::HashSet<u64> = nodes.iter().map(|n| n.id).collect();
+        let mut extra = Vec::new();
+        for &id in written {
+            if !have.contains(&id) {
+                if let Some(node) = self.engine().get_node(id)? {
+                    extra.push(node);
+                }
+            }
+        }
+        if !extra.is_empty() {
+            nodes.extend(extra);
+            nodes.sort_unstable_by_key(|n| n.id);
+        }
+        Ok(nodes)
     }
 
     /// `true` once this statement has performed any write — the point after
@@ -8718,7 +8756,7 @@ impl<'a> Executor<'a> {
                         nodes.push(node);
                     }
                 }
-                nodes
+                self.with_tx_written(nodes)?
             }
             None => self.engine().all_nodes()?,
         };
