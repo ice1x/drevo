@@ -730,6 +730,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.2",
  "http-body-util",
+ "hyper-util",
  "idna_adapter",
  "js-sys",
  "proptest",

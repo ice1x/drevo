@@ -360,6 +360,9 @@ jobs:
         # Build only these targets: a filter alone still compiles every test
         # binary for this feature set, which ran the runner out of disk.
         run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight --lib --test rpc_login_tests -E 'binary(rpc_login_tests) | (kind(lib) & test(rpc_login))'
+      # Issue #655 — gRPC and Flight over TLS need `bolt-tls` as well.
+      - name: Run gRPC / Flight TLS tests (nextest)
+        run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight,bolt-tls --lib --test rpc_tls_tests -E 'binary(rpc_tls_tests) | (kind(lib) & test(rpc_tls))'
       - name: Run drevo-core WAL format feature tests (nextest)
         run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack,encryption -E 'binary(wal_formats) | binary(encryption) | (kind(lib) & (test(wal_format) | test(encryption)))'
       # Encryption at rest on the server: the key settings, encrypted
@@ -429,6 +432,7 @@ jobs:
       - run: cargo clippy --all-targets --features arrow-flight -- -D warnings
       # Issue #634 — the gRPC / Flight login paths and their tests.
       - run: cargo clippy --all-targets --features auth,grpc,arrow-flight -- -D warnings
+      - run: cargo clippy --all-targets --features auth,grpc,arrow-flight,bolt-tls -- -D warnings
       # Issue #582 — drevo-core's binary WAL paths and their tests.
       - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack,encryption -- -D warnings
       # The server's encryption at rest and its tests and bench.

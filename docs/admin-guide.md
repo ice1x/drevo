@@ -178,6 +178,8 @@ needs an `authorization` metadata entry written as the HTTP header:
 `RESOURCE_EXHAUSTED`; a user who must change the password first with
 `PERMISSION_DENIED` (change it over HTTP or Bolt). `Health` needs no login.
 
+With [TLS](#tls) configured, use `-cacert cert.pem` instead of `-plaintext`.
+
 ```bash
 grpcurl -plaintext -import-path proto -proto drevo.proto \
   -H "authorization: Basic $(printf 'ann:ann-password' | base64)" \
@@ -214,6 +216,8 @@ header as the gRPC API. `Handshake` with a `Basic` header answers with a
 session token, as the payload and as an `authorization: Bearer <token>`
 header, so a client logs in once with the password and then sends only the
 token:
+
+With [TLS](#tls) configured, connect to `grpc+tls://` and pass `tls_root_certs`.
 
 ```python
 import pyarrow.flight as flight
@@ -994,8 +998,9 @@ lockouts and refusals are also logged at WARN, so they show in the Web UI's prob
 
 ### TLS
 
-With `DREVO_TLS_CERT` and `DREVO_TLS_KEY` set, the HTTP port serves **HTTPS** and the Bolt
-port serves **`bolt+s://`**; plain-text clients on those ports are turned away. The Web UI's
+With `DREVO_TLS_CERT` and `DREVO_TLS_KEY` set, the HTTP port serves **HTTPS**, the Bolt
+port serves **`bolt+s://`**, and the gRPC and Arrow Flight ports serve gRPC over TLS (ALPN
+`h2`), all with the same certificate. Plain-text clients on those ports get no answer. The Web UI's
 session cookie is then marked `Secure`. The Docker image is built with TLS (Cargo feature
 `bolt-tls`, pure-Rust rustls); a certificate the server cannot read stops it at startup.
 
@@ -1017,7 +1022,24 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj /CN=localhost \
   -addext subjectAltName=DNS:localhost -keyout key.pem -out cert.pem
 ```
 
-gRPC and Arrow Flight are not covered by these settings and stay plain text.
+gRPC and Flight clients trust the same certificate:
+
+```bash
+grpcurl -cacert /etc/drevo/tls/cert.pem -import-path proto -proto drevo.proto \
+  -H "authorization: Basic $(printf 'admin:change-me-now' | base64)" \
+  -d '{"query":"MATCH (n) RETURN n.title LIMIT 3"}' \
+  localhost:50051 drevo.v1.Drevo/Execute
+```
+
+```python
+import pyarrow.flight as flight
+cert = open("/etc/drevo/tls/cert.pem", "rb").read()
+client = flight.connect("grpc+tls://localhost:8815", tls_root_certs=cert)
+token = client.authenticate_basic_token("admin", "change-me-now")
+table = client.do_get(
+    flight.Ticket(b"MATCH (t:Task) RETURN t.title"), flight.FlightCallOptions(headers=[token])
+).read_all()
+```
 
 ---
 

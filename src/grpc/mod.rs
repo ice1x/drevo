@@ -373,3 +373,26 @@ pub async fn serve_with_security(
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await
 }
+
+/// [`serve_with_security`] over TLS with `tls`'s certificate (ALPN `h2`); a
+/// plain-text client gets no answer. See [`crate::rpc_tls`].
+///
+/// # Errors
+/// The transport error if the server fails.
+#[cfg(feature = "bolt-tls")]
+pub async fn serve_tls_with_security(
+    registry: Arc<DatabaseRegistry>,
+    security: Security,
+    listener: tokio::net::TcpListener,
+    tls: &crate::bolt::tls::TlsConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send,
+) -> Result<(), tonic::transport::Error> {
+    tonic::transport::Server::builder()
+        .add_service(
+            DrevoGrpc::new(registry)
+                .with_security(security)
+                .into_service(),
+        )
+        .serve_with_incoming_shutdown(crate::rpc_tls::incoming(listener, tls), shutdown)
+        .await
+}

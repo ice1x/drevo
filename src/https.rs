@@ -56,7 +56,9 @@ impl TlsListener {
     }
 }
 
-async fn accept_loop(
+/// Accept on `tcp`, finish each handshake on its own task, and hand the
+/// connections that completed one to `send`.
+pub(crate) async fn accept_loop(
     tcp: TcpListener,
     acceptor: TlsAcceptor,
     send: mpsc::Sender<(TlsStream<TcpStream>, SocketAddr)>,

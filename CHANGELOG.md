@@ -20,6 +20,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **TLS for the gRPC API and Arrow Flight** (issue #655). With
+  `DREVO_TLS_CERT` / `DREVO_TLS_KEY` set, `DREVO_GRPC_PORT` and
+  `DREVO_FLIGHT_PORT` serve gRPC over TLS (ALPN `h2`) with the HTTPS
+  certificate, so `authorization` headers and session tokens no longer
+  travel in plain text; a plain-text client gets no answer. In Rust:
+  `grpc::serve_tls_with_security`, `flight::serve_tls_with_security`,
+  `rpc_tls::incoming`.
 - **Bolt 5.0–5.4** (issue #651). The handshake takes version ranges and
   picks the highest version both sides speak, so Neo4j 5.x drivers get
   Bolt 5.4; 4.4 / 4.3 clients are unchanged. Nodes and relationships carry
