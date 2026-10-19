@@ -332,7 +332,7 @@ jobs:
       # auth tests in `bolt_session_tests` are already covered by the
       # full-suite step above; this step adds the argon2 path.
       - name: Run bolt-auth feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features auth -E 'binary(bolt_auth_tests) | binary(user_admin_tests) | binary(bolt_login_tests) | binary(http_login_tests) | binary(role_admin_tests) | binary(privilege_enforcement_tests) | binary(privilege_read_filter_tests) | binary(privilege_rest_routes_tests) | binary(admin_command_privileges_tests) | binary(audit_log_tests) | binary(transaction_admin_tests) | binary(events_sse_tests) | binary(server_config_tests) | (kind(lib) & test(bolt::auth))'
+        run: cargo nextest run --no-fail-fast --features auth -E 'binary(bolt_auth_tests) | binary(user_admin_tests) | binary(bolt_login_tests) | binary(bolt5_tests) | binary(http_login_tests) | binary(role_admin_tests) | binary(privilege_enforcement_tests) | binary(privilege_read_filter_tests) | binary(privilege_rest_routes_tests) | binary(admin_command_privileges_tests) | binary(audit_log_tests) | binary(transaction_admin_tests) | binary(events_sse_tests) | binary(server_config_tests) | (kind(lib) & test(bolt::auth))'
       # Issue #581 — the optional HTTP body formats (CBOR / MessagePack) live
       # behind `format-cbor` / `format-msgpack`, NOT in the default set, so
       # re-run their test binary and the inline unit tests with both on.

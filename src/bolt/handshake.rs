@@ -4,10 +4,10 @@
 //! bytes:
 //!
 //! * 4-byte magic preamble `0x60 0x60 0xB0 0x17`
-//! * Four 4-byte version proposals, in preference order, big-endian
-//!   `(major, minor, patch_ish, reserved)` — drevo only cares about
-//!   the high two bytes which encode minor and major respectively in
-//!   the v4 spec.
+//! * Four 4-byte version proposals, in preference order:
+//!   `[0x00, range, minor, major]`. A proposal covers the minor versions
+//!   `minor - range ..= minor` of `major` (ranges came with Bolt 4.3), so
+//!   `00 04 04 05` offers Bolt 5.4 down to 5.0.
 //!
 //! The server replies with 4 bytes carrying the selected version
 //! (`major.minor` in the same encoding) or `0x00 0x00 0x00 0x00` to
@@ -15,16 +15,13 @@
 //! open; the no-match case is followed by the server closing the
 //! socket.
 //!
-//! ## Encoding choice
+//! ## Negotiation
 //!
-//! Bolt 4.3 introduced version *ranges* (a non-zero second byte
-//! means "this proposal covers `minor..=minor-range` minor
-//! versions"). Drevo today implements a strict major/minor pair
-//! and ignores the range byte — both Bolt 4.4 and Bolt 4.3 clients
-//! that send a single version per slot land on the correct
-//! negotiation, which matches the official drivers' default
-//! behaviour. Range-aware negotiation is left for a follow-up task
-//! (session-layer work, `00071`).
+//! [`ClientHandshake::select`] walks the proposals in the client's order
+//! and picks, within the first proposal that covers any version drevo
+//! speaks, the highest such version. drevo speaks Bolt 5.4 down to 5.0 and
+//! 4.4 / 4.3 ([`SUPPORTED_VERSIONS`]). Other slots, such as the Bolt 5.7+
+//! handshake manifest (`00 00 01 FF`), are skipped.
 
 use super::error::{BoltError, BoltResult};
 
@@ -75,8 +72,30 @@ impl BoltVersion {
 /// they arrived.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHandshake {
-    /// Four 4-byte version proposals, in client preference order.
+    /// The highest version of each proposal, in client preference order.
     pub versions: [BoltVersion; 4],
+    /// How many minor versions below `versions[i]` proposal `i` also covers.
+    pub ranges: [u8; 4],
+}
+
+impl ClientHandshake {
+    /// The version to speak: within the first proposal (in the client's
+    /// order) that covers a version drevo supports, the highest one.
+    /// `None` when no proposal covers one.
+    #[must_use]
+    pub fn select(&self) -> Option<BoltVersion> {
+        self.versions
+            .iter()
+            .zip(self.ranges)
+            .filter(|(top, _)| !top.is_none())
+            .find_map(|(top, range)| {
+                SUPPORTED_VERSIONS.iter().copied().find(|v| {
+                    v.major == top.major
+                        && v.minor <= top.minor
+                        && v.minor >= top.minor.saturating_sub(range)
+                })
+            })
+    }
 }
 
 /// Decode a 20-byte Bolt handshake.
@@ -94,23 +113,29 @@ pub fn parse_client_handshake(bytes: &[u8]) -> BoltResult<ClientHandshake> {
         return Err(BoltError::InvalidMagic);
     }
     let mut versions = [BoltVersion::NONE; 4];
+    let mut ranges = [0u8; 4];
     for (i, slot) in versions.iter_mut().enumerate() {
         let off = 4 + i * 4;
         let chunk = [bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]];
         *slot = BoltVersion::from_be_bytes(chunk);
+        ranges[i] = bytes[off + 1];
     }
-    Ok(ClientHandshake { versions })
+    Ok(ClientHandshake { versions, ranges })
 }
 
-/// The set of Bolt versions drevo's wire protocol speaks. Listed in
-/// preference order; [`select_version`] iterates the client's
-/// proposals and picks the first one that appears here.
+/// The set of Bolt versions drevo's wire protocol speaks, highest first.
 pub const SUPPORTED_VERSIONS: &[BoltVersion] = &[
+    BoltVersion { major: 5, minor: 4 },
+    BoltVersion { major: 5, minor: 3 },
+    BoltVersion { major: 5, minor: 2 },
+    BoltVersion { major: 5, minor: 1 },
+    BoltVersion { major: 5, minor: 0 },
     BoltVersion { major: 4, minor: 4 },
     BoltVersion { major: 4, minor: 3 },
 ];
 
-/// Pick the first client-proposed version that drevo supports.
+/// Pick the first client-proposed version that drevo supports, matching
+/// each proposal's exact version (no ranges; see [`ClientHandshake::select`]).
 /// Returns `None` if no proposal is supported — the caller should
 /// then write `0x00 0x00 0x00 0x00` back and close the connection.
 pub fn select_version(proposals: &[BoltVersion; 4]) -> Option<BoltVersion> {
@@ -171,7 +196,7 @@ mod tests {
     #[test]
     fn select_skips_unsupported_slots() {
         let proposals = [
-            BoltVersion { major: 5, minor: 0 },
+            BoltVersion { major: 6, minor: 0 },
             BoltVersion { major: 0, minor: 0 },
             BoltVersion { major: 4, minor: 4 },
             BoltVersion { major: 4, minor: 3 },
@@ -182,10 +207,49 @@ mod tests {
         );
     }
 
+    fn handshake(slots: [[u8; 4]; 4]) -> ClientHandshake {
+        let mut bytes = MAGIC_PREAMBLE.to_vec();
+        for slot in slots {
+            bytes.extend_from_slice(&slot);
+        }
+        parse_client_handshake(&bytes).unwrap()
+    }
+
+    #[test]
+    fn a_range_selects_the_highest_supported_version_in_it() {
+        let v = |major, minor| Some(BoltVersion { major, minor });
+        // 5.8 down to 5.0: the highest drevo speaks is 5.4.
+        let h = handshake([[0, 8, 8, 5], [0, 2, 4, 4], [0, 0, 1, 4], [0, 0, 0, 3]]);
+        assert_eq!(h.ranges, [8, 2, 0, 0]);
+        assert_eq!(h.select(), v(5, 4));
+        // 5.2 down to 5.0.
+        assert_eq!(
+            handshake([[0, 2, 2, 5], [0; 4], [0; 4], [0; 4]]).select(),
+            v(5, 2)
+        );
+        // 5.9 down to 5.6 covers nothing drevo speaks: the 4.x slot wins.
+        let h = handshake([[0, 3, 9, 5], [0, 2, 4, 4], [0; 4], [0; 4]]);
+        assert_eq!(h.select(), v(4, 4));
+        // The 5.7+ handshake manifest slot is skipped.
+        let h = handshake([[0, 0, 1, 0xFF], [0, 4, 4, 5], [0; 4], [0; 4]]);
+        assert_eq!(h.select(), v(5, 4));
+        // 4.4 down to 4.2: 4.4.
+        assert_eq!(
+            handshake([[0, 2, 4, 4], [0; 4], [0; 4], [0; 4]]).select(),
+            v(4, 4)
+        );
+        // 4.2 only, and nothing at all.
+        assert_eq!(
+            handshake([[0, 0, 2, 4], [0; 4], [0; 4], [0; 4]]).select(),
+            None
+        );
+        assert_eq!(handshake([[0; 4]; 4]).select(), None);
+    }
+
     #[test]
     fn select_returns_none_when_only_unsupported_offered() {
         let proposals = [
-            BoltVersion { major: 5, minor: 0 },
+            BoltVersion { major: 5, minor: 9 },
             BoltVersion { major: 6, minor: 0 },
             BoltVersion::NONE,
             BoltVersion::NONE,

@@ -62,8 +62,8 @@ async fn handshake_replies_with_zeros_when_no_version_matches() {
     let mut client = TcpStream::connect(addr).await.expect("connect");
     let mut payload = Vec::with_capacity(20);
     payload.extend_from_slice(&MAGIC_PREAMBLE);
-    // Offer four versions drevo does NOT support.
-    payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x05]);
+    // Offer four versions drevo does NOT support (5.9, 6.0, 7.0, 8.0).
+    payload.extend_from_slice(&[0x00, 0x00, 0x09, 0x05]);
     payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x06]);
     payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x07]);
     payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x08]);

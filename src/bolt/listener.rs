@@ -36,7 +36,7 @@ use tokio::net::TcpStream;
 
 use super::chunked::MAX_CHUNK_SIZE;
 use super::error::{BoltError, BoltResult};
-use super::handshake::{parse_client_handshake, select_version, BoltVersion, HANDSHAKE_LEN};
+use super::handshake::{parse_client_handshake, BoltVersion, HANDSHAKE_LEN};
 use super::packstream::{decode, encode};
 use super::session::{decode_client, encode_server, ServerMessage, Session, State};
 
@@ -111,7 +111,19 @@ pub async fn accept_handshake_on<S: AsyncRead + AsyncWrite + Unpin>(
     let mut buf = [0u8; HANDSHAKE_LEN];
     stream.read_exact(&mut buf).await?;
     let parsed = parse_client_handshake(&buf)?;
-    let negotiated = select_version(&parsed.versions);
+    let negotiated = parsed.select();
+    match negotiated {
+        Some(v) => tracing::debug!(
+            target: "drevo::bolt",
+            version = %format!("{}.{}", v.major, v.minor),
+            "negotiated Bolt version"
+        ),
+        None => tracing::debug!(
+            target: "drevo::bolt",
+            offered = ?parsed.versions,
+            "no Bolt version in common"
+        ),
+    }
     let reply = negotiated.unwrap_or(BoltVersion::NONE).to_be_bytes();
     stream.write_all(&reply).await?;
     Ok(AcceptedConnectionOn { stream, negotiated })
@@ -136,15 +148,11 @@ pub async fn accept_and_run_session_durable(
     service: &std::sync::Arc<crate::native_service::NativeService>,
 ) -> BoltResult<()> {
     let accepted = accept_handshake_on(socket).await?;
-    if accepted.negotiated.is_none() {
+    let Some(version) = accepted.negotiated else {
         return Ok(());
-    }
+    };
     let mut stream = accepted.stream;
-    run_session_on_inner(
-        &mut stream,
-        Session::new_durable(std::sync::Arc::clone(service)),
-    )
-    .await
+    run_session_on_durable(&mut stream, service, version).await
 }
 
 /// Catalog-backed counterpart of [`accept_and_run_session_durable`]: handshake
@@ -187,16 +195,17 @@ pub async fn accept_and_run_session_durable_with_security(
 ) -> BoltResult<()> {
     let client = socket.peer_addr().ok();
     let accepted = accept_handshake_on(socket).await?;
-    if accepted.negotiated.is_none() {
+    let Some(version) = accepted.negotiated else {
         return Ok(());
-    }
+    };
     let mut stream = accepted.stream;
-    run_session_on_durable_with_security(&mut stream, registry, security, client).await
+    run_session_on_durable_with_security(&mut stream, registry, security, client, version).await
 }
 
 /// Post-handshake session loop over every database in `registry`, logging in
 /// against `security`'s users when it requires a login; `client` is the
-/// peer's address for the audit log. Drives
+/// peer's address for the audit log, and `version` the Bolt version the
+/// handshake negotiated. Drives
 /// a [`Session`] over any `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS,
 /// etc. The stream must already be past the 20-byte handshake (call
 /// [`accept_handshake_on`] first).
@@ -217,19 +226,21 @@ pub async fn run_session_on_durable_with_security<S: AsyncRead + AsyncWrite + Un
     registry: &std::sync::Arc<crate::database_registry::DatabaseRegistry>,
     security: crate::security::Security,
     client: Option<std::net::SocketAddr>,
+    version: BoltVersion,
 ) -> BoltResult<()> {
     run_session_on_inner(
         stream,
         Session::new_durable_with_registry(std::sync::Arc::clone(registry))
             .with_security(security)
             .with_client(client)
-            .with_idle_timeout(registry.idle_session_timeout()),
+            .with_idle_timeout(registry.idle_session_timeout())
+            .with_version(version),
     )
     .await
 }
 
 /// Like [`run_session_on_durable_with_security`], over a single database
-/// and with no users.
+/// and with no users, speaking Bolt `version`.
 ///
 /// # Errors
 ///
@@ -237,8 +248,13 @@ pub async fn run_session_on_durable_with_security<S: AsyncRead + AsyncWrite + Un
 pub async fn run_session_on_durable<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     service: &std::sync::Arc<crate::native_service::NativeService>,
+    version: BoltVersion,
 ) -> BoltResult<()> {
-    run_session_on_inner(stream, Session::new_durable(std::sync::Arc::clone(service))).await
+    run_session_on_inner(
+        stream,
+        Session::new_durable(std::sync::Arc::clone(service)).with_version(version),
+    )
+    .await
 }
 
 async fn run_session_on_inner<S: AsyncRead + AsyncWrite + Unpin>(

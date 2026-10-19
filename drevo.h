@@ -129,6 +129,21 @@
 #define PULL 63
 
 /**
+ * `LOGON` request (Bolt 5.1+): authenticate the connection.
+ */
+#define LOGON 106
+
+/**
+ * `LOGOFF` request (Bolt 5.1+): drop the connection's login.
+ */
+#define LOGOFF 107
+
+/**
+ * `TELEMETRY` request (Bolt 5.4+): which driver API the client uses.
+ */
+#define TELEMETRY 84
+
+/**
  * `SUCCESS` response.
  */
 #define SUCCESS 112

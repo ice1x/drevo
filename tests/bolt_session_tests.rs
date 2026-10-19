@@ -1436,5 +1436,17 @@ fn client_message_to_value(msg: &ClientMessage) -> Value {
             tag: PULL,
             fields: vec![Value::Dictionary(extra.clone())],
         },
+        ClientMessage::Logon { auth } => Value::Structure {
+            tag: drevo::bolt::session::LOGON,
+            fields: vec![Value::Dictionary(auth.clone())],
+        },
+        ClientMessage::Logoff => Value::Structure {
+            tag: drevo::bolt::session::LOGOFF,
+            fields: vec![],
+        },
+        ClientMessage::Telemetry { api } => Value::Structure {
+            tag: drevo::bolt::session::TELEMETRY,
+            fields: vec![api.clone()],
+        },
     }
 }
