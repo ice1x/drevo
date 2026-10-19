@@ -620,7 +620,8 @@ pub(crate) mod deadline {
     pub(crate) enum Source {
         /// The server's statement timeout (`DREVO_QUERY_TIMEOUT_MS`).
         Server,
-        /// The client, for its statement or transaction.
+        /// The client, for its statement or transaction (Bolt and HTTP only).
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
         Client,
     }
 
@@ -649,6 +650,7 @@ pub(crate) mod deadline {
         /// The timeout a client asked for, `limit` from now. The server's
         /// own limit caps it: a client cannot ask for more time than the
         /// server gives a statement.
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
         pub(crate) fn client(limit: Duration, server: Option<Duration>) -> Self {
             match server {
                 Some(server) if server < limit => Self::server(server),
@@ -672,6 +674,7 @@ pub(crate) mod deadline {
         }
 
         /// How long until it passes; zero once it has.
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
         pub(crate) fn remaining(&self) -> Duration {
             self.at.saturating_duration_since(Instant::now())
         }
