@@ -35,7 +35,13 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> ExitCode {
     // `drevo-server backup …` / `drevo-server restore …` run and exit.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(result) = drevo::backup::command(&args, |key| std::env::var(key).ok()) {
+    #[cfg(feature = "encryption")]
+    let encryption = drevo::encryption_cmd::command(&args, |key| std::env::var(key).ok());
+    #[cfg(not(feature = "encryption"))]
+    let encryption: Option<Result<String, String>> = None;
+    if let Some(result) =
+        encryption.or_else(|| drevo::backup::command(&args, |key| std::env::var(key).ok()))
+    {
         return match result {
             Ok(out) => {
                 println!("{out}");

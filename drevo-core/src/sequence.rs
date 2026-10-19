@@ -330,6 +330,22 @@ impl Sequences {
             .collect()
     }
 
+    /// Write the current state to the file sealed with `key` (in the clear
+    /// for `None`), for re-encrypting a store that is about to be closed.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "encryption"))]
+    pub(crate) fn rewrite_sealed(
+        &self,
+        key: Option<std::sync::Arc<crate::wal_format::SealKey>>,
+    ) -> Result<(), SequenceError> {
+        let Some(file) = &self.file else {
+            return Ok(());
+        };
+        let json =
+            serde_json::to_vec(&*self.lock()).map_err(|e| SequenceError::Io(e.to_string()))?;
+        crate::sealed_file::write(file, key.as_deref(), crate::sealed_file::SEQUENCES, &json)
+            .map_err(|e| SequenceError::Io(e.to_string()))
+    }
+
     /// `json` as the file stores it: sealed for an encrypted store.
     fn stored(&self, json: &[u8]) -> std::io::Result<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]

@@ -71,7 +71,7 @@ COPY static/ static/
 # (The Cargo library default stays dependency-free; this opinionated default is
 # the deploy image only.) Locked by
 # `tests/dockerfile_tests.rs::dockerfile_features_are_build_arg_overridable`.
-ARG CARGO_FEATURES="http,embeddings-proxy,format-cbor,format-msgpack,grpc,arrow-flight,auth,bolt-tls,oidc"
+ARG CARGO_FEATURES="http,embeddings-proxy,format-cbor,format-msgpack,grpc,arrow-flight,auth,bolt-tls,oidc,encryption"
 # The version the built server reports (`/`, `/status`, Bolt `server` agent,
 # metrics). `.git` is excluded from the build context, so `build.rs` cannot run
 # `git describe` here and would fall back to `CARGO_PKG_VERSION` (0.0.0, since the

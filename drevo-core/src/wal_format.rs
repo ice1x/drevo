@@ -475,7 +475,12 @@ pub(crate) fn read_sealed_record(
     let Some(plain) = open_with(key, RECORD_CONTEXT, sealed) else {
         return Record::Undecryptable { next };
     };
-    match decode_ops(format, &plain) {
+    // JSON straight into ops, as a plain log's lines are read.
+    let ops = match format {
+        WalFormat::Json => serde_json::from_slice::<Vec<WalOp>>(&plain).ok(),
+        _ => decode_ops(format, &plain),
+    };
+    match ops {
         Some(ops) => Record::Ops { ops, next },
         None => Record::Invalid { next },
     }

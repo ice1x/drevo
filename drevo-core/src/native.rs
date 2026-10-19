@@ -3774,6 +3774,64 @@ impl NativeGraph {
         Self::open_log(path.as_ref(), format, false, Some(Arc::new(key)))
     }
 
+    /// Rewrite the store at `path` under another key: `from` is the key it
+    /// is encrypted with now (`None`: it is not encrypted) and `to` the key
+    /// to encrypt it with (`None`: store it in the clear). This encrypts,
+    /// decrypts and rotates keys; the log is rewritten in `format`. The
+    /// store must not be open elsewhere ([`CoreError::Locked`]).
+    ///
+    /// Each file is replaced atomically on its own, but the files are not
+    /// replaced together: back the store up first.
+    ///
+    /// ```
+    /// use drevo_core::encryption::Key;
+    /// use drevo_core::native::NativeGraph;
+    /// use drevo_core::wal_format::WalFormat;
+    ///
+    /// let dir = std::env::temp_dir().join(format!("drevo_reenc_doc_{}", std::process::id()));
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let wal = dir.join("native.wal");
+    /// drop(NativeGraph::open_durable(&wal).unwrap());
+    /// let key = Key::from_bytes([3; 32]);
+    /// NativeGraph::reencrypt(&wal, WalFormat::Json, None, Some(key.clone())).unwrap();
+    /// assert!(NativeGraph::open_durable(&wal).is_err());
+    /// NativeGraph::reencrypt(&wal, WalFormat::Json, Some(key), None).unwrap();
+    /// assert!(NativeGraph::open_durable(&wal).is_ok());
+    /// # std::fs::remove_dir_all(&dir).unwrap();
+    /// ```
+    ///
+    /// # Errors
+    /// As [`open_durable_encrypted`](Self::open_durable_encrypted) for
+    /// `from`; [`CoreError::Io`] when a file cannot be rewritten.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "encryption"))]
+    pub fn reencrypt(
+        path: impl AsRef<std::path::Path>,
+        format: crate::wal_format::WalFormat,
+        from: Option<crate::encryption::Key>,
+        to: Option<crate::encryption::Key>,
+    ) -> Result<()> {
+        let path = path.as_ref();
+        let mut g = Self::open_log(path, format, false, from.map(Arc::new))?;
+        let to: Option<Arc<crate::wal_format::SealKey>> = to.map(Arc::new);
+        g.seal_key = to.clone();
+        if let Some(log) = g
+            .stamp_log
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            log.key = to.clone();
+        }
+        // The log, and with it the stamp log.
+        g.compact_wal()?;
+        g.checkpoint_tombstones();
+        persist_origin(&origin_sidecar(path), g.origin, to.as_deref())?;
+        g.sequences
+            .rewrite_sealed(to)
+            .map_err(|e| CoreError::Backend(e.to_string()))?;
+        Ok(())
+    }
+
     /// [`open_read_only`](Self::open_read_only) for an encrypted store.
     ///
     /// # Errors

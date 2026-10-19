@@ -158,6 +158,9 @@ idna_adapter = { version = "=1.2.0", optional = true }
 cbindgen = { version = "0.27", optional = true }
 
 [features]
+# Encryption at rest (issue #645): the server seals every store's log and
+# sidecars with the key from DREVO_ENCRYPTION_KEY_FILE / DREVO_ENCRYPTION_KEY.
+encryption = ["drevo-core/encryption"]
 # The engine is native-durable (WAL, zero-redb). The legacy redb embedded KV
 # store, its on-disk catalog, and the redb→WAL migration were removed outright
 # in epic #444 P8 (PR2); the in-memory KV `Drevo` handle survives only as the
@@ -303,6 +306,13 @@ required-features = ["auth"]
 [[bench]]
 name = "memory_footprint_bench"
 harness = false
+
+# What encryption at rest costs (issue #645): durable writes and reopening a
+# store with the log in the clear and encrypted.
+[[bench]]
+name = "encryption_bench"
+harness = false
+required-features = ["encryption"]
 
 # Routing on a real road network: weighted path search over an
 # OpenStreetMap extract. Custom `main`; reads the extract named by

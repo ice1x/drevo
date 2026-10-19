@@ -48,15 +48,18 @@ use crate::native_service::NativeService;
 /// Subdirectory under a durable registry's data dir that holds one child
 /// directory per non-default database. Kept one level below the default
 /// database's own `native.wal` so the two never collide.
-const DATABASES_SUBDIR: &str = "databases";
+pub(crate) const DATABASES_SUBDIR: &str = "databases";
 
 /// WAL filename inside each per-database directory — the same basename the
 /// default store uses under the data dir, so the layout is uniform.
-const DB_WAL_FILE: &str = "native.wal";
+pub(crate) const DB_WAL_FILE: &str = "native.wal";
 
 /// The file, under a durable registry's data dir, that lists the databases
 /// switched read-only: `{"read_only": ["erp"]}`.
-const ACCESS_FILE: &str = "database_access.json";
+pub(crate) const ACCESS_FILE: &str = "database_access.json";
+/// The context `database_access.json` is sealed under on an encrypted server.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const ACCESS_CONTEXT: &[u8] = b"drevo database access";
 
 /// What [`ACCESS_FILE`] holds.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -294,9 +297,12 @@ impl DatabaseRegistry {
             name: ACCESS_FILE.to_string(),
             detail,
         };
-        match std::fs::read(data_dir.join(ACCESS_FILE)) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| unreadable(e.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AccessFile::default()),
+        // Sealed like the stores' sidecars when the server encrypts.
+        match crate::native_service::read_sidecar(&data_dir.join(ACCESS_FILE), ACCESS_CONTEXT) {
+            Ok(Some(bytes)) => {
+                serde_json::from_slice(&bytes).map_err(|e| unreadable(e.to_string()))
+            }
+            Ok(None) => Ok(AccessFile::default()),
             Err(e) => Err(unreadable(e.to_string())),
         }
     }
@@ -326,9 +332,8 @@ impl DatabaseRegistry {
             return Ok(());
         }
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| failed(e.to_string()))?;
-        let tmp = data_dir.join(format!("{ACCESS_FILE}.tmp"));
-        std::fs::write(&tmp, bytes).map_err(|e| failed(e.to_string()))?;
-        std::fs::rename(&tmp, &path).map_err(|e| failed(e.to_string()))
+        crate::native_service::write_sidecar(&path, ACCESS_CONTEXT, &bytes)
+            .map_err(|e| failed(e.to_string()))
     }
 
     /// Whether the database named `name` refuses writes; `false` for an
