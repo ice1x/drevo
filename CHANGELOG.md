@@ -6,6 +6,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Relationships lost in a fresh database** (issue #708). In a database
+  that had never held relationships, the first ones created between nodes
+  far apart in the id space (about 100 of 2,000 with 112,000 nodes) were
+  written to the log but not visible: not from either endpoint, not by id,
+  not after a restart. The id-indexed tables behind the adjacency lists
+  hid an entry first stored as an outlier once the table grew past its id.
+  The log always held every relationship, so restarting on a fixed build
+  shows them all again — an importer that re-created the missing ones as
+  a workaround will then see those twice.
+
 ### Changed
 
 - **drevo-core 0.2: `Properties` is a compact map** (issue #687). It is no
