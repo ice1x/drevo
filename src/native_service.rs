@@ -364,15 +364,93 @@ fn semantic_sidecar_path(wal_path: &std::path::Path) -> std::path::PathBuf {
     wal_path.with_file_name("semantic.json")
 }
 
-/// Load both registries from the sidecar, or empty ones if absent/unparseable
-/// (best-effort, mirroring the tombstone sidecar and the KV loader).
+/// The context `semantic.json` is sealed under in an encrypted store.
 #[cfg(not(target_arch = "wasm32"))]
-fn load_semantic_sidecar(path: &std::path::Path) -> SemanticSidecar {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => SemanticSidecar::default(),
+pub(crate) const SEMANTIC_CONTEXT: &[u8] = b"drevo semantic";
+
+/// Read a sidecar file of the service: in the clear, or sealed with the
+/// process's encryption key ([`NativeService::set_encryption_key`]); `None`
+/// when there is none.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_sidecar(
+    path: &std::path::Path,
+    context: &[u8],
+) -> std::io::Result<Option<Vec<u8>>> {
+    #[cfg(feature = "encryption")]
+    {
+        drevo_core::encryption::read_file(path, NativeService::encryption_key().as_deref(), context)
+    }
+    #[cfg(not(feature = "encryption"))]
+    {
+        let _ = context;
+        match std::fs::read(path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
+
+/// Write a sidecar file of the service atomically, sealed with the process's
+/// encryption key when there is one.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn write_sidecar(
+    path: &std::path::Path,
+    context: &[u8],
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    #[cfg(feature = "encryption")]
+    {
+        drevo_core::encryption::write_file(
+            path,
+            NativeService::encryption_key().as_deref(),
+            context,
+            bytes,
+        )
+    }
+    #[cfg(not(feature = "encryption"))]
+    {
+        let _ = context;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, path)
+    }
+}
+
+/// `bytes` as a sidecar stores them — for the files a backup carries.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn sidecar_bytes(context: &[u8], bytes: Vec<u8>) -> std::io::Result<Vec<u8>> {
+    #[cfg(feature = "encryption")]
+    {
+        drevo_core::encryption::file_bytes(
+            NativeService::encryption_key().as_deref(),
+            context,
+            &bytes,
+        )
+    }
+    #[cfg(not(feature = "encryption"))]
+    {
+        let _ = context;
+        Ok(bytes)
+    }
+}
+
+/// Load both registries from the sidecar, or empty ones if absent or
+/// unparseable (best-effort, mirroring the tombstone sidecar). A sidecar that
+/// cannot be read — or does not decrypt with the store's key — fails the
+/// open: starting with no index definitions would silently drop them.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_semantic_sidecar(path: &std::path::Path) -> std::io::Result<SemanticSidecar> {
+    Ok(match read_sidecar(path, SEMANTIC_CONTEXT)? {
+        Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        None => SemanticSidecar::default(),
+    })
+}
+
+/// The key every store this process opens is encrypted with.
+#[cfg(all(not(target_arch = "wasm32"), feature = "encryption"))]
+static ENCRYPTION_KEY: RwLock<Option<std::sync::Arc<drevo_core::encryption::Key>>> =
+    RwLock::new(None);
 
 /// The write-ahead-log format stores are opened with, as
 /// [`WalFormat`](crate::wal_format::WalFormat) ⇄ `u8` (issue #582). Process-wide,
@@ -394,6 +472,26 @@ impl NativeService {
             WalFormat::MsgPack => 2,
         };
         DEFAULT_WAL_FORMAT.store(v, Ordering::SeqCst);
+    }
+
+    /// Encrypt every store opened from now on with `key` — its log, its
+    /// engine sidecars and the service's own `semantic.json` — or none
+    /// (`None`, the default). Process-wide, like the WAL format, so the
+    /// databases the registry opens follow the server's key. A store must
+    /// be opened with the key it was written with.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "encryption"))]
+    pub fn set_encryption_key(key: Option<drevo_core::encryption::Key>) {
+        *ENCRYPTION_KEY.write().unwrap_or_else(|e| e.into_inner()) = key.map(std::sync::Arc::new);
+    }
+
+    /// The key set with [`Self::set_encryption_key`], if any.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "encryption"))]
+    #[must_use]
+    pub fn encryption_key() -> Option<std::sync::Arc<drevo_core::encryption::Key>> {
+        ENCRYPTION_KEY
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The write-ahead-log format new opens use (see
@@ -465,7 +563,26 @@ impl NativeService {
         // The replica identity (issue #389) lives on the store of record:
         // `NativeGraph::open_durable` loads/mints+persists `origin.json` next to
         // the WAL, reused across restarts.
-        let graph = if read_only {
+        #[cfg(feature = "encryption")]
+        let key = Self::encryption_key();
+        #[cfg(feature = "encryption")]
+        let graph = match (key, read_only) {
+            (Some(key), true) => Some(NativeGraph::open_read_only_encrypted(path, (*key).clone())?),
+            (Some(key), false) => Some(NativeGraph::open_durable_encrypted(
+                path,
+                Self::default_wal_format(),
+                (*key).clone(),
+            )?),
+            (None, _) => None,
+        };
+        #[cfg(not(feature = "encryption"))]
+        let graph: Option<NativeGraph> = None;
+        let graph = if let Some(graph) = graph {
+            if !read_only {
+                graph.compact_wal()?;
+            }
+            graph
+        } else if read_only {
             NativeGraph::open_read_only(path)?
         } else {
             let graph = NativeGraph::open_durable_with(path, Self::default_wal_format())?;
@@ -484,7 +601,7 @@ impl NativeService {
             constraints,
             triggers,
             secondary_indexes,
-        } = load_semantic_sidecar(&sidecar);
+        } = load_semantic_sidecar(&sidecar).map_err(DrevoError::Io)?;
         // Constraints are schema, not WAL data: install them over the replayed
         // graph. Data written through drevo already satisfies them; if a
         // replicated or imported write broke one, keep serving and say so.
@@ -2915,8 +3032,7 @@ impl NativeService {
             let Ok(bytes) = self.semantic_sidecar_bytes() else {
                 return;
             };
-            let tmp = path.with_extension("json.tmp");
-            let _ = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, path));
+            let _ = write_sidecar(path, SEMANTIC_CONTEXT, &bytes);
         }
     }
 
@@ -2979,6 +3095,8 @@ impl NativeService {
             let bytes = self
                 .semantic_sidecar_bytes()
                 .map_err(|e| drevo_core::backup::BackupError::Io(std::io::Error::other(e)))?;
+            // As the file is stored: sealed for an encrypted store.
+            let bytes = sidecar_bytes(SEMANTIC_CONTEXT, bytes)?;
             extra_files.push(("semantic.json".to_string(), bytes));
         }
         self.graph.backup_to(

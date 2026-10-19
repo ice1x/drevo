@@ -396,6 +396,12 @@ pub fn command(
             let Some(to) = to else {
                 return Some(usage("`backup` needs `--to DIR`"));
             };
+            // An encrypted server's stores open with its key.
+            #[cfg(feature = "encryption")]
+            match crate::server::encryption_key(&env) {
+                Ok(key) => crate::native_service::NativeService::set_encryption_key(key),
+                Err(e) => return Some(Err(e.to_string())),
+            }
             let data_dir = PathBuf::from(env("DREVO_DATA_DIR").unwrap_or_else(|| "/data".into()));
             Some(backup_command(&data_dir, &to, since.as_deref()))
         }

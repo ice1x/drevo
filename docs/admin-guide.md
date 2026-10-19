@@ -547,6 +547,55 @@ beforehand, or set `DREVO_AUTH=none`.
 docker run -d -p 8080:8080 -e DREVO_READ_ONLY=true -v drevo_data:/data:ro ice1x/drevo
 ```
 
+### Encryption at rest
+
+A server built with the `encryption` feature (the Docker image has it) encrypts every database
+with a 256-bit key when one is given. Each log record and each sidecar is sealed with
+XChaCha20-Poly1305: the data on disk reads as random bytes, and a changed byte is detected and
+refused. Encrypted:
+
+- every database's log, `origin.json`, `tombstones.json`, `stamps.jsonl`, `semantic.json` and
+  `sequences.json`;
+- `database_access.json`;
+- physical backups, which copy the encrypted files as they are.
+
+The users file (`security.json`, password hashes) and `embeddings_config.json` stay in the clear.
+
+Make a key and keep it outside the data directory; without it the data cannot be read:
+
+```bash
+openssl rand -hex 32 > /etc/drevo/drevo.key
+chmod 600 /etc/drevo/drevo.key
+DREVO_ENCRYPTION_KEY_FILE=/etc/drevo/drevo.key drevo-server
+```
+
+`DREVO_ENCRYPTION_KEY` takes the 64 hex digits directly instead (set one of the two). A server
+started without the key, or with another one, refuses to open an encrypted database, and a
+server with a key refuses a database in the clear.
+
+Encrypt existing data, change the key, or go back to the clear, with the server stopped:
+
+```bash
+# Encrypt a data directory in the clear with the key
+DREVO_DATA_DIR=/data DREVO_ENCRYPTION_KEY_FILE=/etc/drevo/drevo.key drevo-server encrypt
+# Re-encrypt with a new key; afterwards start the server with the new key
+DREVO_DATA_DIR=/data DREVO_ENCRYPTION_KEY_FILE=/etc/drevo/drevo.key \
+    drevo-server rotate-key --new-key-file /etc/drevo/new.key
+# Decrypt
+DREVO_DATA_DIR=/data DREVO_ENCRYPTION_KEY_FILE=/etc/drevo/new.key drevo-server decrypt
+```
+
+Each command rewrites every database and swaps each file in atomically. A backup or restore of an
+encrypted server needs the same key in its environment.
+
+What it costs (`cargo bench --features encryption --bench encryption_bench`, Apple M-series):
+
+| Operation | Compared with the clear |
+|---|---|
+| One durable write | about the same (the fsync dominates) |
+| A batch of 1,000 nodes | +10% |
+| Reopening a store (replaying its log) | +107% |
+
 ### Storage bloat (#253 slice 1)
 
 redb is copy-on-write: freed pages go to an internal freelist and the file **keeps its

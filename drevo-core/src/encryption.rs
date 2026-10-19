@@ -169,6 +169,16 @@ pub fn write_file(
     crate::sealed_file::write(path, key, context, bytes)
 }
 
+/// `bytes` in the form [`write_file`] stores them: sealed after `DRVSEAL1`
+/// with a key, unchanged without — for files a backup carries.
+///
+/// # Errors
+/// No randomness for a nonce.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn file_bytes(key: Option<&Key>, context: &[u8], bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    crate::sealed_file::encode(key, context, bytes)
+}
+
 /// Read a file [`write_file`] wrote with the same `key` and `context`;
 /// `None` when there is none.
 ///

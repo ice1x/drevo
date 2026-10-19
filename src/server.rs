@@ -31,6 +31,8 @@
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
 //! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS and Bolt as `bolt+s://` (`bolt-tls` feature) |
 //! | `DREVO_TLS_KEY`   | (unset)     | PEM private key (PKCS#8, PKCS#1 or SEC1) for `DREVO_TLS_CERT` |
+//! | `DREVO_ENCRYPTION_KEY_FILE` | (unset) | File holding a 256-bit key as 64 hex digits; every database's log and sidecars are encrypted with it (`encryption` feature) |
+//! | `DREVO_ENCRYPTION_KEY` | (unset) | The 64 hex digits themselves, instead of `DREVO_ENCRYPTION_KEY_FILE` |
 //! | `DREVO_AUDIT_LOG` | `off`       | Security audit log (`auth` feature): `off`, `stdout`, or a file path (JSON lines, rotated at 10 MiB, 5 old files kept) |
 //! | `DREVO_AUDIT_QUERY_TEXT` | `false` | Put a refused statement's text in its audit event |
 //! | `DREVO_OIDC_ISSUER` | (unset) | Accept bearer tokens from this OpenID Connect provider (`oidc` feature): its exact `iss`, `https://` (or `http://` on this machine). Logins are then required |
@@ -136,6 +138,11 @@ pub struct Config {
     pub audit_query_text: bool,
     /// Serve every database read-only, from `DREVO_READ_ONLY`.
     pub read_only: bool,
+    /// The key every store is encrypted with, from
+    /// `DREVO_ENCRYPTION_KEY_FILE` or `DREVO_ENCRYPTION_KEY`;
+    /// `None` keeps the data in the clear. Its `Debug` output hides it.
+    #[cfg(feature = "encryption")]
+    pub encryption_key: Option<drevo_core::encryption::Key>,
     /// The identity provider whose bearer tokens sign users in, from
     /// `DREVO_OIDC_*`; `None` without `DREVO_OIDC_ISSUER`.
     pub oidc: Option<OidcSettings>,
@@ -203,6 +210,13 @@ pub enum EngineMode {
 /// Errors produced while parsing or validating a [`Config`].
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// The encryption key could not be read or is malformed, both key
+    /// variables are set, or the build has no encryption.
+    #[error("invalid encryption key: {reason}")]
+    InvalidEncryptionKey {
+        /// What is wrong.
+        reason: String,
+    },
     /// `DREVO_PORT` could not be parsed as a `u16` in `1..=65535`, or
     /// was explicitly zero (which `bind(2)` interprets as "kernel
     /// chooses a port" and is invariably an operator mistake here).
@@ -500,6 +514,16 @@ impl Config {
         };
 
         let oidc = oidc_settings(&getter)?;
+        #[cfg(feature = "encryption")]
+        let encryption_key = encryption_key(&getter)?;
+        #[cfg(not(feature = "encryption"))]
+        if getter("DREVO_ENCRYPTION_KEY_FILE").is_some() || getter("DREVO_ENCRYPTION_KEY").is_some()
+        {
+            return Err(ConfigError::InvalidEncryptionKey {
+                reason: "this build has no encryption; rebuild with the `encryption` feature"
+                    .to_string(),
+            });
+        }
 
         let auth_raw = getter("DREVO_AUTH");
         #[cfg(feature = "auth")]
@@ -538,6 +562,8 @@ impl Config {
             audit_log,
             audit_query_text,
             read_only,
+            #[cfg(feature = "encryption")]
+            encryption_key,
             oidc,
         })
     }
@@ -686,6 +712,42 @@ fn configure_security(cfg: &Config) -> Result<crate::security::Security, RunErro
     #[cfg(feature = "oidc")]
     let security = with_identity_provider(security, cfg.oidc.as_ref())?;
     Ok(security)
+}
+
+/// The encryption key from `DREVO_ENCRYPTION_KEY_FILE` (a file of 64
+/// hexadecimal digits, kept outside the data directory) or
+/// `DREVO_ENCRYPTION_KEY` (the digits themselves); `None` when neither is
+/// set.
+///
+/// # Errors
+/// [`ConfigError::InvalidEncryptionKey`] when both are set, the file cannot
+/// be read, or the key is malformed.
+#[cfg(feature = "encryption")]
+pub fn encryption_key<F>(getter: &F) -> Result<Option<drevo_core::encryption::Key>, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let invalid = |reason: String| ConfigError::InvalidEncryptionKey { reason };
+    let file = getter("DREVO_ENCRYPTION_KEY_FILE").filter(|v| !v.trim().is_empty());
+    let inline = getter("DREVO_ENCRYPTION_KEY").filter(|v| !v.trim().is_empty());
+    let text = match (file, inline) {
+        (Some(_), Some(_)) => {
+            return Err(invalid(
+                "set DREVO_ENCRYPTION_KEY_FILE or DREVO_ENCRYPTION_KEY, not both".to_string(),
+            ))
+        }
+        (Some(path), None) => std::fs::read_to_string(path.trim()).map_err(|e| {
+            invalid(format!(
+                "cannot read DREVO_ENCRYPTION_KEY_FILE `{}`: {e}",
+                path.trim()
+            ))
+        })?,
+        (None, Some(text)) => text,
+        (None, None) => return Ok(None),
+    };
+    drevo_core::encryption::Key::from_hex(&text)
+        .map(Some)
+        .map_err(|e| invalid(e.to_string()))
 }
 
 /// The identity provider from `DREVO_OIDC_*`, or `None` without an issuer.
@@ -935,6 +997,15 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
     // the configured log format; compaction on open converts older logs.
     crate::native_service::NativeService::set_default_wal_format(cfg.wal_format);
     tracing::info!(wal_format = cfg.wal_format.name(), "write-ahead log format");
+    // Every store opened from here on is encrypted with the configured key.
+    #[cfg(feature = "encryption")]
+    {
+        tracing::info!(
+            encrypted = cfg.encryption_key.is_some(),
+            "encryption at rest"
+        );
+        crate::native_service::NativeService::set_encryption_key(cfg.encryption_key.clone());
+    }
     run_native_durable(cfg, addr).await
 }
 
