@@ -119,6 +119,10 @@ ENV DREVO_DATA_DIR=/data
 # (task 00163) so Neo4j drivers / Cypher tools can connect. It shares the same
 # single drevo-server process + native-durable store as the HTTP API.
 ENV DREVO_BOLT_PORT=7687
+# glibc malloc keeps one arena per busy thread, and memory freed in them stays
+# resident: deleting and rewriting a large graph left the process at twice
+# the graph's size until a restart. Two arenas give it back.
+ENV MALLOC_ARENA_MAX=2
 
 EXPOSE 8080 7687
 

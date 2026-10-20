@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Memory not given back after deleting and rewriting a large graph**
+  (issue #711). The Docker image sets `MALLOC_ARENA_MAX=2`: with one glibc
+  arena per busy thread, the memory a delete and rewrite freed stayed
+  resident (265 MB → 398 MB on a 112k-node road graph, 198 MB after a
+  restart); with two arenas the process settles at 219 MB. drevo's own live
+  heap returns to the graph's size. Set the variable too when running the
+  binary on Linux outside the image.
 - **`MATCH` by an indexed property inside a transaction scanned every
   node** (issue #686). In an explicit transaction (a driver's
   `execute_write`), and in auto-commit statements run as one transaction
