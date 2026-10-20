@@ -603,10 +603,11 @@ refused. Encrypted:
 
 - every database's log, `origin.json`, `tombstones.json`, `stamps.jsonl`, `semantic.json` and
   `sequences.json`;
-- `database_access.json`;
+- the server's `database_access.json`, `security.json` (users, password hashes, roles and
+  privileges) and `embeddings_config.json` (the embeddings provider and its API key);
 - physical backups, which copy the encrypted files as they are.
 
-The users file (`security.json`, password hashes) and `embeddings_config.json` stay in the clear.
+Nothing in the data directory is left in the clear.
 
 Make a key and keep it outside the data directory; without it the data cannot be read:
 

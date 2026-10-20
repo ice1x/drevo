@@ -1332,6 +1332,28 @@ fn manage_error(e: drevo_auth::users::ManageError) -> SecurityError {
     SecurityError::new(kind, e.to_string())
 }
 
+/// The file in the data directory that holds the server's users.
+pub const SECURITY_FILE: &str = "security.json";
+
+/// The context [`SECURITY_FILE`] is sealed under on an encrypted server.
+pub const SECURITY_CONTEXT: &[u8] = b"drevo security";
+
+/// `security.json` sealed with the server's encryption key, when it has one.
+#[cfg(feature = "auth")]
+#[derive(Debug)]
+struct SealedSecurityFile;
+
+#[cfg(feature = "auth")]
+impl drevo_auth::catalog::FileCodec for SealedSecurityFile {
+    fn encode(&self, json: Vec<u8>) -> std::io::Result<Vec<u8>> {
+        crate::native_service::sidecar_bytes(SECURITY_CONTEXT, json)
+    }
+
+    fn decode(&self, file: Vec<u8>) -> std::io::Result<Vec<u8>> {
+        crate::native_service::decode_sidecar(SECURITY_CONTEXT, file)
+    }
+}
+
 /// Open the server's users: `<data_dir>/security.json` for a durable server,
 /// memory when `data_dir` is `None`; then create the first user from
 /// `bootstrap` when there are none.
@@ -1348,7 +1370,9 @@ pub fn open_server_security(
 ) -> Result<(Security, drevo_auth::users::BootstrapOutcome), drevo_auth::users::ManageError> {
     use drevo_auth::catalog::{CatalogStore, FileStore, MemoryStore};
     let store: Arc<dyn CatalogStore> = match data_dir {
-        Some(dir) => Arc::new(FileStore::new(dir.join("security.json"))),
+        Some(dir) => Arc::new(
+            FileStore::new(dir.join(SECURITY_FILE)).with_codec(Arc::new(SealedSecurityFile)),
+        ),
         None => Arc::new(MemoryStore::new()),
     };
     let users = Arc::new(drevo_auth::users::AuthManager::open(store)?);

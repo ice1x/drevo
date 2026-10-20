@@ -249,6 +249,13 @@ pub struct EmbeddingsStatus {
     pub api_key_set: bool,
 }
 
+/// The file in the data directory that holds the embeddings settings.
+pub const EMBEDDINGS_CONFIG_FILE: &str = "embeddings_config.json";
+
+/// The context [`EMBEDDINGS_CONFIG_FILE`] is sealed under on an encrypted
+/// server.
+pub const EMBEDDINGS_CONFIG_CONTEXT: &[u8] = b"drevo embeddings config";
+
 /// A shared, hot-reloadable, optionally-persisted store for the runtime
 /// embeddings configuration (RFC #307 follow-up: the API key/upstream/model
 /// become Web-UI settings instead of start-only env vars).
@@ -286,11 +293,23 @@ impl EmbeddingsConfigStore {
         path: std::path::PathBuf,
         env_fallback: Option<EmbeddingsConfig>,
     ) -> std::sync::Arc<Self> {
-        let config = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str::<EmbeddingsConfig>(&text)
+        let stored = std::fs::read(&path).and_then(|bytes| {
+            crate::native_service::decode_sidecar(EMBEDDINGS_CONFIG_CONTEXT, bytes)
+        });
+        let config = match stored {
+            Ok(bytes) => serde_json::from_slice::<EmbeddingsConfig>(&bytes)
                 .ok()
                 .or(env_fallback),
-            Err(_) => env_fallback,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::error!(
+                        path = %path.display(),
+                        error = %e,
+                        "cannot read the embeddings config; using the DREVO_EMBEDDINGS_* settings"
+                    );
+                }
+                env_fallback
+            }
         };
         std::sync::Arc::new(Self {
             path: Some(path),
@@ -396,10 +415,12 @@ fn persist_config(
     let json = serde_json::to_string_pretty(config)
         .map_err(|e| EmbeddingsError::InvalidUpstream(format!("cannot serialise config: {e}")))?;
     let tmp = path.with_extension("json.tmp");
-    write_atomic(&tmp, path, json.as_bytes()).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        EmbeddingsError::InvalidUpstream(format!("cannot persist embeddings config: {e}"))
-    })
+    crate::native_service::sidecar_bytes(EMBEDDINGS_CONFIG_CONTEXT, json.into_bytes())
+        .and_then(|bytes| write_atomic(&tmp, path, &bytes))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            EmbeddingsError::InvalidUpstream(format!("cannot persist embeddings config: {e}"))
+        })
 }
 
 /// The effective model for a request: the request's own model, or the

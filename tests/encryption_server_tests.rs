@@ -300,3 +300,145 @@ fn a_backup_of_an_encrypted_server_stays_encrypted() {
         );
     }
 }
+
+#[cfg(feature = "auth")]
+mod server_files {
+    use super::*;
+
+    use drevo::embeddings::{EmbeddingsConfigStore, EmbeddingsConfigUpdate};
+    use drevo::security::open_server_security;
+    use drevo_auth::authn::Credentials;
+    use drevo_auth::users::Bootstrap;
+
+    const API_KEY: &str = "sk-embeddings-do-not-leak";
+    const PASSWORD: &str = "hunter2-but-longer";
+
+    fn admin() -> Bootstrap {
+        Bootstrap::Admin {
+            user: "ann".to_string(),
+            password: PASSWORD.to_string(),
+        }
+    }
+
+    /// Write the server's users and embeddings settings into `dir`.
+    fn write_server_files(dir: &Path) {
+        open_server_security(Some(dir), &admin()).unwrap();
+        let store = EmbeddingsConfigStore::load(dir.join("embeddings_config.json"), None);
+        store
+            .apply(EmbeddingsConfigUpdate {
+                upstream: "https://embeddings.example.com/v1/embeddings".to_string(),
+                api_key: Some(API_KEY.to_string()),
+                model: Some("text-embedding-3-small".to_string()),
+            })
+            .unwrap();
+    }
+
+    fn api_key_in(dir: &Path) -> Option<String> {
+        EmbeddingsConfigStore::load(dir.join("embeddings_config.json"), None)
+            .snapshot()
+            .and_then(|c| c.api_key)
+    }
+
+    fn ann_logs_in(dir: &Path) -> bool {
+        let (security, _) = open_server_security(Some(dir), &admin()).unwrap();
+        security.users().is_some_and(|u| {
+            u.authenticate(&Credentials::Basic {
+                username: "ann".into(),
+                password: PASSWORD.into(),
+            })
+            .is_ok()
+        })
+    }
+
+    #[test]
+    fn users_and_embeddings_settings_are_sealed_with_everything_else() {
+        let _turn = turn();
+        let dir = tempfile::tempdir().unwrap();
+        NativeService::set_encryption_key(Some(key()));
+        {
+            let svc = NativeService::open(dir.path().join("native.wal")).unwrap();
+            run(&svc, &format!("CREATE (:Account {{title: '{SECRET}'}})"));
+        }
+        write_server_files(dir.path());
+        // No exceptions: nothing in the data directory is readable.
+        assert_all_encrypted(
+            dir.path(),
+            &[SECRET, "ann", "argon2", API_KEY, "embeddings.example.com"],
+        );
+
+        // With the key they read back.
+        assert!(ann_logs_in(dir.path()));
+        assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
+
+        // Without it the users do not open, and the settings are not used.
+        NativeService::set_encryption_key(None);
+        assert!(open_server_security(Some(dir.path()), &admin()).is_err());
+        assert_eq!(api_key_in(dir.path()), None);
+    }
+
+    #[test]
+    fn encrypt_rotate_and_decrypt_cover_the_server_files() {
+        let _turn = turn();
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let svc = NativeService::open(dir.path().join("native.wal")).unwrap();
+            run(&svc, "CREATE (:Account {title: 'plain'})");
+        }
+        write_server_files(dir.path());
+        let security = dir.path().join("security.json");
+        #[cfg(unix)]
+        let mode = |p: &Path| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        };
+        #[cfg(unix)]
+        assert_eq!(mode(&security), 0o600);
+
+        let keys = tempfile::tempdir().unwrap();
+        let (old_key, new_key) = (keys.path().join("old.key"), keys.path().join("new.key"));
+        std::fs::write(&old_key, HEX).unwrap();
+        std::fs::write(&new_key, OTHER_HEX).unwrap();
+        let data = dir.path().to_string_lossy().to_string();
+        let env = |key_file: &Path| {
+            let data = data.clone();
+            let key_file = key_file.to_string_lossy().to_string();
+            move |k: &str| match k {
+                "DREVO_DATA_DIR" => Some(data.clone()),
+                "DREVO_ENCRYPTION_KEY_FILE" => Some(key_file.clone()),
+                _ => None,
+            }
+        };
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        drevo::encryption_cmd::command(&args(&["encrypt"]), env(&old_key))
+            .unwrap()
+            .unwrap();
+        assert_all_encrypted(dir.path(), &["ann", API_KEY]);
+        #[cfg(unix)]
+        assert_eq!(mode(&security), 0o600, "still owner-only");
+        NativeService::set_encryption_key(Some(key()));
+        assert!(ann_logs_in(dir.path()));
+        assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
+
+        drevo::encryption_cmd::command(
+            &args(&["rotate-key", "--new-key-file", &new_key.to_string_lossy()]),
+            env(&old_key),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            open_server_security(Some(dir.path()), &admin()).is_err(),
+            "the old key is gone"
+        );
+        NativeService::set_encryption_key(Some(Key::from_hex(OTHER_HEX).unwrap()));
+        assert!(ann_logs_in(dir.path()));
+
+        drevo::encryption_cmd::command(&args(&["decrypt"]), env(&new_key))
+            .unwrap()
+            .unwrap();
+        NativeService::set_encryption_key(None);
+        assert!(ann_logs_in(dir.path()));
+        assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
+        assert!(contains(&std::fs::read(&security).unwrap(), "ann"));
+    }
+}

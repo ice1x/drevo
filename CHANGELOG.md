@@ -76,15 +76,16 @@ history and the in-repo issue tracker; format loosely follows
   `DREVO_QUERY_TIMEOUT_MS` caps the client's value.
   `DREVO_IDLE_SESSION_TIMEOUT_MS` closes a Bolt connection that holds an
   open transaction and sends nothing, rolling the transaction back.
-- **Encryption at rest on the server** (issue #645). Built with the
+- **Encryption at rest on the server** (issues #645, #701). Built with the
   `encryption` feature (now in the Docker image), `drevo-server` encrypts
-  every database's log and sidecars, `database_access.json` and physical
-  backups with the 256-bit key from `DREVO_ENCRYPTION_KEY_FILE` (or
+  every database's log and sidecars, `database_access.json`, the users
+  (`security.json`), the embeddings settings (`embeddings_config.json`) and
+  physical backups with the 256-bit key from `DREVO_ENCRYPTION_KEY_FILE` (or
   `DREVO_ENCRYPTION_KEY`). `drevo-server encrypt`, `decrypt` and
   `rotate-key --new-key-file FILE` convert a stopped server's data in place;
   in Rust, `NativeGraph::reencrypt`. Compared with the clear, one durable
   write costs about the same, a 1,000-node batch +10%, reopening a store
-  +107%. The users file stays in the clear.
+  +107%. Nothing in the data directory stays in the clear.
 - **Encrypted sidecars in drevo-core** (issue #645). An encrypted store
   also seals `origin.json`, `tombstones.json`, the stamp log,
   `sequences.json` and its backup copies.

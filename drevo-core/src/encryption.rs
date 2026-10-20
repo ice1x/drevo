@@ -179,6 +179,22 @@ pub fn file_bytes(key: Option<&Key>, context: &[u8], bytes: &[u8]) -> std::io::R
     crate::sealed_file::encode(key, context, bytes)
 }
 
+/// The plaintext of `bytes` in the form [`file_bytes`] makes, with the same
+/// `key` and `context` — for files read some other way than [`read_file`].
+///
+/// # Errors
+/// [`std::io::ErrorKind::InvalidData`] for encrypted bytes without a key,
+/// plain ones with a key, or ones that do not decrypt.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_file_bytes(
+    key: Option<&Key>,
+    context: &[u8],
+    bytes: Vec<u8>,
+) -> std::io::Result<Vec<u8>> {
+    crate::sealed_file::decode(key, context, bytes)
+        .map_err(|what| std::io::Error::new(std::io::ErrorKind::InvalidData, what))
+}
+
 /// Read a file [`write_file`] wrote with the same `key` and `context`;
 /// `None` when there is none.
 ///
@@ -197,6 +213,30 @@ pub fn read_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_bytes_open_with_their_key_and_context_only() {
+        let key = Key::from_bytes([9; 32]);
+        let users = br#"{"users":{"ann":{}}}"#;
+        let sealed = file_bytes(Some(&key), b"drevo security", users).unwrap();
+        assert!(sealed.starts_with(b"DRVSEAL1"));
+        assert_eq!(
+            open_file_bytes(Some(&key), b"drevo security", sealed.clone()).unwrap(),
+            users
+        );
+        for (k, ctx) in [
+            (None, &b"drevo security"[..]),
+            (Some(&Key::from_bytes([8; 32])), &b"drevo security"[..]),
+            (Some(&key), &b"drevo embeddings config"[..]),
+        ] {
+            let err = open_file_bytes(k, ctx, sealed.clone()).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        }
+        // Plain bytes need no key, and are refused with one.
+        assert_eq!(open_file_bytes(None, b"x", users.to_vec()).unwrap(), users);
+        assert!(open_file_bytes(Some(&key), b"x", users.to_vec()).is_err());
+    }
 
     #[test]
     fn a_sealed_value_opens_only_with_its_key_and_context() {

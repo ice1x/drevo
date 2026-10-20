@@ -84,17 +84,28 @@ pub(crate) fn read(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
+    decode(key, context, bytes)
+        .map(Some)
+        .map_err(|what| invalid(path, what))
+}
+
+/// The plaintext of a whole sidecar's `bytes`, as [`read`] returns it.
+///
+/// # Errors
+/// Why it cannot be read: encrypted without a key, plain with a key, or not
+/// decrypting with this key.
+pub(crate) fn decode(
+    key: Option<&SealKey>,
+    context: &[u8],
+    bytes: Vec<u8>,
+) -> Result<Vec<u8>, &'static str> {
     let sealed = bytes.starts_with(MAGIC);
     match key {
-        None if sealed => Err(invalid(
-            path,
-            "the file is encrypted; open the store with its key",
-        )),
-        None => Ok(Some(bytes)),
-        Some(_) if !sealed => Err(invalid(path, "the file is not encrypted")),
+        None if sealed => Err("the file is encrypted; open the store with its key"),
+        None => Ok(bytes),
+        Some(_) if !sealed => Err("the file is not encrypted"),
         Some(key) => open(key, context, &bytes[MAGIC.len()..])
-            .map(Some)
-            .ok_or_else(|| invalid(path, "the file does not decrypt with this key")),
+            .ok_or("the file does not decrypt with this key"),
     }
 }
 
