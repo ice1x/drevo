@@ -142,6 +142,17 @@ instead. Both formats are compiled into the Docker image (Cargo features
 - **Size:** the gain is the embeddings. A float that fits in 32 bits takes 5
   bytes in CBOR against about 20 characters in JSON, so a log dominated by
   vectors shrinks several-fold. MessagePack writes every float in 9 bytes.
+  On a knowledge graph of 4,185 nodes, 2,152 of them with a 1,536-float
+  embedding property (84% of the JSON log), the compacted log measured:
+
+  | Format | Log size | Reopen |
+  |---|---:|---:|
+  | `json` | 73.8 MB | 209 ms |
+  | `cbor` | **19.5 MB** | 256 ms |
+  | `msgpack` | 39.2 MB | 209 ms |
+
+  Most embedding components are exact 32-bit floats, so CBOR stores the
+  vectors losslessly at 5 bytes a value.
 - **Durability:** unchanged. A binary log starts with an 8-byte header, and
   each record carries its length and a CRC-32. A torn last record (a crash
   mid-write) is dropped on open; a damaged record with valid records after it
