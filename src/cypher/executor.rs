@@ -2294,6 +2294,8 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             | "labels"
             | "type"
             | "id"
+            // The Bolt 5 element id, as a string (#707).
+            | "elementid"
             | "properties"
             // Container predicate (task `00159`) — empty-test over the three
             // container types (String / List / Map). Fills the gap `size`
@@ -4090,6 +4092,8 @@ impl<'a> Executor<'a> {
                         // A negative id can never match — an empty set is exact.
                         Value::Integer(i) if i >= 0 => std::iter::once(i as u64).collect(),
                         Value::Integer(_) => std::collections::BTreeSet::new(),
+                        // An element id (`elementId(n) = '42'`): the id as text.
+                        Value::String(s) => element_id_number(&s).into_iter().collect(),
                         // Non-integer comparison semantics belong to the exact
                         // WHERE — skip narrowing entirely.
                         _ => continue,
@@ -4110,6 +4114,7 @@ impl<'a> Executor<'a> {
                                 set.insert(*i as u64);
                             }
                             Value::Integer(_) => {}
+                            Value::String(s) => set.extend(element_id_number(s)),
                             _ => {
                                 all_integers = false;
                                 break;
@@ -11271,9 +11276,16 @@ fn flip_range_op(
     }
 }
 
-/// `id(variable)` → `variable` when `expr` is exactly the scalar `id` function
-/// applied to a bare variable; `None` otherwise. Function names are compared
-/// case-insensitively (`ID(n)` parses with its source casing).
+/// The id an element id names (`"42"` → 42), or `None` for one that names no
+/// node or relationship. A superset for narrowing: the exact filter still
+/// compares the value with `elementId`/`id` itself.
+fn element_id_number(element_id: &str) -> Option<u64> {
+    element_id.parse().ok()
+}
+
+/// `id(variable)` / `elementId(variable)` → `variable` when `expr` is exactly
+/// one of them applied to a bare variable; `None` otherwise. Function names
+/// are compared case-insensitively (`ID(n)` parses with its source casing).
 fn id_call_var(expr: &Expression) -> Option<String> {
     if let Expression::FunctionCall {
         name,
@@ -11282,7 +11294,10 @@ fn id_call_var(expr: &Expression) -> Option<String> {
         ..
     } = expr
     {
-        if name.len() == 1 && name[0].eq_ignore_ascii_case("id") && args.len() == 1 {
+        if name.len() == 1
+            && (name[0].eq_ignore_ascii_case("id") || name[0].eq_ignore_ascii_case("elementId"))
+            && args.len() == 1
+        {
             if let Expression::Variable(var, _) = &args[0] {
                 return Some(var.clone());
             }
@@ -11718,6 +11733,7 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "labels" => scalar_labels(args, span),
         "type" => scalar_type(args, span),
         "id" => scalar_id(args, span),
+        "elementid" => scalar_element_id(args, span),
         "properties" => scalar_properties(args, span),
         "isempty" => scalar_is_empty(args, span),
         "isnan" => scalar_is_nan(args, span),
@@ -12802,6 +12818,24 @@ fn scalar_id(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         Value::Relationship(rv) => Ok(Value::Integer(rv.id as i64)),
         other => Err(fn_err(
             "id",
+            format!(
+                "argument must be a Node or Relationship, got {}",
+                other.type_name()
+            ),
+            span,
+        )),
+    }
+}
+
+/// `elementId(x)` — the element id of a Node or Relationship: its id as a
+/// string, the `element_id` Bolt 5 drivers see. `null` for `null`.
+fn scalar_element_id(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match take_one("elementId", args, span)? {
+        Value::Node(nv) => Ok(Value::String(nv.id.to_string())),
+        Value::Relationship(rv) => Ok(Value::String(rv.id.to_string())),
+        Value::Null => Ok(Value::Null),
+        other => Err(fn_err(
+            "elementId",
             format!(
                 "argument must be a Node or Relationship, got {}",
                 other.type_name()
@@ -15951,6 +15985,14 @@ mod tests {
         assert!(matches!(m["n"].as_slice(), [PushConstraint::IdEq { .. }]));
         let m = pushdown_of("MATCH (n) WHERE 5 = id(n) RETURN n");
         assert!(matches!(m["n"].as_slice(), [PushConstraint::IdEq { .. }]));
+
+        // `elementId(n)` seeks by id the same way.
+        let m = pushdown_of("MATCH (n) WHERE elementId(n) = $e RETURN n");
+        assert!(matches!(m["n"].as_slice(), [PushConstraint::IdEq { .. }]));
+        let m = pushdown_of("MATCH (n) WHERE ELEMENTID(n) IN $ids RETURN n");
+        assert!(matches!(m["n"].as_slice(), [PushConstraint::IdIn { .. }]));
+        assert_eq!(element_id_number("42"), Some(42));
+        assert_eq!(element_id_number("4:abc:42"), None);
 
         // Case-insensitive function name; `id(n) IN [...]` lifts an IdIn.
         let m = pushdown_of("MATCH (n) WHERE ID(n) IN [1, 2] RETURN n");
