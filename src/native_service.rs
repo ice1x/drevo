@@ -435,6 +435,30 @@ pub(crate) fn sidecar_bytes(context: &[u8], bytes: Vec<u8>) -> std::io::Result<V
     }
 }
 
+/// The plaintext of sidecar `bytes` read some other way than
+/// [`read_sidecar`]: opened with the process's encryption key when there is
+/// one.
+///
+/// # Errors
+/// Encrypted bytes without a key, plain ones with a key, or ones that do not
+/// decrypt.
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "http", feature = "auth")))]
+pub(crate) fn decode_sidecar(context: &[u8], bytes: Vec<u8>) -> std::io::Result<Vec<u8>> {
+    #[cfg(feature = "encryption")]
+    {
+        drevo_core::encryption::open_file_bytes(
+            NativeService::encryption_key().as_deref(),
+            context,
+            bytes,
+        )
+    }
+    #[cfg(not(feature = "encryption"))]
+    {
+        let _ = context;
+        Ok(bytes)
+    }
+}
+
 /// Load both registries from the sidecar, or empty ones if absent or
 /// unparseable (best-effort, mirroring the tombstone sidecar). A sidecar that
 /// cannot be read — or does not decrypt with the store's key — fails the

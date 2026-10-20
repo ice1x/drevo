@@ -8,7 +8,8 @@
 //! ```
 //!
 //! Every database in `DREVO_DATA_DIR` — its log, the engine's sidecars and
-//! `semantic.json` — and the server's `database_access.json` is rewritten.
+//! `semantic.json` — and the server's `database_access.json`,
+//! `security.json` and `embeddings_config.json` are rewritten.
 //! The server must be stopped (a running one holds the stores' locks). Each
 //! file is replaced atomically, but not all of them at once: back the data
 //! directory up first (`drevo-server backup`).
@@ -98,12 +99,19 @@ fn run(
             to.as_ref(),
         )?;
     }
-    rekey_file(
-        &data_dir.join(ACCESS_FILE),
-        ACCESS_CONTEXT,
-        from.as_ref(),
-        to.as_ref(),
-    )?;
+    for (file, context) in [
+        (ACCESS_FILE, ACCESS_CONTEXT),
+        (
+            crate::security::SECURITY_FILE,
+            crate::security::SECURITY_CONTEXT,
+        ),
+        (
+            crate::embeddings::EMBEDDINGS_CONFIG_FILE,
+            crate::embeddings::EMBEDDINGS_CONFIG_CONTEXT,
+        ),
+    ] {
+        rekey_file(&data_dir.join(file), context, from.as_ref(), to.as_ref())?;
+    }
     let done = match verb {
         "encrypt" => "encrypted",
         "decrypt" => "decrypted",
@@ -142,7 +150,7 @@ fn stores(data_dir: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// Rewrite the sidecar at `path` (if there is one) from key `from` to key
-/// `to`.
+/// `to`, keeping its permissions (`security.json` is owner-only).
 fn rekey_file(
     path: &Path,
     context: &[u8],
@@ -151,7 +159,10 @@ fn rekey_file(
 ) -> Result<(), String> {
     let bytes = read_file(path, from, context).map_err(|e| e.to_string())?;
     if let Some(bytes) = bytes {
-        write_file(path, to, context, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        let at = |e: std::io::Error| format!("{}: {e}", path.display());
+        let permissions = std::fs::metadata(path).map_err(at)?.permissions();
+        write_file(path, to, context, &bytes).map_err(at)?;
+        std::fs::set_permissions(path, permissions).map_err(at)?;
     }
     Ok(())
 }

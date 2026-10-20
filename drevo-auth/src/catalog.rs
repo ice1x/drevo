@@ -200,10 +200,27 @@ impl CatalogStore for MemoryStore {
     }
 }
 
+/// How a [`FileStore`] turns the catalog's JSON into the file's bytes and
+/// back — to encrypt the file, say.
+pub trait FileCodec: Send + Sync + std::fmt::Debug {
+    /// The bytes to write for `json`.
+    ///
+    /// # Errors
+    /// When they cannot be made; nothing is written.
+    fn encode(&self, json: Vec<u8>) -> std::io::Result<Vec<u8>>;
+
+    /// The JSON in `file`, the bytes read from the store's file.
+    ///
+    /// # Errors
+    /// When the file cannot be decoded, such as with the wrong key.
+    fn decode(&self, file: Vec<u8>) -> std::io::Result<Vec<u8>>;
+}
+
 /// A catalog kept as JSON in one file.
 #[derive(Debug, Clone)]
 pub struct FileStore {
     path: PathBuf,
+    codec: Option<std::sync::Arc<dyn FileCodec>>,
 }
 
 impl FileStore {
@@ -211,7 +228,17 @@ impl FileStore {
     /// [`load`](CatalogStore::load) or [`save`](CatalogStore::save).
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            codec: None,
+        }
+    }
+
+    /// Write the file through `codec` and read it back through it.
+    #[must_use]
+    pub fn with_codec(mut self, codec: std::sync::Arc<dyn FileCodec>) -> Self {
+        self.codec = Some(codec);
+        self
     }
 
     /// The file this store uses.
@@ -242,6 +269,10 @@ impl CatalogStore for FileStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(self.io(&e)),
         };
+        let bytes = match &self.codec {
+            Some(codec) => codec.decode(bytes).map_err(|e| self.io(&e))?,
+            None => bytes,
+        };
         // Check the version before the shape, so a newer format is reported as
         // such rather than as damage.
         let value: serde_json::Value =
@@ -266,6 +297,10 @@ impl CatalogStore for FileStore {
         use std::io::Write;
 
         let json = serde_json::to_vec_pretty(catalog).map_err(|e| self.corrupt(e.to_string()))?;
+        let json = match &self.codec {
+            Some(codec) => codec.encode(json).map_err(|e| self.io(&e))?,
+            None => json,
+        };
         let tmp = self.path.with_extension("json.tmp");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -332,5 +367,49 @@ mod tests {
         let err = FileStore::new(&file).load().unwrap_err();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(matches!(err, StoreError::Corrupt { .. }), "{err:?}");
+    }
+
+    /// Reverses the bytes, and fails to decode anything not written by it.
+    #[derive(Debug)]
+    struct Reversed;
+
+    impl FileCodec for Reversed {
+        fn encode(&self, mut json: Vec<u8>) -> std::io::Result<Vec<u8>> {
+            json.reverse();
+            json.insert(0, b'#');
+            Ok(json)
+        }
+
+        fn decode(&self, mut file: Vec<u8>) -> std::io::Result<Vec<u8>> {
+            if file.first() != Some(&b'#') {
+                return Err(std::io::Error::other("not written by this codec"));
+            }
+            file.remove(0);
+            file.reverse();
+            Ok(file)
+        }
+    }
+
+    #[test]
+    fn a_codec_shapes_the_file_both_ways() {
+        let dir = std::env::temp_dir().join(format!("drevo_auth_codec_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("security.json");
+        let store = FileStore::new(&file).with_codec(std::sync::Arc::new(Reversed));
+        let catalog = Catalog {
+            format_version: FORMAT_VERSION,
+            ..Catalog::default()
+        };
+        store.save(&catalog).unwrap();
+        let raw = std::fs::read(&file).unwrap();
+        assert_eq!(raw.first(), Some(&b'#'), "written through the codec");
+        assert_eq!(store.load().unwrap(), Some(catalog));
+        // Without the codec the file is not a catalog; a plain file does not
+        // decode through it.
+        assert!(FileStore::new(&file).load().is_err());
+        std::fs::write(&file, br#"{"format_version": 1, "users": {}}"#).unwrap();
+        let err = store.load().unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(err, StoreError::Io { .. }), "{err:?}");
     }
 }
