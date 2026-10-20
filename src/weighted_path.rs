@@ -50,16 +50,16 @@
 //!     3,
 //!     &options,
 //!     &|id| Ok((1..=3).contains(&id).then(|| node(id))),
-//!     &|id, dir| {
-//!         Ok(edges
+//!     &|id, dir, visit| {
+//!         edges
 //!             .iter()
 //!             .filter(|e| match dir {
 //!                 Direction::Outgoing => e.from_id == id,
 //!                 Direction::Incoming => e.to_id == id,
 //!                 Direction::Both => e.from_id == id || e.to_id == id,
 //!             })
-//!             .cloned()
-//!             .collect())
+//!             .for_each(&mut *visit);
+//!         Ok(())
 //!     },
 //! )?
 //! .expect("c is reachable");
@@ -150,8 +150,10 @@ pub struct WeightedPath {
 
 /// Find the lowest-cost path from `from` to `to`.
 ///
-/// `get_node` looks a node up by id and `edges_of` lists a node's
-/// relationships in one direction. Returns `Ok(None)` when either node is
+/// `get_node` looks a node up by id and `edges_of(node, direction, f)` calls
+/// `f` with each of a node's relationships in one direction, by reference
+/// (as [`GraphEngine::for_each_edge_of`](drevo_core::engine::GraphEngine::for_each_edge_of)
+/// does), so the search copies no relationship record. Returns `Ok(None)` when either node is
 /// missing, when `to` cannot be reached, or when every path costs more than
 /// [`WeightedPathOptions::max_cost`]. From a node to itself the path is that
 /// one node at cost zero.
@@ -171,7 +173,7 @@ pub fn weighted_path<N, E>(
 ) -> Result<Option<WeightedPath>>
 where
     N: Fn(u64) -> Result<Option<Arc<Node>>>,
-    E: Fn(u64, Direction) -> Result<Vec<Edge>>,
+    E: Fn(u64, Direction, &mut dyn FnMut(&Edge)) -> Result<()>,
 {
     validate(options)?;
     let (Some(start), Some(end)) = (get_node(from)?, get_node(to)?) else {
@@ -326,18 +328,26 @@ struct Search<'a, E> {
 
 impl<E> Search<'_, E>
 where
-    E: Fn(u64, Direction) -> Result<Vec<Edge>>,
+    E: Fn(u64, Direction, &mut dyn FnMut(&Edge)) -> Result<()>,
 {
     /// The usable relationships of `node` in `direction`, each with the node
     /// at its other end and its cost.
     fn steps(&self, node: u64, direction: Direction) -> Result<Vec<(u64, u64, f64)>> {
         let mut out = Vec::new();
-        for edge in (self.edges_of)(node, direction)? {
-            if !self.options.kinds.is_empty() && !self.options.kinds.contains(&edge.kind) {
-                continue;
+        let mut failure = None;
+        (self.edges_of)(node, direction, &mut |edge| {
+            if failure.is_some()
+                || (!self.options.kinds.is_empty() && !self.options.kinds.contains(&edge.kind))
+            {
+                return;
             }
-            let Some(cost) = self.cost_of(&edge)? else {
-                continue;
+            let cost = match self.cost_of(edge) {
+                Ok(Some(cost)) => cost,
+                Ok(None) => return,
+                Err(e) => {
+                    failure = Some(e);
+                    return;
+                }
             };
             let next = match direction {
                 Direction::Outgoing => edge.to_id,
@@ -346,8 +356,11 @@ where
                 Direction::Both => edge.from_id,
             };
             out.push((next, edge.id, cost));
+        })?;
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(out),
         }
-        Ok(out)
     }
 
     /// The cost of `edge`, `None` when it has no cost and cannot be used.
@@ -583,17 +596,16 @@ mod tests {
                 to,
                 options,
                 &|id| Ok(self.nodes.get(&id).cloned()),
-                &|id, dir| {
-                    Ok(self
-                        .edges
+                &|id, dir, f| {
+                    self.edges
                         .iter()
                         .filter(|e| match dir {
                             Direction::Outgoing => e.from_id == id,
                             Direction::Incoming => e.to_id == id,
                             Direction::Both => e.from_id == id || e.to_id == id,
                         })
-                        .cloned()
-                        .collect())
+                        .for_each(&mut *f);
+                    Ok(())
                 },
             )
         }

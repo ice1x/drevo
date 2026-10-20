@@ -139,6 +139,26 @@ pub trait GraphEngine {
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
     fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>>;
 
+    /// Call `f` with each relationship of `node_id` in `direction`, by
+    /// reference — for a loop that reads a few fields of many relationships
+    /// and should not copy every record, such as a path search. Same
+    /// relationships and order as [`edges_of`](Self::edges_of), which the
+    /// default calls.
+    ///
+    /// # Errors
+    /// Propagates any [`crate::error::CoreError`] from the underlying store.
+    fn for_each_edge_of(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        f: &mut dyn FnMut(&Edge),
+    ) -> Result<()> {
+        for edge in self.edges_of(node_id, direction)? {
+            f(&edge);
+        }
+        Ok(())
+    }
+
     /// Return **every** node in the store (a full scan — the label-less
     /// `MATCH (n)`).
     ///

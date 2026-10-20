@@ -50,8 +50,9 @@
 //!   a one-directional Dijkstra over the relationship `weight`, which holds
 //!   `car_s` too;
 //! * `adjacency_sweep` — reading the outgoing relationships of every
-//!   drivable junction once, as full records (what a search reads) and as
-//!   ids only, to put the per-route numbers in proportion.
+//!   drivable junction once: copied as full records, read by reference (what
+//!   a search does), and as ids only, to put the per-route numbers in
+//!   proportion.
 //!
 //! Before timing, every pair is routed both ways and the bench stops if A*
 //! and Dijkstra disagree on a cost.
@@ -521,6 +522,15 @@ fn main() {
             let mut total = 0usize;
             for &id in &net.drivable {
                 total += snap.edges_of(id, Direction::Outgoing).len();
+            }
+            black_box(total)
+        })
+    });
+    g.bench_function("for_each_edge_of", |b| {
+        b.iter(|| {
+            let mut total = 0usize;
+            for &id in &net.drivable {
+                snap.for_each_edge_of(id, Direction::Outgoing, |_| total += 1);
             }
             black_box(total)
         })
