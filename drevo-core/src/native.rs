@@ -108,20 +108,24 @@ struct Inner {
     /// `to_id → entries` (neighbour = the edge's `from_id`), insertion order.
     in_adj: crate::dense_map::DenseMap<Vec<AdjEntry>>,
     /// `title → ids of the nodes with that title`, ascending. Titles are
-    /// ordinary values; any number of nodes may share one.
-    titles: HashMap<String, crate::id_set::IdSet>,
+    /// ordinary values; any number of nodes may share one. Each set is
+    /// behind `Arc`, as below: a transaction's copy of `Inner` shares them,
+    /// and a write copies only the set it changes.
+    titles: HashMap<String, Arc<crate::id_set::IdSet>>,
     /// `node kind → ids of that kind`: the primary-kind index, so
     /// `nodes_by_kind` is `O(matches · log)` instead of a full `O(n)` scan.
     /// The `BTreeSet` keeps ids ascending, the order `nodes_by_kind` returns
     /// (and what `offset`/`limit` pagination is defined against).
-    kind_index: HashMap<String, BTreeSet<u64>>,
+    kind_index: HashMap<String, Arc<BTreeSet<u64>>>,
     /// Edge-kind string → interned `u32` id (adjacency stores the id).
     kind_ids: HashMap<String, u32>,
     /// `node id → embedding vector` — the durable, typed embedding store. Kept
     /// separate from node `properties` (distinct lifecycle; the HNSW index is
     /// rebuilt from it), but keyed by node id and **cascaded on node
     /// deletion**.
-    embeddings: HashMap<u64, Vec<f32>>,
+    // Behind `Arc` like the records, so a transaction's copy of `Inner`
+    // shares the vectors instead of copying every one.
+    embeddings: HashMap<u64, Arc<Vec<f32>>>,
     /// Declared schema constraints. Uniqueness is checked on every node write
     /// through [`Inner::unique`]; existence on every write outside a
     /// transaction and at transaction commit.
@@ -183,17 +187,14 @@ impl Inner {
 
     /// Add `id` to the `kind` bucket of the node-kind index.
     fn index_node_kind(&mut self, id: u64, kind: &str) {
-        self.kind_index
-            .entry(kind.to_string())
-            .or_default()
-            .insert(id);
+        Arc::make_mut(self.kind_index.entry(kind.to_string()).or_default()).insert(id);
     }
 
     /// Remove `id` from the `kind` bucket, dropping the bucket when it empties
     /// so an absent kind is truly absent (no lingering empty set).
     fn unindex_node_kind(&mut self, id: u64, kind: &str) {
         if let Some(set) = self.kind_index.get_mut(kind) {
-            set.remove(&id);
+            Arc::make_mut(set).remove(&id);
             if set.is_empty() {
                 self.kind_index.remove(kind);
             }
@@ -402,6 +403,7 @@ impl Inner {
     fn nodes_by_title(&self, title: &str) -> Vec<Node> {
         self.titles
             .get(title)
+            .map(|ids| &**ids)
             .into_iter()
             .flatten()
             .filter_map(|id| self.nodes.get(id).map(|a| (**a).clone()))
@@ -409,12 +411,12 @@ impl Inner {
     }
 
     fn index_title(&mut self, id: u64, title: &str) {
-        self.titles.entry(title.to_string()).or_default().insert(id);
+        Arc::make_mut(self.titles.entry(title.to_string()).or_default()).insert(id);
     }
 
     fn unindex_title(&mut self, id: u64, title: &str) {
         if let Some(ids) = self.titles.get_mut(title) {
-            ids.remove(&id);
+            Arc::make_mut(ids).remove(&id);
             if ids.is_empty() {
                 self.titles.remove(title);
             }
@@ -799,10 +801,10 @@ impl Inner {
         }
         // Embeddings last, id-ascending, so compaction/dump preserves the
         // durable embedding store (issue #446).
-        let mut embs: Vec<(&u64, &Vec<f32>)> = self.embeddings.iter().collect();
+        let mut embs: Vec<(&u64, &Arc<Vec<f32>>)> = self.embeddings.iter().collect();
         embs.sort_by_key(|(id, _)| **id);
         for (id, vec) in embs {
-            f(WalOp::SetEmbedding(*id, vec.clone()))?;
+            f(WalOp::SetEmbedding(*id, (**vec).clone()))?;
         }
         // Unresolved prepared transactions last (#556), so a compaction or a
         // dump never forgets an in-doubt transaction.
@@ -893,7 +895,7 @@ impl Inner {
             }
             WalOp::DeleteEdge(id) => self.remove_edge(id),
             WalOp::SetEmbedding(id, vector) => {
-                self.embeddings.insert(id, vector);
+                self.embeddings.insert(id, Arc::new(vector));
             }
             WalOp::DeleteEmbedding(id) => {
                 self.embeddings.remove(&id);
@@ -2827,7 +2829,10 @@ impl NativeGraph {
 
     /// Fetch `node_id`'s embedding, or `None`.
     pub fn get_embedding(&self, node_id: u64) -> Option<Vec<f32>> {
-        read(&self.inner).embeddings.get(&node_id).cloned()
+        read(&self.inner)
+            .embeddings
+            .get(&node_id)
+            .map(|v| (**v).clone())
     }
 
     /// Delete `node_id`'s embedding, durably. Idempotent (a missing embedding
@@ -2855,7 +2860,7 @@ impl NativeGraph {
         let mut out: Vec<(u64, Vec<f32>)> = inner
             .embeddings
             .iter()
-            .map(|(id, v)| (*id, v.clone()))
+            .map(|(id, v)| (*id, (**v).clone()))
             .collect();
         out.sort_by_key(|(id, _)| *id);
         out
@@ -5194,6 +5199,15 @@ mod kind_index_tests {
 
     /// The kind index recomputed from scratch off `nodes` — what any correct
     /// incremental maintenance must converge to.
+    /// The kind index as plain sets.
+    fn kinds(inner: &Inner) -> HashMap<String, BTreeSet<u64>> {
+        inner
+            .kind_index
+            .iter()
+            .map(|(k, v)| (k.clone(), (**v).clone()))
+            .collect()
+    }
+
     fn ground_truth(inner: &Inner) -> HashMap<String, BTreeSet<u64>> {
         let mut truth: HashMap<String, BTreeSet<u64>> = HashMap::new();
         for node in inner.nodes.values() {
@@ -5208,7 +5222,7 @@ mod kind_index_tests {
         let a = inner.create_node(nn("person", "a")).unwrap();
         let b = inner.create_node(nn("person", "b")).unwrap();
         let _c = inner.create_node(nn("city", "c")).unwrap();
-        assert_eq!(inner.kind_index, ground_truth(&inner));
+        assert_eq!(kinds(&inner), ground_truth(&inner));
 
         // Re-kind b (person -> city): must move buckets.
         inner
@@ -5220,11 +5234,11 @@ mod kind_index_tests {
                 },
             )
             .unwrap();
-        assert_eq!(inner.kind_index, ground_truth(&inner));
+        assert_eq!(kinds(&inner), ground_truth(&inner));
 
         // Delete a: person bucket empties and is dropped (no empty bucket left).
         inner.delete_node(a.id).unwrap();
-        assert_eq!(inner.kind_index, ground_truth(&inner));
+        assert_eq!(kinds(&inner), ground_truth(&inner));
         assert!(!inner.kind_index.contains_key("person"));
 
         // A replacing WAL upsert that changes an existing node's kind must
@@ -5232,14 +5246,14 @@ mod kind_index_tests {
         let mut c_rekind = inner.get_node(_c.id).unwrap();
         c_rekind.kind = "town".into();
         inner.apply_wal_op(WalOp::UpsertNode(c_rekind));
-        assert_eq!(inner.kind_index, ground_truth(&inner));
+        assert_eq!(kinds(&inner), ground_truth(&inner));
         // c left `city` for `town`; b (re-kinded to city earlier) still holds it.
-        assert_eq!(inner.kind_index["town"], BTreeSet::from([_c.id]));
-        assert_eq!(inner.kind_index["city"], BTreeSet::from([b.id]));
+        assert_eq!(*inner.kind_index["town"], BTreeSet::from([_c.id]));
+        assert_eq!(*inner.kind_index["city"], BTreeSet::from([b.id]));
 
         // A WAL delete removes its id from the index.
         inner.apply_wal_op(WalOp::DeleteNode(_c.id));
-        assert_eq!(inner.kind_index, ground_truth(&inner));
+        assert_eq!(kinds(&inner), ground_truth(&inner));
     }
 }
 

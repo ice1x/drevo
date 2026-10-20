@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Every write transaction copied the whole graph's adjacency** (issue
+  #716). A transaction's copy of the store now shares the adjacency lists
+  (in chunks of 64 nodes), embeddings and the kind / title indexes with the
+  committed store until it writes them: one `SET` in an `execute_write` on
+  a 112k-node, 210k-relationship graph went from +22 MB and 17 ms to
+  +0.1 MB and 0.3 ms, with the store's own size unchanged.
 - **`MATCH … WITH n LIMIT k` built every match first** (issue #714). A
   `MATCH` whose rows the next `WITH` / `RETURN` cuts to a constant `LIMIT`
   (no `ORDER BY`, `DISTINCT`, aggregation or `WITH … WHERE`) now stops once
