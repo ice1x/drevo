@@ -150,6 +150,15 @@ fn port_1024_is_not_privileged() {
 }
 
 #[test]
+fn port_0_set_in_code_is_not_privileged() {
+    // `DREVO_PORT=0` is refused, but a caller may set port 0 to have the
+    // system pick one (see `server::run_announcing`); it is no privileged port.
+    let mut cfg = Config::from_env(getter(HashMap::new())).unwrap();
+    cfg.port = 0;
+    assert!(!cfg.is_privileged_port());
+}
+
+#[test]
 fn port_default_8080_is_not_privileged() {
     let cfg = Config::from_env(getter(HashMap::new())).unwrap();
     assert!(!cfg.is_privileged_port());

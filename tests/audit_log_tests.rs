@@ -405,31 +405,24 @@ async fn the_server_writes_the_audit_log_file() {
 
     let dir = tempfile::TempDir::new().unwrap();
     let log = dir.path().join("audit.log");
-    let port = {
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        probe.local_addr().unwrap().port()
-    };
     let env: std::collections::HashMap<&str, String> = std::collections::HashMap::from([
         ("DREVO_HOST", "127.0.0.1".to_string()),
-        ("DREVO_PORT", port.to_string()),
         ("DREVO_DATA_DIR", dir.path().to_string_lossy().to_string()),
         ("DREVO_AUTH", format!("admin/{SECRET}")),
         ("DREVO_AUDIT_LOG", log.to_string_lossy().to_string()),
     ]);
-    let cfg = drevo::server::Config::from_env(move |k| env.get(k).cloned()).unwrap();
-    let server = tokio::spawn(async move { drevo::server::run(cfg).await.unwrap() });
-    let mut up = false;
-    for _ in 0..250 {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .is_ok()
-        {
-            up = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(up, "the server did not start");
+    let mut cfg = drevo::server::Config::from_env(move |k| env.get(k).cloned()).unwrap();
+    // Port 0: the system picks a free port, the server reports it.
+    cfg.port = 0;
+    let (listening, announced) = tokio::sync::oneshot::channel();
+    let server =
+        tokio::spawn(async move { drevo::server::run_announcing(cfg, listening).await.unwrap() });
+    let port = tokio::time::timeout(std::time::Duration::from_secs(30), announced)
+        .await
+        .expect("the server started in time")
+        .expect("the server started")
+        .http
+        .port();
     let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .unwrap();
