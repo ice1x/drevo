@@ -84,6 +84,24 @@ fn shell_scripts_have_valid_bash_syntax() {
 }
 
 #[test]
+fn the_restart_script_forwards_the_server_settings() {
+    let script = std::fs::read_to_string(repo_root().join("scripts/drevo-restart.sh")).unwrap();
+    let line = script
+        .lines()
+        .find(|l| l.starts_with("FORWARD_VARS="))
+        .expect("a FORWARD_VARS line");
+    for var in [
+        "DREVO_AUTH",
+        "DREVO_EMBEDDINGS_API_KEY",
+        "DREVO_QUERY_TIMEOUT_MS",
+        "DREVO_IDLE_SESSION_TIMEOUT_MS",
+    ] {
+        assert!(line.contains(var), "{var} is not forwarded: {line}");
+    }
+    assert!(script.contains("for _v in $FORWARD_VARS; do"));
+}
+
+#[test]
 fn watchdog_recreates_when_container_absent() {
     assert!(
         run_watchdog_recreates(""),

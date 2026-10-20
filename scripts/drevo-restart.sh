@@ -51,11 +51,14 @@ DOCKER="${DREVO_DOCKER:-docker}"
 mkdir -p "$DATA_DIR"
 [ -f "${DATA_DIR}/drevo.redb" ] || echo "note: ${DATA_DIR}/drevo.redb not found yet — a fresh DB will be created."
 
-# Forward the optional embeddings-proxy config (issue #217) only when present,
-# so the endpoint stays a 503 no-op otherwise. Requires an image built with the
-# `embeddings-proxy` feature.
+# Server settings forwarded into the container when set (in the shell or the
+# env file): the embeddings proxy (issue #217; needs the `embeddings-proxy`
+# feature, a 503 no-op otherwise), the engine, the statement and idle-session
+# timeouts, and DREVO_AUTH — `none` keeps a server without users open to
+# clients that send no credentials, such as an MCP server.
+FORWARD_VARS="DREVO_EMBEDDINGS_UPSTREAM DREVO_EMBEDDINGS_API_KEY DREVO_EMBEDDINGS_MODEL DREVO_ENGINE DREVO_QUERY_TIMEOUT_MS DREVO_IDLE_SESSION_TIMEOUT_MS DREVO_AUTH"
 EMB_ENV=()
-for _v in DREVO_EMBEDDINGS_UPSTREAM DREVO_EMBEDDINGS_API_KEY DREVO_EMBEDDINGS_MODEL; do
+for _v in $FORWARD_VARS; do
   if [ -n "${!_v:-}" ]; then
     EMB_ENV+=(-e "${_v}=${!_v}")
   fi
