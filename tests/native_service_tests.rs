@@ -236,6 +236,7 @@ fn vector_query_is_served_on_the_native_engine() {
     assert_eq!(titles, ["a", "c"], "top-2 by cosine, label-scoped");
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn fts_search_relationships_is_served_on_the_native_engine() {
     // Edge full-text (fts.searchRelationships, #229) reads the native
@@ -267,8 +268,10 @@ fn fts_search_relationships_is_served_on_the_native_engine() {
 
 /// Deterministic test embedder: 'rust'-ish text points at [1, 0], anything
 /// else at [0, 1].
+#[cfg(feature = "http")]
 struct MockEmbedder;
 
+#[cfg(feature = "http")]
 impl drevo::embeddings::TextEmbedder for MockEmbedder {
     fn embed_query(&self, text: &str) -> Result<Vec<f32>, drevo::embeddings::EmbeddingsError> {
         if text.contains("rust") {
@@ -279,6 +282,7 @@ impl drevo::embeddings::TextEmbedder for MockEmbedder {
     }
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn semantic_reindex_backfills_embeddings_on_native() {
     let service = NativeService::in_memory();
@@ -323,6 +327,7 @@ fn semantic_reindex_backfills_embeddings_on_native() {
     assert_eq!(hits.rows, vec![vec![Value::String("a".to_string())]]);
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn semantic_reindex_rel_backfills_edge_embeddings_on_native() {
     let service = NativeService::in_memory();
@@ -352,6 +357,7 @@ fn semantic_reindex_rel_backfills_edge_embeddings_on_native() {
     );
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn semantic_info_reports_the_native_embedder() {
     // Was `EngineCapability` on native before #447 (info lived on the KV
@@ -367,6 +373,7 @@ fn semantic_info_reports_the_native_embedder() {
     assert_eq!(info.rows, vec![vec![Value::Bool(true), Value::Integer(2)]]);
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn semantic_embed_and_query_use_the_installed_native_embedder() {
     let service = NativeService::in_memory();
@@ -403,6 +410,8 @@ fn semantic_embed_and_query_use_the_installed_native_embedder() {
     );
 }
 
+// The semantic procedures exist only with `http` (the embedder).
+#[cfg(feature = "http")]
 #[test]
 fn semantic_embed_without_an_embedder_surfaces_the_capability_error() {
     let service = NativeService::in_memory();

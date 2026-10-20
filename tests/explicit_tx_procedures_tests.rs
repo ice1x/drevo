@@ -58,8 +58,10 @@ fn mentions(result: &ExecResult, needle: &str) -> bool {
         .any(|v| matches!(v, Value::String(s) if s == needle))
 }
 
+#[cfg(feature = "http")]
 struct MockEmbedder;
 
+#[cfg(feature = "http")]
 impl drevo::embeddings::TextEmbedder for MockEmbedder {
     fn embed_query(&self, text: &str) -> Result<Vec<f32>, drevo::embeddings::EmbeddingsError> {
         if text.contains("rust") {
@@ -227,6 +229,7 @@ fn vector_and_fuzzy_search_read_the_transaction_s_own_writes() {
     svc.rollback_tx(tx);
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn semantic_query_and_status_run_in_a_transaction() {
     let svc = NativeService::in_memory();
@@ -254,6 +257,7 @@ fn semantic_query_and_status_run_in_a_transaction() {
 
 // ── writes ───────────────────────────────────────────────────────────────
 
+#[cfg(feature = "http")]
 #[test]
 fn nodes_created_in_a_transaction_are_auto_embedded() {
     let svc = NativeService::in_memory();
@@ -279,6 +283,7 @@ fn nodes_created_in_a_transaction_are_auto_embedded() {
     );
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn schema_commands_are_refused_in_a_transaction_and_change_nothing() {
     let svc = NativeService::in_memory();

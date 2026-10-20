@@ -281,6 +281,8 @@ fn heuristic_rollback_from_cypher_is_reported_to_a_late_commit() {
     assert!(err.to_string().contains("heuristically"), "{err}");
 }
 
+// The heuristic-rollback watcher is part of the server (`http`).
+#[cfg(feature = "http")]
 #[test]
 fn expired_prepared_transactions_are_rolled_back_heuristically() {
     let svc = NativeService::in_memory();
