@@ -75,6 +75,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Admin guide: Upgrading a server.** The steps to move a data directory
+  to a new image: copy it, choose `DREVO_AUTH` before the first start (an
+  image that requires a login otherwise creates `neo4j` with a generated
+  password and refuses clients without credentials), read the first-start
+  log, compare the node count.
+
 - **`elementId()`** (issue #707). `elementId(n)` / `elementId(r)` return
   the id as a string, the `element_id` Bolt 5 drivers see, and
   `MATCH (n) WHERE elementId(n) = $e` (or `IN $ids`) is a lookup by id.

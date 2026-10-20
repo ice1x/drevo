@@ -395,6 +395,51 @@ Running `drevo-server` on Linux outside the image, set the same variable:
 MALLOC_ARENA_MAX=2 drevo-server
 ```
 
+### Upgrading a server
+
+A new image opens the data directory of an earlier one as it is: the write-ahead log keeps
+its format, and there is no migration step. The image requires a
+login, so a data directory with no `<DREVO_DATA_DIR>/security.json` gets its first user
+when the new image first starts (see [Users](#users)). Choose that user before the first
+start. Otherwise the server creates `neo4j` with a generated password, and clients that
+connect without credentials are refused.
+
+1. Copy the data while the old container is stopped, so you can go back:
+
+   ```bash
+   docker stop drevo
+   cp -a ~/drevo_data ~/drevo_data.bak-before-upgrade
+   ```
+
+2. Set `DREVO_AUTH` in the container's environment: `none` to keep connections without a
+   login, or `user/password` for the first user, whose credentials the clients then pass.
+   A wrapper script that runs `docker run` must forward the variable;
+   [`scripts/drevo-restart.sh`](https://github.com/ice1x/drevo/tree/main/scripts/drevo-restart.sh)
+   forwards `DREVO_AUTH` from `~/.drevo.env`.
+
+   ```bash
+   docker run -d --name drevo -p 8080:8080 -p 7687:7687 \
+     -e DREVO_AUTH=none -v ~/drevo_data:/data ice1x/drevo:latest
+   ```
+
+3. Check the first start's log. It names what was done with `DREVO_AUTH`:
+   `DREVO_AUTH=none: no first user created`, `created the first user from DREVO_AUTH`, or a
+   `WARN` line with the generated `neo4j` password.
+
+   ```bash
+   docker logs drevo 2>&1 | grep DREVO_AUTH
+   ```
+
+4. Compare the node count with the one before the upgrade:
+
+   ```bash
+   curl -s -X POST localhost:8080/cypher -H 'Content-Type: application/json' \
+     -d '{"query": "MATCH (n) RETURN count(n) AS nodes"}'
+   ```
+
+A data directory that already has `security.json` keeps its users, whatever `DREVO_AUTH`
+says.
+
 ---
 
 ## 4. Kubernetes
