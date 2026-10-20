@@ -144,6 +144,26 @@ What the numbers show:
   about as much as reading every drivable junction's relationships once, and
   reading full relationship records costs 3.5× reading neighbour ids.
 
+## Write transactions
+
+A write transaction works on its own copy of the store. The copy shares
+everything with the committed store — node and relationship records, the
+adjacency lists (in chunks of 64 nodes), embeddings, and the kind and title
+indexes — and a write copies only what it touches, so a small transaction
+costs the same on a large graph as on a small one.
+
+One `SET` on one node in an explicit transaction (`execute_write`), on
+112,000 junctions and 210,000 roads, release build, counting allocator:
+
+| | peak heap | time |
+|---|---:|---:|
+| before (whole adjacency, embeddings and indexes copied) | +22.4 MB | 16.7 ms |
+| now | **+0.1 MB** | **0.27 ms** |
+
+The store itself is the same size (102 MB vs 103 MB). The test
+`drevo-core/tests/tx_copy_cost.rs` keeps the peak under 1 MB on 50,000
+junctions with embeddings.
+
 ## Reproducing against competitors
 
 Each competitor runs the **same** graph and the **same** eight operations. Use a
