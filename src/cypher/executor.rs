@@ -461,8 +461,8 @@ pub enum ExecError {
         feature: String,
     },
     /// The statement ran past the configured statement timeout (#547) and was
-    /// stopped. Writes an autocommit statement made before the limit hit are
-    /// kept, as with any other runtime error mid-statement.
+    /// stopped. Like any failing statement it leaves none of its writes
+    /// when run through [`crate::native_service::NativeService`].
     #[error("statement exceeded the {limit_ms} ms statement timeout")]
     Timeout {
         /// The configured limit, in milliseconds.
