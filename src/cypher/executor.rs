@@ -1546,6 +1546,7 @@ fn execute_single(
             .filter(|r| !r.context.reads_everything(r.database)),
         read_memo: std::cell::RefCell::default(),
         pushdown: HashMap::new(),
+        match_cap: None,
         params,
         bindings: vec![HashMap::new()],
         stats: ExecStats::default(),
@@ -1553,9 +1554,16 @@ fn execute_single(
         result_rows: Vec::new(),
     };
 
-    for clause in &single.clauses {
+    for (i, clause) in single.clauses.iter().enumerate() {
+        // A MATCH whose rows the next clause cuts to a LIMIT need not produce
+        // more than that (#714).
+        executor.match_cap = match clause {
+            Clause::Match(_) => executor.limit_cap(single.clauses.get(i + 1)),
+            _ => None,
+        };
         executor.run_clause(clause)?;
     }
+    executor.match_cap = None;
 
     // A query that ends in `CALL … YIELD …` (or `SHOW … [YIELD …] [WHERE …]`)
     // returns the yielded columns, as in Neo4j.
@@ -2728,6 +2736,9 @@ struct Executor<'a> {
     /// The nodes an explicit transaction wrote in earlier statements, added
     /// to every index lookup (see [`NativeQueryContext::tx_written`]).
     native_tx_written: Option<&'a std::collections::HashSet<u64>>,
+    /// At most how many rows the MATCH being run has to produce: the next
+    /// clause keeps only that many (`WITH … LIMIT k`, see `limit_cap`).
+    match_cap: Option<usize>,
     /// A server-side text embedder for the native path (RFC #307 Phase
     /// 4/7): lets `drevo.semantic.embed` / `.query` / `.queryRel` run
     /// without a KV secondary store. `None` on the KV path (which uses the
@@ -3329,6 +3340,48 @@ impl<'a> Executor<'a> {
 
     // ----- MATCH -----------------------------------------------------------
 
+    /// How many rows the clause after a MATCH keeps, when that is all it
+    /// does with them: a `WITH` / `RETURN` with a constant `LIMIT` (plus
+    /// `SKIP`), no `ORDER BY`, `DISTINCT`, aggregation, or `WITH … WHERE`.
+    /// Rows past the cap would be dropped unseen, so the MATCH may stop there.
+    fn limit_cap(&self, next: Option<&Clause>) -> Option<usize> {
+        let (distinct, items, order_by, skip, limit, filtered) = match next? {
+            Clause::With(w) => (
+                w.distinct,
+                &w.items,
+                &w.order_by,
+                &w.skip,
+                &w.limit,
+                w.where_clause.is_some(),
+            ),
+            Clause::Return(r) => (r.distinct, &r.items, &r.order_by, &r.skip, &r.limit, false),
+            _ => return None,
+        };
+        if distinct || filtered || !order_by.is_empty() {
+            return None;
+        }
+        let aggregates = items.iter().any(|item| match item {
+            ProjectionItem::Expression { expr, .. } => contains_aggregation(expr),
+            ProjectionItem::Star => false,
+        });
+        if aggregates {
+            return None;
+        }
+        // Only constants (literals, parameters): a row-dependent or invalid
+        // value is the projection's to report.
+        let count = |e: &Option<Expression>| -> Option<usize> {
+            match e {
+                None => Some(0),
+                Some(e) => match self.eval(e, &Bindings::new()) {
+                    Ok(Value::Integer(n)) if n >= 0 => usize::try_from(n).ok(),
+                    _ => None,
+                },
+            }
+        };
+        limit.as_ref()?;
+        count(skip)?.checked_add(count(limit)?)
+    }
+
     fn run_match(&mut self, m: &MatchClause) -> ExecResultT<()> {
         // Lift conjunctive equality / IN constraints out of this MATCH's WHERE so
         // the head-node scan can push them into the native property index (see
@@ -3353,7 +3406,61 @@ impl<'a> Executor<'a> {
             Vec::new()
         };
 
+        let cap = self.match_cap;
         for existing in prior.into_iter() {
+            if cap.is_some_and(|cap| new_bindings.len() >= cap) {
+                break;
+            }
+            // One node, no path: stop enumerating at the cap instead of
+            // projecting every candidate first.
+            if let (Some(cap), [pattern]) = (cap, m.patterns.as_slice()) {
+                let head = &pattern.path.head;
+                let bound = head
+                    .variable
+                    .as_ref()
+                    .is_some_and(|v| existing.contains_key(v));
+                if !m.optional
+                    && pattern.shortest.is_none()
+                    && pattern.variable.is_none()
+                    && pattern.path.tail.is_empty()
+                    && !bound
+                {
+                    let mut failure = None;
+                    self.for_each_node_match(head, &existing, |nv| {
+                        let mut row = existing.clone();
+                        if let Some(name) = &head.variable {
+                            row.insert(name.clone(), Value::Node(nv));
+                        }
+                        let keep = match &m.where_clause {
+                            None => true,
+                            Some(expr) => match self.eval(expr, &row) {
+                                Ok(Value::Bool(b)) => b,
+                                Ok(Value::Null) => false,
+                                Ok(other) => {
+                                    failure = Some(ExecError::TypeMismatch {
+                                        expected: "Boolean".into(),
+                                        got: other.type_name().into(),
+                                        span: expr.span(),
+                                    });
+                                    return Ok(false);
+                                }
+                                Err(e) => {
+                                    failure = Some(e);
+                                    return Ok(false);
+                                }
+                            },
+                        };
+                        if keep {
+                            new_bindings.push(row);
+                        }
+                        Ok(new_bindings.len() < cap)
+                    })?;
+                    if let Some(e) = failure {
+                        return Err(e);
+                    }
+                    continue;
+                }
+            }
             // The MATCH may contain multiple comma-separated patterns;
             // each one further multiplies the current binding row.
             let mut current = vec![existing.clone()];
@@ -3396,6 +3503,9 @@ impl<'a> Executor<'a> {
             }
 
             new_bindings.extend(current);
+        }
+        if let Some(cap) = cap {
+            new_bindings.truncate(cap);
         }
 
         self.bindings = new_bindings;
@@ -3885,6 +3995,24 @@ impl<'a> Executor<'a> {
         pattern: &NodePattern,
         row: &Bindings,
     ) -> ExecResultT<Vec<Arc<NodeValue>>> {
+        let mut out = Vec::new();
+        self.for_each_node_match(pattern, row, |nv| {
+            out.push(nv);
+            Ok(true)
+        })?;
+        Ok(out)
+    }
+
+    /// Call `f` with each node matching `pattern` (labels and inline
+    /// properties; not a WHERE), in [`enumerate_nodes`](Self::enumerate_nodes)
+    /// order, until it returns `false`. Nodes are projected one at a time, so
+    /// stopping early costs only what was visited.
+    fn for_each_node_match(
+        &self,
+        pattern: &NodePattern,
+        row: &Bindings,
+        mut f: impl FnMut(Arc<NodeValue>) -> ExecResultT<bool>,
+    ) -> ExecResultT<()> {
         // The candidate set must be a *superset* of the real matches; the
         // per-candidate `node_matches_pattern` filter below does the exact test.
         // Pick the most selective correct source available:
@@ -3912,7 +4040,6 @@ impl<'a> Executor<'a> {
         // engine — no scan, no index. The exact filter below still enforces
         // labels, inline properties, and the full WHERE.
         if let Some(seeked) = self.id_seek_candidates(pattern, row)? {
-            let mut out = Vec::with_capacity(seeked.len());
             for node in &seeked {
                 let Some(nv) = self.seen_node(node) else {
                     continue;
@@ -3920,9 +4047,11 @@ impl<'a> Executor<'a> {
                 if !node_matches_pattern(&nv, pattern, row, self)? {
                     continue;
                 }
-                out.push(nv);
+                if !f(nv)? {
+                    break;
+                }
             }
-            return Ok(out);
+            return Ok(());
         }
 
         let first_label = pattern.labels.first();
@@ -3962,7 +4091,6 @@ impl<'a> Executor<'a> {
             (None, Some(p)) => p,
             (None, None) => self.engine().all_nodes()?,
         };
-        let mut out = Vec::with_capacity(nodes.len());
         for node in &nodes {
             deadline::tick()?;
             let Some(nv) = self.seen_node(node) else {
@@ -3971,9 +4099,11 @@ impl<'a> Executor<'a> {
             if !node_matches_pattern(&nv, pattern, row, self)? {
                 continue;
             }
-            out.push(nv);
+            if !f(nv)? {
+                break;
+            }
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Index candidates `nodes`, completed with the nodes the explicit

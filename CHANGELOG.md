@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **`MATCH … WITH n LIMIT k` built every match first** (issue #714). A
+  `MATCH` whose rows the next `WITH` / `RETURN` cuts to a constant `LIMIT`
+  (no `ORDER BY`, `DISTINCT`, aggregation or `WITH … WHERE`) now stops once
+  it has enough, and a one-node pattern projects only the nodes it keeps:
+  `MATCH (n) WHERE n.c = 1 WITH n LIMIT 2000` on 50,000 nodes peaks at
+  1.3 MB instead of 31 MB — the delete loop importers run (`… LIMIT 2000
+  DETACH DELETE n`).
 - **Memory not given back after deleting and rewriting a large graph**
   (issue #711). The Docker image sets `MALLOC_ARENA_MAX=2`: with one glibc
   arena per busy thread, the memory a delete and rewrite freed stayed
