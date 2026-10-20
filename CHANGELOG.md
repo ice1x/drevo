@@ -48,6 +48,9 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`elementId()`** (issue #707). `elementId(n)` / `elementId(r)` return
+  the id as a string, the `element_id` Bolt 5 drivers see, and
+  `MATCH (n) WHERE elementId(n) = $e` (or `IN $ids`) is a lookup by id.
 - **`SHOW CONNECTIONS` / `TERMINATE CONNECTIONS`** (issue #669). Lists the
   open Bolt connections (with the driver's user agent and the logged-in
   user, idle ones included) and the Web UI's signed-in sessions;
