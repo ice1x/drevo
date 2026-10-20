@@ -85,6 +85,25 @@ fn dockerfile_enables_bolt_by_default() {
 }
 
 #[test]
+fn the_runtime_stage_limits_glibc_malloc_arenas() {
+    // Issue #711: with one malloc arena per busy thread, memory a delete and
+    // rewrite of a large graph freed stayed resident (265 → 398 MB on a
+    // 112k-node graph, 198 MB after a restart); with two arenas it settled
+    // at 219 MB.
+    let content = read_dockerfile();
+    let runtime = content
+        .rsplit_once("\nFROM ")
+        .map(|(_, stage)| stage)
+        .expect("a runtime stage");
+    assert!(
+        runtime
+            .lines()
+            .any(|l| l.trim_start().starts_with("ENV") && l.contains("MALLOC_ARENA_MAX=2")),
+        "the runtime stage must set MALLOC_ARENA_MAX=2"
+    );
+}
+
+#[test]
 fn dockerfile_has_volume_data() {
     let content = read_dockerfile();
     let has_volume = content

@@ -370,6 +370,20 @@ Two layers cover two different failures (see [`scripts/README.md`](https://githu
   is missing or not running. This is the layer that survives an accidental
   `docker rm -f`. Pause it without a fight by `touch ~/.drevo-watchdog.disabled`.
 
+### Memory after large deletes
+
+The image sets `MALLOC_ARENA_MAX=2`. glibc's allocator otherwise keeps one
+memory arena per busy thread, and what a delete and rewrite of a large graph
+frees in them stays resident. On a 112,000-node, 210,000-relationship road
+graph, a delete and rewrite took the process from 265 MB to 398 MB without
+the setting (198 MB after a restart), and to 219 MB with it.
+
+Running `drevo-server` on Linux outside the image, set the same variable:
+
+```bash
+MALLOC_ARENA_MAX=2 drevo-server
+```
+
 ---
 
 ## 4. Kubernetes
