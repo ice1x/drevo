@@ -438,6 +438,8 @@ jobs:
       # The server's encryption at rest and its tests and bench.
       - run: cargo clippy --all-targets --features encryption -- -D warnings
       - run: cargo clippy --all-targets --features auth,encryption -- -D warnings
+      # Tests and benches build without the default features too.
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   fmt:
     name: Format

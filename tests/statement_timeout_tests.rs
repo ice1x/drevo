@@ -24,6 +24,7 @@ use drevo::bolt::packstream::Value as BoltValue;
 use drevo::bolt::session::{ClientMessage, ServerMessage, Session};
 use drevo::cypher::executor::{ExecError, ExecResult, Value};
 use drevo::cypher::parser::parse;
+#[cfg(feature = "http")]
 use drevo::database_registry::DatabaseRegistry;
 use drevo::native_service::NativeService;
 
@@ -123,6 +124,7 @@ fn fast_statements_run_and_the_deadline_does_not_leak() {
     exec(&svc, &slow_query(n)).expect("no limit");
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn registry_databases_share_the_default_limit() {
     let registry = DatabaseRegistry::new(Arc::new(NativeService::in_memory()));

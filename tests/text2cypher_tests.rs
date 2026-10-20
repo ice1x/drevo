@@ -7,6 +7,8 @@
 //! `cypher` row carrying the generated query, with the live graph schema handed
 //! to the generator so the model queries the graph that actually exists.
 
+#![cfg(feature = "http")]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

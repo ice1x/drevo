@@ -194,6 +194,8 @@ fn vector_query_works_on_native() {
     assert!(s[0] >= s[1] && s[1] >= s[2], "scores descend: {s:?}");
 }
 
+// The semantic procedures exist only with `http` (the embedder).
+#[cfg(feature = "http")]
 #[test]
 fn semantic_query_needs_the_embedder_on_native() {
     // `drevo.semantic.query` embeds the query text server-side before scanning,
