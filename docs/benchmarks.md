@@ -113,24 +113,30 @@ if the costs differ. Map data © OpenStreetMap contributors, ODbL.
 
 ### Reference run
 
-Apple Silicon, `--release`, in-memory `NativeService`, OSM data of 2026-10-18:
-240,451 junctions, 396,534 relationships (143,777 junctions drivable), loaded
-in 3.5 s. Times are per route, the mean over 8 routes of 165–531 junctions.
+Apple Silicon, `--release`, in-memory `NativeService`, OSM data of 2026-10-20:
+242,947 junctions, 396,551 relationships (143,781 junctions drivable), loaded
+in 2.8 s. Times are per route, the mean over 8 routes of 243–589 junctions.
 **Illustrative — re-run on your hardware before quoting them.**
 
 | Workload | Time per route |
 |----------|---------------:|
-| Driving, A* (`maxSpeedMps` 38.9, the fastest road) | ~176 ms |
-| Driving, bidirectional Dijkstra | ~126 ms |
-| Driving, A* through `CALL drevo.path.weighted` | ~169 ms |
-| Driving, `shortest_path` (one-directional Dijkstra over `weight`) | ~155 ms |
-| Walking, A* (`maxSpeedMps` 1.4) | ~155 ms |
-| Walking, bidirectional Dijkstra | ~324 ms |
+| Driving, A* (`maxSpeedMps` 38.9, the fastest road) | ~80 ms |
+| Driving, bidirectional Dijkstra | ~46 ms |
+| Driving, A* through `CALL drevo.path.weighted` | ~83 ms |
+| Driving, `shortest_path` (one-directional Dijkstra over `weight`) | ~83 ms |
+| Walking, A* (`maxSpeedMps` 1.4) | ~42 ms |
+| Walking, bidirectional Dijkstra | ~105 ms |
 
 | Adjacency read, every drivable junction once | Time |
 |----------------------------------------------|-----:|
-| Outgoing relationships as full records (`edges_of`) | ~182 ms |
-| Outgoing neighbour ids only (`neighbor_ids`) | ~51 ms |
+| Outgoing relationships copied as full records (`edges_of`) | ~68 ms |
+| Outgoing relationships by reference (`for_each_edge_of`, what the search uses) | ~5 ms |
+| Outgoing neighbour ids only (`neighbor_ids`) | ~21 ms |
+
+The search reads each relationship by reference instead of copying its
+record (#684): on the same data, per-route times dropped 11–23% (driving A*
+90 → 80 ms, Dijkstra 53 → 46 ms; walking A* 51 → 42 ms, Dijkstra 137 →
+105 ms).
 
 What the numbers show:
 
@@ -140,9 +146,10 @@ What the numbers show:
   are much slower, the estimate is weak, and the bidirectional Dijkstra is
   faster. Leave `heuristic` out for networks whose speeds vary a lot.
 - **Cypher adds nothing measurable** on top of the native call.
-- **A cross-city route reads a large share of the graph.** One route costs
-  about as much as reading every drivable junction's relationships once, and
-  reading full relationship records costs 3.5× reading neighbour ids.
+- **Reading relationships by reference is cheap.** Visiting every drivable
+  junction's relationships in place costs a quarter of collecting neighbour
+  ids and a fourteenth of copying the records; what a route costs now is
+  mostly the search's own bookkeeping.
 
 ## Write transactions
 

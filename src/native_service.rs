@@ -3297,7 +3297,10 @@ impl NativeService {
             to,
             options,
             &|id| Ok(snap.get_node_arc(id)),
-            &|id, dir| Ok(snap.edges_of(id, dir)),
+            &|id, dir, f| {
+                snap.for_each_edge_of(id, dir, f);
+                Ok(())
+            },
         )
     }
 

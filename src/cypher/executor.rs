@@ -6165,7 +6165,11 @@ impl<'a> Executor<'a> {
             end,
             options,
             &|id| engine.get_node(id).map_err(DrevoError::from),
-            &|id, dir| engine.edges_of(id, dir).map_err(DrevoError::from),
+            &|id, dir, f| {
+                engine
+                    .for_each_edge_of(id, dir, f)
+                    .map_err(DrevoError::from)
+            },
         );
         let found = match found {
             Ok(Some(found)) => found,

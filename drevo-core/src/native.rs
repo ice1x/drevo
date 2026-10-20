@@ -343,12 +343,18 @@ impl Inner {
 
     fn edges_of(&self, node_id: u64, direction: Direction) -> Vec<Edge> {
         let mut out = Vec::new();
+        self.for_each_edge_of(node_id, direction, &mut |edge| out.push(edge.clone()));
+        out
+    }
+
+    /// Call `f` with each relationship of `node_id` in `direction`, by
+    /// reference, in [`edges_of`](Self::edges_of) order.
+    fn for_each_edge_of(&self, node_id: u64, direction: Direction, f: &mut dyn FnMut(&Edge)) {
         self.for_each_incident(node_id, direction, |e| {
             if let Some(edge) = self.edges.get(&e.edge_id) {
-                out.push((**edge).clone());
+                f(edge);
             }
         });
-        out
     }
 
     fn all_nodes(&self) -> Vec<Node> {
@@ -4561,6 +4567,18 @@ impl GraphEngine for NativeTxEngine<'_> {
         self.with_slot(|slot| Ok(slot.working.edges_of(node_id, direction)))
     }
 
+    fn for_each_edge_of(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        f: &mut dyn FnMut(&Edge),
+    ) -> Result<()> {
+        // The transaction's view, without holding its slot while `f` runs.
+        let working = self.with_slot(|slot| Ok(Arc::clone(&slot.working)))?;
+        working.for_each_edge_of(node_id, direction, f);
+        Ok(())
+    }
+
     fn all_nodes(&self) -> Result<Vec<Arc<Node>>> {
         self.with_slot(|slot| Ok(slot.working.all_nodes_arc()))
     }
@@ -4960,6 +4978,18 @@ impl GraphEngine for NativeGraph {
         Ok(read(&self.inner).edges_of(node_id, direction))
     }
 
+    fn for_each_edge_of(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        f: &mut dyn FnMut(&Edge),
+    ) -> Result<()> {
+        // A snapshot, so no lock is held while `f` runs.
+        let inner = Arc::clone(&read(&self.inner));
+        inner.for_each_edge_of(node_id, direction, f);
+        Ok(())
+    }
+
     fn all_nodes(&self) -> Result<Vec<Arc<Node>>> {
         Ok(read(&self.inner).all_nodes_arc())
     }
@@ -5130,6 +5160,13 @@ impl GraphSnapshot {
     /// Full edge records incident to `node_id` in `direction`.
     pub fn edges_of(&self, node_id: u64, direction: Direction) -> Vec<Edge> {
         self.inner.edges_of(node_id, direction)
+    }
+
+    /// Call `f` with each relationship of `node_id` in `direction`, by
+    /// reference, in [`edges_of`](Self::edges_of) order — no record is
+    /// copied.
+    pub fn for_each_edge_of(&self, node_id: u64, direction: Direction, mut f: impl FnMut(&Edge)) {
+        self.inner.for_each_edge_of(node_id, direction, &mut f);
     }
 
     /// Every node in this snapshot.

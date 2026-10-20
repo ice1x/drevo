@@ -49,6 +49,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Changed
 
+- **Weighted path search reads relationships in place** (issue #684).
+  `drevo.path.weighted` no longer copies every relationship record it
+  visits: the new `GraphEngine::for_each_edge_of` (and
+  `GraphSnapshot::for_each_edge_of`) hands each one by reference. On the
+  Sofia road network a route is 11–23% faster (driving A* 90 → 80 ms,
+  walking Dijkstra 137 → 105 ms), and reading every drivable junction's
+  relationships takes 5 ms instead of 68 ms.
 - **A writing auto-commit statement is one transaction** (issue #715).
   Its writes go to the log as one record with one fsync, and a statement
   that fails — an error, the statement timeout, `TERMINATE TRANSACTIONS` —
