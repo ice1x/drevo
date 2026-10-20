@@ -380,35 +380,28 @@ async fn the_server_requires_a_login_on_grpc_and_flight() {
     use drevo::grpc::pb::{self, drevo_client::DrevoClient};
     use futures::TryStreamExt;
 
-    fn free_port() -> u16 {
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        probe.local_addr().unwrap().port()
-    }
     let dir = tempfile::TempDir::new().unwrap();
-    let (http, grpc, flight) = (free_port(), free_port(), free_port());
+    // Port 0 everywhere: the system picks free ports, the server reports them.
     let env: HashMap<&str, String> = HashMap::from([
         ("DREVO_HOST", "127.0.0.1".to_string()),
-        ("DREVO_PORT", http.to_string()),
-        ("DREVO_GRPC_PORT", grpc.to_string()),
-        ("DREVO_FLIGHT_PORT", flight.to_string()),
+        ("DREVO_GRPC_PORT", "1".to_string()),
+        ("DREVO_FLIGHT_PORT", "1".to_string()),
         ("DREVO_DATA_DIR", dir.path().to_string_lossy().to_string()),
         ("DREVO_AUTH", format!("ann/{ANN_PW}")),
     ]);
-    let cfg = drevo::server::Config::from_env(move |k| env.get(k).cloned()).unwrap();
-    let server = tokio::spawn(async move { drevo::server::run(cfg).await.unwrap() });
-    // The HTTP listener binds last, so once it answers gRPC and Flight are up.
-    let mut up = false;
-    for _ in 0..250 {
-        if tokio::net::TcpStream::connect(("127.0.0.1", http))
-            .await
-            .is_ok()
-        {
-            up = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(up, "the server did not start");
+    let mut cfg = drevo::server::Config::from_env(move |k| env.get(k).cloned()).unwrap();
+    cfg.port = 0;
+    cfg.grpc_port = Some(0);
+    cfg.flight_port = Some(0);
+    let (listening, announced) = tokio::sync::oneshot::channel();
+    let server =
+        tokio::spawn(async move { drevo::server::run_announcing(cfg, listening).await.unwrap() });
+    let listening = tokio::time::timeout(Duration::from_secs(30), announced)
+        .await
+        .expect("the server started in time")
+        .expect("the server started");
+    let grpc = listening.grpc.expect("gRPC is served").port();
+    let flight = listening.flight.expect("Flight is served").port();
 
     let mut grpc_client = DrevoClient::connect(format!("http://127.0.0.1:{grpc}"))
         .await

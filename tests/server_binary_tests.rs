@@ -194,39 +194,31 @@ mod server_tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
-        let port = {
-            let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-            let p = probe.local_addr().unwrap().port();
-            drop(probe);
-            p
-        };
 
         let dir_path = dir.path().to_path_buf();
         let data_dir = dir_path.to_string_lossy().to_string();
-        let port_str = port.to_string();
-        let cfg = drevo::server::Config::from_env(move |k| match k {
+        let mut cfg = drevo::server::Config::from_env(move |k| match k {
             "DREVO_HOST" => Some("127.0.0.1".to_string()),
-            "DREVO_PORT" => Some(port_str.clone()),
             "DREVO_DATA_DIR" => Some(data_dir.clone()),
             _ => None,
         })
         .unwrap();
 
+        // Port 0: the system picks a free port, the server reports it.
+        cfg.port = 0;
+        let (listening, announced) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
-            drevo::server::run(cfg).await.unwrap();
+            drevo::server::run_announcing(cfg, listening).await.unwrap();
         });
-
-        // Wait for the listener to come up before issuing requests.
-        let addr = format!("127.0.0.1:{port}");
-        let mut connected = false;
-        for _ in 0..50 {
-            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-                connected = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(connected, "server did not start listening on {addr}");
+        let addr = tokio::time::timeout(Duration::from_secs(30), announced)
+            .await
+            .expect("the server started in time")
+            .expect("the server started")
+            .http;
+        assert!(
+            tokio::net::TcpStream::connect(addr).await.is_ok(),
+            "server did not start listening on {addr}"
+        );
 
         // Verify the durable native WAL landed inside the configured data_dir.
         // `run()` serves the durable native engine (the KV serving mode was
@@ -269,22 +261,15 @@ mod server_tests {
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
-        let port = {
-            let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-            let p = probe.local_addr().unwrap().port();
-            drop(probe);
-            p
-        };
         let data_dir = dir.path().to_string_lossy().to_string();
-        let port_str = port.to_string();
-        let cfg = drevo::server::Config::from_env(move |k| match k {
+        let mut cfg = drevo::server::Config::from_env(move |k| match k {
             "DREVO_HOST" => Some("127.0.0.1".to_string()),
-            "DREVO_PORT" => Some(port_str.clone()),
             "DREVO_DATA_DIR" => Some(data_dir.clone()),
             _ => None,
         })
         .unwrap();
 
+        cfg.port = 0;
         let _ = tokio::time::timeout(Duration::from_millis(500), drevo::server::run(cfg)).await;
 
         assert!(

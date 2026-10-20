@@ -622,7 +622,8 @@ impl Config {
     /// rejects the value.
     #[must_use]
     pub const fn is_privileged_port(&self) -> bool {
-        self.port < PRIVILEGED_PORT_CEILING
+        // Port 0 asks the system for a free port, which is never privileged.
+        self.port != 0 && self.port < PRIVILEGED_PORT_CEILING
     }
 }
 
@@ -986,6 +987,58 @@ fn configure_native_query_embedder(
 /// caller (`main`) is expected to log the error and exit with a
 /// non-zero status.
 pub async fn run(cfg: Config) -> Result<(), RunError> {
+    serve(cfg, None).await
+}
+
+/// The addresses a started server listens on. With port `0` in the
+/// [`Config`] the system picks a free port, and these are the ones it picked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Listening {
+    /// The HTTP API (HTTPS with a certificate).
+    pub http: SocketAddr,
+    /// The Bolt port, when one is served.
+    pub bolt: Option<SocketAddr>,
+    /// The gRPC API, when it is served.
+    pub grpc: Option<SocketAddr>,
+    /// The Arrow Flight endpoint, when it is served.
+    pub flight: Option<SocketAddr>,
+}
+
+/// [`run`], sending the addresses the server listens on to `announce` once
+/// every listener is bound — for a caller that starts the server on port
+/// `0` and then connects to it:
+///
+/// ```no_run
+/// # async fn demo(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+/// let data = dir.to_string_lossy().to_string();
+/// let mut cfg = drevo::server::Config::from_env(|k| match k {
+///     "DREVO_HOST" => Some("127.0.0.1".to_string()),
+///     "DREVO_DATA_DIR" => Some(data.clone()),
+///     _ => None,
+/// })?;
+/// cfg.port = 0;
+/// let (tx, rx) = tokio::sync::oneshot::channel();
+/// tokio::spawn(drevo::server::run_announcing(cfg, tx));
+/// let listening = rx.await?;
+/// println!("serving on {}", listening.http);
+/// # Ok(()) }
+/// ```
+///
+/// # Errors
+///
+/// As [`run`]. A server that fails before binding everything drops
+/// `announce` without sending.
+pub async fn run_announcing(
+    cfg: Config,
+    announce: tokio::sync::oneshot::Sender<Listening>,
+) -> Result<(), RunError> {
+    serve(cfg, Some(announce)).await
+}
+
+async fn serve(
+    cfg: Config,
+    announce: Option<tokio::sync::oneshot::Sender<Listening>>,
+) -> Result<(), RunError> {
     // Announce the running build up front so every log stream records which
     // drevo binary is serving — parity with the version reported by `/`,
     // `/status`, and the Bolt handshake. This is the first thing `run` does, so
@@ -1029,7 +1082,7 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
         );
         crate::native_service::NativeService::set_encryption_key(cfg.encryption_key.clone());
     }
-    run_native_durable(cfg, addr).await
+    run_native_durable(cfg, addr, announce).await
 }
 
 /// Serve `DREVO_ENGINE=native-durable`: the WAL-backed native engine as the
@@ -1039,7 +1092,17 @@ pub async fn run(cfg: Config) -> Result<(), RunError> {
 /// whose sessions execute on the durable service — autocommit statements
 /// only; `BEGIN` is refused until the executor can drive native
 /// transactions.
-async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunError> {
+async fn run_native_durable(
+    cfg: Config,
+    addr: SocketAddr,
+    announce: Option<tokio::sync::oneshot::Sender<Listening>>,
+) -> Result<(), RunError> {
+    let mut listening = Listening {
+        http: addr,
+        bolt: None,
+        grpc: None,
+        flight: None,
+    };
     // Read the certificate first, so a bad one stops the server before it
     // opens anything.
     let tls = load_tls(&cfg)?;
@@ -1146,6 +1209,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                 addr: bolt_addr,
                 source,
             })?;
+        let bolt_addr = bolt_listener.local_addr().unwrap_or(bolt_addr);
+        listening.bolt = Some(bolt_addr);
         let bolt_tls = tls.as_ref().map(TlsSetup::acceptor);
         tracing::info!(%bolt_addr, tls = bolt_tls.is_some(), "bolt listening (native-durable)");
         let bolt_registry = std::sync::Arc::clone(&registry);
@@ -1190,6 +1255,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                 addr: grpc_addr,
                 source,
             })?;
+        let grpc_addr = grpc_listener.local_addr().unwrap_or(grpc_addr);
+        listening.grpc = Some(grpc_addr);
         // Over TLS with the HTTPS certificate when there is one.
         let grpc_tls = tls.as_ref().map(TlsSetup::rpc);
         tracing::info!(%grpc_addr, tls = grpc_tls.is_some(), "grpc listening");
@@ -1237,6 +1304,8 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
                     addr: flight_addr,
                     source,
                 })?;
+        let flight_addr = flight_listener.local_addr().unwrap_or(flight_addr);
+        listening.flight = Some(flight_addr);
         // Over TLS with the HTTPS certificate when there is one.
         let flight_tls = tls.as_ref().map(TlsSetup::rpc);
         tracing::info!(%flight_addr, tls = flight_tls.is_some(), "arrow flight listening");
@@ -1292,7 +1361,13 @@ async fn run_native_durable(cfg: Config, addr: SocketAddr) -> Result<(), RunErro
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| RunError::Bind { addr, source })?;
+    let addr = listener.local_addr().unwrap_or(addr);
+    listening.http = addr;
     tracing::info!(%addr, https = tls.is_some(), "listening (native-durable)");
+    if let Some(announce) = announce {
+        // The caller may have stopped waiting; the server serves regardless.
+        let _ = announce.send(listening);
+    }
     tracing::info!(
         formats = ?cfg.http_formats.enabled().iter().map(|f| f.name()).collect::<Vec<_>>(),
         "http body formats"

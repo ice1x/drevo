@@ -45,11 +45,6 @@ fn connector_trusting(cert_pem: &str) -> TlsConnector {
     TlsConnector::from(Arc::new(config))
 }
 
-fn free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    probe.local_addr().unwrap().port()
-}
-
 /// A running server; aborted on drop.
 struct Server {
     http: u16,
@@ -74,11 +69,9 @@ async fn start(extra: &[(&'static str, &str)]) -> Server {
     let key = dir.path().join("key.pem");
     std::fs::write(&cert, &cert_pem).unwrap();
     std::fs::write(&key, &key_pem).unwrap();
-    let (http, bolt) = (free_port(), free_port());
     let mut env: HashMap<&str, String> = HashMap::from([
         ("DREVO_HOST", "127.0.0.1".to_string()),
-        ("DREVO_PORT", http.to_string()),
-        ("DREVO_BOLT_PORT", bolt.to_string()),
+        ("DREVO_BOLT_PORT", "1".to_string()),
         (
             "DREVO_DATA_DIR",
             dir.path().join("data").to_string_lossy().into(),
@@ -90,17 +83,19 @@ async fn start(extra: &[(&'static str, &str)]) -> Server {
         env.insert(k, (*v).to_string());
     }
     std::fs::create_dir_all(dir.path().join("data")).unwrap();
-    let cfg = drevo::server::Config::from_env(move |k| env.get(k).cloned()).unwrap();
-    let task = tokio::spawn(async move { drevo::server::run(cfg).await.unwrap() });
-    let mut up = false;
-    for _ in 0..250 {
-        if TcpStream::connect(("127.0.0.1", http)).await.is_ok() {
-            up = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(up, "the server did not start");
+    let mut cfg = drevo::server::Config::from_env(move |k| env.get(k).cloned()).unwrap();
+    // Port 0: the system picks free ports, the server reports them.
+    cfg.port = 0;
+    cfg.bolt_port = Some(0);
+    let (listening, announced) = tokio::sync::oneshot::channel();
+    let task =
+        tokio::spawn(async move { drevo::server::run_announcing(cfg, listening).await.unwrap() });
+    let listening = timeout(Duration::from_secs(30), announced)
+        .await
+        .expect("the server started in time")
+        .expect("the server started");
+    let http = listening.http.port();
+    let bolt = listening.bolt.expect("Bolt is served").port();
     Server {
         http,
         bolt,
@@ -267,17 +262,16 @@ async fn an_unreadable_certificate_stops_the_server_at_startup() {
     install_default_crypto_provider();
     let dir = tempfile::TempDir::new().unwrap();
     let missing = dir.path().join("missing.pem").to_string_lossy().to_string();
-    let port = free_port().to_string();
     let data = dir.path().to_string_lossy().to_string();
-    let cfg = drevo::server::Config::from_env(move |k| match k {
+    let mut cfg = drevo::server::Config::from_env(move |k| match k {
         "DREVO_HOST" => Some("127.0.0.1".into()),
-        "DREVO_PORT" => Some(port.clone()),
         "DREVO_DATA_DIR" => Some(data.clone()),
         "DREVO_AUTH" => Some("none".into()),
         "DREVO_TLS_CERT" | "DREVO_TLS_KEY" => Some(missing.clone()),
         _ => None,
     })
     .unwrap();
+    cfg.port = 0;
     let err = timeout(Duration::from_secs(10), drevo::server::run(cfg))
         .await
         .expect("run returns instead of serving")

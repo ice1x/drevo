@@ -294,49 +294,29 @@ async fn the_server_serves_grpc_and_flight_over_tls_with_its_certificate() {
     std::fs::write(&cert_file, &cert_pem).unwrap();
     std::fs::write(&key_file, &key_pem).unwrap();
 
-    // Free ports can be taken between probing and binding: try a few sets.
-    let mut started = None;
-    for _ in 0..5 {
-        let free = || {
-            std::net::TcpListener::bind("127.0.0.1:0")
-                .unwrap()
-                .local_addr()
-                .unwrap()
-                .port()
-        };
-        let (http, grpc, flight) = (free(), free(), free());
-        let data = tempfile::TempDir::new().unwrap();
-        let env: HashMap<&str, String> = HashMap::from([
-            ("DREVO_HOST", "127.0.0.1".to_string()),
-            ("DREVO_PORT", http.to_string()),
-            ("DREVO_GRPC_PORT", grpc.to_string()),
-            ("DREVO_FLIGHT_PORT", flight.to_string()),
-            ("DREVO_DATA_DIR", data.path().to_string_lossy().to_string()),
-            ("DREVO_AUTH", format!("reports/{PW}")),
-            ("DREVO_TLS_CERT", cert_file.to_string_lossy().to_string()),
-            ("DREVO_TLS_KEY", key_file.to_string_lossy().to_string()),
-        ]);
-        let cfg = drevo::server::Config::from_env(move |k| env.get(k).cloned()).unwrap();
-        let server = tokio::spawn(async move { drevo::server::run(cfg).await });
-        // HTTP binds last, so once it accepts, gRPC and Flight are up.
-        let mut up = false;
-        for _ in 0..250 {
-            if server.is_finished() {
-                break;
-            }
-            if TcpStream::connect(("127.0.0.1", http)).await.is_ok() {
-                up = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        if up {
-            started = Some((server, grpc, flight, data));
-            break;
-        }
-        server.abort();
-    }
-    let (server, grpc, flight, _data) = started.expect("the server started");
+    let data = tempfile::TempDir::new().unwrap();
+    let env: HashMap<&str, String> = HashMap::from([
+        ("DREVO_HOST", "127.0.0.1".to_string()),
+        ("DREVO_GRPC_PORT", "1".to_string()),
+        ("DREVO_FLIGHT_PORT", "1".to_string()),
+        ("DREVO_DATA_DIR", data.path().to_string_lossy().to_string()),
+        ("DREVO_AUTH", format!("reports/{PW}")),
+        ("DREVO_TLS_CERT", cert_file.to_string_lossy().to_string()),
+        ("DREVO_TLS_KEY", key_file.to_string_lossy().to_string()),
+    ]);
+    let mut cfg = drevo::server::Config::from_env(move |k| env.get(k).cloned()).unwrap();
+    // Port 0: the system picks free ports, the server reports them.
+    cfg.port = 0;
+    cfg.grpc_port = Some(0);
+    cfg.flight_port = Some(0);
+    let (listening, announced) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move { drevo::server::run_announcing(cfg, listening).await });
+    let listening = timeout(Duration::from_secs(30), announced)
+        .await
+        .expect("the server started in time")
+        .expect("the server started");
+    let grpc = listening.grpc.expect("gRPC is served").port();
+    let flight = listening.flight.expect("Flight is served").port();
 
     let mut client = DrevoClient::new(tls_channel(grpc, &cert).await);
     assert!(client

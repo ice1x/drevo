@@ -472,37 +472,30 @@ async fn run_boots_native_durable_without_creating_a_redb_file() {
     use std::time::Duration;
 
     let dir = tempfile::tempdir().unwrap();
-    let port = {
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let p = probe.local_addr().unwrap().port();
-        drop(probe);
-        p
-    };
     let data_dir = dir.path().to_string_lossy().to_string();
-    let port_str = port.to_string();
-    let cfg = Config::from_env(move |k| match k {
+    let mut cfg = Config::from_env(move |k| match k {
         "DREVO_HOST" => Some("127.0.0.1".to_string()),
-        "DREVO_PORT" => Some(port_str.clone()),
         "DREVO_DATA_DIR" => Some(data_dir.clone()),
         "DREVO_ENGINE" => Some("native-durable".to_string()),
         _ => None,
     })
     .unwrap();
 
+    // Port 0: the system picks a free port, the server reports it.
+    cfg.port = 0;
+    let (listening, announced) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
-        let _ = drevo::server::run(cfg).await;
+        let _ = drevo::server::run_announcing(cfg, listening).await;
     });
-
-    let addr = format!("127.0.0.1:{port}");
-    let mut connected = false;
-    for _ in 0..50 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            connected = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(connected, "native-durable server did not start on {addr}");
+    let addr = tokio::time::timeout(Duration::from_secs(30), announced)
+        .await
+        .expect("the server started in time")
+        .expect("native-durable server did not start")
+        .http;
+    assert!(
+        tokio::net::TcpStream::connect(addr).await.is_ok(),
+        "it listens on the reported {addr}"
+    );
 
     // The durable-native mode's store is the WAL; no redb file may appear.
     assert!(
