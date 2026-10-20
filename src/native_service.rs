@@ -218,6 +218,10 @@ pub struct NativeService {
     compacting: AtomicBool,
     /// Opt-in statement timeout in milliseconds (#547); `0` = no limit.
     statement_timeout_ms: AtomicU64,
+    /// Held while a writing auto-commit statement runs as its transaction,
+    /// so such statements take turns instead of failing each other's
+    /// commits (#715).
+    autocommit_writer: std::sync::Mutex<()>,
     /// How many of the latest committed changes compaction keeps in the
     /// change feed for event subscribers to resume from (`GET /events`).
     event_history: AtomicU64,
@@ -652,6 +656,7 @@ impl NativeService {
             last_compact_head,
             compacting: AtomicBool::new(false),
             statement_timeout_ms: AtomicU64::new(0),
+            autocommit_writer: std::sync::Mutex::new(()),
             event_history: AtomicU64::new(Self::DEFAULT_EVENT_HISTORY),
             semantic: RwLock::new(node),
             rel_semantic: RwLock::new(rel),
@@ -713,6 +718,7 @@ impl NativeService {
             last_compact_head: AtomicU64::new(0),
             compacting: AtomicBool::new(false),
             statement_timeout_ms: AtomicU64::new(0),
+            autocommit_writer: std::sync::Mutex::new(()),
             event_history: AtomicU64::new(Self::DEFAULT_EVENT_HISTORY),
             semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
             rel_semantic: RwLock::new(crate::semantic_index::SemanticIndexRegistry::new()),
@@ -905,9 +911,10 @@ impl NativeService {
                         let writes = query_writes(query)
                             || ((checked_writes || triggers)
                                 && query_calls_writing_procedure(query));
-                        if (self.graph.has_existence_constraints() || checked_writes || triggers)
-                            && writes
-                        {
+                        // A writing statement is one transaction: one log
+                        // record and fsync, and nothing of it stays when it
+                        // fails (#715).
+                        if writes {
                             let (rows, params) =
                                 self.execute_as_transaction(query, &params, restriction)?;
                             *fired.borrow_mut() = params;
@@ -965,6 +972,10 @@ impl NativeService {
         restriction: Option<Restriction<'_>>,
     ) -> Result<(ExecResult, Option<HashMap<String, Value>>), ExecError> {
         const ATTEMPTS: usize = 8;
+        let _turn = self
+            .autocommit_writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut attempt = 0;
         loop {
             attempt += 1;
@@ -1032,6 +1043,14 @@ impl NativeService {
                         kind: v.kind,
                         message: v.message,
                     }));
+                }
+                Err(crate::native::CommitError::ReadOnly) => {
+                    return Err(ExecError::Storage(DrevoError::ReadOnly));
+                }
+                Err(crate::native::CommitError::PreparedPending(gids)) => {
+                    return Err(ExecError::Storage(DrevoError::PreparedTransactionPending(
+                        gids,
+                    )));
                 }
                 Err(e) => {
                     return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(

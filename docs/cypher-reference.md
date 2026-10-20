@@ -1720,8 +1720,8 @@ It answers one row per id: `transactionId`, `username` and `message`
   which drivers do not retry.
 - An explicit transaction refuses its next statement and its commit with the
   same code, and is rolled back: none of its writes stay.
-- An auto-commit statement keeps the writes it made before it stopped, as with
-  the statement timeout.
+- An auto-commit statement leaves none of its writes: like any failing
+  statement, it is rolled back as a whole.
 
 With logins required, users see and stop their own transactions. Someone
 else's needs `TRANSACTION MANAGEMENT` for that user on that database, which

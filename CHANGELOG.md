@@ -49,6 +49,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Changed
 
+- **A writing auto-commit statement is one transaction** (issue #715).
+  Its writes go to the log as one record with one fsync, and a statement
+  that fails — an error, the statement timeout, `TERMINATE TRANSACTIONS` —
+  leaves none of them, as in Neo4j (before, the writes made before the
+  failure stayed). On a durable store, creating 2,000 nodes in one
+  statement went from 11.5 s to 22 ms and deleting 2,000 from 16.6 s to
+  43 ms. Concurrent auto-commit writers take turns.
 - **drevo-core 0.2: `Properties` is a compact map** (issue #687). It is no
   longer a public `HashMap<String, serde_json::Value>` newtype: entries are
   a vector sorted by name and names are shared across every record, which
