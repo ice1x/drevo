@@ -556,8 +556,9 @@ pub struct Session<'a> {
     /// before it is closed and the transaction rolled back
     /// (`DREVO_IDLE_SESSION_TIMEOUT_MS`).
     idle_timeout: Option<std::time::Duration>,
-    /// When the last client message arrived.
-    last_message: std::time::Instant,
+    /// When the session last answered the client: idleness is measured from
+    /// there, so the time a statement runs is not idle time.
+    idle_since: std::time::Instant,
     /// The Bolt version negotiated in the handshake.
     version: BoltVersion,
     /// This connection in the server's list, for `SHOW CONNECTIONS`.
@@ -678,7 +679,7 @@ impl<'a> Session<'a> {
             client: None,
             timed_out: None,
             idle_timeout: None,
-            last_message: std::time::Instant::now(),
+            idle_since: std::time::Instant::now(),
             version: BoltVersion { major: 4, minor: 4 },
             listed,
         }
@@ -728,7 +729,7 @@ impl<'a> Session<'a> {
         let tx = self.native_tx.as_ref()?;
         let idle = self
             .idle_timeout
-            .map(|limit| limit.saturating_sub(self.last_message.elapsed()));
+            .map(|limit| limit.saturating_sub(self.idle_since.elapsed()));
         let deadline = tx.deadline.map(|d| d.remaining());
         match (idle, deadline) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -752,7 +753,7 @@ impl<'a> Session<'a> {
         }
         let idle = self
             .idle_timeout
-            .is_some_and(|limit| self.last_message.elapsed() >= limit);
+            .is_some_and(|limit| self.idle_since.elapsed() >= limit);
         if idle {
             #[cfg(feature = "http")]
             tracing::info!(
@@ -883,7 +884,13 @@ impl<'a> Session<'a> {
     /// order. An empty `Vec` means "no reply" (only `GOODBYE` produces
     /// this).
     pub fn handle(&mut self, msg: ClientMessage) -> Vec<ServerMessage> {
-        self.last_message = std::time::Instant::now();
+        let replies = self.dispatch(msg);
+        self.idle_since = std::time::Instant::now();
+        replies
+    }
+
+    /// [`handle`](Self::handle) without the idle bookkeeping.
+    fn dispatch(&mut self, msg: ClientMessage) -> Vec<ServerMessage> {
         if self.state == State::Defunct {
             return vec![ServerMessage::Ignored];
         }
