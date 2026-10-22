@@ -214,6 +214,10 @@ jobs:
       # --all-features`, "No space left on device"). CI builds gain
       # nothing from incremental caches.
       CARGO_INCREMENTAL: "0"
+      # Full debuginfo left 1.7 GB of the runner's 145 GB before the doctests,
+      # so one more test binary ran it out of disk. Line tables keep file and
+      # line in panics and backtraces.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
         # `runner.tool_cache` expression is ONLY available at step level —
@@ -312,6 +316,15 @@ jobs:
           fi
       - name: Run unit + integration tests (cargo test, sequential)
         run: cargo test --tests --no-fail-fast
+      - name: Free disk after the full suite
+        # The steps below build their own binaries with other features; the
+        # suite's test executables are not used again. Shared libraries and
+        # build-script outputs stay.
+        run: |
+          df -h "$CARGO_TARGET_DIR"
+          find "$CARGO_TARGET_DIR/debug/deps" -maxdepth 1 -type f -perm -u+x \
+            ! -name '*.so' ! -name '*.d' ! -name '*.rlib' ! -name '*.rmeta' -delete
+          df -h "$CARGO_TARGET_DIR"
       # Phase 11 task `00073` — Bolt-over-TLS lives behind the
       # `bolt-tls` Cargo feature, which is NOT in the default set
       # (rustls + tokio-rustls + rustls-pemfile add ~10 transitive
