@@ -1489,6 +1489,7 @@ fn wal_format_to_u8(f: crate::wal_format::WalFormat) -> u8 {
         WalFormat::Json => 0,
         WalFormat::Cbor => 1,
         WalFormat::MsgPack => 2,
+        WalFormat::CborZstd => 3,
     }
 }
 
@@ -1498,6 +1499,7 @@ fn wal_format_from_u8(v: u8) -> crate::wal_format::WalFormat {
     match v {
         1 => WalFormat::Cbor,
         2 => WalFormat::MsgPack,
+        3 => WalFormat::CborZstd,
         _ => WalFormat::Json,
     }
 }

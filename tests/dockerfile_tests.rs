@@ -201,6 +201,10 @@ fn dockerfile_features_are_build_arg_overridable() {
          takes bearer tokens: {arg_line}"
     );
     assert!(
+        arg_line.contains("wal-zstd"),
+        "the image must compile the cbor-zstd WAL format (`wal-zstd`): {arg_line}"
+    );
+    assert!(
         content.contains("${CARGO_FEATURES}"),
         "the cargo build must take features from ${{CARGO_FEATURES}}, not a hardcoded list"
     );

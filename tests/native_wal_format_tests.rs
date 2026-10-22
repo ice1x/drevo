@@ -70,3 +70,52 @@ fn switching_the_wal_format_converts_existing_stores_at_open() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(feature = "wal-zstd")]
+#[test]
+fn switching_to_cbor_zstd_compresses_the_store_at_open() {
+    let dir = std::env::temp_dir().join(format!("drevo_wal_zstd_svc_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let wal = dir.join("native.wal");
+    let count = |svc: &NativeService| run(svc, "MATCH (t:Ticket) RETURN count(t) AS c").rows;
+
+    // A bug tracker written with the default JSON log: every ticket repeats
+    // the same component and status strings.
+    {
+        let svc = NativeService::open(&wal).unwrap();
+        run(
+            &svc,
+            "UNWIND range(1, 60) AS i CREATE (:Ticket {title: 'bug-' + toString(i), \
+             component: 'editor/save-dialog', status: 'open', severity: i % 3, \
+             vec: [x IN range(1, 32) | toFloat(x) / 7.0]})",
+        );
+    }
+    let json_bytes = std::fs::read(&wal).unwrap().len();
+
+    NativeService::set_default_wal_format(WalFormat::CborZstd);
+    let svc = NativeService::open(&wal).unwrap();
+    let bytes = std::fs::read(&wal).unwrap();
+    assert_eq!(&bytes[..8], b"DRVWAL\x01Z");
+    assert!(
+        bytes.len() * 2 < json_bytes,
+        "cbor-zstd {} vs json {json_bytes}",
+        bytes.len()
+    );
+    assert_eq!(
+        count(&svc),
+        vec![vec![drevo::cypher::executor::Value::Integer(60)]]
+    );
+    run(
+        &svc,
+        "CREATE (:Ticket {title: 'after-cbor-zstd', status: 'open'})",
+    );
+    drop(svc);
+    let svc = NativeService::open(&wal).unwrap();
+    assert_eq!(
+        count(&svc),
+        vec![vec![drevo::cypher::executor::Value::Integer(61)]]
+    );
+    NativeService::set_default_wal_format(WalFormat::Json);
+    let _ = std::fs::remove_dir_all(&dir);
+}

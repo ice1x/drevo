@@ -96,6 +96,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`DREVO_WAL_FORMAT=cbor-zstd`** (issue #688). CBOR records compressed one
+  by one with zstd, behind the `wal-zstd` feature (in the Docker image). On
+  a knowledge graph with 2,152 embeddings the compacted log measured 73.8 MB
+  as JSON, 19.5 MB as CBOR and 12.8 MB as `cbor-zstd`; reopening took 195,
+  259 and 277 ms. A compressed log keeps the framing, checksums and
+  recovery rules of the other binary formats, works under encryption at
+  rest, and is converted to or from any other format by compaction.
+
 - **Admin guide: Upgrading a server.** The steps to move a data directory
   to a new image: copy it, choose `DREVO_AUTH` before the first start (an
   image that requires a login otherwise creates `neo4j` with a generated

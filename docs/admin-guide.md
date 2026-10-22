@@ -43,7 +43,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PREPARED_TX_WARN_SECS` | `60` | Log an ERROR (and so raise a Web UI notification) for each two-phase-commit transaction that has stayed prepared longer than this many seconds. While one is prepared, every write is refused. `0` turns the alert off. |
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
 | `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
-| `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor` or `msgpack`. See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
+| `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor`, `msgpack` or `cbor-zstd` (CBOR records compressed with zstd). See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
 | `DREVO_READ_ONLY` | `false` | Serve every database read-only. See [Read-only databases](#read-only-databases). |
 | `DREVO_AUDIT_LOG` | `off` | Security audit log: `off`, `stdout`, or a file path. See [Audit log](#audit-log). Needs the `auth` feature. |
 | `DREVO_AUDIT_QUERY_TEXT` | `false` | Add a refused statement's text to its audit event. |
@@ -133,8 +133,9 @@ curl -s localhost:8080/cypher -H 'Accept: application/cbor' \
 
 The write-ahead log (`native.wal`) is JSON Lines by default. With
 `DREVO_WAL_FORMAT=cbor` or `msgpack` it is written as framed binary records
-instead. Both formats are compiled into the Docker image (Cargo features
-`format-cbor` / `format-msgpack`).
+instead, and with `cbor-zstd` each CBOR record is also compressed with zstd
+(level 3). All three are compiled into the Docker image (Cargo features
+`format-cbor` / `format-msgpack` / `wal-zstd`).
 
 - **Switching:** set the variable and restart. The log is compacted at every
   start, and compaction rewrites it in the configured format, so the switch
@@ -148,18 +149,23 @@ instead. Both formats are compiled into the Docker image (Cargo features
 
   | Format | Log size | Reopen |
   |---|---:|---:|
-  | `json` | 73.8 MB | 209 ms |
-  | `cbor` | **19.5 MB** | 256 ms |
+  | `json` | 73.8 MB | 195 ms |
+  | `cbor` | 19.5 MB | 259 ms |
   | `msgpack` | 39.2 MB | 209 ms |
+  | `cbor-zstd` | **12.8 MB** | 277 ms |
 
   Most embedding components are exact 32-bit floats, so CBOR stores the
-  vectors losslessly at 5 bytes a value.
+  vectors losslessly at 5 bytes a value. `cbor-zstd` takes a third off
+  CBOR: a record is compressed on its own, so a log of many small records
+  gains less than one of large ones, and a compressed JSON record would
+  still be larger than plain CBOR, which is why compression comes with
+  CBOR only. Compressing costs about 10 µs a record.
 - **Durability:** unchanged. A binary log starts with an 8-byte header, and
   each record carries its length and a CRC-32. A torn last record (a crash
   mid-write) is dropped on open; a damaged record with valid records after it
   refuses to open, exactly as with JSON Lines.
-- **Readability:** a binary log can no longer be inspected with `tail` or
-  `jq`. To look inside, set `DREVO_WAL_FORMAT=json` and restart, or use
+- **Readability:** a binary or compressed log can no longer be inspected
+  with `tail` or `jq`. To look inside, set `DREVO_WAL_FORMAT=json` and restart, or use
   `GET /export/json`.
 
 ### gRPC API (opt-in)

@@ -35,6 +35,10 @@ const HEADER_VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 8;
 /// Length of a binary record's frame (length + checksum).
 const FRAME_LEN: usize = 8;
+/// The zstd level of a `cbor-zstd` record. On a knowledge graph's log, level
+/// 19 was 2% smaller than level 3 at twelve times the CPU.
+#[cfg(feature = "wal-zstd")]
+const ZSTD_LEVEL: i32 = 3;
 
 /// The header version of an encrypted log: the tag names the encoding of
 /// the records inside the encryption (JSON included), every record is
@@ -80,13 +84,16 @@ pub enum WalFormat {
     Cbor,
     /// Framed MessagePack records, behind the `wal-msgpack` feature.
     MsgPack,
+    /// Framed CBOR records, each compressed with zstd, behind the `wal-zstd`
+    /// feature.
+    CborZstd,
 }
 
 /// Why a WAL format name was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WalFormatError {
     /// Not a known format name.
-    #[error("unknown WAL format `{0}` (known: json, cbor, msgpack)")]
+    #[error("unknown WAL format `{0}` (known: json, cbor, msgpack, cbor-zstd)")]
     Unknown(String),
     /// A known format this build was compiled without.
     #[error("WAL format `{0}` is not compiled in")]
@@ -101,6 +108,7 @@ impl WalFormat {
             WalFormat::Json => "json",
             WalFormat::Cbor => "cbor",
             WalFormat::MsgPack => "msgpack",
+            WalFormat::CborZstd => "cbor-zstd",
         }
     }
 
@@ -111,6 +119,7 @@ impl WalFormat {
             WalFormat::Json => true,
             WalFormat::Cbor => cfg!(feature = "wal-cbor"),
             WalFormat::MsgPack => cfg!(feature = "wal-msgpack"),
+            WalFormat::CborZstd => cfg!(feature = "wal-zstd"),
         }
     }
 
@@ -119,6 +128,7 @@ impl WalFormat {
             WalFormat::Json => b'J',
             WalFormat::Cbor => b'C',
             WalFormat::MsgPack => b'M',
+            WalFormat::CborZstd => b'Z',
         }
     }
 
@@ -180,10 +190,15 @@ impl FromStr for WalFormat {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let name = s.trim().to_ascii_lowercase();
-        let format = [WalFormat::Json, WalFormat::Cbor, WalFormat::MsgPack]
-            .into_iter()
-            .find(|f| f.name() == name)
-            .ok_or_else(|| WalFormatError::Unknown(name.clone()))?;
+        let format = [
+            WalFormat::Json,
+            WalFormat::Cbor,
+            WalFormat::MsgPack,
+            WalFormat::CborZstd,
+        ]
+        .into_iter()
+        .find(|f| f.name() == name)
+        .ok_or_else(|| WalFormatError::Unknown(name.clone()))?;
         if !format.compiled_in() {
             return Err(WalFormatError::NotCompiled(name));
         }
@@ -242,6 +257,7 @@ pub fn detect(bytes: &[u8]) -> Result<Detected> {
         b'J' if sealed => WalFormat::Json,
         b'C' => WalFormat::Cbor,
         b'M' => WalFormat::MsgPack,
+        b'Z' => WalFormat::CborZstd,
         _ => return Err(invalid(format!("unknown WAL format tag {tag:#04x}"))),
     };
     if !format.compiled_in() {
@@ -764,6 +780,10 @@ fn decode_ops(format: WalFormat, payload: &[u8]) -> Option<Vec<WalOp>> {
         WalFormat::Cbor => ciborium::from_reader(payload).ok(),
         #[cfg(feature = "wal-msgpack")]
         WalFormat::MsgPack => rmp_serde::from_slice(payload).ok(),
+        #[cfg(feature = "wal-zstd")]
+        WalFormat::CborZstd => zstd::stream::decode_all(payload)
+            .ok()
+            .and_then(|cbor| ciborium::from_reader(cbor.as_slice()).ok()),
         #[allow(unreachable_patterns)]
         _ => None,
     };
@@ -783,6 +803,12 @@ fn encode_value(format: WalFormat, value: &serde_json::Value) -> Result<Vec<u8>>
         #[cfg(feature = "wal-msgpack")]
         WalFormat::MsgPack => rmp_serde::to_vec_named(value)
             .map_err(|e| CoreError::Backend(format!("MessagePack encode: {e}"))),
+        #[cfg(feature = "wal-zstd")]
+        WalFormat::CborZstd => {
+            let cbor = encode_value(WalFormat::Cbor, value)?;
+            zstd::bulk::compress(&cbor, ZSTD_LEVEL)
+                .map_err(|e| CoreError::Backend(format!("zstd encode: {e}")))
+        }
         #[allow(unreachable_patterns)]
         other => {
             let _ = value;
