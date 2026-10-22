@@ -442,7 +442,9 @@ mod codes {
     pub const SYNTAX_ERROR: &str = "Neo.ClientError.Statement.SyntaxError";
     pub const SEMANTIC_ERROR: &str = "Neo.ClientError.Statement.SemanticError";
     pub const PARAMETER_MISSING: &str = "Neo.ClientError.Statement.ParameterMissing";
-    pub const UNSUPPORTED: &str = "Neo.DatabaseError.General.UnknownError";
+    /// The query uses a form the server does not support: the client's
+    /// error, which drivers do not retry.
+    pub const UNSUPPORTED: &str = "Neo.ClientError.Statement.UnsupportedOperationError";
     pub const STORAGE: &str = "Neo.DatabaseError.Statement.ExecutionFailed";
     /// A statement ran past the configured statement timeout (#547) — the
     /// code Neo4j drivers already recognise for a timed-out transaction.

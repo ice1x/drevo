@@ -299,17 +299,13 @@ pub struct ExecStats {
 /// Errors raised by the executor.
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
-    /// A clause or expression form is not supported by `00063` yet.
-    ///
-    /// The `task` field points at the follow-on roadmap task that will
-    /// ship the missing feature so callers can present a deterministic
-    /// "not yet" message.
-    #[error("unsupported Cypher feature `{feature}` — lands with task {task}")]
+    /// The query uses a clause, function or expression form the executor
+    /// does not support, such as an unknown function or an aggregation in
+    /// the body of a list comprehension.
+    #[error("{feature} is not supported")]
     Unsupported {
-        /// Short human-readable feature label (`"WHERE"`, `"MERGE"`).
+        /// Short human-readable label of the form (`"function call `foo`"`).
         feature: String,
-        /// Roadmap task id that will ship the feature (`"00065"`).
-        task: String,
         /// Source span of the offending construct.
         span: Span,
     },
@@ -1801,7 +1797,6 @@ fn validate_path_supported(path: &PathPattern, creating: bool) -> ExecResultT<()
         if creating && rel.length.is_some() && !matches!(rel.length, Some(RelLength::Exact(1))) {
             return Err(ExecError::Unsupported {
                 feature: "variable-length CREATE".into(),
-                task: "future Phase 10 follow-up".into(),
                 span: rel.span,
             });
         }
@@ -1930,7 +1925,6 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             } else {
                 Err(ExecError::Unsupported {
                     feature: format!("function call `{}`", name.join(".")),
-                    task: "future Phase 10 follow-up".into(),
                     span: *span,
                 })
             }
@@ -1955,7 +1949,6 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
         }
         Expression::Star(span) => Err(ExecError::Unsupported {
             feature: "`*` outside `count(*)`".into(),
-            task: "future Phase 10 follow-up".into(),
             span: *span,
         }),
         Expression::Index { base, index, .. } => {
@@ -2425,7 +2418,6 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
                 }
                 return Err(ExecError::Unsupported {
                     feature: format!("function call `{}`", name.join(".")),
-                    task: "future Phase 10 follow-up".into(),
                     span: *span,
                 });
             }
@@ -2473,7 +2465,6 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
         }
         Expression::Star(span) => Err(ExecError::Unsupported {
             feature: "`*` outside `count(*)`".into(),
-            task: "future Phase 10 follow-up".into(),
             span: *span,
         }),
         Expression::Binary { lhs, rhs, .. } => {
@@ -4883,7 +4874,6 @@ impl<'a> Executor<'a> {
         if rel.length.is_some() {
             return Err(ExecError::Unsupported {
                 feature: "variable-length CREATE".into(),
-                task: "00069".into(),
                 span: rel.span,
             });
         }
@@ -9789,7 +9779,6 @@ impl<'a> Executor<'a> {
             } => self.eval_case(scrutinee.as_deref(), arms, else_branch.as_deref(), row),
             Expression::Star(span) => Err(ExecError::Unsupported {
                 feature: "`*` outside `count(*)`".into(),
-                task: "future Phase 10 follow-up".into(),
                 span: *span,
             }),
             Expression::Index { base, index, span } => {
@@ -10458,7 +10447,6 @@ impl<'a> Executor<'a> {
         }
         Err(ExecError::Unsupported {
             feature: format!("function call `{}`", name.join(".")),
-            task: "future Phase 10 follow-up".into(),
             span,
         })
     }
@@ -11997,7 +11985,6 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         // reaching here is a missing arm rather than user input.
         other => Err(ExecError::Unsupported {
             feature: format!("function call `{other}`"),
-            task: "future Phase 10 follow-up".into(),
             span,
         }),
     }
