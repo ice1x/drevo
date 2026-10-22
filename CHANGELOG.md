@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **The Bolt idle timeout counted a running statement as idle time** (issue
+  #730). `DREVO_IDLE_SESSION_TIMEOUT_MS` was measured from when a message
+  arrived, so after a statement longer than the limit a client that took a
+  few milliseconds before its next message had its connection closed and its
+  transaction rolled back. Idleness is now measured from the last reply.
+
 - **An aggregation inside another expression was refused** (issue #729).
   `size(collect(x))`, `toFloat(sum(x)) / count(x)`, `collect(x)[0]`,
   `collect(x)[0..3]`, `{c: count(*)}`, `[y IN collect(x) WHERE …]`,

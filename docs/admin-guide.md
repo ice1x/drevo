@@ -90,7 +90,8 @@ gives a statement. When the server's limit is the shorter one, the error is the 
 `DREVO_IDLE_SESSION_TIMEOUT_MS` deals with clients that open a transaction and go silent, such as a
 crashed script or a paused debugger. Their connection is closed and the transaction rolled back,
 so it stops holding its snapshot of the graph and any locks. The driver sees a closed connection and
-opens a new one.
+opens a new one. The silence is counted from the server's last reply, so a statement that runs
+longer than the limit is not idle time.
 
 ### Binary HTTP bodies (CBOR, MessagePack, opt-in)
 

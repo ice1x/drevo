@@ -340,6 +340,39 @@ fn a_busy_transaction_is_not_idle() {
     assert_eq!(tickets(&svc), 5);
 }
 
+#[test]
+fn a_statement_longer_than_the_idle_limit_is_not_idle_time() {
+    let svc = Arc::new(NativeService::in_memory());
+    let limit = Duration::from_millis(50);
+    let mut s = session(&svc).with_idle_timeout(Some(limit));
+    assert_success(&begin(&mut s, BTreeMap::new()));
+
+    let started = Instant::now();
+    let reply = one(s.handle(ClientMessage::Run {
+        query: "UNWIND range(1, 300000) AS x WITH x WHERE x % 7 = 0 RETURN count(x) AS n"
+            .to_string(),
+        parameters: BTreeMap::new(),
+        extra: BTreeMap::new(),
+    }));
+    assert_success(&reply);
+    assert!(
+        started.elapsed() > limit,
+        "the statement must outlast the idle limit for this test to mean anything"
+    );
+
+    // The client answers at once: it was busy, not idle.
+    assert!(s.wake_in().is_some_and(|wait| wait > Duration::ZERO));
+    assert!(s.on_quiet(), "the connection stays open");
+    assert_ne!(s.state(), State::Defunct);
+    assert!(matches!(
+        s.handle(ClientMessage::Pull {
+            extra: BTreeMap::from([("n".to_string(), BoltValue::Integer(-1))]),
+        })
+        .last(),
+        Some(ServerMessage::Success { .. })
+    ));
+}
+
 mod over_tcp {
     use super::*;
 
@@ -481,6 +514,45 @@ mod over_tcp {
             .unwrap();
         assert_eq!(open_transactions(&svc), 0);
         assert_eq!(tickets(&svc), 0);
+    }
+
+    #[tokio::test]
+    async fn a_statement_longer_than_the_idle_limit_keeps_the_connection() {
+        let svc = Arc::new(NativeService::in_memory());
+        let registry = Arc::new(DatabaseRegistry::new(Arc::clone(&svc)));
+        registry.set_idle_session_timeout(Some(Duration::from_millis(100)));
+        let (mut client, server) = connect(registry).await;
+
+        // A report inside a transaction runs far longer than the idle limit.
+        // The client reads the RUN reply and takes a moment, well inside the
+        // idle limit, before it pulls.
+        let mut batch = frame(BEGIN, vec![dict(BTreeMap::new())]);
+        batch.extend(run_msg(
+            "UNWIND range(1, 300000) AS x WITH x WHERE x % 7 = 0 RETURN count(x) AS n",
+        ));
+        let started = Instant::now();
+        client.write_all(&batch).await.unwrap();
+        assert_eq!(tags(&mut client, 2).await, vec![SUCCESS, SUCCESS]);
+        assert!(started.elapsed() > Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        client.write_all(&pull_msg()).await.unwrap();
+        assert_eq!(tags(&mut client, 2).await, vec![0x71, SUCCESS]);
+
+        // And again before it files a ticket and commits.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let mut batch = run_msg("CREATE (:Ticket {title: 'report filed'})");
+        batch.extend(pull_msg());
+        batch.extend(frame(COMMIT, vec![]));
+        client.write_all(&batch).await.unwrap();
+        assert_eq!(tags(&mut client, 3).await, vec![SUCCESS; 3]);
+        assert_eq!(tickets(&svc), 1);
+
+        client.write_all(&frame(GOODBYE, vec![])).await.unwrap();
+        timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
