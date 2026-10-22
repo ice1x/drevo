@@ -411,6 +411,23 @@ MATCH (e:Employee)
 RETURN count(DISTINCT e.team) AS distinct_teams
 ```
 
+An aggregation can be an operand of a larger expression: an argument of a function, an
+indexed or sliced list, a map value, or the list a comprehension, list predicate or `reduce`
+walks. The aggregation is computed over the group first, then the expression around it:
+
+```cypher
+MATCH (b:Bug)
+WITH b ORDER BY b.severity DESC
+RETURN b.component AS component,
+       size(collect(b)) AS bugs,
+       collect(b.title)[0..3] AS worst,
+       {open: count(b), mean: round(avg(b.severity))} AS summary,
+       [t IN collect(b.title) WHERE t STARTS WITH 'Crash'] AS crashes
+```
+
+An aggregation cannot appear inside another aggregation (`count(size(collect(x)))`) or in the
+body of a comprehension, list predicate or `reduce`, which runs once per element.
+
 ### Statistical aggregations
 
 Four further aggregations fold a numeric group to a statistic, exactly like

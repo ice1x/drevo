@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **An aggregation inside another expression was refused** (issue #729).
+  `size(collect(x))`, `toFloat(sum(x)) / count(x)`, `collect(x)[0]`,
+  `collect(x)[0..3]`, `{c: count(*)}`, `[y IN collect(x) WHERE …]`,
+  `any(y IN collect(x) WHERE …)` and `reduce(s = 0, y IN collect(x) | …)`
+  failed with "unsupported Cypher feature"; the aggregation is now folded over
+  the group and the expression evaluated around it, as in Neo4j.
+
 - **Every write transaction copied the whole graph's adjacency** (issue
   #716). A transaction's copy of the store now shares the adjacency lists
   (in chunks of 64 nodes), embeddings and the kind / title indexes with the
