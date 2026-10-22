@@ -43,7 +43,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PREPARED_TX_WARN_SECS` | `60` | Log an ERROR (and so raise a Web UI notification) for each two-phase-commit transaction that has stayed prepared longer than this many seconds. While one is prepared, every write is refused. `0` turns the alert off. |
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
 | `DREVO_HTTP_FORMATS` | `json` | Body formats the HTTP API offers next to JSON: a comma list of `json`, `cbor`, `msgpack`. See [Binary HTTP bodies](#binary-http-bodies-cbor-messagepack-opt-in). A format the binary was built without is rejected at startup. |
-| `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor`, `msgpack` or `cbor-zstd` (CBOR records compressed with zstd). See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
+| `DREVO_WAL_FORMAT` | `json` | Encoding of the write-ahead log: `json`, `cbor`, `msgpack`, `cbor-compact` (CBOR with the built-in field names as small integers), `cbor-zstd` or `cbor-compact-zstd` (the same, each record compressed with zstd). See [Write-ahead-log format](#write-ahead-log-format-opt-in). |
 | `DREVO_READ_ONLY` | `false` | Serve every database read-only. See [Read-only databases](#read-only-databases). |
 | `DREVO_AUDIT_LOG` | `off` | Security audit log: `off`, `stdout`, or a file path. See [Audit log](#audit-log). Needs the `auth` feature. |
 | `DREVO_AUDIT_QUERY_TEXT` | `false` | Add a refused statement's text to its audit event. |
@@ -133,38 +133,40 @@ curl -s localhost:8080/cypher -H 'Accept: application/cbor' \
 
 The write-ahead log (`native.wal`) is JSON Lines by default. With
 `DREVO_WAL_FORMAT=cbor` or `msgpack` it is written as framed binary records
-instead, and with `cbor-zstd` each CBOR record is also compressed with zstd
-(level 3). All three are compiled into the Docker image (Cargo features
-`format-cbor` / `format-msgpack` / `wal-zstd`).
+instead. `cbor-compact` is CBOR in which the built-in field names of a
+record (`UpsertNode`, `id`, `kind`, `created_at`, …) are small integers
+while property names stay text; `cbor-zstd` and `cbor-compact-zstd` also
+compress each record with zstd (level 3). All of them are compiled into the
+Docker image (Cargo features `format-cbor` / `format-msgpack` / `wal-zstd`).
 
 - **Switching:** set the variable and restart. The log is compacted at every
   start, and compaction rewrites it in the configured format, so the switch
   happens at that restart. It works in both directions, and a log in any
   compiled-in format opens whatever the setting is.
-- **Size:** the gain is the embeddings. A float that fits in 32 bits takes 5
-  bytes in CBOR against about 20 characters in JSON, so a log dominated by
-  vectors shrinks several-fold. MessagePack writes every float in 9 bytes.
-  On a knowledge graph of 4,185 nodes, 2,152 of them with a 1,536-float
-  embedding property (84% of the JSON log), the compacted log measured:
+- **Size:** which format is smallest depends on what the records hold. A
+  float that fits in 32 bits takes 5 bytes in CBOR against about 20
+  characters in JSON, so a log dominated by vectors shrinks several-fold
+  (MessagePack writes every float in 9 bytes), and zstd takes a further third
+  off such records. A log of small records is mostly field names, which
+  `cbor-compact` removes, while a record that small does not compress and
+  still pays the zstd frame header. Two real logs, compacted (reopen is the
+  best of three on the same machine):
 
-  | Format | Log size | Reopen |
+  | Format | Knowledge graph: 4,185 nodes, 2,152 with a 1,536-float embedding | Road network: 240,451 junctions and 278,377 roads, 518,828 records |
   |---|---:|---:|
-  | `json` | 73.8 MB | 195 ms |
-  | `cbor` | 19.5 MB | 259 ms |
-  | `msgpack` | 39.2 MB | 209 ms |
-  | `cbor-zstd` | **12.8 MB** | 277 ms |
+  | `json` | 73.8 MB, 226 ms | 127.3 MB, 1.11 s |
+  | `cbor` | 19.5 MB, 291 ms | 91.7 MB, 2.35 s |
+  | `msgpack` | 39.2 MB | — |
+  | `cbor-compact` | 18.6 MB, 325 ms | **59.2 MB**, 2.44 s |
+  | `cbor-zstd` | 12.8 MB, 287 ms | 93.6 MB, 2.51 s |
+  | `cbor-compact-zstd` | **12.1 MB**, 331 ms | 63.9 MB, 2.70 s |
 
-  Most embedding components are exact 32-bit floats, so CBOR stores the
-  vectors losslessly at 5 bytes a value. `cbor-zstd` takes a third off
-  CBOR here. A record is compressed on its own, so the gain depends on the
-  size of the records: a log of 518,828 small road-network records (a
-  median of 154 bytes each as CBOR) measured 87.5 MB as `cbor` and 89.7 MB
-  as `cbor-zstd`, 2% larger, because a record that small does not compress
-  and still pays the zstd frame header. Use `cbor-zstd` for logs of large
-  records, such as embeddings and long texts, and `cbor` otherwise. A
-  compressed JSON record would still be larger than plain CBOR, which is
-  why compression comes with CBOR only. Compressing costs about 10 µs a
-  record.
+  So: `cbor-compact-zstd` for logs of large records such as embeddings and
+  long texts, `cbor-compact` for logs of many small records, and plain
+  `cbor` when a log must stay readable by a build without the `wal-zstd`
+  feature. Compressing costs about 10 µs a record. A compressed JSON record
+  would still be larger than plain CBOR, which is why compression comes with
+  CBOR only.
 - **Durability:** unchanged. A binary log starts with an 8-byte header, and
   each record carries its length and a CRC-32. A torn last record (a crash
   mid-write) is dropped on open; a damaged record with valid records after it

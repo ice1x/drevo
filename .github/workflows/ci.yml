@@ -377,7 +377,7 @@ jobs:
       - name: Run gRPC / Flight TLS tests (nextest)
         run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight,bolt-tls --lib --test rpc_tls_tests -E 'binary(rpc_tls_tests) | (kind(lib) & test(rpc_tls))'
       - name: Run drevo-core WAL format feature tests (nextest)
-        run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack,wal-zstd,encryption -E 'binary(wal_formats) | binary(wal_zstd) | binary(encryption) | (kind(lib) & (test(wal_format) | test(encryption)))'
+        run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack,wal-zstd,encryption -E 'binary(wal_formats) | binary(wal_zstd) | binary(wal_compact) | binary(encryption) | (kind(lib) & (test(wal_format) | test(encryption)))'
       # Encryption at rest on the server: the key settings, encrypted
       # databases and backups, and encrypt / rotate-key / decrypt.
       - name: Run server encryption tests (nextest)
