@@ -994,6 +994,64 @@ fn ci_yml_test_job_does_not_run_benches() {
     );
 }
 
+/// The lines of one top-level job of `ci.yml`, from its `  <name>:` header
+/// up to the next job header.
+fn ci_yml_job(name: &str) -> String {
+    let body = fs::read_to_string(workflows_dir().join("ci.yml")).expect("ci.yml exists");
+    let header = format!("  {name}:");
+    let mut out = String::new();
+    let mut inside = false;
+    for line in body.lines() {
+        let is_job_header =
+            line.starts_with("  ") && !line.starts_with("   ") && line.trim_end().ends_with(':');
+        if is_job_header {
+            if inside {
+                break;
+            }
+            inside = line.trim_end() == header;
+        }
+        if inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    assert!(!out.is_empty(), "ci.yml has no `{name}` job");
+    out
+}
+
+#[test]
+fn ci_yml_test_job_builds_with_line_tables_only_debuginfo() {
+    // The `test` job builds the whole suite plus ten feature combinations
+    // into one target dir on a fresh 145 GB runner. With full debuginfo it
+    // had 1.7 GB left before the doctests, and one more test binary ran it
+    // out of disk. Line tables keep file:line in panics and backtraces at a
+    // fraction of the size.
+    let job = ci_yml_job("test");
+    assert!(
+        job.contains("CARGO_PROFILE_DEV_DEBUG: line-tables-only"),
+        "the ci.yml `test` job must set `CARGO_PROFILE_DEV_DEBUG: line-tables-only` \
+         in its env, or full debuginfo runs the runner out of disk"
+    );
+}
+
+#[test]
+fn ci_yml_test_job_frees_the_suite_binaries_before_the_feature_steps() {
+    let job = ci_yml_job("test");
+    let suite = job
+        .find("cargo test --tests --no-fail-fast")
+        .expect("the full suite step");
+    let free = job
+        .find("name: Free disk after the full suite")
+        .expect("a step that frees the suite's test executables");
+    let first_feature_step = job
+        .find("name: Run bolt-tls feature tests")
+        .expect("the first feature step");
+    assert!(
+        suite < free && free < first_feature_step,
+        "the disk must be freed between the full suite and the feature steps"
+    );
+}
+
 // ---- bench.yml invariants ------------------------------------------------
 //
 // `bench.yml` runs criterion benches nightly on the self-hosted runner.
