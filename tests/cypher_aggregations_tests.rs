@@ -521,3 +521,129 @@ fn multi_aggregation_per_group_returns_all_columns() {
     assert_eq!(int(&rows, 1, 4), 50);
     assert_eq!(int(&rows, 1, 5), 50);
 }
+
+// ===== Aggregations inside other expressions =================================
+
+fn list(rows: &[Vec<Value>], r: usize, c: usize) -> Vec<Value> {
+    match &rows[r][c] {
+        Value::List(items) => items.clone(),
+        other => panic!("expected list at ({},{}), got {:?}", r, c, other),
+    }
+}
+
+#[test]
+fn bug_tracker_bug_count_and_first_titles_per_component() {
+    let db = db();
+    for (title, component, severity) in [
+        ("Crash on save", "editor", 5),
+        ("Slow scroll", "editor", 2),
+        ("Typo in menu", "editor", 1),
+        ("Login loop", "auth", 4),
+    ] {
+        run(
+            &format!(
+                "CREATE (:Bug {{title: '{title}', component: '{component}', severity: {severity}}})"
+            ),
+            &db,
+        );
+    }
+    let rows = run(
+        "MATCH (b:Bug) WITH b ORDER BY b.severity DESC \
+         RETURN b.component AS component, size(collect(b)) AS bugs, \
+                collect(b.title)[0..2] AS worst, round(avg(b.severity)) AS typical \
+         ORDER BY component",
+        &db,
+    );
+    assert_eq!(rows.len(), 2);
+    assert_eq!(string(&rows, 0, 0), "auth");
+    assert_eq!(int(&rows, 0, 1), 1);
+    assert_eq!(list(&rows, 0, 2), vec![Value::String("Login loop".into())]);
+    assert_eq!(string(&rows, 1, 0), "editor");
+    assert_eq!(int(&rows, 1, 1), 3);
+    assert_eq!(
+        list(&rows, 1, 2),
+        vec![
+            Value::String("Crash on save".into()),
+            Value::String("Slow scroll".into())
+        ]
+    );
+    assert!((float(&rows, 1, 3) - 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn story_editor_chapter_summary_as_a_map() {
+    let db = db();
+    for (title, words) in [("Opening", 1200), ("Storm", 3400), ("Return", 2100)] {
+        run(
+            &format!("CREATE (:Chapter {{title: '{title}', words: {words}}})"),
+            &db,
+        );
+    }
+    let rows = run(
+        "MATCH (c:Chapter) \
+         RETURN {chapters: count(c), words: sum(c.words), longest: max(c.words)} AS summary",
+        &db,
+    );
+    let Value::Map(summary) = &rows[0][0] else {
+        panic!("expected a map, got {:?}", rows[0][0]);
+    };
+    assert_eq!(summary.get("chapters"), Some(&Value::Integer(3)));
+    assert_eq!(summary.get("words"), Some(&Value::Integer(6700)));
+    assert_eq!(summary.get("longest"), Some(&Value::Integer(3400)));
+}
+
+#[test]
+fn erp_order_total_and_large_lines_from_collected_prices() {
+    let db = db();
+    run("CREATE (:Order {no: 'PO-1'})", &db);
+    for price in [12.5, 80.0, 7.5] {
+        run(
+            &format!(
+                "MATCH (o:Order {{no: 'PO-1'}}) CREATE (o)-[:HAS]->(:Line {{price: {price:?}}})"
+            ),
+            &db,
+        );
+    }
+    let rows = run(
+        "MATCH (o:Order)-[:HAS]->(l:Line) \
+         RETURN o.no AS orderNo, \
+                reduce(total = 0.0, p IN collect(l.price) | total + p) AS total, \
+                [p IN collect(l.price) WHERE p > 10.0] AS large, \
+                any(p IN collect(l.price) WHERE p > 50.0) AS needsApproval",
+        &db,
+    );
+    assert_eq!(string(&rows, 0, 0), "PO-1");
+    assert!((float(&rows, 0, 1) - 100.0).abs() < 1e-9);
+    let mut large: Vec<f64> = list(&rows, 0, 2)
+        .iter()
+        .map(|v| match v {
+            Value::Float(f) => *f,
+            other => panic!("expected float, got {other:?}"),
+        })
+        .collect();
+    large.sort_by(|a, b| a.total_cmp(b));
+    assert_eq!(large, vec![12.5, 80.0]);
+    assert_eq!(rows[0][3], Value::Bool(true));
+}
+
+#[test]
+fn task_manager_share_of_done_tasks_per_assignee() {
+    let db = db();
+    for (assignee, done) in [("ana", true), ("ana", false), ("ana", true), ("bo", false)] {
+        run(
+            &format!("CREATE (:Task {{assignee: '{assignee}', done: {done}}})"),
+            &db,
+        );
+    }
+    let rows = run(
+        "MATCH (t:Task) \
+         RETURN t.assignee AS who, \
+                toFloat(size([d IN collect(t.done) WHERE d])) / count(t) AS doneShare \
+         ORDER BY who",
+        &db,
+    );
+    assert_eq!(string(&rows, 0, 0), "ana");
+    assert!((float(&rows, 0, 1) - 2.0 / 3.0).abs() < 1e-9);
+    assert_eq!(string(&rows, 1, 0), "bo");
+    assert!((float(&rows, 1, 1) - 0.0).abs() < 1e-9);
+}

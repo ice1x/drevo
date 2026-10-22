@@ -2381,6 +2381,15 @@ fn contains_aggregation(expr: &Expression) -> bool {
                 || from.as_deref().map(contains_aggregation).unwrap_or(false)
                 || to.as_deref().map(contains_aggregation).unwrap_or(false)
         }
+        // The list a comprehension, list predicate or `reduce` walks can be
+        // an aggregation (`[y IN collect(x) WHERE y > 1]`); the body runs once
+        // per element and cannot hold one.
+        Expression::ListComprehension { list, .. } | Expression::ListPredicate { list, .. } => {
+            contains_aggregation(list)
+        }
+        Expression::Reduce { init, list, .. } => {
+            contains_aggregation(init) || contains_aggregation(list)
+        }
         _ => false,
     }
 }
@@ -2407,8 +2416,10 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
                 // `keywords`) are allowed in a projection; validate their
                 // arguments and accept.
                 if is_scalar_function_name(name) {
+                    // An argument may be an aggregation (`size(collect(x))`);
+                    // `eval_with_agg` folds it before calling the function.
                     for arg in args {
-                        validate_expr_supported(arg)?;
+                        validate_expr_supported_in_projection(arg)?;
                     }
                     return Ok(());
                 }
@@ -2514,36 +2525,33 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
-        // Index / slice sub-expressions are validated with the
-        // non-aggregation validator: `eval_with_agg` does not fold an
-        // aggregation nested inside an index (`collect(x)[0]`), so such a
-        // form stays `Unsupported` rather than silently producing a wrong
-        // answer. (`CASE` arms, by contrast, *are* folded — see `00142`.)
+        // Index / slice operands may be aggregations (`collect(x)[0]`,
+        // `collect(x)[..3]`); `eval_with_agg` folds them first.
         Expression::Index { base, index, .. } => {
-            validate_expr_supported(base)?;
-            validate_expr_supported(index)
+            validate_expr_supported_in_projection(base)?;
+            validate_expr_supported_in_projection(index)
         }
         Expression::Slice { base, from, to, .. } => {
-            validate_expr_supported(base)?;
+            validate_expr_supported_in_projection(base)?;
             if let Some(f) = from {
-                validate_expr_supported(f)?;
+                validate_expr_supported_in_projection(f)?;
             }
             if let Some(t) = to {
-                validate_expr_supported(t)?;
+                validate_expr_supported_in_projection(t)?;
             }
             Ok(())
         }
-        // A list comprehension is a group key (it never *contains* an
-        // aggregation — see `validate_expr_supported`), so its sub-expressions
-        // are validated with the non-aggregation validator, mirroring the
-        // Index / Slice handling above.
+        // The list a comprehension, list predicate or `reduce` walks (and a
+        // `reduce` seed) may be an aggregation (`[y IN collect(x) | y.name]`).
+        // The predicate / projection / fold body runs once per element, so it
+        // uses the non-aggregation validator, as in Neo4j.
         Expression::ListComprehension {
             list,
             predicate,
             projection,
             ..
         } => {
-            validate_expr_supported(list)?;
+            validate_expr_supported_in_projection(list)?;
             if let Some(pred) = predicate {
                 validate_expr_supported(pred)?;
             }
@@ -2552,21 +2560,17 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             }
             Ok(())
         }
-        // A list predicate is likewise a group key — see the comprehension arm
-        // above; both parts use the non-aggregation validator.
         Expression::ListPredicate {
             list, predicate, ..
         } => {
-            validate_expr_supported(list)?;
+            validate_expr_supported_in_projection(list)?;
             validate_expr_supported(predicate)
         }
-        // `reduce` is likewise a group key (it never contains an aggregation);
-        // its sub-expressions use the non-aggregation validator.
         Expression::Reduce {
             init, list, expr, ..
         } => {
-            validate_expr_supported(init)?;
-            validate_expr_supported(list)?;
+            validate_expr_supported_in_projection(init)?;
+            validate_expr_supported_in_projection(list)?;
             validate_expr_supported(expr)
         }
         // A map projection is a group key (it never *contains* an aggregation —
@@ -9362,6 +9366,9 @@ impl<'a> Executor<'a> {
                 else_branch.as_deref(),
                 group_rows,
             ),
+            // A function call, index, slice, map or list expression around
+            // an aggregation (`size(collect(x))`, `collect(x)[0]`).
+            _ if contains_aggregation(expr) => self.eval_around_aggregations(expr, group_rows),
             // Leaf / non-aggregation forms — fall back to a
             // representative binding. We pick the first one in the
             // group; for pure-aggregation queries the group may be
@@ -9374,6 +9381,111 @@ impl<'a> Executor<'a> {
                 self.eval(expr, scope)
             }
         }
+    }
+
+    /// Evaluate an expression whose operands hold aggregations — a scalar
+    /// function call, an index or slice, a map literal, or the list of a
+    /// comprehension, list predicate or `reduce`.
+    ///
+    /// Each operand that holds an aggregation is folded over the group first
+    /// (as Neo4j computes aggregations before the projection around them),
+    /// bound to a name no query can write, and the expression is evaluated
+    /// around those values on the group's first row.
+    fn eval_around_aggregations(
+        &self,
+        expr: &Expression,
+        group_rows: &[Bindings],
+    ) -> ExecResultT<Value> {
+        let mut scope: Bindings = group_rows.first().cloned().unwrap_or_default();
+        let mut fold = |operand: &Expression| -> ExecResultT<Expression> {
+            if !contains_aggregation(operand) {
+                return Ok(operand.clone());
+            }
+            let value = self.eval_with_agg(operand, group_rows)?;
+            let name = format!("\u{0}aggregation{}", scope.len());
+            scope.insert(name.clone(), value);
+            Ok(Expression::Variable(name, operand.span()))
+        };
+        let rewritten = match expr {
+            Expression::FunctionCall {
+                name,
+                distinct,
+                args,
+                span,
+            } => Expression::FunctionCall {
+                name: name.clone(),
+                distinct: *distinct,
+                args: args.iter().map(&mut fold).collect::<ExecResultT<_>>()?,
+                span: *span,
+            },
+            Expression::Index { base, index, span } => Expression::Index {
+                base: Box::new(fold(base)?),
+                index: Box::new(fold(index)?),
+                span: *span,
+            },
+            Expression::Slice {
+                base,
+                from,
+                to,
+                span,
+            } => Expression::Slice {
+                base: Box::new(fold(base)?),
+                from: from.as_deref().map(&mut fold).transpose()?.map(Box::new),
+                to: to.as_deref().map(&mut fold).transpose()?.map(Box::new),
+                span: *span,
+            },
+            Expression::Map(m) => Expression::Map(MapLiteral {
+                entries: m
+                    .entries
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), fold(v)?)))
+                    .collect::<ExecResultT<_>>()?,
+                span: m.span,
+            }),
+            Expression::ListComprehension {
+                variable,
+                list,
+                predicate,
+                projection,
+                span,
+            } => Expression::ListComprehension {
+                variable: variable.clone(),
+                list: Box::new(fold(list)?),
+                predicate: predicate.clone(),
+                projection: projection.clone(),
+                span: *span,
+            },
+            Expression::ListPredicate {
+                kind,
+                variable,
+                list,
+                predicate,
+                span,
+            } => Expression::ListPredicate {
+                kind: *kind,
+                variable: variable.clone(),
+                list: Box::new(fold(list)?),
+                predicate: predicate.clone(),
+                span: *span,
+            },
+            Expression::Reduce {
+                accumulator,
+                init,
+                variable,
+                list,
+                expr,
+                span,
+            } => Expression::Reduce {
+                accumulator: accumulator.clone(),
+                init: Box::new(fold(init)?),
+                variable: variable.clone(),
+                list: Box::new(fold(list)?),
+                expr: expr.clone(),
+                span: *span,
+            },
+            other => other.clone(),
+        };
+        self.eval(&rewritten, &scope)
     }
 
     /// Fold one aggregation function over the bindings of one group.
@@ -14657,6 +14769,164 @@ mod tests {
         }
         let res = run("MATCH (n:Person) RETURN sum(n.score) * 2 AS doubled", &db);
         assert_eq!(res.rows, vec![vec![Value::Integer(20)]]);
+    }
+
+    fn ints(values: &[i64]) -> Value {
+        Value::List(values.iter().map(|v| Value::Integer(*v)).collect())
+    }
+
+    #[test]
+    fn aggregation_as_a_scalar_function_argument() {
+        let db = drevo();
+        let res = run(
+            "UNWIND [1, 2, 3] AS x \
+             RETURN size(collect(x)) AS n, toFloat(sum(x)) / count(x) AS mean, \
+                    coalesce(max(x), 0) AS top",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![vec![
+                Value::Integer(3),
+                Value::Float(2.0),
+                Value::Integer(3)
+            ]]
+        );
+    }
+
+    #[test]
+    fn aggregation_indexed_and_sliced() {
+        let db = drevo();
+        let res = run(
+            "UNWIND [1, 2, 3] AS x \
+             RETURN collect(x)[0] AS first, collect(x)[0..2] AS firstTwo, \
+                    collect(x)[-1] AS last",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![vec![Value::Integer(1), ints(&[1, 2]), Value::Integer(3)]]
+        );
+    }
+
+    #[test]
+    fn aggregation_inside_a_map_literal() {
+        let db = drevo();
+        let res = run(
+            "UNWIND [1, 2] AS x RETURN {c: count(x), s: sum(x)} AS m",
+            &db,
+        );
+        let Value::Map(m) = &res.rows[0][0] else {
+            panic!("expected a map, got {:?}", res.rows[0][0]);
+        };
+        assert_eq!(m.get("c"), Some(&Value::Integer(2)));
+        assert_eq!(m.get("s"), Some(&Value::Integer(3)));
+    }
+
+    #[test]
+    fn aggregation_as_the_list_of_a_comprehension_predicate_and_reduce() {
+        let db = drevo();
+        let res = run(
+            "UNWIND [1, 2, 3] AS x \
+             RETURN [y IN collect(x) WHERE y > 1] AS big, \
+                    [y IN collect(x) | y * 10] AS tens, \
+                    any(y IN collect(x) WHERE y > 2) AS some, \
+                    reduce(s = 0, y IN collect(x) | s + y) AS total",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![vec![
+                ints(&[2, 3]),
+                ints(&[10, 20, 30]),
+                Value::Bool(true),
+                Value::Integer(6)
+            ]]
+        );
+    }
+
+    #[test]
+    fn aggregation_inside_an_expression_folds_per_group() {
+        let db = drevo();
+        for (team, score) in [("red", 1), ("red", 2), ("blue", 5)] {
+            run(
+                &format!("CREATE (:Player {{team: '{team}', score: {score}}})"),
+                &db,
+            );
+        }
+        let res = run(
+            "MATCH (p:Player) \
+             RETURN p.team AS team, size(collect(p.score)) AS n, \
+                    collect(p.score)[0] AS first \
+             ORDER BY team",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![
+                vec![
+                    Value::String("blue".into()),
+                    Value::Integer(1),
+                    Value::Integer(5)
+                ],
+                vec![
+                    Value::String("red".into()),
+                    Value::Integer(2),
+                    Value::Integer(1)
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn aggregation_inside_an_expression_over_no_rows() {
+        let db = drevo();
+        let res = run(
+            "MATCH (n:Nobody) \
+             RETURN size(collect(n)) AS n, collect(n)[0] AS first, \
+                    coalesce(max(n.v), -1) AS top",
+            &db,
+        );
+        assert_eq!(
+            res.rows,
+            vec![vec![Value::Integer(0), Value::Null, Value::Integer(-1)]]
+        );
+    }
+
+    #[test]
+    fn aggregation_inside_an_expression_in_with() {
+        let db = drevo();
+        let res = run(
+            "UNWIND [1, 2, 3] AS x WITH size(collect(x)) AS n RETURN n + 1 AS m",
+            &db,
+        );
+        assert_eq!(res.rows, vec![vec![Value::Integer(4)]]);
+    }
+
+    #[test]
+    fn aggregation_inside_a_function_inside_an_aggregation_is_rejected() {
+        let db = drevo();
+        let e = err(
+            "UNWIND [1, 2] AS x RETURN count(size(collect(x))) AS c",
+            &db,
+        );
+        assert!(
+            matches!(e, ExecError::InvalidMutation(ref s) if s.contains("nested aggregations")),
+            "got {e:?}"
+        );
+    }
+
+    #[test]
+    fn aggregation_in_a_comprehension_body_is_rejected() {
+        let db = drevo();
+        // The body runs once per element; Neo4j refuses an aggregation there.
+        assert!(matches!(
+            err(
+                "UNWIND [1, 2] AS x RETURN [y IN [1, 2] | count(y)] AS c",
+                &db
+            ),
+            ExecError::Unsupported { .. }
+        ));
     }
 
     #[test]
