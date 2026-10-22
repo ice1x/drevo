@@ -156,10 +156,15 @@ instead, and with `cbor-zstd` each CBOR record is also compressed with zstd
 
   Most embedding components are exact 32-bit floats, so CBOR stores the
   vectors losslessly at 5 bytes a value. `cbor-zstd` takes a third off
-  CBOR: a record is compressed on its own, so a log of many small records
-  gains less than one of large ones, and a compressed JSON record would
-  still be larger than plain CBOR, which is why compression comes with
-  CBOR only. Compressing costs about 10 µs a record.
+  CBOR here. A record is compressed on its own, so the gain depends on the
+  size of the records: a log of 518,828 small road-network records (a
+  median of 154 bytes each as CBOR) measured 87.5 MB as `cbor` and 89.7 MB
+  as `cbor-zstd`, 2% larger, because a record that small does not compress
+  and still pays the zstd frame header. Use `cbor-zstd` for logs of large
+  records, such as embeddings and long texts, and `cbor` otherwise. A
+  compressed JSON record would still be larger than plain CBOR, which is
+  why compression comes with CBOR only. Compressing costs about 10 µs a
+  record.
 - **Durability:** unchanged. A binary log starts with an 8-byte header, and
   each record carries its length and a CRC-32. A torn last record (a crash
   mid-write) is dropped on open; a damaged record with valid records after it
