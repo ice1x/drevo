@@ -350,7 +350,7 @@ jobs:
       # behind `format-cbor` / `format-msgpack`, NOT in the default set, so
       # re-run their test binary and the inline unit tests with both on.
       - name: Run HTTP body / WAL format feature tests (nextest)
-        run: cargo nextest run --no-fail-fast --features format-cbor,format-msgpack -E 'binary(http_wire_format_tests) | binary(native_wal_format_tests) | binary(server_config_tests) | (kind(lib) & test(wire_format))'
+        run: cargo nextest run --no-fail-fast --features format-cbor,format-msgpack,wal-zstd -E 'binary(http_wire_format_tests) | binary(native_wal_format_tests) | binary(server_config_tests) | (kind(lib) & test(wire_format))'
       # Issue #582 — the binary WAL encodings live in drevo-core behind
       # `wal-cbor` / `wal-msgpack`; run its recovery / compaction / tailer
       # tests and the inline unit tests with both on.
@@ -377,7 +377,7 @@ jobs:
       - name: Run gRPC / Flight TLS tests (nextest)
         run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight,bolt-tls --lib --test rpc_tls_tests -E 'binary(rpc_tls_tests) | (kind(lib) & test(rpc_tls))'
       - name: Run drevo-core WAL format feature tests (nextest)
-        run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack,encryption -E 'binary(wal_formats) | binary(encryption) | (kind(lib) & (test(wal_format) | test(encryption)))'
+        run: cargo nextest run --no-fail-fast -p drevo-core --features wal-cbor,wal-msgpack,wal-zstd,encryption -E 'binary(wal_formats) | binary(wal_zstd) | binary(encryption) | (kind(lib) & (test(wal_format) | test(encryption)))'
       # Encryption at rest on the server: the key settings, encrypted
       # databases and backups, and encrypt / rotate-key / decrypt.
       - name: Run server encryption tests (nextest)
@@ -447,7 +447,7 @@ jobs:
       - run: cargo clippy --all-targets --features auth,grpc,arrow-flight -- -D warnings
       - run: cargo clippy --all-targets --features auth,grpc,arrow-flight,bolt-tls -- -D warnings
       # Issue #582 — drevo-core's binary WAL paths and their tests.
-      - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack,encryption -- -D warnings
+      - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack,wal-zstd,encryption -- -D warnings
       # The server's encryption at rest and its tests and bench.
       - run: cargo clippy --all-targets --features encryption -- -D warnings
       - run: cargo clippy --all-targets --features auth,encryption -- -D warnings

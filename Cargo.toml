@@ -200,6 +200,8 @@ embeddings-proxy = ["http", "dep:reqwest", "dep:idna_adapter"]
 # lists it in `DREVO_HTTP_FORMATS` and/or sets `DREVO_WAL_FORMAT`.
 format-cbor = ["http", "dep:ciborium", "drevo-core/wal-cbor"]
 format-msgpack = ["http", "dep:rmp-serde", "drevo-core/wal-msgpack"]
+# `DREVO_WAL_FORMAT=cbor-zstd`: CBOR records compressed one by one with zstd.
+wal-zstd = ["format-cbor", "drevo-core/wal-zstd"]
 
 # Issue #583 — the gRPC API (Cypher over HTTP/2 + protobuf, streamed rows),
 # served only when `DREVO_GRPC_PORT` is set. The code generated from

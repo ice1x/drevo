@@ -315,6 +315,22 @@ fn wal_format_accepts_compiled_formats() {
     }
 }
 
+#[cfg(feature = "wal-zstd")]
+#[test]
+fn wal_format_accepts_cbor_zstd() {
+    let cfg = Config::from_env(getter(HashMap::from([("DREVO_WAL_FORMAT", "cbor-zstd")])))
+        .expect("compiled in");
+    assert_eq!(cfg.wal_format, drevo::wal_format::WalFormat::CborZstd);
+}
+
+#[cfg(all(feature = "format-cbor", not(feature = "wal-zstd")))]
+#[test]
+fn wal_format_rejects_cbor_zstd_built_without() {
+    let err = Config::from_env(getter(HashMap::from([("DREVO_WAL_FORMAT", "cbor-zstd")])))
+        .expect_err("not compiled in");
+    assert!(err.to_string().contains("not compiled in"), "{err}");
+}
+
 #[cfg(not(feature = "format-cbor"))]
 #[test]
 fn wal_format_rejects_a_format_built_without() {

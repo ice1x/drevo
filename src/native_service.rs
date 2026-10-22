@@ -498,6 +498,7 @@ impl NativeService {
             WalFormat::Json => 0,
             WalFormat::Cbor => 1,
             WalFormat::MsgPack => 2,
+            WalFormat::CborZstd => 3,
         };
         DEFAULT_WAL_FORMAT.store(v, Ordering::SeqCst);
     }
@@ -531,6 +532,7 @@ impl NativeService {
         match DEFAULT_WAL_FORMAT.load(Ordering::SeqCst) {
             1 => WalFormat::Cbor,
             2 => WalFormat::MsgPack,
+            3 => WalFormat::CborZstd,
             _ => WalFormat::Json,
         }
     }

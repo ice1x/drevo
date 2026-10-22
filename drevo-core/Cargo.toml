@@ -46,6 +46,8 @@ getrandom = { version = "0.4", optional = true }
 # Optional binary WAL encodings (issue #582), behind `wal-cbor` / `wal-msgpack`.
 ciborium = { version = "0.2", optional = true }
 rmp-serde = { version = "1.3", optional = true }
+# zstd-compressed CBOR records (`cbor-zstd`), behind `wal-zstd`.
+zstd = { version = "0.13", default-features = false, optional = true }
 # Encryption at rest: XChaCha20-Poly1305 for WAL records and sidecars,
 # pure Rust; nonces from `getrandom`.
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"], optional = true }
@@ -84,6 +86,8 @@ wasm = ["getrandom/wasm_js"]
 # Lines. Chosen per store with `NativeGraph::open_durable_with`.
 wal-cbor = ["dep:ciborium"]
 wal-msgpack = ["dep:rmp-serde"]
+# CBOR records compressed one by one with zstd (`cbor-zstd`).
+wal-zstd = ["wal-cbor", "dep:zstd"]
 # Authenticated encryption of the WAL and sidecars with a caller-supplied
 # key (`encryption` module).
 encryption = ["dep:chacha20poly1305", "dep:zeroize", "dep:getrandom"]
