@@ -39,6 +39,51 @@ const FRAME_LEN: usize = 8;
 /// 19 was 2% smaller than level 3 at twelve times the CPU.
 #[cfg(feature = "wal-zstd")]
 const ZSTD_LEVEL: i32 = 3;
+/// The largest record a zstd frame header may announce: a damaged header
+/// must not make a read allocate without bound.
+#[cfg(feature = "wal-zstd")]
+const ZSTD_MAX_RECORD: usize = 1 << 30;
+
+#[cfg(feature = "wal-zstd")]
+thread_local! {
+    // One context per thread: creating one for every record made a log of
+    // small records twice as slow to read as its uncompressed form.
+    static ZSTD_COMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Compressor<'static>>> =
+        const { std::cell::RefCell::new(None) };
+    static ZSTD_DECOMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// `bytes` as one zstd frame, which records its content size.
+#[cfg(feature = "wal-zstd")]
+fn zstd_compress(bytes: &[u8]) -> Result<Vec<u8>> {
+    let backend = |e: std::io::Error| CoreError::Backend(format!("zstd encode: {e}"));
+    ZSTD_COMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let compressor = match slot.as_mut() {
+            Some(c) => c,
+            None => slot.insert(zstd::bulk::Compressor::new(ZSTD_LEVEL).map_err(backend)?),
+        };
+        compressor.compress(bytes).map_err(backend)
+    })
+}
+
+/// The content of one zstd frame; `None` when `bytes` are not one.
+#[cfg(feature = "wal-zstd")]
+fn zstd_decompress(bytes: &[u8]) -> Option<Vec<u8>> {
+    let size = zstd::zstd_safe::get_frame_content_size(bytes).ok()??;
+    let size = usize::try_from(size)
+        .ok()
+        .filter(|s| *s <= ZSTD_MAX_RECORD)?;
+    ZSTD_DECOMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let decompressor = match slot.as_mut() {
+            Some(d) => d,
+            None => slot.insert(zstd::bulk::Decompressor::new().ok()?),
+        };
+        decompressor.decompress(bytes, size).ok()
+    })
+}
 
 /// The header version of an encrypted log: the tag names the encoding of
 /// the records inside the encryption (JSON included), every record is
@@ -87,13 +132,22 @@ pub enum WalFormat {
     /// Framed CBOR records, each compressed with zstd, behind the `wal-zstd`
     /// feature.
     CborZstd,
+    /// Framed CBOR records whose built-in field names (`UpsertNode`, `id`,
+    /// `kind`, …) are written as small integers, behind the `wal-cbor`
+    /// feature. Property names stay strings.
+    CborCompact,
+    /// [`WalFormat::CborCompact`] records, each compressed with zstd, behind
+    /// the `wal-zstd` feature.
+    CborCompactZstd,
 }
 
 /// Why a WAL format name was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WalFormatError {
     /// Not a known format name.
-    #[error("unknown WAL format `{0}` (known: json, cbor, msgpack, cbor-zstd)")]
+    #[error(
+        "unknown WAL format `{0}` (known: json, cbor, msgpack, cbor-zstd, cbor-compact, cbor-compact-zstd)"
+    )]
     Unknown(String),
     /// A known format this build was compiled without.
     #[error("WAL format `{0}` is not compiled in")]
@@ -109,6 +163,8 @@ impl WalFormat {
             WalFormat::Cbor => "cbor",
             WalFormat::MsgPack => "msgpack",
             WalFormat::CborZstd => "cbor-zstd",
+            WalFormat::CborCompact => "cbor-compact",
+            WalFormat::CborCompactZstd => "cbor-compact-zstd",
         }
     }
 
@@ -120,6 +176,8 @@ impl WalFormat {
             WalFormat::Cbor => cfg!(feature = "wal-cbor"),
             WalFormat::MsgPack => cfg!(feature = "wal-msgpack"),
             WalFormat::CborZstd => cfg!(feature = "wal-zstd"),
+            WalFormat::CborCompact => cfg!(feature = "wal-cbor"),
+            WalFormat::CborCompactZstd => cfg!(feature = "wal-zstd"),
         }
     }
 
@@ -129,6 +187,8 @@ impl WalFormat {
             WalFormat::Cbor => b'C',
             WalFormat::MsgPack => b'M',
             WalFormat::CborZstd => b'Z',
+            WalFormat::CborCompact => b'K',
+            WalFormat::CborCompactZstd => b'X',
         }
     }
 
@@ -195,6 +255,8 @@ impl FromStr for WalFormat {
             WalFormat::Cbor,
             WalFormat::MsgPack,
             WalFormat::CborZstd,
+            WalFormat::CborCompact,
+            WalFormat::CborCompactZstd,
         ]
         .into_iter()
         .find(|f| f.name() == name)
@@ -258,6 +320,8 @@ pub fn detect(bytes: &[u8]) -> Result<Detected> {
         b'C' => WalFormat::Cbor,
         b'M' => WalFormat::MsgPack,
         b'Z' => WalFormat::CborZstd,
+        b'K' => WalFormat::CborCompact,
+        b'X' => WalFormat::CborCompactZstd,
         _ => return Err(invalid(format!("unknown WAL format tag {tag:#04x}"))),
     };
     if !format.compiled_in() {
@@ -781,9 +845,15 @@ fn decode_ops(format: WalFormat, payload: &[u8]) -> Option<Vec<WalOp>> {
         #[cfg(feature = "wal-msgpack")]
         WalFormat::MsgPack => rmp_serde::from_slice(payload).ok(),
         #[cfg(feature = "wal-zstd")]
-        WalFormat::CborZstd => zstd::stream::decode_all(payload)
-            .ok()
-            .and_then(|cbor| ciborium::from_reader(cbor.as_slice()).ok()),
+        WalFormat::CborZstd => {
+            zstd_decompress(payload).and_then(|cbor| ciborium::from_reader(cbor.as_slice()).ok())
+        }
+        #[cfg(feature = "wal-cbor")]
+        WalFormat::CborCompact => compact::decode(payload),
+        #[cfg(feature = "wal-zstd")]
+        WalFormat::CborCompactZstd => {
+            zstd_decompress(payload).and_then(|cbor| compact::decode(&cbor))
+        }
         #[allow(unreachable_patterns)]
         _ => None,
     };
@@ -804,11 +874,11 @@ fn encode_value(format: WalFormat, value: &serde_json::Value) -> Result<Vec<u8>>
         WalFormat::MsgPack => rmp_serde::to_vec_named(value)
             .map_err(|e| CoreError::Backend(format!("MessagePack encode: {e}"))),
         #[cfg(feature = "wal-zstd")]
-        WalFormat::CborZstd => {
-            let cbor = encode_value(WalFormat::Cbor, value)?;
-            zstd::bulk::compress(&cbor, ZSTD_LEVEL)
-                .map_err(|e| CoreError::Backend(format!("zstd encode: {e}")))
-        }
+        WalFormat::CborZstd => zstd_compress(&encode_value(WalFormat::Cbor, value)?),
+        #[cfg(feature = "wal-cbor")]
+        WalFormat::CborCompact => compact::encode(value),
+        #[cfg(feature = "wal-zstd")]
+        WalFormat::CborCompactZstd => zstd_compress(&compact::encode(value)?),
         #[allow(unreachable_patterns)]
         other => {
             let _ = value;
@@ -816,6 +886,226 @@ fn encode_value(format: WalFormat, value: &serde_json::Value) -> Result<Vec<u8>>
                 "WAL format {other} is not compiled in"
             )))
         }
+    }
+}
+
+/// The `cbor-compact` record encoding: CBOR in which the built-in field
+/// names of a record — the [`WalOp`] variants and the [`Node`] / [`Edge`]
+/// fields — are small integer map keys, and property names stay text. A
+/// road-network node of three numeric properties is mostly field names as
+/// plain CBOR; here it is a third smaller.
+///
+/// The transform follows the shape of a record rather than renaming every
+/// key, so a property named `id` or `kind` is left alone; a field name this
+/// build does not know is kept as text, so a record from a newer build still
+/// decodes.
+///
+/// [`Node`]: crate::model::Node
+/// [`Edge`]: crate::model::Edge
+#[cfg(feature = "wal-cbor")]
+mod compact {
+    use ciborium::Value as Cbor;
+    use serde_json::Value as Json;
+
+    use crate::error::{CoreError, Result};
+
+    /// The field names a compact record abbreviates, in code order. Append
+    /// only: a code is part of the on-disk format.
+    const FIELD_NAMES: [&str; 25] = [
+        "UpsertNode",
+        "DeleteNode",
+        "UpsertEdge",
+        "DeleteEdge",
+        "SetEmbedding",
+        "DeleteEmbedding",
+        "Prepare",
+        "CommitPrepared",
+        "RollbackPrepared",
+        "id",
+        "uuid",
+        "kind",
+        "title",
+        "body",
+        "body_html",
+        "created_at",
+        "updated_at",
+        "properties",
+        "from_id",
+        "to_id",
+        "weight",
+        "gid",
+        "prepared_at_ms",
+        "ops",
+        "heuristic",
+    ];
+
+    fn key(name: &str) -> Cbor {
+        match FIELD_NAMES.iter().position(|n| *n == name) {
+            Some(code) => Cbor::Integer(code.into()),
+            None => Cbor::Text(name.to_string()),
+        }
+    }
+
+    fn name(key: Cbor) -> Option<String> {
+        match key {
+            Cbor::Integer(code) => {
+                let code: usize = code.try_into().ok()?;
+                FIELD_NAMES.get(code).map(|n| (*n).to_string())
+            }
+            Cbor::Text(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// The ops of a record, with their field names abbreviated.
+    pub(super) fn encode(record: &Json) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        ciborium::into_writer(&ops(record), &mut out)
+            .map_err(|e| CoreError::Backend(format!("CBOR encode: {e}")))?;
+        Ok(out)
+    }
+
+    /// The ops of a compact record; `None` when the bytes are not one.
+    pub(super) fn decode(payload: &[u8]) -> Option<Json> {
+        let value: Cbor = ciborium::from_reader(payload).ok()?;
+        unops(value)
+    }
+
+    fn ops(value: &Json) -> Cbor {
+        match value {
+            Json::Array(items) => Cbor::Array(items.iter().map(op).collect()),
+            other => plain(other),
+        }
+    }
+
+    /// One op: `{Variant: payload}`.
+    fn op(value: &Json) -> Cbor {
+        let Json::Object(map) = value else {
+            return plain(value);
+        };
+        Cbor::Map(
+            map.iter()
+                .map(|(variant, payload)| (key(variant), op_payload(variant, payload)))
+                .collect(),
+        )
+    }
+
+    fn op_payload(variant: &str, payload: &Json) -> Cbor {
+        match (variant, payload) {
+            (
+                "UpsertNode" | "UpsertEdge" | "Prepare" | "CommitPrepared" | "RollbackPrepared",
+                Json::Object(fields),
+            ) => Cbor::Map(
+                fields
+                    .iter()
+                    .map(|(field, v)| {
+                        let v = match field.as_str() {
+                            "ops" => ops(v),
+                            _ => plain(v),
+                        };
+                        (key(field), v)
+                    })
+                    .collect(),
+            ),
+            _ => plain(payload),
+        }
+    }
+
+    /// A value as it is, text keys included.
+    fn plain(value: &Json) -> Cbor {
+        match value {
+            Json::Null => Cbor::Null,
+            Json::Bool(b) => Cbor::Bool(*b),
+            Json::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Cbor::Integer(i.into())
+                } else if let Some(u) = n.as_u64() {
+                    Cbor::Integer(u.into())
+                } else {
+                    Cbor::Float(n.as_f64().unwrap_or(f64::NAN))
+                }
+            }
+            Json::String(s) => Cbor::Text(s.clone()),
+            Json::Array(items) => Cbor::Array(items.iter().map(plain).collect()),
+            Json::Object(map) => Cbor::Map(
+                map.iter()
+                    .map(|(k, v)| (Cbor::Text(k.clone()), plain(v)))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn unops(value: Cbor) -> Option<Json> {
+        match value {
+            Cbor::Array(items) => Some(Json::Array(
+                items.into_iter().map(unop).collect::<Option<_>>()?,
+            )),
+            other => unplain(other),
+        }
+    }
+
+    fn unop(value: Cbor) -> Option<Json> {
+        let Cbor::Map(entries) = value else {
+            return unplain(value);
+        };
+        let mut map = serde_json::Map::with_capacity(entries.len());
+        for (k, payload) in entries {
+            let variant = name(k)?;
+            let payload = unop_payload(&variant, payload)?;
+            map.insert(variant, payload);
+        }
+        Some(Json::Object(map))
+    }
+
+    fn unop_payload(variant: &str, payload: Cbor) -> Option<Json> {
+        match (variant, payload) {
+            (
+                "UpsertNode" | "UpsertEdge" | "Prepare" | "CommitPrepared" | "RollbackPrepared",
+                Cbor::Map(entries),
+            ) => {
+                let mut map = serde_json::Map::with_capacity(entries.len());
+                for (k, v) in entries {
+                    let field = name(k)?;
+                    let v = match field.as_str() {
+                        "ops" => unops(v)?,
+                        _ => unplain(v)?,
+                    };
+                    map.insert(field, v);
+                }
+                Some(Json::Object(map))
+            }
+            (_, payload) => unplain(payload),
+        }
+    }
+
+    fn unplain(value: Cbor) -> Option<Json> {
+        Some(match value {
+            Cbor::Null => Json::Null,
+            Cbor::Bool(b) => Json::Bool(b),
+            Cbor::Integer(i) => {
+                if let Ok(i) = i64::try_from(i) {
+                    Json::from(i)
+                } else {
+                    Json::from(u64::try_from(i).ok()?)
+                }
+            }
+            Cbor::Float(f) => Json::Number(serde_json::Number::from_f64(f)?),
+            Cbor::Text(s) => Json::String(s),
+            Cbor::Array(items) => {
+                Json::Array(items.into_iter().map(unplain).collect::<Option<_>>()?)
+            }
+            Cbor::Map(entries) => {
+                let mut map = serde_json::Map::with_capacity(entries.len());
+                for (k, v) in entries {
+                    let Cbor::Text(k) = k else {
+                        return None;
+                    };
+                    map.insert(k, unplain(v)?);
+                }
+                Json::Object(map)
+            }
+            _ => return None,
+        })
     }
 }
 
@@ -878,10 +1168,126 @@ mod tests {
     }
 
     fn formats() -> Vec<WalFormat> {
-        [WalFormat::Json, WalFormat::Cbor, WalFormat::MsgPack]
-            .into_iter()
-            .filter(|f| f.compiled_in())
-            .collect()
+        [
+            WalFormat::Json,
+            WalFormat::Cbor,
+            WalFormat::MsgPack,
+            WalFormat::CborZstd,
+            WalFormat::CborCompact,
+            WalFormat::CborCompactZstd,
+        ]
+        .into_iter()
+        .filter(|f| f.compiled_in())
+        .collect()
+    }
+
+    /// One of every op, with the field names a compact record abbreviates
+    /// and property names that look like them.
+    #[cfg(feature = "wal-cbor")]
+    fn every_op() -> Vec<WalOp> {
+        use crate::model::{Edge, Node, Properties};
+        let props = Properties::from(std::collections::HashMap::from([
+            ("id".to_string(), serde_json::json!("not the node id")),
+            (
+                "properties".to_string(),
+                serde_json::json!({"kind": [1, 2.5]}),
+            ),
+            ("lat".to_string(), serde_json::json!(42.6668746)),
+        ]));
+        let node = Node {
+            id: 7,
+            uuid: [1; 16],
+            kind: "Junction".into(),
+            title: "t".into(),
+            body: "b".into(),
+            body_html: String::new(),
+            created_at: 1_792_353_672_521,
+            updated_at: 1_792_353_672_522,
+            properties: props.clone(),
+        };
+        let edge = Edge {
+            id: 9,
+            uuid: [2; 16],
+            from_id: 7,
+            to_id: 8,
+            kind: "ROAD".into(),
+            weight: 0.5,
+            created_at: 1_792_353_672_523,
+            properties: props,
+        };
+        vec![
+            WalOp::UpsertNode(node.clone()),
+            WalOp::DeleteNode(7),
+            WalOp::UpsertEdge(edge.clone()),
+            WalOp::DeleteEdge(9),
+            WalOp::SetEmbedding(7, vec![0.25, -1.0e-3, 3.0]),
+            WalOp::DeleteEmbedding(7),
+            WalOp::Prepare {
+                gid: "gid-1".into(),
+                prepared_at_ms: 5,
+                ops: vec![WalOp::UpsertNode(node), WalOp::UpsertEdge(edge)],
+            },
+            WalOp::CommitPrepared {
+                gid: "gid-1".into(),
+            },
+            WalOp::RollbackPrepared {
+                gid: "gid-2".into(),
+                heuristic: true,
+            },
+            WalOp::RollbackPrepared {
+                gid: "gid-3".into(),
+                heuristic: false,
+            },
+        ]
+    }
+
+    #[cfg(feature = "wal-cbor")]
+    #[test]
+    fn every_op_survives_a_compact_record() {
+        for format in [WalFormat::CborCompact, WalFormat::CborCompactZstd] {
+            if !format.compiled_in() {
+                continue;
+            }
+            let ops = every_op();
+            let record = format.encode_record(&ops).unwrap();
+            match read_record(format, &record, 0) {
+                Record::Ops { ops: back, next } => {
+                    assert_eq!(back, ops, "{format}");
+                    assert_eq!(next, record.len(), "{format}");
+                }
+                other => panic!("{format}: {other:?}"),
+            }
+            // Smaller than the same record as plain CBOR: the field names
+            // are gone.
+            let cbor = WalFormat::Cbor.encode_record(&ops).unwrap();
+            assert!(
+                record.len() < cbor.len(),
+                "{format}: {} vs {}",
+                record.len(),
+                cbor.len()
+            );
+        }
+    }
+
+    #[cfg(feature = "wal-cbor")]
+    #[test]
+    fn a_compact_record_holds_no_built_in_field_name_as_text() {
+        let record = WalFormat::CborCompact.encode_record(&every_op()).unwrap();
+        for name in [
+            "UpsertNode",
+            "UpsertEdge",
+            "created_at",
+            "body_html",
+            "prepared_at_ms",
+            "from_id",
+        ] {
+            assert!(
+                !record.windows(name.len()).any(|w| w == name.as_bytes()),
+                "{name} written as text"
+            );
+        }
+        // Property names stay as they are.
+        assert!(record.windows(3).any(|w| w == b"lat"));
     }
 
     #[test]
@@ -1128,7 +1534,7 @@ mod tests {
 
     #[test]
     fn unknown_tags_and_versions_refuse() {
-        assert!(detect(b"DRVWAL\x01X").is_err());
+        assert!(detect(b"DRVWAL\x01?").is_err());
         assert!(detect(b"DRVWAL\x09C").is_err());
     }
 

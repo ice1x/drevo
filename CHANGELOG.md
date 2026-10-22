@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Reading a `cbor-zstd` log of small records took twice as long as
+  `cbor`**: a zstd context was created for every record. One context per
+  thread is reused, and a record's buffer is sized from its frame header;
+  the road network's log now reopens in 2.5 s against 2.4 s as `cbor`
+  (was 4.6 s).
+
 - **The Bolt idle timeout counted a running statement as idle time** (issue
   #730). `DREVO_IDLE_SESSION_TIMEOUT_MS` was measured from when a message
   arrived, so after a statement longer than the limit a client that took a
@@ -95,6 +101,15 @@ history and the in-repo issue tracker; format loosely follows
   dumps, HTTP) are unchanged.
 
 ### Added
+
+- **`DREVO_WAL_FORMAT=cbor-compact` and `cbor-compact-zstd`** (issue #738).
+  CBOR records whose built-in field names (`UpsertNode`, `id`, `kind`,
+  `created_at`, …) are small integers; property names stay text. A road
+  network's log of 518,828 small records went from 91.7 MB as `cbor` to
+  59.2 MB; a knowledge graph's log of embeddings from 12.8 MB as
+  `cbor-zstd` to 12.1 MB as `cbor-compact-zstd`. Same framing, checksums,
+  recovery rules, compaction and encryption as the other binary formats;
+  needs only the `format-cbor` feature (`wal-zstd` for the compressed one).
 
 - **`DREVO_WAL_FORMAT=cbor-zstd`** (issue #688). CBOR records compressed one
   by one with zstd, behind the `wal-zstd` feature (in the Docker image). On
