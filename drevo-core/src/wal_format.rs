@@ -224,11 +224,7 @@ impl WalFormat {
         if ops.is_empty() {
             return Ok(Vec::new());
         }
-        // Through `serde_json::Value`, whose serializer is human-readable, so
-        // property maps keep their map form (the compact path wraps them as
-        // JSON text for bincode).
-        let value = serde_json::to_value(ops)?;
-        let payload = encode_value(self, &value)?;
+        let payload = encode_ops(self, ops)?;
         let len = u32::try_from(payload.len())
             .map_err(|_| CoreError::Backend("WAL record over 4 GiB".into()))?;
         let mut out = Vec::with_capacity(FRAME_LEN + payload.len());
@@ -451,8 +447,33 @@ fn record_payload(format: WalFormat, ops: &[WalOp]) -> Result<Vec<u8>> {
     if format == WalFormat::Json {
         return Ok(serde_json::to_vec(ops)?);
     }
-    let value = serde_json::to_value(ops)?;
-    encode_value(format, &value)
+    encode_ops(format, ops)
+}
+
+/// The payload of a binary record, before framing or encryption. The plain
+/// CBOR and MessagePack forms are written straight from the ops; the compact
+/// forms go through a `serde_json::Value` tree, which their key transform
+/// works on.
+fn encode_ops(format: WalFormat, ops: &[WalOp]) -> Result<Vec<u8>> {
+    match format {
+        #[cfg(feature = "wal-cbor")]
+        WalFormat::Cbor => {
+            let mut out = Vec::new();
+            ciborium::into_writer(&wire::borrow(ops), &mut out)
+                .map_err(|e| CoreError::Backend(format!("CBOR encode: {e}")))?;
+            Ok(out)
+        }
+        #[cfg(feature = "wal-zstd")]
+        WalFormat::CborZstd => zstd_compress(&encode_ops(WalFormat::Cbor, ops)?),
+        #[cfg(feature = "wal-msgpack")]
+        WalFormat::MsgPack => rmp_serde::to_vec_named(&wire::borrow(ops))
+            .map_err(|e| CoreError::Backend(format!("MessagePack encode: {e}"))),
+        _ => {
+            // Human-readable, so property maps keep their map form.
+            let value = serde_json::to_value(ops)?;
+            encode_value(format, &value)
+        }
+    }
 }
 
 #[cfg(feature = "encryption")]
@@ -840,13 +861,16 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<WalOp>> {
 fn decode_ops(format: WalFormat, payload: &[u8]) -> Option<Vec<WalOp>> {
     let value: Option<serde_json::Value> = match format {
         WalFormat::Json => serde_json::from_slice(payload).ok(),
+        // Straight into the ops: no `serde_json::Value` tree in between.
         #[cfg(feature = "wal-cbor")]
-        WalFormat::Cbor => ciborium::from_reader(payload).ok(),
+        WalFormat::Cbor => return ciborium::from_reader(payload).ok().map(wire::own),
         #[cfg(feature = "wal-msgpack")]
-        WalFormat::MsgPack => rmp_serde::from_slice(payload).ok(),
+        WalFormat::MsgPack => return rmp_serde::from_slice(payload).ok().map(wire::own),
         #[cfg(feature = "wal-zstd")]
         WalFormat::CborZstd => {
-            zstd_decompress(payload).and_then(|cbor| ciborium::from_reader(cbor.as_slice()).ok())
+            return zstd_decompress(payload)
+                .and_then(|cbor| ciborium::from_reader(cbor.as_slice()).ok())
+                .map(wire::own)
         }
         #[cfg(feature = "wal-cbor")]
         WalFormat::CborCompact => compact::decode(payload),
@@ -886,6 +910,230 @@ fn encode_value(format: WalFormat, value: &serde_json::Value) -> Result<Vec<u8>>
                 "WAL format {other} is not compiled in"
             )))
         }
+    }
+}
+
+/// The shape of a record for the binary formats, read and written without
+/// the `serde_json::Value` tree the generic path builds: the same field
+/// names and variants as [`WalOp`], with a property map that is a map
+/// under every serializer. ([`crate::model::Properties`] writes JSON text
+/// under a serializer that is not human-readable, for bincode; CBOR and
+/// MessagePack report themselves as such, so reading a `WalOp` straight
+/// from them would take that branch.)
+#[cfg(any(feature = "wal-cbor", feature = "wal-msgpack"))]
+mod wire {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Serialize};
+
+    use crate::model::{Edge, Node, Properties};
+    use crate::native::WalOp;
+
+    /// A record's ops, borrowed for writing.
+    pub(super) fn borrow(ops: &[WalOp]) -> Vec<OpRef<'_>> {
+        ops.iter().map(OpRef::from).collect()
+    }
+
+    /// A record's ops, read.
+    pub(super) fn own(ops: Vec<Op>) -> Vec<WalOp> {
+        ops.into_iter().map(WalOp::from).collect()
+    }
+
+    #[derive(Serialize)]
+    pub(super) enum OpRef<'a> {
+        UpsertNode(NodeRef<'a>),
+        DeleteNode(u64),
+        UpsertEdge(EdgeRef<'a>),
+        DeleteEdge(u64),
+        SetEmbedding(u64, &'a [f32]),
+        DeleteEmbedding(u64),
+        Prepare {
+            gid: &'a str,
+            prepared_at_ms: i64,
+            ops: Vec<OpRef<'a>>,
+        },
+        CommitPrepared {
+            gid: &'a str,
+        },
+        RollbackPrepared {
+            gid: &'a str,
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            heuristic: bool,
+        },
+    }
+
+    impl<'a> From<&'a WalOp> for OpRef<'a> {
+        fn from(op: &'a WalOp) -> Self {
+            match op {
+                WalOp::UpsertNode(n) => OpRef::UpsertNode(NodeRef {
+                    id: n.id,
+                    uuid: &n.uuid,
+                    kind: &n.kind,
+                    title: &n.title,
+                    body: &n.body,
+                    body_html: &n.body_html,
+                    created_at: n.created_at,
+                    updated_at: n.updated_at,
+                    properties: PropertiesRef(&n.properties),
+                }),
+                WalOp::DeleteNode(id) => OpRef::DeleteNode(*id),
+                WalOp::UpsertEdge(e) => OpRef::UpsertEdge(EdgeRef {
+                    id: e.id,
+                    uuid: &e.uuid,
+                    from_id: e.from_id,
+                    to_id: e.to_id,
+                    kind: &e.kind,
+                    weight: e.weight,
+                    created_at: e.created_at,
+                    properties: PropertiesRef(&e.properties),
+                }),
+                WalOp::DeleteEdge(id) => OpRef::DeleteEdge(*id),
+                WalOp::SetEmbedding(id, v) => OpRef::SetEmbedding(*id, v),
+                WalOp::DeleteEmbedding(id) => OpRef::DeleteEmbedding(*id),
+                WalOp::Prepare {
+                    gid,
+                    prepared_at_ms,
+                    ops,
+                } => OpRef::Prepare {
+                    gid,
+                    prepared_at_ms: *prepared_at_ms,
+                    ops: borrow(ops),
+                },
+                WalOp::CommitPrepared { gid } => OpRef::CommitPrepared { gid },
+                WalOp::RollbackPrepared { gid, heuristic } => OpRef::RollbackPrepared {
+                    gid,
+                    heuristic: *heuristic,
+                },
+            }
+        }
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct NodeRef<'a> {
+        id: u64,
+        uuid: &'a [u8; 16],
+        kind: &'a str,
+        title: &'a str,
+        body: &'a str,
+        body_html: &'a str,
+        created_at: i64,
+        updated_at: i64,
+        properties: PropertiesRef<'a>,
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct EdgeRef<'a> {
+        id: u64,
+        uuid: &'a [u8; 16],
+        from_id: u64,
+        to_id: u64,
+        kind: &'a str,
+        weight: f32,
+        created_at: i64,
+        properties: PropertiesRef<'a>,
+    }
+
+    /// A property map written as a map, whatever the serializer says of
+    /// itself.
+    pub(super) struct PropertiesRef<'a>(&'a Properties);
+
+    impl Serialize for PropertiesRef<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_map(self.0.iter())
+        }
+    }
+
+    #[derive(Deserialize)]
+    pub(super) enum Op {
+        UpsertNode(NodeWire),
+        DeleteNode(u64),
+        UpsertEdge(EdgeWire),
+        DeleteEdge(u64),
+        SetEmbedding(u64, Vec<f32>),
+        DeleteEmbedding(u64),
+        Prepare {
+            gid: String,
+            prepared_at_ms: i64,
+            ops: Vec<Op>,
+        },
+        CommitPrepared {
+            gid: String,
+        },
+        RollbackPrepared {
+            gid: String,
+            #[serde(default)]
+            heuristic: bool,
+        },
+    }
+
+    impl From<Op> for WalOp {
+        fn from(op: Op) -> Self {
+            match op {
+                Op::UpsertNode(n) => WalOp::UpsertNode(Node {
+                    id: n.id,
+                    uuid: n.uuid,
+                    kind: n.kind,
+                    title: n.title,
+                    body: n.body,
+                    body_html: n.body_html,
+                    created_at: n.created_at,
+                    updated_at: n.updated_at,
+                    properties: Properties::from(n.properties),
+                }),
+                Op::DeleteNode(id) => WalOp::DeleteNode(id),
+                Op::UpsertEdge(e) => WalOp::UpsertEdge(Edge {
+                    id: e.id,
+                    uuid: e.uuid,
+                    from_id: e.from_id,
+                    to_id: e.to_id,
+                    kind: e.kind,
+                    weight: e.weight,
+                    created_at: e.created_at,
+                    properties: Properties::from(e.properties),
+                }),
+                Op::DeleteEdge(id) => WalOp::DeleteEdge(id),
+                Op::SetEmbedding(id, v) => WalOp::SetEmbedding(id, v),
+                Op::DeleteEmbedding(id) => WalOp::DeleteEmbedding(id),
+                Op::Prepare {
+                    gid,
+                    prepared_at_ms,
+                    ops,
+                } => WalOp::Prepare {
+                    gid,
+                    prepared_at_ms,
+                    ops: own(ops),
+                },
+                Op::CommitPrepared { gid } => WalOp::CommitPrepared { gid },
+                Op::RollbackPrepared { gid, heuristic } => {
+                    WalOp::RollbackPrepared { gid, heuristic }
+                }
+            }
+        }
+    }
+
+    #[derive(Deserialize)]
+    pub(super) struct NodeWire {
+        id: u64,
+        uuid: [u8; 16],
+        kind: String,
+        title: String,
+        body: String,
+        body_html: String,
+        created_at: i64,
+        updated_at: i64,
+        properties: BTreeMap<String, serde_json::Value>,
+    }
+
+    #[derive(Deserialize)]
+    pub(super) struct EdgeWire {
+        id: u64,
+        uuid: [u8; 16],
+        from_id: u64,
+        to_id: u64,
+        kind: String,
+        weight: f32,
+        created_at: i64,
+        properties: BTreeMap<String, serde_json::Value>,
     }
 }
 
@@ -1239,6 +1487,70 @@ mod tests {
                 heuristic: false,
             },
         ]
+    }
+
+    /// Records of `every_op()` as drevo 0.0.59 wrote them.
+    #[cfg(all(feature = "wal-cbor", feature = "wal-msgpack"))]
+    const FIXTURE_0_0_59: [(WalFormat, &str); 2] = [
+        (WalFormat::Cbor, "86030000a0c3ccab8aa16a5570736572744e6f6465a964626f6479616269626f64795f68746d6c606a637265617465645f61741b000001a1509a9d4962696407646b696e64684a756e6374696f6e6a70726f70657274696573a36269646f6e6f7420746865206e6f6465206964636c6174fb4045555c259ac43c6a70726f70657274696573a1646b696e648201f94100657469746c6561746a757064617465645f61741b000001a1509a9d4a64757569649001010101010101010101010101010101a16a44656c6574654e6f646507a16a55707365727445646765a86a637265617465645f61741b000001a1509a9d4b6766726f6d5f69640762696409646b696e6464524f41446a70726f70657274696573a36269646f6e6f7420746865206e6f6465206964636c6174fb4045555c259ac43c6a70726f70657274696573a1646b696e648201f9410065746f5f6964086475756964900202020202020202020202020202020266776569676874f93800a16a44656c6574654564676509a16c536574456d62656464696e67820783f93400faba83126ff94200a16f44656c657465456d62656464696e6707a16750726570617265a363676964656769642d31636f707382a16a5570736572744e6f6465a964626f6479616269626f64795f68746d6c606a637265617465645f61741b000001a1509a9d4962696407646b696e64684a756e6374696f6e6a70726f70657274696573a36269646f6e6f7420746865206e6f6465206964636c6174fb4045555c259ac43c6a70726f70657274696573a1646b696e648201f94100657469746c6561746a757064617465645f61741b000001a1509a9d4a64757569649001010101010101010101010101010101a16a55707365727445646765a86a637265617465645f61741b000001a1509a9d4b6766726f6d5f69640762696409646b696e6464524f41446a70726f70657274696573a36269646f6e6f7420746865206e6f6465206964636c6174fb4045555c259ac43c6a70726f70657274696573a1646b696e648201f9410065746f5f6964086475756964900202020202020202020202020202020266776569676874f938006e70726570617265645f61745f6d7305a16e436f6d6d69745072657061726564a163676964656769642d31a170526f6c6c6261636b5072657061726564a263676964656769642d3269686575726973746963f5a170526f6c6c6261636b5072657061726564a163676964656769642d33"),
+        (WalFormat::MsgPack, "c20300000b00a9c69a81aa5570736572744e6f646589a4626f6479a162a9626f64795f68746d6ca0aa637265617465645f6174cf000001a1509a9d49a2696407a46b696e64a84a756e6374696f6eaa70726f7065727469657383a26964af6e6f7420746865206e6f6465206964a36c6174cb4045555c259ac43caa70726f7065727469657381a46b696e649201cb4004000000000000a57469746c65a174aa757064617465645f6174cf000001a1509a9d4aa475756964dc00100101010101010101010101010101010181aa44656c6574654e6f64650781aa5570736572744564676588aa637265617465645f6174cf000001a1509a9d4ba766726f6d5f696407a2696409a46b696e64a4524f4144aa70726f7065727469657383a26964af6e6f7420746865206e6f6465206964a36c6174cb4045555c259ac43caa70726f7065727469657381a46b696e649201cb4004000000000000a5746f5f696408a475756964dc001002020202020202020202020202020202a6776569676874cb3fe000000000000081aa44656c657465456467650981ac536574456d62656464696e67920793cb3fd0000000000000cbbf50624de0000000cb400800000000000081af44656c657465456d62656464696e670781a75072657061726583a3676964a56769642d31a36f70739281aa5570736572744e6f646589a4626f6479a162a9626f64795f68746d6ca0aa637265617465645f6174cf000001a1509a9d49a2696407a46b696e64a84a756e6374696f6eaa70726f7065727469657383a26964af6e6f7420746865206e6f6465206964a36c6174cb4045555c259ac43caa70726f7065727469657381a46b696e649201cb4004000000000000a57469746c65a174aa757064617465645f6174cf000001a1509a9d4aa475756964dc00100101010101010101010101010101010181aa5570736572744564676588aa637265617465645f6174cf000001a1509a9d4ba766726f6d5f696407a2696409a46b696e64a4524f4144aa70726f7065727469657383a26964af6e6f7420746865206e6f6465206964a36c6174cb4045555c259ac43caa70726f7065727469657381a46b696e649201cb4004000000000000a5746f5f696408a475756964dc001002020202020202020202020202020202a6776569676874cb3fe0000000000000ae70726570617265645f61745f6d730581ae436f6d6d6974507265706172656481a3676964a56769642d3181b0526f6c6c6261636b507265706172656482a3676964a56769642d32a9686575726973746963c381b0526f6c6c6261636b507265706172656481a3676964a56769642d33"),
+    ];
+
+    #[cfg(all(feature = "wal-cbor", feature = "wal-msgpack"))]
+    fn unhex(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[cfg(all(feature = "wal-cbor", feature = "wal-msgpack"))]
+    #[test]
+    fn records_written_by_0_0_59_still_read() {
+        for (format, hex) in FIXTURE_0_0_59 {
+            let bytes = unhex(hex);
+            match read_record(format, &bytes, 0) {
+                Record::Ops { ops, next } => {
+                    assert_eq!(ops, every_op(), "{format}");
+                    assert_eq!(next, bytes.len());
+                }
+                other => panic!("{format}: {other:?}"),
+            }
+        }
+    }
+
+    /// What a build before the direct path does with a record: through a
+    /// `serde_json::Value` tree. A record written now must read that way
+    /// too, so older servers open a newer log.
+    #[cfg(all(feature = "wal-cbor", feature = "wal-msgpack"))]
+    #[test]
+    fn records_written_now_read_through_the_value_tree() {
+        let ops = every_op();
+        let cbor = WalFormat::Cbor.encode_record(&ops).unwrap();
+        let value: serde_json::Value = ciborium::from_reader(&cbor[FRAME_LEN..]).unwrap();
+        assert_eq!(serde_json::from_value::<Vec<WalOp>>(value).unwrap(), ops);
+        let msgpack = WalFormat::MsgPack.encode_record(&ops).unwrap();
+        let value: serde_json::Value = rmp_serde::from_slice(&msgpack[FRAME_LEN..]).unwrap();
+        assert_eq!(serde_json::from_value::<Vec<WalOp>>(value).unwrap(), ops);
+    }
+
+    #[cfg(feature = "wal-cbor")]
+    #[test]
+    fn every_op_survives_every_binary_record() {
+        for format in formats() {
+            if format == WalFormat::Json {
+                continue;
+            }
+            let ops = every_op();
+            let record = format.encode_record(&ops).unwrap();
+            match read_record(format, &record, 0) {
+                Record::Ops { ops: back, next } => {
+                    assert_eq!(back, ops, "{format}");
+                    assert_eq!(next, record.len(), "{format}");
+                }
+                other => panic!("{format}: {other:?}"),
+            }
+        }
     }
 
     #[cfg(feature = "wal-cbor")]
