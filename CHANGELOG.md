@@ -8,6 +8,15 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **A binary log reopened about twice as slowly as the same log as JSON**
+  (issue #740). `cbor`, `msgpack` and `cbor-zstd` records were read into a
+  `serde_json::Value` tree and converted from there; they are now read and
+  written straight from the ops. A road network's log of 518,828 records
+  reopens in 1.33 s as `cbor` (was 2.35 s; 1.25 s as `json`) and 1.10 s as
+  `msgpack`; a knowledge graph's `cbor` log in 208 ms (was 291 ms). Logs
+  written before and after read each other. `cbor-compact` keeps the tree
+  its key transform works on and is unchanged.
+
 - **Reading a `cbor-zstd` log of small records took twice as long as
   `cbor`**: a zstd context was created for every record. One context per
   thread is reused, and a record's buffer is sized from its frame header;

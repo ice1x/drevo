@@ -154,19 +154,20 @@ Docker image (Cargo features `format-cbor` / `format-msgpack` / `wal-zstd`).
 
   | Format | Knowledge graph: 4,185 nodes, 2,152 with a 1,536-float embedding | Road network: 240,451 junctions and 278,377 roads, 518,828 records |
   |---|---:|---:|
-  | `json` | 73.8 MB, 226 ms | 127.3 MB, 1.11 s |
-  | `cbor` | 19.5 MB, 291 ms | 91.7 MB, 2.35 s |
-  | `msgpack` | 39.2 MB | — |
-  | `cbor-compact` | 18.6 MB, 325 ms | **59.2 MB**, 2.44 s |
-  | `cbor-zstd` | 12.8 MB, 287 ms | 93.6 MB, 2.51 s |
-  | `cbor-compact-zstd` | **12.1 MB**, 331 ms | 63.9 MB, 2.70 s |
+  | `json` | 73.8 MB, 199 ms | 127.3 MB, 1.25 s |
+  | `cbor` | 19.5 MB, 208 ms | 91.7 MB, 1.33 s |
+  | `msgpack` | 39.2 MB, 185 ms | 93.7 MB, 1.10 s |
+  | `cbor-zstd` | 12.8 MB, 217 ms | 93.4 MB, 1.56 s |
+  | `cbor-compact` | 18.6 MB, 281 ms | **59.2 MB**, 2.35 s |
+  | `cbor-compact-zstd` | **12.1 MB**, 289 ms | 63.9 MB, 2.40 s |
 
-  So: `cbor-compact-zstd` for logs of large records such as embeddings and
-  long texts, `cbor-compact` for logs of many small records, and plain
-  `cbor` when a log must stay readable by a build without the `wal-zstd`
-  feature. Compressing costs about 10 µs a record. A compressed JSON record
-  would still be larger than plain CBOR, which is why compression comes with
-  CBOR only.
+  So: `cbor-zstd` for logs of large records such as embeddings and long
+  texts; `cbor-compact` where disk matters more than restart time on a log
+  of many small records (it reads through an extra tree, so it reopens
+  slower than `cbor`); plain `cbor` otherwise, and when a log must stay
+  readable by a build without the `wal-zstd` feature. Compressing costs
+  about 10 µs a record. A compressed JSON record would still be larger than
+  plain CBOR, which is why compression comes with CBOR only.
 - **Durability:** unchanged. A binary log starts with an 8-byte header, and
   each record carries its length and a CRC-32. A torn last record (a crash
   mid-write) is dropped on open; a damaged record with valid records after it
