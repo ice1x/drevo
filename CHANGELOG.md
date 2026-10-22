@@ -62,6 +62,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Changed
 
+- **An unsupported Cypher form is a client error over Bolt** (issue #733).
+  An unknown function or an aggregation where none is allowed (for example
+  in the body of a list comprehension) now fails with
+  `Neo.ClientError.Statement.UnsupportedOperationError` instead of
+  `Neo.DatabaseError.General.UnknownError`, and the message reads
+  ``function call `triage.score` is not supported`` with no roadmap note.
+  `ExecError::Unsupported` no longer has a `task` field.
+
 - **Weighted path search reads relationships in place** (issue #684).
   `drevo.path.weighted` no longer copies every relationship record it
   visits: the new `GraphEngine::for_each_edge_of` (and
