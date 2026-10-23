@@ -8,6 +8,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **`MATCH … ORDER BY … LIMIT k` held every matched row until the sort**
+  (issue #743). Two such scans over 240,451 road junctions, each returning
+  six rows, took up to 183 MB of transient heap that the allocator then kept
+  as RSS. The MATCH now holds only the `SKIP + LIMIT` rows that sort first
+  (ties in scan order, as before) and the clause after it sorts those. The
+  rows are the same; on 50,000 nodes the peak for `… ORDER BY n.i DESC
+  LIMIT 6` is a few MB instead of about 40.
+
 - **A binary log reopened about twice as slowly as the same log as JSON**
   (issue #740). `cbor`, `msgpack` and `cbor-zstd` records were read into a
   `serde_json::Value` tree and converted from there; they are now read and
