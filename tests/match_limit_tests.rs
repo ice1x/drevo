@@ -236,8 +236,11 @@ fn a_limited_match_holds_memory_for_the_limit_not_the_graph() {
         (PEAK.load(Ordering::Relaxed) - before) as f64 / 1e6
     };
     let limited = measure("MATCH (n) WHERE n.c = 1 WITH n LIMIT 2000 RETURN count(*)");
-    let everything =
-        measure("MATCH (n) WHERE n.c = 1 WITH n ORDER BY id(n) LIMIT 2000 RETURN count(*)");
+    // The trailing WHERE keeps the WITH from cutting the MATCH (an ORDER BY
+    // alone no longer does, #743): every row is projected.
+    let everything = measure(
+        "MATCH (n) WHERE n.c = 1 WITH n, 1 AS one LIMIT 2000 WHERE one = 1 RETURN count(*)",
+    );
     println!("peak: limited {limited:.1} MB, every match {everything:.1} MB");
     // Projecting all 50,000 junctions takes tens of MB; 2,000 a few.
     assert!(
@@ -245,4 +248,116 @@ fn a_limited_match_holds_memory_for_the_limit_not_the_graph() {
         "limited peak {limited:.1} MB vs every match {everything:.1} MB"
     );
     assert!(limited < 15.0, "limited peak {limited:.1} MB");
+}
+
+// ----- ORDER BY … LIMIT k: the MATCH keeps the k best rows (#743) ----------
+
+fn ints(rows: &[Vec<Value>]) -> Vec<i64> {
+    rows.iter()
+        .map(|r| match r[0] {
+            Value::Integer(n) => n,
+            ref other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn an_ordered_limit_returns_the_same_rows_as_sorting_everything() {
+    let svc = junctions(1_000);
+    assert_eq!(
+        ints(&rows(
+            &svc,
+            "MATCH (n) WITH n ORDER BY n.i DESC LIMIT 5 RETURN n.i"
+        )),
+        vec![1000, 999, 998, 997, 996]
+    );
+    assert_eq!(
+        ints(&rows(&svc, "MATCH (n) RETURN n.i ORDER BY n.i LIMIT 3")),
+        vec![1, 2, 3]
+    );
+    // SKIP counts into what the MATCH must keep.
+    assert_eq!(
+        ints(&rows(
+            &svc,
+            "MATCH (n) WITH n ORDER BY n.i SKIP 2 LIMIT 3 RETURN n.i"
+        )),
+        vec![3, 4, 5]
+    );
+    // An alias of the projection as the sort key.
+    assert_eq!(
+        ints(&rows(
+            &svc,
+            "MATCH (n) WITH n.i * 2 AS twice ORDER BY twice DESC LIMIT 2 RETURN twice"
+        )),
+        vec![2000, 1998]
+    );
+    // Ties keep the scan order, as a stable sort does: every c is 1.
+    assert_eq!(
+        ints(&rows(
+            &svc,
+            "MATCH (n) WITH n ORDER BY n.c LIMIT 3 RETURN n.i"
+        )),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        ints(&rows(
+            &svc,
+            "MATCH (n) WITH n ORDER BY n.c, n.i DESC LIMIT 3 RETURN n.i"
+        )),
+        vec![1000, 999, 998]
+    );
+    // A WHERE on the MATCH still filters before the cut.
+    assert_eq!(
+        ints(&rows(
+            &svc,
+            "MATCH (n) WHERE n.i % 2 = 0 WITH n ORDER BY n.i LIMIT 3 RETURN n.i"
+        )),
+        vec![2, 4, 6]
+    );
+    // Rows from every prior row compete for the same k.
+    let r = rows(
+        &svc,
+        "UNWIND [10, 20] AS k MATCH (n) WITH k, n ORDER BY n.i DESC LIMIT 3 RETURN k, n.i",
+    );
+    assert_eq!(
+        r,
+        vec![
+            vec![Value::Integer(10), Value::Integer(1000)],
+            vec![Value::Integer(20), Value::Integer(1000)],
+            vec![Value::Integer(10), Value::Integer(999)],
+        ]
+    );
+    assert!(rows(&svc, "MATCH (n) WITH n ORDER BY n.i LIMIT 0 RETURN n.i").is_empty());
+    // Null sorts last ascending (Neo4j); a missing property is null.
+    rows(&svc, "CREATE (:Junction {c: 1})");
+    let last = ints(&rows(
+        &svc,
+        "MATCH (n) WITH n ORDER BY n.i DESC LIMIT 2 RETURN coalesce(n.i, -1)",
+    ));
+    assert_eq!(last, vec![-1, 1000]);
+}
+
+#[test]
+fn an_ordered_limit_holds_memory_for_the_limit_not_the_graph() {
+    let _alone = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    let svc = junctions(50_000);
+    rows(&svc, "MATCH (n) WHERE n.c = 1 RETURN count(n)");
+    let measure = |q: &str| {
+        PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+        let before = LIVE.load(Ordering::Relaxed);
+        rows(&svc, q);
+        (PEAK.load(Ordering::Relaxed) - before) as f64 / 1e6
+    };
+    let topk = measure("MATCH (n) WHERE n.c = 1 WITH n ORDER BY n.i DESC LIMIT 6 RETURN n.i");
+    // The trailing WHERE keeps the WITH from cutting the MATCH: every row
+    // is projected and sorted.
+    let everything = measure(
+        "MATCH (n) WHERE n.c = 1 WITH n, 1 AS one ORDER BY n.i DESC LIMIT 6 WHERE one = 1 RETURN n.i",
+    );
+    println!("peak: top-k {topk:.1} MB, every row {everything:.1} MB");
+    assert!(
+        topk * 5.0 < everything,
+        "top-k peak {topk:.1} MB vs every row {everything:.1} MB"
+    );
+    assert!(topk < 15.0, "top-k peak {topk:.1} MB");
 }

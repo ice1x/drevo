@@ -1543,6 +1543,7 @@ fn execute_single(
         read_memo: std::cell::RefCell::default(),
         pushdown: HashMap::new(),
         match_cap: None,
+        match_top: None,
         params,
         bindings: vec![HashMap::new()],
         stats: ExecStats::default(),
@@ -1553,13 +1554,15 @@ fn execute_single(
     for (i, clause) in single.clauses.iter().enumerate() {
         // A MATCH whose rows the next clause cuts to a LIMIT need not produce
         // more than that (#714).
-        executor.match_cap = match clause {
-            Clause::Match(_) => executor.limit_cap(single.clauses.get(i + 1)),
-            _ => None,
+        let next = single.clauses.get(i + 1);
+        (executor.match_cap, executor.match_top) = match clause {
+            Clause::Match(_) => (executor.limit_cap(next), executor.top_cap(next)),
+            _ => (None, None),
         };
         executor.run_clause(clause)?;
     }
     executor.match_cap = None;
+    executor.match_top = None;
 
     // A query that ends in `CALL … YIELD …` (or `SHOW … [YIELD …] [WHERE …]`)
     // returns the yielded columns, as in Neo4j.
@@ -2673,6 +2676,96 @@ type KeyedRows = Vec<(Vec<Value>, Bindings)>;
 /// describe. Used by [`Executor::sort_keyed`].
 type SortableRows = Vec<(Vec<(Value, OrderDirection)>, (Vec<Value>, Bindings))>;
 
+/// What the clause after a MATCH does with its rows when it sorts them and
+/// keeps the first few: the MATCH then keeps only those (#743).
+#[derive(Clone)]
+struct TopSpec {
+    /// `SKIP + LIMIT` of the next clause.
+    keep: usize,
+    /// Its `ORDER BY`.
+    order_by: Vec<OrderItem>,
+    /// Its projections, so the sort key can name an alias (`… AS x ORDER BY x`).
+    items: Vec<ProjectionItem>,
+}
+
+/// A row with its sort key and arrival number: ordered as the stable sort
+/// of the next clause orders rows, so the `keep` smallest are exactly the
+/// rows that sort first.
+struct Ranked {
+    key: Vec<(Value, OrderDirection)>,
+    seq: usize,
+    row: Bindings,
+}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Ranked {}
+
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        compare_keys(&self.key, &other.key).then_with(|| self.seq.cmp(&other.seq))
+    }
+}
+
+/// The `keep` rows that sort first among those pushed, in a max-heap whose
+/// top is the worst kept row.
+struct TopK {
+    keep: usize,
+    heap: std::collections::BinaryHeap<Ranked>,
+    seq: usize,
+}
+
+impl TopK {
+    fn new(keep: usize) -> Self {
+        Self {
+            keep,
+            heap: std::collections::BinaryHeap::with_capacity(keep.saturating_add(1).min(1 << 16)),
+            seq: 0,
+        }
+    }
+
+    fn push(&mut self, key: Vec<(Value, OrderDirection)>, row: Bindings) {
+        self.seq += 1;
+        if self.keep == 0 {
+            return;
+        }
+        let ranked = Ranked {
+            key,
+            seq: self.seq,
+            row,
+        };
+        if self.heap.len() == self.keep {
+            // Only a row better than the worst kept one gets in.
+            if let Some(worst) = self.heap.peek() {
+                if ranked >= *worst {
+                    return;
+                }
+            }
+            self.heap.pop();
+        }
+        self.heap.push(ranked);
+    }
+
+    /// The kept rows, best first.
+    fn into_rows(self) -> Vec<Bindings> {
+        self.heap
+            .into_sorted_vec()
+            .into_iter()
+            .map(|r| r.row)
+            .collect()
+    }
+}
+
 /// Per-statement answers of the read filter (#636): for each label set (or
 /// relationship type), whether it may be traversed and which properties may
 /// be read.
@@ -2734,6 +2827,10 @@ struct Executor<'a> {
     /// At most how many rows the MATCH being run has to produce: the next
     /// clause keeps only that many (`WITH … LIMIT k`, see `limit_cap`).
     match_cap: Option<usize>,
+    /// The next clause sorts the MATCH's rows and keeps the first `keep`
+    /// (`WITH … ORDER BY … LIMIT k`, see `top_cap`): the MATCH visits every
+    /// candidate but holds only the `keep` best rows (#743).
+    match_top: Option<TopSpec>,
     /// A server-side text embedder for the native path (RFC #307 Phase
     /// 4/7): lets `drevo.semantic.embed` / `.query` / `.queryRel` run
     /// without a KV secondary store. `None` on the KV path (which uses the
@@ -3377,6 +3474,75 @@ impl<'a> Executor<'a> {
         count(skip)?.checked_add(count(limit)?)
     }
 
+    /// The sort and cut the clause after a MATCH applies, when that is all
+    /// it does: a `WITH` / `RETURN` with an `ORDER BY` and a constant `LIMIT`
+    /// (plus `SKIP`), no `DISTINCT`, aggregation or `WITH … WHERE`. The
+    /// MATCH then keeps only the rows that will survive the cut.
+    fn top_cap(&self, next: Option<&Clause>) -> Option<TopSpec> {
+        let (distinct, items, order_by, skip, limit, filtered) = match next? {
+            Clause::With(w) => (
+                w.distinct,
+                &w.items,
+                &w.order_by,
+                &w.skip,
+                &w.limit,
+                w.where_clause.is_some(),
+            ),
+            Clause::Return(r) => (r.distinct, &r.items, &r.order_by, &r.skip, &r.limit, false),
+            _ => return None,
+        };
+        if distinct || filtered || order_by.is_empty() {
+            return None;
+        }
+        let aggregates = items.iter().any(|item| match item {
+            ProjectionItem::Expression { expr, .. } => contains_aggregation(expr),
+            ProjectionItem::Star => false,
+        });
+        if aggregates {
+            return None;
+        }
+        let count = |e: &Option<Expression>| -> Option<usize> {
+            match e {
+                None => Some(0),
+                Some(e) => match self.eval(e, &Bindings::new()) {
+                    Ok(Value::Integer(n)) if n >= 0 => usize::try_from(n).ok(),
+                    _ => None,
+                },
+            }
+        };
+        limit.as_ref()?;
+        let keep = count(skip)?.checked_add(count(limit)?)?;
+        Some(TopSpec {
+            keep,
+            order_by: order_by.clone(),
+            items: items.clone(),
+        })
+    }
+
+    /// The sort key of `row` for the clause `spec` describes: its `ORDER BY`
+    /// expressions over the row plus the clause's projected columns, as
+    /// `sort_keyed` evaluates them.
+    fn top_key(
+        &self,
+        spec: &TopSpec,
+        projected: &(Vec<String>, Vec<Expression>),
+        row: &Bindings,
+    ) -> ExecResultT<Vec<(Value, OrderDirection)>> {
+        let (columns, projections) = projected;
+        let mut scope = row.clone();
+        for (col, proj) in columns.iter().zip(projections.iter()) {
+            if !scope.contains_key(col) {
+                let value = self.eval(proj, row)?;
+                scope.insert(col.clone(), value);
+            }
+        }
+        let mut key = Vec::with_capacity(spec.order_by.len());
+        for item in &spec.order_by {
+            key.push((self.eval(&item.expression, &scope)?, item.direction));
+        }
+        Ok(key)
+    }
+
     fn run_match(&mut self, m: &MatchClause) -> ExecResultT<()> {
         // Lift conjunctive equality / IN constraints out of this MATCH's WHERE so
         // the head-node scan can push them into the native property index (see
@@ -3402,13 +3568,23 @@ impl<'a> Executor<'a> {
         };
 
         let cap = self.match_cap;
+        // The rows the next clause keeps after sorting, when it keeps few
+        // (#743): every candidate is visited, few are held.
+        let top = self.match_top.clone();
+        let projected = match &top {
+            Some(spec) => Some(self.resolve_projections(&spec.items)?),
+            None => None,
+        };
+        let mut topk = top.as_ref().map(|spec| TopK::new(spec.keep));
         for existing in prior.into_iter() {
             if cap.is_some_and(|cap| new_bindings.len() >= cap) {
                 break;
             }
             // One node, no path: stop enumerating at the cap instead of
-            // projecting every candidate first.
-            if let (Some(cap), [pattern]) = (cap, m.patterns.as_slice()) {
+            // projecting every candidate first; or, under a sort and cut,
+            // hold only the rows that will survive it.
+            let cut = cap.or_else(|| top.as_ref().map(|_| usize::MAX));
+            if let (Some(cap), [pattern]) = (cut, m.patterns.as_slice()) {
                 let head = &pattern.path.head;
                 let bound = head
                     .variable
@@ -3446,7 +3622,18 @@ impl<'a> Executor<'a> {
                             },
                         };
                         if keep {
-                            new_bindings.push(row);
+                            match (&top, &projected, &mut topk) {
+                                (Some(spec), Some(projected), Some(topk)) => {
+                                    match self.top_key(spec, projected, &row) {
+                                        Ok(key) => topk.push(key, row),
+                                        Err(e) => {
+                                            failure = Some(e);
+                                            return Ok(false);
+                                        }
+                                    }
+                                }
+                                _ => new_bindings.push(row),
+                            }
                         }
                         Ok(new_bindings.len() < cap)
                     })?;
@@ -3497,10 +3684,21 @@ impl<'a> Executor<'a> {
                 current.push(synthesise_null_row(&existing, &new_variables));
             }
 
-            new_bindings.extend(current);
+            match (&top, &projected, &mut topk) {
+                (Some(spec), Some(projected), Some(topk)) => {
+                    for row in current {
+                        let key = self.top_key(spec, projected, &row)?;
+                        topk.push(key, row);
+                    }
+                }
+                _ => new_bindings.extend(current),
+            }
         }
         if let Some(cap) = cap {
             new_bindings.truncate(cap);
+        }
+        if let Some(topk) = topk {
+            new_bindings = topk.into_rows();
         }
 
         self.bindings = new_bindings;
