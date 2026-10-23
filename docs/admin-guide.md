@@ -410,6 +410,54 @@ Running `drevo-server` on Linux outside the image, set the same variable:
 MALLOC_ARENA_MAX=2 drevo-server
 ```
 
+### Memory footprint
+
+What a graph costs in memory, measured on a road network of 242,947
+junctions (`{osm_id, lat, lon}`) and 281,421 roads (`{car_s, walk_s}`),
+524,368 entities, in a process that reopened the store from its log:
+
+| | heap | per entity |
+|---|---:|---:|
+| the graph: records, adjacency, ids, labels, stamps | 256 MB | 512 B |
+| + property-value index | 225 MB | 450 B |
+| + value cache | 190 MB | 379 B |
+| + full-text index over node strings | 37 MB | 74 B |
+| + full-text index over relationship strings | 37 MB | 74 B |
+| **everything** | **745 MB** | **1,489 B** |
+
+The graph itself is made of a `Node` record (160 bytes: id, uuid, kind,
+title, body, body_html, two timestamps and the property list, plus a
+16-byte `Arc` header and the heap behind each non-empty string), an `Edge`
+record (104 bytes plus the same), one 48-byte entry per property (a shared
+name and a 32-byte value), two 24-byte adjacency entries per relationship,
+and a 24-byte change stamp per entity. A junction with three numeric
+properties comes to about 340 bytes, a road with two to about 230; the rest
+of the 512 is the tables that hold them. The 64 bytes of uuid, `Arc` header
+and stamp are the floor every entity has before any content.
+
+Where to start when a graph has to fit a small box:
+
+- **Turn the secondary indexes off** for a graph that is only traversed or
+  routed over: `CALL drevo.indexes.setSecondary(false)` (see the Cypher
+  reference, *Secondary indexes*) drops the three index families above,
+  66% of the memory here. Lookups by property then scan the label; ids,
+  adjacency, labels, declared indexes and `drevo.path.weighted` are
+  unaffected.
+- **Keep strings off entities that do not need them.** Every string
+  property and title is trigram-indexed while the full-text indexes are on;
+  a street name on each of 280,000 roads cost more than the roads.
+- **Expect a peak above the resting size while queries run.** A statement
+  holds its rows until it answers: a `MATCH … ORDER BY … LIMIT k` keeps `k`
+  rows, but a `MATCH … RETURN` over a label holds them all, and a route
+  search holds its frontier (about 19 MB for a cross-city A* route on this
+  graph). The allocator keeps part of such a peak as resident memory
+  afterwards; see *Memory after large deletes* for the setting that bounds
+  it on Linux.
+
+The log on disk is a separate matter: the same graph is 127 MB as JSON and
+59 MB as `cbor-compact` (see *Write-ahead-log format*), and the format has
+no effect on the memory above.
+
 ### Upgrading a server
 
 A new image opens the data directory of an earlier one as it is: the write-ahead log keeps

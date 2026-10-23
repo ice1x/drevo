@@ -119,6 +119,11 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Admin guide: Memory footprint.** What a graph costs in memory, measured
+  on a 524,368-entity road network: 512 B per entity for the graph itself
+  and 1,489 B with every secondary index, the record layout behind those
+  numbers, and the three things to do when a graph has to fit a small box.
+
 - **`DREVO_WAL_FORMAT=cbor-compact` and `cbor-compact-zstd`** (issue #738).
   CBOR records whose built-in field names (`UpsertNode`, `id`, `kind`,
   `created_at`, …) are small integers; property names stay text. A road

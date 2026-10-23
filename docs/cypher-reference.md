@@ -1371,9 +1371,10 @@ the graph, and `CALL drevo.indexes.secondary()` reports the setting. Changing
 it needs index management rights and is refused in an explicit transaction
 and on a read-only database.
 
-On the Sofia road graph (240,451 junctions, 278,377 roads with two numbers
-each) a restarted server holds about 1 GB with the secondary indexes and
-about 450 MB without.
+On the Sofia road graph (242,947 junctions, 281,421 roads with two numbers
+each) the engine holds about 745 MB of heap with the secondary indexes and
+about 256 MB without; the admin guide's *Memory footprint* section breaks
+the numbers down.
 
 ### Fuzzy matching (#593)
 
