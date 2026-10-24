@@ -124,6 +124,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **The text-to-Cypher provider is set at runtime** (issue #747). The Web
+  UI's Settings panel has a *Text-to-Cypher (Ask)* section — chat completions
+  URL, write-only API key, model — backed by `GET`/`POST /config/text2cypher`.
+  A save is kept in `<data dir>/text2cypher_config.json` (owner-only, sealed
+  under encryption at rest, included in server backups and rekeyed with the
+  other files), wins over `DREVO_TEXT2CYPHER_*` at the next start, and
+  `drevo.cypher.fromText` uses it from the next call with no restart.
+
 - **Admin guide: Memory footprint.** What a graph costs in memory, measured
   on a 524,368-entity road network: 512 B per entity for the graph itself
   and 1,489 B with every secondary index, the record layout behind those

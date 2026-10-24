@@ -4,7 +4,8 @@
 //! A server backup is a directory with `server.json` and one engine backup
 //! per database under `databases/<name>/` (see [`drevo_core::backup`]). The
 //! default database's backup also carries the server's own files, the users
-//! (`security.json`) and the embeddings settings (`embeddings_config.json`),
+//! (`security.json`), the embeddings settings (`embeddings_config.json`) and the
+//! text-to-Cypher settings (`text2cypher_config.json`),
 //! so they are checked and restored the same way.
 //!
 //! ```text
@@ -37,7 +38,11 @@ pub const SERVER_MANIFEST: &str = "server.json";
 pub const SERVER_FORMAT: u32 = 1;
 
 /// The server's own files, kept with the default database's backup.
-const SERVER_FILES: &[&str] = &["security.json", "embeddings_config.json"];
+const SERVER_FILES: &[&str] = &[
+    "security.json",
+    "embeddings_config.json",
+    "text2cypher_config.json",
+];
 
 /// Where each database's backup lives inside a server backup.
 const DATABASES_DIR: &str = "databases";

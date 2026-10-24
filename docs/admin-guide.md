@@ -352,6 +352,25 @@ DREVO_TEXT2CYPHER_UPSTREAM=http://host.docker.internal:11434/v1/chat/completions
 DREVO_TEXT2CYPHER_MODEL=qwen2.5-coder:14b
 ```
 
+**Runtime configuration (Web UI or endpoint).** The same three settings can be
+changed while the server runs, from the Web UI **Settings** panel (the ⚙
+button, section *Text-to-Cypher (Ask)*) or the `/config/text2cypher`
+endpoint, exactly like the embeddings provider:
+
+```
+GET  /config/text2cypher  -> { "configured": true, "upstream": "…",
+                               "model": "…", "api_key_set": false }
+POST /config/text2cypher  { "upstream": "http://host.docker.internal:11434/v1/chat/completions",
+                            "model": "qwen2.5:14b-instruct" }
+```
+
+A blank or omitted `api_key` keeps the stored one; a blank `model` takes the
+default; a bad `upstream` is a `400`. The value is kept in
+`<DREVO_DATA_DIR>/text2cypher_config.json` (owner-only, sealed when the store
+is encrypted, part of a server backup) and wins over the `DREVO_TEXT2CYPHER_*`
+variables at the next start. `drevo.cypher.fromText` uses the new provider from
+the next call; the status never contains the key.
+
 `GET /` reports `"text2cypher": {"model": "…"}` once an upstream is configured
 (`null` otherwise); the upstream URL is not exposed. `scripts/drevo-restart.sh`
 forwards the three variables from `~/.drevo.env` into the container. The prompt carries the
@@ -627,7 +646,7 @@ Next to each log sit:
 - `origin.json`, `tombstones.json` and `stamps.jsonl`: replica identity and causal stamps;
 - `semantic.json`: index registrations and constraints.
 
-The users (`security.json`) and the embeddings settings (`embeddings_config.json`) are kept in
+The users (`security.json`), the embeddings settings (`embeddings_config.json`) and the text-to-Cypher settings (`text2cypher_config.json`) are kept in
 the data directory itself. Every acknowledged write is fsynced to the log before it returns; the
 log is compacted in place as it grows.
 

@@ -81,7 +81,7 @@
     <button type="button" id="storage-toggle" class="storage-toggle"
             title="Storage &amp; maintenance" aria-label="Open storage panel">⛁</button>
     <button type="button" id="settings-toggle" class="settings-toggle"
-            title="Settings (embeddings)" aria-label="Open settings panel">⚙</button>
+            title="Settings (embeddings, text-to-Cypher)" aria-label="Open settings panel">⚙</button>
     <button type="button" id="report-toggle" class="report-toggle"
             title="Report a problem (opens a prefilled GitHub issue)"
             aria-label="Report a problem">⚑</button>
@@ -237,11 +237,12 @@
     </div>
   </div>
 
-  <!-- Settings panel (modal overlay). Opened from the ⚙ topbar button. Today it
-       configures the embeddings upstream/API key/model at runtime (GET/POST
-       /config/embeddings) — a write-only key field (blank keeps the stored
-       secret) so the token is set here without editing the env file and
-       restarting. The status endpoint never returns the key itself. -->
+  <!-- Settings panel (modal overlay). Opened from the ⚙ topbar button. It
+       configures the two providers at runtime: embeddings (GET/POST
+       /config/embeddings) and text-to-Cypher behind Ask (GET/POST
+       /config/text2cypher). Each has a write-only key field (blank keeps the
+       stored secret) so a token is set here without editing the env file and
+       restarting; the status endpoints never return a key. -->
   <div id="settings-modal" class="storage-modal" hidden aria-hidden="true"
        role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="storage-dialog" role="document">
@@ -273,11 +274,36 @@
                    autocomplete="off" />
           </label>
           <p id="settings-embeddings-msg" class="settings-msg" hidden></p>
+          <button type="button" id="settings-embeddings-save" class="storage-shrink"
+                  title="Save the embeddings configuration (applies immediately, no restart)">Save</button>
+        </form>
+        <h3 class="settings-section">Text-to-Cypher (Ask)</h3>
+        <p id="settings-text2cypher-status" class="settings-status">Loading…</p>
+        <form id="settings-text2cypher-form" class="settings-form" autocomplete="off">
+          <label class="settings-field">
+            <span>Chat completions URL</span>
+            <input type="url" id="settings-text2cypher-upstream" name="upstream"
+                   placeholder="http://host.docker.internal:11434/v1/chat/completions"
+                   autocomplete="off" />
+          </label>
+          <label class="settings-field">
+            <span>API key</span>
+            <input type="password" id="settings-text2cypher-key" name="api_key"
+                   placeholder="leave blank to keep the stored key (none for a local Ollama)"
+                   autocomplete="off" />
+          </label>
+          <label class="settings-field">
+            <span>Model</span>
+            <input type="text" id="settings-text2cypher-model" name="model"
+                   placeholder="qwen2.5:14b-instruct"
+                   autocomplete="off" />
+          </label>
+          <p id="settings-text2cypher-msg" class="settings-msg" hidden></p>
+          <button type="button" id="settings-text2cypher-save" class="storage-shrink"
+                  title="Save the text-to-Cypher provider (applies immediately, no restart)">Save</button>
         </form>
       </div>
       <footer class="storage-foot">
-        <button type="button" id="settings-embeddings-save" class="storage-shrink"
-                title="Save the embeddings configuration (applies immediately, no restart)">Save</button>
         <button type="button" id="settings-refresh" class="storage-refresh">Refresh</button>
       </footer>
     </div>
