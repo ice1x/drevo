@@ -809,6 +809,31 @@ async fn ui_html_includes_node_inspector() {
 }
 
 #[tokio::test]
+async fn ui_html_settings_panel_configures_text_to_cypher() {
+    // The Settings panel sets both providers at runtime: embeddings and the
+    // text-to-Cypher upstream behind Ask.
+    let app = make_app();
+    let (_status, _ct, bytes) = get(&app, "/ui").await;
+    let body = String::from_utf8(bytes).expect("utf-8");
+    for id in [
+        "settings-text2cypher-status",
+        "settings-text2cypher-upstream",
+        "settings-text2cypher-key",
+        "settings-text2cypher-model",
+        "settings-text2cypher-save",
+        "settings-text2cypher-msg",
+    ] {
+        assert!(body.contains(&format!("id=\"{id}\"")), "missing #{id}");
+    }
+    let (_status, _ct, bytes) = get(&app, "/ui/app.js").await;
+    let js = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        js.contains("/config/text2cypher"),
+        "app.js must call the endpoint"
+    );
+}
+
+#[tokio::test]
 async fn ui_html_includes_storage_panel() {
     // The Storage panel (bloat + keyspaces + backup) is opened from the ⛁
     // topbar button and rendered into the #storage-modal dialog.

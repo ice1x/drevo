@@ -331,10 +331,24 @@ mod server_files {
                 model: Some("text-embedding-3-small".to_string()),
             })
             .unwrap();
+        drevo::text2cypher::Text2CypherConfigStore::load(dir.join("text2cypher_config.json"), None)
+            .apply(drevo::text2cypher::Text2CypherConfigUpdate {
+                upstream: "https://llm.example.com/v1/chat/completions".to_string(),
+                api_key: Some(API_KEY.to_string()),
+                model: None,
+            })
+            .unwrap();
     }
 
     fn api_key_in(dir: &Path) -> Option<String> {
         EmbeddingsConfigStore::load(dir.join("embeddings_config.json"), None)
+            .snapshot()
+            .and_then(|c| c.api_key)
+    }
+
+    /// The text-to-Cypher key, read back the way the server reads it.
+    fn t2c_key_in(dir: &Path) -> Option<String> {
+        drevo::text2cypher::Text2CypherConfigStore::load(dir.join("text2cypher_config.json"), None)
             .snapshot()
             .and_then(|c| c.api_key)
     }
@@ -369,11 +383,13 @@ mod server_files {
         // With the key they read back.
         assert!(ann_logs_in(dir.path()));
         assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
+        assert_eq!(t2c_key_in(dir.path()).as_deref(), Some(API_KEY));
 
         // Without it the users do not open, and the settings are not used.
         NativeService::set_encryption_key(None);
         assert!(open_server_security(Some(dir.path()), &admin()).is_err());
         assert_eq!(api_key_in(dir.path()), None);
+        assert_eq!(t2c_key_in(dir.path()), None);
     }
 
     #[test]
@@ -419,6 +435,7 @@ mod server_files {
         NativeService::set_encryption_key(Some(key()));
         assert!(ann_logs_in(dir.path()));
         assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
+        assert_eq!(t2c_key_in(dir.path()).as_deref(), Some(API_KEY));
 
         drevo::encryption_cmd::command(
             &args(&["rotate-key", "--new-key-file", &new_key.to_string_lossy()]),
@@ -439,6 +456,7 @@ mod server_files {
         NativeService::set_encryption_key(None);
         assert!(ann_logs_in(dir.path()));
         assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
+        assert_eq!(t2c_key_in(dir.path()).as_deref(), Some(API_KEY));
         assert!(contains(&std::fs::read(&security).unwrap(), "ann"));
     }
 }

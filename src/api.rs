@@ -82,6 +82,17 @@ impl From<JsonRejection> for ApiError {
     }
 }
 
+impl From<crate::text2cypher::Text2CypherError> for ApiError {
+    fn from(err: crate::text2cypher::Text2CypherError) -> Self {
+        use crate::text2cypher::Text2CypherError;
+        match err {
+            Text2CypherError::NotConfigured => Self::Unavailable(err.to_string()),
+            Text2CypherError::InvalidUpstream(_) => Self::Unavailable(err.to_string()),
+            Text2CypherError::Upstream(_) => Self::BadGateway(err.to_string()),
+        }
+    }
+}
+
 impl From<EmbeddingsError> for ApiError {
     fn from(err: EmbeddingsError) -> Self {
         match err {
@@ -703,6 +714,30 @@ pub(crate) fn embeddings_config_apply(
     let store = store.ok_or(EmbeddingsError::NotConfigured)?;
     let status = store.apply(update).map_err(|e| match e {
         EmbeddingsError::InvalidUpstream(m) => ApiError::BadRequest(m),
+        other => ApiError::from(other),
+    })?;
+    Ok(Json(status))
+}
+
+/// The body of `GET /config/text2cypher`: the provider without its key.
+pub(crate) fn text2cypher_config_status(
+    store: Option<&crate::text2cypher::Text2CypherConfigStore>,
+) -> Result<Json<crate::text2cypher::Text2CypherStatus>, ApiError> {
+    let store = store.ok_or(crate::text2cypher::Text2CypherError::NotConfigured)?;
+    Ok(Json(store.status()))
+}
+
+/// The body of `POST /config/text2cypher`: apply the change (a bad upstream
+/// is a `400`), persist it and install the generator; the key is never in
+/// the answer.
+pub(crate) fn text2cypher_config_apply(
+    store: Option<&crate::text2cypher::Text2CypherConfigStore>,
+    update: crate::text2cypher::Text2CypherConfigUpdate,
+) -> Result<Json<crate::text2cypher::Text2CypherStatus>, ApiError> {
+    use crate::text2cypher::Text2CypherError;
+    let store = store.ok_or(Text2CypherError::NotConfigured)?;
+    let status = store.apply(update).map_err(|e| match e {
+        Text2CypherError::InvalidUpstream(m) => ApiError::BadRequest(m),
         other => ApiError::from(other),
     })?;
     Ok(Json(status))

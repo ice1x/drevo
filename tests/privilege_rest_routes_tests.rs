@@ -185,6 +185,7 @@ async fn database_and_server_administration_need_admin() {
         ("GET", "/storage/bloat"),
         ("POST", "/storage/shrink"),
         ("GET", "/config/embeddings"),
+        ("GET", "/config/text2cypher"),
         ("GET", "/transactions/prepared"),
         ("POST", "/admin/backup"),
         ("GET", "/admin/backups"),

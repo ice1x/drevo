@@ -77,6 +77,9 @@ pub struct NativeApiState {
     /// (Web-UI-settable API key/upstream/model); the same `Arc` the proxy
     /// reads, so a write takes effect live.
     embeddings_config: Option<Arc<crate::embeddings::EmbeddingsConfigStore>>,
+    /// The text-to-Cypher provider behind `drevo.cypher.fromText`, settable
+    /// through `GET`/`POST /config/text2cypher`.
+    text2cypher_config: Option<Arc<crate::text2cypher::Text2CypherConfigStore>>,
     /// The server's users, for the Cypher user-management commands.
     security: crate::security::Security,
     /// Prometheus metrics registry backing `GET /metrics` and the per-request
@@ -116,6 +119,7 @@ impl NativeApiState {
             shutting_down: Arc::new(AtomicBool::new(false)),
             embeddings: None,
             embeddings_config: None,
+            text2cypher_config: None,
             security: crate::security::Security::default(),
             metrics: Arc::new(DrevoMetrics::new()),
             formats: Arc::new(crate::wire_format::WireFormats::default()),
@@ -200,6 +204,17 @@ impl NativeApiState {
         self
     }
 
+    /// Attach the text-to-Cypher provider store, enabling
+    /// `GET`/`POST /config/text2cypher`.
+    #[must_use]
+    pub fn with_text2cypher_config_store(
+        mut self,
+        store: Arc<crate::text2cypher::Text2CypherConfigStore>,
+    ) -> Self {
+        self.text2cypher_config = Some(store);
+        self
+    }
+
     /// Mark the API as draining — `/health` and `/ready` answer 503 after.
     pub fn signal_shutdown(&self) {
         self.shutting_down.store(true, Ordering::Release);
@@ -231,6 +246,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route(
             "/config/embeddings",
             get(get_embeddings_config).post(set_embeddings_config),
+        )
+        .route(
+            "/config/text2cypher",
+            get(get_text2cypher_config).post(set_text2cypher_config),
         )
         .route("/search/fts", post(search_fts))
         .route("/export/json", get(export_json))
@@ -391,6 +410,23 @@ async fn set_embeddings_config(
 ) -> Result<Json<crate::embeddings::EmbeddingsStatus>, ApiError> {
     let Json(update) = body?;
     crate::api::embeddings_config_apply(state.embeddings_config.as_deref(), update)
+}
+
+/// `GET /config/text2cypher` — the text-to-Cypher provider without its key.
+async fn get_text2cypher_config(
+    State(state): State<NativeApiState>,
+) -> Result<Json<crate::text2cypher::Text2CypherStatus>, ApiError> {
+    crate::api::text2cypher_config_status(state.text2cypher_config.as_deref())
+}
+
+/// `POST /config/text2cypher` — change the provider: persisted, installed at
+/// once; the key is never echoed back.
+async fn set_text2cypher_config(
+    State(state): State<NativeApiState>,
+    body: Result<Json<crate::text2cypher::Text2CypherConfigUpdate>, JsonRejection>,
+) -> Result<Json<crate::text2cypher::Text2CypherStatus>, ApiError> {
+    let Json(update) = body?;
+    crate::api::text2cypher_config_apply(state.text2cypher_config.as_deref(), update)
 }
 
 /// `POST /search/fts` — BM25 full-text search over the native index, the

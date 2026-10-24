@@ -89,6 +89,12 @@
   const $embModel = document.getElementById("settings-embeddings-model");
   const $embSave = document.getElementById("settings-embeddings-save");
   const $embMsg = document.getElementById("settings-embeddings-msg");
+  const $t2cStatus = document.getElementById("settings-text2cypher-status");
+  const $t2cUpstream = document.getElementById("settings-text2cypher-upstream");
+  const $t2cKey = document.getElementById("settings-text2cypher-key");
+  const $t2cModel = document.getElementById("settings-text2cypher-model");
+  const $t2cSave = document.getElementById("settings-text2cypher-save");
+  const $t2cMsg = document.getElementById("settings-text2cypher-msg");
 
   // ── Graph overview state ─────────────────────────────────────────────
   // The whole graph dump is fetched once from /export/json and cached;
@@ -907,11 +913,83 @@
     }
   }
 
+  // ── Settings panel: text-to-Cypher provider (GET/POST /config/text2cypher) ──
+  // The same contract as the embeddings section: the status never carries the
+  // key; a blank key field keeps the stored secret; a save applies at once.
+  async function loadText2CypherConfig() {
+    if (!$t2cStatus) return;
+    setT2cMsg("");
+    $t2cStatus.textContent = "Loading…";
+    try {
+      const s = await apiGet("/config/text2cypher");
+      if ($t2cUpstream) $t2cUpstream.value = s.upstream || "";
+      if ($t2cModel) $t2cModel.value = s.model || "";
+      if ($t2cKey) {
+        $t2cKey.value = "";
+        $t2cKey.placeholder = s.api_key_set
+          ? "•••••• stored — leave blank to keep"
+          : "not set — none needed for a local Ollama";
+      }
+      $t2cStatus.textContent = s.configured
+        ? `Configured · ${s.model}${s.api_key_set ? " · key set" : " · no key"}`
+        : "Not configured — set a chat completions URL to enable Ask.";
+    } catch (err) {
+      $t2cStatus.textContent = `Unavailable: ${err.message}`;
+    }
+  }
+
+  function setT2cMsg(text, isError) {
+    if (!$t2cMsg) return;
+    if (!text) {
+      $t2cMsg.hidden = true;
+      $t2cMsg.textContent = "";
+      return;
+    }
+    $t2cMsg.hidden = false;
+    $t2cMsg.textContent = text;
+    $t2cMsg.classList.toggle("settings-msg-error", !!isError);
+  }
+
+  async function saveText2CypherConfig() {
+    if (!$t2cSave) return;
+    const upstream = ($t2cUpstream && $t2cUpstream.value.trim()) || "";
+    if (!upstream) {
+      setT2cMsg("Chat completions URL is required.", true);
+      return;
+    }
+    const body = { upstream, model: ($t2cModel && $t2cModel.value.trim()) || "" };
+    const key = ($t2cKey && $t2cKey.value) || "";
+    if (key.trim()) body.api_key = key;
+
+    $t2cSave.disabled = true;
+    $t2cSave.textContent = "Saving…";
+    setT2cMsg("");
+    try {
+      const r = await fetch("/config/text2cypher", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data.error || `${r.status} ${r.statusText}`);
+      }
+      await loadText2CypherConfig();
+      setT2cMsg("Saved — Ask uses it from now on, no restart needed.", false);
+    } catch (err) {
+      setT2cMsg(`Save failed: ${err.message}`, true);
+    } finally {
+      $t2cSave.disabled = false;
+      $t2cSave.textContent = "Save";
+    }
+  }
+
   function openSettings() {
     if (!$settingsModal) return;
     $settingsModal.hidden = false;
     $settingsModal.setAttribute("aria-hidden", "false");
     loadEmbeddingsConfig();
+    loadText2CypherConfig();
   }
   function closeSettings() {
     if (!$settingsModal) return;
@@ -2716,8 +2794,14 @@
   }
   if ($settingsToggle) $settingsToggle.addEventListener("click", openSettings);
   if ($settingsClose) $settingsClose.addEventListener("click", closeSettings);
-  if ($settingsRefresh) $settingsRefresh.addEventListener("click", loadEmbeddingsConfig);
+  if ($settingsRefresh) {
+    $settingsRefresh.addEventListener("click", () => {
+      loadEmbeddingsConfig();
+      loadText2CypherConfig();
+    });
+  }
   if ($embSave) $embSave.addEventListener("click", saveEmbeddingsConfig);
+  if ($t2cSave) $t2cSave.addEventListener("click", saveText2CypherConfig);
   if ($settingsModal) {
     $settingsModal.addEventListener("click", (e) => {
       if (e.target === $settingsModal) closeSettings();

@@ -97,6 +97,11 @@ fn populated(data_dir: &Path) -> Arc<DatabaseRegistry> {
         br#"{"model":"nomic-embed-text"}"#,
     )
     .unwrap();
+    std::fs::write(
+        data_dir.join("text2cypher_config.json"),
+        br#"{"upstream":"http://ollama:11434/v1/chat/completions","model":"qwen"}"#,
+    )
+    .unwrap();
     registry
 }
 
@@ -128,7 +133,11 @@ fn a_server_backup_restores_every_database_and_the_server_files() {
             .iter()
             .map(|f| f.name.as_str())
             .collect::<Vec<_>>(),
-        ["security.json", "embeddings_config.json"]
+        [
+            "security.json",
+            "embeddings_config.json",
+            "text2cypher_config.json"
+        ]
     );
     assert_eq!(ServerBackup::read(&tmp.path("b1")).unwrap(), summary);
     assert!(tmp.path("b1").join(SERVER_MANIFEST).exists());
@@ -166,6 +175,10 @@ fn a_server_backup_restores_every_database_and_the_server_files() {
     assert_eq!(
         std::fs::read(tmp.path("restored/embeddings_config.json")).unwrap(),
         br#"{"model":"nomic-embed-text"}"#
+    );
+    assert_eq!(
+        std::fs::read(tmp.path("restored/text2cypher_config.json")).unwrap(),
+        br#"{"upstream":"http://ollama:11434/v1/chat/completions","model":"qwen"}"#
     );
 }
 

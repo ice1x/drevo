@@ -58,7 +58,7 @@ pub enum Text2CypherError {
 /// Constructed from the environment only ([`Self::from_env`]); there is no way
 /// to derive it from a request. This is the SSRF boundary: the upstream is an
 /// operator choice, never an attacker's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Text2CypherConfig {
     /// Full URL of the upstream OpenAI-compatible `chat/completions` endpoint,
     /// e.g. `https://api.openai.com/v1/chat/completions` or
@@ -129,6 +129,215 @@ fn validate_upstream(raw: &str) -> Result<String, Text2CypherError> {
         )));
     }
     Ok(upstream)
+}
+
+/// A change to the text-to-Cypher provider, as `POST /config/text2cypher`
+/// and the Web UI's Settings panel send it.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Text2CypherConfigUpdate {
+    /// The `chat/completions` URL; required.
+    pub upstream: String,
+    /// A new bearer token; blank or absent keeps the stored one.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// The chat model; blank or absent takes the default.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// The provider as `GET /config/text2cypher` reports it: whether a key is
+/// set, never the key.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Text2CypherStatus {
+    /// Whether an upstream is configured.
+    pub configured: bool,
+    /// The `chat/completions` URL.
+    pub upstream: Option<String>,
+    /// The chat model.
+    pub model: Option<String>,
+    /// Whether a bearer token is stored.
+    pub api_key_set: bool,
+}
+
+/// The file under the data directory that keeps the provider set at runtime.
+pub const TEXT2CYPHER_CONFIG_FILE: &str = "text2cypher_config.json";
+/// The context the file is sealed under when the store is encrypted.
+pub const TEXT2CYPHER_CONFIG_CONTEXT: &[u8] = b"drevo text2cypher config";
+
+/// The text-to-Cypher provider a server runs with: set at runtime through
+/// `POST /config/text2cypher` or the Web UI, kept in
+/// `<data dir>/text2cypher_config.json` (owner-only, sealed when the store is
+/// encrypted), and winning over the `DREVO_TEXT2CYPHER_*` environment at the
+/// next start. A change installs the generator `drevo.cypher.fromText` uses
+/// at once.
+#[derive(Debug)]
+pub struct Text2CypherConfigStore {
+    path: Option<std::path::PathBuf>,
+    config: std::sync::RwLock<Option<Text2CypherConfig>>,
+}
+
+impl Text2CypherConfigStore {
+    /// A store that is not persisted, starting from `config`.
+    #[must_use]
+    pub fn in_memory(config: Option<Text2CypherConfig>) -> Arc<Self> {
+        Arc::new(Self {
+            path: None,
+            config: std::sync::RwLock::new(config),
+        })
+    }
+
+    /// The store behind `path`: its file when there is one, otherwise
+    /// `env_fallback`.
+    #[must_use]
+    pub fn load(path: std::path::PathBuf, env_fallback: Option<Text2CypherConfig>) -> Arc<Self> {
+        let stored = std::fs::read(&path).and_then(|bytes| {
+            crate::native_service::decode_sidecar(TEXT2CYPHER_CONFIG_CONTEXT, bytes)
+        });
+        let config = match stored {
+            Ok(bytes) => serde_json::from_slice::<Text2CypherConfig>(&bytes)
+                .ok()
+                .or(env_fallback),
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::error!(
+                        path = %path.display(),
+                        error = %e,
+                        "cannot read the text-to-Cypher config; using the DREVO_TEXT2CYPHER_* settings"
+                    );
+                }
+                env_fallback
+            }
+        };
+        Arc::new(Self {
+            path: Some(path),
+            config: std::sync::RwLock::new(config),
+        })
+    }
+
+    /// The current provider, key included (for the server's own use).
+    #[must_use]
+    pub fn snapshot(&self) -> Option<Text2CypherConfig> {
+        self.config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The current provider without its key.
+    #[must_use]
+    pub fn status(&self) -> Text2CypherStatus {
+        match &*self.config.read().unwrap_or_else(|e| e.into_inner()) {
+            Some(c) => Text2CypherStatus {
+                configured: true,
+                upstream: Some(c.upstream.clone()),
+                model: Some(c.model.clone()),
+                api_key_set: c.api_key.is_some(),
+            },
+            None => Text2CypherStatus {
+                configured: false,
+                upstream: None,
+                model: None,
+                api_key_set: false,
+            },
+        }
+    }
+
+    /// Apply `update`: validate the upstream, keep the stored key when the
+    /// field is blank, default the model, write the file, install the
+    /// generator, and swap the setting in. The file is written before
+    /// anything changes in memory, so a disk failure leaves the running
+    /// provider as it was and is reported.
+    ///
+    /// # Errors
+    /// [`Text2CypherError::InvalidUpstream`] for a bad URL, a file that cannot
+    /// be written, or a generator that cannot be built.
+    pub fn apply(
+        &self,
+        update: Text2CypherConfigUpdate,
+    ) -> Result<Text2CypherStatus, Text2CypherError> {
+        let upstream = validate_upstream(&update.upstream)?;
+        let current = self.snapshot();
+        let api_key = match update.api_key.map(|s| s.trim().to_string()) {
+            Some(k) if !k.is_empty() => Some(k),
+            _ => current.and_then(|c| c.api_key),
+        };
+        let model = update
+            .model
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        let next = Text2CypherConfig {
+            upstream,
+            api_key,
+            model,
+        };
+        if let Some(path) = &self.path {
+            persist_config(path, &next)?;
+        }
+        install_generator(&next)?;
+        *self.config.write().unwrap_or_else(|e| e.into_inner()) = Some(next);
+        Ok(self.status())
+    }
+}
+
+/// Install the generator for `config` as the process-global one.
+///
+/// # Errors
+/// [`Text2CypherError::InvalidUpstream`] when the HTTP client or worker cannot
+/// be built.
+#[cfg(feature = "embeddings-proxy")]
+pub fn install_generator(config: &Text2CypherConfig) -> Result<(), Text2CypherError> {
+    let generator = SyncCypherGenerator::from_config(config.clone())?;
+    install(Arc::new(generator));
+    Ok(())
+}
+
+/// Without the proxy backend there is nothing to install: the setting is
+/// kept for a build that has it.
+#[cfg(not(feature = "embeddings-proxy"))]
+pub fn install_generator(_config: &Text2CypherConfig) -> Result<(), Text2CypherError> {
+    Ok(())
+}
+
+/// Write `config` to `path` as JSON, owner-only, atomically, sealed when the
+/// store is encrypted.
+fn persist_config(
+    path: &std::path::Path,
+    config: &Text2CypherConfig,
+) -> Result<(), Text2CypherError> {
+    fn write_atomic(
+        tmp: &std::path::Path,
+        path: &std::path::Path,
+        bytes: &[u8],
+    ) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(tmp)?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(tmp, bytes)?;
+        }
+        std::fs::rename(tmp, path)
+    }
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| Text2CypherError::InvalidUpstream(format!("cannot serialise config: {e}")))?;
+    let tmp = path.with_extension("json.tmp");
+    crate::native_service::sidecar_bytes(TEXT2CYPHER_CONFIG_CONTEXT, json.into_bytes())
+        .and_then(|bytes| write_atomic(&tmp, path, &bytes))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            Text2CypherError::InvalidUpstream(format!("cannot persist text-to-Cypher config: {e}"))
+        })
 }
 
 /// Build the system prompt sent to the LLM: fixed instructions plus the live

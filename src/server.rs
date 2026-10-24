@@ -679,9 +679,8 @@ pub enum RunError {
     #[cfg(feature = "embeddings-proxy")]
     #[error("invalid embeddings configuration: {0}")]
     Embeddings(String),
-    /// The text-to-Cypher proxy was requested via `DREVO_TEXT2CYPHER_UPSTREAM`
-    /// but its configuration is invalid (issue #429).
-    #[cfg(feature = "embeddings-proxy")]
+    /// The text-to-Cypher provider (`DREVO_TEXT2CYPHER_*` or the stored
+    /// setting) is invalid, or its generator could not be built.
     #[error("invalid text-to-Cypher configuration: {0}")]
     Text2Cypher(String),
     /// The users could not be loaded from `<data_dir>/security.json`, or the
@@ -893,30 +892,24 @@ fn build_embeddings_store(
     ))
 }
 
-/// Install the process-global text-to-Cypher generator (`drevo.cypher.fromText`,
-/// issue #429) when the `embeddings-proxy` feature is built and
-/// `DREVO_TEXT2CYPHER_UPSTREAM` is set. Engine-agnostic (a process global), so
-/// it runs once for both the KV and durable-native serving paths. A no-op when
-/// unconfigured — the procedure then reports "not configured".
-#[cfg(feature = "embeddings-proxy")]
-fn configure_text2cypher() -> Result<(), RunError> {
-    use crate::text2cypher::{SyncCypherGenerator, Text2CypherConfig};
-    let Some(config) = Text2CypherConfig::from_env(|key| std::env::var(key).ok())
-        .map_err(|e| RunError::Text2Cypher(e.to_string()))?
-    else {
-        return Ok(());
-    };
-    let generator = SyncCypherGenerator::from_config(config)
+/// The text-to-Cypher provider store (`drevo.cypher.fromText`): the
+/// `<data_dir>/text2cypher_config.json` file an operator set through the Web
+/// UI wins, falling back to `DREVO_TEXT2CYPHER_*`. The generator for the
+/// effective provider is installed as the process global here, once, for
+/// both serving paths; a later `POST /config/text2cypher` replaces it.
+fn configure_text2cypher(
+    cfg: &Config,
+) -> Result<std::sync::Arc<crate::text2cypher::Text2CypherConfigStore>, RunError> {
+    use crate::text2cypher::{Text2CypherConfig, Text2CypherConfigStore, TEXT2CYPHER_CONFIG_FILE};
+    let env_cfg = Text2CypherConfig::from_env(|key| std::env::var(key).ok())
         .map_err(|e| RunError::Text2Cypher(e.to_string()))?;
-    crate::text2cypher::install(std::sync::Arc::new(generator));
-    tracing::info!("drevo.cypher.fromText generator installed");
-    Ok(())
-}
-
-/// No-op when the proxy backend is not compiled in.
-#[cfg(not(feature = "embeddings-proxy"))]
-fn configure_text2cypher() -> Result<(), RunError> {
-    Ok(())
+    let store = Text2CypherConfigStore::load(cfg.data_dir.join(TEXT2CYPHER_CONFIG_FILE), env_cfg);
+    if let Some(config) = store.snapshot() {
+        crate::text2cypher::install_generator(&config)
+            .map_err(|e| RunError::Text2Cypher(e.to_string()))?;
+        tracing::info!(model = %config.model, "drevo.cypher.fromText generator installed");
+    }
+    Ok(store)
 }
 
 /// Install the server-side query embedder on the durable native service
@@ -1046,10 +1039,6 @@ async fn serve(
     tracing::info!(version = crate::VERSION, "starting drevo");
     let addr = cfg.socket_addr()?;
 
-    // Install the text-to-Cypher generator (issue #429) once, before the engine
-    // branch: it is a process-global proxy, shared by both serving paths.
-    configure_text2cypher()?;
-
     if cfg.is_privileged_port() {
         tracing::warn!(
             port = cfg.port,
@@ -1118,6 +1107,10 @@ async fn run_native_durable(
     // Shared, persisted embeddings config store (Web-UI-settable), same as the
     // KV path: file wins over `DREVO_EMBEDDINGS_*`.
     let embeddings_store = build_embeddings_store(&cfg)?;
+    // The text-to-Cypher provider (`drevo.cypher.fromText`): the stored
+    // setting wins over `DREVO_TEXT2CYPHER_*`; its generator is installed as
+    // the process global here, and the Web UI can replace it later.
+    let text2cypher_store = configure_text2cypher(&cfg)?;
     // Opt-in server-side query embedder — the durable-engine counterpart of
     // `configure_query_embedder`; no-op unless the `embeddings-proxy` feature
     // is built.
@@ -1354,6 +1347,7 @@ async fn run_native_durable(
     // tooling probes POST /v1/embeddings after boot. Store-backed so the key is
     // Web-UI-settable.
     let state = state.with_embeddings_config_store(embeddings_store.clone());
+    let state = state.with_text2cypher_config_store(text2cypher_store.clone());
     let state = configure_native_embeddings(state, embeddings_store)?;
     let shutdown_state = state.clone();
     let router = crate::native_api::build_native_router(state);
