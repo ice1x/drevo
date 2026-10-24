@@ -93,6 +93,9 @@ fn the_restart_script_forwards_the_server_settings() {
     for var in [
         "DREVO_AUTH",
         "DREVO_EMBEDDINGS_API_KEY",
+        "DREVO_TEXT2CYPHER_UPSTREAM",
+        "DREVO_TEXT2CYPHER_MODEL",
+        "DREVO_TEXT2CYPHER_API_KEY",
         "DREVO_QUERY_TIMEOUT_MS",
         "DREVO_IDLE_SESSION_TIMEOUT_MS",
     ] {

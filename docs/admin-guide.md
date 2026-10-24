@@ -353,7 +353,8 @@ DREVO_TEXT2CYPHER_MODEL=qwen2.5-coder:14b
 ```
 
 `GET /` reports `"text2cypher": {"model": "…"}` once an upstream is configured
-(`null` otherwise); the upstream URL is not exposed. The prompt carries the
+(`null` otherwise); the upstream URL is not exposed. `scripts/drevo-restart.sh`
+forwards the three variables from `~/.drevo.env` into the container. The prompt carries the
 whole schema, so on a large graph a model running on CPU can take minutes;
 on Apple Silicon run the native arm64 Ollama so the model uses the GPU.
 

@@ -8,6 +8,11 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **`scripts/drevo-restart.sh` did not forward `DREVO_TEXT2CYPHER_*`**, so a
+  text-to-Cypher upstream set in `~/.drevo.env` never reached the container
+  and the Web UI's **Ask** reported "not configured". The three variables
+  are forwarded like the embeddings ones.
+
 - **`MATCH … ORDER BY … LIMIT k` held every matched row until the sort**
   (issue #743). Two such scans over 240,451 road junctions, each returning
   six rows, took up to 183 MB of transient heap that the allocator then kept
