@@ -1647,6 +1647,92 @@ with driver.session() as session:
     )
 ```
 
+### Concurrency
+
+Every statement, and every explicit transaction, works on one **snapshot** of
+the graph: the state as of its start, plus its own writes. A traversal never
+sees half of someone else's change, and the rows a statement returns are
+consistent with each other even while other clients write.
+
+Writers never wait for each other. There are no row locks, no lock queue and
+therefore **no deadlocks**: the cross-order update that PostgreSQL has to break
+with its deadlock detector (A updates row 1 then row 2, B updates row 2 then
+row 1) ends in drevo with one transaction committed and the other told to
+retry, in under a millisecond, with nothing blocked in between.
+
+Instead, a conflict is detected **at commit**. An explicit transaction
+commits only if no other transaction committed between its `BEGIN` and its
+`COMMIT`; otherwise the commit fails, the transaction is rolled back, and the
+client gets a retryable error:
+
+- Bolt: `Neo.TransientError.Transaction.Outdated`, message *transaction
+  conflict: the graph changed since the transaction began; retry*;
+- Python (`drevo`): `TransactionConflict`.
+
+Today that check does not look at *which* nodes were touched: two transactions
+that wrote unrelated nodes conflict exactly like two that wrote the same node.
+The committed result is always serializable, so no write is ever lost and no
+constraint is ever bypassed; the cost is that concurrent explicit transactions
+take turns. Keep them short, and let the driver retry.
+
+The Neo4j drivers retry `TransientError`s on their own inside a managed
+transaction, with exponential back-off. The loser of a conflict therefore
+commits on its second attempt without any code in the application:
+
+```python
+def bump(tx, first, second):
+    tx.run("MATCH (t:Ticket {id: $id}) SET t.touches = t.touches + 1", id=first)
+    tx.run("MATCH (t:Ticket {id: $id}) SET t.touches = t.touches + 1", id=second)
+
+with driver.session() as session:
+    session.execute_write(bump, 1, 2)   # retried for you on Transaction.Outdated
+```
+
+A hand-rolled `session.begin_transaction()` gets the error as a
+`neo4j.exceptions.TransientError` and has to retry itself. The same error
+inside a prepared two-phase transaction cannot happen: `drevo.tx.prepare` runs
+the conflict check, and the fence it raises keeps the graph unchanged until the
+transaction is resolved.
+
+**Auto-commit statements** are each their own transaction, and the server
+retries one that lost a conflict itself, up to eight times, before reporting
+it. From the client's point of view they never fail with a conflict. HTTP
+`POST /cypher` is always auto-commit. A counter updated by many clients at once
+is therefore best bumped in one statement:
+
+```cypher
+MATCH (t:Ticket {id: 7})
+SET t.touches = coalesce(t.touches, 0) + 1
+RETURN t.touches
+```
+
+For unique increasing numbers under contention use a [sequence](#sequences):
+`drevo.sequence.next` hands out a number per call without a transaction that
+can be rolled back by a conflict.
+
+**Timeouts and tools.** A statement or transaction that runs too long is
+stopped by the server's `DREVO_QUERY_TIMEOUT_MS` or the client's own
+`tx_timeout`, and a connection that opens a transaction and falls silent is
+closed by `DREVO_IDLE_SESSION_TIMEOUT_MS` (see the
+[Admin Guide](admin-guide.md#client-timeouts)). `SHOW TRANSACTIONS` and
+`TERMINATE TRANSACTIONS`, below, show and stop what runs now.
+
+**Coming from PostgreSQL**
+
+| PostgreSQL | drevo |
+|---|---|
+| row locks; writers block each other | snapshots; writers never wait |
+| `deadlock_timeout`, error `40P01 deadlock_detected` | no deadlocks; the later commit fails with `Neo.TransientError.Transaction.Outdated` |
+| `40001 serialization_failure` under `SERIALIZABLE` | the same `Transaction.Outdated`; every committed history is serializable |
+| `READ COMMITTED` default | every statement reads one snapshot |
+| `statement_timeout` | `DREVO_QUERY_TIMEOUT_MS` (server) and the driver's `tx_timeout` (client) |
+| `idle_in_transaction_session_timeout` | `DREVO_IDLE_SESSION_TIMEOUT_MS` |
+| `pg_stat_activity` | `SHOW TRANSACTIONS`, `SHOW CONNECTIONS` |
+| `pg_cancel_backend`, `pg_terminate_backend` | `TERMINATE TRANSACTIONS` |
+| `PREPARE TRANSACTION` / `COMMIT PREPARED` | `drevo.tx.prepare` / `drevo.tx.commitPrepared` (next section) |
+| `SAVEPOINT` | none; after a failed statement the transaction is rolled back, not resumed |
+| `SELECT … FOR UPDATE`, advisory locks | none; use one auto-commit statement or a sequence for a hot spot |
+
 ### Two-phase commit (#556)
 
 drevo can take part in a distributed transaction run by an external

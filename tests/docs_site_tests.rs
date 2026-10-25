@@ -144,3 +144,40 @@ fn docs_workflow_builds_with_pinned_mdbook_and_deploys_via_pages_actions() {
     );
     assert!(w.contains("actions/deploy-pages"));
 }
+
+/// The Cypher reference answers "what happens when two of my transactions
+/// overlap?" in one place: the isolation model, the retryable conflict code on
+/// every API, that nothing waits (so there is no deadlock), and a table for
+/// readers coming from PostgreSQL.
+#[test]
+fn cypher_reference_documents_the_concurrency_model() {
+    let s = read("docs/cypher-reference.md");
+    let start = s
+        .find("\n### Concurrency\n")
+        .expect("docs/cypher-reference.md must have a `### Concurrency` section");
+    let rest = &s[start + 1..];
+    let end = rest[4..].find("\n### ").map_or(rest.len(), |i| i + 4);
+    let section = &rest[..end];
+    for needle in [
+        "Neo.TransientError.Transaction.Outdated",
+        "TransactionConflict",
+        "execute_write",
+        "deadlock",
+        "| PostgreSQL |",
+        "deadlock_timeout",
+        "statement_timeout",
+        "idle_in_transaction_session_timeout",
+        "pg_terminate_backend",
+        "```cypher",
+    ] {
+        assert!(
+            section.contains(needle),
+            "the Concurrency section must mention `{needle}`"
+        );
+    }
+    let admin = read("docs/admin-guide.md");
+    assert!(
+        admin.contains("cypher-reference.md#concurrency"),
+        "docs/admin-guide.md must point operators at the Concurrency section"
+    );
+}

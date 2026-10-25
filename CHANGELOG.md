@@ -124,6 +124,16 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Cypher reference: a _Concurrency_ section.** What happens when two
+  transactions overlap, in one place: every statement and transaction reads
+  one snapshot; writers never wait, so there are no deadlocks; an explicit
+  transaction that commits after another one fails with the retryable
+  `Neo.TransientError.Transaction.Outdated` (Python `TransactionConflict`)
+  and the drivers' managed transactions retry it; auto-commit statements are
+  retried by the server. With a "coming from PostgreSQL" table (`40P01`,
+  `statement_timeout`, `pg_terminate_backend`, …) and a pointer from the
+  admin guide's timeouts section.
+
 - **The text-to-Cypher provider is set at runtime** (issue #747). The Web
   UI's Settings panel has a *Text-to-Cypher (Ask)* section — chat completions
   URL, write-only API key, model — backed by `GET`/`POST /config/text2cypher`.

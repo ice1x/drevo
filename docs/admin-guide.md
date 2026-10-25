@@ -66,6 +66,9 @@ Invalid configuration exits with code `2`; a runtime failure exits with `1`.
 
 ### Client timeouts
 
+How overlapping transactions behave — snapshots, the retryable conflict error, why there are
+no deadlocks — is in the Cypher reference under [Concurrency](cypher-reference.md#concurrency).
+
 A client can give its own statement or transaction a time limit, in milliseconds:
 
 - **Bolt:** the `tx_timeout` that Neo4j drivers send on `BEGIN` and on an auto-commit `RUN`.
