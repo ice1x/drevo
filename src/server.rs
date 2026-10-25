@@ -29,6 +29,8 @@
 //! | `DREVO_READ_ONLY` | `false`     | Serve every database read-only: reads, search and export work, writes and schema changes fail with `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase`, and nothing in the data directory is written |
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
+//! | `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once; one more is refused at `HELLO` with `Neo.TransientError.Request.NoThreadsAvailable`; `0` = no limit |
+//! | `DREVO_HTTP_MAX_IN_FLIGHT` | `256` | HTTP requests served at once; one more gets `503` + `Retry-After`; health and metrics are exempt; `0` = no limit |
 //! | `DREVO_IDLE_SESSION_TIMEOUT_MS` | `0` (off) | Close a Bolt connection that holds an open transaction and sends nothing for this long, rolling the transaction back |
 //! | `DREVO_TLS_CERT`  | (unset)     | PEM certificate chain; with `DREVO_TLS_KEY`, HTTP is served as HTTPS, Bolt as `bolt+s://`, and gRPC and Arrow Flight over TLS (`bolt-tls` feature) |
 //! | `DREVO_TLS_KEY`   | (unset)     | PEM private key (PKCS#8, PKCS#1 or SEC1) for `DREVO_TLS_CERT` |
@@ -108,6 +110,15 @@ pub struct Config {
     /// nothing before it is closed and the transaction rolled back, from
     /// `DREVO_IDLE_SESSION_TIMEOUT_MS`; `None` (unset or `0`) means no limit.
     pub idle_session_timeout: Option<std::time::Duration>,
+    /// Bolt connections served at once, from `DREVO_MAX_CONNECTIONS` (default
+    /// [`crate::limits::DEFAULT_MAX_CONNECTIONS`]; `0` = no limit). One more is
+    /// refused at `HELLO` with `Neo.TransientError.Request.NoThreadsAvailable`.
+    pub max_connections: usize,
+    /// HTTP requests served at once, from `DREVO_HTTP_MAX_IN_FLIGHT` (default
+    /// [`crate::limits::DEFAULT_HTTP_MAX_IN_FLIGHT`]; `0` = no limit). One more
+    /// gets `503` with `Retry-After`; `/health`, `/ready` and `/metrics` are
+    /// always served.
+    pub http_max_in_flight: usize,
     /// How many recent commits each database remembers to classify a rejected
     /// explicit-transaction commit, from `DREVO_TX_CONFLICT_HISTORY` (issue
     /// #749; default [`drevo_core::conflict::DEFAULT_HISTORY`]).
@@ -289,6 +300,18 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_MAX_CONNECTIONS` was not a non-negative integer.
+    #[error("invalid DREVO_MAX_CONNECTIONS value `{value}`: expected a number of connections (0 = no limit)")]
+    InvalidMaxConnections {
+        /// The raw env-var value.
+        value: String,
+    },
+    /// `DREVO_HTTP_MAX_IN_FLIGHT` was not a non-negative integer.
+    #[error("invalid DREVO_HTTP_MAX_IN_FLIGHT value `{value}`: expected a number of requests (0 = no limit)")]
+    InvalidHttpMaxInFlight {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_TX_CONFLICT_HISTORY` was not a positive integer.
     #[error(
         "invalid DREVO_TX_CONFLICT_HISTORY value `{value}`: expected the number of commits to remember (at least 1)"
@@ -418,6 +441,21 @@ impl Config {
                 Ok(ms) => Some(std::time::Duration::from_millis(ms)),
                 Err(_) => return Err(ConfigError::InvalidIdleSessionTimeout { value: raw }),
             },
+        };
+
+        let max_connections = match getter("DREVO_MAX_CONNECTIONS") {
+            None => crate::limits::DEFAULT_MAX_CONNECTIONS,
+            Some(raw) => raw
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| ConfigError::InvalidMaxConnections { value: raw })?,
+        };
+        let http_max_in_flight = match getter("DREVO_HTTP_MAX_IN_FLIGHT") {
+            None => crate::limits::DEFAULT_HTTP_MAX_IN_FLIGHT,
+            Some(raw) => raw
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| ConfigError::InvalidHttpMaxInFlight { value: raw })?,
         };
 
         let tx_conflict_history = match getter("DREVO_TX_CONFLICT_HISTORY") {
@@ -594,6 +632,8 @@ impl Config {
             engine,
             query_timeout,
             idle_session_timeout,
+            max_connections,
+            http_max_in_flight,
             tx_conflict_history,
             prepared_tx_warn,
             prepared_tx_timeout,
@@ -1164,6 +1204,9 @@ async fn run_native_durable(
     registry.set_statement_timeout(cfg.query_timeout);
     // Bolt connections that hold a transaction open and go silent.
     registry.set_idle_session_timeout(cfg.idle_session_timeout);
+    // How many Bolt connections and HTTP requests are served at once.
+    registry.limits().bolt.set_max(cfg.max_connections);
+    registry.limits().http.set_max(cfg.http_max_in_flight);
     // How many recent commits a database remembers to say why an explicit
     // transaction's commit was rejected (issue #749).
     registry.set_conflict_history(cfg.tx_conflict_history);
@@ -1235,11 +1278,34 @@ async fn run_native_durable(
         tokio::spawn(async move {
             loop {
                 match bolt_listener.accept().await {
-                    Ok((socket, _peer)) => {
+                    Ok((socket, peer)) => {
                         let conn_registry = std::sync::Arc::clone(&bolt_registry);
                         let conn_security = bolt_security.clone();
                         let conn_tls = bolt_tls.clone();
+                        let gate = &conn_registry.limits().bolt;
+                        let Some(pass) = gate.try_enter() else {
+                            // Over DREVO_MAX_CONNECTIONS: finish the handshake
+                            // so the driver can read why, refuse at HELLO,
+                            // close. Bounded, so slow clients cannot pile up.
+                            let max = gate.max();
+                            if gate.should_warn() {
+                                tracing::warn!(
+                                    %peer,
+                                    max_connections = max,
+                                    refused = gate.rejected(),
+                                    "bolt connection refused: DREVO_MAX_CONNECTIONS reached"
+                                );
+                            }
+                            tokio::spawn(async move {
+                                let refuse = refuse_bolt_connection(socket, conn_tls, max);
+                                let _ =
+                                    tokio::time::timeout(std::time::Duration::from_secs(5), refuse)
+                                        .await;
+                            });
+                            continue;
+                        };
                         tokio::spawn(async move {
+                            let _pass = pass;
                             if let Err(err) = serve_bolt_connection(
                                 socket,
                                 conn_tls,
@@ -1517,6 +1583,26 @@ async fn serve_bolt_connection(
             )
             .await
         }
+    }
+}
+
+/// Refuse a Bolt connection over the limit: complete the handshake, answer
+/// the first message with `Neo.TransientError.Request.NoThreadsAvailable`
+/// naming the limit, and close.
+async fn refuse_bolt_connection(
+    socket: tokio::net::TcpStream,
+    tls: Option<BoltTls>,
+    max: usize,
+) -> crate::bolt::error::BoltResult<()> {
+    let message = crate::limits::bolt_refused_message(max);
+    match tls {
+        #[cfg(feature = "bolt-tls")]
+        Some(acceptor) => {
+            crate::bolt::tls::accept_and_refuse_tls(socket, &acceptor, &message).await
+        }
+        #[cfg(not(feature = "bolt-tls"))]
+        Some(never) => match never {},
+        None => crate::bolt::listener::accept_and_refuse(socket, &message).await,
     }
 }
 

@@ -668,6 +668,12 @@ pub struct DrevoMetrics {
     /// [`crate::problems::statement_timeouts`] by the `/metrics` handler via
     /// [`DrevoMetrics::sync_statement_timeouts`].
     statement_timeouts: Counter,
+    /// `drevo_connections_rejected_total{protocol="bolt"|"http"}` — Bolt
+    /// connections and HTTP requests refused by the connection limits.
+    connections_rejected: [Counter; 2],
+    /// `drevo_connections_active{protocol="bolt"|"http"}` — open Bolt
+    /// connections and HTTP requests being served.
+    connections_active: [Gauge; 2],
     /// `drevo_tx_conflicts_total{reason}` (issue #749) — explicit-transaction
     /// commits rejected because the graph changed since they began, by what a
     /// per-entity rule would have said: `overlap`, `would_pass`, `history`.
@@ -768,6 +774,21 @@ impl DrevoMetrics {
             "Statements stopped by the statement timeout (DREVO_QUERY_TIMEOUT_MS).",
             &[],
         );
+        let connections_rejected = ["bolt", "http"].map(|protocol| {
+            registry.counter(
+                "drevo_connections_rejected_total",
+                "Bolt connections refused over DREVO_MAX_CONNECTIONS and HTTP requests \
+                 refused over DREVO_HTTP_MAX_IN_FLIGHT.",
+                &[("protocol", protocol)],
+            )
+        });
+        let connections_active = ["bolt", "http"].map(|protocol| {
+            registry.gauge(
+                "drevo_connections_active",
+                "Open Bolt connections and HTTP requests being served.",
+                &[("protocol", protocol)],
+            )
+        });
         let tx_conflicts = ["overlap", "would_pass", "history"].map(|reason| {
             registry.counter(
                 "drevo_tx_conflicts_total",
@@ -798,6 +819,8 @@ impl DrevoMetrics {
             uptime_seconds,
             storage_file_bytes,
             statement_timeouts,
+            connections_rejected,
+            connections_active,
             tx_conflicts,
             prepared_transactions,
             prepared_oldest_age_seconds,
@@ -816,6 +839,19 @@ impl DrevoMetrics {
             if total > current {
                 counter.inc_by(total - current);
             }
+        }
+    }
+
+    /// Report the connection limits' counts: refusals (forward only) and what
+    /// is inside each gate now.
+    pub fn sync_connection_limits(&self, limits: &crate::limits::ConnectionLimits) {
+        for (i, gate) in [&limits.bolt, &limits.http].into_iter().enumerate() {
+            let current = self.connections_rejected[i].get();
+            let total = gate.rejected();
+            if total > current {
+                self.connections_rejected[i].inc_by(total - current);
+            }
+            self.connections_active[i].set(i64::try_from(gate.active()).unwrap_or(i64::MAX));
         }
     }
 

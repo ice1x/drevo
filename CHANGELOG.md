@@ -134,6 +134,16 @@ history and the in-repo issue tracker; format loosely follows
   decision itself is unchanged: this slice measures how much a per-record rule
   would gain before one lands (design: `docs/rfc-per-entity-conflicts.md`).
 
+- **Connection limits** (issue #750). A server serves at most
+  `DREVO_MAX_CONNECTIONS` Bolt connections (default 512) and
+  `DREVO_HTTP_MAX_IN_FLIGHT` HTTP requests (default 256) at once. A Bolt
+  connection over the limit is refused at `HELLO` with
+  `Neo.TransientError.Request.NoThreadsAvailable`, which the Neo4j drivers
+  retry; an HTTP request over it gets `503` with `Retry-After: 1`, while
+  `/health`, `/ready` and `/metrics` are always served. New metrics
+  `drevo_connections_rejected_total{protocol}` and
+  `drevo_connections_active{protocol}`; `0` turns a limit off.
+
 - **Cypher reference: a _Concurrency_ section.** What happens when two
   transactions overlap, in one place: every statement and transaction reads
   one snapshot; writers never wait, so there are no deadlocks; an explicit

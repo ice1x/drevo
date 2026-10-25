@@ -367,6 +367,12 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             state.clone(),
             require_login,
         ))
+        // At most DREVO_HTTP_MAX_IN_FLIGHT requests at once; inside the
+        // metrics layer, so refused requests are still counted as 503s.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            limit_in_flight,
+        ))
         // Per-request metrics instrumentation — layered after the routes so it
         // wraps every handler and before `with_state` so it can extract the
         // shared state, exactly as the KV router does.
@@ -729,6 +735,39 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 /// same registry/gauges as the KV router. The uptime gauge is refreshed from
 /// `started_at` and the physical-size gauge from the WAL's on-disk size just
 /// before rendering, so a scrape needs no background ticker.
+/// Serve at most `DREVO_HTTP_MAX_IN_FLIGHT` requests at once. One more gets
+/// `503 Service Unavailable` with `Retry-After: 1`. Health, readiness and
+/// metrics are always served, so monitoring keeps working when the server is
+/// full.
+async fn limit_in_flight(
+    State(state): State<NativeApiState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if matches!(request.uri().path(), "/health" | "/ready" | "/metrics") {
+        return next.run(request).await;
+    }
+    let gate = &state.registry.limits().http;
+    let Some(_pass) = gate.try_enter() else {
+        let max = gate.max();
+        if gate.should_warn() {
+            tracing::warn!(
+                max_in_flight = max,
+                refused = gate.rejected(),
+                "http request refused: DREVO_HTTP_MAX_IN_FLIGHT reached"
+            );
+        }
+        let mut response =
+            ApiError::Unavailable(crate::limits::http_refused_message(max)).into_response();
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+        return response;
+    };
+    next.run(request).await
+}
+
 async fn metrics(State(state): State<NativeApiState>) -> Response {
     state
         .metrics
@@ -747,6 +786,9 @@ async fn metrics(State(state): State<NativeApiState>) -> Response {
     state
         .metrics
         .sync_tx_conflicts(state.service.conflict_stats());
+    state
+        .metrics
+        .sync_connection_limits(state.registry.limits());
     // Two-phase commit (#556): a prepared transaction blocks every write, so
     // its count and age are first-class operational signals.
     let prepared = state.service.list_prepared();

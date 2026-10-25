@@ -145,6 +145,8 @@ pub mod events;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ffi;
 pub mod fts;
+/// How many Bolt connections and HTTP requests a server serves at once.
+pub mod limits;
 /// Cross-engine data migration (RFC `docs/rfc-native-core.md`, #307). Moves a
 /// live graph between any two [`engine::GraphEngine`] implementations
 /// (KV-backed `Drevo` ⇄ native [`native::NativeGraph`]) over the shared

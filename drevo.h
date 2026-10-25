@@ -186,6 +186,18 @@
 #define DEFAULT_COSINE_THRESHOLD 0.85
 
 /**
+ * Bolt connections served at once unless `DREVO_MAX_CONNECTIONS` says
+ * otherwise.
+ */
+#define DEFAULT_MAX_CONNECTIONS 512
+
+/**
+ * HTTP requests served at once unless `DREVO_HTTP_MAX_IN_FLIGHT` says
+ * otherwise.
+ */
+#define DEFAULT_HTTP_MAX_IN_FLIGHT 256
+
+/**
  * Default runtime-compaction threshold (appended ops between
  * compactions). Large enough that steady write loads compact rarely,
  * small enough that the log never dwarfs the state.
