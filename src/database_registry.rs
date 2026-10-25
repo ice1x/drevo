@@ -435,6 +435,16 @@ impl DatabaseRegistry {
         }
     }
 
+    /// Size the conflict history of every registered database, the default
+    /// included (`DREVO_TX_CONFLICT_HISTORY`, issue #749); databases created
+    /// afterwards inherit it from the default.
+    pub fn set_conflict_history(&self, commits: usize) {
+        self.default.set_conflict_history(commits);
+        for service in self.read().values() {
+            service.set_conflict_history(commits);
+        }
+    }
+
     /// Close a Bolt connection that has held an open transaction for `limit`
     /// without sending anything, rolling the transaction back
     /// (`DREVO_IDLE_SESSION_TIMEOUT_MS`). `None` removes the limit.

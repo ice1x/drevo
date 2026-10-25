@@ -44,6 +44,7 @@
 //! and follow the graph through its change-feed
 //! ([`changes_since`](crate::native::NativeGraph::changes_since)).
 
+use crate::conflict::{CommitHistory, ConflictReason, ConflictSet, ConflictStats};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
@@ -150,6 +151,11 @@ struct Inner {
     /// Global transaction ids rolled back heuristically: a late
     /// `commit_prepared` for one of these reports the overridden outcome.
     heuristic: BTreeSet<String>,
+    /// How many commits produced this state, counted from when the engine
+    /// was opened. Every write path advances it by one (see
+    /// [`NativeGraph::note_commit`]); a transaction compares the value of
+    /// its snapshot with the live one to find the commits it did not see.
+    commit_seq: u64,
 }
 
 impl Inner {
@@ -1479,6 +1485,18 @@ pub struct NativeGraph {
     /// Opened with [`open_read_only`](Self::open_read_only): the log was
     /// opened for reading only, so the store can never be made writable.
     opened_read_only: bool,
+    /// What the most recent commits touched, by commit sequence.
+    history: std::sync::Mutex<CommitHistory>,
+    /// Rejected commits by [`ConflictReason`].
+    conflicts: ConflictCounters,
+}
+
+/// Rejected commits by reason — see [`NativeGraph::conflict_stats`].
+#[derive(Default)]
+struct ConflictCounters {
+    overlap: std::sync::atomic::AtomicU64,
+    would_pass: std::sync::atomic::AtomicU64,
+    history: std::sync::atomic::AtomicU64,
 }
 
 /// [`crate::wal_format::WalFormat`] ⇄ `u8`, for [`NativeGraph::wal_file_format`].
@@ -2574,6 +2592,7 @@ impl NativeGraph {
             };
             record.id = id;
             inner.apply_wal_op(WalOp::UpsertNode(record.clone()));
+            self.note_commit(inner, ConflictSet::node(id));
             id
         };
         self.record(&[WalOp::UpsertNode(record)])?;
@@ -2626,6 +2645,7 @@ impl NativeGraph {
             };
             record.id = id;
             inner.apply_wal_op(WalOp::UpsertEdge(record.clone()));
+            self.note_commit(inner, ConflictSet::edge(id, record.from_id, record.to_id));
             id
         };
         self.record(&[WalOp::UpsertEdge(record)])?;
@@ -2682,7 +2702,12 @@ impl NativeGraph {
                     } else {
                         WalOp::DeleteEdge(id)
                     };
-                    Arc::make_mut(&mut *self.write_for_commit()?).apply_wal_op(op.clone());
+                    {
+                        let mut guard = self.write_for_commit()?;
+                        let inner = Arc::make_mut(&mut guard);
+                        inner.apply_wal_op(op.clone());
+                        self.note_commit(inner, ConflictSet::from_ops(std::slice::from_ref(&op)));
+                    }
                     self.record(&[op])?;
                 }
                 t
@@ -2693,13 +2718,17 @@ impl NativeGraph {
                 let id = {
                     let mut guard = self.write_for_commit()?;
                     let inner = Arc::make_mut(&mut guard);
-                    if is_node {
+                    let id = if is_node {
                         inner.next_node_id += 1;
                         inner.next_node_id
                     } else {
                         inner.next_edge_id += 1;
                         inner.next_edge_id
-                    }
+                    };
+                    // No record changes, but the state did: a commit that
+                    // touched nothing.
+                    self.note_commit(inner, ConflictSet::default());
+                    id
                 };
                 as_target(id)
             }
@@ -2807,6 +2836,7 @@ impl NativeGraph {
                 return Err(CoreError::NodeNotFound(node_id));
             }
             inner.apply_wal_op(WalOp::SetEmbedding(node_id, vector.clone()));
+            self.note_commit(inner, ConflictSet::node(node_id));
         }
         self.record(&[WalOp::SetEmbedding(node_id, vector)])
     }
@@ -2834,6 +2864,7 @@ impl NativeGraph {
                 inner.apply_wal_op(WalOp::SetEmbedding(*id, vector.clone()));
                 ops.push(WalOp::SetEmbedding(*id, vector.clone()));
             }
+            self.note_commit(inner, ConflictSet::from_ops(&ops));
             ops
         };
         self.record(&ops)
@@ -2855,7 +2886,9 @@ impl NativeGraph {
     pub fn delete_embedding(&self, node_id: u64) -> Result<()> {
         {
             let mut guard = self.write_for_commit()?;
-            Arc::make_mut(&mut guard).apply_wal_op(WalOp::DeleteEmbedding(node_id));
+            let inner = Arc::make_mut(&mut guard);
+            inner.apply_wal_op(WalOp::DeleteEmbedding(node_id));
+            self.note_commit(inner, ConflictSet::node(node_id));
         }
         self.record(&[WalOp::DeleteEmbedding(node_id)])
     }
@@ -2904,6 +2937,7 @@ impl NativeGraph {
             nodes.push(node);
         }
         self.record(&ops)?;
+        self.note_commit(Arc::make_mut(&mut working), ConflictSet::from_ops(&ops));
         *live = working;
         drop(live);
         for n in &nodes {
@@ -2933,6 +2967,7 @@ impl NativeGraph {
             edges.push(edge);
         }
         self.record(&ops)?;
+        self.note_commit(Arc::make_mut(&mut working), ConflictSet::from_ops(&ops));
         *live = working;
         drop(live);
         for e in &edges {
@@ -3461,6 +3496,7 @@ impl NativeGraph {
             ));
         }
         if !Arc::ptr_eq(&live, &slot.base) {
+            self.note_conflict(&slot.base, &slot.ops);
             return Err(PrepareError::Conflict);
         }
         slot.working
@@ -3486,6 +3522,8 @@ impl NativeGraph {
         let inner = Arc::make_mut(&mut live);
         inner.heuristic.remove(gid);
         inner.prepared.insert(gid.to_string(), entry);
+        // The fence went up; the graph itself is unchanged.
+        self.note_commit(inner, ConflictSet::default());
         Ok(())
     }
 
@@ -3517,7 +3555,9 @@ impl NativeGraph {
         // indexes and in-process replicas see ordinary upserts and deletes.
         self.record_split(std::slice::from_ref(&record), &ops)
             .map_err(|e| ResolveError::Io(e.to_string()))?;
-        Arc::make_mut(&mut live).apply_wal_op(record);
+        let inner = Arc::make_mut(&mut live);
+        inner.apply_wal_op(record);
+        self.note_commit(inner, ConflictSet::from_ops(&ops));
         Ok(())
     }
 
@@ -3569,7 +3609,9 @@ impl NativeGraph {
         };
         self.record_split(std::slice::from_ref(&record), &[])
             .map_err(|e| ResolveError::Io(e.to_string()))?;
-        Arc::make_mut(&mut live).apply_wal_op(record);
+        let inner = Arc::make_mut(&mut live);
+        inner.apply_wal_op(record);
+        self.note_commit(inner, ConflictSet::default());
         Ok(())
     }
 
@@ -3594,7 +3636,7 @@ impl NativeGraph {
     fn commit_parts(
         &self,
         base: Arc<Inner>,
-        working: Arc<Inner>,
+        mut working: Arc<Inner>,
         ops: &[WalOp],
     ) -> std::result::Result<(), CommitError> {
         // A transaction that wrote nothing has nothing to apply, validate or
@@ -3615,6 +3657,7 @@ impl NativeGraph {
             ));
         }
         if !Arc::ptr_eq(&live, &base) {
+            self.note_conflict(&base, ops);
             return Err(CommitError::Conflict);
         }
         working
@@ -3622,6 +3665,7 @@ impl NativeGraph {
             .map_err(CommitError::Constraint)?;
         self.record(ops)
             .map_err(|e| CommitError::Io(e.to_string()))?;
+        self.note_commit(Arc::make_mut(&mut working), ConflictSet::from_ops(ops));
         *live = working;
         Ok(())
     }
@@ -3652,6 +3696,7 @@ impl NativeGraph {
             return Err(e);
         }
         g.sync_unique();
+        self.note_commit(g, ConflictSet::everything());
         Ok(())
     }
 
@@ -3662,7 +3707,11 @@ impl NativeGraph {
         let before = g.constraints.len();
         g.constraints.retain(|c| c != constraint);
         g.sync_unique();
-        g.constraints.len() != before
+        let removed = g.constraints.len() != before;
+        if removed {
+            self.note_commit(g, ConflictSet::everything());
+        }
+        removed
     }
 
     /// Whether a declared constraint requires properties to be present
@@ -3707,6 +3756,7 @@ impl NativeGraph {
             for op in ops {
                 inner.apply_wal_op(op.clone());
             }
+            self.note_commit(inner, ConflictSet::from_ops(ops));
         }
         self.record(ops)?;
         Ok(())
@@ -3757,6 +3807,8 @@ impl NativeGraph {
             wal_file_format: std::sync::atomic::AtomicU8::new(0),
             read_only: std::sync::atomic::AtomicBool::new(false),
             opened_read_only: false,
+            history: std::sync::Mutex::new(CommitHistory::default()),
+            conflicts: ConflictCounters::default(),
         }
     }
 
@@ -4112,6 +4164,8 @@ impl NativeGraph {
             wal_file_format: std::sync::atomic::AtomicU8::new(wal_format_to_u8(file_format)),
             read_only: std::sync::atomic::AtomicBool::new(read_only),
             opened_read_only: read_only,
+            history: std::sync::Mutex::new(CommitHistory::default()),
+            conflicts: ConflictCounters::default(),
         })
     }
 
@@ -4860,10 +4914,92 @@ impl NativeGraph {
     }
 }
 
+impl NativeGraph {
+    /// Record one commit on the live state `inner`: advance its commit
+    /// sequence and remember what the commit touched, so a transaction that
+    /// began earlier can be told whether it overlapped with it. Every path
+    /// that changes the live state calls this once, inside the writer lock,
+    /// after the change and (for the batched paths) after the WAL append.
+    fn note_commit(&self, inner: &mut Inner, touched: ConflictSet) {
+        inner.commit_seq += 1;
+        self.history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(inner.commit_seq, touched);
+    }
+
+    /// Classify and count a commit (or prepare) rejected because the graph
+    /// changed since the transaction's snapshot `base`: did a commit it did
+    /// not see touch what `ops` touch ([`ConflictReason::Overlap`]), did none
+    /// ([`ConflictReason::WouldPass`]), or did the transaction outlive the
+    /// history ([`ConflictReason::History`])? The decision itself is
+    /// unchanged — the transaction is rejected either way.
+    fn note_conflict(&self, base: &Inner, ops: &[WalOp]) {
+        let mine = ConflictSet::from_ops(ops);
+        let reason = self
+            .history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .classify(base.commit_seq, &mine);
+        let counter = match reason {
+            ConflictReason::Overlap => &self.conflicts.overlap,
+            ConflictReason::WouldPass => &self.conflicts.would_pass,
+            ConflictReason::History => &self.conflicts.history,
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How many commits the live state has seen since the engine was opened.
+    pub fn commit_seq(&self) -> u64 {
+        read(&self.inner).commit_seq
+    }
+
+    /// Rejected commits by reason since the engine was opened:
+    /// the ones a per-entity rule would also reject, the ones it would let
+    /// through, and the ones that outlived the conflict history.
+    pub fn conflict_stats(&self) -> ConflictStats {
+        use std::sync::atomic::Ordering::Relaxed;
+        ConflictStats {
+            overlap: self.conflicts.overlap.load(Relaxed),
+            would_pass: self.conflicts.would_pass.load(Relaxed),
+            history: self.conflicts.history.load(Relaxed),
+        }
+    }
+
+    /// Keep the conflict sets of the newest `commits` commits (default
+    /// [`crate::conflict::DEFAULT_HISTORY`]). A transaction that began before
+    /// the oldest kept commit is counted as [`ConflictReason::History`] when
+    /// it is rejected.
+    pub fn set_conflict_history(&self, commits: usize) {
+        self.history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_capacity(commits);
+    }
+
+    /// How many commits the conflict history holds right now.
+    pub fn conflict_history_len(&self) -> usize {
+        self.history.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// How many commits the conflict history keeps.
+    pub fn conflict_history_capacity(&self) -> usize {
+        self.history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .capacity()
+    }
+}
+
 impl GraphEngine for NativeGraph {
     fn create_node(&self, new_node: NewNode) -> Result<Node> {
-        let node =
-            Arc::make_mut(&mut *self.write_for_commit()?).create_node_checked(new_node, true)?;
+        let node = {
+            let mut guard = self.write_for_commit()?;
+            let inner = Arc::make_mut(&mut guard);
+            let node = inner.create_node_checked(new_node, true)?;
+            self.note_commit(inner, ConflictSet::node(node.id));
+            node
+        };
         self.record(&[WalOp::UpsertNode(node.clone())])?;
         self.stamp_write(StampTarget::Node(node.id));
         Ok(node)
@@ -4875,8 +5011,13 @@ impl GraphEngine for NativeGraph {
     }
 
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
-        let node =
-            Arc::make_mut(&mut *self.write_for_commit()?).update_node_checked(id, patch, true)?;
+        let node = {
+            let mut guard = self.write_for_commit()?;
+            let inner = Arc::make_mut(&mut guard);
+            let node = inner.update_node_checked(id, patch, true)?;
+            self.note_commit(inner, ConflictSet::node(node.id));
+            node
+        };
         self.record(&[WalOp::UpsertNode(node.clone())])?;
         self.stamp_write(StampTarget::Node(node.id));
         Ok(node)
@@ -4886,7 +5027,12 @@ impl GraphEngine for NativeGraph {
         // Capture the uuid before removal so the tombstone can be remapped by a
         // peer (issue #389).
         let uuid = read(&self.inner).get_node_arc(id).map(|n| n.uuid);
-        Arc::make_mut(&mut *self.write_for_commit()?).delete_node(id)?;
+        {
+            let mut guard = self.write_for_commit()?;
+            let inner = Arc::make_mut(&mut guard);
+            inner.delete_node(id)?;
+            self.note_commit(inner, ConflictSet::deleted_node(id));
+        }
         self.record(&[WalOp::DeleteNode(id)])?;
         if let Some(uuid) = uuid {
             self.stamp_tombstone(StampTarget::Node(id), uuid);
@@ -4924,6 +5070,7 @@ impl GraphEngine for NativeGraph {
             return Ok(0);
         }
         self.record(&ops)?;
+        self.note_commit(Arc::make_mut(&mut working), ConflictSet::from_ops(&ops));
         *live = working;
         drop(live);
         for (target, uuid) in &tombs {
@@ -4934,7 +5081,13 @@ impl GraphEngine for NativeGraph {
     }
 
     fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
-        let edge = Arc::make_mut(&mut *self.write_for_commit()?).create_edge(new_edge)?;
+        let edge = {
+            let mut guard = self.write_for_commit()?;
+            let inner = Arc::make_mut(&mut guard);
+            let edge = inner.create_edge(new_edge)?;
+            self.note_commit(inner, ConflictSet::edge(edge.id, edge.from_id, edge.to_id));
+            edge
+        };
         self.record(&[WalOp::UpsertEdge(edge.clone())])?;
         self.stamp_write(StampTarget::Edge(edge.id));
         Ok(edge)
@@ -4945,7 +5098,13 @@ impl GraphEngine for NativeGraph {
     }
 
     fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
-        let edge = Arc::make_mut(&mut *self.write_for_commit()?).update_edge(id, patch)?;
+        let edge = {
+            let mut guard = self.write_for_commit()?;
+            let inner = Arc::make_mut(&mut guard);
+            let edge = inner.update_edge(id, patch)?;
+            self.note_commit(inner, ConflictSet::edge(edge.id, edge.from_id, edge.to_id));
+            edge
+        };
         self.record(&[WalOp::UpsertEdge(edge.clone())])?;
         self.stamp_write(StampTarget::Edge(edge.id));
         Ok(edge)
@@ -4953,7 +5112,12 @@ impl GraphEngine for NativeGraph {
 
     fn delete_edge(&self, id: u64) -> Result<()> {
         let uuid = read(&self.inner).get_edge_arc(id).map(|e| e.uuid);
-        Arc::make_mut(&mut *self.write_for_commit()?).delete_edge(id)?;
+        {
+            let mut guard = self.write_for_commit()?;
+            let inner = Arc::make_mut(&mut guard);
+            inner.delete_edge(id)?;
+            self.note_commit(inner, ConflictSet::deleted_edge(id));
+        }
         self.record(&[WalOp::DeleteEdge(id)])?;
         if let Some(uuid) = uuid {
             self.stamp_tombstone(StampTarget::Edge(id), uuid);
@@ -5100,6 +5264,9 @@ impl GraphEngine for NativeGraph {
             // the max imported id; honour a higher producer counter too).
             g.next_node_id = g.next_node_id.max(dump.next_node_id.saturating_sub(1));
             g.next_edge_id = g.next_edge_id.max(dump.next_edge_id.saturating_sub(1));
+            if !applied.is_empty() {
+                self.note_commit(g, ConflictSet::from_ops(&applied));
+            }
         }
 
         if !applied.is_empty() {

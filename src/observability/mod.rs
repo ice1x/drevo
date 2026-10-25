@@ -668,6 +668,11 @@ pub struct DrevoMetrics {
     /// [`crate::problems::statement_timeouts`] by the `/metrics` handler via
     /// [`DrevoMetrics::sync_statement_timeouts`].
     statement_timeouts: Counter,
+    /// `drevo_tx_conflicts_total{reason}` (issue #749) — explicit-transaction
+    /// commits rejected because the graph changed since they began, by what a
+    /// per-entity rule would have said: `overlap`, `would_pass`, `history`.
+    /// Synced from the engine's counters on every scrape.
+    tx_conflicts: [Counter; 3],
     /// `drevo_prepared_transactions` (#556) — prepared, unresolved
     /// two-phase-commit transactions; while non-zero, writes are refused.
     /// Refreshed by the `/metrics` handler.
@@ -763,6 +768,16 @@ impl DrevoMetrics {
             "Statements stopped by the statement timeout (DREVO_QUERY_TIMEOUT_MS).",
             &[],
         );
+        let tx_conflicts = ["overlap", "would_pass", "history"].map(|reason| {
+            registry.counter(
+                "drevo_tx_conflicts_total",
+                "Explicit-transaction commits rejected because the graph changed since they \
+                 began, by reason: overlap (a commit touched the same records), would_pass \
+                 (a per-entity rule would have accepted it), history (the transaction \
+                 outlived DREVO_TX_CONFLICT_HISTORY commits).",
+                &[("reason", reason)],
+            )
+        });
         // Publish the build version as a `1`-valued info gauge — the idiomatic
         // Prometheus way to expose a constant string dimension.
         registry
@@ -783,8 +798,24 @@ impl DrevoMetrics {
             uptime_seconds,
             storage_file_bytes,
             statement_timeouts,
+            tx_conflicts,
             prepared_transactions,
             prepared_oldest_age_seconds,
+        }
+    }
+
+    /// Bring `drevo_tx_conflicts_total{reason}` up to the engine's counts
+    /// (counters only move forward; a smaller value is ignored).
+    pub fn sync_tx_conflicts(&self, stats: drevo_core::conflict::ConflictStats) {
+        for (counter, total) in
+            self.tx_conflicts
+                .iter()
+                .zip([stats.overlap, stats.would_pass, stats.history])
+        {
+            let current = counter.get();
+            if total > current {
+                counter.inc_by(total - current);
+            }
         }
     }
 
