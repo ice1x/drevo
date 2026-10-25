@@ -54,6 +54,8 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_OIDC_ROLE_MAP` | unset | Groups to roles: `admins=admin,devs=editor`. A group not listed gives no role. |
 | `DREVO_BOLT_PORT` | unset (off) | Serve Bolt on this port, same host as HTTP (Neo4j drivers, `cypher-shell`). |
 | `DREVO_TX_CONFLICT_HISTORY` | `10000` | How many recent commits a database remembers in order to say *why* an explicit transaction's commit was rejected: whether a commit it did not see touched the same nodes or relationships (`overlap`), none did (`would_pass`), or the transaction began before the oldest remembered commit (`history`). Reported as `drevo_tx_conflicts_total{reason}`. Raise it if `history` grows; a few hundred bytes per remembered commit. |
+| `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once. One more is refused when the driver says `HELLO`, with `Neo.TransientError.Request.NoThreadsAvailable`, which drivers retry. `0` means no limit. See [Connection limits](#connection-limits). |
+| `DREVO_HTTP_MAX_IN_FLIGHT` | `256` | HTTP requests served at once. One more gets `503` with `Retry-After: 1`; `/health`, `/ready` and `/metrics` are always served. `0` means no limit. |
 | `DREVO_IDLE_SESSION_TIMEOUT_MS` | `0` (off) | Close a Bolt connection that holds an open transaction and sends nothing for this many milliseconds, and roll the transaction back. Connections without a transaction may stay idle. See [Client timeouts](#client-timeouts). |
 | `DREVO_TLS_CERT` | unset (off) | PEM certificate chain, leaf first. Together with `DREVO_TLS_KEY` it turns on TLS: HTTP is served as HTTPS and Bolt as `bolt+s://`. See [TLS](#tls). Setting only one of the pair, or a build without the `bolt-tls` feature, is rejected at startup. |
 | `DREVO_TLS_KEY` | unset (off) | PEM private key for `DREVO_TLS_CERT` (PKCS#8, PKCS#1 RSA or SEC1 EC). |
@@ -64,6 +66,31 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_AUTO_COMPACT_MIN_BYTES` | `10485760` | Minimum file size (10 MiB) before auto-compaction is considered. |
 
 Invalid configuration exits with code `2`; a runtime failure exits with `1`.
+
+### Connection limits
+
+A server serves at most `DREVO_MAX_CONNECTIONS` Bolt connections (default 512) and
+`DREVO_HTTP_MAX_IN_FLIGHT` HTTP requests (default 256) at once, so a connection leak, an
+oversized pool or a retry storm cannot exhaust its memory or file descriptors.
+
+- **Bolt:** a connection over the limit completes the handshake, gets
+  `Neo.TransientError.Request.NoThreadsAvailable` in reply to `HELLO`, and is closed. The message
+  names the limit. Drivers treat the code as transient: a managed transaction (`execute_read`,
+  `execute_write`) retries until a connection frees up, and a plain `session.run` raises a
+  `TransientError` the application can retry.
+- **HTTP:** a request over the limit gets `503 Service Unavailable` with `Retry-After: 1`.
+  `/health`, `/ready` and `/metrics` are never refused, so monitoring keeps working.
+- When Bolt is full, the operator can still look at it over HTTP:
+
+  ```sh
+  curl -s localhost:8080/cypher -H 'Content-Type: application/json' \
+    -d '{"query": "SHOW CONNECTIONS YIELD connectionId, userAgent, connectTime"}'
+  ```
+
+Each driver keeps a pool of connections per process (100 by default for the Neo4j drivers), so
+size the limit as the sum of the pools that connect, plus room for tools. A refusal is logged at
+WARN once a minute at most; `drevo_connections_rejected_total{protocol}` counts every one and
+`drevo_connections_active{protocol}` shows what is open.
 
 ### Client timeouts
 
@@ -573,6 +600,8 @@ bundle (dependency-free, always compiled — see [`src/observability/`](https://
 | `drevo_storage_file_bytes` | gauge | — |
 | `drevo_statement_timeouts_total` | counter | — |
 | `drevo_tx_conflicts_total` | counter | `reason` |
+| `drevo_connections_rejected_total` | counter | `protocol` |
+| `drevo_connections_active` | gauge | `protocol` |
 | `drevo_prepared_transactions` | gauge | — |
 | `drevo_prepared_transaction_oldest_age_seconds` | gauge | — |
 | `drevo_build_info` | gauge | `version` |

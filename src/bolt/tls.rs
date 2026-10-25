@@ -280,6 +280,25 @@ pub async fn accept_and_run_session_tls_with_security(
     .await
 }
 
+/// [`crate::bolt::listener::accept_and_refuse`] over TLS: complete the TLS
+/// and Bolt handshakes, then refuse the connection at its first message.
+///
+/// # Errors
+///
+/// Propagates TLS and I/O failures.
+pub async fn accept_and_refuse_tls(
+    socket: TcpStream,
+    acceptor: &TlsAcceptor,
+    message: &str,
+) -> BoltResult<()> {
+    let accepted = accept_handshake_tls(socket, acceptor).await?;
+    if accepted.negotiated.is_none() {
+        return Ok(());
+    }
+    let mut stream = accepted.stream;
+    crate::bolt::listener::refuse_on(&mut stream, message).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

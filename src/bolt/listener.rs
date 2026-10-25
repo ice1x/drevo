@@ -202,6 +202,53 @@ pub async fn accept_and_run_session_durable_with_security(
     run_session_on_durable_with_security(&mut stream, registry, security, client, version).await
 }
 
+/// Complete the handshake on `socket`, answer the client's first message with
+/// a `FAILURE` carrying [`crate::limits::BOLT_REFUSED_CODE`] and `message`,
+/// and return: the connection is refused, not served. Used when the server
+/// already serves `DREVO_MAX_CONNECTIONS` connections, so the driver reports
+/// why instead of a bare disconnect.
+///
+/// # Errors
+///
+/// Propagates I/O failures from the stream.
+pub async fn accept_and_refuse(socket: TcpStream, message: &str) -> BoltResult<()> {
+    let accepted = accept_handshake_on(socket).await?;
+    if accepted.negotiated.is_none() {
+        return Ok(());
+    }
+    let mut stream = accepted.stream;
+    refuse_on(&mut stream, message).await
+}
+
+/// After a completed handshake on `stream`: read the client's first message
+/// and answer it with the refusal of [`accept_and_refuse`].
+///
+/// # Errors
+///
+/// Propagates I/O failures from the stream.
+pub async fn refuse_on<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    message: &str,
+) -> BoltResult<()> {
+    match read_message_async(stream).await {
+        Ok(_) | Err(BoltError::Eof) => {}
+        Err(e) => return Err(e),
+    }
+    let mut metadata = std::collections::BTreeMap::new();
+    metadata.insert(
+        "code".to_string(),
+        crate::bolt::packstream::Value::String(crate::limits::BOLT_REFUSED_CODE.to_string()),
+    );
+    metadata.insert(
+        "message".to_string(),
+        crate::bolt::packstream::Value::String(message.to_string()),
+    );
+    write_server_async(&ServerMessage::Failure { metadata }, stream).await?;
+    stream.flush().await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
 /// Post-handshake session loop over every database in `registry`, logging in
 /// against `security`'s users when it requires a login; `client` is the
 /// peer's address for the audit log, and `version` the Bolt version the

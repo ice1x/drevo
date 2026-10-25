@@ -174,6 +174,9 @@ pub struct DatabaseRegistry {
     /// How long a Bolt connection holding an open transaction may stay
     /// silent, in milliseconds (`0`: no limit).
     idle_session_timeout_ms: std::sync::atomic::AtomicU64,
+    /// How many Bolt connections and HTTP requests the server serves at once,
+    /// shared by every listener that serves this registry.
+    limits: Arc<crate::limits::ConnectionLimits>,
 }
 
 // `NativeService` is not `Debug`, so derive would not apply; print the catalog
@@ -403,7 +406,15 @@ impl DatabaseRegistry {
             data_dir,
             read_only: false,
             idle_session_timeout_ms: std::sync::atomic::AtomicU64::new(0),
+            limits: Arc::new(crate::limits::ConnectionLimits::default()),
         }
+    }
+
+    /// The server's connection limits: open Bolt connections
+    /// (`DREVO_MAX_CONNECTIONS`) and HTTP requests in flight
+    /// (`DREVO_HTTP_MAX_IN_FLIGHT`).
+    pub fn limits(&self) -> &Arc<crate::limits::ConnectionLimits> {
+        &self.limits
     }
 
     /// The on-disk directory for the database named `name` in a durable
