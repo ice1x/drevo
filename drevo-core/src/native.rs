@@ -136,8 +136,11 @@ struct Inner {
     /// check costs O(1), not O(label size). Ids are a set so data loaded in
     /// breach (replication, replay) is still tracked exactly.
     unique: HashMap<(String, Vec<String>), HashMap<String, BTreeSet<u64>>>,
-    next_node_id: u64,
-    next_edge_id: u64,
+    /// The last node and relationship ids handed out. Shared by every copy of
+    /// this state — a snapshot, a transaction's working copy — so concurrent
+    /// transactions never hand out the same id. An id is never reused: a
+    /// rolled-back transaction leaves a gap, like a sequence.
+    ids: Arc<IdCounters>,
     /// High-water mark of every `updated_at` timestamp the graph has issued.
     /// `update_node` draws a strictly-greater value from it so a touched node
     /// always sorts ahead in `list_recent`, even when several in-memory writes
@@ -156,6 +159,34 @@ struct Inner {
     /// [`NativeGraph::note_commit`]); a transaction compares the value of
     /// its snapshot with the live one to find the commits it did not see.
     commit_seq: u64,
+}
+
+/// The id counters of one graph, shared by all copies of its state.
+#[derive(Debug, Default)]
+struct IdCounters {
+    node: std::sync::atomic::AtomicU64,
+    edge: std::sync::atomic::AtomicU64,
+}
+
+impl IdCounters {
+    fn next_node(&self) -> u64 {
+        self.node.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+    fn next_edge(&self) -> u64 {
+        self.edge.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+    fn observe_node(&self, id: u64) {
+        self.node.fetch_max(id, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn observe_edge(&self, id: u64) {
+        self.edge.fetch_max(id, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn last_node(&self) -> u64 {
+        self.node.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn last_edge(&self) -> u64 {
+        self.edge.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl Inner {
@@ -602,7 +633,7 @@ impl Inner {
     /// write outside a transaction must satisfy at once (a transaction is
     /// checked at commit instead).
     fn create_node_checked(&mut self, new_node: NewNode, require: bool) -> Result<Node> {
-        let id = self.next_node_id + 1;
+        let id = self.ids.next_node();
         let node = new_node.into_node(id);
         self.check_unique(&node)
             .map_err(CoreError::ConstraintViolation)?;
@@ -610,7 +641,6 @@ impl Inner {
             self.check_exists(&node)
                 .map_err(CoreError::ConstraintViolation)?;
         }
-        self.next_node_id = id;
         self.observe_updated_at(node.updated_at);
         self.index_title(id, &node.title);
         self.index_node_kind(id, &node.kind);
@@ -709,8 +739,7 @@ impl Inner {
         if !self.nodes.contains_key(&new_edge.to_id) {
             return Err(CoreError::NodeNotFound(new_edge.to_id));
         }
-        self.next_edge_id += 1;
-        let id = self.next_edge_id;
+        let id = self.ids.next_edge();
         let edge = new_edge.into_edge(id);
         let kind_id = self.intern_kind(&edge.kind);
         insert_adj_sorted(
@@ -858,7 +887,7 @@ impl Inner {
                 self.index_title(node.id, &node.title);
                 self.index_unique(&node);
                 self.index_node_kind(node.id, &node.kind);
-                self.next_node_id = self.next_node_id.max(node.id);
+                self.ids.observe_node(node.id);
                 self.observe_updated_at(node.updated_at);
                 self.nodes.insert(node.id, Arc::new(node));
             }
@@ -902,7 +931,7 @@ impl Inner {
                         kind_id,
                     },
                 );
-                self.next_edge_id = self.next_edge_id.max(edge.id);
+                self.ids.observe_edge(edge.id);
                 self.edges.insert(edge.id, Arc::new(edge));
             }
             WalOp::DeleteEdge(id) => self.remove_edge(id),
@@ -1489,14 +1518,78 @@ pub struct NativeGraph {
     history: std::sync::Mutex<CommitHistory>,
     /// Rejected commits by [`ConflictReason`].
     conflicts: ConflictCounters,
+    /// The [`Isolation`] of transactions that do not ask for one.
+    isolation: std::sync::atomic::AtomicU8,
 }
 
-/// Rejected commits by reason — see [`NativeGraph::conflict_stats`].
+/// Rejected and merged commits — see [`NativeGraph::conflict_stats`].
 #[derive(Default)]
 struct ConflictCounters {
     overlap: std::sync::atomic::AtomicU64,
     would_pass: std::sync::atomic::AtomicU64,
     history: std::sync::atomic::AtomicU64,
+    merged: std::sync::atomic::AtomicU64,
+}
+
+/// When an explicit transaction may commit after other transactions
+/// committed since it began.
+///
+/// ```
+/// use drevo_core::engine::GraphEngine;
+/// use drevo_core::model::{NewNode, NodePatch, Properties};
+/// use drevo_core::native::{Isolation, NativeGraph};
+///
+/// let g = NativeGraph::new();
+/// let note = |t: &str| NewNode {
+///     kind: "note".into(),
+///     title: t.into(),
+///     body: String::new(),
+///     body_html: String::new(),
+///     properties: Properties::default(),
+/// };
+/// let (a, b) = (g.create_node(note("a")).unwrap(), g.create_node(note("b")).unwrap());
+/// let patch = |text: &str| NodePatch { body: Some(text.into()), ..Default::default() };
+///
+/// // Snapshot (the default): different nodes, both commit.
+/// let tx = g.tx_begin();
+/// g.tx_engine(tx).unwrap().update_node(a.id, patch("tx")).unwrap();
+/// g.update_node(b.id, patch("direct")).unwrap();
+/// assert!(g.tx_commit(tx).is_ok());
+///
+/// // Serializable: any commit in between is a conflict.
+/// let tx = g.tx_begin_with(Isolation::Serializable);
+/// g.tx_engine(tx).unwrap().update_node(a.id, patch("tx")).unwrap();
+/// g.update_node(b.id, patch("direct again")).unwrap();
+/// assert!(g.tx_commit(tx).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Isolation {
+    /// The transaction commits unless a commit it did not see wrote a node
+    /// or relationship it also wrote, or deleted a node a relationship it
+    /// wrote depends on. It reads one snapshot, so two transactions that
+    /// each read what the other writes can both commit (write skew).
+    #[default]
+    Snapshot,
+    /// The transaction commits only if nothing at all was committed since it
+    /// began: every committed history is serializable, and concurrent
+    /// transactions take turns.
+    Serializable,
+}
+
+impl Isolation {
+    fn to_u8(self) -> u8 {
+        match self {
+            Isolation::Snapshot => 0,
+            Isolation::Serializable => 1,
+        }
+    }
+    fn from_u8(v: u8) -> Self {
+        if v == 1 {
+            Isolation::Serializable
+        } else {
+            Isolation::Snapshot
+        }
+    }
 }
 
 /// [`crate::wal_format::WalFormat`] ⇄ `u8`, for [`NativeGraph::wal_file_format`].
@@ -2585,10 +2678,7 @@ impl NativeGraph {
             let inner = Arc::make_mut(&mut guard);
             let id = match cur_target {
                 Some(StampTarget::Node(id)) => id,
-                _ => {
-                    inner.next_node_id += 1;
-                    inner.next_node_id
-                }
+                _ => inner.ids.next_node(),
             };
             record.id = id;
             inner.apply_wal_op(WalOp::UpsertNode(record.clone()));
@@ -2638,10 +2728,7 @@ impl NativeGraph {
             let inner = Arc::make_mut(&mut guard);
             let id = match cur_target {
                 Some(StampTarget::Edge(id)) => id,
-                _ => {
-                    inner.next_edge_id += 1;
-                    inner.next_edge_id
-                }
+                _ => inner.ids.next_edge(),
             };
             record.id = id;
             inner.apply_wal_op(WalOp::UpsertEdge(record.clone()));
@@ -2719,11 +2806,9 @@ impl NativeGraph {
                     let mut guard = self.write_for_commit()?;
                     let inner = Arc::make_mut(&mut guard);
                     let id = if is_node {
-                        inner.next_node_id += 1;
-                        inner.next_node_id
+                        inner.ids.next_node()
                     } else {
-                        inner.next_edge_id += 1;
-                        inner.next_edge_id
+                        inner.ids.next_edge()
                     };
                     // No record changes, but the state did: a commit that
                     // touched nothing.
@@ -3235,12 +3320,18 @@ impl NativeGraph {
     /// began, otherwise it returns [`CommitError::Conflict`] and the caller
     /// retries. Dropping the transaction without committing rolls it back.
     pub fn begin(&self) -> NativeTx<'_> {
+        self.begin_with(self.isolation())
+    }
+
+    /// [`Self::begin`] at the given [`Isolation`] instead of the graph's.
+    pub fn begin_with(&self, isolation: Isolation) -> NativeTx<'_> {
         let base = Arc::clone(&read(&self.inner));
         NativeTx {
             engine: self,
             working: Arc::clone(&base),
             base,
             ops: Vec::new(),
+            isolation,
         }
     }
 
@@ -3252,6 +3343,11 @@ impl NativeGraph {
     /// writes, read-your-writes, snapshot isolation, first-committer-wins
     /// conflict detection, one fsynced WAL batch at commit.
     pub fn tx_begin(&self) -> NativeTxId {
+        self.tx_begin_with(self.isolation())
+    }
+
+    /// [`Self::tx_begin`] at the given [`Isolation`] instead of the graph's.
+    pub fn tx_begin_with(&self, isolation: Isolation) -> NativeTxId {
         let base = Arc::clone(&read(&self.inner));
         let id = self
             .next_reg_tx
@@ -3266,6 +3362,7 @@ impl NativeGraph {
                     working: Arc::clone(&base),
                     base,
                     ops: Vec::new(),
+                    isolation,
                 },
             );
         NativeTxId(id)
@@ -3449,7 +3546,7 @@ impl NativeGraph {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id.0)
             .ok_or_else(|| CommitError::Io("unknown or already-closed transaction".to_string()))?;
-        self.commit_parts(slot.base, slot.working, &slot.ops)
+        self.commit_parts(slot.base, slot.working, &slot.ops, slot.isolation)
     }
 
     /// Discard a registered transaction's buffered writes. Returns whether
@@ -3502,7 +3599,9 @@ impl NativeGraph {
         slot.working
             .validate_constraints()
             .map_err(PrepareError::Constraint)?;
-        let TxSlot { base, working, ops } = slot;
+        let TxSlot {
+            base, working, ops, ..
+        } = slot;
         // Only the write set is kept: the fence guarantees live stays equal to
         // `base`, so applying `ops` at resolution reproduces `working`.
         drop(working);
@@ -3638,6 +3737,7 @@ impl NativeGraph {
         base: Arc<Inner>,
         mut working: Arc<Inner>,
         ops: &[WalOp],
+        isolation: Isolation,
     ) -> std::result::Result<(), CommitError> {
         // A transaction that wrote nothing has nothing to apply, validate or
         // log: its reads came from its own snapshot, so it commits as is,
@@ -3656,17 +3756,52 @@ impl NativeGraph {
                 live.prepared.keys().cloned().collect(),
             ));
         }
-        if !Arc::ptr_eq(&live, &base) {
-            self.note_conflict(&base, ops);
+        let mine = ConflictSet::from_ops(ops);
+        if Arc::ptr_eq(&live, &base) {
+            // Nothing committed since the transaction began: its working copy
+            // becomes the live state.
+            working
+                .validate_constraints()
+                .map_err(CommitError::Constraint)?;
+            self.record(ops)
+                .map_err(|e| CommitError::Io(e.to_string()))?;
+            self.note_commit(Arc::make_mut(&mut working), mine);
+            *live = working;
+            return Ok(());
+        }
+        // Others committed. Did any of them touch what this one touched?
+        let reason = self
+            .history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .classify(base.commit_seq, &mine);
+        if reason != ConflictReason::WouldPass || isolation == Isolation::Serializable {
+            self.count_conflict(reason);
             return Err(CommitError::Conflict);
         }
+        // No overlap: replay this transaction's writes on top of what the
+        // others committed. A constraint the transaction broke on its own
+        // keeps its error; one broken only by the combination is a conflict
+        // the retry resolves (it then sees the other commit).
         working
             .validate_constraints()
             .map_err(CommitError::Constraint)?;
+        let mut merged = Arc::clone(&live);
+        let m = Arc::make_mut(&mut merged);
+        for op in ops {
+            m.apply_wal_op(op.clone());
+        }
+        if m.validate_constraints().is_err() {
+            self.count_conflict(ConflictReason::Overlap);
+            return Err(CommitError::Conflict);
+        }
         self.record(ops)
             .map_err(|e| CommitError::Io(e.to_string()))?;
-        self.note_commit(Arc::make_mut(&mut working), ConflictSet::from_ops(ops));
-        *live = working;
+        self.note_commit(m, mine);
+        self.conflicts
+            .merged
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *live = merged;
         Ok(())
     }
 
@@ -3809,6 +3944,7 @@ impl NativeGraph {
             opened_read_only: false,
             history: std::sync::Mutex::new(CommitHistory::default()),
             conflicts: ConflictCounters::default(),
+            isolation: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -4166,6 +4302,7 @@ impl NativeGraph {
             opened_read_only: read_only,
             history: std::sync::Mutex::new(CommitHistory::default()),
             conflicts: ConflictCounters::default(),
+            isolation: std::sync::atomic::AtomicU8::new(0),
         })
     }
 
@@ -4430,13 +4567,13 @@ impl NativeGraph {
     /// The next node id the allocator will hand out (monotonic; never reused).
     #[must_use]
     pub fn next_node_id(&self) -> u64 {
-        read(&self.inner).next_node_id + 1
+        read(&self.inner).ids.last_node() + 1
     }
 
     /// The next edge id the allocator will hand out (monotonic; never reused).
     #[must_use]
     pub fn next_edge_id(&self) -> u64 {
-        read(&self.inner).next_edge_id + 1
+        read(&self.inner).ids.last_edge() + 1
     }
 }
 
@@ -4473,6 +4610,8 @@ struct TxSlot {
     working: Arc<Inner>,
     /// The WAL ops produced so far, in causal order.
     ops: Vec<WalOp>,
+    /// When it may commit after others committed.
+    isolation: Isolation,
 }
 
 /// Handle to a registered (session-owned) transaction — see
@@ -4681,6 +4820,8 @@ pub struct NativeTx<'a> {
     /// flushed to the engine's WAL as one atomic batch at commit (durable
     /// engine only).
     ops: Vec<WalOp>,
+    /// When it may commit after others committed.
+    isolation: Isolation,
 }
 
 impl NativeTx<'_> {
@@ -4700,7 +4841,8 @@ impl NativeTx<'_> {
         // is all-or-nothing — an I/O failure leaves the graph, the log, and
         // the feed untouched. On a non-durable engine the WAL step is a
         // no-op and only the feed advances.
-        self.engine.commit_parts(self.base, self.working, &self.ops)
+        self.engine
+            .commit_parts(self.base, self.working, &self.ops, self.isolation)
     }
 
     /// Discard the transaction's buffered writes. Equivalent to dropping it.
@@ -4941,12 +5083,29 @@ impl NativeGraph {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .classify(base.commit_seq, &mine);
+        self.count_conflict(reason);
+    }
+
+    fn count_conflict(&self, reason: ConflictReason) {
         let counter = match reason {
             ConflictReason::Overlap => &self.conflicts.overlap,
             ConflictReason::WouldPass => &self.conflicts.would_pass,
             ConflictReason::History => &self.conflicts.history,
         };
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The [`Isolation`] of transactions that do not ask for one
+    /// ([`Isolation::Snapshot`] unless set).
+    pub fn isolation(&self) -> Isolation {
+        Isolation::from_u8(self.isolation.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Set the [`Isolation`] of transactions begun from now on without asking
+    /// for one.
+    pub fn set_isolation(&self, isolation: Isolation) {
+        self.isolation
+            .store(isolation.to_u8(), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// How many commits the live state has seen since the engine was opened.
@@ -4963,6 +5122,7 @@ impl NativeGraph {
             overlap: self.conflicts.overlap.load(Relaxed),
             would_pass: self.conflicts.would_pass.load(Relaxed),
             history: self.conflicts.history.load(Relaxed),
+            merged: self.conflicts.merged.load(Relaxed),
         }
     }
 
@@ -5262,8 +5422,8 @@ impl GraphEngine for NativeGraph {
             // Clamp id counters above every imported id so a post-migration
             // create never reuses one (`apply_wal_op` already raised them to
             // the max imported id; honour a higher producer counter too).
-            g.next_node_id = g.next_node_id.max(dump.next_node_id.saturating_sub(1));
-            g.next_edge_id = g.next_edge_id.max(dump.next_edge_id.saturating_sub(1));
+            g.ids.observe_node(dump.next_node_id.saturating_sub(1));
+            g.ids.observe_edge(dump.next_edge_id.saturating_sub(1));
             if !applied.is_empty() {
                 self.note_commit(g, ConflictSet::from_ops(&applied));
             }

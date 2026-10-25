@@ -1145,7 +1145,16 @@ impl<'a> Session<'a> {
         // each open their own instead of one getting `transaction already
         // active`. Nesting on a *single* connection is still rejected above by
         // the `state != Ready` guard.
-        let id = crate::transactions::scope(self.caller(), "", || service.begin_tx());
+        let isolation = match extract_isolation(&extra) {
+            Ok(isolation) => isolation,
+            Err(msg) => {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::REQUEST_INVALID, &msg),
+                }];
+            }
+        };
+        let id = crate::transactions::scope(self.caller(), "", || service.begin_tx_with(isolation));
         let database = self.database_name(extract_db(&extra));
         self.native_tx = Some(ActiveTx {
             service,
@@ -2315,6 +2324,30 @@ fn extract_tx_timeout(
         }
         Some(other) => Err(format!(
             "tx_timeout must be a non-negative number of milliseconds, got {other:?}"
+        )),
+    }
+}
+
+/// Read the isolation a `BEGIN` asks for: `tx_metadata["drevo.isolation"]`,
+/// `"snapshot"` or `"serializable"` (any case). Absent means the database's
+/// default.
+fn extract_isolation(
+    extra: &BTreeMap<String, Value>,
+) -> Result<Option<crate::native::Isolation>, String> {
+    let Some(Value::Dictionary(meta)) = extra.get("tx_metadata") else {
+        return Ok(None);
+    };
+    match meta.get("drevo.isolation") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(level)) => match level.to_ascii_lowercase().as_str() {
+            "snapshot" => Ok(Some(crate::native::Isolation::Snapshot)),
+            "serializable" => Ok(Some(crate::native::Isolation::Serializable)),
+            _ => Err(format!(
+                "drevo.isolation must be `snapshot` or `serializable`, got `{level}`"
+            )),
+        },
+        Some(other) => Err(format!(
+            "drevo.isolation must be a string (`snapshot` or `serializable`), got {other:?}"
         )),
     }
 }

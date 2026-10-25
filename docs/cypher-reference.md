@@ -1661,19 +1661,46 @@ row 1) ends in drevo with one transaction committed and the other told to
 retry, in under a millisecond, with nothing blocked in between.
 
 Instead, a conflict is detected **at commit**. An explicit transaction
-commits only if no other transaction committed between its `BEGIN` and its
-`COMMIT`; otherwise the commit fails, the transaction is rolled back, and the
-client gets a retryable error:
+commits unless a transaction that committed after its `BEGIN`
+
+- wrote a node or relationship it also wrote (created, changed or deleted), or
+- deleted a node that a relationship it wrote starts or ends at, or the other
+  way round.
+
+Two transactions that touched different records both commit, whatever order
+they finish in. A conflicting one is rolled back, and the client gets a
+retryable error:
 
 - Bolt: `Neo.TransientError.Transaction.Outdated`, message *transaction
   conflict: the graph changed since the transaction began; retry*;
 - Python (`drevo`): `TransactionConflict`.
 
-Today that check does not look at *which* nodes were touched: two transactions
-that wrote unrelated nodes conflict exactly like two that wrote the same node.
-The committed result is always serializable, so no write is ever lost and no
-constraint is ever bypassed; the cost is that concurrent explicit transactions
-take turns. Keep them short, and let the driver retry.
+This is **snapshot isolation**. No update is ever lost, and unique and
+existence constraints are checked again on the combined result: when two
+transactions each claim the same unique value, the second gets the retryable
+conflict, and its retry gets the constraint error. What snapshot isolation
+allows is *write skew*: two transactions that each read what the other writes
+can both commit. If an application keeps a rule across several nodes — "at
+least one on-call engineer per team", where each transaction reads the team
+and takes one engineer off call — ask for **serializable** isolation, under
+which a transaction commits only if nothing at all was committed since it
+began:
+
+```python
+from neo4j import unit_of_work
+
+@unit_of_work(metadata={"drevo.isolation": "serializable"})
+def take_off_call(tx, name):
+    ...
+
+with driver.session() as session:
+    session.execute_write(take_off_call, "alice")
+```
+
+The server-wide default is `DREVO_TX_ISOLATION` (`snapshot` or
+`serializable`, see the [Admin Guide](admin-guide.md)); a transaction asks for
+its own with `drevo.isolation` in its metadata, which the Neo4j drivers send
+with `BEGIN`. Keep transactions short either way, and let the driver retry.
 
 The Neo4j drivers retry `TransientError`s on their own inside a managed
 transaction, with exponential back-off. The loser of a conflict therefore
@@ -1723,7 +1750,9 @@ closed by `DREVO_IDLE_SESSION_TIMEOUT_MS` (see the
 |---|---|
 | row locks; writers block each other | snapshots; writers never wait |
 | `deadlock_timeout`, error `40P01 deadlock_detected` | no deadlocks; the later commit fails with `Neo.TransientError.Transaction.Outdated` |
-| `40001 serialization_failure` under `SERIALIZABLE` | the same `Transaction.Outdated`; every committed history is serializable |
+| `40001 serialization_failure` under `REPEATABLE READ` / `SERIALIZABLE` | the same `Transaction.Outdated` |
+| `REPEATABLE READ` (snapshot isolation) | the default, `DREVO_TX_ISOLATION=snapshot` |
+| `SERIALIZABLE` | `DREVO_TX_ISOLATION=serializable`, or `drevo.isolation` in a transaction's metadata |
 | `READ COMMITTED` default | every statement reads one snapshot |
 | `statement_timeout` | `DREVO_QUERY_TIMEOUT_MS` (server) and the driver's `tx_timeout` (client) |
 | `idle_in_transaction_session_timeout` | `DREVO_IDLE_SESSION_TIMEOUT_MS` |

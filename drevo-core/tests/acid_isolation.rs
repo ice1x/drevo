@@ -83,28 +83,60 @@ fn repeatable_read_snapshot_is_unaffected_by_later_commits() {
 }
 
 /// Lost update prevented: two transactions that began from the same state and
-/// both write cannot both commit — the second is rejected as a
-/// [`CommitError::Conflict`] (optimistic concurrency), and applies nothing.
+/// both write the **same node** cannot both commit — the second is rejected as
+/// a [`CommitError::Conflict`] (optimistic concurrency), and applies nothing.
 #[test]
 fn lost_update_is_prevented_by_a_commit_conflict() {
     let g = NativeGraph::new();
+    let x = g.create_node(node("x")).unwrap();
+    let patch = |text: &str| drevo_core::model::NodePatch {
+        body: Some(text.to_string()),
+        ..Default::default()
+    };
 
     let mut t1 = g.begin();
     let mut t2 = g.begin();
-    t1.create_node(node("x")).unwrap();
-    t2.create_node(node("y")).unwrap();
+    t1.update_node(x.id, patch("t1")).unwrap();
+    t2.update_node(x.id, patch("t2")).unwrap();
 
     t1.commit().expect("the first committer wins");
     assert!(
         matches!(t2.commit(), Err(CommitError::Conflict)),
-        "the second transaction must conflict rather than silently lose/overwrite the update"
+        "the second transaction must conflict rather than silently overwrite the update"
     );
-
     assert_eq!(
-        g.node_count(),
-        1,
+        g.get_node(x.id).unwrap().unwrap().body,
+        "t1",
         "the losing transaction applied none of its writes"
     );
+}
+
+/// Snapshot isolation (the default): two transactions that write different
+/// nodes both commit, and both writes are kept.
+#[test]
+fn transactions_writing_different_nodes_both_commit_under_snapshot_isolation() {
+    let g = NativeGraph::new();
+    let mut t1 = g.begin();
+    let mut t2 = g.begin();
+    t1.create_node(node("x")).unwrap();
+    t2.create_node(node("y")).unwrap();
+    t1.commit().unwrap();
+    t2.commit().expect("nothing t1 wrote was written by t2");
+    assert_eq!(g.node_count(), 2);
+}
+
+/// Serializable: any commit since the transaction began is a conflict, even
+/// one to a different node.
+#[test]
+fn serializable_rejects_any_commit_in_between() {
+    let g = NativeGraph::new();
+    let mut t1 = g.begin_with(drevo_core::native::Isolation::Serializable);
+    let mut t2 = g.begin_with(drevo_core::native::Isolation::Serializable);
+    t1.create_node(node("x")).unwrap();
+    t2.create_node(node("y")).unwrap();
+    t1.commit().unwrap();
+    assert!(matches!(t2.commit(), Err(CommitError::Conflict)));
+    assert_eq!(g.node_count(), 1);
 }
 
 /// A read-only snapshot never blocks or is blocked by writers, and stays

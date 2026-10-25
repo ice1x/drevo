@@ -679,6 +679,10 @@ pub struct DrevoMetrics {
     /// per-entity rule would have said: `overlap`, `would_pass`, `history`.
     /// Synced from the engine's counters on every scrape.
     tx_conflicts: [Counter; 3],
+    /// `drevo_tx_merged_commits_total` — explicit-transaction commits that
+    /// went through although others committed since they began, because none
+    /// of those touched the same records (snapshot isolation).
+    tx_merged: Counter,
     /// `drevo_prepared_transactions` (#556) — prepared, unresolved
     /// two-phase-commit transactions; while non-zero, writes are refused.
     /// Refreshed by the `/metrics` handler.
@@ -789,6 +793,12 @@ impl DrevoMetrics {
                 &[("protocol", protocol)],
             )
         });
+        let tx_merged = registry.counter(
+            "drevo_tx_merged_commits_total",
+            "Explicit-transaction commits that went through although other transactions \
+             committed since they began, because none of those touched the same records.",
+            &[],
+        );
         let tx_conflicts = ["overlap", "would_pass", "history"].map(|reason| {
             registry.counter(
                 "drevo_tx_conflicts_total",
@@ -822,6 +832,7 @@ impl DrevoMetrics {
             connections_rejected,
             connections_active,
             tx_conflicts,
+            tx_merged,
             prepared_transactions,
             prepared_oldest_age_seconds,
         }
@@ -830,10 +841,11 @@ impl DrevoMetrics {
     /// Bring `drevo_tx_conflicts_total{reason}` up to the engine's counts
     /// (counters only move forward; a smaller value is ignored).
     pub fn sync_tx_conflicts(&self, stats: drevo_core::conflict::ConflictStats) {
-        for (counter, total) in
-            self.tx_conflicts
-                .iter()
-                .zip([stats.overlap, stats.would_pass, stats.history])
+        for (counter, total) in self
+            .tx_conflicts
+            .iter()
+            .chain(std::iter::once(&self.tx_merged))
+            .zip([stats.overlap, stats.would_pass, stats.history, stats.merged])
         {
             let current = counter.get();
             if total > current {

@@ -15,12 +15,13 @@
 //! A [`CommitHistory`] keeps the sets of the most recent commits, each tagged
 //! with the commit sequence it produced, so a transaction that began at
 //! sequence `b` can ask whether anything committed after `b` intersects with
-//! what it wants to commit. The engine uses it today to **measure**: it still
-//! rejects every transaction that overlapped with any commit, but counts how
-//! many of those rejections a per-entity rule would have let through
-//! ([`ConflictReason::WouldPass`]) against the ones it would also reject
-//! ([`ConflictReason::Overlap`]) and the ones that outlived the history
-//! ([`ConflictReason::History`]).
+//! what it wants to commit. Under
+//! [`Isolation::Snapshot`](crate::native::Isolation::Snapshot) the engine
+//! commits a transaction when the answer is [`ConflictReason::WouldPass`]
+//! and rejects it on [`ConflictReason::Overlap`] or, when the transaction
+//! outlived the history, [`ConflictReason::History`]. Under
+//! [`Isolation::Serializable`](crate::native::Isolation::Serializable) every
+//! one of them is rejected, and the reason is only counted.
 //!
 //! ```
 //! use drevo_core::conflict::{ConflictSet, Key};
@@ -192,6 +193,10 @@ pub struct ConflictStats {
     /// Rejections that could not be classified: the transaction outlived the
     /// history.
     pub history: u64,
+    /// Commits that went through although others committed since they began,
+    /// because none of those touched the same records
+    /// ([`Isolation::Snapshot`](crate::native::Isolation::Snapshot)).
+    pub merged: u64,
 }
 
 /// The conflict sets of the most recent commits, newest last, each tagged

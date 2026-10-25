@@ -254,13 +254,19 @@ fn native_tx_detects_write_conflict() {
     use drevo::native::NativeGraph;
     let g = NativeGraph::new();
 
-    // Two transactions from the same base.
+    let shared = g.create_node(new_node("k", "shared")).unwrap();
+    let rename = |title: &str| drevo::model::NodePatch {
+        title: Some(title.to_string()),
+        ..Default::default()
+    };
+
+    // Two transactions from the same base write the same node.
     let mut t1 = g.begin();
     let mut t2 = g.begin();
-    t1.create_node(new_node("k", "x")).unwrap();
-    t2.create_node(new_node("k", "y")).unwrap();
+    t1.update_node(shared.id, rename("x")).unwrap();
+    t2.update_node(shared.id, rename("y")).unwrap();
 
-    // First commit wins; the second sees the graph moved under it and conflicts.
+    // First commit wins; the second wrote what the first wrote and conflicts.
     t1.commit().unwrap();
     assert!(t2.commit().is_err());
 

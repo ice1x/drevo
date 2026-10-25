@@ -89,6 +89,9 @@ fn sample(metrics: &str, reason: &str) -> f64 {
 #[tokio::test]
 async fn rejected_commits_reach_the_metrics_by_reason() {
     let service = Arc::new(NativeService::in_memory());
+    // The whole-graph rule, so the commit on other records is rejected and
+    // classified rather than merged.
+    service.set_isolation(drevo::native::Isolation::Serializable);
     let app = build_native_router(NativeApiState::new(Arc::clone(&service)));
     let text = metrics(&app).await;
     for reason in ["overlap", "would_pass", "history"] {

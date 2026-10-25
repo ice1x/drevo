@@ -29,6 +29,8 @@
 //! | `DREVO_READ_ONLY` | `false`     | Serve every database read-only: reads, search and export work, writes and schema changes fail with `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase`, and nothing in the data directory is written |
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
+//! | `DREVO_TX_ISOLATION` | `snapshot` | When an explicit transaction may commit after others committed: `snapshot` (unless they touched the same records) or `serializable` (only if nothing committed) |
+//! | `DREVO_TX_CONFLICT_HISTORY` | `10000` | Recent commits remembered to decide whether a transaction overlapped with them |
 //! | `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once; one more is refused at `HELLO` with `Neo.TransientError.Request.NoThreadsAvailable`; `0` = no limit |
 //! | `DREVO_HTTP_MAX_IN_FLIGHT` | `256` | HTTP requests served at once; one more gets `503` + `Retry-After`; health and metrics are exempt; `0` = no limit |
 //! | `DREVO_IDLE_SESSION_TIMEOUT_MS` | `0` (off) | Close a Bolt connection that holds an open transaction and sends nothing for this long, rolling the transaction back |
@@ -123,6 +125,9 @@ pub struct Config {
     /// explicit-transaction commit, from `DREVO_TX_CONFLICT_HISTORY` (issue
     /// #749; default [`drevo_core::conflict::DEFAULT_HISTORY`]).
     pub tx_conflict_history: usize,
+    /// The isolation of explicit transactions that do not ask for one, from
+    /// `DREVO_TX_ISOLATION` (`snapshot`, the default, or `serializable`).
+    pub tx_isolation: crate::native::Isolation,
     /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
     /// `0` disables the alert).
@@ -320,6 +325,12 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_TX_ISOLATION` was neither `snapshot` nor `serializable`.
+    #[error("invalid DREVO_TX_ISOLATION value `{value}`: expected `snapshot` or `serializable`")]
+    InvalidTxIsolation {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_HTTP_FORMATS` named an unknown format or one not compiled in.
     #[error("invalid DREVO_HTTP_FORMATS: {0}")]
     InvalidHttpFormats(#[from] crate::wire_format::FormatsError),
@@ -463,6 +474,14 @@ impl Config {
             Some(raw) => match raw.trim().parse::<usize>() {
                 Ok(n) if n >= 1 => n,
                 _ => return Err(ConfigError::InvalidTxConflictHistory { value: raw }),
+            },
+        };
+        let tx_isolation = match getter("DREVO_TX_ISOLATION") {
+            None => crate::native::Isolation::Snapshot,
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "snapshot" => crate::native::Isolation::Snapshot,
+                "serializable" => crate::native::Isolation::Serializable,
+                _ => return Err(ConfigError::InvalidTxIsolation { value: raw }),
             },
         };
 
@@ -635,6 +654,7 @@ impl Config {
             max_connections,
             http_max_in_flight,
             tx_conflict_history,
+            tx_isolation,
             prepared_tx_warn,
             prepared_tx_timeout,
             http_formats,
@@ -1210,6 +1230,8 @@ async fn run_native_durable(
     // How many recent commits a database remembers to say why an explicit
     // transaction's commit was rejected (issue #749).
     registry.set_conflict_history(cfg.tx_conflict_history);
+    // When an explicit transaction may commit after others committed.
+    registry.set_isolation(cfg.tx_isolation);
     // The server's users, shared by HTTP, Bolt, gRPC and Flight (issue #633).
     let security = configure_security(&cfg)?;
     // The Web UI's signed-in sessions are listed by `SHOW CONNECTIONS`.

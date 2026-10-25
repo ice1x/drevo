@@ -1,12 +1,12 @@
-//! Slice 1 of per-entity conflict detection (issue #749): the engine still
-//! rejects an explicit transaction when anything committed since it began,
-//! but it now knows *why* — and counts how many rejections a per-entity rule
-//! would have let through.
+//! Why a commit was rejected (issue #749): every rejected explicit
+//! transaction is classified — a real overlap, a rejection only the
+//! serializable rule makes, or a transaction older than the history — and
+//! counted. Snapshot-isolation merges are covered in `snapshot_isolation.rs`.
 
 use drevo_core::conflict::{ConflictStats, DEFAULT_HISTORY};
 use drevo_core::engine::GraphEngine;
 use drevo_core::model::{NewEdge, NewNode, Properties};
-use drevo_core::native::{CommitError, Constraint, NativeGraph, PrepareError};
+use drevo_core::native::{CommitError, Constraint, Isolation, NativeGraph, PrepareError};
 
 fn note(title: &str) -> NewNode {
     NewNode {
@@ -57,8 +57,9 @@ fn a_transaction_that_wrote_nothing_commits_without_touching_the_counters() {
 }
 
 #[test]
-fn disjoint_writers_still_conflict_but_are_counted_as_would_pass() {
+fn under_serializable_disjoint_writers_conflict_and_are_counted_as_would_pass() {
     let g = NativeGraph::new();
+    g.set_isolation(Isolation::Serializable);
     let n1 = g.create_node(note("1")).unwrap();
     let n3 = g.create_node(note("3")).unwrap();
 
@@ -91,7 +92,8 @@ fn disjoint_writers_still_conflict_but_are_counted_as_would_pass() {
         ConflictStats {
             overlap: 0,
             would_pass: 1,
-            history: 0
+            history: 0,
+            merged: 0
         }
     );
 }
@@ -198,7 +200,8 @@ fn a_transaction_older_than_the_history_is_counted_as_history() {
         ConflictStats {
             overlap: 0,
             would_pass: 0,
-            history: 1
+            history: 1,
+            merged: 0
         }
     );
     assert_eq!(g.conflict_history_len(), 2);
@@ -242,6 +245,7 @@ fn a_rejected_prepare_is_classified_too() {
 #[test]
 fn the_embedded_transaction_handle_is_classified_too() {
     let g = NativeGraph::new();
+    g.set_isolation(Isolation::Serializable);
     let n1 = g.create_node(note("1")).unwrap();
     let n3 = g.create_node(note("3")).unwrap();
     let mut tx = g.begin();

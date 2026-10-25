@@ -70,6 +70,29 @@ fn rollback_discards_and_closes_the_slot() {
 #[test]
 fn concurrent_commit_conflicts_like_begin_based_transactions() {
     let g = NativeGraph::new();
+    run_on(&g, "CREATE (:Shared {title: 's', v: 0})");
+    let a = g.tx_begin();
+    let b = g.tx_begin();
+    {
+        let ea = g.tx_engine(a).expect("a");
+        run_on(&ea, "MATCH (n:Shared) SET n.v = 1");
+    }
+    {
+        let eb = g.tx_engine(b).expect("b");
+        run_on(&eb, "MATCH (n:Shared) SET n.v = 2");
+    }
+    g.tx_commit(a).expect("first commit wins");
+    match g.tx_commit(b) {
+        Err(CommitError::Conflict) => {}
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+    // Only the winner's write is live.
+    assert_eq!(int(&run_on(&g, "MATCH (n:Shared) RETURN n.v")), 1);
+}
+
+#[test]
+fn concurrent_commits_on_different_nodes_both_apply() {
+    let g = NativeGraph::new();
     let a = g.tx_begin();
     let b = g.tx_begin();
     {
@@ -80,13 +103,9 @@ fn concurrent_commit_conflicts_like_begin_based_transactions() {
         let eb = g.tx_engine(b).expect("b");
         run_on(&eb, "CREATE (:B {title: 'b'})");
     }
-    g.tx_commit(a).expect("first commit wins");
-    match g.tx_commit(b) {
-        Err(CommitError::Conflict) => {}
-        other => panic!("expected Conflict, got {other:?}"),
-    }
-    // Only the winner's write is live.
-    assert_eq!(int(&run_on(&g, "MATCH (n) RETURN count(*)")), 1);
+    g.tx_commit(a).expect("a commits");
+    g.tx_commit(b).expect("b touches other records and commits too");
+    assert_eq!(int(&run_on(&g, "MATCH (n) RETURN count(*)")), 2);
 }
 
 #[test]

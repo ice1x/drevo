@@ -90,6 +90,24 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Changed
 
+- **Explicit transactions that touch different records no longer roll each
+  other back** (issue #749). The default isolation is now *snapshot*: a
+  transaction commits unless a transaction that committed after it began
+  wrote a node or relationship it also wrote, or deleted an endpoint of a
+  relationship it wrote; its writes are then applied on top of the others'.
+  Before, any commit in between was a conflict. Eight writers running ten
+  transactions each on different nodes no longer need retries. Updates are
+  never lost and unique / existence constraints are checked on the combined
+  result, but *write skew* is now possible: two transactions that each read
+  what the other writes can both commit. To keep the old rule, set
+  `DREVO_TX_ISOLATION=serializable`, or send `drevo.isolation: serializable`
+  in one transaction's metadata (Python driver:
+  `@unit_of_work(metadata={"drevo.isolation": "serializable"})`). Node and
+  relationship ids now come from one counter shared by all transactions, so
+  a rolled-back transaction leaves a gap in the ids. New metric
+  `drevo_tx_merged_commits_total`; databases created with `CREATE DATABASE`
+  now inherit the conflict-history size and the isolation.
+
 - **An unsupported Cypher form is a client error over Bolt** (issue #733).
   An unknown function or an aggregation where none is allowed (for example
   in the body of a list comprehension) now fails with
