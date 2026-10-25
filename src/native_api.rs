@@ -742,6 +742,11 @@ async fn metrics(State(state): State<NativeApiState>) -> Response {
     state
         .metrics
         .sync_statement_timeouts(crate::problems::statement_timeouts());
+    // Rejected explicit-transaction commits, by what a per-entity rule would
+    // have said (issue #749).
+    state
+        .metrics
+        .sync_tx_conflicts(state.service.conflict_stats());
     // Two-phase commit (#556): a prepared transaction blocks every write, so
     // its count and age are first-class operational signals.
     let prepared = state.service.list_prepared();

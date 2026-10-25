@@ -1,7 +1,9 @@
 # RFC: Per-entity conflict detection for explicit transactions (#749)
 
 **Status:** proposed 2026-10-25. Decision D1 (default isolation) is the maintainer's; D2–D4 as
-proposed unless objected to. Implementation follows this RFC in the slices of section 6.
+proposed unless objected to. Implementation follows this RFC in the slices of section 6; slice 1
+(`commit_seq`, conflict sets, the bounded history and `drevo_tx_conflicts_total{reason}`) is
+implemented.
 **Motivation:** two explicit transactions that write *different* nodes cannot both commit today.
 Reproduced on `ice1x/drevo:0.0.62` with the neo4j Python driver (issue #749): A writes nodes 1→2
 while B writes 3→4; whichever commits second fails with

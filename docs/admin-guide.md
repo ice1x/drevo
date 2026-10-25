@@ -53,6 +53,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_OIDC_ROLES_CLAIM` | `groups` | The claim listing the user's groups. |
 | `DREVO_OIDC_ROLE_MAP` | unset | Groups to roles: `admins=admin,devs=editor`. A group not listed gives no role. |
 | `DREVO_BOLT_PORT` | unset (off) | Serve Bolt on this port, same host as HTTP (Neo4j drivers, `cypher-shell`). |
+| `DREVO_TX_CONFLICT_HISTORY` | `10000` | How many recent commits a database remembers in order to say *why* an explicit transaction's commit was rejected: whether a commit it did not see touched the same nodes or relationships (`overlap`), none did (`would_pass`), or the transaction began before the oldest remembered commit (`history`). Reported as `drevo_tx_conflicts_total{reason}`. Raise it if `history` grows; a few hundred bytes per remembered commit. |
 | `DREVO_IDLE_SESSION_TIMEOUT_MS` | `0` (off) | Close a Bolt connection that holds an open transaction and sends nothing for this many milliseconds, and roll the transaction back. Connections without a transaction may stay idle. See [Client timeouts](#client-timeouts). |
 | `DREVO_TLS_CERT` | unset (off) | PEM certificate chain, leaf first. Together with `DREVO_TLS_KEY` it turns on TLS: HTTP is served as HTTPS and Bolt as `bolt+s://`. See [TLS](#tls). Setting only one of the pair, or a build without the `bolt-tls` feature, is rejected at startup. |
 | `DREVO_TLS_KEY` | unset (off) | PEM private key for `DREVO_TLS_CERT` (PKCS#8, PKCS#1 RSA or SEC1 EC). |
@@ -571,6 +572,7 @@ bundle (dependency-free, always compiled — see [`src/observability/`](https://
 | `drevo_process_uptime_seconds` | gauge | — |
 | `drevo_storage_file_bytes` | gauge | — |
 | `drevo_statement_timeouts_total` | counter | — |
+| `drevo_tx_conflicts_total` | counter | `reason` |
 | `drevo_prepared_transactions` | gauge | — |
 | `drevo_prepared_transaction_oldest_age_seconds` | gauge | — |
 | `drevo_build_info` | gauge | `version` |
@@ -579,6 +581,15 @@ bundle (dependency-free, always compiled — see [`src/observability/`](https://
 refreshed on every scrape from an O(1) file stat (`0` for the ephemeral in-memory backend).
 Pair it with the **logical** size from `GET /storage/bloat` (below) to alert on reclaimable
 copy-on-write bloat.
+
+`drevo_tx_conflicts_total{reason}` counts explicit-transaction commits that failed with
+`Neo.TransientError.Transaction.Outdated` because another transaction committed first (see
+[Concurrency](cypher-reference.md#concurrency)), by what a per-record rule would have decided:
+`overlap` — a commit the transaction did not see touched the same nodes or relationships;
+`would_pass` — none did, the rejection is a cost of today's whole-graph rule; `history` — the
+transaction began before the oldest of the `DREVO_TX_CONFLICT_HISTORY` remembered commits. A high
+`would_pass` share means the workload would gain from finer conflict detection; a growing
+`history` means the history is too short for the transactions' lifetimes.
 
 `drevo_statement_timeouts_total` (#552) counts statements stopped by `DREVO_QUERY_TIMEOUT_MS`,
 over HTTP and Bolt. Each one is also logged at **ERROR** (target `drevo::query`) with the

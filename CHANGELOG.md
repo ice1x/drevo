@@ -124,6 +124,16 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Rejected transaction commits are classified and counted** (issue #749,
+  slice 1). Each database keeps the records the newest `DREVO_TX_CONFLICT_HISTORY`
+  (default 10,000) commits wrote, deleted and depend on, and when an explicit
+  transaction fails with `Transaction.Outdated` the engine records whether a
+  commit it did not see touched the same nodes or relationships (`overlap`),
+  none did (`would_pass`) or the transaction outlived the history (`history`).
+  `drevo_tx_conflicts_total{reason}` on `/metrics` exposes the counts. The
+  decision itself is unchanged: this slice measures how much a per-record rule
+  would gain before one lands (design: `docs/rfc-per-entity-conflicts.md`).
+
 - **Cypher reference: a _Concurrency_ section.** What happens when two
   transactions overlap, in one place: every statement and transaction reads
   one snapshot; writers never wait, so there are no deadlocks; an explicit

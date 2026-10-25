@@ -69,6 +69,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod backup;
 pub mod bm25;
+pub mod conflict;
 pub mod csr;
 pub mod delta;
 mod dense_map;

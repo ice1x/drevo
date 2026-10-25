@@ -108,6 +108,10 @@ pub struct Config {
     /// nothing before it is closed and the transaction rolled back, from
     /// `DREVO_IDLE_SESSION_TIMEOUT_MS`; `None` (unset or `0`) means no limit.
     pub idle_session_timeout: Option<std::time::Duration>,
+    /// How many recent commits each database remembers to classify a rejected
+    /// explicit-transaction commit, from `DREVO_TX_CONFLICT_HISTORY` (issue
+    /// #749; default [`drevo_core::conflict::DEFAULT_HISTORY`]).
+    pub tx_conflict_history: usize,
     /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
     /// `0` disables the alert).
@@ -285,6 +289,14 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_TX_CONFLICT_HISTORY` was not a positive integer.
+    #[error(
+        "invalid DREVO_TX_CONFLICT_HISTORY value `{value}`: expected the number of commits to remember (at least 1)"
+    )]
+    InvalidTxConflictHistory {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_HTTP_FORMATS` named an unknown format or one not compiled in.
     #[error("invalid DREVO_HTTP_FORMATS: {0}")]
     InvalidHttpFormats(#[from] crate::wire_format::FormatsError),
@@ -405,6 +417,14 @@ impl Config {
                 Ok(0) => None,
                 Ok(ms) => Some(std::time::Duration::from_millis(ms)),
                 Err(_) => return Err(ConfigError::InvalidIdleSessionTimeout { value: raw }),
+            },
+        };
+
+        let tx_conflict_history = match getter("DREVO_TX_CONFLICT_HISTORY") {
+            None => drevo_core::conflict::DEFAULT_HISTORY,
+            Some(raw) => match raw.trim().parse::<usize>() {
+                Ok(n) if n >= 1 => n,
+                _ => return Err(ConfigError::InvalidTxConflictHistory { value: raw }),
             },
         };
 
@@ -574,6 +594,7 @@ impl Config {
             engine,
             query_timeout,
             idle_session_timeout,
+            tx_conflict_history,
             prepared_tx_warn,
             prepared_tx_timeout,
             http_formats,
@@ -1143,6 +1164,9 @@ async fn run_native_durable(
     registry.set_statement_timeout(cfg.query_timeout);
     // Bolt connections that hold a transaction open and go silent.
     registry.set_idle_session_timeout(cfg.idle_session_timeout);
+    // How many recent commits a database remembers to say why an explicit
+    // transaction's commit was rejected (issue #749).
+    registry.set_conflict_history(cfg.tx_conflict_history);
     // The server's users, shared by HTTP, Bolt, gRPC and Flight (issue #633).
     let security = configure_security(&cfg)?;
     // The Web UI's signed-in sessions are listed by `SHOW CONNECTIONS`.

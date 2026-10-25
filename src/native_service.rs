@@ -1081,6 +1081,19 @@ impl NativeService {
         self.statement_timeout_ms.store(ms, Ordering::Relaxed);
     }
 
+    /// Keep the conflict sets of the newest `commits` commits
+    /// (`DREVO_TX_CONFLICT_HISTORY`, issue #749); see
+    /// [`NativeGraph::set_conflict_history`].
+    pub fn set_conflict_history(&self, commits: usize) {
+        self.graph.set_conflict_history(commits);
+    }
+
+    /// Rejected commits by reason since this database was opened (issue
+    /// #749); see [`NativeGraph::conflict_stats`].
+    pub fn conflict_stats(&self) -> drevo_core::conflict::ConflictStats {
+        self.graph.conflict_stats()
+    }
+
     /// The statement timeout set by
     /// [`set_statement_timeout`](Self::set_statement_timeout), if any.
     pub fn statement_timeout(&self) -> Option<std::time::Duration> {
