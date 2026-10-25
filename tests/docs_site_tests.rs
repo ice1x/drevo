@@ -181,3 +181,27 @@ fn cypher_reference_documents_the_concurrency_model() {
         "docs/admin-guide.md must point operators at the Concurrency section"
     );
 }
+
+/// Every RFC under docs/ is a chapter of the site, so a design that the code
+/// follows is as reachable as the guides are.
+#[test]
+fn summary_lists_every_rfc() {
+    let s = read("docs/SUMMARY.md");
+    let docs = std::fs::read_dir(root().join("docs")).expect("docs/ exists");
+    let mut rfcs: Vec<String> = docs
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("rfc-") && name.ends_with(".md"))
+        .collect();
+    rfcs.sort();
+    assert!(
+        rfcs.len() >= 3,
+        "expected the RFCs under docs/, found {rfcs:?}"
+    );
+    for rfc in rfcs {
+        assert!(
+            s.contains(&format!("({rfc})")),
+            "docs/SUMMARY.md must list {rfc}"
+        );
+    }
+}
