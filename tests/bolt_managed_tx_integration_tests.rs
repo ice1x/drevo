@@ -302,12 +302,19 @@ fn driver_retry_after_failed_statement_succeeds_concurrently() {
     assert!(is_success(&a.handle(ClientMessage::Reset)[0]));
 }
 
-/// While a two-phase-commit transaction is prepared (#556), a Bolt COMMIT is
-/// refused with a *transient* code, so drivers back off and retry. After the
-/// prepared transaction is resolved, the retried transaction commits.
+/// While a two-phase-commit transaction is prepared (#556), a Bolt COMMIT
+/// that writes what it wrote is refused with a *transient* code, so drivers
+/// back off and retry. After the prepared transaction is resolved, the
+/// retried transaction commits.
 #[test]
 fn commit_while_a_transaction_is_prepared_is_transient_and_retryable() {
+    use drevo::engine::GraphEngine;
     let db = open();
+    db.execute(
+        &drevo::cypher::parser::parse("CREATE (:Note {title: 'shared'})").unwrap(),
+        std::collections::HashMap::new(),
+    )
+    .unwrap();
     let mut s = hello(&db);
     assert!(is_success(
         &s.handle(ClientMessage::Begin {
@@ -315,8 +322,27 @@ fn commit_while_a_transaction_is_prepared_is_transient_and_retryable() {
         })[0]
     ));
     run_step(&mut s, "CREATE (:Note {title: 'bolt'})").expect("RUN");
+    run_step(&mut s, "MATCH (n:Note {title: 'shared'}) SET n.by = 'bolt'").expect("RUN");
 
     let prepared = db.graph().tx_begin();
+    let shared = db
+        .graph()
+        .all_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|n| n.title == "shared")
+        .unwrap();
+    db.graph()
+        .tx_engine(prepared)
+        .unwrap()
+        .update_node(
+            shared.id,
+            drevo::model::NodePatch {
+                body: Some("coordinator".into()),
+                ..drevo::model::NodePatch::default()
+            },
+        )
+        .unwrap();
     db.graph()
         .tx_prepare(prepared, "coordinator-1")
         .expect("prepare");

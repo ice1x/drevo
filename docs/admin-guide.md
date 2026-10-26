@@ -631,9 +631,17 @@ always means a slow path in drevo worth fixing, so alert on any increase.
 
 **Two-phase commit (#556).** A transaction prepared by a distributed-transaction coordinator (see
 the [RFC](rfc-two-phase-commit.md) and the `drevo.tx.*` procedures in the Cypher reference)
-**refuses every other write** until it is resolved. Writes fail fast and are retryable: HTTP 503,
-Bolt `Neo.TransientError.Transaction.LockAcquisitionTimeout`. Reads, including explicit
-transactions that only read, keep working. Prepared transactions survive restarts
+holds back every write that could make its resolution fail, until it is resolved:
+
+- a Cypher statement or explicit transaction that writes a node or relationship the prepared one
+  wrote, links to a node it deleted, deletes a node its relationships need, or would break a
+  declared constraint once it commits (a second node with a UNIQUE value it claimed);
+- every direct REST write (`POST /nodes`, `/import/json`, …) and embedded `GraphEngine` write,
+  whatever it touches.
+
+Those fail fast and are retryable: HTTP 503, Bolt
+`Neo.TransientError.Transaction.LockAcquisitionTimeout`. Every other statement and transaction
+commits as usual, and reads keep working. Prepared transactions survive restarts
 and compaction, and are never resolved automatically. Operators can:
 
 - watch `drevo_prepared_transactions` and `drevo_prepared_transaction_oldest_age_seconds`, and

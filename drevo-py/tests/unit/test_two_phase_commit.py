@@ -3,8 +3,9 @@
 `Transaction.prepare(gid)` validates the transaction and records it as
 prepared; it is then resolved with `Drevo.commit_prepared(gid)` or
 `Drevo.rollback_prepared(gid)`, and `Drevo.list_prepared()` lists in-doubt
-transactions. While anything is prepared, every other write raises the
-retryable `TransactionConflict`; reads keep working. `drevo.dbapi` exposes
+transactions. While a transaction is prepared, a write that touches its
+records raises the retryable `TransactionConflict`, as does a direct
+(non-transactional) write; writes to other records and reads keep working. `drevo.dbapi` exposes
 the same through the optional PEP 249 two-phase-commit extension (`xid`,
 `tpc_begin`, `tpc_prepare`, `tpc_commit`, `tpc_rollback`, `tpc_recover`).
 """
@@ -49,18 +50,38 @@ def test_prepare_then_rollback(drevo_db: drevo.Drevo) -> None:
     drevo_db.execute("CREATE (:T)")  # the fence is lifted
 
 
-def test_writes_while_prepared_raise_transaction_conflict(drevo_db: drevo.Drevo) -> None:
+def test_writes_to_prepared_records_raise_transaction_conflict(
+    drevo_db: drevo.Drevo, fake: Faker
+) -> None:
+    gid = fake.uuid4()
+    drevo_db.execute("CREATE (:Shared {v: 0})")
     other = drevo_db.begin()
-    other.execute("CREATE (:Other)")
-    prepared(drevo_db, "g1")
-    with pytest.raises(drevo.TransactionConflict, match="g1"):
-        drevo_db.execute("CREATE (:X)")
+    other.execute("MATCH (s:Shared) SET s.v = 2")
+    tx = drevo_db.begin()
+    tx.execute("MATCH (s:Shared) SET s.v = 1")
+    tx.prepare(gid)
+    with pytest.raises(drevo.TransactionConflict, match=gid):
+        drevo_db.execute("MATCH (s:Shared) SET s.v = 3")
     with pytest.raises(drevo.TransactionConflict):
-        drevo_db.create_node(drevo.NewNode(kind="note", title="blocked"))
+        drevo_db.create_node(drevo.NewNode(kind="note", title=fake.word()))
     with pytest.raises(drevo.TransactionConflict):
         other.commit()
-    assert count(drevo_db, "X") == 0, "reads still work"
-    drevo_db.commit_prepared("g1")
+    assert drevo_db.execute("MATCH (s:Shared) RETURN s.v AS v")[0]["v"] == 0, "reads still work"
+    drevo_db.commit_prepared(gid)
+    assert drevo_db.execute("MATCH (s:Shared) RETURN s.v AS v")[0]["v"] == 1
+
+
+def test_writes_to_other_records_commit_while_prepared(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    gid = fake.uuid4()
+    name = fake.name()
+    prepared(drevo_db, gid)
+    drevo_db.execute("CREATE (:X {name: $n})", {"n": name})
+    tx = drevo_db.begin()
+    tx.execute("CREATE (:Y)")
+    tx.commit()
+    assert (count(drevo_db, "X"), count(drevo_db, "Y"), count(drevo_db, "T")) == (1, 1, 0)
+    drevo_db.commit_prepared(gid)
+    assert count(drevo_db, "T") == 1
 
 
 def test_a_read_only_transaction_commits_while_prepared(drevo_db: drevo.Drevo, fake: Faker) -> None:

@@ -1,10 +1,10 @@
 # RFC: Per-entity conflict detection for explicit transactions (#749)
 
 **Status:** accepted 2026-10-25. D1: snapshot isolation by default, serializable on request (decided
-for the maintainer, reasons in issue #749); D2–D4 as proposed. Slices 1–3 are implemented: conflict
-sets and their history, shared id counters, the merge commit with `DREVO_TX_ISOLATION` and the
-per-transaction `drevo.isolation`. Slice 4 (per-entity two-phase-commit fence) is open; until then a
-prepare still requires that nothing committed since the transaction began.
+for the maintainer, reasons in issue #749); D2–D4 as proposed. All four slices are implemented:
+conflict sets and their history, shared id counters, the merge commit with `DREVO_TX_ISOLATION` and
+the per-transaction `drevo.isolation`, and the per-record two-phase-commit fence (§3.5). A prepare
+still requires that nothing committed since the transaction began.
 **Motivation:** two explicit transactions that write *different* nodes cannot both commit today.
 Reproduced on `ice1x/drevo:0.0.62` with the neo4j Python driver (issue #749): A writes nodes 1→2
 while B writes 3→4; whichever commits second fails with
@@ -138,11 +138,17 @@ open. Kinds need no change (3.3).
 
 ### 3.5 Two-phase commit
 
-A `PreparedEntry` stores the prepared transaction's conflict set. While it is prepared, another
-commit fails with `PreparedPending` **only if it intersects** that set under the rules of 3.1;
-everything else commits and is merged as in 3.3. `commit_prepared` then replays the prepared write
-set onto live (it cannot fail: nothing that reached live since intersects it). The RFC on two-phase
-commit and the admin guide's "refuses every other write" change accordingly.
+While a transaction is prepared, another transaction's commit fails with `PreparedPending` **only
+if it intersects** the prepared write set under the rules of 3.1, or if the state it would leave
+breaks a declared constraint once the prepared write set is applied on top (a second node with a
+UNIQUE value the prepared transaction claimed). Everything else commits and is merged as in 3.3.
+`commit_prepared` then replays the prepared write set onto live; it cannot fail, because nothing
+that reached live since intersects it and every constraint holds with it applied.
+
+As implemented, the conflict set is computed from the stored write set when a commit is checked
+rather than kept in the `PreparedEntry`, and the constraint check runs only while constraints are
+declared. Direct engine writes (`GraphEngine` methods on the graph, REST CRUD, bulk loads) keep the
+whole-graph fence. Every Cypher write runs as a transaction, so it gets the per-record rule.
 
 ### 3.6 Isolation
 

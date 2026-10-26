@@ -1,6 +1,6 @@
 # RFC: Two-phase commit (#556)
 
-**Status:** accepted 2026-10-02. D1 (fail fast) and D2 (no auto-resolution, alert, opt-in heuristic timeout) were confirmed by the maintainer; D3 and D4 as proposed. Implementation follows this RFC.
+**Status:** accepted 2026-10-02. D1 (fail fast) and D2 (no auto-resolution, alert, opt-in heuristic timeout) were confirmed by the maintainer; D3 and D4 as proposed. Implementation follows this RFC. Since 2026-10-26 the fence is per record for transaction commits (see [per-entity conflicts](rfc-per-entity-conflicts.md), §3.5): a commit waits only if it writes what a prepared transaction wrote, depends on a node it deleted, or would break a constraint once it commits; direct engine writes still wait whatever they touch. The text below describes the original whole-graph fence.
 **Motivation:** drevo should be able to take part in a distributed transaction run by an external
 coordinator, for example the [datorium](https://github.com/ice1x/datorium) Unit of Work, next to
 PostgreSQL's `PREPARE TRANSACTION`. That needs the classic resource-manager contract:
@@ -139,8 +139,10 @@ Replay is extended so that:
 - `CommitPrepared` and `RollbackPrepared` resolve it.
 
 Any `Prepare` without a resolution at the end of the log is **restored as prepared**, with the fence
-up. This is correct because nothing else committed after the prepare: the fence guaranteed that
-before the crash, and replay reproduces the same order.
+up. This is correct because the log holds the prepare, the commits the fence let through and the
+resolution in commit order, and replay reproduces that order. The per-record fence only lets
+through commits that touch other records, so replaying the prepared write set after them gives the
+same state as it did in memory.
 
 WAL compaction (`compact_wal`, which rewrites the log as a state snapshot) must carry unresolved
 `Prepare` records forward after the snapshot, so a compaction never forgets an in-doubt transaction.

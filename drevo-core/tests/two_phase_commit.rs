@@ -2,8 +2,9 @@
 //!
 //! Design: `docs/rfc-two-phase-commit.md`. `tx_prepare(tx, gid)` validates a
 //! registered transaction and durably records its write set as *prepared*.
-//! While anything is prepared, a **fence** refuses every other write
-//! (autocommit and other transactions; reads keep working), so
+//! While anything is prepared, a **fence** refuses every direct write and
+//! every transaction commit that touches what a prepared transaction wrote or
+//! would break a constraint once it commits (reads keep working), so
 //! `commit_prepared(gid)` can never conflict. Prepared transactions survive a
 //! crash and a WAL compaction, are listable, and are resolved by
 //! `commit_prepared` / `rollback_prepared`, possibly after a restart.
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use drevo_core::engine::GraphEngine;
 use drevo_core::error::CoreError;
-use drevo_core::model::{NewNode, Properties};
+use drevo_core::model::{NewNode, NodePatch, Properties};
 use drevo_core::native::{
     CommitError, Constraint, NativeGraph, NativeTxId, PrepareError, ResolveError,
 };
@@ -197,44 +198,65 @@ fn while_prepared_other_writers_fail_fast_and_reads_work() {
     let existing = g.create_node(node("existing")).unwrap();
     let other = tx_creating(&g, &["other"]);
     let tx = tx_creating(&g, &["ada"]);
-    // `other` began before the prepare; even so, the fence refuses it.
+    g.tx_engine(tx)
+        .unwrap()
+        .update_node(
+            existing.id,
+            NodePatch {
+                title: Some("existing".into()),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap();
     g.tx_prepare(tx, "g1").unwrap();
+    let rival = g.tx_begin();
+    g.tx_engine(rival)
+        .unwrap()
+        .update_node(
+            existing.id,
+            NodePatch {
+                title: Some("rival".into()),
+                ..NodePatch::default()
+            },
+        )
+        .unwrap();
 
     let pending = |r: Result<_, CoreError>| matches!(r, Err(CoreError::PreparedTransactionPending(ref ids)) if ids == &["g1"]);
     assert!(pending(g.create_node(node("x")).map(|_| ())));
     assert!(pending(g.delete_node(existing.id)));
     assert!(pending(g.create_nodes(vec![node("y")]).map(|_| ())));
     assert!(pending(g.set_embedding(existing.id, vec![1.0]).map(|_| ())));
+    // A transaction that writes what the prepared one wrote waits.
     assert!(matches!(
-        g.tx_commit(other),
+        g.tx_commit(rival),
         Err(CommitError::PreparedPending(ref ids)) if ids == &["g1"]
     ));
+    // One that touches other records commits, even though it began first.
+    g.tx_commit(other).unwrap();
 
     // Reads keep working.
-    assert_eq!(titles(&g), vec!["existing"]);
+    assert_eq!(titles(&g), vec!["existing", "other"]);
     assert!(g.get_node(existing.id).unwrap().is_some());
 
     g.commit_prepared("g1").unwrap();
     g.create_node(node("after")).unwrap();
-    assert_eq!(titles(&g), vec!["ada", "after", "existing"]);
+    assert_eq!(titles(&g), vec!["ada", "after", "existing", "other"]);
 }
 
 #[test]
-fn a_new_transaction_can_begin_and_read_while_prepared_but_only_a_writer_is_refused() {
+fn a_new_transaction_can_begin_read_and_write_other_records_while_prepared() {
     let g = NativeGraph::new();
     let tx = tx_creating(&g, &["ada"]);
     g.tx_prepare(tx, "g1").unwrap();
     let reader = g.tx_begin();
     assert!(g.tx_engine(reader).unwrap().all_nodes().unwrap().is_empty());
     let writer = tx_creating(&g, &["x"]);
-    assert!(matches!(
-        g.tx_commit(writer),
-        Err(CommitError::PreparedPending(_))
-    ));
+    g.tx_commit(writer).unwrap();
     // A transaction that wrote nothing has nothing to pause: it commits.
     g.tx_commit(reader).unwrap();
     assert!(!g.tx_rollback(reader), "the commit closed the transaction");
     g.rollback_prepared("g1").unwrap();
+    assert_eq!(titles(&g), vec!["x"]);
 }
 
 #[test]
@@ -275,6 +297,18 @@ fn commit_prepared_never_conflicts_whatever_was_attempted_meanwhile() {
         let g = NativeGraph::new();
         let seed = g.create_node(node("seed")).unwrap();
         let tx = tx_creating(&g, &["ada"]);
+        // The prepared transaction also writes `seed`, so transactions that
+        // write it must wait.
+        g.tx_engine(tx)
+            .unwrap()
+            .update_node(
+                seed.id,
+                NodePatch {
+                    title: Some("seed".into()),
+                    ..NodePatch::default()
+                },
+            )
+            .unwrap();
         g.tx_prepare(tx, "g").unwrap();
         // A pseudo-random burst of writes that must all be refused.
         let mut x = round.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -287,7 +321,8 @@ fn commit_prepared_never_conflicts_whatever_was_attempted_meanwhile() {
                 1 => g.delete_node(seed.id).is_err(),
                 2 => g.set_embedding(seed.id, vec![0.5]).is_err(),
                 3 => {
-                    let t = tx_creating(&g, &[&format!("t{round}-{i}")]);
+                    let t = g.tx_begin();
+                    g.tx_engine(t).unwrap().delete_node(seed.id).unwrap();
                     g.tx_commit(t).is_err()
                 }
                 _ => {

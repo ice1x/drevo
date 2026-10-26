@@ -211,9 +211,10 @@ with drevo.Drevo.open_in_memory() as db:
     db.commit_prepared("order-42")    # phase two (or db.rollback_prepared)
 ```
 
-While a transaction is prepared, every other write raises
-`TransactionConflict` (retry once it is resolved); reads keep working. An
-unknown gid raises `UnknownGidError`. An operator can unblock writes with
+While a transaction is prepared, a write that touches its records (or would
+break a uniqueness constraint against them) raises `TransactionConflict`
+(retry once it is resolved); writes to other records and reads keep working.
+An unknown gid raises `UnknownGidError`. An operator can unblock writes with
 `db.heuristic_rollback_prepared(gid)`. The coordinator's late
 `commit_prepared` then raises `HeuristicRollbackError`, instead of the
 transaction silently vanishing. `drevo.dbapi` exposes the same through
