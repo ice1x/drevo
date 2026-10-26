@@ -104,7 +104,8 @@ fn concurrent_commits_on_different_nodes_both_apply() {
         run_on(&eb, "CREATE (:B {title: 'b'})");
     }
     g.tx_commit(a).expect("a commits");
-    g.tx_commit(b).expect("b touches other records and commits too");
+    g.tx_commit(b)
+        .expect("b touches other records and commits too");
     assert_eq!(int(&run_on(&g, "MATCH (n) RETURN count(*)")), 2);
 }
 

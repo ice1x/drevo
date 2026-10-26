@@ -138,13 +138,14 @@ def test_closed_connection_raises(conn: Any) -> None:
 
 def test_conflicting_commit_is_an_operational_error(tmp_path: Any) -> None:
     db = drevo.Drevo.open_in_memory()
+    db.execute("CREATE (:T {v: 0})")
     conn = dbapi.connect(db)
-    conn.cursor().execute("CREATE (:T)")
-    db.execute("CREATE (:Other)")  # a write after the implicit begin
+    conn.cursor().execute("MATCH (t:T) SET t.v = 1")
+    db.execute("MATCH (t:T) SET t.v = 2")  # the same node, written after the implicit begin
     with pytest.raises(dbapi.OperationalError):
         conn.commit()
     conn.close()
-    assert db.execute("MATCH (n) RETURN count(n) AS c")[0]["c"] == 1, "the handle stays open"
+    assert db.execute("MATCH (t:T) RETURN t.v AS v")[0]["v"] == 2, "the handle stays open"
     db.close()
 
 
