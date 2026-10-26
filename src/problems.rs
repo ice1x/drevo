@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use serde::Serialize;
 use tracing::field::{Field, Visit};
@@ -231,6 +232,102 @@ pub fn note_exec_error(protocol: &str, database: &str, query: &str, err: &ExecEr
             );
         }
         _ => {}
+    }
+}
+
+/// The slow-statement threshold in milliseconds; 0 is off.
+static SLOW_QUERY_MS: AtomicU64 = AtomicU64::new(0);
+static SLOW_STATEMENTS: AtomicU64 = AtomicU64::new(0);
+
+/// The process-wide slow-statement threshold (`DREVO_SLOW_QUERY_MS`, or
+/// `POST /config/slow-query`), `None` when the log is off.
+pub fn slow_query_threshold() -> Option<Duration> {
+    match SLOW_QUERY_MS.load(Ordering::Relaxed) {
+        0 => None,
+        ms => Some(Duration::from_millis(ms)),
+    }
+}
+
+/// Log statements slower than `threshold` from now on; `None` (or zero)
+/// turns the log off.
+pub fn set_slow_query_threshold(threshold: Option<Duration>) {
+    let ms = threshold.map_or(0, |t| u64::try_from(t.as_millis()).unwrap_or(u64::MAX));
+    SLOW_QUERY_MS.store(ms, Ordering::Relaxed);
+}
+
+/// How many statements were logged as slow in this process.
+pub fn slow_statements() -> u64 {
+    SLOW_STATEMENTS.load(Ordering::Relaxed)
+}
+
+/// Log a statement that ran for `elapsed` as slow, when `threshold` is set
+/// and `elapsed` reaches it: one WARN (target `drevo::slow_query`) with the
+/// duration, the statement text (cut to 2000 characters), the names of its
+/// `params` (never their values), the protocol, user and client of the
+/// statement this thread runs, the `database`, and whether it ran in an
+/// explicit transaction. Counted in [`slow_statements`].
+pub fn note_statement_duration(
+    threshold: Option<Duration>,
+    database: &str,
+    params: &[String],
+    explicit: bool,
+    elapsed: Duration,
+) {
+    let Some(threshold) = threshold else {
+        return;
+    };
+    if elapsed < threshold {
+        return;
+    }
+    SLOW_STATEMENTS.fetch_add(1, Ordering::Relaxed);
+    let caller = crate::transactions::current_caller().unwrap_or_default();
+    let query = crate::transactions::current_query().unwrap_or_default();
+    let millis = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+    tracing::warn!(
+        target: "drevo::slow_query",
+        duration_ms = millis(elapsed),
+        threshold_ms = millis(threshold),
+        protocol = caller.surface,
+        database,
+        user = caller.user.as_deref().unwrap_or(""),
+        client = caller.client.as_deref().unwrap_or(""),
+        explicit,
+        params = %params.join(", "),
+        query = %truncate(&query),
+        "slow statement"
+    );
+}
+
+/// Times one statement for the slow-statement log; inert while the log is
+/// off, so a statement then pays for nothing but one atomic load.
+pub(crate) struct SlowWatch {
+    started: std::time::Instant,
+    threshold: Duration,
+    params: Vec<String>,
+}
+
+impl SlowWatch {
+    /// Start timing a statement with these parameters, if the log is on.
+    pub(crate) fn start<V>(params: &std::collections::HashMap<String, V>) -> Option<Self> {
+        let threshold = slow_query_threshold()?;
+        let mut names: Vec<String> = params.keys().cloned().collect();
+        names.sort();
+        Some(Self {
+            started: std::time::Instant::now(),
+            threshold,
+            params: names,
+        })
+    }
+
+    /// The statement ended: log it if it was slow.
+    pub(crate) fn finish(self, database: &str, explicit: bool) {
+        note_statement_duration(
+            Some(self.threshold),
+            database,
+            &self.params,
+            explicit,
+            self.started.elapsed(),
+        );
     }
 }
 

@@ -242,7 +242,8 @@
        /config/embeddings) and text-to-Cypher behind Ask (GET/POST
        /config/text2cypher). Each has a write-only key field (blank keeps the
        stored secret) so a token is set here without editing the env file and
-       restarting; the status endpoints never return a key. -->
+       restarting; the status endpoints never return a key. It also sets the
+       slow-statement log's threshold (GET/POST /config/slow-query). -->
   <div id="settings-modal" class="storage-modal" hidden aria-hidden="true"
        role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="storage-dialog" role="document">
@@ -301,6 +302,19 @@
           <p id="settings-text2cypher-msg" class="settings-msg" hidden></p>
           <button type="button" id="settings-text2cypher-save" class="storage-shrink"
                   title="Save the text-to-Cypher provider (applies immediately, no restart)">Save</button>
+        </form>
+        <h3 class="settings-section">Slow statements</h3>
+        <p id="settings-slowquery-status" class="settings-status">Loading…</p>
+        <form id="settings-slowquery-form" class="settings-form" autocomplete="off">
+          <label class="settings-field">
+            <span>Log statements slower than (ms)</span>
+            <input type="number" id="settings-slowquery-ms" name="threshold_ms"
+                   min="0" step="1" placeholder="off (blank or 0)"
+                   autocomplete="off" />
+          </label>
+          <p id="settings-slowquery-msg" class="settings-msg" hidden></p>
+          <button type="button" id="settings-slowquery-save" class="storage-shrink"
+                  title="Save the threshold (applies immediately, until the server restarts)">Save</button>
         </form>
       </div>
       <footer class="storage-foot">

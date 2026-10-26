@@ -251,6 +251,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             "/config/text2cypher",
             get(get_text2cypher_config).post(set_text2cypher_config),
         )
+        .route(
+            "/config/slow-query",
+            get(get_slow_query_config).post(set_slow_query_config),
+        )
         .route("/search/fts", post(search_fts))
         .route("/export/json", get(export_json))
         .route("/databases", get(list_databases).post(create_database))
@@ -433,6 +437,57 @@ async fn set_text2cypher_config(
 ) -> Result<Json<crate::text2cypher::Text2CypherStatus>, ApiError> {
     let Json(update) = body?;
     crate::api::text2cypher_config_apply(state.text2cypher_config.as_deref(), update)
+}
+
+/// The slow-statement log's setting, as `GET`/`POST /config/slow-query`
+/// return it.
+#[derive(Debug, serde::Serialize)]
+struct SlowQueryStatus {
+    /// Statements that run longer are logged; `null` when the log is off.
+    threshold_ms: Option<u64>,
+    /// How many statements were logged as slow since the server started.
+    slow_statements: u64,
+}
+
+/// The body of `POST /config/slow-query`.
+#[derive(Debug, serde::Deserialize)]
+struct SlowQueryUpdate {
+    /// The new threshold in milliseconds; `null` or `0` turns the log off.
+    #[serde(default)]
+    threshold_ms: Option<u64>,
+}
+
+fn slow_query_status() -> SlowQueryStatus {
+    SlowQueryStatus {
+        threshold_ms: crate::problems::slow_query_threshold()
+            .map(|t| u64::try_from(t.as_millis()).unwrap_or(u64::MAX)),
+        slow_statements: crate::problems::slow_statements(),
+    }
+}
+
+/// `GET /config/slow-query` — the slow-statement threshold and how many
+/// statements were logged.
+async fn get_slow_query_config() -> Json<SlowQueryStatus> {
+    Json(slow_query_status())
+}
+
+/// `POST /config/slow-query` — change the slow-statement threshold at once,
+/// until the server restarts (`DREVO_SLOW_QUERY_MS` sets it at start).
+async fn set_slow_query_config(
+    body: Result<Json<SlowQueryUpdate>, JsonRejection>,
+) -> Result<Json<SlowQueryStatus>, ApiError> {
+    let Json(update) = body?;
+    crate::problems::set_slow_query_threshold(
+        update
+            .threshold_ms
+            .filter(|ms| *ms > 0)
+            .map(std::time::Duration::from_millis),
+    );
+    tracing::info!(
+        threshold_ms = ?update.threshold_ms,
+        "slow-statement threshold changed"
+    );
+    Ok(Json(slow_query_status()))
 }
 
 /// `POST /search/fts` — BM25 full-text search over the native index, the
@@ -781,6 +836,9 @@ async fn metrics(State(state): State<NativeApiState>) -> Response {
     state
         .metrics
         .sync_statement_timeouts(crate::problems::statement_timeouts());
+    state
+        .metrics
+        .sync_slow_statements(crate::problems::slow_statements());
     // Rejected explicit-transaction commits, by what a per-entity rule would
     // have said (issue #749).
     state

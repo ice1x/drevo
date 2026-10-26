@@ -39,6 +39,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_PORT` | `8080` | TCP port (1–65535; `0` is rejected). |
 | `DREVO_DATA_DIR` | `/data` | Directory holding the single `drevo.redb` file. |
 | `RUST_LOG` | `info` | `tracing` env-filter (e.g. `drevo=debug,info`). |
+| `DREVO_SLOW_QUERY_MS` | `0` (off) | Log every statement that runs longer than this many milliseconds, in auto-commit mode or in an explicit transaction, at WARN. See [Slow-statement log](#slow-statement-log); it can also be changed at runtime. |
 | `DREVO_QUERY_TIMEOUT_MS` | `0` (off) | Per-statement wall-clock limit in milliseconds, for HTTP `/cypher` and Bolt, applied to every database. A statement over it fails with `statement exceeded the N ms statement timeout` (Bolt: `Neo.ClientError.Transaction.TransactionTimedOut`) and releases its locks. A statement is all or nothing: an auto-commit statement that times out leaves none of its writes, and an explicit transaction is rolled back as usual. Non-integer values are rejected. |
 | `DREVO_PREPARED_TX_WARN_SECS` | `60` | Log an ERROR (and so raise a Web UI notification) for each two-phase-commit transaction that has stayed prepared longer than this many seconds. While one is prepared, every write is refused. `0` turns the alert off. |
 | `DREVO_PREPARED_TX_TIMEOUT_SECS` | unset (never) | Opt-in **heuristic rollback** of a two-phase-commit transaction that has stayed prepared this long. This unblocks writes but overrides the coordinator: its late commit is refused with a heuristic-rollback error, and an ERROR is logged. Leave it off unless writes being blocked is worse than cross-store inconsistency. |
@@ -672,6 +673,34 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ['drevo:8080']
+```
+
+### Slow-statement log
+
+With `DREVO_SLOW_QUERY_MS=500`, every statement that runs 500 ms or longer is logged once at
+**WARN**, target `drevo::slow_query`, whether it ran in auto-commit mode or inside an explicit
+transaction, over any protocol. The event carries:
+
+- `duration_ms` and `threshold_ms`;
+- `query`, the statement text cut to 2 000 characters;
+- `params`, the parameter **names** only, never their values, which can hold secrets;
+- `protocol` (`bolt`, `http`, `grpc` or `flight`), `user` and `client` when known, `database`
+  and `explicit`.
+
+Being WARN, it shows in the problem feed (`GET /problems`) and the Web UI's notifications, so
+the query that made the server slow can be found after the fact. `drevo_slow_statements_total`
+counts them.
+
+The threshold can be changed while the server runs, for example during an incident, from the
+⚙ Settings panel or over HTTP (admin only when logins are on). The change lasts until the
+server restarts; `DREVO_SLOW_QUERY_MS` sets it at start.
+
+```bash
+curl -s -X POST localhost:8080/config/slow-query \
+  -H 'Content-Type: application/json' -d '{"threshold_ms": 500}'
+# {"threshold_ms":500,"slow_statements":0}
+curl -s -X POST localhost:8080/config/slow-query \
+  -H 'Content-Type: application/json' -d '{"threshold_ms": null}'   # off
 ```
 
 ### Structured query log
