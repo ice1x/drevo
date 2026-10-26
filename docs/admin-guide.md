@@ -53,7 +53,8 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_OIDC_ROLES_CLAIM` | `groups` | The claim listing the user's groups. |
 | `DREVO_OIDC_ROLE_MAP` | unset | Groups to roles: `admins=admin,devs=editor`. A group not listed gives no role. |
 | `DREVO_BOLT_PORT` | unset (off) | Serve Bolt on this port, same host as HTTP (Neo4j drivers, `cypher-shell`). |
-| `DREVO_TX_CONFLICT_HISTORY` | `10000` | How many recent commits a database remembers in order to say *why* an explicit transaction's commit was rejected: whether a commit it did not see touched the same nodes or relationships (`overlap`), none did (`would_pass`), or the transaction began before the oldest remembered commit (`history`). Reported as `drevo_tx_conflicts_total{reason}`. Raise it if `history` grows; a few hundred bytes per remembered commit. |
+| `DREVO_TX_ISOLATION` | `snapshot` | When an explicit transaction may commit after others committed since it began. `snapshot`: unless one of those wrote a node or relationship it also wrote, or deleted an endpoint of a relationship it wrote. `serializable`: only if nothing at all was committed. A transaction can ask for its own with `drevo.isolation` in its metadata. See [Concurrency](cypher-reference.md#concurrency). |
+| `DREVO_TX_CONFLICT_HISTORY` | `10000` | How many recent commits a database remembers to decide whether an explicit transaction overlapped with them. A transaction that began before the oldest remembered commit, and saw others commit since, gets the retryable conflict (counted as `history`). Raise it if `drevo_tx_conflicts_total{reason="history"}` grows; a few hundred bytes per remembered commit. |
 | `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once. One more is refused when the driver says `HELLO`, with `Neo.TransientError.Request.NoThreadsAvailable`, which drivers retry. `0` means no limit. See [Connection limits](#connection-limits). |
 | `DREVO_HTTP_MAX_IN_FLIGHT` | `256` | HTTP requests served at once. One more gets `503` with `Retry-After: 1`; `/health`, `/ready` and `/metrics` are always served. `0` means no limit. |
 | `DREVO_IDLE_SESSION_TIMEOUT_MS` | `0` (off) | Close a Bolt connection that holds an open transaction and sends nothing for this many milliseconds, and roll the transaction back. Connections without a transaction may stay idle. See [Client timeouts](#client-timeouts). |
@@ -600,6 +601,7 @@ bundle (dependency-free, always compiled — see [`src/observability/`](https://
 | `drevo_storage_file_bytes` | gauge | — |
 | `drevo_statement_timeouts_total` | counter | — |
 | `drevo_tx_conflicts_total` | counter | `reason` |
+| `drevo_tx_merged_commits_total` | counter | — |
 | `drevo_connections_rejected_total` | counter | `protocol` |
 | `drevo_connections_active` | gauge | `protocol` |
 | `drevo_prepared_transactions` | gauge | — |
@@ -613,12 +615,13 @@ copy-on-write bloat.
 
 `drevo_tx_conflicts_total{reason}` counts explicit-transaction commits that failed with
 `Neo.TransientError.Transaction.Outdated` because another transaction committed first (see
-[Concurrency](cypher-reference.md#concurrency)), by what a per-record rule would have decided:
-`overlap` — a commit the transaction did not see touched the same nodes or relationships;
-`would_pass` — none did, the rejection is a cost of today's whole-graph rule; `history` — the
-transaction began before the oldest of the `DREVO_TX_CONFLICT_HISTORY` remembered commits. A high
-`would_pass` share means the workload would gain from finer conflict detection; a growing
-`history` means the history is too short for the transactions' lifetimes.
+[Concurrency](cypher-reference.md#concurrency)): `overlap` — a commit the transaction did not see
+touched the same nodes or relationships, or the combined result broke a constraint; `would_pass` —
+none did, and the transaction was rejected only because it ran `serializable`; `history` — the
+transaction began before the oldest of the `DREVO_TX_CONFLICT_HISTORY` remembered commits.
+`drevo_tx_merged_commits_total` counts the commits that went through although others committed
+since they began. A growing `history` means the history is too short for the transactions'
+lifetimes; a high `would_pass` share under `serializable` is what snapshot isolation would save.
 
 `drevo_statement_timeouts_total` (#552) counts statements stopped by `DREVO_QUERY_TIMEOUT_MS`,
 over HTTP and Bolt. Each one is also logged at **ERROR** (target `drevo::query`) with the

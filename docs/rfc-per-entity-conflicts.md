@@ -1,9 +1,10 @@
 # RFC: Per-entity conflict detection for explicit transactions (#749)
 
-**Status:** proposed 2026-10-25. Decision D1 (default isolation) is the maintainer's; D2–D4 as
-proposed unless objected to. Implementation follows this RFC in the slices of section 6; slice 1
-(`commit_seq`, conflict sets, the bounded history and `drevo_tx_conflicts_total{reason}`) is
-implemented.
+**Status:** accepted 2026-10-25. D1: snapshot isolation by default, serializable on request (decided
+for the maintainer, reasons in issue #749); D2–D4 as proposed. Slices 1–3 are implemented: conflict
+sets and their history, shared id counters, the merge commit with `DREVO_TX_ISOLATION` and the
+per-transaction `drevo.isolation`. Slice 4 (per-entity two-phase-commit fence) is open; until then a
+prepare still requires that nothing committed since the transaction began.
 **Motivation:** two explicit transactions that write *different* nodes cannot both commit today.
 Reproduced on `ice1x/drevo:0.0.62` with the neo4j Python driver (issue #749): A writes nodes 1→2
 while B writes 3→4; whichever commits second fails with
@@ -29,8 +30,8 @@ deadlocks, retryable conflicts, one fsynced batch per commit.
 - Ids are allocated from the working copy (`Inner::next_node_id`, `next_edge_id`, and the `u32`
   interning of edge kinds in `kind_ids`), so two concurrent transactions that each create a node
   hand out the **same id**. Harmless today, because at most one of them can commit.
-- Node titles are globally unique (`DuplicateTitle`), and `UNIQUE` / `EXISTS` constraints are
-  validated on the working copy at commit (`validate_constraints`).
+- `UNIQUE` / `EXISTS` / node-key constraints are validated on the working copy at commit
+  (`validate_constraints`). The native engine does not require node titles to be unique.
 - Two-phase commit (`tx_prepare`) reuses the same check and raises a fence that fails **every**
   other write until the prepared transaction is resolved.
 - The change feed (`ChangeFeed`, `changes_since`, `trim_before`) already carries every committed
@@ -107,7 +108,7 @@ and nothing intersects, the transaction's ops are **replayed onto the current li
 let mut merged = Arc::clone(&live);                 // O(1)
 let m = Arc::make_mut(&mut merged);                 // one copy-on-write of Inner's maps
 for op in ops { m.apply_wal_op(op.clone()); }       // the WAL replay path used at open
-m.validate_constraints()?;  m.validate_titles()?;   // on the MERGED state
+m.validate_constraints()?;                          // on the MERGED state
 record(ops)?;                                       // one fsynced batch, as today
 m.commit_seq += 1;  *live = merged;  ring.push(...);
 ```
@@ -120,10 +121,10 @@ costs today (a clone of `Inner`'s maps of `Arc`s, not of the records); it is pai
 that actually overlapped with another one.
 
 **Constraints under concurrency.** Two transactions may each create a node with the same unique
-property value or title; their keys are disjoint, so only the merged validation catches it. The
+property value; their keys are disjoint, so only the merged validation catches it. The
 failure is reported as a **retryable `Conflict`** when the working copy was valid against its own
 base (the violation exists only because of the other commit) and as the usual
-`ConstraintValidationFailed` / `DuplicateTitle` when the transaction was invalid on its own. The
+`ConstraintValidationFailed` when the transaction was invalid on its own. The
 retry then sees the committed node, which is what a `MERGE`-style upsert needs.
 
 ### 3.4 Id allocation
@@ -180,8 +181,8 @@ tracked — a `MATCH` scan reads the whole graph, so a read set would bring the 
 - Core (`drevo-core/tests/`): disjoint writers both commit, in both commit orders; same node →
   `Conflict`; A deletes a node while B attaches a relationship to it → the second committer gets
   `Conflict`, in both orders; cascade: A deletes node X with its relationships while B updates one of
-  them → `Conflict`; two transactions creating nodes get different ids; same title or same unique
-  value from two transactions → the second gets `Conflict`, a retry gets `DuplicateTitle` /
+  them → `Conflict`; two transactions creating nodes get different ids; the same unique
+  value from two transactions → the second gets `Conflict`, a retry gets
   `ConstraintValidationFailed`; a transaction older than the history gets `Conflict` with the
   history message; prepared: a non-intersecting write commits while a transaction is prepared, an
   intersecting one gets `PreparedPending`; `commit_prepared` after unrelated commits applies the

@@ -101,28 +101,45 @@ def test_explicit_commit_inside_with_is_fine(drevo_db: drevo.Drevo) -> None:
 # ── Conflicts and failures ──────────────────────────────────────────
 
 
-def test_concurrent_write_makes_commit_conflict(drevo_db: drevo.Drevo) -> None:
+def test_concurrent_write_makes_commit_conflict(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    name = fake.name()
+    drevo_db.execute("CREATE (:T {name: $n, who: 'seed'})", {"n": name})
     tx = drevo_db.begin()
-    tx.execute("CREATE (:T {who: 'tx'})")
-    drevo_db.execute("CREATE (:T {who: 'autocommit'})")
+    tx.execute("MATCH (t:T {name: $n}) SET t.who = 'tx'", {"n": name})
+    drevo_db.execute("MATCH (t:T {name: $n}) SET t.who = 'autocommit'", {"n": name})
     with pytest.raises(drevo.TransactionConflict):
         tx.commit()
     assert tx.closed
     assert drevo_db.execute("MATCH (t:T) RETURN t.who AS w").rows == [{"w": "autocommit"}]
 
 
-def test_conflict_is_retryable(drevo_db: drevo.Drevo) -> None:
-    def transfer() -> None:
+def test_concurrent_write_to_other_records_still_commits(
+    drevo_db: drevo.Drevo, fake: Faker
+) -> None:
+    tx = drevo_db.begin()
+    tx.execute("CREATE (:T {name: $n})", {"n": fake.name()})
+    drevo_db.execute("CREATE (:Other {name: $n})", {"n": fake.name()})
+    tx.commit()
+    assert count(drevo_db, "T") == 1
+    assert count(drevo_db, "Other") == 1
+
+
+def test_conflict_is_retryable(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    name = fake.name()
+    drevo_db.execute("CREATE (:Acct {name: $n, balance: 0})", {"n": name})
+
+    def deposit() -> None:
         with drevo_db.transaction() as tx:
-            tx.execute("CREATE (:T)")
+            tx.execute("MATCH (a:Acct {name: $n}) SET a.balance = a.balance + 10", {"n": name})
 
     tx = drevo_db.begin()
-    tx.execute("CREATE (:T)")
-    drevo_db.execute("CREATE (:Other)")
+    tx.execute("MATCH (a:Acct {name: $n}) SET a.balance = a.balance + 10", {"n": name})
+    drevo_db.execute("MATCH (a:Acct {name: $n}) SET a.balance = a.balance + 5", {"n": name})
     with pytest.raises(drevo.TransactionConflict):
         tx.commit()
-    transfer()  # a fresh transaction on the new state commits
-    assert count(drevo_db, "T") == 1
+    deposit()  # a fresh transaction on the new state commits
+    balance = drevo_db.execute("MATCH (a:Acct) RETURN a.balance AS b")[0]["b"]
+    assert balance == 15
 
 
 def test_a_failed_statement_rolls_the_transaction_back(drevo_db: drevo.Drevo) -> None:

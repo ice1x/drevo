@@ -665,15 +665,19 @@ mod bolt_durable {
     #[test]
     fn conflicting_commit_surfaces_the_transient_code() {
         let service = Arc::new(NativeService::in_memory());
+        let seed = drevo::cypher::parser::parse("CREATE (:T {title: 't', v: 0})").unwrap();
+        service
+            .execute(&seed, std::collections::HashMap::new())
+            .unwrap();
         let mut session = Session::new_durable(Arc::clone(&service));
         assert_success(&session.handle(ClientMessage::Hello { extra: dict([]) }));
         assert_success(&session.handle(ClientMessage::Begin { extra: dict([]) }));
-        assert_success(&run_statement(&mut session, "CREATE (:T {title: 't'})"));
+        assert_success(&run_statement(&mut session, "MATCH (t:T) SET t.v = 1"));
         assert_success(&pull_all(&mut session));
 
-        // A concurrent autocommit write advances the live graph, so the
-        // transaction's commit loses the first-committer race.
-        let w = drevo::cypher::parser::parse("CREATE (:Race {title: 'r'})").unwrap();
+        // A concurrent autocommit write to the same node commits first, so
+        // the transaction's commit loses the first-committer race.
+        let w = drevo::cypher::parser::parse("MATCH (t:T) SET t.v = 2").unwrap();
         service
             .execute(&w, std::collections::HashMap::new())
             .unwrap();

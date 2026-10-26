@@ -456,6 +456,24 @@ impl DatabaseRegistry {
         }
     }
 
+    /// Set the isolation of explicit transactions that do not ask for one on
+    /// every registered database, the default included (`DREVO_TX_ISOLATION`);
+    /// databases created afterwards inherit it from the default.
+    pub fn set_isolation(&self, isolation: crate::native::Isolation) {
+        self.default.set_isolation(isolation);
+        for service in self.read().values() {
+            service.set_isolation(isolation);
+        }
+    }
+
+    /// Give a new database the server-wide settings the default carries.
+    fn inherit_settings(&self, service: &NativeService) {
+        let default = self.default_service();
+        service.set_statement_timeout(default.statement_timeout());
+        service.set_isolation(default.graph().isolation());
+        service.set_conflict_history(default.graph().conflict_history_capacity());
+    }
+
     /// Close a Bolt connection that has held an open transaction for `limit`
     /// without sending anything, rolling the transaction back
     /// (`DREVO_IDLE_SESSION_TIMEOUT_MS`). `None` removes the limit.
@@ -533,7 +551,7 @@ impl DatabaseRegistry {
             return Err(RegistryError::AlreadyExists(name.to_string()));
         }
         let service = Arc::new(NativeService::in_memory());
-        service.set_statement_timeout(self.default_service().statement_timeout());
+        self.inherit_settings(&service);
         #[cfg(not(target_arch = "wasm32"))]
         {
             service.join_server(name, self.default_service().transactions());
@@ -572,8 +590,9 @@ impl DatabaseRegistry {
             Some(data_dir) => Arc::new(Self::open_durable(data_dir, name)?),
             None => Arc::new(NativeService::in_memory()),
         };
-        // New databases inherit the server-wide statement timeout (#547).
-        service.set_statement_timeout(self.default_service().statement_timeout());
+        // New databases inherit the server-wide settings: statement timeout
+        // (#547), transaction isolation and conflict history.
+        self.inherit_settings(&service);
         #[cfg(not(target_arch = "wasm32"))]
         {
             service.join_server(name, self.default_service().transactions());

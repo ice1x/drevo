@@ -1088,6 +1088,12 @@ impl NativeService {
         self.graph.set_conflict_history(commits);
     }
 
+    /// The [`crate::native::Isolation`] of explicit transactions that do not
+    /// ask for one (`DREVO_TX_ISOLATION`).
+    pub fn set_isolation(&self, isolation: crate::native::Isolation) {
+        self.graph.set_isolation(isolation);
+    }
+
     /// Rejected commits by reason since this database was opened (issue
     /// #749); see [`NativeGraph::conflict_stats`].
     pub fn conflict_stats(&self) -> drevo_core::conflict::ConflictStats {
@@ -1380,7 +1386,19 @@ impl NativeService {
     /// keeps the returned id between statements. See
     /// [`crate::native::NativeGraph::tx_begin`].
     pub fn begin_tx(&self) -> crate::native::NativeTxId {
-        let tx = self.graph.tx_begin();
+        self.begin_tx_with(None)
+    }
+
+    /// [`Self::begin_tx`] at `isolation`, or at the database's default when
+    /// `None` (see [`crate::native::Isolation`]).
+    pub fn begin_tx_with(
+        &self,
+        isolation: Option<crate::native::Isolation>,
+    ) -> crate::native::NativeTxId {
+        let tx = match isolation {
+            Some(isolation) => self.graph.tx_begin_with(isolation),
+            None => self.graph.tx_begin(),
+        };
         #[cfg(not(target_arch = "wasm32"))]
         {
             let name = self
