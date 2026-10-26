@@ -88,6 +88,17 @@ pub enum CoreError {
     #[error("writes are paused while prepared transaction(s) {} await resolution; retry", .0.join(", "))]
     PreparedTransactionPending(Vec<String>),
 
+    /// An explicit transaction already buffers as many writes as it may (see
+    /// [`NativeGraph::set_max_tx_writes`](crate::native::NativeGraph::set_max_tx_writes)).
+    /// The write that would go over the limit was not applied; the
+    /// transaction keeps its earlier writes. Not retryable as is: commit in
+    /// smaller transactions or raise the limit.
+    #[error("the transaction reached its limit of {limit} uncommitted writes; commit in smaller transactions or raise the limit")]
+    TransactionTooLarge {
+        /// The limit, in buffered writes.
+        limit: usize,
+    },
+
     /// A write would break a declared schema constraint, e.g. a second node
     /// with the same value under a UNIQUE constraint. Nothing was written.
     #[error("{0}")]

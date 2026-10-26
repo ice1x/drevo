@@ -1827,9 +1827,21 @@ running statement, and each open explicit transaction, with Neo4j's columns:
 - `startTime` (ISO 8601, UTC), `elapsedTime` (ISO 8601 duration), `status`
   (`Running`, `Idle` or `Terminated`);
 - `protocol` (`bolt`, `http`, `grpc` or `flight`), `isExplicit`,
-  `elapsedTimeMillis`, `currentQueryElapsedTimeMillis`.
+  `elapsedTimeMillis`, `currentQueryElapsedTimeMillis`;
+- `bufferedWrites`: how many writes an explicit transaction holds as of its
+  last statement (null for a single statement). One transaction may hold up
+  to `DREVO_MAX_TX_WRITES` (1,000,000 by default); the statement that goes
+  over fails with `Neo.ClientError.General.TransactionOutOfMemoryError` and
+  the transaction is rolled back.
 
 The statement itself is listed too.
+
+```cypher
+SHOW TRANSACTIONS
+YIELD transactionId, username, bufferedWrites
+WHERE bufferedWrites > 100000
+RETURN transactionId, username, bufferedWrites
+```
 
 ```cypher
 SHOW TRANSACTIONS

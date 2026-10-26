@@ -119,6 +119,10 @@ fn exec_status(e: ExecError) -> Status {
         ExecError::Storage(err @ crate::error::DrevoError::PreparedTransactionPending(_)) => {
             Status::unavailable(err.to_string())
         }
+        // An explicit transaction over its write limit (#751).
+        ExecError::Storage(err @ crate::error::DrevoError::TransactionTooLarge { .. }) => {
+            Status::resource_exhausted(err.to_string())
+        }
         // A missing privilege (#636).
         ExecError::Forbidden { message } => Status::permission_denied(message),
         e => Status::invalid_argument(format!("Cypher execution error: {e}")),

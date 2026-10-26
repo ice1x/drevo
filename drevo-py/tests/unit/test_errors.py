@@ -42,6 +42,7 @@ import drevo
         # Explicit transactions (#554).
         (drevo.TransactionError, drevo.DrevoError),
         (drevo.TransactionConflict, drevo.TransactionError),
+        (drevo.TransactionTooLarge, drevo.TransactionError),
         (drevo.ConstraintViolation, drevo.ConflictError),
         # Two-phase commit (#556).
         (drevo.PreparedTransactionError, drevo.TransactionError),

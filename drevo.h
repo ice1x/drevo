@@ -198,6 +198,12 @@
 #define DEFAULT_HTTP_MAX_IN_FLIGHT 256
 
 /**
+ * How many writes one explicit transaction may buffer before it commits,
+ * unless `DREVO_MAX_TX_WRITES` says otherwise.
+ */
+#define DEFAULT_MAX_TX_WRITES 1000000
+
+/**
  * Default runtime-compaction threshold (appended ops between
  * compactions). Large enough that steady write loads compact rarely,
  * small enough that the log never dwarfs the state.

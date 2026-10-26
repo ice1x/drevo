@@ -985,7 +985,9 @@ impl NativeService {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let tx = self.graph.tx_begin();
+            // One statement: bounded by the statement timeout, not by the
+            // write limit of a client's transaction.
+            let tx = self.graph.tx_begin_statement();
             let Some(engine) = self.graph.tx_engine(tx) else {
                 return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(
                     "the statement's transaction closed before it ran",
@@ -1492,7 +1494,7 @@ impl NativeService {
         #[cfg(not(target_arch = "wasm32"))]
         let flag = entry.as_ref().map(|e| e.terminated_flag());
         #[cfg(not(target_arch = "wasm32"))]
-        let _idle = Idle(entry);
+        let idle = Idle(entry);
         #[cfg(target_arch = "wasm32")]
         let flag = None;
         let (result, events) = crate::event_bus::collect(|| {
@@ -1531,6 +1533,20 @@ impl NativeService {
                 )
             })
         });
+        // A statement that took the transaction over its write limit rolls
+        // it back, freeing what it buffered (#751).
+        if matches!(
+            result,
+            Err(ExecError::Storage(DrevoError::TransactionTooLarge { .. }))
+        ) {
+            self.rollback_tx(tx);
+            return result;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(entry) = &idle.0 {
+            let writes = self.graph.tx_write_count(tx).unwrap_or(0);
+            entry.set_buffered_writes(u64::try_from(writes).unwrap_or(u64::MAX));
+        }
         // A failed statement's events go with it; the others wait for the
         // commit.
         if result.is_ok() && !events.is_empty() {
