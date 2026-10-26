@@ -90,6 +90,16 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Changed
 
+- **A prepared two-phase-commit transaction no longer pauses every write**
+  (issue #749, slice 4). While a transaction is prepared, a Cypher statement
+  or explicit transaction now waits (the same retryable
+  `Neo.TransientError.Transaction.LockAcquisitionTimeout` / HTTP 503) only if
+  it writes a node or relationship the prepared one wrote, links to a node it
+  deleted, deletes a node its relationships need, or would break a declared
+  constraint once it commits. Writes on other records commit as usual, and
+  resolving the prepared transaction still cannot fail. Direct REST and
+  embedded engine writes still wait whatever they touch.
+
 - **Explicit transactions that touch different records no longer roll each
   other back** (issue #749). The default isolation is now *snapshot*: a
   transaction commits unless a transaction that committed after it began

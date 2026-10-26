@@ -28,8 +28,9 @@ Two-phase commit (#556) is available through PEP 249's optional TPC
 extension: `conn.xid(format_id, gtrid, bqual)`, `tpc_begin(xid)`,
 `tpc_prepare()`, `tpc_commit([xid])`, `tpc_rollback([xid])` and
 `tpc_recover()`. A prepared branch is durable, survives its connection and a
-restart, and can be resolved from any connection. While it is prepared,
-every other write raises `OperationalError` (retryable).
+restart, and can be resolved from any connection. While it is prepared, a
+write that touches its records raises `OperationalError` (retryable);
+writes to other records go through.
 """
 
 from __future__ import annotations

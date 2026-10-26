@@ -50,6 +50,23 @@ fn prepare_creating(svc: &NativeService, label: &str, n: usize, gid: &str) {
     svc.prepare_tx(tx, gid).expect("prepare");
 }
 
+/// A `(:Shared)` node, then a transaction that sets it and is prepared as
+/// `gid`: a statement that writes the node waits for the resolution.
+fn prepare_writing_shared(svc: &NativeService, gid: &str) {
+    ok(svc, "CREATE (:Shared {v: 0})");
+    let tx = svc.begin_tx();
+    svc.execute_in_tx(
+        tx,
+        &parse("MATCH (s:Shared) SET s.v = 1").unwrap(),
+        HashMap::new(),
+    )
+    .expect("write in tx");
+    svc.prepare_tx(tx, gid).expect("prepare");
+}
+
+/// A statement that writes the `(:Shared)` node.
+const WRITE_SHARED: &str = "MATCH (s:Shared) SET s.v = 2";
+
 fn is_pending(e: &ExecError) -> bool {
     matches!(
         e,
@@ -77,8 +94,8 @@ fn service_prepare_commit_and_rollback() {
 #[test]
 fn writes_while_prepared_are_a_structured_retryable_error() {
     let svc = NativeService::in_memory();
-    prepare_creating(&svc, "T", 1, "g1");
-    let err = exec(&svc, "CREATE (:X)").expect_err("fenced");
+    prepare_writing_shared(&svc, "g1");
+    let err = exec(&svc, WRITE_SHARED).expect_err("fenced");
     assert!(is_pending(&err), "{err:?}");
     match err {
         ExecError::Storage(DrevoError::PreparedTransactionPending(gids)) => {
@@ -87,8 +104,11 @@ fn writes_while_prepared_are_a_structured_retryable_error() {
         other => panic!("{other:?}"),
     }
     assert_eq!(count(&svc, "X"), 0, "reads still work");
-    svc.commit_prepared("g1").unwrap();
+    // A statement on other records commits while the gid is prepared.
     ok(&svc, "CREATE (:X)");
+    svc.commit_prepared("g1").unwrap();
+    ok(&svc, WRITE_SHARED);
+    assert_eq!(count(&svc, "X"), 1);
 }
 
 // ── Cypher procedures ───────────────────────────────────────────────────
@@ -207,6 +227,7 @@ fn records(replies: &[ServerMessage]) -> Vec<Vec<Bolt>> {
 #[test]
 fn bolt_prepare_inside_an_explicit_transaction_then_resolve() {
     let svc = Arc::new(NativeService::in_memory());
+    ok(&svc, "CREATE (:Shared {v: 0})");
     let mut s = hello(&svc);
     assert!(matches!(
         s.handle(ClientMessage::Begin {
@@ -215,6 +236,10 @@ fn bolt_prepare_inside_an_explicit_transaction_then_resolve() {
         ServerMessage::Success { .. }
     ));
     assert_eq!(failure_code(&run(&mut s, "CREATE (:T {v: 1})")), None);
+    assert_eq!(
+        failure_code(&run(&mut s, "MATCH (s:Shared) SET s.v = 1")),
+        None
+    );
 
     let prepared = run(&mut s, "CALL drevo.tx.prepare('bolt-1')");
     assert_eq!(failure_code(&prepared), None, "{prepared:?}");
@@ -227,10 +252,11 @@ fn bolt_prepare_inside_an_explicit_transaction_then_resolve() {
     assert_eq!(failure_code(&s.handle(ClientMessage::Commit)), None);
     assert_eq!(count(&svc, "T"), 0, "still only prepared");
 
-    // Another writer on another connection is told to back off.
+    // Another writer on another connection that writes what it wrote is
+    // told to back off.
     let mut other = hello(&svc);
     assert_eq!(
-        failure_code(&run(&mut other, "CREATE (:X)")).as_deref(),
+        failure_code(&run(&mut other, WRITE_SHARED)).as_deref(),
         Some("Neo.TransientError.Transaction.LockAcquisitionTimeout")
     );
 
@@ -320,9 +346,9 @@ fn expired_prepared_transactions_are_rolled_back_heuristically() {
 #[test]
 fn the_fence_bolt_code_is_retryable_by_official_drivers() {
     let svc = Arc::new(NativeService::in_memory());
-    prepare_creating(&svc, "T", 1, "g");
+    prepare_writing_shared(&svc, "g");
     let mut s = hello(&svc);
-    let code = failure_code(&run(&mut s, "CREATE (:X)")).expect("fenced");
+    let code = failure_code(&run(&mut s, WRITE_SHARED)).expect("fenced");
     assert!(code.starts_with("Neo.TransientError."), "{code}");
     for remapped in [
         "Neo.TransientError.Transaction.Terminated",
@@ -364,17 +390,30 @@ fn bolt_a_read_only_explicit_transaction_commits_while_prepared() {
 }
 
 #[test]
-fn bolt_a_writing_explicit_transaction_is_still_fenced() {
+fn bolt_an_explicit_transaction_writing_a_prepared_record_is_fenced() {
     let svc = Arc::new(NativeService::in_memory());
-    prepare_creating(&svc, "T", 1, "g");
+    prepare_writing_shared(&svc, "g");
     let mut s = hello(&svc);
     begin(&mut s);
     assert_eq!(failure_code(&run(&mut s, "CREATE (:X)")), None);
+    assert_eq!(failure_code(&run(&mut s, WRITE_SHARED)), None);
     assert_eq!(
         failure_code(&s.handle(ClientMessage::Commit)).as_deref(),
         Some("Neo.TransientError.Transaction.LockAcquisitionTimeout")
     );
     assert_eq!(count(&svc, "X"), 0);
+}
+
+#[test]
+fn bolt_an_explicit_transaction_on_other_records_commits_while_prepared() {
+    let svc = Arc::new(NativeService::in_memory());
+    prepare_writing_shared(&svc, "g");
+    let mut s = hello(&svc);
+    begin(&mut s);
+    assert_eq!(failure_code(&run(&mut s, "CREATE (:X)")), None);
+    assert_eq!(failure_code(&s.handle(ClientMessage::Commit)), None);
+    assert_eq!(count(&svc, "X"), 1);
+    assert_eq!(svc.list_prepared().len(), 1, "the gid is still prepared");
 }
 
 #[test]

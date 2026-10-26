@@ -96,10 +96,32 @@ async fn rollback_over_http_and_unknown_gid_is_404() {
 
 #[tokio::test]
 async fn writes_refused_by_the_fence_are_503() {
-    let (app, _svc) = app_with_prepared("http-3");
-    let (status, body) = call(&app, "POST", "/cypher", r#"{"query": "CREATE (:X)"}"#).await;
+    let svc = Arc::new(NativeService::in_memory());
+    svc.execute(&parse("CREATE (:Shared {v: 0})").unwrap(), HashMap::new())
+        .unwrap();
+    let tx = svc.begin_tx();
+    svc.execute_in_tx(
+        tx,
+        &parse("MATCH (s:Shared) SET s.v = 1").unwrap(),
+        HashMap::new(),
+    )
+    .unwrap();
+    svc.prepare_tx(tx, "http-3").unwrap();
+    let app = build_native_router(NativeApiState::new(Arc::clone(&svc)));
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/cypher",
+        r#"{"query": "MATCH (s:Shared) SET s.v = 2"}"#,
+    )
+    .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert!(body.contains("http-3") && body.contains("retry"), "{body}");
+
+    // A write to other records goes through.
+    let (status, body) = call(&app, "POST", "/cypher", r#"{"query": "CREATE (:X)"}"#).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let (status, _) = call(
         &app,

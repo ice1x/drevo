@@ -3586,10 +3586,17 @@ impl NativeGraph {
     /// write fence. The transaction is closed either way; on success it can
     /// only be finished by [`commit_prepared`](Self::commit_prepared) or
     /// [`rollback_prepared`](Self::rollback_prepared), from any handle and
-    /// across restarts. While the fence is up every other write fails fast
-    /// ([`CoreError::PreparedTransactionPending`] /
-    /// [`CommitError::PreparedPending`]); reads, and commits of transactions
-    /// that only read, are unaffected.
+    /// across restarts.
+    ///
+    /// While it is prepared, the fence holds back what could make its
+    /// resolution fail: a transaction commit that writes a record it wrote,
+    /// writes a relationship to a node it deleted, or deletes a node its
+    /// relationships need, or one that would break a declared constraint once
+    /// it commits, fails fast with [`CommitError::PreparedPending`]. Other
+    /// transaction commits go through. Direct writes on the graph
+    /// ([`GraphEngine`] methods, bulk loads) fail with
+    /// [`CoreError::PreparedTransactionPending`] whatever they touch. Reads
+    /// are unaffected.
     ///
     /// # Errors
     ///
@@ -3623,8 +3630,9 @@ impl NativeGraph {
         let TxSlot {
             base, working, ops, ..
         } = slot;
-        // Only the write set is kept: the fence guarantees live stays equal to
-        // `base`, so applying `ops` at resolution reproduces `working`.
+        // Only the write set is kept: the fence lets through only commits that
+        // touch other records, so applying `ops` at resolution reproduces
+        // what this transaction wrote.
         drop(working);
         drop(base);
         let entry = PreparedEntry {
@@ -3649,7 +3657,9 @@ impl NativeGraph {
 
     /// Two-phase commit, phase two: apply the write set prepared under
     /// `gid` and lower the fence once nothing else is prepared. Cannot
-    /// conflict: the fence kept the graph unchanged since the prepare.
+    /// conflict: the fence let through only commits that touched other
+    /// records and kept every constraint satisfied with this write set
+    /// applied.
     ///
     /// # Errors
     ///
@@ -3770,20 +3780,21 @@ impl NativeGraph {
         if self.is_read_only() {
             return Err(CommitError::ReadOnly);
         }
-        // The two-phase-commit fence (#556): no other write commits while a
-        // transaction is prepared.
-        if !live.prepared.is_empty() {
-            return Err(CommitError::PreparedPending(
-                live.prepared.keys().cloned().collect(),
-            ));
-        }
         let mine = ConflictSet::from_ops(ops);
+        // The two-phase-commit fence: while a transaction is prepared, a
+        // commit that touches what it wrote waits until it is resolved.
+        if !live.prepared.is_empty() && mine.intersects(&prepared_set(&live)) {
+            return Err(prepared_pending(&live));
+        }
         if Arc::ptr_eq(&live, &base) {
             // Nothing committed since the transaction began: its working copy
             // becomes the live state.
             working
                 .validate_constraints()
                 .map_err(CommitError::Constraint)?;
+            if breaks_prepared(&working) {
+                return Err(prepared_pending(&live));
+            }
             self.record(ops)
                 .map_err(|e| CommitError::Io(e.to_string()))?;
             self.note_commit(Arc::make_mut(&mut working), mine);
@@ -3815,6 +3826,9 @@ impl NativeGraph {
         if m.validate_constraints().is_err() {
             self.count_conflict(ConflictReason::Overlap);
             return Err(CommitError::Conflict);
+        }
+        if breaks_prepared(m) {
+            return Err(prepared_pending(&live));
         }
         self.record(ops)
             .map_err(|e| CommitError::Io(e.to_string()))?;
@@ -4988,6 +5002,39 @@ impl NativeTx<'_> {
         self.ops.push(WalOp::DeleteEdge(id));
         Ok(())
     }
+}
+
+/// Everything the prepared transactions of `live` wrote, deleted and depend
+/// on: a commit that intersects it waits for them to be resolved.
+fn prepared_set(live: &Inner) -> ConflictSet {
+    let mut set = ConflictSet::default();
+    for entry in live.prepared.values() {
+        set.extend(ConflictSet::from_ops(&entry.ops));
+    }
+    set
+}
+
+/// Whether committing the prepared transactions on top of `state` would
+/// break a declared constraint, for example a second node with a value that
+/// a prepared transaction claimed under a UNIQUE constraint. A commit that
+/// leads to such a state waits, so that resolving a prepared transaction
+/// can never fail.
+fn breaks_prepared(state: &Inner) -> bool {
+    if state.prepared.is_empty() || state.constraints.is_empty() {
+        return false;
+    }
+    let mut after = state.clone();
+    for entry in state.prepared.values() {
+        for op in &entry.ops {
+            after.apply_wal_op(op.clone());
+        }
+    }
+    after.validate_constraints().is_err()
+}
+
+/// The error of a commit the two-phase-commit fence holds back.
+fn prepared_pending(live: &Inner) -> CommitError {
+    CommitError::PreparedPending(live.prepared.keys().cloned().collect())
 }
 
 /// Recover a poisoned lock rather than propagating the panic — matches the

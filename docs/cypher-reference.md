@@ -1718,8 +1718,9 @@ with driver.session() as session:
 A hand-rolled `session.begin_transaction()` gets the error as a
 `neo4j.exceptions.TransientError` and has to retry itself. The same error
 inside a prepared two-phase transaction cannot happen: `drevo.tx.prepare` runs
-the conflict check, and the fence it raises keeps the graph unchanged until the
-transaction is resolved.
+the conflict check, and until the transaction is resolved the fence it raises
+holds back every other commit that writes what it wrote or would break a
+constraint once it commits. Commits on other records go through.
 
 **Auto-commit statements** are each their own transaction, and the server
 retries one that lost a conflict itself, up to eight times, before reporting
