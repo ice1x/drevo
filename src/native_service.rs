@@ -901,6 +901,24 @@ impl NativeService {
         params: HashMap<String, Value>,
         restriction: Option<Restriction<'_>>,
     ) -> Result<ExecResult, ExecError> {
+        #[cfg(feature = "http")]
+        let watch = crate::problems::SlowWatch::start(&params);
+        let result = self.execute_autocommit(query, params, restriction);
+        #[cfg(feature = "http")]
+        if let Some(watch) = watch {
+            watch.finish(&self.database_name(), false);
+        }
+        result
+    }
+
+    /// The body of [`execute_as`](Self::execute_as), without the
+    /// slow-statement log.
+    fn execute_autocommit(
+        &self,
+        query: &Query,
+        params: HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+    ) -> Result<ExecResult, ExecError> {
         // Schema lives beside the log, not in it, so the engine cannot refuse
         // it; data writes are refused by the engine itself.
         if self.is_read_only() && query_changes_schema(query) {
@@ -1449,6 +1467,25 @@ impl NativeService {
     /// As [`execute_in_tx`](Self::execute_in_tx), and
     /// [`ExecError::Forbidden`].
     pub fn execute_in_tx_as(
+        &self,
+        tx: crate::native::NativeTxId,
+        query: &Query,
+        params: HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+    ) -> Result<ExecResult, ExecError> {
+        #[cfg(feature = "http")]
+        let watch = crate::problems::SlowWatch::start(&params);
+        let result = self.execute_in_open_tx(tx, query, params, restriction);
+        #[cfg(feature = "http")]
+        if let Some(watch) = watch {
+            watch.finish(&self.database_name(), true);
+        }
+        result
+    }
+
+    /// The body of [`execute_in_tx_as`](Self::execute_in_tx_as), without the
+    /// slow-statement log.
+    fn execute_in_open_tx(
         &self,
         tx: crate::native::NativeTxId,
         query: &Query,

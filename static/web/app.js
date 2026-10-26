@@ -95,6 +95,10 @@
   const $t2cModel = document.getElementById("settings-text2cypher-model");
   const $t2cSave = document.getElementById("settings-text2cypher-save");
   const $t2cMsg = document.getElementById("settings-text2cypher-msg");
+  const $slowStatus = document.getElementById("settings-slowquery-status");
+  const $slowMs = document.getElementById("settings-slowquery-ms");
+  const $slowSave = document.getElementById("settings-slowquery-save");
+  const $slowMsg = document.getElementById("settings-slowquery-msg");
 
   // ── Graph overview state ─────────────────────────────────────────────
   // The whole graph dump is fetched once from /export/json and cached;
@@ -984,12 +988,78 @@
     }
   }
 
+  // ── Settings panel: slow-statement log (GET/POST /config/slow-query) ──
+  // Statements slower than the threshold are logged at WARN and show up in the
+  // problem feed. The setting lasts until the server restarts.
+  async function loadSlowQueryConfig() {
+    if (!$slowStatus) return;
+    setSlowMsg("");
+    $slowStatus.textContent = "Loading…";
+    try {
+      const s = await apiGet("/config/slow-query");
+      if ($slowMs) $slowMs.value = s.threshold_ms == null ? "" : String(s.threshold_ms);
+      $slowStatus.textContent =
+        s.threshold_ms == null
+          ? `Off · ${s.slow_statements} logged since start`
+          : `Logging statements over ${s.threshold_ms} ms · ${s.slow_statements} logged since start`;
+    } catch (err) {
+      $slowStatus.textContent = `Unavailable: ${err.message}`;
+    }
+  }
+
+  function setSlowMsg(text, isError) {
+    if (!$slowMsg) return;
+    if (!text) {
+      $slowMsg.hidden = true;
+      $slowMsg.textContent = "";
+      return;
+    }
+    $slowMsg.hidden = false;
+    $slowMsg.textContent = text;
+    $slowMsg.classList.toggle("settings-msg-error", !!isError);
+  }
+
+  async function saveSlowQueryConfig() {
+    if (!$slowSave) return;
+    const raw = ($slowMs && $slowMs.value.trim()) || "";
+    const ms = raw === "" ? 0 : Number(raw);
+    if (!Number.isInteger(ms) || ms < 0) {
+      setSlowMsg("Enter a whole number of milliseconds, or leave it blank to turn the log off.", true);
+      return;
+    }
+    $slowSave.disabled = true;
+    $slowSave.textContent = "Saving…";
+    setSlowMsg("");
+    try {
+      const r = await fetch("/config/slow-query", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ threshold_ms: ms === 0 ? null : ms }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data.error || `${r.status} ${r.statusText}`);
+      }
+      await loadSlowQueryConfig();
+      setSlowMsg(
+        ms === 0 ? "Saved — the slow-statement log is off." : "Saved — applies now, until the server restarts.",
+        false,
+      );
+    } catch (err) {
+      setSlowMsg(`Save failed: ${err.message}`, true);
+    } finally {
+      $slowSave.disabled = false;
+      $slowSave.textContent = "Save";
+    }
+  }
+
   function openSettings() {
     if (!$settingsModal) return;
     $settingsModal.hidden = false;
     $settingsModal.setAttribute("aria-hidden", "false");
     loadEmbeddingsConfig();
     loadText2CypherConfig();
+    loadSlowQueryConfig();
   }
   function closeSettings() {
     if (!$settingsModal) return;
@@ -2798,10 +2868,12 @@
     $settingsRefresh.addEventListener("click", () => {
       loadEmbeddingsConfig();
       loadText2CypherConfig();
+      loadSlowQueryConfig();
     });
   }
   if ($embSave) $embSave.addEventListener("click", saveEmbeddingsConfig);
   if ($t2cSave) $t2cSave.addEventListener("click", saveText2CypherConfig);
+  if ($slowSave) $slowSave.addEventListener("click", saveSlowQueryConfig);
   if ($settingsModal) {
     $settingsModal.addEventListener("click", (e) => {
       if (e.target === $settingsModal) closeSettings();

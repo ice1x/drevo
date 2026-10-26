@@ -834,6 +834,29 @@ async fn ui_html_settings_panel_configures_text_to_cypher() {
 }
 
 #[tokio::test]
+async fn ui_html_settings_panel_sets_the_slow_statement_threshold() {
+    // The slow-statement log can be turned on from the Settings panel while
+    // an incident is happening (GET/POST /config/slow-query).
+    let app = make_app();
+    let (_status, _ct, bytes) = get(&app, "/ui").await;
+    let body = String::from_utf8(bytes).expect("utf-8");
+    for id in [
+        "settings-slowquery-status",
+        "settings-slowquery-ms",
+        "settings-slowquery-save",
+        "settings-slowquery-msg",
+    ] {
+        assert!(body.contains(&format!("id=\"{id}\"")), "missing #{id}");
+    }
+    let (_status, _ct, bytes) = get(&app, "/ui/app.js").await;
+    let js = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        js.contains("/config/slow-query"),
+        "app.js must call the endpoint"
+    );
+}
+
+#[tokio::test]
 async fn ui_html_includes_storage_panel() {
     // The Storage panel (bloat + keyspaces + backup) is opened from the ⛁
     // topbar button and rendered into the #storage-modal dialog.

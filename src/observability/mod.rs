@@ -668,6 +668,10 @@ pub struct DrevoMetrics {
     /// [`crate::problems::statement_timeouts`] by the `/metrics` handler via
     /// [`DrevoMetrics::sync_statement_timeouts`].
     statement_timeouts: Counter,
+    /// `drevo_slow_statements_total` — statements logged as slow
+    /// (`DREVO_SLOW_QUERY_MS`); mirrors [`crate::problems::slow_statements`]
+    /// via [`DrevoMetrics::sync_slow_statements`].
+    slow_statements: Counter,
     /// `drevo_connections_rejected_total{protocol="bolt"|"http"}` — Bolt
     /// connections and HTTP requests refused by the connection limits.
     connections_rejected: [Counter; 2],
@@ -778,6 +782,11 @@ impl DrevoMetrics {
             "Statements stopped by the statement timeout (DREVO_QUERY_TIMEOUT_MS).",
             &[],
         );
+        let slow_statements = registry.counter(
+            "drevo_slow_statements_total",
+            "Statements that ran longer than the slow-statement threshold (DREVO_SLOW_QUERY_MS).",
+            &[],
+        );
         let connections_rejected = ["bolt", "http"].map(|protocol| {
             registry.counter(
                 "drevo_connections_rejected_total",
@@ -829,6 +838,7 @@ impl DrevoMetrics {
             uptime_seconds,
             storage_file_bytes,
             statement_timeouts,
+            slow_statements,
             connections_rejected,
             connections_active,
             tx_conflicts,
@@ -873,6 +883,15 @@ impl DrevoMetrics {
         let current = self.statement_timeouts.get();
         if total > current {
             self.statement_timeouts.inc_by(total - current);
+        }
+    }
+
+    /// Bring `drevo_slow_statements_total` up to the process-wide `total`
+    /// (the counter only ever moves forward).
+    pub fn sync_slow_statements(&self, total: u64) {
+        let current = self.slow_statements.get();
+        if total > current {
+            self.slow_statements.inc_by(total - current);
         }
     }
 

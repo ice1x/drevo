@@ -142,6 +142,15 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Slow statements are logged** (issue #752). With `DREVO_SLOW_QUERY_MS`
+  set, every statement that runs longer is logged once at WARN (target
+  `drevo::slow_query`) with its duration, text, parameter names (never
+  values), protocol, user and database, in auto-commit mode and in explicit
+  transactions alike. It shows in the problem feed and the Web UI's
+  notifications and is counted in `drevo_slow_statements_total`. The
+  threshold can be changed at runtime from the Settings panel or
+  `POST /config/slow-query`. Off by default.
+
 - **An explicit transaction has a write limit** (issue #751). A transaction
   keeps every write in memory until it commits, so one `BEGIN` that never
   commits could grow the server until the OS killed it. `DREVO_MAX_TX_WRITES`

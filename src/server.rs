@@ -29,6 +29,7 @@
 //! | `DREVO_READ_ONLY` | `false`     | Serve every database read-only: reads, search and export work, writes and schema changes fail with `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase`, and nothing in the data directory is written |
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
+//! | `DREVO_SLOW_QUERY_MS` | unset (off) | Log every statement that runs longer, at WARN with its duration, text, parameter names (not values), protocol, user and database; it shows in the Web UI's problem feed and `drevo_slow_statements_total`. Changeable at runtime with `POST /config/slow-query`. `0` = off |
 //! | `DREVO_MAX_TX_WRITES` | `1000000` | How many writes one explicit transaction may buffer before it commits; the statement that goes over fails with `Neo.ClientError.General.TransactionOutOfMemoryError` and the transaction is rolled back. `0` = no limit |
 //! | `DREVO_TX_ISOLATION` | `snapshot` | When an explicit transaction may commit after others committed: `snapshot` (unless they touched the same records) or `serializable` (only if nothing committed) |
 //! | `DREVO_TX_CONFLICT_HISTORY` | `10000` | Recent commits remembered to decide whether a transaction overlapped with them |
@@ -109,6 +110,9 @@ pub struct Config {
     /// Per-statement wall-clock limit from `DREVO_QUERY_TIMEOUT_MS` (#547);
     /// `None` (unset or `0`) means no limit.
     pub query_timeout: Option<std::time::Duration>,
+    /// Log statements that run longer than this, from `DREVO_SLOW_QUERY_MS`;
+    /// `None` (unset or `0`) means off.
+    pub slow_query: Option<std::time::Duration>,
     /// How long a Bolt connection holding an open transaction may send
     /// nothing before it is closed and the transaction rolled back, from
     /// `DREVO_IDLE_SESSION_TIMEOUT_MS`; `None` (unset or `0`) means no limit.
@@ -302,6 +306,12 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_SLOW_QUERY_MS` was not a non-negative integer.
+    #[error("invalid DREVO_SLOW_QUERY_MS value `{value}`: expected milliseconds (0 = off)")]
+    InvalidSlowQuery {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_IDLE_SESSION_TIMEOUT_MS` was not a non-negative integer.
     #[error(
         "invalid DREVO_IDLE_SESSION_TIMEOUT_MS value `{value}`: expected milliseconds (0 = no limit)"
@@ -453,6 +463,14 @@ impl Config {
                 Ok(0) => None,
                 Ok(ms) => Some(std::time::Duration::from_millis(ms)),
                 Err(_) => return Err(ConfigError::InvalidQueryTimeout { value: raw }),
+            },
+        };
+        let slow_query = match getter("DREVO_SLOW_QUERY_MS") {
+            None => None,
+            Some(raw) => match raw.trim().parse::<u64>() {
+                Ok(0) => None,
+                Ok(ms) => Some(std::time::Duration::from_millis(ms)),
+                Err(_) => return Err(ConfigError::InvalidSlowQuery { value: raw }),
             },
         };
 
@@ -669,6 +687,7 @@ impl Config {
                 .map(PathBuf::from),
             engine,
             query_timeout,
+            slow_query,
             idle_session_timeout,
             max_connections,
             http_max_in_flight,
@@ -1242,6 +1261,8 @@ async fn run_native_durable(
     // Opt-in statement timeout (#547): every database, including ones created
     // later through the catalog, stops a statement past this limit.
     registry.set_statement_timeout(cfg.query_timeout);
+    // Statements slower than this are logged at WARN (issue #752).
+    crate::problems::set_slow_query_threshold(cfg.slow_query);
     // Bolt connections that hold a transaction open and go silent.
     registry.set_idle_session_timeout(cfg.idle_session_timeout);
     // How many Bolt connections and HTTP requests are served at once.
