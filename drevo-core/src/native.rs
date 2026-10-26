@@ -1520,6 +1520,8 @@ pub struct NativeGraph {
     conflicts: ConflictCounters,
     /// The [`Isolation`] of transactions that do not ask for one.
     isolation: std::sync::atomic::AtomicU8,
+    /// How many writes an explicit transaction may buffer; 0 is no limit.
+    max_tx_writes: std::sync::atomic::AtomicUsize,
 }
 
 /// Rejected and merged commits — see [`NativeGraph::conflict_stats`].
@@ -3348,6 +3350,18 @@ impl NativeGraph {
 
     /// [`Self::tx_begin`] at the given [`Isolation`] instead of the graph's.
     pub fn tx_begin_with(&self, isolation: Isolation) -> NativeTxId {
+        self.register_tx(isolation, true)
+    }
+
+    /// [`Self::tx_begin`] for one statement that a server runs as a
+    /// transaction of its own, committed when the statement ends. The
+    /// write limit of [`Self::set_max_tx_writes`], which bounds what a
+    /// client's transaction holds across statements, does not apply.
+    pub fn tx_begin_statement(&self) -> NativeTxId {
+        self.register_tx(self.isolation(), false)
+    }
+
+    fn register_tx(&self, isolation: Isolation, limited: bool) -> NativeTxId {
         let base = Arc::clone(&read(&self.inner));
         let id = self
             .next_reg_tx
@@ -3363,6 +3377,7 @@ impl NativeGraph {
                     base,
                     ops: Vec::new(),
                     isolation,
+                    limited,
                 },
             );
         NativeTxId(id)
@@ -3403,11 +3418,17 @@ impl NativeGraph {
     /// assert!(g.tx_has_writes(tx));
     /// ```
     pub fn tx_has_writes(&self, id: NativeTxId) -> bool {
+        self.tx_write_count(id).is_some_and(|n| n > 0)
+    }
+
+    /// How many writes registered transaction `id` buffers, or `None` for a
+    /// closed id. See [`Self::set_max_tx_writes`].
+    pub fn tx_write_count(&self, id: NativeTxId) -> Option<usize> {
         self.reg_txs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id.0)
-            .is_some_and(|slot| !slot.ops.is_empty())
+            .map(|slot| slot.ops.len())
     }
 
     /// The nodes registered transaction `id` has created, updated or deleted,
@@ -3945,6 +3966,7 @@ impl NativeGraph {
             history: std::sync::Mutex::new(CommitHistory::default()),
             conflicts: ConflictCounters::default(),
             isolation: std::sync::atomic::AtomicU8::new(0),
+            max_tx_writes: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -4303,6 +4325,7 @@ impl NativeGraph {
             history: std::sync::Mutex::new(CommitHistory::default()),
             conflicts: ConflictCounters::default(),
             isolation: std::sync::atomic::AtomicU8::new(0),
+            max_tx_writes: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -4612,6 +4635,8 @@ struct TxSlot {
     ops: Vec<WalOp>,
     /// When it may commit after others committed.
     isolation: Isolation,
+    /// Whether [`NativeGraph::set_max_tx_writes`] applies.
+    limited: bool,
 }
 
 /// Handle to a registered (session-owned) transaction — see
@@ -4690,6 +4715,9 @@ impl NativeTxEngine<'_> {
 impl GraphEngine for NativeTxEngine<'_> {
     fn create_node(&self, new_node: NewNode) -> Result<Node> {
         self.with_slot(|slot| {
+            if slot.limited {
+                self.graph.check_tx_room(slot.ops.len())?;
+            }
             let node = Arc::make_mut(&mut slot.working).create_node(new_node)?;
             slot.ops.push(WalOp::UpsertNode(node.clone()));
             Ok(node)
@@ -4702,6 +4730,9 @@ impl GraphEngine for NativeTxEngine<'_> {
 
     fn update_node(&self, id: u64, patch: NodePatch) -> Result<Node> {
         self.with_slot(|slot| {
+            if slot.limited {
+                self.graph.check_tx_room(slot.ops.len())?;
+            }
             let node = Arc::make_mut(&mut slot.working).update_node(id, patch)?;
             slot.ops.push(WalOp::UpsertNode(node.clone()));
             Ok(node)
@@ -4710,6 +4741,9 @@ impl GraphEngine for NativeTxEngine<'_> {
 
     fn delete_node(&self, id: u64) -> Result<()> {
         self.with_slot(|slot| {
+            if slot.limited {
+                self.graph.check_tx_room(slot.ops.len())?;
+            }
             Arc::make_mut(&mut slot.working).delete_node(id)?;
             slot.ops.push(WalOp::DeleteNode(id));
             Ok(())
@@ -4718,6 +4752,9 @@ impl GraphEngine for NativeTxEngine<'_> {
 
     fn create_edge(&self, new_edge: NewEdge) -> Result<Edge> {
         self.with_slot(|slot| {
+            if slot.limited {
+                self.graph.check_tx_room(slot.ops.len())?;
+            }
             let edge = Arc::make_mut(&mut slot.working).create_edge(new_edge)?;
             slot.ops.push(WalOp::UpsertEdge(edge.clone()));
             Ok(edge)
@@ -4730,6 +4767,9 @@ impl GraphEngine for NativeTxEngine<'_> {
 
     fn update_edge(&self, id: u64, patch: EdgePatch) -> Result<Edge> {
         self.with_slot(|slot| {
+            if slot.limited {
+                self.graph.check_tx_room(slot.ops.len())?;
+            }
             let edge = Arc::make_mut(&mut slot.working).update_edge(id, patch)?;
             slot.ops.push(WalOp::UpsertEdge(edge.clone()));
             Ok(edge)
@@ -4738,6 +4778,9 @@ impl GraphEngine for NativeTxEngine<'_> {
 
     fn delete_edge(&self, id: u64) -> Result<()> {
         self.with_slot(|slot| {
+            if slot.limited {
+                self.graph.check_tx_room(slot.ops.len())?;
+            }
             Arc::make_mut(&mut slot.working).delete_edge(id)?;
             slot.ops.push(WalOp::DeleteEdge(id));
             Ok(())
@@ -4883,6 +4926,7 @@ impl NativeTx<'_> {
     /// # Errors
     /// None today; the `Result` matches [`GraphEngine::create_node`].
     pub fn create_node(&mut self, new_node: NewNode) -> Result<Node> {
+        self.engine.check_tx_room(self.ops.len())?;
         let node = Arc::make_mut(&mut self.working).create_node(new_node)?;
         self.ops.push(WalOp::UpsertNode(node.clone()));
         Ok(node)
@@ -4893,6 +4937,7 @@ impl NativeTx<'_> {
     /// # Errors
     /// Propagates any [`CoreError`] from the update.
     pub fn update_node(&mut self, id: u64, patch: NodePatch) -> Result<Node> {
+        self.engine.check_tx_room(self.ops.len())?;
         let node = Arc::make_mut(&mut self.working).update_node(id, patch)?;
         self.ops.push(WalOp::UpsertNode(node.clone()));
         Ok(node)
@@ -4904,6 +4949,7 @@ impl NativeTx<'_> {
     /// [`CoreError::NodeNotFound`] if
     /// absent in the transaction's view.
     pub fn delete_node(&mut self, id: u64) -> Result<()> {
+        self.engine.check_tx_room(self.ops.len())?;
         Arc::make_mut(&mut self.working).delete_node(id)?;
         self.ops.push(WalOp::DeleteNode(id));
         Ok(())
@@ -4914,6 +4960,7 @@ impl NativeTx<'_> {
     /// # Errors
     /// Propagates any [`CoreError`] from the create.
     pub fn create_edge(&mut self, new_edge: NewEdge) -> Result<Edge> {
+        self.engine.check_tx_room(self.ops.len())?;
         let edge = Arc::make_mut(&mut self.working).create_edge(new_edge)?;
         self.ops.push(WalOp::UpsertEdge(edge.clone()));
         Ok(edge)
@@ -4924,6 +4971,7 @@ impl NativeTx<'_> {
     /// # Errors
     /// Propagates any [`CoreError`] from the update.
     pub fn update_edge(&mut self, id: u64, patch: EdgePatch) -> Result<Edge> {
+        self.engine.check_tx_room(self.ops.len())?;
         let edge = Arc::make_mut(&mut self.working).update_edge(id, patch)?;
         self.ops.push(WalOp::UpsertEdge(edge.clone()));
         Ok(edge)
@@ -4935,6 +4983,7 @@ impl NativeTx<'_> {
     /// [`CoreError::EdgeNotFound`] if
     /// absent in the transaction's view.
     pub fn delete_edge(&mut self, id: u64) -> Result<()> {
+        self.engine.check_tx_room(self.ops.len())?;
         Arc::make_mut(&mut self.working).delete_edge(id)?;
         self.ops.push(WalOp::DeleteEdge(id));
         Ok(())
@@ -5106,6 +5155,61 @@ impl NativeGraph {
     pub fn set_isolation(&self, isolation: Isolation) {
         self.isolation
             .store(isolation.to_u8(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How many writes an explicit transaction may buffer before it commits,
+    /// or `None` for no limit (the default).
+    pub fn max_tx_writes(&self) -> Option<usize> {
+        match self
+            .max_tx_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            n => Some(n),
+        }
+    }
+
+    /// Cap the writes an explicit transaction may buffer before it commits;
+    /// `None` or `Some(0)` removes the cap. It applies to open transactions
+    /// from their next write. Auto-commit writes are not limited.
+    ///
+    /// A transaction keeps every write in memory until it commits, so the
+    /// cap bounds what one runaway transaction can hold. The write that
+    /// would go over it fails with [`CoreError::TransactionTooLarge`] and
+    /// changes nothing.
+    ///
+    /// ```
+    /// use drevo_core::engine::GraphEngine;
+    /// use drevo_core::error::CoreError;
+    /// use drevo_core::model::{NewNode, Properties};
+    /// use drevo_core::native::NativeGraph;
+    ///
+    /// let g = NativeGraph::new();
+    /// g.set_max_tx_writes(Some(1));
+    /// let mut tx = g.begin();
+    /// let node = |t: &str| NewNode {
+    ///     kind: "note".into(),
+    ///     title: t.into(),
+    ///     body: String::new(),
+    ///     body_html: String::new(),
+    ///     properties: Properties::default(),
+    /// };
+    /// tx.create_node(node("a")).unwrap();
+    /// let err = tx.create_node(node("b")).unwrap_err();
+    /// assert!(matches!(err, CoreError::TransactionTooLarge { limit: 1 }));
+    /// ```
+    pub fn set_max_tx_writes(&self, limit: Option<usize>) {
+        self.max_tx_writes
+            .store(limit.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Fail with [`CoreError::TransactionTooLarge`] when a transaction that
+    /// buffers `buffered` writes may not buffer one more.
+    fn check_tx_room(&self, buffered: usize) -> Result<()> {
+        match self.max_tx_writes() {
+            Some(limit) if buffered >= limit => Err(CoreError::TransactionTooLarge { limit }),
+            _ => Ok(()),
+        }
     }
 
     /// How many commits the live state has seen since the engine was opened.

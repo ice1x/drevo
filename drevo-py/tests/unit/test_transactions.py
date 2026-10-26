@@ -232,3 +232,38 @@ def test_closing_the_database_with_an_open_transaction_does_not_hang() -> None:
     db.close()  # must not wait for the transaction object to go away
     with pytest.raises(RuntimeError):
         tx.execute("RETURN 1 AS v")
+
+
+# ── Write limit ─────────────────────────────────────────────────────
+
+
+def test_no_write_limit_unless_set(drevo_db: drevo.Drevo) -> None:
+    assert drevo_db.max_tx_writes() is None
+    drevo_db.set_max_tx_writes(25)
+    assert drevo_db.max_tx_writes() == 25
+    drevo_db.set_max_tx_writes(None)
+    assert drevo_db.max_tx_writes() is None
+
+
+def test_a_transaction_within_the_write_limit_commits(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    drevo_db.set_max_tx_writes(3)
+    with drevo_db.transaction() as tx:
+        for _ in range(3):
+            tx.execute("CREATE (:T {name: $n})", {"n": fake.name()})
+    assert count(drevo_db, "T") == 3
+
+
+def test_going_over_the_write_limit_raises_and_rolls_back(
+    drevo_db: drevo.Drevo, fake: Faker
+) -> None:
+    drevo_db.set_max_tx_writes(3)
+    tx = drevo_db.begin()
+    tx.execute("CREATE (:T {name: $n})", {"n": fake.name()})
+    with pytest.raises(drevo.TransactionTooLarge, match="3"):
+        tx.execute("UNWIND range(1, 5) AS i CREATE (:T {i: i})")
+    assert tx.closed
+    with pytest.raises(drevo.TransactionError):
+        tx.commit()
+    assert count(drevo_db, "T") == 0
+    drevo_db.execute("UNWIND range(1, 5) AS i CREATE (:T {i: i})")  # auto-commit is not limited
+    assert count(drevo_db, "T") == 5

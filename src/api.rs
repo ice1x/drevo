@@ -141,6 +141,14 @@ impl IntoResponse for ApiError {
                     }
                     .into_response();
                 }
+                DrevoError::TransactionTooLarge { .. } => {
+                    return ApiError::Coded {
+                        status: StatusCode::INSUFFICIENT_STORAGE,
+                        code: TRANSACTION_OUT_OF_MEMORY,
+                        message: err.to_string(),
+                    }
+                    .into_response();
+                }
                 DrevoError::ConstraintViolation { .. } => {
                     return ApiError::Coded {
                         status: StatusCode::CONFLICT,
@@ -183,6 +191,10 @@ pub const CONSTRAINT_VALIDATION_FAILED: &str = "Neo.ClientError.Schema.Constrain
 /// The Neo4j code of a write to a read-only database, the `code` of its 403.
 pub const FORBIDDEN_ON_READ_ONLY_DATABASE: &str =
     "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase";
+
+/// The Neo4j code of a statement that took an explicit transaction over its
+/// write limit (`DREVO_MAX_TX_WRITES`), the `code` of its 507.
+pub const TRANSACTION_OUT_OF_MEMORY: &str = "Neo.ClientError.General.TransactionOutOfMemoryError";
 
 /// Build a unified JSON error response with both `error` (message) and
 /// `status` (numeric HTTP status code) fields.  Every error response
@@ -796,6 +808,11 @@ mod error_mapping_tests {
             "ReadOnly → 403",
         );
         assert_eq!(
+            status_of(DrevoError::TransactionTooLarge { limit: 9 }),
+            StatusCode::INSUFFICIENT_STORAGE,
+            "TransactionTooLarge → 507",
+        );
+        assert_eq!(
             status_of(DrevoError::PreparedTransactionPending(vec!["g".into()])),
             StatusCode::SERVICE_UNAVAILABLE,
             "PreparedTransactionPending → 503 (retry once resolved, #556)",
@@ -834,6 +851,7 @@ mod error_mapping_tests {
                 DrevoError::PreparedTransactionPending(_) => "PreparedTransactionPending",
                 DrevoError::ConstraintViolation { .. } => "ConstraintViolation",
                 DrevoError::InvalidArgument(_) => "InvalidArgument",
+                DrevoError::TransactionTooLarge { .. } => "TransactionTooLarge",
             }
         }
     }

@@ -123,6 +123,9 @@ pub struct TransactionInfo {
     pub query_elapsed: Option<Duration>,
     /// Whether it was terminated and has not finished yet.
     pub terminated: bool,
+    /// How many writes an explicit transaction buffers, as of its last
+    /// statement; `None` for a single statement.
+    pub buffered_writes: Option<u64>,
 }
 
 /// One listed statement or transaction.
@@ -136,6 +139,9 @@ pub(crate) struct Entry {
     started: Instant,
     query: Mutex<Option<(String, Instant)>>,
     terminated: Arc<AtomicBool>,
+    /// The writes an explicit transaction buffers (see
+    /// [`TransactionInfo::buffered_writes`]).
+    writes: std::sync::atomic::AtomicU64,
 }
 
 impl Entry {
@@ -147,6 +153,11 @@ impl Entry {
     /// Whether it was terminated.
     pub(crate) fn is_terminated(&self) -> bool {
         self.terminated.load(Ordering::Relaxed)
+    }
+
+    /// Record how many writes the explicit transaction buffers.
+    pub(crate) fn set_buffered_writes(&self, writes: u64) {
+        self.writes.store(writes, Ordering::Relaxed);
     }
 
     /// Show `query` as its current statement, or none.
@@ -169,6 +180,7 @@ impl Entry {
             query: query.as_ref().map(|(q, _)| q.clone()),
             query_elapsed: query.as_ref().map(|(_, at)| at.elapsed()),
             terminated: self.is_terminated(),
+            buffered_writes: self.explicit.then(|| self.writes.load(Ordering::Relaxed)),
         }
     }
 }
@@ -360,6 +372,7 @@ impl Transactions {
             started: Instant::now(),
             query: Mutex::new(None),
             terminated: Arc::new(AtomicBool::new(false)),
+            writes: std::sync::atomic::AtomicU64::new(0),
         });
         if !explicit {
             entry.set_query(query);

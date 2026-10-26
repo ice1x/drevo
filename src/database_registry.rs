@@ -466,9 +466,22 @@ impl DatabaseRegistry {
         }
     }
 
+    /// Cap how many writes one explicit transaction may buffer before it
+    /// commits, on every database (`DREVO_MAX_TX_WRITES`); `None` removes
+    /// the cap. See [`crate::native::NativeGraph::set_max_tx_writes`].
+    pub fn set_max_tx_writes(&self, limit: Option<usize>) {
+        self.default.graph().set_max_tx_writes(limit);
+        for service in self.read().values() {
+            service.graph().set_max_tx_writes(limit);
+        }
+    }
+
     /// Give a new database the server-wide settings the default carries.
     fn inherit_settings(&self, service: &NativeService) {
         let default = self.default_service();
+        service
+            .graph()
+            .set_max_tx_writes(default.graph().max_tx_writes());
         service.set_statement_timeout(default.statement_timeout());
         service.set_isolation(default.graph().isolation());
         service.set_conflict_history(default.graph().conflict_history_capacity());

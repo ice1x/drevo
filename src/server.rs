@@ -29,6 +29,7 @@
 //! | `DREVO_READ_ONLY` | `false`     | Serve every database read-only: reads, search and export work, writes and schema changes fail with `Neo.ClientError.General.ForbiddenOnReadOnlyDatabase`, and nothing in the data directory is written |
 //! | `DREVO_AUTH`      | (unset)     | First user when there are none (`auth` feature), as Neo4j's `NEO4J_AUTH`: `user/password`, `none`, or unset for `neo4j` with a generated password that is logged once and must be changed. Users live in `<data_dir>/security.json`. |
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
+//! | `DREVO_MAX_TX_WRITES` | `1000000` | How many writes one explicit transaction may buffer before it commits; the statement that goes over fails with `Neo.ClientError.General.TransactionOutOfMemoryError` and the transaction is rolled back. `0` = no limit |
 //! | `DREVO_TX_ISOLATION` | `snapshot` | When an explicit transaction may commit after others committed: `snapshot` (unless they touched the same records) or `serializable` (only if nothing committed) |
 //! | `DREVO_TX_CONFLICT_HISTORY` | `10000` | Recent commits remembered to decide whether a transaction overlapped with them |
 //! | `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once; one more is refused at `HELLO` with `Neo.TransientError.Request.NoThreadsAvailable`; `0` = no limit |
@@ -128,6 +129,10 @@ pub struct Config {
     /// The isolation of explicit transactions that do not ask for one, from
     /// `DREVO_TX_ISOLATION` (`snapshot`, the default, or `serializable`).
     pub tx_isolation: crate::native::Isolation,
+    /// How many writes one explicit transaction may buffer before it commits,
+    /// from `DREVO_MAX_TX_WRITES` (default
+    /// [`crate::limits::DEFAULT_MAX_TX_WRITES`]; `0` = no limit, `None`).
+    pub max_tx_writes: Option<usize>,
     /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
     /// `0` disables the alert).
@@ -331,6 +336,12 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_MAX_TX_WRITES` was not a whole number.
+    #[error("invalid DREVO_MAX_TX_WRITES value `{value}`: expected a whole number of writes (0 = no limit)")]
+    InvalidMaxTxWrites {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_HTTP_FORMATS` named an unknown format or one not compiled in.
     #[error("invalid DREVO_HTTP_FORMATS: {0}")]
     InvalidHttpFormats(#[from] crate::wire_format::FormatsError),
@@ -482,6 +493,14 @@ impl Config {
                 "snapshot" => crate::native::Isolation::Snapshot,
                 "serializable" => crate::native::Isolation::Serializable,
                 _ => return Err(ConfigError::InvalidTxIsolation { value: raw }),
+            },
+        };
+        let max_tx_writes = match getter("DREVO_MAX_TX_WRITES") {
+            None => Some(crate::limits::DEFAULT_MAX_TX_WRITES),
+            Some(raw) => match raw.trim().parse::<usize>() {
+                Ok(0) => None,
+                Ok(n) => Some(n),
+                Err(_) => return Err(ConfigError::InvalidMaxTxWrites { value: raw }),
             },
         };
 
@@ -655,6 +674,7 @@ impl Config {
             http_max_in_flight,
             tx_conflict_history,
             tx_isolation,
+            max_tx_writes,
             prepared_tx_warn,
             prepared_tx_timeout,
             http_formats,
@@ -1232,6 +1252,8 @@ async fn run_native_durable(
     registry.set_conflict_history(cfg.tx_conflict_history);
     // When an explicit transaction may commit after others committed.
     registry.set_isolation(cfg.tx_isolation);
+    // How many writes one explicit transaction may buffer (issue #751).
+    registry.set_max_tx_writes(cfg.max_tx_writes);
     // The server's users, shared by HTTP, Bolt, gRPC and Flight (issue #633).
     let security = configure_security(&cfg)?;
     // The Web UI's signed-in sessions are listed by `SHOW CONNECTIONS`.

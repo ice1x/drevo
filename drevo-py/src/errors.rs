@@ -50,6 +50,8 @@ create_exception!(_drevo, ParameterMissingError, CypherError);
 // `ConflictError`.
 create_exception!(_drevo, TransactionConflict, TransactionError);
 create_exception!(_drevo, ConstraintViolation, ConflictError);
+// An explicit transaction that reached its write limit: not retryable as is.
+create_exception!(_drevo, TransactionTooLarge, TransactionError);
 // Two-phase commit (#556): misuse of a prepared transaction, and an unknown
 // global transaction id at resolution.
 create_exception!(_drevo, PreparedTransactionError, TransactionError);
@@ -79,6 +81,7 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
         py.get_type::<ParameterMissingError>(),
     )?;
     m.add("TransactionConflict", py.get_type::<TransactionConflict>())?;
+    m.add("TransactionTooLarge", py.get_type::<TransactionTooLarge>())?;
     m.add("ConstraintViolation", py.get_type::<ConstraintViolation>())?;
     m.add(
         "PreparedTransactionError",
@@ -127,6 +130,8 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
         // Writes are paused while a two-phase-commit transaction is prepared
         // (#556): retryable once it is resolved, like an optimistic conflict.
         e @ D::PreparedTransactionPending(_) => TransactionConflict::new_err(e.to_string()),
+        // The transaction reached its write limit: commit in smaller ones.
+        e @ D::TransactionTooLarge { .. } => TransactionTooLarge::new_err(e.to_string()),
         // A declared constraint refused the write (#604): the same class a
         // transaction commit raises for one.
         // `.args == (message, kind)`, as for a commit-time violation.

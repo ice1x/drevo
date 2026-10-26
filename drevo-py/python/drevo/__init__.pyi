@@ -339,6 +339,11 @@ class TransactionConflict(TransactionError):
     """The graph changed since the transaction began (optimistic commit).
     Retryable: begin a new transaction and run it again."""
 
+class TransactionTooLarge(TransactionError):
+    """A statement took an explicit transaction over its write limit
+    (`Drevo.set_max_tx_writes`); the transaction was rolled back. Not
+    retryable as is: commit in smaller transactions or raise the limit."""
+
 class PreparedTransactionError(TransactionError):
     """Misuse of two-phase commit, e.g. a gid that is already prepared (#556)."""
 
@@ -489,6 +494,16 @@ class Drevo:
 
     def transaction(self) -> Transaction:
         """Alias of `begin()` for `with db.transaction() as tx:`."""
+        ...
+
+    def set_max_tx_writes(self, limit: Optional[int]) -> None:
+        """Cap the writes one explicit transaction may buffer before it
+        commits; `None` or `0` removes the cap. Going over raises
+        `TransactionTooLarge` and rolls the transaction back."""
+        ...
+
+    def max_tx_writes(self) -> Optional[int]:
+        """The cap set by `set_max_tx_writes`, or `None`."""
         ...
     # ── Two-phase commit (#556) ─────────────────────────────────────────
     def commit_prepared(self, gid: str) -> None: ...

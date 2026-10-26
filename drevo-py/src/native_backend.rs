@@ -135,6 +135,16 @@ impl NativeBackend {
         self.svc.list_prepared()
     }
 
+    /// Cap the writes one explicit transaction may buffer; `None` removes it.
+    pub fn set_max_tx_writes(&self, limit: Option<usize>) {
+        self.svc.graph().set_max_tx_writes(limit);
+    }
+
+    /// The cap set by [`Self::set_max_tx_writes`].
+    pub fn max_tx_writes(&self) -> Option<usize> {
+        self.svc.graph().max_tx_writes()
+    }
+
     /// Discard transaction `tx`; `false` if it was already closed.
     pub fn rollback_tx(&self, tx: drevo::native::NativeTxId) -> bool {
         self.svc.rollback_tx(tx)

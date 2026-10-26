@@ -127,6 +127,19 @@ pub enum DrevoError {
     )]
     PreparedTransactionPending(Vec<String>),
 
+    /// An explicit transaction already buffers as many writes as it may
+    /// (`DREVO_MAX_TX_WRITES`, see
+    /// [`crate::native::NativeGraph::set_max_tx_writes`]). The statement
+    /// fails; the server rolls the transaction back. Not retryable as is.
+    /// Maps to HTTP 507, the Bolt status
+    /// `Neo.ClientError.General.TransactionOutOfMemoryError` and Python's
+    /// `TransactionTooLarge`.
+    #[error("the transaction reached its limit of {limit} uncommitted writes; commit in smaller transactions or raise the limit")]
+    TransactionTooLarge {
+        /// The limit, in buffered writes.
+        limit: usize,
+    },
+
     /// A request argument is out of range or has the wrong type, e.g. a
     /// negative relationship cost in a weighted path search. Nothing was
     /// changed. Maps to HTTP 400 and Python's `ValueError`.
@@ -175,6 +188,7 @@ impl From<drevo_core::error::CoreError> for DrevoError {
             C::ReadOnly => DrevoError::ReadOnly,
             C::Backend(msg) => DrevoError::Io(std::io::Error::other(msg)),
             C::PreparedTransactionPending(gids) => DrevoError::PreparedTransactionPending(gids),
+            C::TransactionTooLarge { limit } => DrevoError::TransactionTooLarge { limit },
             C::ConstraintViolation(v) => DrevoError::ConstraintViolation {
                 kind: v.kind,
                 message: v.message,
@@ -208,6 +222,7 @@ impl From<DrevoError> for drevo_core::error::CoreError {
             DrevoError::Locked => C::Locked,
             DrevoError::ReadOnly => C::ReadOnly,
             DrevoError::PreparedTransactionPending(gids) => C::PreparedTransactionPending(gids),
+            DrevoError::TransactionTooLarge { limit } => C::TransactionTooLarge { limit },
             DrevoError::ConstraintViolation { kind, message } => {
                 C::ConstraintViolation(drevo_core::native::ConstraintViolation { kind, message })
             }

@@ -770,6 +770,25 @@ impl Drevo {
         })
     }
 
+    /// Cap how many writes one explicit transaction may buffer before it
+    /// commits; `None` (the default) or `0` removes the cap. The statement
+    /// that goes over it raises `TransactionTooLarge` and rolls the
+    /// transaction back. Auto-commit statements are not limited.
+    #[pyo3(signature = (limit))]
+    fn set_max_tx_writes(&self, limit: Option<usize>) -> PyResult<()> {
+        guarded(|| {
+            with_db(&self.inner, |db| {
+                db.set_max_tx_writes(limit);
+                Ok(())
+            })
+        })
+    }
+
+    /// The cap set by `set_max_tx_writes`, or `None`.
+    fn max_tx_writes(&self) -> PyResult<Option<usize>> {
+        guarded(|| with_db(&self.inner, |db| Ok(db.max_tx_writes())))
+    }
+
     /// Two-phase commit (#556): apply the transaction prepared as `gid`.
     /// Raises `UnknownGidError` if nothing is prepared under it.
     fn commit_prepared(&self, py: Python<'_>, gid: &str) -> PyResult<()> {

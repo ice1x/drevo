@@ -1230,6 +1230,10 @@ fn run_cypher_on(
             crate::cypher::executor::ExecError::Storage(
                 err @ crate::error::DrevoError::ReadOnly,
             ) => ApiError::Db(err),
+            // An explicit transaction over its write limit (#751): 507.
+            crate::cypher::executor::ExecError::Storage(
+                err @ crate::error::DrevoError::TransactionTooLarge { .. },
+            ) => ApiError::Db(err),
             // `drevo.tx.*` on an unknown / heuristically rolled-back gid
             // (#590): the same status and code as the resolve routes.
             crate::cypher::executor::ExecError::PreparedTransactionUnresolved {

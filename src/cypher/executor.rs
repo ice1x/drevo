@@ -11224,6 +11224,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "isExplicit",
             "elapsedTimeMillis",
             "currentQueryElapsedTimeMillis",
+            "bufferedWrites",
         ]),
         "dbms.terminateTransactions" => Some(&["transactionId", "username", "message"]),
         // `SHOW CONNECTIONS` / `TERMINATE CONNECTIONS` (issue #669), after
@@ -12405,6 +12406,9 @@ fn transaction_row(t: &crate::transactions::TransactionInfo) -> Vec<Value> {
         Value::Integer(elapsed),
         t.query_elapsed
             .map_or(Value::Null, |d| Value::Integer(millis(d))),
+        t.buffered_writes.map_or(Value::Null, |n| {
+            Value::Integer(i64::try_from(n).unwrap_or(i64::MAX))
+        }),
     ]
 }
 

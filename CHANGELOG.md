@@ -142,6 +142,17 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **An explicit transaction has a write limit** (issue #751). A transaction
+  keeps every write in memory until it commits, so one `BEGIN` that never
+  commits could grow the server until the OS killed it. `DREVO_MAX_TX_WRITES`
+  (default 1,000,000; `0` = no limit) caps the writes one transaction may
+  buffer. The statement that goes over fails with Neo4j's
+  `Neo.ClientError.General.TransactionOutOfMemoryError` (HTTP 507, gRPC
+  `RESOURCE_EXHAUSTED`, drevo-py `TransactionTooLarge`), which drivers do not
+  retry, and the transaction is rolled back. `SHOW TRANSACTIONS` gains a
+  `bufferedWrites` column, and drevo-py gets `Drevo.set_max_tx_writes()`.
+  Auto-commit statements are not limited.
+
 - **Rejected transaction commits are classified and counted** (issue #749,
   slice 1). Each database keeps the records the newest `DREVO_TX_CONFLICT_HISTORY`
   (default 10,000) commits wrote, deleted and depend on, and when an explicit

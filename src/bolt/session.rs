@@ -482,6 +482,11 @@ mod codes {
     /// A write to a read-only database; not retried by drivers.
     pub const FORBIDDEN_ON_READ_ONLY_DATABASE: &str =
         "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase";
+    /// A statement took its explicit transaction over the write limit
+    /// (`DREVO_MAX_TX_WRITES`); the transaction was rolled back. A client
+    /// error, so drivers do not retry the same work.
+    pub const TRANSACTION_OUT_OF_MEMORY: &str =
+        "Neo.ClientError.General.TransactionOutOfMemoryError";
     /// A trigger that runs before the commit failed, so the transaction was
     /// rolled back.
     pub const TRANSACTION_HOOK_FAILED: &str = "Neo.ClientError.Transaction.TransactionHookFailed";
@@ -2292,6 +2297,10 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         // A write to a read-only database (#642).
         ExecError::Storage(crate::error::DrevoError::ReadOnly) => {
             codes::FORBIDDEN_ON_READ_ONLY_DATABASE
+        }
+        // The explicit transaction reached its write limit (#751).
+        ExecError::Storage(crate::error::DrevoError::TransactionTooLarge { .. }) => {
+            codes::TRANSACTION_OUT_OF_MEMORY
         }
         ExecError::Storage(_) => codes::STORAGE,
         ExecError::Timeout { .. } => codes::TIMED_OUT,

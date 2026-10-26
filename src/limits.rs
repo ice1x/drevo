@@ -31,6 +31,10 @@ pub const DEFAULT_MAX_CONNECTIONS: usize = 512;
 /// otherwise.
 pub const DEFAULT_HTTP_MAX_IN_FLIGHT: usize = 256;
 
+/// How many writes one explicit transaction may buffer before it commits,
+/// unless `DREVO_MAX_TX_WRITES` says otherwise.
+pub const DEFAULT_MAX_TX_WRITES: usize = 1_000_000;
+
 /// The Bolt status a refused connection gets in reply to `HELLO`. Neo4j sends
 /// it when it has no worker left for a connection; drivers treat it as
 /// transient and try again.
