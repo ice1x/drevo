@@ -158,7 +158,8 @@ The wrapped relationship must be variable-length (`-[*]-`, `-[:KNOWS*..5]-`, …
 must be exactly one of it; anything else is a recoverable `ExecError::InvalidFunctionCall`.
 
 `shortestPath` counts hops. For the path with the lowest summed cost (seconds,
-metres, …) use [`drevo.path.weighted`](#weighted-paths); for journeys on public
+metres, …) use [`drevo.path.weighted`](#weighted-paths); for every node within a
+cost budget, [`drevo.path.reachable`](#reachable-nodes); for journeys on public
 transport, [`drevo.path.timetable`](#timetable-routing).
 
 ### Weighted paths
@@ -216,6 +217,49 @@ CALL drevo.path.weighted(a, c, {
 YIELD path, cost
 RETURN cost, [n IN nodes(path) | [n.lat, n.lon]] AS coords
 ```
+
+### Reachable nodes
+
+`CALL drevo.path.reachable(start, options) YIELD node, cost, path` returns every
+node that can be reached from `start` within a cost budget, each with its
+least cost, cheapest first: what is within a 10-minute walk, or which stops
+are close enough to walk to. Nodes of equal cost come back in id order. It runs
+once per input row; a `null` start yields no row. `start` itself is always
+reached, at cost `0.0`.
+
+The options `relTypes`, `direction` and `cost` work as for
+[`drevo.path.weighted`](#weighted-paths), and so do the cost rules: a
+relationship without the cost property is not used, and a negative cost fails
+the call. With `direction: 'INCOMING'` the cost is that of getting from each
+node *to* `start`, over one-way streets.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `maxCost` | required | the budget; nodes that cost more are not reached |
+| `targets` | every node | `{label: 'Stop'}`: only nodes with this label are returned, though the search goes through every node |
+| `limit` | none | stop after this many nodes are returned |
+| `path` | `false` | `true` also returns the cheapest `path` to each node; otherwise `path` is `null` |
+
+The walking isochrone around a crossing, and the stops on it:
+
+```cypher
+CREATE (a:RoadNode {name: 'A'}), (b:RoadNode {name: 'B'}),
+       (c:RoadNode:Stop {name: 'C'}), (d:RoadNode:Stop {name: 'D'}),
+       (a)-[:ROAD {walk_s: 300}]->(b),
+       (b)-[:ROAD {walk_s: 300}]->(c),
+       (a)-[:PATH {walk_s: 100}]->(c),
+       (c)-[:ROAD {walk_s: 600}]->(d)
+WITH a
+CALL drevo.path.reachable(a, {
+  relTypes: ['ROAD', 'PATH'], direction: 'BOTH', cost: 'walk_s',
+  maxCost: 400, targets: {label: 'Stop'}, path: true
+})
+YIELD node, cost, path
+RETURN node.name AS stop, cost, [n IN nodes(path) | n.name] AS route
+```
+
+The only stop within 400 seconds is `C`, at cost `100.0` over the footpath
+(`route` is `['A', 'C']`); `D` costs `700.0`, over the budget.
 
 ### Timetable routing
 

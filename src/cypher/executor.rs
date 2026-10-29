@@ -6141,6 +6141,9 @@ impl<'a> Executor<'a> {
         if name == TIMETABLE {
             return self.run_timetable(c, columns);
         }
+        if name == REACHABLE {
+            return self.run_reachable(c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -6298,8 +6301,8 @@ impl<'a> Executor<'a> {
             None => None,
         };
         for row in prior {
-            let start = path_endpoint(&self.eval(&c.args[0], &row)?, c.span)?;
-            let end = path_endpoint(&self.eval(&c.args[1], &row)?, c.span)?;
+            let start = path_endpoint(&self.eval(&c.args[0], &row)?, WEIGHTED_PATH, c.span)?;
+            let end = path_endpoint(&self.eval(&c.args[1], &row)?, WEIGHTED_PATH, c.span)?;
             let options = weighted_path_options(&self.eval(&c.args[2], &row)?, c.span)?;
             let (Some(start), Some(end)) = (start, end) else {
                 continue;
@@ -6308,6 +6311,65 @@ impl<'a> Executor<'a> {
                 continue;
             };
             for out_row in self.visible_rows(vec![found])? {
+                let Some(items) = &items else {
+                    standalone.push(out_row);
+                    continue;
+                };
+                let mut next = row.clone();
+                for item in items {
+                    let idx = columns
+                        .iter()
+                        .position(|col| *col == item.name)
+                        .unwrap_or(0);
+                    let key = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                    next.insert(key, out_row[idx].clone());
+                }
+                if let Some(pred) = &c.where_clause {
+                    match self.eval(pred, &next)? {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) | Value::Null => continue,
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Boolean".into(),
+                                got: other.type_name().into(),
+                                span: pred.span(),
+                            });
+                        }
+                    }
+                }
+                kept.push(next);
+            }
+        }
+        self.bindings = kept;
+        if c.yields.is_none() {
+            self.result_columns = columns.iter().map(|c| c.to_string()).collect();
+            self.result_rows = standalone;
+        }
+        Ok(())
+    }
+
+    /// `CALL drevo.path.reachable(start, options) YIELD node, cost, path` —
+    /// every node within the options' `maxCost` of `start`, cheapest first,
+    /// once per row; `path` is `null` unless the options ask for it. A row
+    /// with a `null` start yields nothing. The options map is described at
+    /// [`reachable_options`].
+    fn run_reachable(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
+        let prior = std::mem::take(&mut self.bindings);
+        let mut kept = Vec::new();
+        let mut standalone = Vec::new();
+        let items = match &c.yields {
+            Some(items) if items.is_empty() => Some(yield_all(columns, c.span)),
+            Some(items) => Some(items.clone()),
+            None => None,
+        };
+        for row in prior {
+            let start = path_endpoint(&self.eval(&c.args[0], &row)?, REACHABLE, c.span)?;
+            let call = reachable_options(&self.eval(&c.args[1], &row)?, c.span)?;
+            let Some(start) = start else {
+                continue;
+            };
+            let found = self.find_reachable(start, &call, c.span)?;
+            for out_row in self.visible_rows(found)? {
                 let Some(items) = &items else {
                     standalone.push(out_row);
                     continue;
@@ -6513,6 +6575,18 @@ impl<'a> Executor<'a> {
             }
             Err(e) => return Err(ExecError::Storage(e)),
         };
+        Ok(Some(vec![
+            self.weighted_path_value(&found)?,
+            Value::Float(found.cost),
+        ]))
+    }
+
+    /// A found path as a Cypher path value of its nodes and relationships.
+    fn weighted_path_value(
+        &self,
+        found: &crate::weighted_path::WeightedPath,
+    ) -> ExecResultT<Value> {
+        let engine = self.engine();
         let mut nodes = Vec::with_capacity(found.nodes.len());
         for id in &found.nodes {
             let node = engine
@@ -6527,13 +6601,69 @@ impl<'a> Executor<'a> {
                 .ok_or(ExecError::Storage(DrevoError::EdgeNotFound(*id)))?;
             relationships.push(edge_to_value(&edge));
         }
-        Ok(Some(vec![
-            Value::Path(Arc::new(PathValue {
-                nodes,
-                relationships,
-            })),
-            Value::Float(found.cost),
-        ]))
+        Ok(Value::Path(Arc::new(PathValue {
+            nodes,
+            relationships,
+        })))
+    }
+
+    /// One `drevo.path.reachable` search over the statement's view of the
+    /// graph, as `[node, cost, path]` rows, cheapest first.
+    fn find_reachable(
+        &self,
+        start: u64,
+        call: &ReachableCall,
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let engine = self.engine();
+        let found = crate::weighted_path::reachable(
+            start,
+            &call.options,
+            &call.reach,
+            &|id| match &call.label {
+                None => Ok(true),
+                Some(label) => {
+                    Ok(engine
+                        .get_node(id)
+                        .map_err(DrevoError::from)?
+                        .is_some_and(|node| {
+                            node_labels_from_storage(&node).iter().any(|l| l == label)
+                        }))
+                }
+            },
+            &|id, dir, f| {
+                engine
+                    .for_each_edge_of(id, dir, f)
+                    .map_err(DrevoError::from)
+            },
+        );
+        let found = match found {
+            Ok(found) => found,
+            Err(DrevoError::InvalidArgument(message)) => {
+                return Err(ExecError::InvalidProcedureCall {
+                    name: REACHABLE.into(),
+                    message,
+                    span,
+                });
+            }
+            Err(e) => return Err(ExecError::Storage(e)),
+        };
+        let mut rows = Vec::with_capacity(found.len());
+        for reached in &found {
+            let node = engine
+                .get_node(reached.node)?
+                .ok_or(ExecError::Storage(DrevoError::NodeNotFound(reached.node)))?;
+            let path = match &reached.path {
+                Some(path) => self.weighted_path_value(path)?,
+                None => Value::Null,
+            };
+            rows.push(vec![
+                Value::Node(node_to_value(&node)),
+                Value::Float(reached.cost),
+                path,
+            ]);
+        }
+        Ok(rows)
     }
 
     /// `SEARCH var IN (VECTOR INDEX Label.property FOR expr [WHERE pred]
@@ -11111,14 +11241,22 @@ const WEIGHTED_PATH: &str = "drevo.path.weighted";
 /// The public-transport routing procedure, `drevo.path.timetable`.
 const TIMETABLE: &str = "drevo.path.timetable";
 
-/// A `drevo.path.weighted` end: a node's id, or `None` for `null`.
-fn path_endpoint(value: &Value, span: Span) -> ExecResultT<Option<u64>> {
+/// The `drevo.path.reachable` procedure: every node within a cost budget.
+const REACHABLE: &str = "drevo.path.reachable";
+
+/// A start or end node of a path procedure: a node's id, or `None` for
+/// `null`.
+fn path_endpoint(value: &Value, procedure: &str, span: Span) -> ExecResultT<Option<u64>> {
     match value {
         Value::Node(n) => Ok(Some(n.id)),
         Value::Null => Ok(None),
         other => Err(ExecError::InvalidProcedureCall {
-            name: WEIGHTED_PATH.into(),
-            message: format!("the start and end must be nodes, got {}", other.type_name()),
+            name: procedure.into(),
+            message: if procedure == WEIGHTED_PATH {
+                format!("the start and end must be nodes, got {}", other.type_name())
+            } else {
+                format!("the start must be a node, got {}", other.type_name())
+            },
             span,
         }),
     }
@@ -11401,16 +11539,182 @@ fn weighted_path_options(
     value: &Value,
     span: Span,
 ) -> ExecResultT<crate::weighted_path::WeightedPathOptions> {
-    use crate::weighted_path::{EdgeCost, GeoHeuristic, WeightedPathOptions};
+    use crate::weighted_path::GeoHeuristic;
     let refuse = |message: String| ExecError::InvalidProcedureCall {
         name: WEIGHTED_PATH.into(),
         message,
         span,
     };
-    let number = |v: &Value| match v {
+    path_search_options(
+        value,
+        WEIGHTED_PATH,
+        "relTypes, direction, cost, heuristic or maxCost",
+        span,
+        &mut |key, v, options| {
+            if key != "heuristic" {
+                return Ok(false);
+            }
+            let Value::Map(h) = v else {
+                return Err(refuse(format!(
+                    "heuristic must be a map, got {}",
+                    v.type_name()
+                )));
+            };
+            let name = |key: &str, default: &str| match h.get(key) {
+                None | Some(Value::Null) => Ok(default.to_string()),
+                Some(Value::String(s)) => Ok(s.clone()),
+                Some(other) => Err(refuse(format!(
+                    "heuristic {key} must be a property name, got {}",
+                    other.type_name()
+                ))),
+            };
+            if let Some(unknown) = h
+                .keys()
+                .find(|k| !matches!(k.as_str(), "lat" | "lon" | "maxSpeedMps"))
+            {
+                return Err(refuse(format!(
+                    "unknown heuristic option `{unknown}`; expected lat, lon or maxSpeedMps"
+                )));
+            }
+            let max_speed_mps = h
+                .get("maxSpeedMps")
+                .and_then(option_number)
+                .ok_or_else(|| {
+                    refuse(
+                        "heuristic needs maxSpeedMps, the fastest speed in metres per second"
+                            .into(),
+                    )
+                })?;
+            options.heuristic = Some(GeoHeuristic {
+                lat: name("lat", "lat")?,
+                lon: name("lon", "lon")?,
+                max_speed_mps,
+            });
+            Ok(true)
+        },
+    )
+}
+
+/// What `drevo.path.reachable` searches over: the shared path options, what
+/// to return, and the label a node needs to be returned.
+struct ReachableCall {
+    options: crate::weighted_path::WeightedPathOptions,
+    reach: crate::weighted_path::ReachableOptions,
+    label: Option<String>,
+}
+
+/// The options map of `drevo.path.reachable`: `relTypes`, `direction` and
+/// `cost` as for [`weighted_path_options`], and
+///
+/// - `maxCost` — required: the budget; nodes costing more are not reached;
+/// - `targets` — `{label}`: only nodes with this label are returned, though
+///   the search goes through every node;
+/// - `limit` — stop after this many nodes;
+/// - `path` — `true` to also return the path to each node.
+fn reachable_options(value: &Value, span: Span) -> ExecResultT<ReachableCall> {
+    let refuse = |message: String| ExecError::InvalidProcedureCall {
+        name: REACHABLE.into(),
+        message,
+        span,
+    };
+    let mut reach = crate::weighted_path::ReachableOptions::default();
+    let mut label = None;
+    let options = path_search_options(
+        value,
+        REACHABLE,
+        "relTypes, direction, cost, maxCost, targets, limit or path",
+        span,
+        &mut |key, v, _| {
+            match (key, v) {
+                ("targets", Value::Map(t)) => {
+                    if let Some(unknown) = t.keys().find(|k| k.as_str() != "label") {
+                        return Err(refuse(format!(
+                            "unknown targets option `{unknown}`; expected label"
+                        )));
+                    }
+                    label = match t.get("label") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(l)) => Some(l.clone()),
+                        Some(other) => {
+                            return Err(refuse(format!(
+                                "targets label must be a label name, got {}",
+                                other.type_name()
+                            )));
+                        }
+                    };
+                }
+                ("targets", other) => {
+                    return Err(refuse(format!(
+                        "targets must be a map like {{label: 'Stop'}}, got {}",
+                        other.type_name()
+                    )));
+                }
+                ("limit", Value::Integer(n)) if *n >= 0 => {
+                    reach.limit = Some(usize::try_from(*n).unwrap_or(usize::MAX));
+                }
+                ("limit", other) => {
+                    let got = match other {
+                        Value::Integer(n) => n.to_string(),
+                        other => other.type_name().to_string(),
+                    };
+                    return Err(refuse(format!(
+                        "limit must be a non-negative integer, got {got}"
+                    )));
+                }
+                ("path", Value::Bool(paths)) => reach.paths = *paths,
+                ("path", other) => {
+                    return Err(refuse(format!(
+                        "path must be true or false, got {}",
+                        other.type_name()
+                    )));
+                }
+                _ => return Ok(false),
+            }
+            Ok(true)
+        },
+    )?;
+    if options.max_cost.is_none() {
+        return Err(refuse(
+            "maxCost is required: the budget of the search, in the units of the cost".into(),
+        ));
+    }
+    Ok(ReachableCall {
+        options,
+        reach,
+        label,
+    })
+}
+
+/// A number option as a float.
+fn option_number(v: &Value) -> Option<f64> {
+    match v {
         Value::Integer(i) => Some(*i as f64),
         Value::Float(f) => Some(*f),
         _ => None,
+    }
+}
+
+/// The options the path procedures share — `relTypes`, `direction`, `cost`
+/// and `maxCost` — read from `value` for `procedure`. `null` values are
+/// ignored. Every other key goes to `extra`, which applies it and returns
+/// `true`, or returns `false` for a key it does not know; `expected` lists
+/// every key for that error.
+fn path_search_options(
+    value: &Value,
+    procedure: &str,
+    expected: &str,
+    span: Span,
+    extra: &mut dyn FnMut(
+        &str,
+        &Value,
+        &mut crate::weighted_path::WeightedPathOptions,
+    ) -> ExecResultT<bool>,
+) -> ExecResultT<crate::weighted_path::WeightedPathOptions> {
+    use crate::weighted_path::{EdgeCost, WeightedPathOptions};
+    let refuse = |message: String| ExecError::InvalidProcedureCall {
+        name: procedure.into(),
+        message,
+        span,
     };
     let Value::Map(map) = value else {
         return Err(refuse(format!(
@@ -11454,52 +11758,24 @@ fn weighted_path_options(
                 };
             }
             ("cost", Value::String(name)) => options.cost = EdgeCost::Property(name.clone()),
-            ("maxCost", v) if number(v).is_some() => options.max_cost = number(v),
-            ("heuristic", Value::Map(h)) => {
-                let name = |key: &str, default: &str| match h.get(key) {
-                    None | Some(Value::Null) => Ok(default.to_string()),
-                    Some(Value::String(s)) => Ok(s.clone()),
-                    Some(other) => Err(refuse(format!(
-                        "heuristic {key} must be a property name, got {}",
-                        other.type_name()
-                    ))),
-                };
-                if let Some(unknown) = h
-                    .keys()
-                    .find(|k| !matches!(k.as_str(), "lat" | "lon" | "maxSpeedMps"))
-                {
-                    return Err(refuse(format!(
-                        "unknown heuristic option `{unknown}`; expected lat, lon or maxSpeedMps"
-                    )));
-                }
-                let max_speed_mps = h.get("maxSpeedMps").and_then(number).ok_or_else(|| {
-                    refuse(
-                        "heuristic needs maxSpeedMps, the fastest speed in metres per second"
-                            .into(),
-                    )
-                })?;
-                options.heuristic = Some(GeoHeuristic {
-                    lat: name("lat", "lat")?,
-                    lon: name("lon", "lon")?,
-                    max_speed_mps,
-                });
-            }
-            (key @ ("direction" | "cost" | "maxCost" | "heuristic"), other) => {
+            ("maxCost", v) if option_number(v).is_some() => options.max_cost = option_number(v),
+            (key @ ("direction" | "cost" | "maxCost"), other) => {
                 let expected = match key {
                     "direction" => "a string",
                     "cost" => "the name of a numeric relationship property",
-                    "maxCost" => "a number",
-                    _ => "a map",
+                    _ => "a number",
                 };
                 return Err(refuse(format!(
                     "{key} must be {expected}, got {}",
                     other.type_name()
                 )));
             }
-            (other, _) => {
-                return Err(refuse(format!(
-                    "unknown option `{other}`; expected relTypes, direction, cost, heuristic or maxCost"
-                )));
+            (other, v) => {
+                if !extra(other, v, &mut options)? {
+                    return Err(refuse(format!(
+                        "unknown option `{other}`; expected {expected}"
+                    )));
+                }
             }
         }
     }
@@ -11594,6 +11870,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         WEIGHTED_PATH => Some(&["path", "cost"]),
         // drevo.path.timetable(starts, ends, options): earliest arrivals.
         TIMETABLE => Some(&["arriveAt", "departAt", "transfers", "legs"]),
+        // drevo.path.reachable(start, options): every node within a budget.
+        REACHABLE => Some(&["node", "cost", "path"]),
         // Fuzzy lookup through a text index (issue #593): node + edit distance.
         "drevo.text.fuzzy" => Some(&["node", "distance"]),
         // Engine-flip observability: engine mode + mirror routing counters.
@@ -11804,6 +12082,8 @@ fn procedure_arity(name: &str) -> usize {
         WEIGHTED_PATH => 3,
         // drevo.path.timetable(starts, ends, options).
         TIMETABLE => 3,
+        // drevo.path.reachable(start, options).
+        REACHABLE => 2,
         // drevo.text.fuzzy(indexName, query, maxEdits) (issue #593).
         "drevo.text.fuzzy" => 3,
         // drevo.engine.status() — no arguments.

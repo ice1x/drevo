@@ -207,6 +207,65 @@ where
     }
 }
 
+/// What [`reachable`] returns besides each node's cost.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReachableOptions {
+    /// Stop after this many nodes are returned; `None` returns them all.
+    pub limit: Option<usize>,
+    /// Also return the lowest-cost path to each node.
+    pub paths: bool,
+}
+
+/// A node within the budget of a [`reachable`] search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reached {
+    /// The node's id.
+    pub node: u64,
+    /// The least cost from the start to the node.
+    pub cost: f64,
+    /// The path from the start node to this node, when
+    /// [`ReachableOptions::paths`] is set.
+    pub path: Option<WeightedPath>,
+}
+
+/// Every node reachable from `from` within [`WeightedPathOptions::max_cost`],
+/// cheapest first, each at its least cost: a Dijkstra search that settles
+/// nodes in cost order and stops at the budget.
+///
+/// Relationship kinds, direction and costs follow the same rules as
+/// [`weighted_path`]. With [`Direction::Incoming`] the cost is that of
+/// getting from each node *to* `from`. `is_target` decides which settled
+/// nodes are returned (`from` included); the search still goes through the
+/// others. Nodes of equal cost come back in id order. `from` itself is
+/// returned at cost zero whether or not it exists, so callers check that
+/// first.
+///
+/// # Errors
+///
+/// [`DrevoError::InvalidArgument`] when `options` has a heuristic (there is
+/// no target to steer by), when `max_cost` is negative or not finite, or when
+/// a relationship the search reaches has a cost that is negative, not finite,
+/// or not a number. Errors from the two closures are passed through.
+pub fn reachable<T, E>(
+    from: u64,
+    options: &WeightedPathOptions,
+    reach: &ReachableOptions,
+    is_target: &T,
+    edges_of: &E,
+) -> Result<Vec<Reached>>
+where
+    T: Fn(u64) -> Result<bool>,
+    E: Fn(u64, Direction, &mut dyn FnMut(&Edge)) -> Result<()>,
+{
+    validate(options)?;
+    if options.heuristic.is_some() {
+        return Err(DrevoError::InvalidArgument(
+            "a reachable search has no target to steer by, so it takes no heuristic".into(),
+        ));
+    }
+    Search { options, edges_of }.reachable(from, reach, is_target)
+}
+
 /// A node's `(lat, lon)` under the heuristic's property names, when both are
 /// finite numbers.
 fn position(node: &Node, h: &GeoHeuristic) -> Option<(f64, f64)> {
@@ -422,6 +481,43 @@ where
             }
         }
         Ok(None)
+    }
+
+    /// Dijkstra from `from` until the budget: each node is settled once, at
+    /// its least cost, and returned when `is_target` accepts it.
+    fn reachable<T>(
+        &self,
+        from: u64,
+        reach: &ReachableOptions,
+        is_target: &T,
+    ) -> Result<Vec<Reached>>
+    where
+        T: Fn(u64) -> Result<bool>,
+    {
+        let mut found = Vec::new();
+        if reach.limit == Some(0) {
+            return Ok(found);
+        }
+        let mut side = Side::starting_at(from, 0.0);
+        while let Some(Entry { cost, node, .. }) = side.pop() {
+            if is_target(node)? {
+                let path = reach.paths.then(|| {
+                    let (nodes, edges) = side.walk_back(node);
+                    WeightedPath { nodes, edges, cost }
+                });
+                found.push(Reached { node, cost, path });
+                if reach.limit.is_some_and(|limit| found.len() >= limit) {
+                    break;
+                }
+            }
+            for (next, edge, step) in self.steps(node, self.options.direction)? {
+                let reached = cost + step;
+                if self.within_budget(reached) {
+                    side.relax(next, reached, reached, node, edge);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Bidirectional Dijkstra: grow from both ends, always on the side with
@@ -970,7 +1066,199 @@ mod tests {
         assert!((total - path.cost).abs() < 1e-9, "{total} vs {}", path.cost);
     }
 
+    impl Graph {
+        /// [`reachable`] over this graph; `targets` lists the nodes that may
+        /// be yielded, `None` meaning every node.
+        fn reach(
+            &self,
+            from: u64,
+            options: &WeightedPathOptions,
+            reach: &ReachableOptions,
+            targets: Option<&[u64]>,
+        ) -> Result<Vec<Reached>> {
+            reachable(
+                from,
+                options,
+                reach,
+                &|id| Ok(targets.is_none_or(|t| t.contains(&id))),
+                &|id, dir, f| {
+                    self.edges
+                        .iter()
+                        .filter(|e| match dir {
+                            Direction::Outgoing => e.from_id == id,
+                            Direction::Incoming => e.to_id == id,
+                            Direction::Both => e.from_id == id || e.to_id == id,
+                        })
+                        .for_each(&mut *f);
+                    Ok(())
+                },
+            )
+        }
+    }
+
+    fn costs(found: &[Reached]) -> Vec<(u64, f64)> {
+        found.iter().map(|r| (r.node, r.cost)).collect()
+    }
+
+    fn budget(max: f64) -> WeightedPathOptions {
+        WeightedPathOptions {
+            max_cost: Some(max),
+            ..by_cost()
+        }
+    }
+
+    #[test]
+    fn reachable_yields_every_node_within_the_budget_in_cost_order() {
+        let found = line()
+            .reach(1, &budget(2.0), &ReachableOptions::default(), None)
+            .unwrap();
+        assert_eq!(costs(&found), vec![(1, 0.0), (2, 1.0), (3, 2.0)]);
+        assert!(found.iter().all(|r| r.path.is_none()));
+        let all = line()
+            .reach(1, &by_cost(), &ReachableOptions::default(), None)
+            .unwrap();
+        assert_eq!(costs(&all), vec![(1, 0.0), (2, 1.0), (3, 2.0), (4, 3.0)]);
+    }
+
+    #[test]
+    fn reachable_from_a_node_with_no_way_out_is_the_node_alone() {
+        let mut g = line();
+        g.node(5);
+        let found = g
+            .reach(5, &budget(10.0), &ReachableOptions::default(), None)
+            .unwrap();
+        assert_eq!(costs(&found), vec![(5, 0.0)]);
+    }
+
+    #[test]
+    fn reachable_incoming_gives_the_cost_to_the_start() {
+        let incoming = WeightedPathOptions {
+            direction: Direction::Incoming,
+            ..budget(2.0)
+        };
+        let found = line()
+            .reach(4, &incoming, &ReachableOptions::default(), None)
+            .unwrap();
+        assert_eq!(costs(&found), vec![(4, 0.0), (3, 1.0), (2, 2.0)]);
+    }
+
+    #[test]
+    fn reachable_searches_through_nodes_it_does_not_yield() {
+        let found = line()
+            .reach(1, &by_cost(), &ReachableOptions::default(), Some(&[4]))
+            .unwrap();
+        assert_eq!(costs(&found), vec![(4, 3.0)]);
+    }
+
+    #[test]
+    fn reachable_stops_after_the_limit() {
+        let limit = |n| ReachableOptions {
+            limit: Some(n),
+            ..ReachableOptions::default()
+        };
+        let g = line();
+        assert_eq!(
+            costs(&g.reach(1, &by_cost(), &limit(2), None).unwrap()),
+            vec![(1, 0.0), (2, 1.0)]
+        );
+        assert_eq!(
+            costs(&g.reach(1, &by_cost(), &limit(1), Some(&[3, 4])).unwrap()),
+            vec![(3, 2.0)]
+        );
+        assert!(g.reach(1, &by_cost(), &limit(0), None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reachable_returns_the_path_to_each_node_when_asked() {
+        let paths = ReachableOptions {
+            paths: true,
+            ..ReachableOptions::default()
+        };
+        let found = line().reach(1, &by_cost(), &paths, None).unwrap();
+        let to_four = found.iter().find(|r| r.node == 4).unwrap();
+        assert_eq!(
+            to_four.path,
+            Some(WeightedPath {
+                nodes: vec![1, 2, 3, 4],
+                edges: vec![10, 11, 12],
+                cost: 3.0
+            })
+        );
+        let start = found.iter().find(|r| r.node == 1).unwrap();
+        assert_eq!(
+            start.path,
+            Some(WeightedPath {
+                nodes: vec![1],
+                edges: vec![],
+                cost: 0.0
+            })
+        );
+    }
+
+    #[test]
+    fn reachable_skips_relationships_without_a_cost_and_refuses_bad_ones() {
+        let mut g = Graph::default();
+        g.node(1).node(2).node(3);
+        g.edge(10, 1, 2, "ROAD", None, 1.0).road(11, 1, 3, 4.0);
+        assert_eq!(
+            costs(
+                &g.reach(1, &by_cost(), &ReachableOptions::default(), None)
+                    .unwrap()
+            ),
+            vec![(1, 0.0), (3, 4.0)]
+        );
+        g.road(12, 3, 2, -1.0);
+        let err = g
+            .reach(1, &by_cost(), &ReachableOptions::default(), None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, DrevoError::InvalidArgument(m) if m.contains("relationship 12")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn reachable_refuses_a_heuristic_and_a_bad_budget() {
+        let err = line()
+            .reach(1, &astar(1.0), &ReachableOptions::default(), None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, DrevoError::InvalidArgument(m) if m.contains("heuristic")),
+            "{err}"
+        );
+        assert!(matches!(
+            line().reach(1, &budget(-1.0), &ReachableOptions::default(), None),
+            Err(DrevoError::InvalidArgument(_))
+        ));
+    }
+
     proptest! {
+        #[test]
+        fn reachable_agrees_with_the_reference(
+            (g, from, _, dir) in random_graph(),
+            max in 0.0f64..600.0,
+        ) {
+            let options = WeightedPathOptions { direction: dir, max_cost: Some(max), ..by_cost() };
+            let paths = ReachableOptions { paths: true, ..ReachableOptions::default() };
+            let found = g.reach(from, &options, &paths, None).unwrap();
+            // Every node within the budget comes back once, at its least cost.
+            let mut expected: Vec<(u64, f64)> = g
+                .nodes
+                .keys()
+                .filter_map(|&n| reference_cost(&g, from, n, dir).map(|c| (n, c)))
+                .filter(|(_, c)| *c <= max)
+                .collect();
+            expected.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+            prop_assert_eq!(costs(&found), expected);
+            for r in &found {
+                let path = r.path.as_ref().unwrap();
+                assert_consistent(&g, path, dir);
+                prop_assert_eq!(path.cost, r.cost);
+                prop_assert_eq!(path.nodes.first().copied(), Some(from));
+                prop_assert_eq!(path.nodes.last().copied(), Some(r.node));
+            }
+        }
+
         #[test]
         fn a_star_and_dijkstra_agree_with_the_reference((g, from, to, dir) in random_graph()) {
             let expected = reference_cost(&g, from, to, dir);

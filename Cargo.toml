@@ -330,3 +330,9 @@ harness = false
 [[bench]]
 name = "timetable_bench"
 harness = false
+
+# Walking isochrones (`drevo.path.reachable`) on a synthetic road grid the
+# size of Sofia's OpenStreetMap road graph. Custom `main`; no external data.
+[[bench]]
+name = "reachable_bench"
+harness = false

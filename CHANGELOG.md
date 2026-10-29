@@ -152,6 +152,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Every node within a cost budget: `CALL drevo.path.reachable(start,
+  {maxCost, …}) YIELD node, cost, path`** (issue #763). One Dijkstra search
+  from `start` returns each node it reaches within `maxCost`, at its least
+  cost, cheapest first — isochrones, and the walk from a place to every
+  nearby stop. It takes the `relTypes`, `direction` and `cost` options of
+  `drevo.path.weighted`, plus `targets: {label}` (return only those nodes,
+  search through all), `limit` and `path: true`. Also
+  `NativeService::reachable` and `drevo::weighted_path::reachable`.
 - **Public-transport routing: `CALL drevo.path.timetable(starts, ends,
   options) YIELD arriveAt, departAt, transfers, legs`** (issue #762). It
   plans "leave at 08:10 from near here, arrive there as early as possible"
