@@ -151,6 +151,38 @@ What the numbers show:
   ids and a fourteenth of copying the records; what a route costs now is
   mostly the search's own bookkeeping.
 
+## Public-transport routing
+
+[`benches/timetable_bench.rs`](https://github.com/ice1x/drevo/tree/main/benches/timetable_bench.rs)
+times [`drevo.path.timetable`](cypher-reference.md#timetable-routing) on a
+synthetic city the size of Sofia's weekday GTFS feed: a grid of 4,900 stops
+250 m apart, 540 bus line patterns of 19 stops with 31 trips each (16,740
+trips, 318,060 stop times, 9,720 `HOP` relationships) and 132,196 `WALK`
+footpaths between stops up to 750 m apart. Each of 1,000 queries goes at
+least 3 km, between 06:00 and 20:00, from the 20 stops nearest the origin to
+the 20 nearest the destination (each within a 15-minute walk), with a 60 s
+transfer, at most 4 transfers and 2 hours. No external data is needed:
+
+```sh
+cargo bench --bench timetable_bench
+```
+
+### Reference run
+
+Apple M1 Max, `--release`, in-memory `NativeService`, on a shared machine
+under load. **Illustrative — re-run on your hardware before quoting them.**
+
+| Workload | p50 | p95 | p99 | max |
+|----------|----:|----:|----:|----:|
+| `NativeService::timetable` | 61 ms | 95 ms | 113 ms | 154 ms |
+| `CALL drevo.path.timetable` (stops looked up by an indexed property) | 65 ms | 99 ms | 115 ms | 158 ms |
+
+931 of the 1,000 queries find a journey within two hours; the fastest uses
+0 / 1 / 2 / 3 / 4 transfers in 182 / 315 / 239 / 143 / 52 of them. Cypher and
+the native call return the same arrivals for every query. A query keeps only
+what it reads — the stops it reaches and their labels — and frees it when it
+returns; nothing is kept between queries.
+
 ## Write transactions
 
 A write transaction works on its own copy of the store. The copy shares
