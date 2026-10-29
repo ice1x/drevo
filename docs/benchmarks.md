@@ -183,6 +183,41 @@ the native call return the same arrivals for every query. A query keeps only
 what it reads — the stops it reaches and their labels — and frees it when it
 returns; nothing is kept between queries.
 
+## Everything within a walk
+
+[`benches/reachable_bench.rs`](https://github.com/ice1x/drevo/tree/main/benches/reachable_bench.rs)
+times [`drevo.path.reachable`](cypher-reference.md#reachable-nodes) on a
+synthetic road grid the size of Sofia's OpenStreetMap road graph: 243,049
+junctions and 281,257 `ROAD` relationships (a street between grid neighbours
+kept at random, 10–40 m long, walked at 1.4 m/s). One junction in fifty is
+also a `StopAccess`. Each of 1,000 queries starts at a random junction with a
+street and walks for up to 15 minutes (`maxCost: 900`) in both directions,
+returning every junction (*isochrone*) or only the `StopAccess` ones
+(*stops*, `targets: {label: 'StopAccess'}`). No external data is needed:
+
+```sh
+cargo bench --bench reachable_bench
+```
+
+### Reference run
+
+Apple M1 Max, `--release`, in-memory `NativeService`, on a shared machine
+under load. **Illustrative — re-run on your hardware before quoting them.**
+
+| Workload | p50 | p95 | p99 | max |
+|----------|----:|----:|----:|----:|
+| `NativeService::reachable`, isochrone | 2.0 ms | 2.8 ms | 3.1 ms | 4.3 ms |
+| `CALL drevo.path.reachable`, isochrone | 4.1 ms | 5.2 ms | 5.8 ms | 7.3 ms |
+| `NativeService::reachable`, stops | 2.6 ms | 3.5 ms | 4.0 ms | 5.8 ms |
+| `CALL drevo.path.reachable`, stops | 2.6 ms | 3.5 ms | 3.8 ms | 4.7 ms |
+
+A 15-minute walk reaches 2,755 junctions at the median (3,383 at p95), and
+55 stop entrances. Cypher adds a cost per returned row: ~2 ms on top of
+the native call for the isochrone's ~2,750 rows, next to nothing for the 55
+stops. The first Cypher statement of a run takes ~0.7 s
+of one-time setup and is timed separately. Cypher and the native call return
+the same number of nodes for every query.
+
 ## Write transactions
 
 A write transaction works on its own copy of the store. The copy shares

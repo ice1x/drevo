@@ -3394,6 +3394,47 @@ impl NativeService {
         )
     }
 
+    /// Every node reachable from `from` within `options.max_cost` on the
+    /// current snapshot, cheapest first — see
+    /// [`reachable`](crate::weighted_path::reachable()). With `label` only
+    /// nodes carrying it are returned, though the search goes through every
+    /// node. Empty when `from` does not exist.
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::InvalidArgument`] for out-of-range options, a
+    /// heuristic, or a relationship whose cost is negative or not a number.
+    pub fn reachable(
+        &self,
+        from: u64,
+        options: &crate::weighted_path::WeightedPathOptions,
+        reach: &crate::weighted_path::ReachableOptions,
+        label: Option<&str>,
+    ) -> Result<Vec<crate::weighted_path::Reached>, DrevoError> {
+        let snap = self.graph.snapshot();
+        if snap.get_node_arc(from).is_none() {
+            return Ok(Vec::new());
+        }
+        crate::weighted_path::reachable(
+            from,
+            options,
+            reach,
+            &|id| {
+                Ok(label.is_none_or(|label| {
+                    snap.get_node_arc(id).is_some_and(|node| {
+                        crate::cypher::executor::node_labels_from_storage(&node)
+                            .iter()
+                            .any(|l| l == label)
+                    })
+                }))
+            },
+            &|id, dir, f| {
+                snap.for_each_edge_of(id, dir, f);
+                Ok(())
+            },
+        )
+    }
+
     /// Public-transport journeys from any of `starts` to any of `ends` over
     /// the timetable in the graph — see [`crate::timetable`].
     pub fn timetable(
