@@ -158,7 +158,8 @@ The wrapped relationship must be variable-length (`-[*]-`, `-[:KNOWS*..5]-`, …
 must be exactly one of it; anything else is a recoverable `ExecError::InvalidFunctionCall`.
 
 `shortestPath` counts hops. For the path with the lowest summed cost (seconds,
-metres, …) use [`drevo.path.weighted`](#weighted-paths).
+metres, …) use [`drevo.path.weighted`](#weighted-paths); for journeys on public
+transport, [`drevo.path.timetable`](#timetable-routing).
 
 ### Weighted paths
 
@@ -215,6 +216,91 @@ CALL drevo.path.weighted(a, c, {
 YIELD path, cost
 RETURN cost, [n IN nodes(path) | [n.lat, n.lon]] AS coords
 ```
+
+### Timetable routing
+
+`CALL drevo.path.timetable(starts, ends, options) YIELD arriveAt, departAt,
+transfers, legs` plans a public-transport journey: leave at a given time from
+near one place, arrive as early as possible near another, riding buses and
+trams, changing between them and walking between stops. It runs once per
+input row.
+
+The timetable lives in the graph. Stops are nodes. A **hop** relationship runs
+from a stop to the next stop of a trip pattern (one stop sequence of a line)
+and holds one entry per trip in four parallel list properties: the departure
+from its start stop, the arrival at its end stop, the trip id and the service
+id. Times are seconds after midnight of the trip's service day and may pass
+`86400` for trips that run past midnight. A **footpath** is a relationship
+between two stops holding the walk in seconds.
+
+```text
+(:Stop)-[:HOP {dep: [29400, 30000], arr: [29520, 30120], trip: [8812, 8813], svc: [17, 17]}]->(:Stop)
+(:Stop)-[:WALK {s: 120}]->(:Stop)
+```
+
+`starts` and `ends` are lists of `{node, cost}` maps: the stops near the
+origin with the seconds it takes to walk to each, and the stops near the
+destination with the seconds from each. `drevo.path.weighted` on a road graph
+gives those costs.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `departAt` | required | when the journey starts, in seconds after midnight of the query date |
+| `days` | required | the service days whose trips may run, each `{offset, services}`: seconds added to its trips' times (`0` today, `-86400` yesterday, for its trips past midnight) and the service ids running that day |
+| `hops` | `{relType: 'HOP', dep: 'dep', arr: 'arr', trip: 'trip', service: 'svc'}` | the hop relationship type and its list properties |
+| `walk` | none (no walking between stops) | `{relTypes: ['WALK'], cost: 's'}`: footpath relationship types and their seconds property |
+| `minTransfer` | `0` | seconds added when changing vehicles at a stop |
+| `maxTransfers` | `4` | the most vehicle changes in a journey |
+| `maxDuration` | none | journeys arriving later than `departAt` plus this are not returned |
+
+Staying on the same trip from hop to hop is one ride. Boarding needs the
+vehicle to leave no earlier than you are at the stop; after a ride, changing
+to another vehicle adds `minTransfer`; a walk between rides takes its seconds
+and needs no transfer time, and several footpaths may follow each other. A
+trip runs on a day when its service is in that day's `services`. Hops and
+footpaths are followed in their direction only.
+
+Each row is a journey that arrives earlier than every journey with fewer
+transfers, so a slower direct ride and a faster ride with a change both come
+back; rows are ordered by `arriveAt`, and there are at most `maxTransfers + 1`.
+A journey that needs no ride at all (a start that is also an end) counts as no
+transfers. Nothing arriving within `maxDuration` gives no row.
+
+- `arriveAt` — when the destination is reached;
+- `departAt` — when to leave the origin: the first ride's departure minus the
+  walk to its stop;
+- `transfers` — vehicle changes;
+- `legs` — the journey in order, each a map `{mode, from, to, depart, arrive,
+  trip, hops}`: `mode` is `'access'` (origin to the first stop, `from` is
+  `null`), `'ride'`, `'walk'` or `'egress'` (last stop to the destination, `to`
+  is `null`); `trip` is the trip id of a ride; `hops` lists the relationships
+  travelled — the hops of a ride or the footpath of a walk.
+
+```cypher
+CREATE (a:Stop {name: 'Central'}), (b:Stop {name: 'Market'}),
+       (c:Stop {name: 'Park'}), (d:Stop {name: 'Zoo'}),
+       (a)-[:HOP {dep: [28800, 29400], arr: [29100, 29700], trip: [11, 12], svc: [1, 1]}]->(b),
+       (b)-[:HOP {dep: [29160, 29760], arr: [29400, 30000], trip: [11, 12], svc: [1, 1]}]->(c),
+       (c)-[:WALK {s: 180}]->(d)
+WITH a, d
+CALL drevo.path.timetable([{node: a, cost: 240}], [{node: d, cost: 60}], {
+  departAt: 28500,
+  days: [{offset: 0, services: [1]}],
+  walk: {relTypes: ['WALK'], cost: 's'},
+  minTransfer: 60
+})
+YIELD arriveAt, departAt, transfers, legs
+RETURN arriveAt, departAt, transfers,
+       [l IN legs | [l.mode, coalesce(l.from.name, '-'), coalesce(l.to.name, '-'), l.trip]] AS route
+```
+
+Leaving at 07:55 (`28500`), the journey walks 4 minutes to Central, rides trip
+11 from 08:00 to Park at 08:10, walks 3 minutes to the Zoo stop and 1 more to
+the destination: `arriveAt` is `29640`, `departAt` `28560`, no transfers.
+
+The search runs in rounds, one more ride per round (RAPTOR). A query reads
+only the stops it reaches, so its cost grows with the part of the network
+within reach of `departAt + maxDuration`, not with the size of the graph.
 
 ---
 

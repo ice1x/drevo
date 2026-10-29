@@ -152,6 +152,20 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Public-transport routing: `CALL drevo.path.timetable(starts, ends,
+  options) YIELD arriveAt, departAt, transfers, legs`** (issue #762). It
+  plans "leave at 08:10 from near here, arrive there as early as possible"
+  over a timetable stored in the graph: hop relationships between
+  consecutive stops carry `dep` / `arr` / `trip` / `svc` lists, one entry per
+  trip, and footpaths carry seconds. It returns one journey per number of
+  transfers that arrives earlier than every journey with fewer, with its
+  legs (access, rides with their hops, walks, egress). Options: `departAt`,
+  service `days` with an offset (yesterday's trips past midnight),
+  `minTransfer`, `maxTransfers`, `maxDuration`, and the relationship and
+  property names. The native call is `NativeService::timetable`. On a
+  synthetic city the size of Sofia's weekday feed, see
+  `benches/timetable_bench.rs`.
+
 - **Slow statements are logged** (issue #752). With `DREVO_SLOW_QUERY_MS`
   set, every statement that runs longer is logged once at WARN (target
   `drevo::slow_query`) with its duration, text, parameter names (never

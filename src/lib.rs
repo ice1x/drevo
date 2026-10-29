@@ -366,3 +366,7 @@ pub mod web_ui;
 /// straight-line bound, or a bidirectional Dijkstra, over a chosen cost
 /// property, relationship kinds and direction.
 pub mod weighted_path;
+
+/// Public-transport routing: the earliest arrival over a timetable of trips
+/// stored on the relationships between stops.
+pub mod timetable;

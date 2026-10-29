@@ -3394,6 +3394,21 @@ impl NativeService {
         )
     }
 
+    /// Public-transport journeys from any of `starts` to any of `ends` over
+    /// the timetable in the graph — see [`crate::timetable`].
+    pub fn timetable(
+        &self,
+        starts: &[crate::timetable::Endpoint],
+        ends: &[crate::timetable::Endpoint],
+        options: &crate::timetable::TimetableOptions,
+    ) -> Result<Vec<crate::timetable::Journey>, DrevoError> {
+        let snap = self.graph.snapshot();
+        crate::timetable::earliest_arrivals(starts, ends, options, &|id, dir, f| {
+            snap.for_each_edge_of(id, dir, f);
+            Ok(())
+        })
+    }
+
     /// The connected subgraph within `depth` hops of `root` — parity with
     /// `Drevo::subgraph_filtered`.
     pub fn subgraph_filtered(

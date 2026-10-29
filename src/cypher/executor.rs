@@ -6138,6 +6138,9 @@ impl<'a> Executor<'a> {
         if name == WEIGHTED_PATH {
             return self.run_weighted_path(c, columns);
         }
+        if name == TIMETABLE {
+            return self.run_timetable(c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -6340,6 +6343,141 @@ impl<'a> Executor<'a> {
             self.result_rows = standalone;
         }
         Ok(())
+    }
+
+    /// `CALL drevo.path.timetable(starts, ends, options) YIELD arriveAt,
+    /// departAt, transfers, legs` — public-transport journeys from any of
+    /// `starts` to any of `ends`, one row per journey that arrives earlier
+    /// than every journey with fewer transfers, ordered by arrival; once per
+    /// input row. `starts` and `ends` are lists of `{node, cost}` maps; the
+    /// options map is described at
+    /// [`timetable_options`].
+    fn run_timetable(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
+        let prior = std::mem::take(&mut self.bindings);
+        let mut kept = Vec::new();
+        let mut standalone = Vec::new();
+        let items = match &c.yields {
+            Some(items) if items.is_empty() => Some(yield_all(columns, c.span)),
+            Some(items) => Some(items.clone()),
+            None => None,
+        };
+        for row in prior {
+            let starts = timetable_endpoints(&self.eval(&c.args[0], &row)?, "start", c.span)?;
+            let ends = timetable_endpoints(&self.eval(&c.args[1], &row)?, "end", c.span)?;
+            let options = timetable_options(&self.eval(&c.args[2], &row)?, c.span)?;
+            let found = self.plan_journeys(&starts, &ends, &options, c.span)?;
+            for out_row in self.visible_rows(found)? {
+                let Some(items) = &items else {
+                    standalone.push(out_row);
+                    continue;
+                };
+                let mut next = row.clone();
+                for item in items {
+                    let idx = columns
+                        .iter()
+                        .position(|col| *col == item.name)
+                        .unwrap_or(0);
+                    let key = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                    next.insert(key, out_row[idx].clone());
+                }
+                if let Some(pred) = &c.where_clause {
+                    match self.eval(pred, &next)? {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) | Value::Null => continue,
+                        other => {
+                            return Err(ExecError::TypeMismatch {
+                                expected: "Boolean".into(),
+                                got: other.type_name().into(),
+                                span: pred.span(),
+                            });
+                        }
+                    }
+                }
+                kept.push(next);
+            }
+        }
+        self.bindings = kept;
+        if c.yields.is_none() {
+            self.result_columns = columns.iter().map(|c| c.to_string()).collect();
+            self.result_rows = standalone;
+        }
+        Ok(())
+    }
+
+    /// One `drevo.path.timetable` search over the statement's view of the
+    /// graph, as `[arriveAt, departAt, transfers, legs]` rows.
+    fn plan_journeys(
+        &self,
+        starts: &[crate::timetable::Endpoint],
+        ends: &[crate::timetable::Endpoint],
+        options: &crate::timetable::TimetableOptions,
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        use crate::timetable::LegMode;
+        let engine = self.engine();
+        let journeys =
+            match crate::timetable::earliest_arrivals(starts, ends, options, &|id, dir, f| {
+                engine
+                    .for_each_edge_of(id, dir, f)
+                    .map_err(DrevoError::from)
+            }) {
+                Ok(journeys) => journeys,
+                Err(DrevoError::InvalidArgument(message)) => {
+                    return Err(ExecError::InvalidProcedureCall {
+                        name: TIMETABLE.into(),
+                        message,
+                        span,
+                    });
+                }
+                Err(e) => return Err(ExecError::Storage(e)),
+            };
+        let node = |id: Option<u64>| -> ExecResultT<Value> {
+            let Some(id) = id else {
+                return Ok(Value::Null);
+            };
+            let node = engine
+                .get_node(id)?
+                .ok_or(ExecError::Storage(DrevoError::NodeNotFound(id)))?;
+            Ok(Value::Node(node_to_value(&node)))
+        };
+        let mut rows = Vec::with_capacity(journeys.len());
+        for journey in journeys {
+            let mut legs = Vec::with_capacity(journey.legs.len());
+            for leg in journey.legs {
+                let mut hops = Vec::with_capacity(leg.hops.len());
+                for id in leg.hops {
+                    let edge = engine
+                        .get_edge(id)?
+                        .ok_or(ExecError::Storage(DrevoError::EdgeNotFound(id)))?;
+                    hops.push(Value::Relationship(edge_to_value(&edge)));
+                }
+                let mode = match leg.mode {
+                    LegMode::Access => "access",
+                    LegMode::Ride => "ride",
+                    LegMode::Walk => "walk",
+                    LegMode::Egress => "egress",
+                };
+                legs.push(Value::Map(BTreeMap::from([
+                    ("mode".to_string(), Value::String(mode.into())),
+                    ("from".to_string(), node(leg.from)?),
+                    ("to".to_string(), node(leg.to)?),
+                    ("depart".to_string(), Value::Integer(leg.depart)),
+                    ("arrive".to_string(), Value::Integer(leg.arrive)),
+                    (
+                        "trip".to_string(),
+                        leg.trip.map_or(Value::Null, Value::Integer),
+                    ),
+                    ("hops".to_string(), Value::List(hops)),
+                ])));
+            }
+            rows.push(vec![
+                Value::Integer(journey.arrive_at),
+                Value::Integer(journey.depart_at),
+                Value::Integer(i64::try_from(journey.transfers).unwrap_or(i64::MAX)),
+                Value::List(legs),
+            ]);
+        }
+        Ok(rows)
     }
 
     /// One `drevo.path.weighted` search over the statement's view of the
@@ -10970,6 +11108,9 @@ const MEMORY_ENTITY_TYPES: [(&str, &str); 5] = [
 /// The weighted path procedure, `drevo.path.weighted`.
 const WEIGHTED_PATH: &str = "drevo.path.weighted";
 
+/// The public-transport routing procedure, `drevo.path.timetable`.
+const TIMETABLE: &str = "drevo.path.timetable";
+
 /// A `drevo.path.weighted` end: a node's id, or `None` for `null`.
 fn path_endpoint(value: &Value, span: Span) -> ExecResultT<Option<u64>> {
     match value {
@@ -10981,6 +11122,270 @@ fn path_endpoint(value: &Value, span: Span) -> ExecResultT<Option<u64>> {
             span,
         }),
     }
+}
+
+/// The `starts` / `ends` of `drevo.path.timetable`: a list of `{node, cost}`
+/// maps; `null` entries, and entries whose node is `null`, are skipped.
+fn timetable_endpoints(
+    value: &Value,
+    what: &str,
+    span: Span,
+) -> ExecResultT<Vec<crate::timetable::Endpoint>> {
+    let refuse = |message: String| ExecError::InvalidProcedureCall {
+        name: TIMETABLE.into(),
+        message,
+        span,
+    };
+    let items = match value {
+        Value::List(items) => items,
+        Value::Null => return Ok(Vec::new()),
+        other => {
+            return Err(refuse(format!(
+                "the {what}s must be a list of {{node, cost}} maps, got {}",
+                other.type_name()
+            )));
+        }
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let (node, cost) = match item {
+            Value::Null => continue,
+            Value::Map(m) => {
+                if let Some(unknown) = m.keys().find(|k| !matches!(k.as_str(), "node" | "cost")) {
+                    return Err(refuse(format!(
+                        "unknown key `{unknown}` in a {what}; expected node and cost"
+                    )));
+                }
+                let node = match m.get("node") {
+                    None | Some(Value::Null) => continue,
+                    Some(Value::Node(n)) => n.id,
+                    Some(other) => {
+                        return Err(refuse(format!(
+                            "a {what}'s node must be a node, got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                let cost = match m.get("cost") {
+                    None | Some(Value::Null) => 0,
+                    Some(v) => timetable_seconds(v).filter(|c| *c >= 0).ok_or_else(|| {
+                        refuse(format!(
+                            "a {what}'s cost must be a non-negative number of seconds, got {}",
+                            v.type_name()
+                        ))
+                    })?,
+                };
+                (node, cost)
+            }
+            other => {
+                return Err(refuse(format!(
+                    "each {what} must be a {{node, cost}} map, got {}",
+                    other.type_name()
+                )));
+            }
+        };
+        out.push(crate::timetable::Endpoint { node, cost });
+    }
+    Ok(out)
+}
+
+/// A whole number of seconds: an integer, or a float without a fraction.
+fn timetable_seconds(v: &Value) -> Option<i64> {
+    match v {
+        Value::Integer(i) => Some(*i),
+        Value::Float(f) if f.is_finite() && f.fract() == 0.0 => Some(*f as i64),
+        _ => None,
+    }
+}
+
+/// The options map of `drevo.path.timetable`:
+///
+/// - `departAt` — when the journey starts, in seconds after midnight of the
+///   query date (required);
+/// - `days` — the service days whose trips may run, each `{offset, services}`:
+///   seconds added to its trips' times (`0` today, `-86400` yesterday) and
+///   the service ids running that day (required);
+/// - `hops` — `{relType, dep, arr, trip, service}`: the hop relationship type
+///   and its list properties (default `'HOP'`, `'dep'`, `'arr'`, `'trip'`,
+///   `'svc'`);
+/// - `walk` — `{relTypes, cost}`: footpath relationship types and their
+///   seconds property; no walking between stops when absent;
+/// - `minTransfer` — seconds added when changing vehicles (default 0);
+/// - `maxTransfers` — the most vehicle changes (default 4);
+/// - `maxDuration` — journeys arriving later than `departAt` plus this are
+///   not returned.
+fn timetable_options(value: &Value, span: Span) -> ExecResultT<crate::timetable::TimetableOptions> {
+    use crate::timetable::{HopFields, ServiceDay, TimetableOptions, WalkFields};
+    let refuse = |message: String| ExecError::InvalidProcedureCall {
+        name: TIMETABLE.into(),
+        message,
+        span,
+    };
+    let seconds = |key: &str, v: &Value| {
+        timetable_seconds(v).ok_or_else(|| {
+            refuse(format!(
+                "{key} must be a whole number of seconds, got {}",
+                v.type_name()
+            ))
+        })
+    };
+    let Value::Map(map) = value else {
+        return Err(refuse(format!(
+            "the options must be a map, got {}",
+            value.type_name()
+        )));
+    };
+    let mut options = TimetableOptions::default();
+    let mut depart_at = None;
+    let mut days = None;
+    for (key, v) in map {
+        match (key.as_str(), v) {
+            (_, Value::Null) => {}
+            ("departAt", v) => depart_at = Some(seconds("departAt", v)?),
+            ("days", Value::List(items)) => {
+                let mut list = Vec::with_capacity(items.len());
+                for item in items {
+                    let Value::Map(day) = item else {
+                        return Err(refuse(format!(
+                            "each day must be a map {{offset, services}}, got {}",
+                            item.type_name()
+                        )));
+                    };
+                    if let Some(unknown) = day
+                        .keys()
+                        .find(|k| !matches!(k.as_str(), "offset" | "services"))
+                    {
+                        return Err(refuse(format!(
+                            "unknown day key `{unknown}`; expected offset and services"
+                        )));
+                    }
+                    let offset = match day.get("offset") {
+                        None | Some(Value::Null) => 0,
+                        Some(v) => seconds("a day's offset", v)?,
+                    };
+                    let services = match day.get("services") {
+                        Some(Value::List(ids)) => ids
+                            .iter()
+                            .map(|id| match id {
+                                Value::Integer(i) => Ok(*i),
+                                other => Err(refuse(format!(
+                                    "a day's services must be integer service ids, got {}",
+                                    other.type_name()
+                                ))),
+                            })
+                            .collect::<ExecResultT<Vec<i64>>>()?,
+                        _ => {
+                            return Err(refuse(
+                                "each day needs services, the list of service ids running that day"
+                                    .into(),
+                            ));
+                        }
+                    };
+                    list.push(ServiceDay { offset, services });
+                }
+                days = Some(list);
+            }
+            ("days", other) => {
+                return Err(refuse(format!(
+                    "days must be a list of {{offset, services}} maps, got {}",
+                    other.type_name()
+                )));
+            }
+            ("hops", Value::Map(h)) => {
+                let mut fields = HopFields::default();
+                for (k, v) in h {
+                    let Value::String(name) = v else {
+                        return Err(refuse(format!(
+                            "hops {k} must be a name, got {}",
+                            v.type_name()
+                        )));
+                    };
+                    let slot = match k.as_str() {
+                        "relType" => &mut fields.kind,
+                        "dep" => &mut fields.dep,
+                        "arr" => &mut fields.arr,
+                        "trip" => &mut fields.trip,
+                        "service" => &mut fields.service,
+                        _ => {
+                            return Err(refuse(format!(
+                                "unknown hops option `{k}`; expected relType, dep, arr, trip or service"
+                            )));
+                        }
+                    };
+                    *slot = name.clone();
+                }
+                options.hops = fields;
+            }
+            ("walk", Value::Map(w)) => {
+                if let Some(unknown) = w
+                    .keys()
+                    .find(|k| !matches!(k.as_str(), "relTypes" | "cost"))
+                {
+                    return Err(refuse(format!(
+                        "unknown walk option `{unknown}`; expected relTypes and cost"
+                    )));
+                }
+                let kinds = match w.get("relTypes") {
+                    Some(Value::List(items)) => items
+                        .iter()
+                        .map(|i| match i {
+                            Value::String(s) => Ok(s.clone()),
+                            other => Err(refuse(format!(
+                                "walk relTypes must list relationship types as strings, got {}",
+                                other.type_name()
+                            ))),
+                        })
+                        .collect::<ExecResultT<Vec<String>>>()?,
+                    _ => {
+                        return Err(refuse(
+                            "walk needs relTypes, the list of footpath relationship types".into(),
+                        ));
+                    }
+                };
+                let Some(Value::String(cost)) = w.get("cost") else {
+                    return Err(refuse(
+                        "walk needs cost, the footpath property holding seconds".into(),
+                    ));
+                };
+                options.walk = Some(WalkFields {
+                    kinds,
+                    cost: cost.clone(),
+                });
+            }
+            ("minTransfer", v) => options.min_transfer = seconds("minTransfer", v)?,
+            ("maxTransfers", Value::Integer(n)) if *n >= 0 => {
+                options.max_transfers = usize::try_from(*n).unwrap_or(usize::MAX);
+            }
+            ("maxTransfers", other) => {
+                return Err(refuse(format!(
+                    "maxTransfers must be a non-negative integer, got {}",
+                    match other {
+                        Value::Integer(n) => n.to_string(),
+                        other => other.type_name().to_string(),
+                    }
+                )));
+            }
+            ("maxDuration", v) => options.max_duration = Some(seconds("maxDuration", v)?),
+            ("hops" | "walk", other) => {
+                return Err(refuse(format!(
+                    "{key} must be a map, got {}",
+                    other.type_name()
+                )));
+            }
+            (unknown, _) => {
+                return Err(refuse(format!(
+                    "unknown option `{unknown}`; expected departAt, days, hops, walk, \
+                     minTransfer, maxTransfers or maxDuration"
+                )));
+            }
+        }
+    }
+    options.depart_at = depart_at.ok_or_else(|| {
+        refuse("departAt is required: seconds after midnight of the query date".into())
+    })?;
+    options.days = days
+        .ok_or_else(|| refuse("days is required: the service days whose trips may run".into()))?;
+    Ok(options)
 }
 
 /// The options map of `drevo.path.weighted`:
@@ -11187,6 +11592,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.stableMatching" => Some(&["proposer", "acceptor", "proposerRank", "acceptorRank"]),
         // drevo.path.weighted(start, end, options): the lowest-cost path.
         WEIGHTED_PATH => Some(&["path", "cost"]),
+        // drevo.path.timetable(starts, ends, options): earliest arrivals.
+        TIMETABLE => Some(&["arriveAt", "departAt", "transfers", "legs"]),
         // Fuzzy lookup through a text index (issue #593): node + edit distance.
         "drevo.text.fuzzy" => Some(&["node", "distance"]),
         // Engine-flip observability: engine mode + mirror routing counters.
@@ -11395,6 +11802,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.stableMatching" => 4,
         // drevo.path.weighted(start, end, options).
         WEIGHTED_PATH => 3,
+        // drevo.path.timetable(starts, ends, options).
+        TIMETABLE => 3,
         // drevo.text.fuzzy(indexName, query, maxEdits) (issue #593).
         "drevo.text.fuzzy" => 3,
         // drevo.engine.status() — no arguments.

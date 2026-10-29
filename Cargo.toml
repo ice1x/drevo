@@ -324,3 +324,9 @@ required-features = ["encryption"]
 [[bench]]
 name = "sofia_routing_bench"
 harness = false
+
+# Public-transport routing (`drevo.path.timetable`) on a synthetic timetable
+# the size of Sofia's weekday GTFS feed. Custom `main`; no external data.
+[[bench]]
+name = "timetable_bench"
+harness = false
