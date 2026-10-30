@@ -30,9 +30,13 @@
 //!
 //! The parser accepts both [`crate::cypher::lexer::TokenKind::Identifier`]
 //! and any keyword in those positions via a single internal helper. Bare
-//! variable positions (e.g. `MATCH (foo)`) still require a real
-//! identifier — using a clause keyword as a variable would create
-//! ambiguity the parser can't resolve without unbounded look-ahead.
+//! variable positions (e.g. `MATCH (foo)`, `AS foo`) accept an identifier or
+//! a soft keyword — one that only ever stands between operands or inside a
+//! clause (`starts`, `ends`, `contains`, `in`, `is`, `on`, `by`, `asc`,
+//! `desc`, `and`, `or`, `xor`; see
+//! [`crate::cypher::lexer::TokenKind::names_a_variable`]). Using a clause
+//! keyword as a variable would create ambiguity the parser can't resolve
+//! without unbounded look-ahead, so those stay reserved.
 
 use crate::cypher::ast::*;
 use crate::cypher::lexer::{tokenize, LexError, Span, Token, TokenKind};
@@ -337,20 +341,33 @@ impl Parser {
 
     // ---- Identifier extraction with soft-keyword policy -----------------
 
-    /// Consume an identifier. Does NOT accept keywords.
-    fn consume_strict_identifier(&mut self) -> ParseResult<(String, Span)> {
-        match self.peek_kind() {
-            TokenKind::Identifier(_) => {
-                let tok = self.consume();
-                let name = match tok.kind {
-                    TokenKind::Identifier(s) => s,
-                    _ => unreachable!(),
-                };
-                Ok((name, tok.span))
+    /// Whether the next token can name a variable: an identifier, or a
+    /// keyword that [`TokenKind::names_a_variable`].
+    fn at_variable(&self) -> bool {
+        let kind = self.peek_kind();
+        matches!(kind, TokenKind::Identifier(_)) || kind.names_a_variable()
+    }
+
+    /// Consume a variable name: an identifier, or a soft keyword (`starts`,
+    /// `ends`, `contains`, `in`, …) with its written casing. Used for
+    /// variables, aliases and procedure names; the other keywords are
+    /// rejected here.
+    fn consume_variable(&mut self) -> ParseResult<(String, Span)> {
+        let tok = self.tokens[self.pos].clone();
+        match &tok.kind {
+            TokenKind::Identifier(s) => {
+                let s = s.clone();
+                self.consume();
+                Ok((s, tok.span))
             }
-            _ => Err(ParseError::ExpectedIdentifier {
-                span: self.peek_span(),
-            }),
+            kind if kind.names_a_variable() => {
+                // Keyword recognition is case-insensitive, so the token has
+                // lost the casing: `AS Starts` names the column `Starts`.
+                let text = self.source[tok.span.start..tok.span.end].to_string();
+                self.consume();
+                Ok((text, tok.span))
+            }
+            _ => Err(ParseError::ExpectedIdentifier { span: tok.span }),
         }
     }
 
@@ -515,7 +532,7 @@ impl Parser {
     fn parse_search(&mut self) -> ParseResult<Clause> {
         let span = self.peek_span();
         self.consume(); // SEARCH (soft keyword)
-        let (variable, _) = self.consume_strict_identifier()?;
+        let (variable, _) = self.consume_variable()?;
         self.eat(&TokenKind::In, "IN after the SEARCH variable")?;
         self.eat(&TokenKind::LParen, "`(` after IN")?;
         self.expect_soft_keyword("VECTOR")?;
@@ -542,7 +559,7 @@ impl Parser {
         let score_alias = if self.is_soft_keyword("SCORE") {
             self.consume(); // SCORE
             self.eat(&TokenKind::As, "AS after SCORE")?;
-            let (alias, _) = self.consume_strict_identifier()?;
+            let (alias, _) = self.consume_variable()?;
             Some(alias)
         } else {
             None
@@ -1075,7 +1092,7 @@ impl Parser {
                 &TokenKind::LBracket,
                 "`[` in the relationship index pattern",
             )?;
-            let _ = self.consume_strict_identifier()?; // relationship variable (r)
+            let _ = self.consume_variable()?; // relationship variable (r)
             self.eat(&TokenKind::Colon, "`:` before the relationship type")?;
             let (rel_type, _) = self.consume_name()?;
             self.eat(&TokenKind::RBracket, "`]` after the relationship type")?;
@@ -1097,7 +1114,7 @@ impl Parser {
             )?;
             (rel_type, true)
         } else {
-            let _ = self.consume_strict_identifier()?; // pattern variable (n)
+            let _ = self.consume_variable()?; // pattern variable (n)
             self.eat(&TokenKind::Colon, "`:` before the index label")?;
             let (label, _) = self.consume_name()?;
             self.eat(&TokenKind::RParen, "`)` after the index label")?;
@@ -1105,7 +1122,7 @@ impl Parser {
         };
         self.eat(&TokenKind::On, "ON after the FOR pattern")?;
         self.eat(&TokenKind::LParen, "`(` after ON")?;
-        let _ = self.consume_strict_identifier()?; // property owner variable (n)
+        let _ = self.consume_variable()?; // property owner variable (n)
         self.eat(&TokenKind::Dot, "`.` before the index property")?;
         let (property, _) = self.consume_name()?;
         self.eat(&TokenKind::RParen, "`)` after the index property")?;
@@ -1456,7 +1473,7 @@ impl Parser {
         self.consume();
         let expression = self.parse_expression()?;
         self.eat(&TokenKind::As, "AS in UNWIND")?;
-        let (alias, _) = self.consume_strict_identifier()?;
+        let (alias, _) = self.consume_variable()?;
         Ok(Clause::Unwind(UnwindClause {
             expression,
             alias,
@@ -1474,7 +1491,7 @@ impl Parser {
         let span = self.peek_span();
         self.consume(); // FOREACH
         self.eat(&TokenKind::LParen, "( after FOREACH")?;
-        let (variable, _) = self.consume_strict_identifier()?;
+        let (variable, _) = self.consume_variable()?;
         self.eat(&TokenKind::In, "IN in FOREACH")?;
         let list = self.parse_expression()?;
         self.eat(&TokenKind::Pipe, "| in FOREACH")?;
@@ -1526,7 +1543,7 @@ impl Parser {
     fn parse_call(&mut self) -> ParseResult<Clause> {
         let span = self.peek_span();
         self.consume(); // CALL
-        let (first, _) = self.consume_strict_identifier()?;
+        let (first, _) = self.consume_variable()?;
         let mut name = vec![first];
         while matches!(self.peek_kind(), TokenKind::Dot) {
             self.consume(); // .
@@ -1576,10 +1593,10 @@ impl Parser {
 
     /// One `YIELD` item: `col [AS alias]`.
     fn parse_yield_item(&mut self) -> ParseResult<YieldItem> {
-        let (name, span) = self.consume_strict_identifier()?;
+        let (name, span) = self.consume_variable()?;
         let alias = if matches!(self.peek_kind(), TokenKind::As) {
             self.consume();
-            let (alias, _) = self.consume_strict_identifier()?;
+            let (alias, _) = self.consume_variable()?;
             Some(alias)
         } else {
             None
@@ -1611,7 +1628,7 @@ impl Parser {
         let expr = self.parse_expression()?;
         let alias = if matches!(self.peek_kind(), TokenKind::As) {
             self.consume();
-            let (name, _) = self.consume_strict_identifier()?;
+            let (name, _) = self.consume_variable()?;
             Some(name)
         } else {
             None
@@ -1690,10 +1707,8 @@ impl Parser {
 
     fn parse_named_pattern(&mut self) -> ParseResult<NamedPattern> {
         // Optional `name =` prefix for path-binding.
-        let variable = if matches!(self.peek_kind(), TokenKind::Identifier(_))
-            && matches!(self.peek_at(1), TokenKind::Eq)
-        {
-            let (name, _) = self.consume_strict_identifier()?;
+        let variable = if self.at_variable() && matches!(self.peek_at(1), TokenKind::Eq) {
+            let (name, _) = self.consume_variable()?;
             self.consume(); // =
             Some(name)
         } else {
@@ -1762,8 +1777,8 @@ impl Parser {
     fn parse_node_pattern(&mut self) -> ParseResult<NodePattern> {
         let span = self.peek_span();
         self.eat(&TokenKind::LParen, "`(` to open node pattern")?;
-        let variable = if matches!(self.peek_kind(), TokenKind::Identifier(_)) {
-            let (name, _) = self.consume_strict_identifier()?;
+        let variable = if self.at_variable() {
+            let (name, _) = self.consume_variable()?;
             Some(name)
         } else {
             None
@@ -1817,8 +1832,8 @@ impl Parser {
         if matches!(self.peek_kind(), TokenKind::LBracket) {
             self.consume();
             // Variable
-            if matches!(self.peek_kind(), TokenKind::Identifier(_)) {
-                let (name, _) = self.consume_strict_identifier()?;
+            if self.at_variable() {
+                let (name, _) = self.consume_variable()?;
                 variable = Some(name);
             }
             // Types
@@ -2275,6 +2290,10 @@ impl Parser {
                 self.parse_exists_subquery(tok_span)?
             }
             TokenKind::Identifier(_) => self.parse_identifier_or_call()?,
+            // A soft keyword where an operand is expected is a variable
+            // (`RETURN starts`); as an operator it follows an operand and is
+            // seen by the infix loop instead (`starts STARTS WITH 'a'`).
+            kind if kind.names_a_variable() => self.parse_identifier_or_call()?,
             TokenKind::Eof => {
                 return Err(ParseError::ExpectedExpression { span: tok_span });
             }
@@ -2647,7 +2666,7 @@ impl Parser {
         span: Span,
     ) -> ParseResult<Expression> {
         self.eat(&TokenKind::LParen, "`(` after list predicate function")?;
-        let (variable, _) = self.consume_strict_identifier()?;
+        let (variable, _) = self.consume_variable()?;
         self.eat(&TokenKind::In, "`IN` in list predicate")?;
         let list = self.parse_expression()?;
         self.eat(&TokenKind::Where, "`WHERE` in list predicate")?;
@@ -2670,11 +2689,11 @@ impl Parser {
     /// missing piece surfaces as a parse error.
     fn parse_reduce(&mut self, span: Span) -> ParseResult<Expression> {
         self.eat(&TokenKind::LParen, "`(` after `reduce`")?;
-        let (accumulator, _) = self.consume_strict_identifier()?;
+        let (accumulator, _) = self.consume_variable()?;
         self.eat(&TokenKind::Eq, "`=` after the reduce accumulator")?;
         let init = self.parse_expression()?;
         self.eat(&TokenKind::Comma, "`,` after the reduce initial value")?;
-        let (variable, _) = self.consume_strict_identifier()?;
+        let (variable, _) = self.consume_variable()?;
         self.eat(&TokenKind::In, "`IN` in reduce")?;
         let list = self.parse_expression()?;
         self.eat(&TokenKind::Pipe, "`|` before the reduce expression")?;
@@ -2728,7 +2747,7 @@ impl Parser {
     }
 
     fn parse_identifier_or_call(&mut self) -> ParseResult<Expression> {
-        let (first, first_span) = self.consume_strict_identifier()?;
+        let (first, first_span) = self.consume_variable()?;
         // `COUNT { [MATCH] pattern [WHERE pred] }` — a counting subquery. Unlike
         // `EXISTS`, `count` is not a reserved keyword token (it is the ordinary
         // aggregation identifier `count(*)`), so the brace form is detected here

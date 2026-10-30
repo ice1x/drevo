@@ -346,6 +346,33 @@ impl TokenKind {
                 | Self::Null
         )
     }
+
+    /// Returns `true` if this keyword may also name a variable: `RETURN 1
+    /// AS starts`, `MATCH (ends:Stop)`, `UNWIND list AS in`, as in Neo4j.
+    ///
+    /// These keywords only ever stand between two operands (`STARTS WITH`,
+    /// `CONTAINS`, `IN`, `IS`, `AND`, `OR`, `XOR`) or inside a clause after
+    /// another keyword (`ON`, `BY`, `ASC`, `DESC`), so a bare one where a
+    /// variable is expected is unambiguous. Keywords that open an expression
+    /// (`CASE`, `EXISTS`, `NOT`, `ALL`, `TRUE`, `FALSE`, `NULL`), the `CASE`
+    /// arm words and the clause keywords stay reserved.
+    pub fn names_a_variable(&self) -> bool {
+        matches!(
+            self,
+            Self::Starts
+                | Self::Ends
+                | Self::Contains
+                | Self::In
+                | Self::Is
+                | Self::On
+                | Self::By
+                | Self::Asc
+                | Self::Desc
+                | Self::And
+                | Self::Or
+                | Self::Xor
+        )
+    }
 }
 
 impl fmt::Display for TokenKind {
@@ -1873,6 +1900,48 @@ mod tests {
         assert!(!TokenKind::Identifier("foo".to_string()).is_keyword());
         assert!(!TokenKind::Integer(42).is_keyword());
         assert!(!TokenKind::LParen.is_keyword());
+    }
+
+    #[test]
+    fn names_a_variable_is_the_soft_subset_of_the_keywords() {
+        for soft in [
+            TokenKind::Starts,
+            TokenKind::Ends,
+            TokenKind::Contains,
+            TokenKind::In,
+            TokenKind::Is,
+            TokenKind::On,
+            TokenKind::By,
+            TokenKind::Asc,
+            TokenKind::Desc,
+            TokenKind::And,
+            TokenKind::Or,
+            TokenKind::Xor,
+        ] {
+            assert!(soft.is_keyword(), "{soft}");
+            assert!(soft.names_a_variable(), "{soft}");
+        }
+        for reserved in [
+            TokenKind::Match,
+            TokenKind::Return,
+            TokenKind::With,
+            TokenKind::Where,
+            TokenKind::As,
+            TokenKind::Not,
+            TokenKind::All,
+            TokenKind::Exists,
+            TokenKind::Case,
+            TokenKind::When,
+            TokenKind::Then,
+            TokenKind::Else,
+            TokenKind::End,
+            TokenKind::True,
+            TokenKind::False,
+            TokenKind::Null,
+        ] {
+            assert!(!reserved.names_a_variable(), "{reserved}");
+        }
+        assert!(!TokenKind::Identifier("starts".to_string()).names_a_variable());
     }
 
     #[test]

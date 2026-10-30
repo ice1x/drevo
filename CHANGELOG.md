@@ -8,6 +8,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Soft keywords can name variables** (issue #765). `RETURN 1 AS starts`,
+  `WITH … AS ends`, `MATCH (contains:Stop)`, `UNWIND list AS in` and the
+  like were parse errors ("expected identifier"); Neo4j accepts them. The
+  keywords that only ever stand between operands or inside a clause —
+  `starts`, `ends`, `contains`, `in`, `is`, `on`, `by`, `asc`, `desc`,
+  `and`, `or`, `xor` — now name variables, aliases, pattern and path
+  variables, `UNWIND`/`FOREACH`/`reduce`/list-predicate variables and
+  `YIELD` aliases, keeping their written casing. Each still works as a
+  keyword in its own position; clause keywords and expression openers
+  (`CASE`, `EXISTS`, `NOT`, `ALL`, `TRUE`, `FALSE`, `NULL`, …) stay
+  reserved.
+
 - **A lookup by property value could miss a node committed while the indexes
   caught up** (issue #768). The service recorded the change-feed head after
   syncing its indexes, so a commit landing in between counted as indexed
