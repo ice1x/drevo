@@ -152,6 +152,19 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **The nodes nearest to a latitude/longitude: `CALL drevo.spatial.nearest(label,
+  {lat, lon}, {k, maxMeters, where, lat, lon}) YIELD node, meters`** and
+  **`CREATE POINT INDEX … FOR (n:Label) ON (n.lat, n.lon)`** (issue #764).
+  The procedure returns the `k` nodes with `label` closest to a point by
+  great-circle distance, nearest first, optionally within `maxMeters` and
+  only those whose properties equal `where`. A point index keeps the
+  positions in a grid that follows writes, survives a restart and stays on a
+  lean database (`setSecondary(false)`); without one the call reads every
+  node with the label. Snapping a point to the nearest of 243,049 junctions
+  takes 20 µs at p95 through the index against ~120 ms by scan
+  (`benches/spatial_nearest_bench.rs`). Also `NativeService::nearest` and
+  `drevo_core::native_point_index`.
+
 - **Every node within a cost budget: `CALL drevo.path.reachable(start,
   {maxCost, …}) YIELD node, cost, path`** (issue #763). One Dijkstra search
   from `start` returns each node it reaches within `maxCost`, at its least

@@ -36,9 +36,11 @@ use crate::native::NativeGraph;
 use crate::native_fts::{NativeFtsIndex, NativeFtsRelIndex};
 use crate::native_label_index::NativeLabelIndex;
 use crate::native_path_index::{NativePathIndex, PathIndexSpec};
+use crate::native_point_index::{NativePointIndex, PointIndexSpec};
 use crate::native_property_index::NativePropertyIndex;
 use crate::native_text_index::{NativeTextIndex, TextIndexSpec};
 use crate::native_value_cache::NativeValueCache;
+pub use crate::spatial::{Near, NearestOptions};
 
 /// The index stack plus the change-feed head it is synced to.
 struct ServiceIndexes {
@@ -50,8 +52,11 @@ struct ServiceIndexes {
     paths: NativePathIndex,
     /// Opt-in trigram text index (issue #589), over the registered specs.
     texts: NativeTextIndex,
-    /// The [`NativeService::path_specs_version`] `paths` and `texts` were
-    /// built for.
+    /// Opt-in point index (issue #764), over the registered specs. Not a
+    /// secondary index: a lean database keeps it.
+    points: NativePointIndex,
+    /// The [`NativeService::path_specs_version`] `paths`, `texts` and
+    /// `points` were built for.
     paths_version: u64,
     /// Executor `NodeValue` projection cache.
     values: NativeValueCache,
@@ -111,6 +116,7 @@ impl ServiceIndexes {
         graph: &NativeGraph,
         path_specs: Vec<PathIndexSpec>,
         text_specs: Vec<TextIndexSpec>,
+        point_specs: Vec<PointIndexSpec>,
         secondary: bool,
     ) -> Self {
         let mut idx = ServiceIndexes {
@@ -118,6 +124,7 @@ impl ServiceIndexes {
             props: NativePropertyIndex::new(),
             paths: NativePathIndex::new(path_specs),
             texts: NativeTextIndex::new(text_specs),
+            points: NativePointIndex::new(point_specs),
             paths_version: 0,
             values: NativeValueCache::new(),
             fts: NativeFtsIndex::new(),
@@ -133,6 +140,7 @@ impl ServiceIndexes {
         self.labels.sync(graph);
         self.paths.sync(graph);
         self.texts.sync(graph);
+        self.points.sync(graph);
         if self.secondary {
             self.props.sync(graph);
             self.values.sync(graph);
@@ -651,6 +659,7 @@ impl NativeService {
             &graph,
             path_indexes.specs(),
             path_indexes.text_specs(),
+            path_indexes.point_specs(),
             secondary_indexes,
         ));
         let service = Self {
@@ -711,6 +720,7 @@ impl NativeService {
         let graph = NativeGraph::new();
         let indexes = RwLock::new(ServiceIndexes::synced_over(
             &graph,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             true,
@@ -1025,6 +1035,7 @@ impl NativeService {
                         properties: idx.props().filter(|_| indexed),
                         paths: indexed.then_some(&idx.paths),
                         texts: indexed.then_some(&idx.texts),
+                        points: indexed.then_some(&idx.points),
                         values: idx.values(),
                         #[cfg(feature = "http")]
                         embedder: self.embedder.get(),
@@ -1211,12 +1222,13 @@ impl NativeService {
     fn catch_up_indexes(&self, idx: &mut ServiceIndexes) {
         let version = self.path_specs_version.load(Ordering::SeqCst);
         if idx.paths_version != version {
-            let (specs, text_specs) = {
+            let (specs, text_specs, point_specs) = {
                 let reg = self.path_indexes.read().unwrap_or_else(|e| e.into_inner());
-                (reg.specs(), reg.text_specs())
+                (reg.specs(), reg.text_specs(), reg.point_specs())
             };
             idx.paths.set_specs(specs, &self.graph);
             idx.texts.set_specs(text_specs, &self.graph);
+            idx.points.set_specs(point_specs, &self.graph);
             idx.paths_version = version;
         }
         idx.set_secondary(self.secondary_indexes(), &self.graph);
@@ -1553,6 +1565,7 @@ impl NativeService {
                                 properties: idx.props().filter(|_| indexed),
                                 paths: indexed.then_some(&idx.paths),
                                 texts: indexed.then_some(&idx.texts),
+                                points: indexed.then_some(&idx.points),
                                 values: idx.values(),
                                 tx_written: overlay.as_ref(),
                                 #[cfg(feature = "http")]
@@ -1672,6 +1685,7 @@ impl NativeService {
                         properties: None,
                         paths: None,
                         texts: None,
+                        points: None,
                         values: None,
                         #[cfg(feature = "http")]
                         embedder: self.embedder.get(),
@@ -3435,6 +3449,49 @@ impl NativeService {
         )
     }
 
+    /// The nodes with `label` nearest to `from` (`(lat, lon)` in degrees) —
+    /// see [`crate::spatial`].
+    ///
+    /// # Errors
+    ///
+    /// [`DrevoError::InvalidArgument`] for a point off the globe or a
+    /// negative `max_meters`.
+    pub fn nearest(
+        &self,
+        label: &str,
+        from: (f64, f64),
+        options: &NearestOptions,
+    ) -> Result<Vec<Near>, DrevoError> {
+        crate::spatial::validate(from, options)?;
+        self.with_fresh_indexes(|idx| {
+            // The index answers only for the snapshot it was synced to.
+            let head = self.graph.change_head();
+            let snap = self.graph.snapshot();
+            let fresh = idx.synced_head == head && self.graph.change_head() == head;
+            let found = crate::spatial::nearest(
+                fresh.then_some(&idx.points),
+                label,
+                from,
+                options,
+                &|id| Ok(snap.get_node_arc(id)),
+                &|| {
+                    Ok(snap
+                        .all_nodes()
+                        .into_iter()
+                        .map(std::sync::Arc::new)
+                        .collect())
+                },
+            )?;
+            Ok(found
+                .into_iter()
+                .map(|(node, meters)| Near {
+                    node: node.id,
+                    meters,
+                })
+                .collect())
+        })
+    }
+
     /// Public-transport journeys from any of `starts` to any of `ends` over
     /// the timetable in the graph — see [`crate::timetable`].
     pub fn timetable(
@@ -3527,6 +3584,7 @@ impl NativeService {
             properties: idx.props(),
             paths: Some(&idx.paths),
             texts: Some(&idx.texts),
+            points: Some(&idx.points),
             values: idx.values(),
             #[cfg(feature = "http")]
             embedder: self.embedder.get(),

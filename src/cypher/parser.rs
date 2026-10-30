@@ -606,10 +606,22 @@ impl Parser {
         }
         // `CREATE [RANGE|BTREE] INDEX … FOR (n[:L]) ON (n.a.b, …)` over nested
         // paths is a path index (#578); `CREATE TEXT INDEX … FOR (n[:L])
-        // ON (n.prop)` is a trigram text index (#589). Every other index form
-        // (`POINT`, `LOOKUP`, `FULLTEXT`, relationship patterns, top-level-only
-        // range properties) is accepted but a no-op: drevo auto-indexes
-        // top-level properties, labels and full text.
+        // ON (n.prop)` is a trigram text index (#589); `CREATE POINT INDEX …
+        // FOR (n:L) ON (n.lat, n.lon)` is a point index (#764). Every other
+        // index form (a single-property `POINT`, `LOOKUP`, `FULLTEXT`,
+        // relationship patterns, top-level-only range properties) is accepted
+        // but a no-op: drevo auto-indexes top-level properties, labels and
+        // full text.
+        if self.is_soft_keyword("POINT") && self.is_soft_keyword_at(1, "INDEX") {
+            let start = self.pos;
+            self.consume(); // POINT
+            if let Some(clause) =
+                self.parse_create_path_index(span, crate::path_index_registry::IndexKind::Point)?
+            {
+                return Ok(clause);
+            }
+            self.pos = start;
+        }
         if self.is_soft_keyword("TEXT") && self.is_soft_keyword_at(1, "INDEX") {
             let start = self.pos;
             self.consume(); // TEXT
@@ -648,9 +660,11 @@ impl Parser {
 
     /// Parse `[RANGE|BTREE] INDEX [<name>] [IF NOT EXISTS] FOR (n[:Label])
     /// ON (n.a.b [, n.c.*]…) [OPTIONS {…}]` (#578), or with `kind` = `Text`
-    /// the rest of `TEXT INDEX … ON (n.prop)` (#589). `Ok(None)` when the
-    /// statement is valid Neo4j DDL drevo treats as a no-op — a relationship
-    /// pattern, or a range index on only top-level properties; the caller then
+    /// the rest of `TEXT INDEX … ON (n.prop)` (#589), with `Point` the rest of
+    /// `POINT INDEX … FOR (n:Label) ON (n.lat, n.lon)` (#764). `Ok(None)` when
+    /// the statement is valid Neo4j DDL drevo treats as a no-op — a
+    /// relationship pattern, a range index on only top-level properties, or a
+    /// point index on one point-valued property (top-level or nested); the caller then
     /// rewinds and accepts it as such. For a range index errors also make the
     /// caller fall back to the no-op, so an index form drevo does not model
     /// never fails a schema bootstrap; a text index that is not exactly one
@@ -690,7 +704,14 @@ impl Parser {
         } else {
             None
         };
+        let pattern_end = self.peek_span();
         self.eat(&TokenKind::RParen, "`)` after the index pattern")?;
+        if kind == IndexKind::Point && label.is_none() {
+            return Err(ParseError::Malformed {
+                message: "a point index needs a label: FOR (n:Label)".to_string(),
+                span: pattern_end,
+            });
+        }
         self.eat(&TokenKind::On, "ON after the FOR pattern")?;
         self.eat(&TokenKind::LParen, "`(` after ON")?;
         let mut paths = Vec::new();
@@ -755,6 +776,26 @@ impl Parser {
         }
         if paths.is_empty() {
             return Ok(None);
+        }
+        if kind == IndexKind::Point {
+            match paths.as_slice() {
+                [_] => return Ok(None),
+                [lat, lon] if lat.is_nested() || lon.is_nested() => {
+                    return Err(ParseError::Malformed {
+                        message: "a point index covers top-level properties".to_string(),
+                        span,
+                    });
+                }
+                [lat, lon] if lat != lon => {}
+                _ => {
+                    return Err(ParseError::Malformed {
+                        message: "a point index covers two different properties, \
+                                  the latitude then the longitude: ON (n.lat, n.lon)"
+                            .to_string(),
+                        span,
+                    });
+                }
+            }
         }
         Ok(Some(Clause::CreatePathIndex(CreatePathIndex {
             name,

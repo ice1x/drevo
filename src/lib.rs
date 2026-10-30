@@ -229,6 +229,9 @@ pub use drevo_core::native_label_index;
 /// Opt-in indexes on nested property paths (issue #578), re-exported from
 /// `drevo-core`.
 pub use drevo_core::native_path_index;
+/// Opt-in point indexes: nearest nodes to a latitude/longitude, re-exported
+/// from `drevo-core`.
+pub use drevo_core::native_point_index;
 /// Opt-in trigram text indexes for `CONTAINS` / `STARTS WITH` / `ENDS WITH`
 /// (issue #589), re-exported from `drevo-core`.
 pub use drevo_core::native_text_index;
@@ -367,6 +370,8 @@ pub mod web_ui;
 /// property, relationship kinds and direction.
 pub mod weighted_path;
 
+/// Nearest nodes to a latitude/longitude, from a point index or a scan.
+pub mod spatial;
 /// Public-transport routing: the earliest arrival over a timetable of trips
 /// stored on the relationships between stops.
 pub mod timetable;

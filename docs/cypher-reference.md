@@ -160,7 +160,9 @@ must be exactly one of it; anything else is a recoverable `ExecError::InvalidFun
 `shortestPath` counts hops. For the path with the lowest summed cost (seconds,
 metres, …) use [`drevo.path.weighted`](#weighted-paths); for every node within a
 cost budget, [`drevo.path.reachable`](#reachable-nodes); for journeys on public
-transport, [`drevo.path.timetable`](#timetable-routing).
+transport, [`drevo.path.timetable`](#timetable-routing). To find where a route
+starts and ends, [`drevo.spatial.nearest`](#nearest-nodes-to-a-point) gives the
+nodes closest to a latitude and longitude.
 
 ### Weighted paths
 
@@ -345,6 +347,50 @@ the destination: `arriveAt` is `29640`, `departAt` `28560`, no transfers.
 The search runs in rounds, one more ride per round (RAPTOR). A query reads
 only the stops it reaches, so its cost grows with the part of the network
 within reach of `departAt + maxDuration`, not with the size of the graph.
+
+### Nearest nodes to a point
+
+`CALL drevo.spatial.nearest(label, {lat, lon}, options) YIELD node, meters`
+returns the nodes with `label` closest to a point, nearest first, with the
+great-circle (haversine) distance in metres. Nodes at the same distance come
+back in id order. The point is a map of two numbers in degrees, the latitude
+in −90..90 and the longitude in −180..180; `options` may be left out. It runs
+once per input row; a `null` label or point yields no row.
+
+A node's position is read from two number properties, `lat` and `lon` unless
+the options name others. Nodes without both, or with a value that is not a
+number in range, are never returned.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `k` | `1` | at most this many nodes |
+| `maxMeters` | none | only nodes at most this far away; none in range gives no rows |
+| `where` | none | a map: only nodes whose properties equal its values (`{r: 1}`) |
+| `lat`, `lon` | `'lat'`, `'lon'` | the properties holding the position |
+
+A [point index](#point-indexes) on the label and the two properties answers
+the call from a grid instead of reading every node with the label; the answer
+is the same. On a database with no such index, the call reads every node with
+the label.
+
+The nearest drivable junction to a point, and the route from there:
+
+```cypher
+CREATE (o:Junction {name: 'Opera', r: 1, lat: 42.6935, lon: 23.3290}),
+       (l:Junction {name: 'Lions Bridge', r: 1, lat: 42.7075, lon: 23.3216}),
+       (:Junction {name: 'Footway', r: 0, lat: 42.6977, lon: 23.3219}),
+       (o)-[:ROAD {car_s: 120}]->(l)
+WITH 1 AS one
+CALL drevo.spatial.nearest('Junction', {lat: 42.6977, lon: 23.3219}, {where: {r: 1}})
+YIELD node AS start, meters
+MATCH (goal:Junction {name: 'Lions Bridge'})
+CALL drevo.path.weighted(start, goal, {relTypes: ['ROAD'], cost: 'car_s'})
+YIELD cost
+RETURN start.name AS start, round(meters) AS meters, cost
+```
+
+The footway crossing is closer, but `where` skips it: the route starts at
+Opera, 745 m away, and costs `120.0`.
 
 ---
 
@@ -1143,13 +1189,15 @@ RETURN relationship, score ORDER BY score DESC
 ```
 
 Schema DDL that drevo does not need is **accepted but a no-op**, so a driver's
-bootstrap does not fail: `CREATE [RANGE|POINT|LOOKUP|FULLTEXT] INDEX …` on
-top-level properties or relationships, `CREATE TEXT INDEX` on relationships,
+bootstrap does not fail: `CREATE [RANGE|LOOKUP|FULLTEXT] INDEX …` on
+top-level properties or relationships, `CREATE POINT INDEX` on one property or
+on relationships, `CREATE TEXT INDEX` on relationships,
 and the relationship and property-type `CREATE CONSTRAINT` forms parse and do
 nothing (drevo auto-indexes every top-level node property).
 `CREATE VECTOR INDEX`, indexes on nested property paths
 ([below](#indexes-on-nested-properties-578)), text indexes on node
-properties ([below](#text-indexes-589)) and node constraints
+properties ([below](#text-indexes-589)), point indexes on two position
+properties ([below](#point-indexes)) and node constraints
 ([below](#constraints-604-606)) have an effect.
 
 `SHOW [type] INDEXES` lists the named indexes in Neo4j's column layout
@@ -1157,7 +1205,8 @@ properties ([below](#text-indexes-589)) and node constraints
 `labelsOrTypes`, `properties`, `indexProvider`, `owningConstraint`, `options`),
 with the usual `YIELD …` / `WHERE …` / `RETURN …`, a bare `WHERE`, and
 `YIELD *`. Vector indexes are listed as `VECTOR`, nested-path indexes as
-`RANGE`, text indexes as `TEXT`; `SHOW ALL INDEXES` lists all of them. drevo's automatic indexes have no
+`RANGE`, text indexes as `TEXT`, point indexes as `POINT`; `SHOW ALL INDEXES`
+lists all of them. drevo's automatic indexes have no
 names and the no-op DDL registers nothing. `SHOW CONSTRAINTS` lists the
 declared UNIQUE constraints and nothing else. That is exactly what a client's
 check-then-create bootstrap expects, e.g. neo4j-agent-memory's:
@@ -1285,6 +1334,35 @@ as without the index.
 Full-text search (`fts.search`, `db.index.fulltext.queryNodes`) is a different
 tool: it ranks whole nodes by relevance, ignores case and punctuation, and
 needs no declaration.
+
+### Point indexes
+
+A point index keeps the position of every node with a label, read from a
+latitude and a longitude property in degrees, so that
+[`drevo.spatial.nearest`](#nearest-nodes-to-a-point) finds the nodes closest to
+a point without reading every node:
+
+```cypher
+CREATE POINT INDEX junctions IF NOT EXISTS FOR (j:Junction) ON (j.lat, j.lon)
+```
+
+- **Two top-level properties**, the latitude first, and a label. Neo4j's form
+  with one point-valued property (`ON (p.location)`) is accepted as a no-op.
+- **Values:** a node is indexed when both properties hold numbers, the
+  latitude in −90..90 and the longitude in −180..180. Other nodes are left
+  out, as `drevo.spatial.nearest` leaves them out without the index.
+- **Writes:** the index follows `CREATE`, `SET`, `REMOVE` and `DELETE`. A
+  statement that has written answers from a scan, so it sees its own writes.
+- **Lean databases:** a point index is not one of the
+  [secondary indexes](#secondary-indexes); `setSecondary(false)` keeps it.
+- **Names and lifecycle:** an unnamed index is called
+  `point_index_<label>_<lat>_<lon>` (`point_index_Junction_lat_lon`).
+  Definitions survive a restart, the positions are rebuilt in memory on open,
+  and `DROP INDEX` removes it. `OPTIONS {…}` is accepted and ignored.
+
+The index buckets positions into a grid of 0.002° cells (about 220 m north to
+south) and reads the cells around the point ring by ring until no unread cell
+can hold anything closer.
 
 ### Constraints (#604, #606)
 
@@ -1495,7 +1573,7 @@ Their memory is freed before the next statement. Queries stay correct:
 lookups by property scan the label or the graph instead, and the full-text
 procedures report that they are unavailable. Ids, adjacency, labels,
 `drevo.path.weighted` and the indexes you declare (`CREATE INDEX`,
-`CREATE TEXT INDEX`, vector indexes) keep working. The choice is kept across
+`CREATE TEXT INDEX`, `CREATE POINT INDEX`, vector indexes) keep working. The choice is kept across
 restarts; `CALL drevo.indexes.setSecondary(true)` rebuilds the indexes from
 the graph, and `CALL drevo.indexes.secondary()` reports the setting. Changing
 it needs index management rights and is refused in an explicit transaction

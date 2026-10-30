@@ -57,8 +57,8 @@
 //!   create/patch inputs.
 //! - Indexes: [`native_fts`] (BM25 full-text search),
 //!   [`native_label_index`], [`native_property_index`], and opt-in indexes on
-//!   nested property paths, [`native_path_index`], and on substrings,
-//!   [`native_text_index`].
+//!   nested property paths, [`native_path_index`], on substrings,
+//!   [`native_text_index`], and on positions, [`native_point_index`].
 //! - Text: [`tokenizer`] and [`levenshtein`] edit distance.
 //! - Replication: [`replica`], [`delta`], [`hlc`], [`lww`].
 //! - Backups: [`backup`], an online physical copy of a durable store and its
@@ -88,6 +88,7 @@ pub mod native;
 pub mod native_fts;
 pub mod native_label_index;
 pub mod native_path_index;
+pub mod native_point_index;
 pub mod native_property_index;
 pub mod native_text_index;
 mod properties;
