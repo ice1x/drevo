@@ -136,7 +136,11 @@ impl ServiceIndexes {
         idx
     }
 
+    /// Sync every index with the change feed. The head is read first: each
+    /// index then reads at least up to it, so `synced_head` never claims a
+    /// commit that landed during the sync and one of the indexes missed.
     fn catch_up(&mut self, graph: &NativeGraph) {
+        let head = graph.change_head();
         self.labels.sync(graph);
         self.paths.sync(graph);
         self.texts.sync(graph);
@@ -147,7 +151,7 @@ impl ServiceIndexes {
             self.fts.sync(graph);
             self.fts_rel.sync(graph);
         }
-        self.synced_head = graph.change_head();
+        self.synced_head = head;
     }
 }
 

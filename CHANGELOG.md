@@ -8,6 +8,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **A lookup by property value could miss a node committed while the indexes
+  caught up** (issue #768). The service recorded the change-feed head after
+  syncing its indexes, so a commit landing in between counted as indexed
+  although the property index had not read it; `MATCH (n:Note {title: …})`
+  then missed that node until the next write, while a label scan found it.
+  The head is now read before the indexes sync.
+
 - **`scripts/drevo-restart.sh` did not forward `DREVO_TEXT2CYPHER_*`**, so a
   text-to-Cypher upstream set in `~/.drevo.env` never reached the container
   and the Web UI's **Ask** reported "not configured". The three variables
