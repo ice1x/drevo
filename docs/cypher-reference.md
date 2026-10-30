@@ -494,6 +494,17 @@ SKIP 0
 LIMIT 25
 ```
 
+A variable or alias is an identifier, or one of the keywords that only ever
+stand between operands or inside a clause: `starts`, `ends`, `contains`, `in`,
+`is`, `on`, `by`, `asc`, `desc`, `and`, `or`, `xor`. They keep working as
+keywords in their own position.
+
+```cypher
+UNWIND ['Central', 'North'] AS starts
+RETURN starts, starts STARTS WITH 'C' AS central
+ORDER BY starts DESC
+```
+
 ### WITH
 
 `WITH` is `RETURN` mid-query: it projects intermediate results and pipes them into the next
