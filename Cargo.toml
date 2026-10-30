@@ -336,3 +336,10 @@ harness = false
 [[bench]]
 name = "reachable_bench"
 harness = false
+
+# `drevo.spatial.nearest` latency: snapping points to the nearest of 243k
+# junctions and to stops, through a point index, on a synthetic city the size
+# of Sofia's OpenStreetMap road graph. Custom `main`; no external data.
+[[bench]]
+name = "spatial_nearest_bench"
+harness = false

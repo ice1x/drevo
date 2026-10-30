@@ -5,7 +5,10 @@
 //! [`NativePathIndex`](crate::native_path_index::NativePathIndex) maintains;
 //! `CREATE TEXT INDEX <name> FOR (n:Label) ON (n.title)` declares a property
 //! the trigram [`NativeTextIndex`](crate::native_text_index::NativeTextIndex)
-//! maintains. This registry holds those definitions under their names; it is persisted in
+//! maintains; `CREATE POINT INDEX <name> FOR (n:Label) ON (n.lat, n.lon)`
+//! declares the two properties positioning nodes in the
+//! [`NativePointIndex`](crate::native_point_index::NativePointIndex). This
+//! registry holds those definitions under their names; it is persisted in
 //! the `semantic.json` sidecar next to the vector-index registry (see
 //! [`crate::native_service`]), so definitions survive a restart while the
 //! index data itself is rebuilt from the WAL.
@@ -13,6 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::native_path_index::{PathIndexSpec, PropertyPath};
+use crate::native_point_index::PointIndexSpec;
 use crate::native_text_index::TextIndexSpec;
 
 /// What a [`PathIndex`] serves.
@@ -25,6 +29,9 @@ pub enum IndexKind {
     /// `CONTAINS` / `STARTS WITH` / `ENDS WITH` on one property, through
     /// trigrams (`CREATE TEXT INDEX`).
     Text,
+    /// Nearest nodes to a latitude/longitude held in two properties
+    /// (`CREATE POINT INDEX`).
+    Point,
 }
 
 /// One named path index: the paths it covers, for nodes with `label` (or all
@@ -40,7 +47,8 @@ pub struct PathIndex {
     /// The label the index is restricted to, if any.
     pub label: Option<String>,
     /// The paths, in declaration order: nested ones for a range index, exactly
-    /// one (top-level or nested, without a wildcard) for a text index.
+    /// one (top-level or nested, without a wildcard) for a text index, the
+    /// latitude then the longitude property for a point index.
     pub paths: Vec<PropertyPath>,
 }
 
@@ -64,6 +72,20 @@ impl PathIndex {
             .filter_map(|path| {
                 TextIndexSpec::new(self.label.clone(), path.segments().to_vec()).ok()
             })
+    }
+
+    /// The [`PointIndexSpec`] a point index contributes; none for the others.
+    #[must_use]
+    pub fn point_spec(&self) -> Option<PointIndexSpec> {
+        let (IndexKind::Point, Some(label), [lat, lon]) =
+            (self.kind, &self.label, self.paths.as_slice())
+        else {
+            return None;
+        };
+        match (lat.segments(), lon.segments()) {
+            ([lat], [lon]) => PointIndexSpec::new(label.clone(), lat.clone(), lon.clone()).ok(),
+            _ => None,
+        }
     }
 }
 
@@ -123,6 +145,19 @@ impl PathIndexRegistry {
         specs
     }
 
+    /// Every spec of every registered point index — what the point index
+    /// maintains.
+    #[must_use]
+    pub fn point_specs(&self) -> Vec<PointIndexSpec> {
+        let mut specs: Vec<PointIndexSpec> = Vec::new();
+        for spec in self.indexes.iter().filter_map(PathIndex::point_spec) {
+            if !specs.contains(&spec) {
+                specs.push(spec);
+            }
+        }
+        specs
+    }
+
     /// Register `index`. The caller has checked the name is free.
     pub fn insert(&mut self, index: PathIndex) {
         self.indexes.push(index);
@@ -140,12 +175,14 @@ impl PathIndexRegistry {
 /// `index_<label|all>_<paths>`, with every non-alphanumeric character as `_`
 /// and a wildcard as `star` — e.g. `index_Bug_meta_severity`,
 /// `index_all_star`. A text index gets a `text_` prefix:
-/// `text_index_Ticket_title`.
+/// `text_index_Ticket_title`, a point index a `point_` prefix:
+/// `point_index_Stop_lat_lon`.
 #[must_use]
 pub fn generated_name(kind: IndexKind, label: Option<&str>, paths: &[PropertyPath]) -> String {
     let prefix = match kind {
         IndexKind::Range => "",
         IndexKind::Text => "text_",
+        IndexKind::Point => "point_",
     };
     let mut name = format!("{prefix}index_{}", label.unwrap_or("all"));
     for path in paths {
@@ -274,5 +311,35 @@ mod tests {
         assert_eq!(text.len(), 1);
         assert_eq!(text[0].label(), Some("Doc"));
         assert_eq!(text[0].path(), ["title".to_string()]);
+    }
+
+    #[test]
+    fn point_indexes_give_point_specs() {
+        let top = |name: &str| PropertyPath::new(vec![name.to_string()], false).expect("path");
+        let mut reg = PathIndexRegistry::default();
+        reg.insert(PathIndex {
+            name: "stops".into(),
+            kind: IndexKind::Point,
+            label: Some("Stop".into()),
+            paths: vec![top("lat"), top("lon")],
+        });
+        reg.insert(PathIndex {
+            name: "titles".into(),
+            kind: IndexKind::Text,
+            label: Some("Stop".into()),
+            paths: vec![top("lat")],
+        });
+        assert_eq!(
+            reg.point_specs(),
+            [PointIndexSpec::new("Stop", "lat", "lon").expect("spec")]
+        );
+        assert!(reg.specs().is_empty());
+        assert_eq!(reg.text_specs().len(), 1);
+        assert_eq!(
+            generated_name(IndexKind::Point, Some("Stop"), &[top("lat"), top("lon")]),
+            "point_index_Stop_lat_lon"
+        );
+        let json = serde_json::to_string(&reg.list()[0]).expect("json");
+        assert!(json.contains(r#""kind":"point""#), "{json}");
     }
 }

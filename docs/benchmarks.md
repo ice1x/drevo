@@ -218,6 +218,41 @@ stops. The first Cypher statement of a run takes ~0.7 s
 of one-time setup and is timed separately. Cypher and the native call return
 the same number of nodes for every query.
 
+## The nearest junction to a point
+
+[`benches/spatial_nearest_bench.rs`](https://github.com/ice1x/drevo/tree/main/benches/spatial_nearest_bench.rs)
+times [`drevo.spatial.nearest`](cypher-reference.md#nearest-nodes-to-a-point)
+on a synthetic city the size of Sofia's OpenStreetMap road graph: 243,049
+junctions at random points in Sofia's bounding box (85% drivable, `r: 1`) and
+4,800 stops, each label with a [point index](cypher-reference.md#point-indexes).
+Each of 1,000 queries is a random point in the box, snapped to the nearest
+drivable junction (*junction*, `where: {r: 1}`) or to the five nearest stops
+within 500 m (*stops*, `k: 5, maxMeters: 500`). The junction lookups also run
+without a point index for comparison. No external data is needed:
+
+```sh
+cargo bench --bench spatial_nearest_bench
+```
+
+### Reference run
+
+Apple M1 Max, `--release`, in-memory `NativeService`, on a shared machine
+under load. **Illustrative — re-run on your hardware before quoting them.**
+
+| Workload | p50 | p95 | p99 | max |
+|----------|----:|----:|----:|----:|
+| `NativeService::nearest`, junction | 3.5 µs | 20 µs | 23 µs | 38 µs |
+| `CALL drevo.spatial.nearest`, junction | 6.1 µs | 22 µs | 24 µs | 15 ms |
+| `NativeService::nearest`, stops | 3.2 µs | 5.3 µs | 6.5 µs | 18 µs |
+| `CALL drevo.spatial.nearest`, stops | 8.8 µs | 11 µs | 12 µs | 30 µs |
+| `NativeService::nearest`, junction, no index | 121 ms | 128 ms | — | 830 ms |
+
+The first lookup after loading the city brings the point indexes up to date
+with every node and takes ~0.8 s; later lookups read a few grid cells.
+Without an index every lookup
+reads all 247,849 nodes (20 queries). Cypher and the native call return the
+same nodes for every query.
+
 ## Write transactions
 
 A write transaction works on its own copy of the store. The copy shares

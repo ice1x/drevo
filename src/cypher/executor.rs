@@ -1249,6 +1249,8 @@ pub struct NativeQueryContext<'a> {
     pub paths: Option<&'a crate::native_path_index::NativePathIndex>,
     /// Opt-in trigram text index (`WHERE n.title CONTAINS …`, issue #589).
     pub texts: Option<&'a crate::native_text_index::NativeTextIndex>,
+    /// Opt-in point index (`drevo.spatial.nearest`, issue #764).
+    pub points: Option<&'a crate::native_point_index::NativePointIndex>,
     /// `NodeValue` projection cache.
     pub values: Option<&'a crate::native_value_cache::NativeValueCache>,
     /// Server-side text embedder — lets `drevo.semantic.embed` /
@@ -1530,6 +1532,7 @@ fn execute_single(
         native_props: ctx.properties,
         native_paths: ctx.paths,
         native_texts: ctx.texts,
+        native_points: ctx.points,
         native_values: ctx.values,
         native_tx_written: ctx.tx_written,
         native_embedder: ctx.embedder,
@@ -2676,6 +2679,9 @@ type KeyedRows = Vec<(Vec<Value>, Bindings)>;
 /// describe. Used by [`Executor::sort_keyed`].
 type SortableRows = Vec<(Vec<(Value, OrderDirection)>, (Vec<Value>, Bindings))>;
 
+/// Rows of values, as a procedure yields them.
+type Rows = Vec<Vec<Value>>;
+
 /// What the clause after a MATCH does with its rows when it sorts them and
 /// keeps the first few: the MATCH then keeps only those (#743).
 #[derive(Clone)]
@@ -2817,6 +2823,10 @@ struct Executor<'a> {
     /// CONTAINS / STARTS WITH / ENDS WITH …` pushdown when a declared text
     /// index covers the pattern. `None` when none was supplied.
     native_texts: Option<&'a crate::native_text_index::NativeTextIndex>,
+    /// The opt-in point index (issue #764): serves `drevo.spatial.nearest`
+    /// when a declared point index covers the label and properties. `None`
+    /// when none was supplied.
+    native_points: Option<&'a crate::native_point_index::NativePointIndex>,
     /// Memoised `NodeValue` projections for unchanged native records; hits are
     /// `Arc::ptr_eq`-validated against the live node, so staleness can only
     /// cost speed, never correctness.
@@ -6144,6 +6154,9 @@ impl<'a> Executor<'a> {
         if name == REACHABLE {
             return self.run_reachable(c, columns);
         }
+        if name == NEAREST {
+            return self.run_nearest(c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -6354,6 +6367,84 @@ impl<'a> Executor<'a> {
     /// with a `null` start yields nothing. The options map is described at
     /// [`reachable_options`].
     fn run_reachable(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
+        self.run_per_row(c, columns, &mut |exec, row| {
+            let start = path_endpoint(&exec.eval(&c.args[0], row)?, REACHABLE, c.span)?;
+            let call = reachable_options(&exec.eval(&c.args[1], row)?, c.span)?;
+            match start {
+                Some(start) => exec.find_reachable(start, &call, c.span),
+                None => Ok(Vec::new()),
+            }
+        })
+    }
+
+    /// `CALL drevo.spatial.nearest(label, {lat, lon}[, options]) YIELD node,
+    /// meters` — the nodes with `label` nearest to a point, nearest first;
+    /// once per input row. A `null` label or point gives no rows. The options
+    /// are described at [`nearest_options`].
+    fn run_nearest(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
+        self.run_per_row(c, columns, &mut |exec, row| {
+            let label = match exec.eval(&c.args[0], row)? {
+                Value::Null => return Ok(Vec::new()),
+                Value::String(label) => label,
+                other => {
+                    return Err(nearest_refusal(
+                        format!("the label must be a string, got {}", other.type_name()),
+                        c.span,
+                    ));
+                }
+            };
+            let Some(from) = nearest_point(&exec.eval(&c.args[1], row)?, c.span)? else {
+                return Ok(Vec::new());
+            };
+            let options = match c.args.get(2) {
+                Some(arg) => nearest_options(&exec.eval(arg, row)?, c.span)?,
+                None => crate::spatial::NearestOptions::default(),
+            };
+            exec.find_nearest(&label, from, &options, c.span)
+        })
+    }
+
+    /// One `drevo.spatial.nearest` lookup over the statement's view of the
+    /// graph, as `[node, meters]` rows. The point index answers until the
+    /// statement writes; after that it may miss the statement's own changes,
+    /// so the nodes are scanned.
+    fn find_nearest(
+        &self,
+        label: &str,
+        from: (f64, f64),
+        options: &crate::spatial::NearestOptions,
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let refuse = |e: DrevoError| match e {
+            DrevoError::InvalidArgument(message) => nearest_refusal(message, span),
+            e => ExecError::Storage(e),
+        };
+        crate::spatial::validate(from, options).map_err(refuse)?;
+        let engine = self.engine();
+        let found = crate::spatial::nearest(
+            self.native_points.filter(|_| !self.statement_has_written()),
+            label,
+            from,
+            options,
+            &|id| engine.get_node(id).map_err(DrevoError::from),
+            &|| engine.all_nodes().map_err(DrevoError::from),
+        )
+        .map_err(refuse)?;
+        Ok(found
+            .into_iter()
+            .map(|(node, meters)| vec![Value::Node(node_to_value(&node)), Value::Float(meters)])
+            .collect())
+    }
+
+    /// Run a procedure once per input row: `rows_for` gives the procedure's
+    /// output rows for one input row, which are joined to it through `YIELD`
+    /// (and its `WHERE`), or, without `YIELD`, become the statement's result.
+    fn run_per_row(
+        &mut self,
+        c: &CallClause,
+        columns: &[&str],
+        rows_for: &mut dyn FnMut(&Self, &Bindings) -> ExecResultT<Rows>,
+    ) -> ExecResultT<()> {
         let prior = std::mem::take(&mut self.bindings);
         let mut kept = Vec::new();
         let mut standalone = Vec::new();
@@ -6363,12 +6454,7 @@ impl<'a> Executor<'a> {
             None => None,
         };
         for row in prior {
-            let start = path_endpoint(&self.eval(&c.args[0], &row)?, REACHABLE, c.span)?;
-            let call = reachable_options(&self.eval(&c.args[1], &row)?, c.span)?;
-            let Some(start) = start else {
-                continue;
-            };
-            let found = self.find_reachable(start, &call, c.span)?;
+            let found = rows_for(self, &row)?;
             for out_row in self.visible_rows(found)? {
                 let Some(items) = &items else {
                     standalone.push(out_row);
@@ -7212,6 +7298,7 @@ impl<'a> Executor<'a> {
         let want_vector = filter == "ALL" || filter == "VECTOR";
         let want_range = filter == "ALL" || filter == "RANGE" || filter == "BTREE";
         let want_text = filter == "ALL" || filter == "TEXT";
+        let want_point = filter == "ALL" || filter == "POINT";
         let Some(svc) = self.native_semantic else {
             return Ok(Vec::new());
         };
@@ -7265,6 +7352,7 @@ impl<'a> Executor<'a> {
             let (kind, provider) = match index.kind {
                 IndexKind::Range if want_range => ("RANGE", "range-1.0"),
                 IndexKind::Text if want_text => ("TEXT", "text-2.0"),
+                IndexKind::Point if want_point => ("POINT", "point-1.0"),
                 _ => continue,
             };
             let id = i64::try_from(rows.len()).unwrap_or(i64::MAX) + 1;
@@ -11244,6 +11332,131 @@ const TIMETABLE: &str = "drevo.path.timetable";
 /// The `drevo.path.reachable` procedure: every node within a cost budget.
 const REACHABLE: &str = "drevo.path.reachable";
 
+/// The `drevo.spatial.nearest` procedure: the nodes nearest to a point.
+const NEAREST: &str = "drevo.spatial.nearest";
+
+/// A `drevo.spatial.nearest` argument error.
+fn nearest_refusal(message: String, span: Span) -> ExecError {
+    ExecError::InvalidProcedureCall {
+        name: NEAREST.into(),
+        message,
+        span,
+    }
+}
+
+/// The `{lat, lon}` point of `drevo.spatial.nearest`, in degrees; `None` for
+/// `null`.
+fn nearest_point(value: &Value, span: Span) -> ExecResultT<Option<(f64, f64)>> {
+    let refuse = || {
+        nearest_refusal(
+            format!(
+                "the point must be a map {{lat: …, lon: …}} of two numbers, got {}",
+                match value {
+                    Value::Map(_) => "a map without them".to_string(),
+                    other => other.type_name().to_string(),
+                }
+            ),
+            span,
+        )
+    };
+    match value {
+        Value::Null => Ok(None),
+        Value::Map(map) => {
+            let number = |key: &str| map.get(key).and_then(option_number);
+            match (number("lat"), number("lon")) {
+                (Some(lat), Some(lon)) => Ok(Some((lat, lon))),
+                _ => Err(refuse()),
+            }
+        }
+        _ => Err(refuse()),
+    }
+}
+
+/// The options map of `drevo.spatial.nearest`:
+///
+/// * `lat`, `lon` — the position properties, in degrees (default `lat` and
+///   `lon`);
+/// * `k` — how many nodes, a non-negative integer (default 1);
+/// * `maxMeters` — only nodes at most this far away;
+/// * `where` — a map: only nodes whose properties equal its values.
+///
+/// `null` options, and `null` values, mean the defaults.
+fn nearest_options(value: &Value, span: Span) -> ExecResultT<crate::spatial::NearestOptions> {
+    let mut options = crate::spatial::NearestOptions::default();
+    let map = match value {
+        Value::Null => return Ok(options),
+        Value::Map(map) => map,
+        other => {
+            return Err(nearest_refusal(
+                format!("options must be a map, got {}", other.type_name()),
+                span,
+            ));
+        }
+    };
+    for (key, v) in map {
+        if matches!(v, Value::Null) {
+            continue;
+        }
+        match key.as_str() {
+            "lat" | "lon" => {
+                let Value::String(name) = v else {
+                    return Err(nearest_refusal(
+                        format!("{key} must be a property name, got {}", v.type_name()),
+                        span,
+                    ));
+                };
+                if key == "lat" {
+                    options.lat = name.clone();
+                } else {
+                    options.lon = name.clone();
+                }
+            }
+            "k" => {
+                options.k = match v {
+                    Value::Integer(k) => usize::try_from(*k).ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    nearest_refusal(format!("k must be a non-negative integer, got {v:?}"), span)
+                })?;
+            }
+            "maxMeters" => {
+                options.max_meters =
+                    Some(option_number(v).filter(|m| *m >= 0.0).ok_or_else(|| {
+                        nearest_refusal(
+                            format!("maxMeters must be a non-negative number of metres, got {v:?}"),
+                            span,
+                        )
+                    })?);
+            }
+            "where" => {
+                let Value::Map(wanted) = v else {
+                    return Err(nearest_refusal(
+                        format!(
+                            "where must be a map of property values, got {}",
+                            v.type_name()
+                        ),
+                        span,
+                    ));
+                };
+                for (property, want) in wanted {
+                    let want = value_to_json(want).ok_or_else(|| {
+                        nearest_refusal(format!("where.{property} must be a property value"), span)
+                    })?;
+                    options.filter.push((property.clone(), want));
+                }
+            }
+            other => {
+                return Err(nearest_refusal(
+                    format!("unknown option `{other}`; expected lat, lon, k, maxMeters or where"),
+                    span,
+                ));
+            }
+        }
+    }
+    Ok(options)
+}
+
 /// A start or end node of a path procedure: a node's id, or `None` for
 /// `null`.
 fn path_endpoint(value: &Value, procedure: &str, span: Span) -> ExecResultT<Option<u64>> {
@@ -11872,6 +12085,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         TIMETABLE => Some(&["arriveAt", "departAt", "transfers", "legs"]),
         // drevo.path.reachable(start, options): every node within a budget.
         REACHABLE => Some(&["node", "cost", "path"]),
+        // drevo.spatial.nearest(label, point, options): the nearest nodes.
+        NEAREST => Some(&["node", "meters"]),
         // Fuzzy lookup through a text index (issue #593): node + edit distance.
         "drevo.text.fuzzy" => Some(&["node", "distance"]),
         // Engine-flip observability: engine mode + mirror routing counters.
@@ -11977,7 +12192,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
 /// them) may be left out.
 fn procedure_optional_args(name: &str) -> usize {
     match name {
-        "apoc.trigger.install" | "apoc.trigger.add" | "drevo.sequence.create" => 1,
+        "apoc.trigger.install" | "apoc.trigger.add" | "drevo.sequence.create" | NEAREST => 1,
         _ => 0,
     }
 }
@@ -12084,6 +12299,8 @@ fn procedure_arity(name: &str) -> usize {
         TIMETABLE => 3,
         // drevo.path.reachable(start, options).
         REACHABLE => 2,
+        // drevo.spatial.nearest(label, point[, options]).
+        NEAREST => 3,
         // drevo.text.fuzzy(indexName, query, maxEdits) (issue #593).
         "drevo.text.fuzzy" => 3,
         // drevo.engine.status() — no arguments.
