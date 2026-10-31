@@ -439,8 +439,11 @@ impl NativePointIndex {
     pub fn set_specs(&mut self, specs: Vec<PointIndexSpec>, graph: &NativeGraph) {
         self.grids = specs.iter().map(|_| Grid::default()).collect();
         self.specs = specs;
+        // The head before the snapshot: a change committed during the
+        // rebuild is replayed by the next sync.
+        let head = graph.change_head();
         self.rebuild_from(graph);
-        self.cursor = graph.change_head();
+        self.cursor = head;
     }
 
     /// Apply every change `graph` committed since the last sync.
@@ -451,8 +454,10 @@ impl NativePointIndex {
         }
         let batch = graph.changes_since(self.cursor);
         if batch.lagged {
+            // `batch.cursor` is the head before the rebuild's snapshot, which
+            // holds every change up to it; a later change is replayed next.
             self.rebuild_from(graph);
-            self.cursor = graph.change_head().max(batch.cursor);
+            self.cursor = batch.cursor;
             return;
         }
         for op in batch.ops {

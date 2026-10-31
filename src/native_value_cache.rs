@@ -83,8 +83,10 @@ impl NativeValueCache {
     pub fn sync(&mut self, graph: &NativeGraph) {
         let batch = graph.changes_since(self.cursor);
         if batch.lagged {
+            // `batch.cursor` is the head before the rebuild's snapshot, which
+            // holds every change up to it; a later change is replayed next.
             self.rebuild_from(graph);
-            self.cursor = graph.change_head().max(batch.cursor);
+            self.cursor = batch.cursor;
             return;
         }
         for op in batch.ops {
