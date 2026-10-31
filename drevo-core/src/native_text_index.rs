@@ -272,8 +272,11 @@ impl NativeTextIndex {
     pub fn set_specs(&mut self, specs: Vec<TextIndexSpec>, graph: &NativeGraph) {
         self.stores = specs.iter().map(|_| TrigramStore::default()).collect();
         self.specs = specs;
+        // The head before the snapshot: a change committed during the
+        // rebuild is replayed by the next sync.
+        let head = graph.change_head();
         self.rebuild_from(graph);
-        self.cursor = graph.change_head();
+        self.cursor = head;
     }
 
     /// Ids of the nodes whose string at `path` may satisfy `op` with `needle`,
@@ -348,8 +351,10 @@ impl NativeTextIndex {
         }
         let batch = graph.changes_since(self.cursor);
         if batch.lagged {
+            // `batch.cursor` is the head before the rebuild's snapshot, which
+            // holds every change up to it; a later change is replayed next.
             self.rebuild_from(graph);
-            self.cursor = graph.change_head().max(batch.cursor);
+            self.cursor = batch.cursor;
             return;
         }
         for op in batch.ops {

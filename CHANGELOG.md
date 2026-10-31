@@ -8,6 +8,14 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **An index rebuilt from a snapshot could skip a commit made during the
+  rebuild** (issue #770). The label, property, path, text, point and
+  full-text indexes and the value cache rebuild when the change feed was
+  trimmed past their cursor, and the path, text and point indexes when their
+  definitions change. They took the cursor from the feed head read after the
+  rebuild, so a commit landing in between was never indexed until the node
+  changed again. They now resume from the head read before the snapshot.
+
 - **Soft keywords can name variables** (issue #765). `RETURN 1 AS starts`,
   `WITH … AS ends`, `MATCH (contains:Stop)`, `UNWIND list AS in` and the
   like were parse errors ("expected identifier"); Neo4j accepts them. The
