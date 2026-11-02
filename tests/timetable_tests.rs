@@ -212,10 +212,123 @@ fn a_footpath_between_rides() {
                 "egress D>-"
             ])
         )],
-        "walking needs no transfer time: C 1200 + 120 s = E 1320, trip 31 leaves at 1330",
+        "a walk longer than the transfer time needs no extra time: C 1200 + 120 s = E 1320, trip 31 leaves at 1330",
     );
     let without_walking = plan(&svc, &[("A", 0)], &[("D", 0)], &opts(&[("walk", "null")]));
     assert_eq!(without_walking[0].0, 1400, "{without_walking:?}");
+}
+
+#[test]
+fn a_change_over_a_footpath_takes_at_least_the_transfer_time() {
+    // Two poles of one stop joined by a 0 s footpath, as GTFS transfers.txt
+    // often has them: leaving bus 11 at C and boarding at E is still a change
+    // of vehicle, so the transfer time applies.
+    let svc = city();
+    run_ok(
+        &svc,
+        "MATCH (c:Stop {name: 'C'}), (e:Stop {name: 'E'}), (d:Stop {name: 'D'}) \
+         CREATE (c)-[:WALK {s: 0}]->(e), \
+                (e)-[:HOP {dep: [1230, 1300], arr: [1280, 1350], trip: [31, 32], svc: [1, 1]}]->(d)",
+    );
+    let slack = plan(&svc, &[("A", 0)], &[("D", 0)], &opts(&[]));
+    assert_eq!(
+        slack,
+        vec![(
+            1350,
+            1000,
+            1,
+            legs(&["access ->A", "ride A>C #11", "walk C>E", "ride E>D #32", "egress D>-"])
+        )],
+        "C 1200, walk 0 s, ready at 1260 with a 60 s transfer: trip 31 (1230) is missed, 32 (1300) is caught"
+    );
+    let tight = plan(
+        &svc,
+        &[("A", 0)],
+        &[("D", 0)],
+        &opts(&[("minTransfer", "0")]),
+    );
+    assert_eq!(
+        tight[0].0, 1280,
+        "without a transfer time trip 31 is caught: {tight:?}"
+    );
+}
+
+/// `C -WALK 100-> E -WALK 100-> F` and `D -WALK 100-> F`, with `F` served by
+/// nothing else, on top of the city.
+fn city_with_a_chain() -> NativeService {
+    let svc = city();
+    run_ok(
+        &svc,
+        "MATCH (c:Stop {name: 'C'}), (e:Stop {name: 'E'}), (d:Stop {name: 'D'}) \
+         CREATE (f:Stop {name: 'F'}), (c)-[:WALK {s: 100}]->(e), (e)-[:WALK {s: 100}]->(f), \
+                (d)-[:WALK {s: 100}]->(f)",
+    );
+    svc
+}
+
+#[test]
+fn max_walk_bounds_a_chain_of_footpaths_between_rides() {
+    let svc = city_with_a_chain();
+    let unbounded = plan(&svc, &[("A", 0)], &[("F", 0)], &opts(&[]));
+    assert_eq!(
+        unbounded,
+        vec![(
+            1400,
+            1000,
+            0,
+            legs(&[
+                "access ->A",
+                "ride A>C #11",
+                "walk C>E",
+                "walk E>F",
+                "egress F>-"
+            ])
+        )],
+        "without a bound the 200 s chain from C reaches F at 1400"
+    );
+    let bounded = plan(&svc, &[("A", 0)], &[("F", 0)], &opts(&[("maxWalk", "150")]));
+    assert_eq!(
+        bounded,
+        vec![(
+            1500,
+            1000,
+            1,
+            legs(&["access ->A", "ride A>C #11", "ride C>D #22", "walk D>F", "egress F>-"])
+        )],
+        "with 150 s of walking at most the chain stops at E; the tram and one footpath reach F at 1500"
+    );
+    let generous = plan(&svc, &[("A", 0)], &[("F", 0)], &opts(&[("maxWalk", "200")]));
+    assert_eq!(
+        generous[0].0, 1400,
+        "a bound the chain fits in changes nothing: {generous:?}"
+    );
+}
+
+#[test]
+fn max_walk_bounds_the_footpaths_after_the_start_too() {
+    let svc = city_with_a_chain();
+    let unbounded = plan(&svc, &[("C", 0)], &[("F", 0)], &opts(&[]));
+    assert_eq!(
+        unbounded,
+        vec![(
+            1100,
+            900,
+            0,
+            legs(&["access ->C", "walk C>E", "walk E>F", "egress F>-"])
+        )],
+        "a walk-only journey over the chain"
+    );
+    let bounded = plan(&svc, &[("C", 0)], &[("F", 0)], &opts(&[("maxWalk", "150")]));
+    assert_eq!(
+        bounded,
+        vec![(
+            1430,
+            1230,
+            0,
+            legs(&["access ->C", "ride C>D #21", "walk D>F", "egress F>-"])
+        )],
+        "the start cost is not walking, but the chain after it is bounded"
+    );
 }
 
 #[test]
@@ -516,6 +629,17 @@ fn bad_options_are_refused() {
             &call(start, "{departAt: 900, days: [], minTransfer: 'soon'}"),
         ),
         "minTransfer",
+    );
+    assert_refused(
+        fails(&svc, &call(start, "{departAt: 900, days: [], maxWalk: -1}")),
+        "maxWalk",
+    );
+    assert_refused(
+        fails(
+            &svc,
+            &call(start, "{departAt: 900, days: [], maxWalk: 'far'}"),
+        ),
+        "maxWalk",
     );
     assert_refused(
         fails(

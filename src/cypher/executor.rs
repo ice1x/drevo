@@ -11561,10 +11561,13 @@ fn timetable_seconds(v: &Value) -> Option<i64> {
 ///   `'svc'`);
 /// - `walk` — `{relTypes, cost}`: footpath relationship types and their
 ///   seconds property; no walking between stops when absent;
-/// - `minTransfer` — seconds added when changing vehicles (default 0);
+/// - `minTransfer` — seconds a change of vehicles takes at least, at one stop
+///   or over footpaths (default 0);
 /// - `maxTransfers` — the most vehicle changes (default 4);
 /// - `maxDuration` — journeys arriving later than `departAt` plus this are
-///   not returned.
+///   not returned;
+/// - `maxWalk` — the most seconds of footpaths in a row, between rides or
+///   after the start (no bound when absent).
 fn timetable_options(value: &Value, span: Span) -> ExecResultT<crate::timetable::TimetableOptions> {
     use crate::timetable::{HopFields, ServiceDay, TimetableOptions, WalkFields};
     let refuse = |message: String| ExecError::InvalidProcedureCall {
@@ -11717,6 +11720,7 @@ fn timetable_options(value: &Value, span: Span) -> ExecResultT<crate::timetable:
                 )));
             }
             ("maxDuration", v) => options.max_duration = Some(seconds("maxDuration", v)?),
+            ("maxWalk", v) => options.max_walk = Some(seconds("maxWalk", v)?),
             ("hops" | "walk", other) => {
                 return Err(refuse(format!(
                     "{key} must be a map, got {}",
@@ -11726,7 +11730,7 @@ fn timetable_options(value: &Value, span: Span) -> ExecResultT<crate::timetable:
             (unknown, _) => {
                 return Err(refuse(format!(
                     "unknown option `{unknown}`; expected departAt, days, hops, walk, \
-                     minTransfer, maxTransfers or maxDuration"
+                     minTransfer, maxTransfers, maxDuration or maxWalk"
                 )));
             }
         }
