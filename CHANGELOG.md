@@ -22,6 +22,13 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Changed
 
+- **The Web UI's Storage panel follows the graph** (issue #777). While the
+  panel is open, its file size, bloat share and keyspace counts reload after
+  a change on `GET /events`, once per burst of changes, like the live
+  overview. The **Refresh** button is gone: the panel shows what the server
+  knows without being asked. Transactions keep their poll, backups reload
+  after a backup, Shrink reloads the stats as before.
+
 - **A change of vehicles over footpaths takes `minTransfer` too** (issue
   #774). Only a change at one stop added it; a walk between rides counted its
   seconds alone, so a 0 s footpath (GTFS `transfers.txt` joining the two

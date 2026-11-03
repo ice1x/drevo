@@ -188,10 +188,10 @@
   <!-- Storage panel (modal overlay). Opened from the ⛁ topbar button; shows
        the active database's on-disk footprint (from GET /storage/bloat), the
        per-keyspace row/byte breakdown (GET /storage/keyspaces — the `fts` row
-       is what dominates a text-heavy graph), and a GraphML backup download.
-       shrink/compact are OFFLINE maintenance ops (redb holds the live file
-       open) → the panel documents that rather than pretending a live one-click
-       shrink is safe. -->
+       is what dominates a text-heavy graph), the running transactions, the
+       newest physical backups, a GraphML backup download, an online Shrink
+       and a Benchmark. While it is open the footprint and keyspaces follow
+       the graph over GET /events (#777), so there is no Refresh button. -->
   <div id="storage-modal" class="storage-modal" hidden aria-hidden="true"
        role="dialog" aria-modal="true" aria-labelledby="storage-title">
     <div class="storage-dialog" role="document">
@@ -232,7 +232,6 @@
                 title="Run a quick performance benchmark (write throughput + FTS latency; writes use a throwaway in-memory DB)">Benchmark</button>
         <button type="button" id="storage-shrink" class="storage-shrink"
                 title="Rebuild the database file in place to reclaim bloat (online, no restart)">Shrink</button>
-        <button type="button" id="storage-refresh" class="storage-refresh">Refresh</button>
       </footer>
     </div>
   </div>

@@ -1,7 +1,7 @@
 // drevo browser — pure helpers for the live overview: the GET /events URL
 // for the database being viewed, what a change means for what is on screen,
-// a coalescer that turns a burst of changes into one refresh, and the
-// remembered on/off switch. DOM-free so they can be unit-tested under
+// a coalescer that turns a burst of changes into one refresh, a panel that
+// follows the stream while it is open, and the remembered on/off switch. DOM-free so they can be unit-tested under
 // `node --test` (see live_refresh.test.js).
 //
 // UMD: attaches to the global `DrevoLiveRefresh` in the browser (loaded
@@ -89,6 +89,40 @@
     return { poke, cancel, pending };
   }
 
+  // A panel that follows the change stream while it is open: `open(db)`
+  // starts the stream for `db` (closing an earlier one) and `close()` ends
+  // it. A change pokes a coalescer whose `run` reloads the panel, so a
+  // burst — an import, a long transaction — reloads once, `delayMs` after
+  // the first change. `openStream(url)` defaults to `new EventSource(url)`.
+  //
+  // The Storage panel uses it (#777): its file size, bloat share and
+  // keyspace counts follow the graph instead of needing a Refresh button.
+  function createLivePanel({ delayMs, run, openStream, setTimer, clearTimer }) {
+    const start = openStream || ((url) => new EventSource(url));
+    const refresh = createCoalescer({ delayMs, run, setTimer, clearTimer });
+    let stream = null;
+
+    function open(db) {
+      close();
+      stream = start(eventsUrl(db));
+      for (const type of CHANGE_EVENTS) {
+        stream.addEventListener(type, () => refresh.poke());
+      }
+    }
+
+    function close() {
+      if (stream) stream.close();
+      stream = null;
+      refresh.cancel();
+    }
+
+    function following() {
+      return stream !== null;
+    }
+
+    return { open, close, following };
+  }
+
   // Whether the switch is on in `storage` (localStorage); off when nothing
   // is stored or storage is unavailable.
   function readLivePref(storage) {
@@ -114,6 +148,7 @@
     eventsUrl,
     changeAction,
     createCoalescer,
+    createLivePanel,
     readLivePref,
     writeLivePref,
   };
