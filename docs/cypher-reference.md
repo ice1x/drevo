@@ -295,16 +295,20 @@ gives those costs.
 | `days` | required | the service days whose trips may run, each `{offset, services}`: seconds added to its trips' times (`0` today, `-86400` yesterday, for its trips past midnight) and the service ids running that day |
 | `hops` | `{relType: 'HOP', dep: 'dep', arr: 'arr', trip: 'trip', service: 'svc'}` | the hop relationship type and its list properties |
 | `walk` | none (no walking between stops) | `{relTypes: ['WALK'], cost: 's'}`: footpath relationship types and their seconds property |
-| `minTransfer` | `0` | seconds added when changing vehicles at a stop |
+| `minTransfer` | `0` | seconds a change of vehicles takes at least, at one stop or over footpaths |
 | `maxTransfers` | `4` | the most vehicle changes in a journey |
 | `maxDuration` | none | journeys arriving later than `departAt` plus this are not returned |
+| `maxWalk` | none | the most seconds of footpaths in a row — between two rides, or after the start cost; a longer chain is not followed |
 
 Staying on the same trip from hop to hop is one ride. Boarding needs the
-vehicle to leave no earlier than you are at the stop; after a ride, changing
-to another vehicle adds `minTransfer`; a walk between rides takes its seconds
-and needs no transfer time, and several footpaths may follow each other. A
-trip runs on a day when its service is in that day's `services`. Hops and
-footpaths are followed in their direction only.
+vehicle to leave no earlier than you are at the stop. After a ride, the next
+vehicle can be boarded `minTransfer` seconds after arriving, at that stop or
+at any stop reached over footpaths from it — a walk between rides takes its
+seconds, or `minTransfer` when that is longer, so two poles of one stop joined
+by a 0 s footpath still need the transfer time. Several footpaths may follow
+each other, up to `maxWalk` seconds in a row when it is given. A trip runs on
+a day when its service is in that day's `services`. Hops and footpaths are
+followed in their direction only.
 
 Each row is a journey that arrives earlier than every journey with fewer
 transfers, so a slower direct ride and a faster ride with a change both come

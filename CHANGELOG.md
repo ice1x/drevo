@@ -6,6 +6,31 @@ history and the in-repo issue tracker; format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **`maxWalk` on `drevo.path.timetable`** (issue #774): the most seconds of
+  footpaths in a row, between two rides or after the start cost. Without it
+  the search followed footpaths as far as they went — on Sofia's graph, where
+  every footpath is at most 5 minutes, a chain of 11 of them made a 46-minute
+  "walk to the first stop", and 1.7 km "transfers". With a bound, a way to a
+  stop that arrives later but has walked less is kept alongside the earliest,
+  so the bound never hides a stop the earliest way cannot walk on from; the
+  default (no bound) searches exactly as before. On a copy of that graph
+  (3,262 stops, 10,390 hops, 20,220 footpaths; 40 random pairs, every
+  service running) `maxWalk: 300` cut the longest chain from 7,869 s to
+  300 s at p50 147 ms against 124 ms unbounded.
+
+### Changed
+
+- **A change of vehicles over footpaths takes `minTransfer` too** (issue
+  #774). Only a change at one stop added it; a walk between rides counted its
+  seconds alone, so a 0 s footpath (GTFS `transfers.txt` joining the two
+  poles of one stop) let a journey leave one bus and board the next in the
+  same second. Boarding after a walk is now ready at the later of the arrival
+  and the transfer time after the ride, i.e. the transfer takes
+  `max(walk, minTransfer)`; a walk longer than `minTransfer` needs no extra
+  time, as before.
+
 ### Fixed
 
 - **An index rebuilt from a snapshot could skip a commit made during the

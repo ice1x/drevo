@@ -12,16 +12,18 @@
 //! at 08:10 from here, arrive there as early as possible": it returns, for
 //! each number of transfers, the earliest journey, when that journey arrives
 //! earlier than every journey with fewer transfers. Staying on the same trip
-//! from hop to hop is one ride; changing vehicles at a stop takes the minimum
-//! transfer time; a footpath between two rides takes its walking time. A trip
-//! runs on a day when its service is among that day's services, and its
-//! times are shifted by the day's offset, so yesterday's trips past midnight
-//! are found with `offset: -86400`.
+//! from hop to hop is one ride; changing vehicles takes at least the minimum
+//! transfer time, whether at one stop or over footpaths (a footpath between
+//! two rides takes its walking time, or the transfer time when that is
+//! longer); footpaths in a row are bounded by `max_walk`. A trip runs on a
+//! day when its service is among that day's services, and its times are
+//! shifted by the day's offset, so yesterday's trips past midnight are found
+//! with `offset: -86400`.
 //!
 //! The search runs in rounds, one more ride per round (RAPTOR): from every
 //! stop reached earlier in the previous round it boards every trip leaving
 //! later, rides each trip to its end, and then walks on from every stop a
-//! ride reached earlier, over as many footpaths in a row as it takes.
+//! ride reached earlier, over footpaths in a row within the walking bound.
 //!
 //! ```
 //! use drevo::model::{Direction, Edge, Properties};
@@ -149,6 +151,9 @@ pub struct TimetableOptions {
     pub max_transfers: usize,
     /// Journeys arriving later than `depart_at + max_duration` are not returned.
     pub max_duration: Option<i64>,
+    /// The most seconds of footpaths in a row — between two rides, or after
+    /// the start — `None` for no bound.
+    pub max_walk: Option<i64>,
 }
 
 impl Default for TimetableOptions {
@@ -161,6 +166,7 @@ impl Default for TimetableOptions {
             min_transfer: 0,
             max_transfers: 4,
             max_duration: None,
+            max_walk: None,
         }
     }
 }
@@ -222,9 +228,9 @@ pub struct Journey {
 ///
 /// # Errors
 ///
-/// [`DrevoError::InvalidArgument`] for a negative cost or transfer time, and
-/// for a hop whose lists are missing, not integers or of different lengths,
-/// or a footpath with a negative walking time.
+/// [`DrevoError::InvalidArgument`] for a negative cost, transfer time or
+/// walking bound, and for a hop whose lists are missing, not integers or of
+/// different lengths, or a footpath with a negative walking time.
 pub fn earliest_arrivals<E>(
     starts: &[Endpoint],
     ends: &[Endpoint],
@@ -254,6 +260,11 @@ fn validate(starts: &[Endpoint], ends: &[Endpoint], options: &TimetableOptions) 
     if let Some(d) = options.max_duration.filter(|d| *d < 0) {
         return Err(DrevoError::InvalidArgument(format!(
             "maxDuration must not be negative, got {d}"
+        )));
+    }
+    if let Some(w) = options.max_walk.filter(|w| *w < 0) {
+        return Err(DrevoError::InvalidArgument(format!(
+            "maxWalk must not be negative, got {w}"
         )));
     }
     Ok(())
@@ -300,13 +311,19 @@ enum Parent {
         scan: usize,
         hops: usize,
     },
-    /// On a footpath from `from`, reached earlier in this round.
-    Walk { from: u64, edge: u64, depart: i64 },
+    /// Over footpaths in a row from a stop a ride reached this round (or
+    /// from the start in round 0): each step's `(from, relationship,
+    /// departure)`, in order.
+    Walk { steps: Vec<(u64, u64, i64)> },
 }
 
 #[derive(Debug, Clone)]
 struct Label {
     time: i64,
+    /// When a vehicle can be boarded here: after a ride, `time` plus the
+    /// transfer time; over footpaths, the later of the arrival and the
+    /// readiness where the chain began.
+    ready: i64,
     parent: Parent,
 }
 
@@ -345,14 +362,11 @@ impl Reach {
     }
 
     /// The earliest time a vehicle can be boarded, and how the stop was
-    /// reached for it: a ride needs the transfer time first.
-    fn ready(&self, min_transfer: i64) -> Option<(i64, Via)> {
+    /// reached for it.
+    fn ready(&self) -> Option<(i64, Via)> {
         [Via::Access, Via::Walk, Via::Ride]
             .into_iter()
-            .filter_map(|v| {
-                self.get(v)
-                    .map(|l| (l.time + if v == Via::Ride { min_transfer } else { 0 }, v))
-            })
+            .filter_map(|v| self.get(v).map(|l| (l.ready, v)))
             .min_by_key(|(t, _)| *t)
     }
 }
@@ -372,6 +386,9 @@ struct Search<'a, E> {
     scans: Vec<Vec<Vec<u64>>>,
     best_arrival: HashMap<u64, i64>,
     best_ready: HashMap<u64, i64>,
+    /// The least walking in a row any way to each stop ended with; always 0
+    /// without a walking bound.
+    best_walked: HashMap<u64, i64>,
 }
 
 impl<'a, E> Search<'a, E>
@@ -401,6 +418,7 @@ where
             scans: Vec::new(),
             best_arrival: HashMap::new(),
             best_ready: HashMap::new(),
+            best_walked: HashMap::new(),
         }
     }
 
@@ -417,14 +435,15 @@ where
             if reach.access.as_ref().is_none_or(|l| time < l.time) {
                 reach.access = Some(Label {
                     time,
+                    ready: time,
                     parent: Parent::Access,
                 });
-                self.improve(s.node, time, time, &mut marked);
+                self.improve(s.node, time, time, 0, &mut marked);
             }
         }
-        let accessed: Vec<(u64, i64)> = round
+        let accessed: Vec<(u64, i64, i64)> = round
             .iter()
-            .filter_map(|(stop, r)| r.access.as_ref().map(|l| (*stop, l.time)))
+            .filter_map(|(stop, r)| r.access.as_ref().map(|l| (*stop, l.time, l.ready)))
             .collect();
         self.walk_from(&accessed, &mut round, &mut marked, i64::MAX)?;
         self.rounds.push(round);
@@ -462,11 +481,20 @@ where
         Ok(journeys)
     }
 
-    /// Records a better arrival or boarding time at `stop`; marks it when it
-    /// can now board earlier.
-    fn improve(&mut self, stop: u64, arrival: i64, ready: i64, marked: &mut HashSet<u64>) {
+    /// Records a better arrival, boarding time or walking balance at `stop`;
+    /// marks it when it can now board earlier.
+    fn improve(
+        &mut self,
+        stop: u64,
+        arrival: i64,
+        ready: i64,
+        walked: i64,
+        marked: &mut HashSet<u64>,
+    ) {
         let a = self.best_arrival.entry(stop).or_insert(i64::MAX);
         *a = (*a).min(arrival);
+        let w = self.best_walked.entry(stop).or_insert(i64::MAX);
+        *w = (*w).min(walked);
         let r = self.best_ready.entry(stop).or_insert(i64::MAX);
         if ready < *r {
             *r = ready;
@@ -474,11 +502,15 @@ where
         }
     }
 
-    /// Whether arriving at `stop` at `time` (ready to board at `ready`) is
-    /// better than anything found so far.
-    fn better(&self, stop: u64, time: i64, ready: i64) -> bool {
-        time < self.best_arrival.get(&stop).copied().unwrap_or(i64::MAX)
-            || ready < self.best_ready.get(&stop).copied().unwrap_or(i64::MAX)
+    /// Whether arriving at `stop` at `time` (ready to board at `ready`, with
+    /// `walked` seconds of footpaths behind it) is better in some way than
+    /// anything found so far. Less walking counts: with a walking bound such
+    /// a way can walk on where an earlier one could not.
+    fn better(&self, stop: u64, time: i64, ready: i64, walked: i64) -> bool {
+        let best = |table: &HashMap<u64, i64>| table.get(&stop).copied().unwrap_or(i64::MAX);
+        time < best(&self.best_arrival)
+            || ready < best(&self.best_ready)
+            || walked < best(&self.best_walked)
     }
 
     /// The earliest arrival at the destination over the stops reached in
@@ -504,11 +536,19 @@ where
         Ok(data)
     }
 
-    /// Walks on from each `(stop, time)` in the round being built, over
+    /// Walks on from each `(stop, time, ready)` in the round being built, over
     /// footpaths in a row, earliest first (Dijkstra).
+    ///
+    /// Without a walking bound a stop is settled once, at its earliest time:
+    /// a way there that is no better than what earlier rounds found is not
+    /// walked on from either, since those rounds walked on from there. With
+    /// `max_walk`, a way that arrives later but has walked less may still
+    /// walk on where the earliest cannot, so a stop keeps every way not beaten
+    /// on both time and walking, and only a bounded chain is pruned; its
+    /// label stays the earliest.
     fn walk_from(
         &mut self,
-        from: &[(u64, i64)],
+        from: &[(u64, i64, i64)],
         round: &mut HashMap<u64, Reach>,
         marked: &mut HashSet<u64>,
         bound: i64,
@@ -516,35 +556,49 @@ where
         if self.options.walk.is_none() {
             return Ok(());
         }
-        let mut heap: BinaryHeap<Reverse<(i64, u64)>> = from
+        let max_walk = self.options.max_walk;
+        // (time, walked, stop, ready, the steps so far).
+        type Way = (i64, i64, u64, i64, Vec<(u64, u64, i64)>);
+        let mut heap: BinaryHeap<Reverse<Way>> = from
             .iter()
-            .map(|&(stop, time)| Reverse((time, stop)))
+            .map(|&(stop, time, ready)| Reverse((time, 0, stop, ready, Vec::new())))
             .collect();
-        let mut settled = HashSet::new();
-        while let Some(Reverse((time, stop))) = heap.pop() {
-            if !settled.insert(stop) {
+        let mut frontier: HashMap<u64, Vec<(i64, i64)>> = HashMap::new();
+        while let Some(Reverse((time, walked, stop, ready, steps))) = heap.pop() {
+            let known = frontier.entry(stop).or_default();
+            if known.iter().any(|&(t, w)| t <= time && w <= walked) {
                 continue;
             }
+            known.push((time, walked));
             let data = self.stop(stop)?;
             for &(to, seconds, edge) in &data.walks {
                 let t = time.saturating_add(seconds);
-                if t > self.limit || t >= bound || !self.better(to, t, t) {
+                // Walking only counts against the bound when there is one,
+                // so that without it a stop is settled once, as before.
+                let w = max_walk.map_or(0, |_| walked.saturating_add(seconds));
+                if t > self.limit || t >= bound || max_walk.is_some_and(|m| w > m) {
                     continue;
                 }
-                let reach = round.entry(to).or_default();
-                if reach.walk.as_ref().is_some_and(|l| l.time <= t) {
+                let r = ready.max(t);
+                if max_walk.is_none() && !self.better(to, t, r, w) {
                     continue;
                 }
-                reach.walk = Some(Label {
-                    time: t,
-                    parent: Parent::Walk {
-                        from: stop,
-                        edge,
-                        depart: time,
-                    },
-                });
-                self.improve(to, t, t, marked);
-                heap.push(Reverse((t, to)));
+                let mut path = steps.clone();
+                path.push((stop, edge, time));
+                if self.better(to, t, r, w) {
+                    let reach = round.entry(to).or_default();
+                    if reach.walk.as_ref().is_none_or(|l| t < l.time) {
+                        reach.walk = Some(Label {
+                            time: t,
+                            ready: r,
+                            parent: Parent::Walk {
+                                steps: path.clone(),
+                            },
+                        });
+                    }
+                    self.improve(to, t, r, w, marked);
+                }
+                heap.push(Reverse((t, w, to, r, path)));
             }
         }
         Ok(())
@@ -559,10 +613,7 @@ where
         let mut sorted: Vec<u64> = marked.iter().copied().collect();
         sorted.sort_unstable();
         for stop in sorted {
-            let Some((ready, _)) = self.rounds[k - 1]
-                .get(&stop)
-                .and_then(|r| r.ready(min_transfer))
-            else {
+            let Some((ready, _)) = self.rounds[k - 1].get(&stop).and_then(Reach::ready) else {
                 continue;
             };
             let data = self.stop(stop)?;
@@ -610,11 +661,14 @@ where
                     break;
                 }
                 let to = hop.to;
-                if self.better(to, arrive, arrive.saturating_add(min_transfer)) {
+                // A ride arrives with no walking behind it: even where an
+                // earlier way exists, it may walk on where that one could not.
+                if self.better(to, arrive, arrive.saturating_add(min_transfer), 0) {
                     let reach = round.entry(to).or_default();
                     if reach.ride.as_ref().is_none_or(|l| arrive < l.time) {
                         reach.ride = Some(Label {
                             time: arrive,
+                            ready: arrive.saturating_add(min_transfer),
                             parent: Parent::Ride {
                                 board,
                                 depart,
@@ -625,7 +679,13 @@ where
                         });
                         reached.push(to);
                     }
-                    self.improve(to, arrive, arrive.saturating_add(min_transfer), &mut next);
+                    self.improve(
+                        to,
+                        arrive,
+                        arrive.saturating_add(min_transfer),
+                        0,
+                        &mut next,
+                    );
                 }
                 // The same trip, leaving the stop it just reached.
                 data = self.stop(to)?;
@@ -645,11 +705,17 @@ where
             }
             scans.push(hops);
         }
-        let walkers: Vec<(u64, i64)> = reached
+        let walkers: Vec<(u64, i64, i64)> = reached
             .into_iter()
             .collect::<HashSet<_>>()
             .into_iter()
-            .filter_map(|stop| round.get(&stop)?.ride.as_ref().map(|l| (stop, l.time)))
+            .filter_map(|stop| {
+                round
+                    .get(&stop)?
+                    .ride
+                    .as_ref()
+                    .map(|l| (stop, l.time, l.ready))
+            })
             .collect();
         self.walk_from(&walkers, &mut round, &mut next, bound)?;
         self.rounds.push(round);
@@ -694,21 +760,24 @@ where
                     });
                     break;
                 }
-                Parent::Walk { from, edge, depart } => {
-                    legs.push(Leg {
-                        mode: LegMode::Walk,
-                        from: Some(*from),
-                        to: Some(stop),
-                        depart: *depart,
-                        arrive: label.time,
-                        trip: None,
-                        hops: vec![*edge],
-                    });
-                    stop = *from;
-                    via = self.rounds[round]
-                        .get(from)
-                        .and_then(Reach::arrival)
-                        .map_or(Via::Access, |(_, v)| v);
+                Parent::Walk { steps } => {
+                    let mut arrive = label.time;
+                    for &(from, edge, depart) in steps.iter().rev() {
+                        legs.push(Leg {
+                            mode: LegMode::Walk,
+                            from: Some(from),
+                            to: Some(stop),
+                            depart,
+                            arrive,
+                            trip: None,
+                            hops: vec![edge],
+                        });
+                        stop = from;
+                        arrive = depart;
+                    }
+                    // A chain begins where a ride arrived this round, or at
+                    // a start in round 0.
+                    via = if round == 0 { Via::Access } else { Via::Ride };
                 }
                 Parent::Ride {
                     board,
@@ -733,8 +802,7 @@ where
                         .into_iter()
                         .filter_map(|v| {
                             let l = reach.get(v)?;
-                            let ready = l.time + if v == Via::Ride { o.min_transfer } else { 0 };
-                            (ready <= *depart).then_some((ready, v))
+                            (l.ready <= *depart).then_some((l.ready, v))
                         })
                         .min_by_key(|(ready, _)| *ready)
                         .map_or(Via::Access, |(_, v)| v);

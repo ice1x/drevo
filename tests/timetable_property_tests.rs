@@ -112,12 +112,14 @@ fn plan(net: &Network) -> Result<Vec<Journey>> {
 /// A passenger at a stop, or on a trip, in the brute-force search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum State {
-    /// At `stop` after `rides` rides; `by_ride` when the last leg was a ride
-    /// (a change of vehicle then needs the transfer time).
+    /// At `stop` after `rides` rides, able to board from `ready` (a change
+    /// of vehicle after a ride takes the transfer time, over footpaths too),
+    /// having walked `walked` seconds since the last ride or the start.
     At {
         stop: u64,
         rides: usize,
-        by_ride: bool,
+        ready: i64,
+        walked: i64,
     },
     /// On trip `trip` (index) of day `day`, about to arrive at call `call`.
     On {
@@ -135,6 +137,24 @@ fn brute_force(net: &Network) -> Vec<Option<i64>> {
     let o = &net.options;
     let max_rides = o.max_transfers + 1;
     let limit = o.max_duration.map_or(i64::MAX, |d| o.depart_at + d);
+    // States carry the time walked and the readiness, so walking round a
+    // cycle of footpaths makes new states for ever. Nothing a cycle adds can
+    // beat a way without it, and every way without one is over by the time
+    // the last trip has arrived and every footpath has been walked once.
+    let latest_arrival = net
+        .trips
+        .iter()
+        .flat_map(|t| {
+            o.days
+                .iter()
+                .filter(|d| d.services.contains(&t.service))
+                .map(|d| t.calls.last().map_or(0, |c| c.1) + d.offset)
+        })
+        .max()
+        .unwrap_or(o.depart_at);
+    let horizon = latest_arrival
+        .max(o.depart_at + net.starts.iter().map(|s| s.cost).max().unwrap_or(0))
+        + net.walks.iter().map(|w| w.2).sum::<i64>();
     let mut heap = BinaryHeap::new();
     for s in &net.starts {
         heap.push(Reverse((
@@ -142,21 +162,23 @@ fn brute_force(net: &Network) -> Vec<Option<i64>> {
             State::At {
                 stop: s.node,
                 rides: 0,
-                by_ride: false,
+                ready: o.depart_at + s.cost,
+                walked: 0,
             },
         )));
     }
     let mut seen = HashSet::new();
     let mut best = vec![None::<i64>; max_rides + 1];
     while let Some(Reverse((time, state))) = heap.pop() {
-        if time > limit || !seen.insert(state) {
+        if time > limit || time > horizon || !seen.insert(state) {
             continue;
         }
         match state {
             State::At {
                 stop,
                 rides,
-                by_ride,
+                ready,
+                walked,
             } => {
                 for e in net.ends.iter().filter(|e| e.node == stop) {
                     let arrive = time + e.cost;
@@ -167,13 +189,14 @@ fn brute_force(net: &Network) -> Vec<Option<i64>> {
                     }
                 }
                 for &(from, to, s) in &net.walks {
-                    if from == stop {
+                    if from == stop && o.max_walk.is_none_or(|m| walked + s <= m) {
                         heap.push(Reverse((
                             time + s,
                             State::At {
                                 stop: to,
                                 rides,
-                                by_ride: false,
+                                ready: ready.max(time + s),
+                                walked: walked + s,
                             },
                         )));
                     }
@@ -181,7 +204,6 @@ fn brute_force(net: &Network) -> Vec<Option<i64>> {
                 if rides == max_rides {
                     continue;
                 }
-                let ready = time + if by_ride { o.min_transfer } else { 0 };
                 for (t, trip) in net.trips.iter().enumerate() {
                     for (d, day) in o.days.iter().enumerate() {
                         if !day.services.contains(&trip.service) {
@@ -217,7 +239,8 @@ fn brute_force(net: &Network) -> Vec<Option<i64>> {
                     State::At {
                         stop: calls[call].0,
                         rides,
-                        by_ride: true,
+                        ready: arrive + o.min_transfer,
+                        walked: 0,
                     },
                 )));
                 if call + 1 < calls.len() {
@@ -268,11 +291,33 @@ fn check_journey(net: &Network, j: &Journey) {
     let edges = net.edges();
     for pair in legs.windows(2) {
         assert_eq!(pair[0].to, pair[1].from, "legs connect: {j:?}");
-        let mut ready = pair[0].arrive;
-        if pair[0].mode == LegMode::Ride && pair[1].mode == LegMode::Ride {
-            ready += o.min_transfer;
+        assert!(pair[1].depart >= pair[0].arrive, "no time travel: {j:?}");
+    }
+    let mut last_ride_arrive = None;
+    let mut walked = 0;
+    for leg in legs {
+        match leg.mode {
+            LegMode::Ride => {
+                if let Some(arrive) = last_ride_arrive {
+                    assert!(
+                        leg.depart >= arrive + o.min_transfer,
+                        "a change of vehicle, over footpaths or not, takes the transfer time: {j:?}"
+                    );
+                }
+                last_ride_arrive = Some(leg.arrive);
+                walked = 0;
+            }
+            LegMode::Walk => {
+                walked += leg.arrive - leg.depart;
+                if let Some(max) = o.max_walk {
+                    assert!(
+                        walked <= max,
+                        "footpaths in a row stay within maxWalk: {j:?}"
+                    );
+                }
+            }
+            LegMode::Access | LegMode::Egress => {}
         }
-        assert!(pair[1].depart >= ready, "no time travel: {j:?}");
     }
     for leg in legs {
         match leg.mode {
@@ -353,6 +398,7 @@ prop_compose! {
         min_transfer in 0i64..40,
         max_transfers in 0usize..4,
         max_duration in prop::option::of(100i64..600),
+        max_walk in prop::option::of(5i64..250),
         repeat in 1usize..3,
     ) -> Network {
         let mut out = Vec::new();
@@ -395,6 +441,7 @@ prop_compose! {
                 min_transfer,
                 max_transfers,
                 max_duration,
+                max_walk,
             },
         }
     }
