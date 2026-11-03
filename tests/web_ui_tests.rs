@@ -660,6 +660,7 @@ async fn ui_serves_live_refresh_module_and_the_live_switch() {
         "eventsUrl",
         "changeAction",
         "createCoalescer",
+        "createLivePanel",
         "readLivePref",
     ] {
         assert!(js.contains(needle), "live_refresh.js must define {needle}");
@@ -883,6 +884,10 @@ async fn ui_html_includes_storage_panel() {
         body.contains("id=\"storage-bench-run\""),
         "the panel must offer the benchmark action"
     );
+    assert!(
+        !body.contains("id=\"storage-refresh\""),
+        "the panel follows the change stream (#777); it must not need a Refresh button"
+    );
 }
 
 #[tokio::test]
@@ -912,6 +917,10 @@ async fn ui_app_js_calls_storage_endpoints() {
     assert!(
         body.contains("/storage/benchmark"),
         "app.js must POST the benchmark action"
+    );
+    assert!(
+        body.contains("storageLive.open(currentDb)") && body.contains("storageLive.close()"),
+        "app.js must follow the change stream while the Storage panel is open (#777)"
     );
 }
 

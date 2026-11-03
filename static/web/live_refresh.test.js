@@ -179,3 +179,102 @@ test("storage that is missing or refuses access reads as off", () => {
   assert.doesNotThrow(() => writeLivePref(refusing, true));
   assert.doesNotThrow(() => writeLivePref(null, true));
 });
+
+// ── createLivePanel ──────────────────────────────────────────────────
+// A panel that follows the change stream while it is open (#777): the
+// Storage panel reloads its numbers after a change instead of needing a
+// Refresh button.
+
+// A stand-in for EventSource: records listeners, can emit, counts closes.
+function fakeStream(url) {
+  const listeners = new Map();
+  return {
+    url,
+    closed: 0,
+    addEventListener(type, fn) {
+      listeners.set(type, fn);
+    },
+    types() {
+      return [...listeners.keys()].sort();
+    },
+    emit(type) {
+      const fn = listeners.get(type);
+      if (fn) fn({ type });
+    },
+    close() {
+      this.closed++;
+    },
+  };
+}
+
+function panelHarness() {
+  const timers = fakeTimers();
+  const streams = [];
+  let runs = 0;
+  const { createLivePanel } = require("./live_refresh.js");
+  const panel = createLivePanel({
+    delayMs: 800,
+    run: async () => runs++,
+    openStream: (url) => {
+      const s = fakeStream(url);
+      streams.push(s);
+      return s;
+    },
+    ...timers,
+  });
+  return { timers, streams, panel, runs: () => runs };
+}
+
+test("opening the panel follows the change stream for the database", () => {
+  const { streams, panel } = panelHarness();
+  assert.equal(panel.following(), false);
+  panel.open("erp");
+  assert.equal(panel.following(), true);
+  assert.equal(streams.length, 1);
+  assert.equal(streams[0].url, "/events?db=erp");
+  assert.deepEqual(streams[0].types(), ["lagged", "node", "relationship"]);
+});
+
+test("a burst of changes reloads the panel once, after the delay", async () => {
+  const { timers, streams, panel, runs } = panelHarness();
+  panel.open("");
+  assert.equal(streams[0].url, "/events");
+  streams[0].emit("node");
+  streams[0].emit("relationship");
+  streams[0].emit("lagged");
+  assert.equal(timers.count(), 1);
+  assert.deepEqual(timers.delays(), [800]);
+  assert.equal(runs(), 0);
+  timers.fire();
+  await flush();
+  assert.equal(runs(), 1);
+  assert.equal(timers.count(), 0);
+});
+
+test("closing the panel ends the stream and drops a pending reload", async () => {
+  const { timers, streams, panel, runs } = panelHarness();
+  panel.open("erp");
+  streams[0].emit("node");
+  assert.equal(timers.count(), 1);
+  panel.close();
+  assert.equal(streams[0].closed, 1);
+  assert.equal(panel.following(), false);
+  assert.equal(timers.count(), 0);
+  timers.fire();
+  await flush();
+  assert.equal(runs(), 0);
+  // Closing again is harmless.
+  assert.doesNotThrow(() => panel.close());
+  assert.equal(streams[0].closed, 1);
+});
+
+test("re-opening closes the earlier stream and follows the new database", () => {
+  const { streams, panel } = panelHarness();
+  panel.open("erp");
+  panel.open("bugs");
+  assert.equal(streams.length, 2);
+  assert.equal(streams[0].closed, 1);
+  assert.equal(streams[1].url, "/events?db=bugs");
+  assert.equal(streams[1].closed, 0);
+  assert.equal(panel.following(), true);
+});

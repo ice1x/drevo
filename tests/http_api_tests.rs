@@ -2245,6 +2245,10 @@ async fn ui_live_refresh_module_serves_to_client() {
     assert!(content_type.contains("javascript"));
     assert!(body.contains("DrevoLiveRefresh"));
     assert!(body.contains("eventsUrl"));
+    assert!(
+        body.contains("createLivePanel"),
+        "the Storage panel's stream helper (#777)"
+    );
 }
 
 #[tokio::test]

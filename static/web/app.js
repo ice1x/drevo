@@ -71,7 +71,6 @@
   const $storageShrink = document.getElementById("storage-shrink");
   const $storageBenchRun = document.getElementById("storage-bench-run");
   const $storageBench = document.getElementById("storage-bench");
-  const $storageRefresh = document.getElementById("storage-refresh");
   const $storageTransactions = document.getElementById("storage-transactions-list");
   const TxView = window.DrevoTransactionsView;
   const $storageBackups = document.getElementById("storage-backups-list");
@@ -569,9 +568,9 @@
       </p>`;
   }
 
-  async function loadStorage() {
-    $storageBody.innerHTML = '<p class="storage-loading">Loading storage stats…</p>';
-    if ($storageBackup) $storageBackup.href = backupHref();
+  // The file size, bloat share and keyspace counts. What is on screen stays
+  // until the answer arrives, so a reload after a change does not flicker.
+  async function loadStorageStats() {
     try {
       const [bloat, ks] = await Promise.all([
         apiGet("/storage/bloat"),
@@ -581,8 +580,19 @@
     } catch (e) {
       $storageBody.innerHTML = `<p class="storage-error">Cannot load storage stats: ${e.message}</p>`;
     }
+  }
+
+  async function loadStorage() {
+    $storageBody.innerHTML = '<p class="storage-loading">Loading storage stats…</p>';
+    if ($storageBackup) $storageBackup.href = backupHref();
+    await loadStorageStats();
     await Promise.all([loadTransactions(), loadBackups()]);
   }
+
+  // While the panel is open its numbers follow the graph (#777): a change
+  // on GET /events reloads the stats, a burst of changes reloads them once.
+  // Transactions keep their own poll below; backups reload after a backup.
+  const storageLive = Live.createLivePanel({ delayMs: 800, run: loadStorageStats });
 
   // ── Physical backups (POST /admin/backup, GET /admin/backups) ──────
   // The newest few backups in the server's backup directory, and buttons
@@ -831,6 +841,7 @@
       $storageBench.innerHTML = "";
     }
     loadStorage();
+    storageLive.open(currentDb);
     clearInterval(txTimer);
     txTimer = setInterval(loadTransactions, 3000);
   }
@@ -838,6 +849,7 @@
     if (!$storageModal) return;
     $storageModal.hidden = true;
     $storageModal.setAttribute("aria-hidden", "true");
+    storageLive.close();
     clearInterval(txTimer);
     txTimer = null;
   }
@@ -2851,7 +2863,6 @@
   if ($storageClose) $storageClose.addEventListener("click", closeStorage);
   if ($storageShrink) $storageShrink.addEventListener("click", doShrink);
   if ($storageBenchRun) $storageBenchRun.addEventListener("click", doBenchmark);
-  if ($storageRefresh) $storageRefresh.addEventListener("click", loadStorage);
   if ($storageBackupFull) $storageBackupFull.addEventListener("click", () => takeBackup("full"));
   if ($storageBackupIncr) {
     $storageBackupIncr.addEventListener("click", () => takeBackup("incremental"));

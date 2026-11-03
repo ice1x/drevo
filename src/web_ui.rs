@@ -622,6 +622,26 @@ mod tests {
         );
     }
 
+    // The Storage panel follows the change stream while it is open (#777):
+    // its numbers reload after a change, so there is no Refresh button.
+    #[test]
+    fn embedded_storage_panel_follows_the_change_stream_instead_of_a_refresh_button() {
+        assert!(
+            LIVE_REFRESH_JS.contains("createLivePanel"),
+            "live_refresh.js must export createLivePanel on DrevoLiveRefresh"
+        );
+        assert!(
+            !INDEX_HTML.contains("id=\"storage-refresh\""),
+            "the Storage panel must not need a Refresh button"
+        );
+        assert!(
+            APP_JS.contains("Live.createLivePanel(")
+                && APP_JS.contains("storageLive.open(currentDb)")
+                && APP_JS.contains("storageLive.close()"),
+            "app.js must open the storage stream with the panel and close it with the panel"
+        );
+    }
+
     #[test]
     fn embedded_transactions_view_module_is_dom_free_and_loaded_before_app_js() {
         assert!(
