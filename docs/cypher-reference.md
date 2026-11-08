@@ -801,7 +801,8 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `db.propertyKeys()` | `propertyKey` | every distinct property key across nodes and relationships, sorted (the reserved `_labels` key is never exposed) |
 | `drevo.info()` | `version, git_sha, build_date, protocol` | the running build's version + metadata, so a Bolt client can assert a minimum-compatible drevo (issue #303) |
 | `drevo.engine.status()` | `engine, mirror_fresh, native_hits, kv_fallbacks, kv_routed, rebuild_errors` | which engine serves this database's Cypher (`kv` or `native`) and the native read mirror's routing counters (RFC #307) |
-| `drevo.pagerank()` | `node, score` | PageRank centrality over the whole graph, computed in parallel over an immutable adjacency snapshot; rows come back most-central-first (RFC #307 Phase 8) |
+| `drevo.pagerank([config])` | `node, score` | PageRank centrality over the whole graph, computed over an immutable adjacency snapshot; rows come back most-central-first, ties by node id. The optional config map takes the keys of `drevo.pagerank.personalized` except `sourceWeights` (`maxIterations` defaults to `100` here) — see [Personalized PageRank](#personalized-pagerank) |
+| `drevo.pagerank.personalized(sourceNodes[, config])` | `node, score` | PageRank whose random walk jumps back to `sourceNodes` instead of to a random node: which nodes matter *for these seeds* — see [Personalized PageRank](#personalized-pagerank) |
 | `drevo.louvain()` | `node, community` | Louvain community detection over the whole graph; each node is returned with its contiguously-numbered community id (RFC #307 Phase 8) |
 | `drevo.wcc()` | `node, component` | Weakly connected components over the whole graph; each node is returned with its component id (edges treated as undirected), numbered by the minimum node id per component (RFC #307 Phase 8) |
 | `drevo.scc()` | `node, component` | Strongly connected components over the whole graph (iterative Tarjan); two nodes share a component only if mutually reachable **following edge direction** — i.e. on a common directed cycle — numbered by the minimum node id per component (RFC #307 Phase 8) |
@@ -2396,6 +2397,78 @@ YIELD rel, score, ftsRank, vectorRank, mode` does the same over relationships:
 CALL drevo.search.hybridRelationships('who mentors whom', 'RELATES_TO', 'fact_embedding', 5)
 YIELD rel, score, mode
 RETURN rel, score, mode
+```
+
+### Personalized PageRank
+
+`drevo.pagerank` says which nodes matter in the whole graph.
+`drevo.pagerank.personalized` says which nodes matter **for a set of seed
+nodes**: its random walk follows edges with probability `damping` and
+otherwise jumps back to one of the seeds (classic PageRank jumps to any
+node). Nodes close to and well connected with the seeds score high, a hub that
+is merely popular elsewhere in the graph does not, and nodes the seeds cannot
+reach are not returned at all. The scores of a call sum to 1.
+
+```text
+CALL drevo.pagerank.personalized(sourceNodes[, config])
+YIELD node, score
+```
+
+```cypher
+MATCH (seed:Page {title: 'Graph databases'})
+CALL drevo.pagerank.personalized(seed, {limit: 10})
+YIELD node, score
+RETURN node.title, score
+```
+
+| Argument | Meaning |
+|---|---|
+| `sourceNodes` | the seeds: a node, a node id (integer), or a list mixing both; at least one |
+| `config` | optional map, below |
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `damping` | `0.85` | the probability of following an edge rather than jumping back to the seeds; a number in the open interval (0, 1) |
+| `maxIterations` | `20` | the most power-iteration steps, an integer ≥ 1 (`100` for `drevo.pagerank`) |
+| `tolerance` | `1e-6` | stop once the scores change by at most this much in a step (L1 norm) |
+| `direction` | `'outgoing'` | `'outgoing'` follows edges, `'incoming'` walks them backwards, `'both'` walks them either way |
+| `relTypes` | `null` | walk only relationships of these types, e.g. `['CITES', 'LINKS']`; `null` or `[]` walks every type |
+| `sourceWeights` | `null` | one number ≥ 0 per entry of `sourceNodes`, not all zero; a seed with twice the weight receives twice the jumps. Equal weights when `null` |
+| `limit` | `null` | return only the best `limit` rows; scores are still computed over the whole graph |
+| `minScore` | `0.0` | drop rows scoring below this (unreachable nodes are never returned) |
+
+Edges are weighted by the relationship's weight (`1.0` unless set). A node
+with no edge to follow sends its score back to the seeds. Rows come best
+first, ties by node id, so the same graph and seeds always give the same rows;
+`minScore` and then `limit` apply after ranking. An empty `sourceNodes`, an id
+that is not a node, a `sourceWeights` list of the wrong length or all zeros, an
+unknown key or a `direction` outside the three fail with an error naming the
+problem.
+
+The arguments are evaluated for each incoming row, so the seeds can come from
+a search. A graph-RAG step that ranks the neighbourhood of the hybrid-search
+hits, rather than returning every neighbour:
+
+```cypher
+CALL drevo.search.hybrid('anxious thoughts about work', 'Chunk', 'embedding', 5)
+YIELD node
+WITH collect(node) AS seeds
+WHERE size(seeds) > 0
+CALL drevo.pagerank.personalized(seeds, {limit: 50, direction: 'both'})
+YIELD node, score
+RETURN node.title, score
+```
+
+The `WHERE size(seeds) > 0` skips the call when the search found nothing,
+since an empty `sourceNodes` is an error.
+
+`drevo.pagerank` takes the same map (without `sourceWeights`), so the damping,
+iterations, edge direction and types of global PageRank can be set too:
+
+```cypher
+CALL drevo.pagerank({damping: 0.9, relTypes: ['LINKS'], limit: 10})
+YIELD node, score
+RETURN node.title, score
 ```
 
 ---

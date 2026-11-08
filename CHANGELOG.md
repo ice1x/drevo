@@ -8,6 +8,20 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Personalized PageRank: `drevo.pagerank.personalized(sourceNodes[,
+  config]) YIELD node, score`** (issue #781). The random walk jumps back to
+  the seed nodes (a node, a node id, or a list mixing both) instead of to a
+  random node, so the scores say which nodes matter for those seeds: dangling
+  mass returns to the seeds too, nodes they cannot reach are not returned,
+  and the scores sum to 1. The config map takes `damping` (0.85), `maxIterations`
+  (20), `tolerance` (1e-6), `direction` (`'outgoing'`, `'incoming'`,
+  `'both'`), `relTypes`, `sourceWeights`, `limit` and `minScore`; rows come
+  best first, ties by node id. `drevo.pagerank` now takes the same optional
+  map (without `sourceWeights`); `drevo.pagerank()` returns exactly what it
+  did. In Rust, `PageRankConfig` gains `personalization:
+  Option<Personalization>` (so it is no longer `Copy`), honoured by
+  `pagerank` and `pagerank_parallel`, and `algorithms::oriented_edges`
+  reverses or doubles edges for a direction.
 - **Hybrid search in one call: `drevo.search.hybrid(query, label,
   embeddingProperty, k[, config]) YIELD node, score, ftsRank, vectorRank,
   mode`** (issue #780), and `drevo.search.hybridRelationships` for
