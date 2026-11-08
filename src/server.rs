@@ -140,12 +140,10 @@ pub struct Config {
     /// [`crate::limits::DEFAULT_MAX_TX_WRITES`]; `0` = no limit, `None`).
     pub max_tx_writes: Option<usize>,
     /// The most `hops` one `drevo.graph.expand` call may ask for, from
-    /// `DREVO_EXPAND_MAX_HOPS` (default
-    /// [`crate::cypher::expand::DEFAULT_EXPAND_MAX_HOPS`]).
+    /// `DREVO_EXPAND_MAX_HOPS` (default 6).
     pub expand_max_hops: usize,
     /// The largest `maxNodes` one `drevo.graph.expand` call may ask for, from
-    /// `DREVO_EXPAND_MAX_NODES` (default
-    /// [`crate::cypher::expand::DEFAULT_EXPAND_MAX_NODES`]).
+    /// `DREVO_EXPAND_MAX_NODES` (default 5000).
     pub expand_max_nodes: usize,
     /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;

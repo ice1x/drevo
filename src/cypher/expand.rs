@@ -2,7 +2,7 @@
 //! server's ceilings on how far and how wide one call may walk.
 //!
 //! [`expand_options`] turns the config map into the
-//! [`ExpandOptions`](crate::traversal::ExpandOptions) of
+//! [`ExpandOptions`] of
 //! [`expand_bfs`](crate::traversal::expand_bfs), refusing an unknown key or a
 //! value out of range by name:
 //!
