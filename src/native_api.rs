@@ -237,6 +237,8 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/ready", get(health))
         .route("/status", get(status))
         .route("/cypher", post(cypher))
+        // The graph-RAG context for a question (`drevo.rag.context`).
+        .route("/rag/context", post(rag_context))
         // Sign-in for the Web UI and API clients (issue #634).
         .route("/auth/login", post(auth_login))
         .route("/auth/logout", post(auth_logout))
@@ -1190,6 +1192,101 @@ async fn cypher(
             &caller,
         )
     })?))
+}
+
+/// `POST /rag/context` body: the question, the database (default: the
+/// server's), and the `drevo.rag.context` config map.
+#[derive(serde::Deserialize)]
+struct RagContextRequest {
+    query: Option<String>,
+    #[serde(default)]
+    db: Option<String>,
+    #[serde(default)]
+    config: Option<serde_json::Value>,
+    /// Stop after this many milliseconds (`0`: no limit of the client's
+    /// own), as `timeout_ms` on `POST /cypher`; the server's statement
+    /// timeout caps it.
+    #[serde(default, rename = "timeoutMs")]
+    timeout_ms: Option<serde_json::Value>,
+}
+
+/// The `timeoutMs` of a `POST /rag/context` body as a time limit: `None`
+/// when absent, `null` or `0`.
+fn rag_timeout(value: Option<serde_json::Value>) -> Result<Option<std::time::Duration>, ApiError> {
+    let ms = match value {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::Number(n)) if n.is_u64() => n.as_u64(),
+        Some(_) => None,
+    };
+    let ms = ms.ok_or_else(|| {
+        ApiError::BadRequest(
+            "timeoutMs must be a whole number of milliseconds ≥ 0 (0 = no limit)".to_string(),
+        )
+    })?;
+    Ok((ms > 0).then(|| std::time::Duration::from_millis(ms)))
+}
+
+/// The statement `POST /rag/context` runs.
+const RAG_CONTEXT_QUERY: &str = "CALL drevo.rag.context($query, $config) \
+     YIELD text, tokens, format, nodeIds, relIds, truncated, mode, traceId \
+     RETURN text, tokens, format, nodeIds, relIds, truncated, mode, traceId";
+
+/// `POST /rag/context {query, db?, config?, timeoutMs?}` — the graph-RAG
+/// context for a question: `drevo.rag.context(query, config)` run as the
+/// signed-in user, with the same privilege checks and time limits as
+/// `POST /cypher`,
+/// answered as one JSON object `{text, tokens, format, nodeIds, relIds,
+/// truncated, mode, traceId}`. A bad config is a 400 naming the key; a
+/// missing privilege a 403; an unknown `db` a 404.
+async fn rag_context(
+    State(state): State<NativeApiState>,
+    signed_in: Option<axum::Extension<crate::security::SignedIn>>,
+    origin: Option<axum::Extension<crate::security::Origin>>,
+    body: Result<Json<RagContextRequest>, JsonRejection>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let origin = origin.map_or_else(|| crate::security::Origin::new("http"), |o| o.0);
+    let Json(RagContextRequest {
+        query,
+        db,
+        config,
+        timeout_ms,
+    }) = body?;
+    let query =
+        query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
+    let timeout = rag_timeout(timeout_ms)?;
+    let signed_in = signed_in.map(|axum::Extension(user)| user);
+    let database = db.unwrap_or_else(|| state.registry.default_name().to_string());
+    let service = state
+        .registry
+        .get(&database)
+        .ok_or_else(|| ApiError::NotFound(format!("database '{database}' not found")))?;
+    let context = state
+        .security
+        .context_for(signed_in.as_ref(), state.registry.default_name());
+    let caller = Caller {
+        security: &state.security,
+        origin: &origin,
+        user: signed_in.as_ref().map(|u| u.name.as_str()),
+        context: context.as_ref(),
+        timeout,
+    };
+    let params = serde_json::Map::from_iter([
+        ("query".to_string(), serde_json::Value::String(query)),
+        (
+            "config".to_string(),
+            config.unwrap_or(serde_json::Value::Null),
+        ),
+    ]);
+    let response =
+        run_blocking(|| run_cypher_on(&service, &database, RAG_CONTEXT_QUERY, params, &caller))?;
+    let row = response.rows.into_iter().next().ok_or_else(|| {
+        ApiError::Db(crate::error::DrevoError::InvalidArgument(
+            "drevo.rag.context returned no row".to_string(),
+        ))
+    })?;
+    Ok(Json(serde_json::Value::Object(
+        response.columns.into_iter().zip(row).collect(),
+    )))
 }
 
 /// Run a synchronous, possibly long statement (Cypher execution) from async

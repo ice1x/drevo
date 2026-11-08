@@ -1367,6 +1367,48 @@ events.addEventListener("posted", (e) => notify(JSON.parse(e.data).payload));
 - **Logins.** With logins required, the stream needs a login like any other route. It also leaves
   out the nodes and relationships the user may not traverse.
 
+### Graph-RAG context (`POST /rag/context`)
+
+`POST /rag/context` answers "what does the graph know about this question?" with text ready for an
+LLM prompt, within a token budget. It runs [`drevo.rag.context`](cypher-reference.md#graph-rag-retrieval)
+and returns its row as one JSON object, for clients that do not speak Cypher.
+
+```bash
+curl -s http://localhost:8080/rag/context \
+  -H 'content-type: application/json' \
+  -d '{"query": "panic before the team meeting", "config": {"label": "Entry", "format": "triples", "tokenBudget": 800}}'
+```
+
+```json
+{
+  "text": "Monday shift | Entry | Panic before the team meeting, heart racing.\nMila | Person | Keeps a mood journal\nMila | WROTE | Monday shift\n",
+  "tokens": 34,
+  "format": "triples",
+  "nodeIds": [2, 1],
+  "relIds": [1],
+  "truncated": false,
+  "mode": "hybrid",
+  "traceId": null
+}
+```
+
+- **Body.** `query` (required) is the question; `config` is the `drevo.rag.context` config map
+  (every key optional); `db` names another database than the default; `timeoutMs` stops the call
+  after that many milliseconds, like `timeout_ms` on `POST /cypher` (`0` or absent: no limit of
+  its own; the server's `DREVO_QUERY_TIMEOUT_MS` still caps it).
+- **Errors.** A missing `query`, a `timeoutMs` that is not a whole number ≥ 0, a config that is not
+  a map, an unknown config key or a bad value is a `400` whose `error` names the key. An unknown
+  `db` is a `404`.
+- **Logins and privileges.** The route runs as the signed-in user, exactly like `POST /cypher`: it
+  needs `EXECUTE PROCEDURE` on `drevo.rag.context` and access to the database (a `403` with
+  `Neo.ClientError.Security.Forbidden` otherwise), and it leaves out the nodes and relationships
+  the user may not read.
+- **Time limit.** `DREVO_QUERY_TIMEOUT_MS` applies as to any statement, and `timeoutMs` can only
+  shorten it; a context that takes longer is a `400` saying which limit it exceeded.
+- **Embeddings.** With an embeddings upstream configured and a `label` given, seeds come from BM25
+  and embedding similarity together (`mode: "hybrid"`); without one, from BM25 alone
+  (`mode: "fts"`).
+
 ## 8. Replication & streaming (substrate)
 
 These Phase 15 subsystems are **always-compiled library substrate** — the event/log/role model

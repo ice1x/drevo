@@ -155,6 +155,9 @@ pub mod migrate;
 /// An identity provider's signing keys over HTTPS, for bearer-token logins.
 #[cfg(feature = "oidc")]
 pub mod oidc;
+/// Graph-RAG retrieval: `drevo.rag.retrieve` / `drevo.rag.context` — seeds,
+/// expansion, ranking and a token-budgeted serialiser for LLM prompts.
+pub mod rag;
 /// Engine-independent storage & semantic report DTOs (`CompactReport`,
 /// `BloatReport`, `KeyspaceStat`, `SemanticReindexReport`,
 /// `SemanticTargetStatus`) — relocated out of `db` so they outlive the KV

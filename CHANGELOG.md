@@ -8,6 +8,32 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Graph-RAG in one call: `drevo.rag.context(query[, config]) YIELD text,
+  tokens, format, nodeIds, relIds, truncated, mode, traceId`,
+  `drevo.rag.retrieve(query[, config]) YIELD node, seedScore, distance,
+  pprScore, rank, via, truncated` and `POST /rag/context`** (issue #783). A
+  question becomes LLM-ready context inside the database: seeds from
+  `drevo.search.hybrid`, the walk of `drevo.graph.expand` (2 hops by default,
+  conversation and bookkeeping labels left out), the relationships between
+  the nodes found, a ranking (`rank: 'ppr'` — Personalized PageRank over just
+  those nodes, teleporting to the seeds by search score — `'distance'` or
+  `'none'`, seeds always first), and a greedy writer that fills `tokenBudget`
+  (2000, at least 50) best-ranked first, skipping a node that does not fit
+  whole. Formats `markdown` (`## Entities` / `## Relations`), `triples`
+  (`A | REL | B`, the cheapest) and `json` (sorted keys); tokens estimated as
+  ⌈chars / 4⌉ (`'approx'`) or ⌈words × 1.3⌉ (`'words'`); `textProperties`,
+  `maxBodyChars` (cuts `body`, `text`, `description` and `quote` at a character
+  boundary; names and titles stay whole), `includeProvenance` (writes
+  `valid_from→valid_until`, `«quote»`, `(source_id)` when present) and
+  `source` (keeps elements of the listed `source_id`s, and those without
+  one). Output is byte-identical for the same graph and config; `mode`
+  reports the search mode that ran; no match gives an empty context, not an
+  error. The statement timeout is checked between stages. `session` is
+  accepted; `traceId` is `null` until context traces land. `POST
+  /rag/context {query, db?, config?, timeoutMs?}` returns the row as JSON
+  with the privileges and time limits of `POST /cypher` (400 naming a bad key, 403
+  without the privilege). In Rust: the `drevo::rag` module (`RagConfig`,
+  `Subgraph`, `serialize::render`, `tokens`).
 - **Provenance for long-term memory** (issue #785): memory can record where
   it read something. `drevo.memory.addSource(id, uri, title, kind) YIELD node`
   upserts a `:Source`; `drevo.memory.addChunks(sourceId, chunks) YIELD node`

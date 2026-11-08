@@ -2543,3 +2543,454 @@ async fn user_commands_without_user_management_answer_503() {
         "{body}"
     );
 }
+
+// ── POST /rag/context ────────────────────────────────────────────────────────
+
+/// A router over a small CBT journal, and the service behind it.
+async fn rag_app() -> (axum::Router, Arc<NativeService>) {
+    let db = Arc::new(NativeService::in_memory());
+    let app = build_native_router(NativeApiState::new(Arc::clone(&db)));
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({ "query": "CREATE (m:Person {name: 'Mila'})-[:WROTE]->\
+                               (:Entry {title: 'Monday shift', body: 'Panic before the team meeting.'})-[:CONTAINS]->\
+                               (:Thought {text: 'Everyone will see I am incompetent'})" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (app, db)
+}
+
+#[tokio::test]
+async fn rag_context_returns_the_context_row_as_json() {
+    let (app, _) = rag_app().await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "team meeting", "config": { "format": "triples" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = body["text"].as_str().expect("text");
+    assert!(
+        text.starts_with("Monday shift | Entry | Panic before the team meeting.\n"),
+        "{text}"
+    );
+    assert!(text.contains("Mila | WROTE | Monday shift\n"), "{text}");
+    assert_eq!(body["format"], "triples");
+    assert_eq!(body["mode"], "fts");
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["traceId"], Value::Null);
+    assert_eq!(
+        body["tokens"].as_u64(),
+        Some(drevo::rag::tokens::approx(text) as u64)
+    );
+    assert_eq!(body["nodeIds"].as_array().map(Vec::len), Some(3));
+    assert_eq!(body["relIds"].as_array().map(Vec::len), Some(2));
+
+    // The same answer as the procedure over /cypher.
+    let (_, via_cypher) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({
+            "query": "CALL drevo.rag.context($q, {format: 'triples'}) YIELD text RETURN text",
+            "params": { "q": "team meeting" }
+        })),
+    )
+    .await;
+    assert_eq!(via_cypher["rows"][0][0], body["text"]);
+}
+
+#[tokio::test]
+async fn rag_context_without_config_uses_the_defaults() {
+    let (app, _) = rag_app().await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "team meeting" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["format"], "markdown");
+    assert!(
+        body["text"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("## Entities\n"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn rag_context_refuses_a_bad_config_naming_the_key() {
+    let (app, _) = rag_app().await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "panic", "config": { "depth": 2 } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["status"], 400);
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(error.contains("unknown config key `depth`"), "{error}");
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "panic", "config": { "tokenBudget": 10 } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("tokenBudget"),
+        "{body}"
+    );
+
+    let (status, body) = send(&app, "POST", "/rag/context", Some(json!({ "config": {} }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("field 'query' is required"),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "panic", "config": "fast" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("the config must be a map"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn rag_context_runs_on_the_named_database() {
+    let (app, _) = rag_app().await;
+    let (status, _) = send(&app, "POST", "/databases", Some(json!({ "name": "notes" }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    // The new database has no journal: an empty context, not the default's.
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "team meeting", "db": "notes" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["text"], "");
+    assert_eq!(body["tokens"], 0);
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "panic", "db": "missing" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("missing"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn rag_context_honours_the_statement_timeout() {
+    let db = Arc::new(NativeService::in_memory());
+    let app = build_native_router(NativeApiState::new(Arc::clone(&db)));
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(
+            json!({ "query": "CREATE (t:Topic {name: 'insomnia'}) WITH t \
+                               UNWIND range(1, 3000) AS i \
+                               CREATE (t)-[:HAS]->(:Night {title: 'night ' + toString(i)})" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let request = json!({
+        "query": "insomnia",
+        "config": { "perNodeLimit": 5000, "maxNodes": 5000, "hops": 1 }
+    });
+    let (status, body) = send(&app, "POST", "/rag/context", Some(request.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    db.set_statement_timeout(Some(std::time::Duration::from_millis(1)));
+    let (status, body) = send(&app, "POST", "/rag/context", Some(request)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("exceeded the 1 ms statement timeout"),
+        "{body}"
+    );
+}
+
+/// A router over a 3000-night star: a context large enough that a debug
+/// build takes well over a millisecond.
+async fn big_rag_app() -> (axum::Router, Arc<NativeService>) {
+    let db = Arc::new(NativeService::in_memory());
+    let app = build_native_router(NativeApiState::new(Arc::clone(&db)));
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(
+            json!({ "query": "CREATE (t:Topic {name: 'insomnia'}) WITH t \
+                               UNWIND range(1, 3000) AS i \
+                               CREATE (t)-[:HAS]->(:Night {title: 'night ' + toString(i)})" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (app, db)
+}
+
+#[tokio::test]
+async fn rag_context_honours_the_client_timeout_ms() {
+    let (app, db) = big_rag_app().await;
+    let config = json!({ "perNodeLimit": 5000, "maxNodes": 5000, "hops": 1 });
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "insomnia", "config": config, "timeoutMs": 60000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "insomnia", "config": config, "timeoutMs": 1 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("exceeded the 1 ms timeout the client set"),
+        "{body}"
+    );
+    // `0` means no limit of the client's own.
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "insomnia", "config": config, "timeoutMs": 0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The server's limit wins over a longer one the client asks for.
+    db.set_statement_timeout(Some(std::time::Duration::from_millis(1)));
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "insomnia", "config": config, "timeoutMs": 60000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("exceeded the 1 ms statement timeout"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn rag_context_refuses_a_bad_timeout_ms_naming_it() {
+    let (app, _) = rag_app().await;
+    for bad in [json!("soon"), json!(-5), json!(1.5), json!(true)] {
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/rag/context",
+            Some(json!({ "query": "team meeting", "timeoutMs": bad })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        let error = body["error"].as_str().unwrap_or("");
+        assert!(
+            error.starts_with("timeoutMs must be a whole number of milliseconds ≥ 0"),
+            "{bad}: {error}"
+        );
+    }
+    // null is the same as leaving it out.
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "team meeting", "timeoutMs": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[cfg(feature = "auth")]
+mod rag_context_privileges {
+    use super::*;
+    use drevo::security::Security;
+    use drevo_auth::catalog::MemoryStore;
+    use drevo_auth::users::{AuthManager, NewUser};
+
+    struct Server {
+        app: axum::Router,
+        users: Arc<AuthManager>,
+    }
+
+    impl Server {
+        /// `admin`; `rita` (reader who may not see `:Secret` nodes); `rex`
+        /// (reader); `pat` (only `PUBLIC`).
+        async fn new() -> Self {
+            let users = Arc::new(AuthManager::open(Arc::new(MemoryStore::new())).unwrap());
+            for (name, role) in [
+                ("admin", Some("admin")),
+                ("rita", Some("reader")),
+                ("rex", Some("reader")),
+                ("pat", None),
+            ] {
+                users
+                    .create_user(NewUser::new(name, "long-password").change_required(false))
+                    .unwrap();
+                if let Some(role) = role {
+                    users.grant_role(role, name).unwrap();
+                }
+            }
+            users.create_role("no_secrets", false, None).unwrap();
+            let deny = drevo_auth::privileges::parse("DENY TRAVERSE ON GRAPH * NODES Secret TO x")
+                .unwrap()
+                .privileges;
+            users
+                .grant(drevo_auth::privileges::Access::Deny, &deny, "no_secrets")
+                .unwrap();
+            users.grant_role("no_secrets", "rita").unwrap();
+            let state = NativeApiState::new(Arc::new(NativeService::in_memory()))
+                .with_security(Security::new(Arc::clone(&users)));
+            let s = Self {
+                app: build_native_router(state),
+                users,
+            };
+            for query in [
+                "CREATE (:Entry {title: 'panic diary'})-[:MENTIONS]->(:Person:Secret {name: 'Hidden therapist'})",
+                "CREATE DATABASE clinic",
+            ] {
+                let (status, body) = s
+                    .call("admin", "/cypher", json!({ "query": query }))
+                    .await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+            }
+            s
+        }
+
+        async fn call(&self, user: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+            let token = self.users.issue_session(user).unwrap();
+            let req = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let resp = self.app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reader_sees_only_what_they_may_read() {
+        let s = Server::new().await;
+        let (status, body) = s
+            .call("rex", "/rag/context", json!({ "query": "panic diary" }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Hidden therapist"),
+            "{body}"
+        );
+        let (status, body) = s
+            .call("rita", "/rag/context", json!({ "query": "panic diary" }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let text = body["text"].as_str().unwrap_or("");
+        assert!(text.contains("panic diary"), "{body}");
+        assert!(!text.contains("Hidden therapist"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn without_access_to_the_database_it_is_forbidden() {
+        let s = Server::new().await;
+        // pat has PUBLIC only: the home database, not `clinic`.
+        let (status, body) = s
+            .call(
+                "pat",
+                "/rag/context",
+                json!({ "query": "panic", "db": "clinic" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["code"], "Neo.ClientError.Security.Forbidden", "{body}");
+    }
+
+    #[tokio::test]
+    async fn without_execute_on_the_procedure_it_is_forbidden() {
+        let s = Server::new().await;
+        let (status, _) = s
+            .call(
+                "admin",
+                "/cypher",
+                json!({ "query": "DENY EXECUTE PROCEDURE drevo.rag.* ON DBMS TO reader" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = s
+            .call("rex", "/rag/context", json!({ "query": "panic diary" }))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["code"], "Neo.ClientError.Security.Forbidden", "{body}");
+    }
+
+    #[tokio::test]
+    async fn without_a_login_it_is_unauthorized() {
+        let s = Server::new().await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/rag/context")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "query": "panic" }).to_string()))
+            .unwrap();
+        let resp = s.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+}
