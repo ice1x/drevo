@@ -31,6 +31,8 @@
 //! | `DREVO_BOLT_PORT` | (unset)     | Serve Bolt on this port, same host as HTTP |
 //! | `DREVO_SLOW_QUERY_MS` | unset (off) | Log every statement that runs longer, at WARN with its duration, text, parameter names (not values), protocol, user and database; it shows in the Web UI's problem feed and `drevo_slow_statements_total`. Changeable at runtime with `POST /config/slow-query`. `0` = off |
 //! | `DREVO_MAX_TX_WRITES` | `1000000` | How many writes one explicit transaction may buffer before it commits; the statement that goes over fails with `Neo.ClientError.General.TransactionOutOfMemoryError` and the transaction is rolled back. `0` = no limit |
+//! | `DREVO_EXPAND_MAX_HOPS` | `6` | The most `hops` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
+//! | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
 //! | `DREVO_TX_ISOLATION` | `snapshot` | When an explicit transaction may commit after others committed: `snapshot` (unless they touched the same records) or `serializable` (only if nothing committed) |
 //! | `DREVO_TX_CONFLICT_HISTORY` | `10000` | Recent commits remembered to decide whether a transaction overlapped with them |
 //! | `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once; one more is refused at `HELLO` with `Neo.TransientError.Request.NoThreadsAvailable`; `0` = no limit |
@@ -137,6 +139,14 @@ pub struct Config {
     /// from `DREVO_MAX_TX_WRITES` (default
     /// [`crate::limits::DEFAULT_MAX_TX_WRITES`]; `0` = no limit, `None`).
     pub max_tx_writes: Option<usize>,
+    /// The most `hops` one `drevo.graph.expand` call may ask for, from
+    /// `DREVO_EXPAND_MAX_HOPS` (default
+    /// [`crate::cypher::expand::DEFAULT_EXPAND_MAX_HOPS`]).
+    pub expand_max_hops: usize,
+    /// The largest `maxNodes` one `drevo.graph.expand` call may ask for, from
+    /// `DREVO_EXPAND_MAX_NODES` (default
+    /// [`crate::cypher::expand::DEFAULT_EXPAND_MAX_NODES`]).
+    pub expand_max_nodes: usize,
     /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
     /// `0` disables the alert).
@@ -352,6 +362,22 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_EXPAND_MAX_HOPS` was not a positive integer.
+    #[error(
+        "invalid DREVO_EXPAND_MAX_HOPS value `{value}`: expected a whole number of hops, at least 1"
+    )]
+    InvalidExpandMaxHops {
+        /// The raw env-var value.
+        value: String,
+    },
+    /// `DREVO_EXPAND_MAX_NODES` was not a positive integer.
+    #[error(
+        "invalid DREVO_EXPAND_MAX_NODES value `{value}`: expected a whole number of nodes, at least 1"
+    )]
+    InvalidExpandMaxNodes {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_HTTP_FORMATS` named an unknown format or one not compiled in.
     #[error("invalid DREVO_HTTP_FORMATS: {0}")]
     InvalidHttpFormats(#[from] crate::wire_format::FormatsError),
@@ -519,6 +545,21 @@ impl Config {
                 Ok(0) => None,
                 Ok(n) => Some(n),
                 Err(_) => return Err(ConfigError::InvalidMaxTxWrites { value: raw }),
+            },
+        };
+
+        let expand_max_hops = match getter("DREVO_EXPAND_MAX_HOPS") {
+            None => crate::cypher::expand::DEFAULT_EXPAND_MAX_HOPS,
+            Some(raw) => match raw.trim().parse::<usize>() {
+                Ok(n) if n >= 1 => n,
+                _ => return Err(ConfigError::InvalidExpandMaxHops { value: raw }),
+            },
+        };
+        let expand_max_nodes = match getter("DREVO_EXPAND_MAX_NODES") {
+            None => crate::cypher::expand::DEFAULT_EXPAND_MAX_NODES,
+            Some(raw) => match raw.trim().parse::<usize>() {
+                Ok(n) if n >= 1 => n,
+                _ => return Err(ConfigError::InvalidExpandMaxNodes { value: raw }),
             },
         };
 
@@ -694,6 +735,8 @@ impl Config {
             tx_conflict_history,
             tx_isolation,
             max_tx_writes,
+            expand_max_hops,
+            expand_max_nodes,
             prepared_tx_warn,
             prepared_tx_timeout,
             http_formats,
@@ -1275,6 +1318,11 @@ async fn run_native_durable(
     registry.set_isolation(cfg.tx_isolation);
     // How many writes one explicit transaction may buffer (issue #751).
     registry.set_max_tx_writes(cfg.max_tx_writes);
+    // How far and how wide one `drevo.graph.expand` call may walk.
+    crate::cypher::expand::set_ceilings(crate::cypher::expand::ExpandCeilings {
+        max_hops: cfg.expand_max_hops,
+        max_nodes: cfg.expand_max_nodes,
+    });
     // The server's users, shared by HTTP, Bolt, gRPC and Flight (issue #633).
     let security = configure_security(&cfg)?;
     // The Web UI's signed-in sessions are listed by `SHOW CONNECTIONS`.

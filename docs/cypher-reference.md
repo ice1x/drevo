@@ -813,6 +813,7 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale–Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
 | `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra — see [Weighted paths](#weighted-paths) |
 | `drevo.search.hybrid(query, label, embeddingProperty, k[, config])`, `drevo.search.hybridRelationships(query, type, …)` | `node` or `rel`, `score`, `ftsRank`, `vectorRank`, `mode` | BM25 and embedding similarity fused with Reciprocal Rank Fusion, best first — see [Hybrid search](#hybrid-search-780) |
+| `drevo.graph.expand(seeds[, config])` | `node, distance, via, truncated` | The seeds and every node within `hops` of them, each once at its shortest distance with the relationship that reached it, in a fixed order — see [Graph expansion](#graph-expansion) |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 | `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes — see [Secondary indexes](#secondary-indexes) |
 | `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
@@ -2470,6 +2471,89 @@ CALL drevo.pagerank({damping: 0.9, relTypes: ['LINKS'], limit: 10})
 YIELD node, score
 RETURN node.title, score
 ```
+
+### Graph expansion
+
+`drevo.graph.expand` widens a handful of seed nodes into their neighbourhood in
+one call: a breadth-first walk that returns every node within `hops`
+relationships of a seed, each once, at its shortest distance, together with the
+relationship that first reached it. It is the "find seeds, then widen" step of
+graph retrieval — seeds from a search, then the facts and entities around them —
+without a round-trip per node.
+
+```text
+CALL drevo.graph.expand(seeds[, config])
+YIELD node, distance, via, truncated
+```
+
+```cypher
+CREATE (deploy:Task {title: 'deploy'})-[:BLOCKS]->(migrate:Task {title: 'migrate'}),
+       (migrate)-[:TAGGED]->(:Topic {title: 'postgres'}),
+       (deploy)-[:OWNED_BY]->(:Person {title: 'ana'})
+WITH deploy
+CALL drevo.graph.expand(deploy, {hops: 2})
+YIELD node, distance, via
+RETURN node.title, distance, via.relType, via.direction
+```
+
+returns `deploy` at distance 0 (`via` is `null` for a seed), `migrate` and `ana`
+at distance 1, and `postgres` at distance 2, reached over `TAGGED` from
+`migrate`.
+
+`seeds` is a node, a node id, or a list mixing both; `null` and `[]` give no
+rows. The call runs once per input row, so seeds can come from an earlier
+clause — for example the hits of a [hybrid search](#hybrid-search-780):
+
+```cypher
+CALL drevo.search.hybrid('database migration', null, 'embedding', 5, {mode: 'fts'})
+YIELD node
+WITH collect(node) AS seeds
+CALL drevo.graph.expand(seeds, {hops: 2, excludeLabels: ['Message', 'ReasoningTrace']})
+YIELD node, distance
+RETURN node.title, distance
+```
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `hops` | `1` | how many relationships away from a seed a node may be; `0` returns the seeds only. At most `DREVO_EXPAND_MAX_HOPS` (6 unless the server sets it) |
+| `direction` | `'both'` | `'outgoing'`, `'incoming'` or `'both'` |
+| `relTypes` | `null` | only relationships of these types are walked; `null` walks every type |
+| `labels` | `null` | only nodes with one of these labels are returned and walked further; seeds are always returned |
+| `excludeLabels` | `[]` | nodes with any of these labels are neither returned nor walked through |
+| `perNodeLimit` | `25` | at most this many new nodes are taken from one node, its relationships taken by id, lowest first |
+| `maxNodes` | `200` | at most this many rows, seeds included; at most `DREVO_EXPAND_MAX_NODES` (5000 unless the server sets it) |
+| `asOf` | `null` | an ISO-8601 timestamp: a relationship with `valid_from` / `valid_until` (as `drevo.memory.assertFact` writes them) is walked only if `valid_from <= asOf < valid_until`; one without them always is |
+| `includeSeeds` | `true` | whether the seeds come back as distance-0 rows |
+
+Each row holds:
+
+| Column | Meaning |
+|---|---|
+| `node` | the node |
+| `distance` | how many relationships from the nearest seed; `0` for a seed |
+| `via` | `{fromId, relId, relType, direction}` for the relationship that first reached the node — `direction` is `'out'` when it points away from `fromId`, `'in'` when it points at it; `null` for a seed |
+| `truncated` | `true` on every row when the walk stopped at `maxNodes` with more nodes left |
+
+Rows come seeds first, in the order given, then by distance and node id. Nodes
+at one distance are walked in that order and each node's relationships by id,
+so a node two others reach at the same distance is attributed to the one walked
+first, and the same graph always gives the same rows. A node reached from two
+seeds appears once; the relationships between returned nodes are not part of the
+output. Nodes and relationships the user may not traverse are neither returned
+nor walked through.
+
+What a time-travel walk over long-term memory looks like:
+
+```cypher
+MATCH (alice {name: 'Alice'})
+CALL drevo.graph.expand(alice, {relTypes: ['RELATED_TO'], asOf: '2024-03-01T00:00:00Z', includeSeeds: false})
+YIELD node
+RETURN node.name
+```
+
+A seed id that is not a node, a config that is not a map, an unknown key, a
+negative or wrong-typed value, `hops` or `maxNodes` above the server's limit, and
+`maxNodes` below the number of seeds fail with an error naming the id or the key.
 
 ---
 

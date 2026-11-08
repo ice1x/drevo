@@ -1734,7 +1734,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.sequence.create, drevo.sequence.drop, drevo.sequence.list, \
                           drevo.indexes.secondary, drevo.indexes.setSecondary, \
                           fts.search, fts.searchRelationships, \
-                          drevo.search.hybrid, drevo.search.hybridRelationships"
+                          drevo.search.hybrid, drevo.search.hybridRelationships, \
+                          drevo.graph.expand"
                         .into(),
                     span: c.span,
                 })?;
@@ -6155,6 +6156,9 @@ impl<'a> Executor<'a> {
         if name == REACHABLE {
             return self.run_reachable(c, columns);
         }
+        if name == EXPAND {
+            return self.run_expand(c, columns);
+        }
         if name == NEAREST {
             return self.run_nearest(c, columns);
         }
@@ -6379,6 +6383,101 @@ impl<'a> Executor<'a> {
                 None => Ok(Vec::new()),
             }
         })
+    }
+
+    /// `CALL drevo.graph.expand(seeds[, config]) YIELD node, distance, via,
+    /// truncated` — the seeds and every node within the config's `hops` of
+    /// them, each once at its shortest distance, with the relationship that
+    /// first reached it ([`crate::traversal::expand_bfs`]); once per input
+    /// row, so the seeds may come from the row. No seeds give no rows. Nodes
+    /// and relationships the signed-in user may not traverse are neither
+    /// returned nor walked through. The config is described at
+    /// [`crate::cypher::expand::expand_options`].
+    fn run_expand(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
+        use crate::cypher::expand::{ceilings, expand_options, seed_ids};
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: EXPAND.into(),
+            message,
+            span: c.span,
+        };
+        self.run_per_row(c, columns, &mut |exec, row| {
+            let seeds = seed_ids(&exec.eval(&c.args[0], row)?).map_err(refuse)?;
+            let config = match c.args.get(1) {
+                Some(arg) => exec.eval(arg, row)?,
+                None => Value::Null,
+            };
+            let options = expand_options(&config, ceilings()).map_err(refuse)?;
+            if seeds.is_empty() {
+                return Ok(Vec::new());
+            }
+            exec.expand_rows(&seeds, &options).map_err(|e| match e {
+                ExecError::Storage(DrevoError::InvalidArgument(message)) => refuse(message),
+                other => other,
+            })
+        })
+    }
+
+    /// One `drevo.graph.expand` walk over the statement's view of the graph,
+    /// as the signed-in user may see it, as `[node, distance, via,
+    /// truncated]` rows.
+    fn expand_rows(
+        &self,
+        seeds: &[u64],
+        options: &crate::traversal::ExpandOptions,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        let engine = self.engine();
+        let mut seen: HashMap<u64, Arc<NodeValue>> = HashMap::new();
+        let found = crate::traversal::expand_bfs(
+            seeds,
+            options,
+            &mut |id| {
+                let Some(node) = engine.get_node(id).map_err(DrevoError::from)? else {
+                    return Ok(None);
+                };
+                let Some(nv) = self.seen_node(&node) else {
+                    return Ok(None);
+                };
+                let labels = nv.labels.clone();
+                seen.insert(id, nv);
+                Ok(Some(labels))
+            },
+            &mut |id, direction, f| {
+                engine
+                    .for_each_edge_of(id, direction, &mut |edge| {
+                        if self.edge_traversable(edge) {
+                            f(edge);
+                        }
+                    })
+                    .map_err(DrevoError::from)
+            },
+        )
+        .map_err(ExecError::Storage)?;
+        let int = |n: u64| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+        let truncated = Value::Bool(found.truncated);
+        let mut rows = Vec::with_capacity(found.nodes.len());
+        for reached in found.nodes {
+            let Some(node) = seen.remove(&reached.id) else {
+                continue;
+            };
+            let via = reached.via.map_or(Value::Null, |via| {
+                Value::Map(BTreeMap::from([
+                    ("fromId".to_string(), int(via.from_id)),
+                    ("relId".to_string(), int(via.rel_id)),
+                    ("relType".to_string(), Value::String(via.rel_type)),
+                    (
+                        "direction".to_string(),
+                        Value::String(if via.outgoing { "out" } else { "in" }.to_string()),
+                    ),
+                ]))
+            });
+            rows.push(vec![
+                Value::Node(node),
+                Value::Integer(i64::try_from(reached.distance).unwrap_or(i64::MAX)),
+                via,
+                truncated.clone(),
+            ]);
+        }
+        Ok(rows)
     }
 
     /// `CALL drevo.spatial.nearest(label, {lat, lon}[, options]) YIELD node,
@@ -11655,6 +11754,9 @@ const PERSONALIZED_PAGERANK: &str = "drevo.pagerank.personalized";
 /// fused with Reciprocal Rank Fusion.
 const HYBRID: &str = "drevo.search.hybrid";
 
+/// The `drevo.graph.expand` procedure: the nodes within k hops of seed nodes.
+const EXPAND: &str = "drevo.graph.expand";
+
 /// The `drevo.search.hybridRelationships` procedure: the relationship twin of
 /// [`HYBRID`].
 const HYBRID_RELS: &str = "drevo.search.hybridRelationships";
@@ -12481,6 +12583,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // Hybrid search (issue #780): BM25 + vector fused with RRF.
         HYBRID => Some(&["node", "score", "ftsRank", "vectorRank", "mode"]),
         HYBRID_RELS => Some(&["rel", "score", "ftsRank", "vectorRank", "mode"]),
+        // Seed → k-hop expansion.
+        EXPAND => Some(&["node", "distance", "via", "truncated"]),
         // Neo4j-compatible index procedures (issue #532): same (node, score)
         // contract as their drevo-native counterparts.
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
@@ -12578,7 +12682,8 @@ fn procedure_optional_args(name: &str) -> usize {
         | HYBRID
         | HYBRID_RELS
         | "drevo.pagerank"
-        | PERSONALIZED_PAGERANK => 1,
+        | PERSONALIZED_PAGERANK
+        | EXPAND => 1,
         _ => 0,
     }
 }
@@ -12698,6 +12803,8 @@ fn procedure_arity(name: &str) -> usize {
         // drevo.search.hybrid(query, label, embeddingProperty, k[, config]) and
         // drevo.search.hybridRelationships(query, type, …) (issue #780).
         HYBRID | HYBRID_RELS => 5,
+        // drevo.graph.expand(seeds[, config]).
+        EXPAND => 2,
         // db.index.vector.queryNodes(indexName, k, queryVector) (issue #532).
         "db.index.vector.queryNodes" => 3,
         // db.index.fulltext.queryNodes(indexName, queryString) (issue #532).

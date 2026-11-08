@@ -36,7 +36,8 @@
 //!   scan, a 1-hop fan-out from the highest-degree hub, and `drevo.search.hybrid`
 //!   (BM25 + cosine scan + RRF, `candidates: 20`) next to its BM25-only mode
 //!   when the graph has nodes with an `embedding` property
-//!   (`DREVO_BASELINE_HYBRID_QUERY` sets the query text).
+//!   (`DREVO_BASELINE_HYBRID_QUERY` sets the query text), and
+//!   `drevo.graph.expand` from 5 seeds over 2 hops with `perNodeLimit: 25`.
 //! * The **adjacency seam** underneath it — a 1-hop `neighbors`, a 2-hop
 //!   frontier expansion, and a full-graph PageRank over an
 //!   [`AdjacencyList`](drevo::algorithms::AdjacencyList) built from the live
@@ -269,6 +270,36 @@ fn main() {
                 ),
             );
         }
+    }
+
+    // --- Graph expansion: 5 seeds x 2 hops, perNodeLimit 25 ---------------
+    // The "widen the seeds" step of graph retrieval: the highest-degree hub
+    // and the first nodes of the graph as seeds, as a search would hand them
+    // over.
+    let mut seeds: Vec<u64> = l.hub_id.into_iter().collect();
+    for &id in &l.node_ids {
+        if seeds.len() == 5 {
+            break;
+        }
+        if !seeds.contains(&id) {
+            seeds.push(id);
+        }
+    }
+    if !seeds.is_empty() {
+        let ids = seeds
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        bench_cypher(
+            &mut c,
+            &l.svc,
+            "graph_expand_5_seeds_2_hops",
+            &format!(
+                "CALL drevo.graph.expand([{ids}], {{hops: 2, perNodeLimit: 25}}) \
+                 YIELD node, distance RETURN id(node), distance"
+            ),
+        );
     }
 
     // --- Adjacency seam (isolates index-free adjacency from the executor) --
