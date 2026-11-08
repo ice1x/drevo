@@ -664,7 +664,7 @@ where
 
 /// Whether [`expand_bfs`] may walk `edge`: of an allowed type and, with
 /// [`ExpandOptions::as_of`], valid at that time.
-fn expand_walks(edge: &Edge, options: &ExpandOptions) -> bool {
+pub(crate) fn expand_walks(edge: &Edge, options: &ExpandOptions) -> bool {
     if let Some(types) = &options.rel_types {
         if !types.contains(&edge.kind) {
             return false;

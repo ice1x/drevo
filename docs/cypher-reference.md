@@ -814,6 +814,8 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra — see [Weighted paths](#weighted-paths) |
 | `drevo.search.hybrid(query, label, embeddingProperty, k[, config])`, `drevo.search.hybridRelationships(query, type, …)` | `node` or `rel`, `score`, `ftsRank`, `vectorRank`, `mode` | BM25 and embedding similarity fused with Reciprocal Rank Fusion, best first — see [Hybrid search](#hybrid-search-780) |
 | `drevo.graph.expand(seeds[, config])` | `node, distance, via, truncated` | The seeds and every node within `hops` of them, each once at its shortest distance with the relationship that reached it, in a fixed order — see [Graph expansion](#graph-expansion) |
+| `drevo.rag.retrieve(query[, config])` | `node, seedScore, distance, pprScore, rank, via, truncated` | The nodes that answer a question, best first: hybrid-search seeds, then their neighbourhood ranked by Personalized PageRank, distance or walk order — see [Graph-RAG retrieval](#graph-rag-retrieval) |
+| `drevo.rag.context(query[, config])` | `text, tokens, format, nodeIds, relIds, truncated, mode, traceId` | The same nodes and the relationships between them written as LLM-ready text (markdown, triples or JSON) within a token budget — see [Graph-RAG retrieval](#graph-rag-retrieval) |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 | `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes — see [Secondary indexes](#secondary-indexes) |
 | `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
@@ -2632,6 +2634,147 @@ RETURN node.name
 A seed id that is not a node, a config that is not a map, an unknown key, a
 negative or wrong-typed value, `hops` or `maxNodes` above the server's limit, and
 `maxNodes` below the number of seeds fail with an error naming the id or the key.
+
+### Graph-RAG retrieval
+
+`drevo.rag.context` turns a question into the part of the graph that answers it,
+written as text ready to paste into an LLM prompt, within a token budget — in one
+call. `drevo.rag.retrieve` returns the same nodes as rows, for a client that does
+its own formatting.
+
+```text
+CALL drevo.rag.retrieve(query[, config])
+YIELD node, seedScore, distance, pprScore, rank, via, truncated
+
+CALL drevo.rag.context(query[, config])
+YIELD text, tokens, format, nodeIds, relIds, truncated, mode, traceId
+```
+
+```cypher
+CALL drevo.rag.context('panic before the team meeting', {label: 'Entry', format: 'triples', tokenBudget: 800})
+YIELD text, tokens, truncated, mode
+RETURN text, tokens, truncated, mode
+```
+
+Over a CBT journal — a person writes entries, an entry contains automatic
+thoughts, a thought is an instance of a cognitive distortion — the `text` is:
+
+```text
+Monday shift | Entry | Panic before the team meeting, heart racing.
+Mila | Person | Keeps a mood journal
+Mila | WROTE | Monday shift
+Everyone will see I am incompetent | Thought
+Monday shift | CONTAINS | Everyone will see I am incompetent
+Mind reading | Distortion | Assuming what others think
+Everyone will see I am incompetent | IS_A | Mind reading
+```
+
+The call runs five stages inside one statement, each the code of the procedure it
+is named after:
+
+1. **Seeds** — [`drevo.search.hybrid`](#hybrid-search-780)`(query, label,
+   embeddingProperty, k, {candidates, rrfK, mode})`. Seeds with a label in
+   `excludeLabels` are dropped.
+2. **Expand** — [`drevo.graph.expand`](#graph-expansion)`(seeds, {hops,
+   direction, relTypes, labels, excludeLabels, perNodeLimit, maxNodes, asOf})`.
+3. **Edges** — the relationships whose two ends were both found, of `relTypes`
+   and valid at `asOf`.
+4. **Rank** — the seeds first, in search order; then the other nodes by `rank`:
+   `'ppr'` runs [Personalized PageRank](#personalized-pagerank) over just the
+   nodes and relationships found (so nothing outside them moves a score),
+   teleporting to the seeds in proportion to their search score; `'distance'`
+   orders by distance, then node id; `'none'` keeps the expansion's order.
+5. **Write** (`context` only) — nodes are taken best-ranked first; each brings
+   its block and the relationships to the nodes already taken. A node that would
+   push the text over `tokenBudget` is skipped whole, never cut mid-sentence, and
+   the next one is tried.
+
+The statement timeout (`DREVO_QUERY_TIMEOUT_MS`) is checked between stages.
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `label` | `null` | the label whose embeddings rank the vector leg; `null` searches by BM25 only |
+| `embeddingProperty` | `'embedding'` | the property holding those embeddings |
+| `k` | `8` | how many seeds the search returns |
+| `candidates`, `rrfK`, `mode` | `max(k, 20)`, `60`, `'auto'` | as in [`drevo.search.hybrid`](#hybrid-search-780) |
+| `hops` | `2` | as in [`drevo.graph.expand`](#graph-expansion) |
+| `direction`, `relTypes`, `labels`, `perNodeLimit`, `maxNodes`, `asOf` | `'both'`, `null`, `null`, `25`, `200`, `null` | as in [`drevo.graph.expand`](#graph-expansion); `direction` also orients PageRank |
+| `excludeLabels` | `['Message', 'ReasoningTrace', 'ContextTrace', 'IngestJob', 'IngestItem']` | labels kept out of the seeds and the expansion: conversation and bookkeeping, not knowledge. `[]` keeps everything |
+| `rank` | `'ppr'` | `'ppr'`, `'distance'` or `'none'` |
+| `source` | `null` | a list of source ids: nodes and relationships whose `source_id` property names another source are left out; those without a `source_id` are kept |
+| `tokenBudget` | `2000` | the most tokens `text` may take; at least `50` |
+| `tokenizer` | `'approx'` | how tokens are estimated: `'approx'` = ⌈characters / 4⌉, `'words'` = ⌈whitespace-separated words × 1.3⌉. Both are estimates, not a model's exact count |
+| `format` | `'markdown'` | `'markdown'`, `'triples'` or `'json'` (below) |
+| `textProperties` | `['name', 'title', 'description', 'body', 'text']` | the properties a node's block is built from, in order; the first one present names the node (a node with none is named `#id`) |
+| `maxBodyChars` | `600` | each `body`, `text`, `description` or `quote` value longer than this many characters is cut to it, at a character boundary, with `…`. `name`, `title` and other properties are never cut, so a node keeps its full name |
+| `includeProvenance` | `true` | write `valid_from`→`valid_until`, `«quote»` and `(source_id)` when an element carries them |
+| `session` | `null` | the conversation the context is for, a string; accepted and validated, `traceId` stays `null` (no trace is recorded yet) |
+
+The three formats, for a node *Thought* that carries a quote and a fact
+`IS_A` valid since 2025-01-01:
+
+```text
+markdown:
+## Entities
+- **Anna** (Person): Keeps a CBT journal
+- **I will fail** (Thought) «I will fail at this» (journal-1)
+
+## Relations
+- (I will fail) -[IS_A]-> (Catastrophizing) valid 2025-01-01→ «always the worst» (journal-1)
+
+triples:
+Anna | Person | Keeps a CBT journal
+I will fail | Thought | «I will fail at this» (journal-1)
+I will fail | IS_A | Catastrophizing | valid 2025-01-01→ | «always the worst» (journal-1)
+
+json:
+{"nodes":[{"id":1,"labels":["Person"],"props":{"description":"Keeps a CBT journal","name":"Anna"}}],"rels":[{"from":3,"id":12,"props":{"valid_from":"2025-01-01"},"to":4,"type":"IS_A"}],"stats":{"nodes":1,"rels":1}}
+```
+
+`triples` takes the fewest tokens. A `RELATED_TO` fact written by
+`drevo.memory.assertFact` is shown under its own relation name (its `type`
+property). JSON keys are sorted; a node's `props` holds its text properties and,
+with `includeProvenance`, `quote`, `source_id`, `valid_from` and `valid_until`.
+
+`drevo.rag.retrieve` returns one row per node, in rank order:
+
+| Column | Meaning |
+|---|---|
+| `node` | the node |
+| `seedScore` | its fused search score when it is a seed, else `null` |
+| `distance` | relationships from the nearest seed; `0` for a seed |
+| `pprScore` | its Personalized PageRank score with `rank: 'ppr'` (the scores of an untruncated retrieval sum to 1), else `null` |
+| `rank` | its position, from 1 |
+| `via` | as in [`drevo.graph.expand`](#graph-expansion); `null` for a seed |
+| `truncated` | whether the expansion stopped at `maxNodes` |
+
+```cypher
+CALL drevo.rag.retrieve('team meeting', {rank: 'distance', hops: 1})
+YIELD node, seedScore, distance, rank
+RETURN rank, node.title, distance, seedScore
+```
+
+`drevo.rag.context` returns one row:
+
+| Column | Meaning |
+|---|---|
+| `text` | the context; `''` when nothing matched or nothing fits |
+| `tokens` | the size of `text` under `tokenizer` — never more than `tokenBudget` |
+| `format` | the format written |
+| `nodeIds`, `relIds` | the ids of the nodes and relationships in `text`, in the order written |
+| `truncated` | `true` when a node did not fit the budget or the expansion hit `maxNodes` |
+| `mode` | the search mode that ran: `'hybrid'`, `'fts'` or `'vector'` (`'auto'` without an embedder or a `label` runs `'fts'`) |
+| `traceId` | `null` |
+
+The same graph, question and config give byte-identical `text`: ties are broken
+by node id and properties are written in a fixed order. A question that matches
+nothing gives no `retrieve` rows and a `context` row with empty `text`, `tokens`
+`0` and empty id lists. Nodes and relationships the user may not read are left
+out of every stage. A query that is not a string, a config that is not a map, an
+unknown key (`includeSeeds` included: seeds are always returned) and a value of
+the wrong type or range fail with an error naming the key; an explicit `mode:
+'hybrid'` or `'vector'` without an embedder fails as in `drevo.search.hybrid`.
+Over HTTP the same call is [`POST /rag/context`](admin-guide.md#graph-rag-context-post-ragcontext).
 
 ---
 

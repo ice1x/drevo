@@ -37,7 +37,9 @@
 //!   (BM25 + cosine scan + RRF, `candidates: 20`) next to its BM25-only mode
 //!   when the graph has nodes with an `embedding` property
 //!   (`DREVO_BASELINE_HYBRID_QUERY` sets the query text), and
-//!   `drevo.graph.expand` from 5 seeds over 2 hops with `perNodeLimit: 25`.
+//!   `drevo.graph.expand` from 5 seeds over 2 hops with `perNodeLimit: 25`,
+//!   and `drevo.rag.context` with its defaults (hybrid seeds, 2 hops, PPR,
+//!   a 2000-token markdown context) on the same query and embedder.
 //! * The **adjacency seam** underneath it — a 1-hop `neighbors`, a 2-hop
 //!   frontier expansion, and a full-graph PageRank over an
 //!   [`AdjacencyList`](drevo::algorithms::AdjacencyList) built from the live
@@ -270,6 +272,18 @@ fn main() {
                 ),
             );
         }
+
+        // --- Graph-RAG context with the defaults: hybrid seeds, 2 hops, PPR
+        // over the expanded set, a 2000-token markdown context.
+        bench_cypher(
+            &mut c,
+            &l.svc,
+            "rag_context_default",
+            &format!(
+                "CALL drevo.rag.context('{text}', {{label: '{label}'}}) \
+                 YIELD tokens RETURN tokens"
+            ),
+        );
     }
 
     // --- Graph expansion: 5 seeds x 2 hops, perNodeLimit 25 ---------------

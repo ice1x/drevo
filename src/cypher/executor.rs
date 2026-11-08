@@ -748,9 +748,41 @@ pub(crate) mod deadline {
         }
     }
 
+    /// Like [`tick`], but reads the clock on every call: for the few
+    /// checkpoints between coarse stages of one statement, where a stride of
+    /// ticks may never be reached.
+    pub(crate) fn check() -> ExecResultT<()> {
+        if WATCHING.with(|w| w.get()) && cancelled() {
+            return Err(ExecError::Terminated);
+        }
+        match DEADLINE.with(|d| d.get()) {
+            Some(deadline) if deadline.expired() => Err(deadline.error()),
+            _ => Ok(()),
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn check_reads_the_clock_on_every_call() {
+            assert!(check().is_ok(), "no deadline, nothing to check");
+            let early = with_statement_timeout(Some(Duration::from_secs(60)), check);
+            assert!(early.is_ok(), "not yet: {early:?}");
+            let err = with_statement_timeout(Some(Duration::from_millis(1)), || {
+                std::thread::sleep(Duration::from_millis(5));
+                check()
+            });
+            assert!(
+                matches!(err, Err(ExecError::Timeout { limit_ms: 1 })),
+                "{err:?}"
+            );
+            assert!(check().is_ok(), "deadline leaked out of its scope");
+            let flag = Arc::new(AtomicBool::new(true));
+            let stopped = with_cancel(Some(flag), check);
+            assert!(matches!(stopped, Err(ExecError::Terminated)), "{stopped:?}");
+        }
 
         fn spin_until_timeout() -> u64 {
             loop {
@@ -1741,7 +1773,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.indexes.secondary, drevo.indexes.setSecondary, \
                           fts.search, fts.searchRelationships, \
                           drevo.search.hybrid, drevo.search.hybridRelationships, \
-                          drevo.graph.expand"
+                          drevo.graph.expand, drevo.rag.retrieve, drevo.rag.context"
                         .into(),
                     span: c.span,
                 })?;
@@ -6433,6 +6465,31 @@ impl<'a> Executor<'a> {
         seeds: &[u64],
         options: &crate::traversal::ExpandOptions,
     ) -> ExecResultT<Vec<Vec<Value>>> {
+        let (found, mut seen) = self.expand_walk(seeds, options)?;
+        let truncated = Value::Bool(found.truncated);
+        let mut rows = Vec::with_capacity(found.nodes.len());
+        for reached in found.nodes {
+            let Some(node) = seen.remove(&reached.id) else {
+                continue;
+            };
+            rows.push(vec![
+                Value::Node(node),
+                Value::Integer(i64::try_from(reached.distance).unwrap_or(i64::MAX)),
+                reached.via.as_ref().map_or(Value::Null, via_value),
+                truncated.clone(),
+            ]);
+        }
+        Ok(rows)
+    }
+
+    /// The breadth-first walk of `drevo.graph.expand` over the statement's
+    /// view of the graph, through what the signed-in user may see: the
+    /// expansion, and each node it returned as that user sees it.
+    fn expand_walk(
+        &self,
+        seeds: &[u64],
+        options: &crate::traversal::ExpandOptions,
+    ) -> ExecResultT<(crate::traversal::Expansion, HashMap<u64, Arc<NodeValue>>)> {
         let engine = self.engine();
         let mut seen: HashMap<u64, Arc<NodeValue>> = HashMap::new();
         let found = crate::traversal::expand_bfs(
@@ -6460,32 +6517,7 @@ impl<'a> Executor<'a> {
             },
         )
         .map_err(ExecError::Storage)?;
-        let int = |n: u64| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
-        let truncated = Value::Bool(found.truncated);
-        let mut rows = Vec::with_capacity(found.nodes.len());
-        for reached in found.nodes {
-            let Some(node) = seen.remove(&reached.id) else {
-                continue;
-            };
-            let via = reached.via.map_or(Value::Null, |via| {
-                Value::Map(BTreeMap::from([
-                    ("fromId".to_string(), int(via.from_id)),
-                    ("relId".to_string(), int(via.rel_id)),
-                    ("relType".to_string(), Value::String(via.rel_type)),
-                    (
-                        "direction".to_string(),
-                        Value::String(if via.outgoing { "out" } else { "in" }.to_string()),
-                    ),
-                ]))
-            });
-            rows.push(vec![
-                Value::Node(node),
-                Value::Integer(i64::try_from(reached.distance).unwrap_or(i64::MAX)),
-                via,
-                truncated.clone(),
-            ]);
-        }
-        Ok(rows)
+        Ok((found, seen))
     }
 
     /// `CALL drevo.spatial.nearest(label, {lat, lon}[, options]) YIELD node,
@@ -10468,9 +10500,7 @@ impl<'a> Executor<'a> {
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
-        use crate::cypher::hybrid::{
-            parse_k, resolve_mode, rrf_fuse, HybridConfig, HybridMode, Leg, ModeUnavailable,
-        };
+        use crate::cypher::hybrid::{parse_k, HybridConfig};
         // Arity (4 or 5) is enforced by the upfront validation sweep.
         let refuse = |message: String| ExecError::InvalidProcedureCall {
             name: name.to_string(),
@@ -10512,14 +10542,67 @@ impl<'a> Executor<'a> {
             Some(arg) => HybridConfig::from_value(&self.eval(arg, &empty)?).map_err(refuse)?,
             None => HybridConfig::default(),
         };
+        let (hits, mode) = self.hybrid_hits(
+            name,
+            items,
+            &query,
+            target.as_deref(),
+            &property,
+            k,
+            &config,
+            span,
+        )?;
+        let rank = |r: Option<usize>| {
+            r.map_or(Value::Null, |r| {
+                Value::Integer(i64::try_from(r).unwrap_or(i64::MAX))
+            })
+        };
+        Ok(hits
+            .into_iter()
+            .map(|(item, f)| {
+                vec![
+                    item,
+                    Value::Float(f.score),
+                    rank(f.fts_rank),
+                    rank(f.vector_rank),
+                    Value::String(mode.as_str().to_string()),
+                ]
+            })
+            .collect())
+    }
 
+    /// The top-`k` fused hits of a hybrid search for `query` — each item
+    /// (a node or relationship, as stored) with its fused ranks — and the
+    /// mode that ran. `target` is the label / relationship type whose
+    /// `property` embeddings the vector leg ranks; `name` is the procedure
+    /// errors are reported for.
+    #[allow(clippy::too_many_arguments)]
+    fn hybrid_hits(
+        &self,
+        name: &str,
+        items: HybridItems,
+        query: &str,
+        target: Option<&str>,
+        property: &str,
+        k: usize,
+        config: &crate::cypher::hybrid::HybridConfig,
+        span: Span,
+    ) -> ExecResultT<(HybridHits, crate::cypher::hybrid::HybridMode)> {
+        use crate::cypher::hybrid::{resolve_mode, rrf_fuse, HybridMode, Leg, ModeUnavailable};
+        let target_arg = items.target();
         let has_embedder = self.native_embedder.is_some();
-        let unavailable = |e: ModeUnavailable| match e {
-            ModeUnavailable::NoVectorTarget => refuse(format!(
-                "mode '{}' needs a {target_arg} to rank by embedding; pass one or use mode 'fts'",
-                config.mode.as_str()
-            )),
+        let unavailable = |e: ModeUnavailable| {
+            match e {
+            ModeUnavailable::NoVectorTarget => ExecError::InvalidProcedureCall {
+                name: name.to_string(),
+                message: format!(
+                    "mode '{}' needs a {target_arg} to rank by embedding; pass one or use mode 'fts'",
+                    config.mode.as_str()
+                ),
+                span,
+            },
             ModeUnavailable::NoEmbedder => Self::engine_capability(HYBRID_EMBEDDING),
+        }
         };
         let mut mode =
             resolve_mode(config.mode, target.is_some(), has_embedder).map_err(unavailable)?;
@@ -10530,7 +10613,7 @@ impl<'a> Executor<'a> {
         // Embed first: in mode 'auto' an embedder that fails leaves BM25 alone.
         let query_vector = match mode {
             HybridMode::Hybrid | HybridMode::Vector => {
-                match self.hybrid_query_vector(name, &query, span) {
+                match self.hybrid_query_vector(name, query, span) {
                     Ok(vector) => Some(vector),
                     Err(e) if config.mode == HybridMode::Auto => {
                         log_hybrid_embedder_failure(&e);
@@ -10550,20 +10633,20 @@ impl<'a> Executor<'a> {
         } else {
             self.hybrid_fts_leg(
                 items,
-                &query,
+                query,
                 depth,
                 config.fts_filter.as_deref(),
                 &mut found,
             )?
         };
-        let vector_ids = match (&target, &query_vector) {
+        let vector_ids = match (target, &query_vector) {
             (Some(target), Some(vector)) => {
                 let rows = match items {
                     HybridItems::Nodes => {
-                        self.vector_scan(target, &property, vector, depth, span)?
+                        self.vector_scan(target, property, vector, depth, span)?
                     }
                     HybridItems::Relationships => {
-                        self.rel_vector_scan(target, &property, vector, depth, span)?
+                        self.rel_vector_scan(target, property, vector, depth, span)?
                     }
                 };
                 let mut ids = Vec::with_capacity(rows.len());
@@ -10589,25 +10672,12 @@ impl<'a> Executor<'a> {
             config.rrf_k,
             config.weights,
         );
-        let rank = |r: Option<usize>| {
-            r.map_or(Value::Null, |r| {
-                Value::Integer(i64::try_from(r).unwrap_or(i64::MAX))
-            })
-        };
-        Ok(fused
+        let hits = fused
             .into_iter()
-            .filter_map(|f| {
-                let item = found.remove(&f.id)?;
-                Some(vec![
-                    item,
-                    Value::Float(f.score),
-                    rank(f.fts_rank),
-                    rank(f.vector_rank),
-                    Value::String(mode.as_str().to_string()),
-                ])
-            })
+            .filter_map(|f| Some((found.remove(&f.id)?, f)))
             .take(k)
-            .collect())
+            .collect();
+        Ok((hits, mode))
     }
 
     /// The BM25 leg of a hybrid search: the ids of the best `depth` matches
@@ -10677,6 +10747,238 @@ impl<'a> Executor<'a> {
         Err(Self::engine_capability(HYBRID_EMBEDDING))
     }
 
+    /// `CALL drevo.rag.retrieve(query[, config]) YIELD node, seedScore,
+    /// distance, pprScore, rank, via, truncated` — the nodes that answer
+    /// `query`, best first: the seeds of a hybrid search, then the nodes
+    /// within `hops` of them in the config's `rank` order ([`crate::rag`]).
+    /// `seedScore` is set on seeds, `pprScore` when ranked by `'ppr'`,
+    /// `rank` counts from 1. No seeds give no rows.
+    fn proc_rag_retrieve(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        let (query, config) = self.rag_args(RAG_RETRIEVE, args, span)?;
+        let (subgraph, _) = self.rag_subgraph(RAG_RETRIEVE, &query, &config, span)?;
+        let int = |n: usize| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+        let truncated = Value::Bool(subgraph.truncated);
+        Ok(subgraph
+            .nodes
+            .into_iter()
+            .enumerate()
+            .map(|(i, n)| {
+                vec![
+                    Value::Node(n.node),
+                    n.seed_score.map_or(Value::Null, Value::Float),
+                    int(n.distance),
+                    n.ppr_score.map_or(Value::Null, Value::Float),
+                    int(i + 1),
+                    n.via.as_ref().map_or(Value::Null, via_value),
+                    truncated.clone(),
+                ]
+            })
+            .collect())
+    }
+
+    /// `CALL drevo.rag.context(query[, config]) YIELD text, tokens, format,
+    /// nodeIds, relIds, truncated, mode, traceId` — the nodes of
+    /// `drevo.rag.retrieve` and the relationships between them written as
+    /// one text within the config's `tokenBudget`
+    /// ([`crate::rag::serialize::render`]). Always one row: no seeds give an
+    /// empty text. `truncated` is set when the expansion hit its node cap or
+    /// a node did not fit the budget; `mode` is the search mode that ran;
+    /// `traceId` is `null` (no trace is recorded).
+    fn proc_rag_context(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        let (query, config) = self.rag_args(RAG_CONTEXT, args, span)?;
+        let (subgraph, mode) = self.rag_subgraph(RAG_CONTEXT, &query, &config, span)?;
+        let rendered = crate::rag::serialize::render(&subgraph, &config.render);
+        deadline::check()?;
+        let int = |n: u64| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+        let ids = |ids: Vec<u64>| Value::List(ids.into_iter().map(int).collect());
+        Ok(vec![vec![
+            Value::String(rendered.text),
+            Value::Integer(i64::try_from(rendered.tokens).unwrap_or(i64::MAX)),
+            Value::String(config.render.format.as_str().to_string()),
+            ids(rendered.node_ids),
+            ids(rendered.rel_ids),
+            Value::Bool(subgraph.truncated || rendered.skipped > 0),
+            Value::String(mode.as_str().to_string()),
+            Value::Null,
+        ]])
+    }
+
+    /// The `query` and parsed config of a `drevo.rag.*` call.
+    fn rag_args(
+        &self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<(String, crate::rag::config::RagConfig)> {
+        // Arity (1 or 2) is enforced by the upfront validation sweep.
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: name.to_string(),
+            message,
+            span,
+        };
+        let empty = Bindings::new();
+        let query = match self.eval(&args[0], &empty)? {
+            Value::String(q) => q,
+            other => {
+                return Err(refuse(format!(
+                    "query must be a string, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let config = match args.get(1) {
+            Some(arg) => self.eval(arg, &empty)?,
+            None => Value::Null,
+        };
+        let config =
+            crate::rag::config::RagConfig::from_value(&config, crate::cypher::expand::ceilings())
+                .map_err(refuse)?;
+        Ok((query, config))
+    }
+
+    /// The graph-RAG pipeline over the statement's view of the graph, as the
+    /// signed-in user may see it: hybrid-search seeds, the expansion from
+    /// them, the relationships between the nodes found, and their ranking.
+    /// Returns the ranked subgraph and the search mode that ran. The
+    /// statement's deadline is checked between stages.
+    fn rag_subgraph(
+        &self,
+        name: &str,
+        query: &str,
+        config: &crate::rag::config::RagConfig,
+        span: Span,
+    ) -> ExecResultT<(crate::rag::Subgraph, crate::cypher::hybrid::HybridMode)> {
+        use crate::rag::{order, personalized_scores, source_admits, RankedNode, Subgraph};
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: name.to_string(),
+            message,
+            span,
+        };
+        let sources = config.sources.as_deref();
+
+        // 1. Seeds: the hybrid search, less what the caller may not see, the
+        //    excluded labels and other sources.
+        let (hits, mode) = self.hybrid_hits(
+            name,
+            HybridItems::Nodes,
+            query,
+            config.label.as_deref(),
+            &config.embedding_property,
+            config.k,
+            &config.hybrid,
+            span,
+        )?;
+        deadline::check()?;
+        let mut seed_scores: HashMap<u64, f64> = HashMap::new();
+        let mut seeds: Vec<u64> = Vec::new();
+        for (item, fused) in hits {
+            let Value::Node(stored) = item else {
+                continue;
+            };
+            let Some(node) = self.visible_node(stored) else {
+                continue;
+            };
+            let excluded = node
+                .labels
+                .iter()
+                .any(|l| config.expand.exclude_labels.contains(l));
+            if excluded || !source_admits(&node.properties, sources) {
+                continue;
+            }
+            seed_scores.insert(node.id, fused.score);
+            seeds.push(node.id);
+        }
+        if seeds.is_empty() {
+            return Ok((Subgraph::default(), mode));
+        }
+
+        // 2. Expand.
+        let (found, mut seen) = self
+            .expand_walk(&seeds, &config.expand)
+            .map_err(|e| match e {
+                ExecError::Storage(DrevoError::InvalidArgument(message)) => refuse(message),
+                other => other,
+            })?;
+        deadline::check()?;
+        let mut nodes = Vec::with_capacity(found.nodes.len());
+        for reached in found.nodes {
+            let Some(node) = seen.remove(&reached.id) else {
+                continue;
+            };
+            if !source_admits(&node.properties, sources) {
+                continue;
+            }
+            nodes.push(RankedNode {
+                seed_score: seed_scores.get(&reached.id).copied(),
+                node,
+                distance: reached.distance,
+                ppr_score: None,
+                via: reached.via,
+            });
+        }
+
+        // 3. The relationships between the nodes found.
+        let ids: HashSet<u64> = nodes.iter().map(|n| n.node.id).collect();
+        let mut sorted_ids: Vec<u64> = ids.iter().copied().collect();
+        sorted_ids.sort_unstable();
+        let mut edges: Vec<Edge> = Vec::new();
+        for &id in &sorted_ids {
+            self.engine()
+                .for_each_edge_of(id, crate::model::Direction::Outgoing, &mut |edge| {
+                    if ids.contains(&edge.to_id)
+                        && crate::traversal::expand_walks(edge, &config.expand)
+                        && self.edge_traversable(edge)
+                    {
+                        edges.push(edge.clone());
+                    }
+                })?;
+        }
+        edges.sort_unstable_by_key(|e| e.id);
+        edges.dedup_by_key(|e| e.id);
+        let mut rels = Vec::with_capacity(edges.len());
+        let mut weighted = Vec::with_capacity(edges.len());
+        for edge in &edges {
+            let rel = self.redact_relationship(edge_to_value(edge));
+            if source_admits(&rel.properties, sources) {
+                weighted.push((edge.from_id, edge.to_id, edge.weight));
+                rels.push(rel);
+            }
+        }
+        deadline::check()?;
+
+        // 4. Rank.
+        if config.rank == crate::rag::config::RankMode::Ppr {
+            let options = crate::cypher::pagerank_config::PageRankOptions {
+                direction: config.expand.direction,
+                ..crate::cypher::pagerank_config::PageRankOptions::defaults(
+                    crate::cypher::pagerank_config::PageRankProcedure::Personalized,
+                )
+            };
+            let node_ids: Vec<u64> = nodes.iter().map(|n| n.node.id).collect();
+            let seeds: Vec<(u64, f64)> = nodes
+                .iter()
+                .filter_map(|n| Some((n.node.id, n.seed_score?)))
+                .collect();
+            if !seeds.is_empty() {
+                let scores =
+                    personalized_scores(&node_ids, &weighted, &seeds, &options).map_err(refuse)?;
+                for n in &mut nodes {
+                    n.ppr_score = Some(scores.get(&n.node.id).copied().unwrap_or(0.0));
+                }
+            }
+        }
+        let nodes = order(nodes, config.rank);
+        deadline::check()?;
+        Ok((
+            Subgraph {
+                nodes,
+                rels,
+                truncated: found.truncated,
+            },
+            mode,
+        ))
+    }
+
     /// Run a built-in procedure and return its output rows, each a
     /// positional vector aligned with [`procedure_columns`].
     fn invoke_procedure(
@@ -10734,6 +11036,8 @@ impl<'a> Executor<'a> {
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
+            RAG_RETRIEVE => self.proc_rag_retrieve(args, span),
+            RAG_CONTEXT => self.proc_rag_context(args, span),
             HYBRID => self.proc_search_hybrid(HYBRID, HybridItems::Nodes, args, span),
             HYBRID_RELS => {
                 self.proc_search_hybrid(HYBRID_RELS, HybridItems::Relationships, args, span)
@@ -12563,6 +12867,29 @@ const HYBRID: &str = "drevo.search.hybrid";
 /// The `drevo.graph.expand` procedure: the nodes within k hops of seed nodes.
 const EXPAND: &str = "drevo.graph.expand";
 
+/// The `via` column of `drevo.graph.expand` / `drevo.rag.retrieve`: the
+/// relationship that first reached a node, as a map.
+fn via_value(via: &crate::traversal::ExpandVia) -> Value {
+    let int = |n: u64| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+    Value::Map(BTreeMap::from([
+        ("fromId".to_string(), int(via.from_id)),
+        ("relId".to_string(), int(via.rel_id)),
+        ("relType".to_string(), Value::String(via.rel_type.clone())),
+        (
+            "direction".to_string(),
+            Value::String(if via.outgoing { "out" } else { "in" }.to_string()),
+        ),
+    ]))
+}
+
+/// The `drevo.rag.retrieve` procedure: the ranked nodes that answer a
+/// question.
+const RAG_RETRIEVE: &str = "drevo.rag.retrieve";
+
+/// The `drevo.rag.context` procedure: those nodes as LLM-ready text within
+/// a token budget.
+const RAG_CONTEXT: &str = "drevo.rag.context";
+
 /// The `drevo.search.hybridRelationships` procedure: the relationship twin of
 /// [`HYBRID`].
 const HYBRID_RELS: &str = "drevo.search.hybridRelationships";
@@ -12597,6 +12924,9 @@ fn log_hybrid_embedder_failure(error: &ExecError) {
     #[cfg(not(feature = "http"))]
     let _ = error;
 }
+
+/// The fused hits of a hybrid search: each item with its fused ranks.
+type HybridHits = Vec<(Value, crate::cypher::hybrid::Fused<u64>)>;
 
 /// What a hybrid search ranks: nodes of a label or relationships of a type.
 #[derive(Clone, Copy)]
@@ -13391,6 +13721,26 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         HYBRID_RELS => Some(&["rel", "score", "ftsRank", "vectorRank", "mode"]),
         // Seed → k-hop expansion.
         EXPAND => Some(&["node", "distance", "via", "truncated"]),
+        // Graph-RAG retrieval: ranked rows, or the context text.
+        RAG_RETRIEVE => Some(&[
+            "node",
+            "seedScore",
+            "distance",
+            "pprScore",
+            "rank",
+            "via",
+            "truncated",
+        ]),
+        RAG_CONTEXT => Some(&[
+            "text",
+            "tokens",
+            "format",
+            "nodeIds",
+            "relIds",
+            "truncated",
+            "mode",
+            "traceId",
+        ]),
         // Neo4j-compatible index procedures (issue #532): same (node, score)
         // contract as their drevo-native counterparts.
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
@@ -13501,7 +13851,9 @@ fn procedure_optional_args(name: &str) -> usize {
         | PERSONALIZED_PAGERANK
         | EXPAND
         | "drevo.memory.rememberEntity"
-        | "drevo.memory.assertFact" => 1,
+        | "drevo.memory.assertFact"
+        | RAG_RETRIEVE
+        | RAG_CONTEXT => 1,
         _ => 0,
     }
 }
@@ -13623,6 +13975,8 @@ fn procedure_arity(name: &str) -> usize {
         HYBRID | HYBRID_RELS => 5,
         // drevo.graph.expand(seeds[, config]).
         EXPAND => 2,
+        // drevo.rag.retrieve(query[, config]) / drevo.rag.context(query[, config]).
+        RAG_RETRIEVE | RAG_CONTEXT => 2,
         // db.index.vector.queryNodes(indexName, k, queryVector) (issue #532).
         "db.index.vector.queryNodes" => 3,
         // db.index.fulltext.queryNodes(indexName, queryString) (issue #532).

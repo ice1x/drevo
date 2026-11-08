@@ -214,7 +214,63 @@ Louvain community detection clusters related issues — see
 
 ---
 
-## 6. Where to go next
+## 6. Graph-RAG inside drevo
+
+An assistant that answers from your graph needs, for each question, the few facts that matter —
+small enough to fit the prompt, ordered so the most relevant come first. drevo builds that context
+itself, in one call:
+
+1. **The question comes in.** "Why did Mila panic before the meeting?"
+2. **drevo builds the context.** `drevo.rag.context` searches for the nodes the question is about
+   (by words and, with an embedder, by meaning), walks out from them to the facts around them,
+   ranks what it found by how closely it connects to those first hits, and writes the best of it as
+   text within your token budget.
+
+   ```text
+   CALL drevo.rag.context('Why did Mila panic before the meeting?',
+                          {label: 'Entry', format: 'markdown', tokenBudget: 1500})
+   YIELD text, tokens, truncated
+   ```
+
+   ```text
+   ## Entities
+   - **Monday shift** (Entry): Panic before the team meeting, heart racing.
+   - **Mila** (Person): Keeps a mood journal
+   - **Everyone will see I am incompetent** (Thought)
+   - **Mind reading** (Distortion): Assuming what others think
+
+   ## Relations
+   - (Mila) -[WROTE]-> (Monday shift)
+   - (Monday shift) -[CONTAINS]-> (Everyone will see I am incompetent)
+   - (Everyone will see I am incompetent) -[IS_A]-> (Mind reading)
+   ```
+
+3. **Your code writes the prompt.** Put `text` under a heading such as "What the journal says" and
+   the question after it.
+4. **The model answers** from that context. drevo never calls the chat model here; it only hands
+   over the context.
+
+The same call is `POST /rag/context` for clients without Cypher — see the
+[Admin Guide](admin-guide.md#graph-rag-context-post-ragcontext). `drevo.rag.retrieve` returns the
+same nodes as rows with their scores, for when you format the context yourself.
+
+A few knobs change the most:
+
+- **`format`** — `'markdown'` reads well, `'triples'` (`A | REL | B` lines) is the cheapest in
+  tokens, `'json'` is for programs.
+- **`tokenBudget`** — the context never exceeds it; nodes that do not fit are skipped whole and
+  `truncated` says so.
+- **`hops`** and **`rank`** — how far from the first hits to look (default 2) and how to order what
+  is found (`'ppr'`, the default, favours what is closely connected to the best hits).
+- **`asOf`** — facts written by `drevo.memory.assertFact` are shown as they stood at that time.
+
+Every option is in the [Cypher Reference](cypher-reference.md#graph-rag-retrieval). Recording
+which context answered which question, and replaying it (`drevo.rag.explain`), comes with context
+traces in a later release.
+
+---
+
+## 7. Where to go next
 
 - Exact query syntax → [Cypher Reference](cypher-reference.md)
 - Calling drevo from code → [SDK Reference](sdk-reference.md)
