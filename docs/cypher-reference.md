@@ -1802,10 +1802,12 @@ RETURN rel.type, rel.valid_from, rel.valid_until
 ```
 
 `CALL drevo.memory.factsAt(name, asOf) YIELD subject, relation, object,
-valid_from, valid_until` answers "what did memory hold about this entity at
+valid_from, valid_until, source, quote` answers "what did memory hold about this entity at
 that time?": every fact touching the entity, either direction, with
 `valid_from <= asOf` and `valid_until` unset or later. `asOf` is an ISO-8601
-UTC timestamp in the form `datetime()` returns, or `null` for now.
+UTC timestamp in the form `datetime()` returns, or `null` for now. `source`
+and `quote` are the fact's citation (see Provenance below), `null` when it has
+none.
 
 ```cypher
 CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null) YIELD node
@@ -1817,6 +1819,82 @@ RETURN subject.name, relation, object.name, valid_from, valid_until
 Unlike the reference library, where `valid_until` is written but never set,
 drevo closes superseded facts and filters on the window, so "as of" questions
 get real answers.
+
+#### Provenance: sources, chunks and quotes
+
+Long-term memory can record where it read something, so an answer can show
+the passage behind a fact. A `:Source {id, uri, title, kind, created_at}` is a
+document, URL, message or file; its passages are
+`:Chunk {id, source_id, order, offset, length, text, body, created_at}` nodes,
+each `-[:FROM]->` its source and chained `-[:NEXT]->` in reading order. `body`
+repeats `text`, so `fts.search` finds chunks, and
+`CALL drevo.semantic.register('Chunk', 'text', 'embedding', 'auto')` makes
+them searchable by meaning.
+
+`CALL drevo.memory.addSource(id, uri, title, kind) YIELD node` upserts a
+source keyed on `id` (a `null` field keeps the stored value).
+`CALL drevo.memory.addChunks(sourceId, chunks) YIELD node` upserts its chunks:
+each entry is `{id, order, offset, length, text}`, where `order` and `text` are
+required, `offset` / `length` place the passage in the source (in characters),
+and a missing `id` becomes `<sourceId>#<order>`. Gaps in `order` are allowed,
+the `NEXT` chain is rebuilt when a chunk lands between two others, and adding
+the same chunks again changes nothing. The chunks are yielded in reading
+order; an unknown source, or a chunk id that belongs to another source, is an
+error.
+
+```cypher
+CALL drevo.memory.addSource('book-1', 'file:///books/one.md', 'Book One', 'document')
+YIELD node AS source
+CALL drevo.memory.addChunks('book-1', [
+  {order: 0, offset: 0, text: 'Dana opened the manuscript at dawn.'},
+  {order: 1, offset: 36, text: 'By noon Dana had joined Acme as an editor.'}
+]) YIELD node
+RETURN node.id, node.order, node.text
+```
+
+`rememberEntity` and `assertFact` take an optional fifth argument, a
+`provenance` map `{source, chunk, quote, offset, length, surface}`. `source`
+and `chunk` are either an id, which must exist, or a map that is upserted by
+its `id` (`{id, uri, title, kind}` and `{id, order, offset, length, text}`; a
+chunk map needs a source). A chunk named by id brings its own source. When
+the chunk's text is known, `quote` (and a given `surface`) must occur in it,
+which is what makes the citation trustworthy; `offset` and `length` default
+to where it occurs, in characters, so `substring(chunk.text, offset, length)`
+is the quote. When an `offset` is given with a quote (or a given `surface`),
+the text at that character offset must be exactly the quote (`length`, when
+given, must be its length); a mismatch is an error naming the chunk and the
+offset. A fact then carries `source_id, chunk_id, quote, offset,
+length`; an entity gets `-[:MENTIONED_IN {offset, length, surface}]->` the
+chunk, once per place (`surface` defaults to the quote, then the entity's
+name). Re-asserting a fact that holds without a citation adds this one.
+
+```cypher
+CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null,
+  {source: {id: 'book-1', title: 'Book One'},
+   chunk: {id: 'book-1#1', order: 1, text: 'By noon Dana had joined Acme as an editor.'}})
+YIELD node AS dana
+CALL drevo.memory.rememberEntity(null, 'Acme', 'ORGANIZATION', null) YIELD node AS acme
+CALL drevo.memory.assertFact('Dana', 'WORKS_AT', 'Acme', false,
+  {chunk: 'book-1#1', quote: 'joined Acme'})
+YIELD rel
+RETURN rel.source_id, rel.chunk_id, rel.quote, rel.offset, rel.length
+```
+
+`CALL drevo.memory.evidence(name, k) YIELD chunk, quote, offset, source, fact`
+lists the passages behind an entity: chunks that back one of its facts (either
+direction; `fact` is the relationship, `quote` / `offset` its citation) and
+chunks that only mention it (`fact` is `null`, `quote` the surface at its
+first place). Each chunk appears once per fact and a chunk backing a fact is
+not repeated as a mention. Newest chunks come first; at most `k` rows.
+
+```cypher
+CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null,
+  {source: {id: 'book-1', title: 'Book One'},
+   chunk: {id: 'book-1#0', order: 0, text: 'Dana opened the manuscript at dawn.'}})
+YIELD node
+CALL drevo.memory.evidence('Dana', 5) YIELD chunk, quote, source, fact
+RETURN chunk.id, quote, source.title, fact
+```
 
 ### Named events
 

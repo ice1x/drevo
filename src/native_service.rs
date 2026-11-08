@@ -3673,6 +3673,8 @@ fn query_calls_writing_procedure(query: &Query) -> bool {
                     | "drevo.memory.rememberEntity"
                     | "drevo.memory.assertFact"
                     | "drevo.memory.retractFact"
+                    | "drevo.memory.addSource"
+                    | "drevo.memory.addChunks"
             ))
         })
     })
@@ -4140,5 +4142,38 @@ mod node_text_tests {
         };
         assert_eq!(node_text(&props(&[]), fields, "title"), None);
         assert_eq!(node_text(&props(&[]), fields, "body"), None);
+    }
+}
+
+#[cfg(test)]
+mod writing_procedure_tests {
+    use super::query_calls_writing_procedure;
+    use crate::cypher::parser::parse;
+
+    fn writes(q: &str) -> bool {
+        query_calls_writing_procedure(&parse(q).expect("parse"))
+    }
+
+    #[test]
+    fn memory_writers_are_writing_procedures() {
+        for q in [
+            "CALL drevo.memory.addMessage('s', 'user', 'hi')",
+            "CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null, {chunk: 'c'})",
+            "CALL drevo.memory.assertFact('a', 'R', 'b', false, {chunk: 'c'})",
+            "CALL drevo.memory.addSource('book-1', null, 'Book One', 'document')",
+            "CALL drevo.memory.addChunks('book-1', [{order: 0, text: 'x'}]) YIELD node RETURN node",
+        ] {
+            assert!(writes(q), "{q}");
+        }
+    }
+
+    #[test]
+    fn memory_readers_are_not() {
+        for q in [
+            "CALL drevo.memory.evidence('Dana', 5)",
+            "CALL drevo.memory.factsAt('Dana', null)",
+        ] {
+            assert!(!writes(q), "{q}");
+        }
     }
 }

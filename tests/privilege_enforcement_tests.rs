@@ -247,6 +247,17 @@ async fn writing_procedures_need_write() {
     .await;
 }
 
+#[tokio::test]
+async fn provenance_procedures_need_write() {
+    let t = Tracker::seeded().await;
+    let add_source = "CALL drevo.memory.addSource('book-1', null, 'Book One', 'document')";
+    let add_chunks = "CALL drevo.memory.addChunks('book-1', [{order: 0, text: 'Chapter one.'}])";
+    t.forbidden("rita", add_source).await;
+    t.ok("ed", add_source).await;
+    t.forbidden("rita", add_chunks).await;
+    t.ok("ed", add_chunks).await;
+}
+
 // ── Database access ──────────────────────────────────────────────────
 
 #[tokio::test]
