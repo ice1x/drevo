@@ -22,6 +22,21 @@ history and the in-repo issue tracker; format loosely follows
   Option<Personalization>` (so it is no longer `Copy`), honoured by
   `pagerank` and `pagerank_parallel`, and `algorithms::oriented_edges`
   reverses or doubles edges for a direction.
+
+- **Seed → k-hop expansion in one call: `drevo.graph.expand(seeds[, config])
+  YIELD node, distance, via, truncated`** (issue #782). A breadth-first walk
+  inside the database from a node, a node id or a list of both, returning
+  each node reached once at its shortest distance with the relationship that
+  first reached it (`via: {fromId, relId, relType, direction}`), in a fixed
+  order (seeds, then distance and node id). Config: `hops` (1), `direction`,
+  `relTypes`, `labels`, `excludeLabels`, `perNodeLimit` (25, lowest
+  relationship ids first), `maxNodes` (200; `truncated` is then `true` on
+  every row), `asOf` (walks `valid_from` / `valid_until` facts valid at that
+  time) and `includeSeeds`. Nodes and relationships the user may not
+  traverse are neither returned nor walked through. The server caps a call
+  with `DREVO_EXPAND_MAX_HOPS` (default 6) and `DREVO_EXPAND_MAX_NODES`
+  (default 5000). Replaces the client-side walk that took one `neighbors`
+  round-trip per node.
 - **Hybrid search in one call: `drevo.search.hybrid(query, label,
   embeddingProperty, k[, config]) YIELD node, score, ftsRank, vectorRank,
   mode`** (issue #780), and `drevo.search.hybridRelationships` for
