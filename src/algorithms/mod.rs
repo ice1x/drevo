@@ -54,7 +54,7 @@ mod wcc;
 pub use betweenness::{betweenness, BetweennessResult};
 pub use closeness::{closeness, ClosenessResult};
 pub use louvain::{louvain, LouvainConfig, LouvainResult};
-pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult};
+pub use pagerank::{pagerank, pagerank_parallel, PageRankConfig, PageRankResult, Personalization};
 pub use ricci::{ricci_curvature, RicciConfig, RicciEdge, RicciResult};
 pub use scc::{scc, SccResult};
 pub use stable_matching::{stable_matching, Preferences};
@@ -176,6 +176,56 @@ pub enum AlgorithmError {
     /// not finite.
     #[error("alpha must be a finite number in the closed interval [0, 1], got {0}")]
     InvalidAlpha(f64),
+
+    /// A Personalized PageRank teleport set named no node.
+    #[error("the personalization must name at least one node")]
+    EmptyPersonalization,
+
+    /// A Personalized PageRank teleport set had a different number of nodes
+    /// and weights.
+    #[error("the personalization has {nodes} nodes but {weights} weights")]
+    PersonalizationLengthMismatch {
+        /// How many source nodes were given.
+        nodes: usize,
+        /// How many weights were given.
+        weights: usize,
+    },
+
+    /// A personalization weight was negative or not finite.
+    #[error("personalization weights must be finite and non-negative, got {0}")]
+    InvalidPersonalizationWeight(f64),
+
+    /// Every personalization weight was zero.
+    #[error("personalization weights must not all be zero")]
+    ZeroPersonalization,
+}
+
+/// The `(from, to, weight)` edges an algorithm walks in `direction`:
+/// `Outgoing` keeps each edge, `Incoming` reverses it, and `Both` keeps it and
+/// adds its reverse (the symmetric adjacency). Feed the result to
+/// [`AdjacencyList::from_parts`].
+///
+/// ```
+/// use drevo::algorithms::oriented_edges;
+/// use drevo::model::Direction;
+///
+/// let edges = vec![(1, 2, 1.0_f32)];
+/// assert_eq!(oriented_edges(edges.clone(), Direction::Incoming), vec![(2, 1, 1.0)]);
+/// assert_eq!(oriented_edges(edges, Direction::Both), vec![(1, 2, 1.0), (2, 1, 1.0)]);
+/// ```
+pub fn oriented_edges<I>(edges: I, direction: crate::model::Direction) -> Vec<(u64, u64, f32)>
+where
+    I: IntoIterator<Item = (u64, u64, f32)>,
+{
+    use crate::model::Direction;
+    let edges = edges.into_iter();
+    match direction {
+        Direction::Outgoing => edges.collect(),
+        Direction::Incoming => edges.map(|(from, to, w)| (to, from, w)).collect(),
+        Direction::Both => edges
+            .flat_map(|(from, to, w)| [(from, to, w), (to, from, w)])
+            .collect(),
+    }
 }
 
 /// An in-memory, directed, weighted adjacency snapshot over a set of node IDs.
@@ -382,5 +432,20 @@ mod tests {
         assert_eq!(loops[i1], 2.5);
         assert_eq!(loops[i2], 0.0);
         assert_eq!(adj[i1], vec![(i2, 1.0)]);
+    }
+
+    #[test]
+    fn oriented_edges_keeps_reverses_or_doubles_each_edge() {
+        use crate::model::Direction;
+        let edges = vec![(1, 2, 1.0f32), (2, 3, 0.5)];
+        assert_eq!(oriented_edges(edges.clone(), Direction::Outgoing), edges);
+        assert_eq!(
+            oriented_edges(edges.clone(), Direction::Incoming),
+            vec![(2, 1, 1.0), (3, 2, 0.5)]
+        );
+        assert_eq!(
+            oriented_edges(edges, Direction::Both),
+            vec![(1, 2, 1.0), (2, 1, 1.0), (2, 3, 0.5), (3, 2, 0.5)]
+        );
     }
 }

@@ -28,6 +28,8 @@ pub mod hybrid;
 /// Lexical analyser — turns a Cypher source string into a stream of
 /// [`lexer::Token`]s for the parser.
 pub mod lexer;
+/// The config map of `drevo.pagerank` and `drevo.pagerank.personalized`.
+pub mod pagerank_config;
 /// Recursive-descent + Pratt parser that turns a `Cypher` source string
 /// into an [`ast::Query`].
 pub mod parser;

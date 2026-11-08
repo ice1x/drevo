@@ -6158,6 +6158,9 @@ impl<'a> Executor<'a> {
         if name == NEAREST {
             return self.run_nearest(c, columns);
         }
+        if name == PERSONALIZED_PAGERANK {
+            return self.run_personalized_pagerank(c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -8781,26 +8784,103 @@ impl<'a> Executor<'a> {
         ]])
     }
 
-    /// `CALL drevo.pagerank() YIELD node, score` (RFC #307 Phase 8) — PageRank
-    /// centrality over the whole graph, computed in parallel over an adjacency
-    /// snapshot and returned most-central-first as `(node, score)` rows. Uses
-    /// the default damping/iteration/tolerance config; edge weights are read
-    /// from `Edge::weight`.
-    fn proc_pagerank(&self) -> ExecResultT<Vec<Vec<Value>>> {
+    /// `CALL drevo.pagerank([config]) YIELD node, score` (RFC #307 Phase 8) —
+    /// PageRank centrality over the whole graph, returned most-central-first
+    /// (ties by node id) as `(node, score)` rows; edge weights are read from
+    /// `Edge::weight`. The optional config map (#781) is described at
+    /// [`PageRankOptions`](crate::cypher::pagerank_config::PageRankOptions);
+    /// without one the defaults of `PageRankConfig::default()` apply. The
+    /// config is evaluated once, before any row, like `drevo.search.hybrid`'s.
+    fn proc_pagerank(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        use crate::cypher::pagerank_config::{PageRankOptions, PageRankProcedure};
+        let options = match args.first() {
+            Some(arg) => PageRankOptions::from_value(
+                &self.eval(arg, &Bindings::new())?,
+                PageRankProcedure::Global,
+            )
+            .map_err(|message| ExecError::InvalidProcedureCall {
+                name: "drevo.pagerank".to_string(),
+                message,
+                span,
+            })?,
+            None => PageRankOptions::defaults(PageRankProcedure::Global),
+        };
+        let graph = self.pagerank_graph(&options)?;
+        // Serial: the naive parallel version is measured slower (see
+        // `algorithms::pagerank_native` / benches/pagerank_bench.rs).
+        let result = crate::algorithms::pagerank(&graph, &options.algorithm_config(None));
+        self.pagerank_rows(options.select(result.ranked()))
+    }
+
+    /// `CALL drevo.pagerank.personalized(sourceNodes[, config]) YIELD node,
+    /// score` (#781) — Personalized PageRank: the walk teleports back to
+    /// `sourceNodes` (a node, a node id, or a list mixing both) instead of to
+    /// a random node, so scores measure closeness to the sources. Nodes the
+    /// sources cannot reach score exactly `0` and get no row. Rows come
+    /// best-first, ties by node id;
+    /// once per input row, so the sources may come from the row
+    /// (`WITH collect(n) AS seeds CALL drevo.pagerank.personalized(seeds)`).
+    fn run_personalized_pagerank(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
+        use crate::cypher::pagerank_config::{source_ids, PageRankOptions, PageRankProcedure};
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: PERSONALIZED_PAGERANK.to_string(),
+            message,
+            span: c.span,
+        };
+        self.run_per_row(c, columns, &mut |exec, row| {
+            let sources = source_ids(&exec.eval(&c.args[0], row)?).map_err(refuse)?;
+            let options = match c.args.get(1) {
+                Some(arg) => PageRankOptions::from_value(
+                    &exec.eval(arg, row)?,
+                    PageRankProcedure::Personalized,
+                )
+                .map_err(refuse)?,
+                None => PageRankOptions::defaults(PageRankProcedure::Personalized),
+            };
+            for &id in &sources {
+                if exec.engine().get_node(id)?.is_none() {
+                    return Err(refuse(format!("sourceNodes: {id} is not a node id")));
+                }
+            }
+            let personalization = options.personalization(sources).map_err(refuse)?;
+            let graph = exec.pagerank_graph(&options)?;
+            let result = crate::algorithms::pagerank(
+                &graph,
+                &options.algorithm_config(Some(personalization)),
+            );
+            // Unreachable nodes (score exactly 0) are not ranked.
+            let reached = result
+                .ranked()
+                .into_iter()
+                .filter(|&(_, s)| s > 0.0)
+                .collect();
+            exec.pagerank_rows(options.select(reached))
+        })
+    }
+
+    /// The adjacency snapshot a PageRank call walks: every node, and the
+    /// edges of `options.rel_types` (every type when empty) oriented by
+    /// `options.direction`.
+    fn pagerank_graph(
+        &self,
+        options: &crate::cypher::pagerank_config::PageRankOptions,
+    ) -> ExecResultT<crate::algorithms::AdjacencyList> {
         let node_ids: Vec<u64> = self.engine().all_nodes()?.iter().map(|n| n.id).collect();
-        let edges: Vec<(u64, u64, f32)> = self
+        let edges = self
             .engine()
             .all_edges()?
             .into_iter()
-            .map(|e| (e.from_id, e.to_id, e.weight))
-            .collect();
-        let graph = crate::algorithms::AdjacencyList::from_parts(node_ids, edges);
-        // Serial: the naive parallel version is measured slower (see
-        // `algorithms::pagerank_native` / benches/pagerank_bench.rs).
-        let result =
-            crate::algorithms::pagerank(&graph, &crate::algorithms::PageRankConfig::default());
+            .filter(|e| options.rel_types.is_empty() || options.rel_types.contains(&e.kind))
+            .map(|e| (e.from_id, e.to_id, e.weight));
+        let edges = crate::algorithms::oriented_edges(edges, options.direction);
+        Ok(crate::algorithms::AdjacencyList::from_parts(
+            node_ids, edges,
+        ))
+    }
 
-        let ranked = result.ranked();
+    /// `(node, score)` rows for ranked node ids, skipping ids whose node is
+    /// gone.
+    fn pagerank_rows(&self, ranked: Vec<(u64, f64)>) -> ExecResultT<Vec<Vec<Value>>> {
         let mut rows = Vec::with_capacity(ranked.len());
         for (id, score) in ranked {
             if let Some(node) = self.engine().get_node(id)? {
@@ -9774,7 +9854,7 @@ impl<'a> Executor<'a> {
                 span,
             }),
             "drevo.info" => Self::proc_drevo_info(),
-            "drevo.pagerank" => self.proc_pagerank(),
+            "drevo.pagerank" => self.proc_pagerank(args, span),
             "drevo.louvain" => self.proc_louvain(),
             "drevo.wcc" => self.proc_wcc(),
             "drevo.scc" => self.proc_scc(),
@@ -11567,6 +11647,10 @@ const REACHABLE: &str = "drevo.path.reachable";
 /// The `drevo.spatial.nearest` procedure: the nodes nearest to a point.
 const NEAREST: &str = "drevo.spatial.nearest";
 
+/// The `drevo.pagerank.personalized` procedure: PageRank teleporting to
+/// source nodes (#781).
+const PERSONALIZED_PAGERANK: &str = "drevo.pagerank.personalized";
+
 /// The `drevo.search.hybrid` procedure: BM25 and vector retrieval over nodes,
 /// fused with Reciprocal Rank Fusion.
 const HYBRID: &str = "drevo.search.hybrid";
@@ -12360,7 +12444,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // #303 — build/version introspection so a Bolt client can assert a
         // minimum-compatible drevo. Read-only, no auth; stable YIELD contract.
         "drevo.info" => Some(&["version", "git_sha", "build_date", "protocol"]),
-        "drevo.pagerank" => Some(&["node", "score"]),
+        "drevo.pagerank" | PERSONALIZED_PAGERANK => Some(&["node", "score"]),
         "drevo.louvain" => Some(&["node", "community"]),
         "drevo.wcc" => Some(&["node", "component"]),
         "drevo.scc" => Some(&["node", "component"]),
@@ -12492,7 +12576,9 @@ fn procedure_optional_args(name: &str) -> usize {
         | "drevo.sequence.create"
         | NEAREST
         | HYBRID
-        | HYBRID_RELS => 1,
+        | HYBRID_RELS
+        | "drevo.pagerank"
+        | PERSONALIZED_PAGERANK => 1,
         _ => 0,
     }
 }
@@ -12575,8 +12661,10 @@ fn procedure_arity(name: &str) -> usize {
         // #303: drevo.info() — no arguments (explicit; the `_ => 0` default
         // would also cover it).
         "drevo.info" => 0,
-        // drevo.pagerank() — no arguments (default config).
-        "drevo.pagerank" => 0,
+        // drevo.pagerank([config]) — the config map is optional (#781).
+        "drevo.pagerank" => 1,
+        // drevo.pagerank.personalized(sourceNodes[, config]) (#781).
+        PERSONALIZED_PAGERANK => 2,
         // drevo.louvain() — no arguments (default config).
         "drevo.louvain" => 0,
         // drevo.wcc() — no arguments.

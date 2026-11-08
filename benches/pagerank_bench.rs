@@ -6,6 +6,10 @@
 //! this only times them. On a small graph the parallel overhead can lose; the
 //! win shows up as the node/edge count grows, which is the point.
 //!
+//! Each size also times Personalized PageRank from 10 sources (`ppr_10`),
+//! which runs the same power iteration with a teleport vector in place of the
+//! uniform jump, so it should cost about what `serial` does.
+//!
 //! Run: `cargo bench --bench pagerank_bench`
 
 use std::hint::black_box;
@@ -13,7 +17,9 @@ use std::time::Duration;
 
 use criterion::Criterion;
 
-use drevo::algorithms::{pagerank, pagerank_parallel, AdjacencyList, PageRankConfig};
+use drevo::algorithms::{
+    pagerank, pagerank_parallel, AdjacencyList, PageRankConfig, Personalization,
+};
 
 /// A deterministic scale-free-ish graph: `n` nodes, ~`avg_deg` out-edges each to
 /// pseudo-random targets, plus a supernode (id 1) many nodes point at — so the
@@ -46,6 +52,15 @@ fn main() {
         .configure_from_args();
 
     let cfg = PageRankConfig::default();
+    let ppr_cfg = PageRankConfig {
+        // 10 sources spread over the id range (every graph below has ≥ 10k
+        // nodes, so all are present).
+        personalization: Some(
+            Personalization::uniform((0..10u64).map(|k| 1 + k * 997).collect())
+                .expect("10 sources"),
+        ),
+        ..PageRankConfig::default()
+    };
     for &n in &[10_000usize, 100_000, 500_000] {
         let g = build_graph(n, 6);
         eprintln!(
@@ -70,6 +85,9 @@ fn main() {
         });
         grp.bench_function("parallel", |b| {
             b.iter(|| black_box(pagerank_parallel(&g, &cfg).iterations))
+        });
+        grp.bench_function("ppr_10", |b| {
+            b.iter(|| black_box(pagerank(&g, &ppr_cfg).iterations))
         });
         grp.finish();
     }
