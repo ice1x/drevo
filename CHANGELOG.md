@@ -8,6 +8,21 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Provenance for long-term memory** (issue #785): memory can record where
+  it read something. `drevo.memory.addSource(id, uri, title, kind) YIELD node`
+  upserts a `:Source`; `drevo.memory.addChunks(sourceId, chunks) YIELD node`
+  upserts its `:Chunk {id, source_id, order, offset, length, text, body}`
+  passages, linked `FROM` the source and chained `NEXT` in `order`
+  (idempotent on `id`, gaps allowed). `drevo.memory.rememberEntity` and
+  `drevo.memory.assertFact` take an optional fifth `provenance` map
+  `{source, chunk, quote, offset, length, surface}` (a source / chunk given
+  as a map is upserted, given as an id it must exist; a quote must occur in
+  the chunk's text, and stand exactly at an `offset` when one is given): a fact carries `source_id, chunk_id, quote, offset,
+  length`, an entity gets `MENTIONED_IN {offset, length, surface}` the chunk.
+  `drevo.memory.evidence(name, k) YIELD chunk, quote, offset, source, fact`
+  lists the passages behind an entity, newest first, and
+  `drevo.memory.factsAt` yields two more columns at the end, `source` and
+  `quote`. The four-argument forms behave as before.
 - **Personalized PageRank: `drevo.pagerank.personalized(sourceNodes[,
   config]) YIELD node, score`** (issue #781). The random walk jumps back to
   the seed nodes (a node, a node id, or a list mixing both) instead of to a

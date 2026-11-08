@@ -162,6 +162,10 @@ use crate::cypher::ast::{
     UnionKind, UnwindClause, YieldItem,
 };
 use crate::cypher::lexer::Span;
+use crate::cypher::provenance::{
+    default_chunk_id, locate_quote, quote_at, quote_not_at, quote_not_found, ChunkRef, ChunkSpec,
+    Provenance, SourceRef, SourceSpec,
+};
 use crate::engine::GraphEngine;
 use crate::error::DrevoError;
 use crate::model::{Direction as ModelDirection, Edge, NewEdge, NewNode, Node, Properties};
@@ -1728,6 +1732,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.memory.addMessage, drevo.memory.recordReasoning, \
                           drevo.memory.rememberEntity, drevo.memory.assertFact, \
                           drevo.memory.retractFact, drevo.memory.factsAt, \
+                          drevo.memory.addSource, drevo.memory.addChunks, \
+                          drevo.memory.evidence, \
                           drevo.events.post, \
                           apoc.trigger.install, apoc.trigger.list, apoc.trigger.drop, \
                           apoc.trigger.dropAll, apoc.trigger.stop, apoc.trigger.start, \
@@ -6174,6 +6180,8 @@ impl<'a> Executor<'a> {
             "drevo.memory.rememberEntity" => self.proc_memory_remember_entity(&c.args, c.span)?,
             "drevo.memory.assertFact" => self.proc_memory_assert_fact(&c.args, c.span)?,
             "drevo.memory.retractFact" => self.proc_memory_retract_fact(&c.args, c.span)?,
+            "drevo.memory.addSource" => self.proc_memory_add_source(&c.args, c.span)?,
+            "drevo.memory.addChunks" => self.proc_memory_add_chunks(&c.args, c.span)?,
             _ => self.invoke_procedure(&name, &c.args, c.span)?,
         };
         // Search, vector, memory and algorithm procedures read storage
@@ -7996,12 +8004,19 @@ impl<'a> Executor<'a> {
     /// reused, its `description` refreshed when a new non-null one is given
     /// (with `updated_at`). When `session` has messages, the newest one gets a
     /// `:MENTIONS` edge to the entity (once). `session` may be `null`.
+    ///
+    /// An optional fifth `provenance` map names the chunk the entity was read
+    /// in: the entity gets `-[:MENTIONED_IN {offset, length, surface}]->` that
+    /// chunk, once per `(entity, chunk, offset)`. `surface` defaults to the
+    /// quote, else the entity's name; `offset` / `length` default to where the
+    /// surface occurs in the chunk's text.
     fn proc_memory_remember_entity(
         &mut self,
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
-        // Arity (4) is enforced by the upfront validation sweep.
+        const PROC: &str = "drevo.memory.rememberEntity";
+        // Arity (4 or 5) is enforced by the upfront validation sweep.
         let empty = Bindings::new();
         let session = match self.eval(&args[0], &empty)? {
             Value::Null => None,
@@ -8026,6 +8041,53 @@ impl<'a> Executor<'a> {
                 ),
                 span,
             })?;
+        let mention = match self.memory_provenance_arg(PROC, args.get(4), span)? {
+            Some(provenance) => {
+                if provenance.chunk.is_none() {
+                    return Err(memory_refusal(
+                        PROC,
+                        "a mention needs a chunk: the entity is MENTIONED_IN a chunk".into(),
+                        span,
+                    ));
+                }
+                let explicit = provenance.surface.is_some() || provenance.quote.is_some();
+                let surface = provenance
+                    .surface
+                    .clone()
+                    .or_else(|| provenance.quote.clone())
+                    .unwrap_or_else(|| name.clone());
+                let plan = self.memory_plan_provenance(PROC, provenance, span)?;
+                let what = if plan.provenance.surface.is_some() {
+                    "surface"
+                } else {
+                    "quote"
+                };
+                let located = match &plan.text {
+                    Some(text) => match locate_quote(&surface, text) {
+                        Some(found) => Some(found),
+                        None if explicit => {
+                            return Err(memory_refusal(
+                                PROC,
+                                quote_not_found(
+                                    what,
+                                    &surface,
+                                    plan.chunk_id.as_deref().unwrap_or_default(),
+                                    text,
+                                ),
+                                span,
+                            ))
+                        }
+                        None => None,
+                    },
+                    None => None,
+                };
+                if explicit {
+                    Self::memory_check_quote_at(PROC, what, &surface, &plan, span)?;
+                }
+                Some((plan, surface, located))
+            }
+            None => None,
+        };
 
         let existing = self.memory_nodes_named("Entity", &name)?.into_iter().find(
             |e| matches!(e.properties.get("type"), Some(Value::String(t)) if *t == entity_type),
@@ -8089,6 +8151,41 @@ impl<'a> Executor<'a> {
                 }
             }
         }
+
+        if let Some((plan, surface, located)) = mention {
+            let offset = plan.provenance.offset.or(located.map(|(o, _)| o));
+            let length = plan
+                .provenance
+                .length
+                .or(Some(located.map_or_else(|| char_len(&surface), |(_, l)| l)));
+            let cited = self.memory_apply_provenance(PROC, plan, span)?;
+            if let Some(chunk) = cited.chunk {
+                let offset_value = offset.map_or(Value::Null, Value::Integer);
+                let already = self
+                    .engine()
+                    .edges_of(entity.id, ModelDirection::Outgoing)?
+                    .iter()
+                    .filter(|e| e.kind == "MENTIONED_IN" && e.to_id == chunk.id)
+                    .any(|e| {
+                        edge_to_value(e)
+                            .properties
+                            .get("offset")
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                            == offset_value
+                    });
+                if !already {
+                    let mut props = vec![("surface", Value::String(surface))];
+                    if let Some(offset) = offset {
+                        props.push(("offset", Value::Integer(offset)));
+                    }
+                    if let Some(length) = length {
+                        props.push(("length", Value::Integer(length)));
+                    }
+                    self.memory_link(&entity, "MENTIONED_IN", &chunk, props, span)?;
+                }
+            }
+        }
         Ok(vec![vec![Value::Node(entity)]])
     }
 
@@ -8103,13 +8200,19 @@ impl<'a> Executor<'a> {
     /// (`valid_until = now`) first — a supersession ("works at Globex" ends
     /// "works at Acme") that keeps the old fact as history for
     /// `drevo.memory.factsAt`.
+    ///
+    /// An optional fifth `provenance` map cites where the fact was read: the
+    /// edge gets `source_id`, `chunk_id`, `quote`, `offset` and `length`
+    /// (`offset` / `length` default to where the quote occurs in the chunk's
+    /// text, which must contain it). A fact that already holds without a
+    /// citation gains this one.
     fn proc_memory_assert_fact(
         &mut self,
         args: &[Expression],
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
         const PROC: &str = "drevo.memory.assertFact";
-        // Arity (4) is enforced by the upfront validation sweep.
+        // Arity (4 or 5) is enforced by the upfront validation sweep.
         let empty = Bindings::new();
         let subject = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
         let relation = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
@@ -8127,6 +8230,54 @@ impl<'a> Executor<'a> {
         };
         let subject = self.memory_entity(PROC, &subject, span)?;
         let object = self.memory_entity(PROC, &object, span)?;
+        let citation = match self.memory_provenance_arg(PROC, args.get(4), span)? {
+            Some(provenance) => {
+                let plan = self.memory_plan_provenance(PROC, provenance, span)?;
+                let located = match (&plan.provenance.quote, &plan.text) {
+                    (Some(quote), Some(text)) => {
+                        Some(locate_quote(quote, text).ok_or_else(|| {
+                            memory_refusal(
+                                PROC,
+                                quote_not_found(
+                                    "quote",
+                                    quote,
+                                    plan.chunk_id.as_deref().unwrap_or_default(),
+                                    text,
+                                ),
+                                span,
+                            )
+                        })?)
+                    }
+                    _ => None,
+                };
+                if let Some(quote) = &plan.provenance.quote {
+                    Self::memory_check_quote_at(PROC, "quote", quote, &plan, span)?;
+                }
+                let quote = plan.provenance.quote.clone();
+                let offset = plan.provenance.offset.or(located.map(|(o, _)| o));
+                let length = plan
+                    .provenance
+                    .length
+                    .or(located.map(|(_, l)| l))
+                    .or_else(|| quote.as_deref().map(char_len));
+                let cited = self.memory_apply_provenance(PROC, plan, span)?;
+                let mut props: Vec<(&str, Value)> = Vec::new();
+                let pairs = [
+                    ("source_id", cited.source_id.map(Value::String)),
+                    ("chunk_id", cited.chunk_id.map(Value::String)),
+                    ("quote", quote.map(Value::String)),
+                    ("offset", offset.map(Value::Integer)),
+                    ("length", length.map(Value::Integer)),
+                ];
+                for (key, value) in pairs {
+                    if let Some(value) = value {
+                        props.push((key, value));
+                    }
+                }
+                props
+            }
+            None => Vec::new(),
+        };
 
         let now = Self::memory_now(span)?;
         let current = self.memory_current_facts(&subject, &relation)?;
@@ -8136,20 +8287,32 @@ impl<'a> Executor<'a> {
             }
         }
         if let Some(same) = current.into_iter().find(|r| r.to_id == object.id) {
-            return Ok(vec![vec![Value::Relationship(same)]]);
+            let uncited = ["source_id", "chunk_id", "quote"]
+                .iter()
+                .all(|key| matches!(same.properties.get(*key), None | Some(Value::Null)));
+            if !uncited || citation.is_empty() {
+                return Ok(vec![vec![Value::Relationship(same)]]);
+            }
+            let mut cited = same;
+            for (key, value) in citation {
+                let mut row = Bindings::new();
+                let var = "__drevo_memory_rel";
+                self.write_edge_property(&cited, key, value, &mut row, var)?;
+                self.stats.properties_set += 1;
+                if let Some(Value::Relationship(updated)) = row.remove(var) {
+                    cited = updated;
+                }
+            }
+            return Ok(vec![vec![Value::Relationship(cited)]]);
         }
-        let rel = self.memory_link(
-            &subject,
-            "RELATED_TO",
-            &object,
-            vec![
-                ("id", scalar_random_uuid(Vec::new(), span)?),
-                ("type", Value::String(relation)),
-                ("valid_from", now.clone()),
-                ("created_at", now),
-            ],
-            span,
-        )?;
+        let mut props = vec![
+            ("id", scalar_random_uuid(Vec::new(), span)?),
+            ("type", Value::String(relation)),
+            ("valid_from", now.clone()),
+            ("created_at", now),
+        ];
+        props.extend(citation);
+        let rel = self.memory_link(&subject, "RELATED_TO", &object, props, span)?;
         Ok(vec![vec![Value::Relationship(rel)]])
     }
 
@@ -8183,14 +8346,15 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.factsAt(name, asOf) YIELD subject, relation, object,
-    /// valid_from, valid_until` (issue #533) — what long-term memory held about
-    /// an entity at a point in time.
+    /// valid_from, valid_until, source, quote` (issue #533) — what long-term
+    /// memory held about an entity at a point in time.
     ///
     /// Every `RELATED_TO` fact touching the entity `name` (either direction)
     /// valid at `asOf`: `valid_from <= asOf` and `valid_until` unset or
     /// `> asOf`. `asOf` is an ISO-8601 UTC timestamp as `datetime()` returns;
     /// `null` means now. Facts without `valid_from` count as always held.
-    /// Ordered by `valid_from`. Read-only.
+    /// Ordered by `valid_from`. `source` is the `:Source` the fact cites and
+    /// `quote` its quoted words (`null` when it cites none). Read-only.
     fn proc_memory_facts_at(
         &self,
         args: &[Expression],
@@ -8229,6 +8393,14 @@ impl<'a> Executor<'a> {
         };
         facts.sort_by(|a, b| valid_from(a).cmp(&valid_from(b)).then(a.id.cmp(&b.id)));
 
+        let cited = facts
+            .iter()
+            .any(|f| matches!(f.properties.get("source_id"), Some(Value::String(_))));
+        let sources = if cited {
+            self.memory_nodes_by_id("Source")?
+        } else {
+            HashMap::new()
+        };
         let mut rows = Vec::with_capacity(facts.len());
         for rel in facts {
             let (Some(subject), Some(object)) = (
@@ -8246,9 +8418,605 @@ impl<'a> Executor<'a> {
                 Value::Node(node_to_value(&object)),
                 prop("valid_from"),
                 prop("valid_until"),
+                match rel.properties.get("source_id") {
+                    Some(Value::String(id)) => sources
+                        .get(id)
+                        .map_or(Value::Null, |s| Value::Node(s.clone())),
+                    _ => Value::Null,
+                },
+                prop("quote"),
             ]);
         }
         Ok(rows)
+    }
+
+    /// Every node carrying `label` that has a string `id` property, keyed on
+    /// that id (the first one wins when two share it).
+    fn memory_nodes_by_id(&self, label: &str) -> ExecResultT<HashMap<String, Arc<NodeValue>>> {
+        let mut out = HashMap::new();
+        for node in self.engine().all_nodes()? {
+            if !node_labels_from_storage(&node).iter().any(|l| l == label) {
+                continue;
+            }
+            let nv = node_to_value(&node);
+            if let Some(Value::String(id)) = nv.properties.get("id") {
+                out.entry(id.clone()).or_insert_with(|| nv.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// The node carrying `label` whose `id` property is `id`.
+    fn memory_node_by_id(&self, label: &str, id: &str) -> ExecResultT<Option<Arc<NodeValue>>> {
+        for node in self.engine().all_nodes()? {
+            if !node_labels_from_storage(&node).iter().any(|l| l == label) {
+                continue;
+            }
+            let nv = node_to_value(&node);
+            if matches!(nv.properties.get("id"), Some(Value::String(v)) if v == id) {
+                return Ok(Some(nv));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The existing `:Source` with id `id`, or an error naming it.
+    fn memory_source(&self, proc_name: &str, id: &str, span: Span) -> ExecResultT<Arc<NodeValue>> {
+        self.memory_node_by_id("Source", id)?.ok_or_else(|| {
+            memory_refusal(
+                proc_name,
+                format!(
+                    "no source `{id}` — add it first with drevo.memory.addSource, or pass \
+                     {{id, uri, title, kind}}"
+                ),
+                span,
+            )
+        })
+    }
+
+    /// The id of the source a chunk belongs to.
+    fn memory_chunk_owner(chunk: &NodeValue) -> Option<&str> {
+        match chunk.properties.get("source_id") {
+            Some(Value::String(id)) => Some(id.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Refuse a chunk id that already belongs to another source.
+    fn memory_check_owner(
+        proc_name: &str,
+        chunk: &NodeValue,
+        chunk_id: &str,
+        source_id: &str,
+        span: Span,
+    ) -> ExecResultT<()> {
+        match Self::memory_chunk_owner(chunk) {
+            Some(owner) if owner != source_id => Err(memory_refusal(
+                proc_name,
+                format!("chunk `{chunk_id}` belongs to source `{owner}`, not `{source_id}`"),
+                span,
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Set each `(key, value)` on `node` that differs from what it holds,
+    /// through the regular `SET` path. Returns the updated node.
+    fn memory_set_props(
+        &mut self,
+        node: Arc<NodeValue>,
+        props: Vec<(&str, Value)>,
+    ) -> ExecResultT<Arc<NodeValue>> {
+        let var = "__drevo_memory_upsert";
+        let mut current = node;
+        for (key, value) in props {
+            if current.properties.get(key) == Some(&value) {
+                continue;
+            }
+            let mut row = Bindings::new();
+            self.write_node_property(&current, key, value, &mut row, var)?;
+            self.stats.properties_set += 1;
+            if let Some(Value::Node(updated)) = row.remove(var) {
+                current = updated;
+            }
+        }
+        Ok(current)
+    }
+
+    /// Upsert `:Source {id, uri, title, kind, created_at}` keyed on `id`: a
+    /// known source keeps what `spec` leaves `None` and takes the rest.
+    fn memory_upsert_source(
+        &mut self,
+        spec: SourceSpec,
+        span: Span,
+    ) -> ExecResultT<Arc<NodeValue>> {
+        let given: Vec<(&str, Value)> = [
+            ("uri", spec.uri),
+            ("title", spec.title),
+            ("kind", spec.kind),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, Value::String(v))))
+        .collect();
+        match self.memory_node_by_id("Source", &spec.id)? {
+            Some(source) => self.memory_set_props(source, given),
+            None => {
+                let mut props = vec![("id", Value::String(spec.id))];
+                props.extend(given);
+                props.push(("created_at", Self::memory_now(span)?));
+                self.memory_create_node(&["Source"], props, span)
+            }
+        }
+    }
+
+    /// The chunks of source `source_id`, in reading order (`order`, then id).
+    fn memory_chunks_of(&self, source_id: &str) -> ExecResultT<Vec<Arc<NodeValue>>> {
+        let mut chunks = Vec::new();
+        for node in self.engine().all_nodes()? {
+            if !node_labels_from_storage(&node).iter().any(|l| l == "Chunk") {
+                continue;
+            }
+            let nv = node_to_value(&node);
+            if Self::memory_chunk_owner(&nv) == Some(source_id) {
+                chunks.push(nv);
+            }
+        }
+        let key = |c: &NodeValue| {
+            let order = match c.properties.get("order") {
+                Some(Value::Integer(o)) => *o,
+                _ => i64::MAX,
+            };
+            let id = match c.properties.get("id") {
+                Some(Value::String(id)) => id.clone(),
+                _ => String::new(),
+            };
+            (order, id)
+        };
+        chunks.sort_by_key(|c| key(c));
+        Ok(chunks)
+    }
+
+    /// Upsert the chunk `spec` (its `id` set) of `source`: a new chunk is
+    /// created `-[:FROM]->` the source, appended after the source's last chunk
+    /// when it has no `order`; a known one takes the fields `spec` gives.
+    /// The caller relinks `:NEXT` ([`Self::memory_relink_chunks`]).
+    fn memory_upsert_chunk(
+        &mut self,
+        source: &Arc<NodeValue>,
+        source_id: &str,
+        spec: ChunkSpec,
+        span: Span,
+    ) -> ExecResultT<Arc<NodeValue>> {
+        let id = spec
+            .id
+            .clone()
+            .unwrap_or_else(|| default_chunk_id(source_id, spec.order.unwrap_or_default()));
+        let mut given: Vec<(&str, Value)> = [
+            ("order", spec.order),
+            ("offset", spec.offset),
+            ("length", spec.length),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, Value::Integer(v))))
+        .collect();
+        given.push(("text", Value::String(spec.text.clone())));
+        given.push(("body", Value::String(spec.text)));
+        if let Some(chunk) = self.memory_node_by_id("Chunk", &id)? {
+            return self.memory_set_props(chunk, given);
+        }
+        if spec.order.is_none() {
+            let next = self
+                .memory_chunks_of(source_id)?
+                .iter()
+                .filter_map(|c| match c.properties.get("order") {
+                    Some(Value::Integer(o)) => Some(*o + 1),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            given.insert(0, ("order", Value::Integer(next)));
+        }
+        let mut props = vec![
+            ("id", Value::String(id)),
+            ("source_id", Value::String(source_id.to_string())),
+        ];
+        props.extend(given);
+        props.push(("created_at", Self::memory_now(span)?));
+        let chunk = self.memory_create_node(&["Chunk"], props, span)?;
+        self.memory_link(&chunk, "FROM", source, Vec::new(), span)?;
+        Ok(chunk)
+    }
+
+    /// Make the `:NEXT` edges between the chunks of `source_id` one chain in
+    /// reading order: missing links are created, stale ones (left by a chunk
+    /// that has since been placed between two others) deleted.
+    fn memory_relink_chunks(&mut self, source_id: &str, span: Span) -> ExecResultT<()> {
+        let chunks = self.memory_chunks_of(source_id)?;
+        let ids: HashSet<u64> = chunks.iter().map(|c| c.id).collect();
+        let wanted: Vec<(u64, u64)> = chunks.windows(2).map(|w| (w[0].id, w[1].id)).collect();
+        let mut present: HashSet<(u64, u64)> = HashSet::new();
+        for chunk in &chunks {
+            for edge in self.engine().edges_of(chunk.id, ModelDirection::Outgoing)? {
+                if edge.kind != "NEXT" || !ids.contains(&edge.to_id) {
+                    continue;
+                }
+                let pair = (chunk.id, edge.to_id);
+                if wanted.contains(&pair) && present.insert(pair) {
+                    continue;
+                }
+                self.guard_relationship(drevo_auth::privileges::Action::Delete, "NEXT", None)?;
+                self.engine().delete_edge(edge.id)?;
+                self.stats.relationships_deleted += 1;
+            }
+        }
+        for (pos, pair) in wanted.iter().enumerate() {
+            if !present.contains(pair) {
+                self.memory_link(&chunks[pos], "NEXT", &chunks[pos + 1], Vec::new(), span)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Parse an optional `provenance` argument; an absent, `null` or empty
+    /// map is no provenance.
+    fn memory_provenance_arg(
+        &self,
+        proc_name: &str,
+        arg: Option<&Expression>,
+        span: Span,
+    ) -> ExecResultT<Option<Provenance>> {
+        let Some(arg) = arg else {
+            return Ok(None);
+        };
+        let value = self.eval(arg, &Bindings::new())?;
+        let provenance =
+            Provenance::from_value(&value).map_err(|m| memory_refusal(proc_name, m, span))?;
+        Ok(provenance.filter(|p| *p != Provenance::default()))
+    }
+
+    /// Resolve a provenance map without writing anything: ids that must exist
+    /// are looked up, a chunk is checked against its source, and the chunk's
+    /// text is fetched so the caller can check a quote before any write.
+    fn memory_plan_provenance(
+        &self,
+        proc_name: &str,
+        provenance: Provenance,
+        span: Span,
+    ) -> ExecResultT<ProvenancePlan> {
+        let source_id = match &provenance.source {
+            Some(SourceRef::Id(id)) => {
+                self.memory_source(proc_name, id, span)?;
+                Some(id.clone())
+            }
+            Some(SourceRef::Spec(spec)) => Some(spec.id.clone()),
+            None => None,
+        };
+        let (chunk_id, text, owner) = match &provenance.chunk {
+            Some(ChunkRef::Id(id)) => {
+                let chunk = self.memory_node_by_id("Chunk", id)?.ok_or_else(|| {
+                    memory_refusal(
+                        proc_name,
+                        format!(
+                            "no chunk `{id}` — add it first with drevo.memory.addChunks, or \
+                             pass {{id, order, offset, length, text}} with its source"
+                        ),
+                        span,
+                    )
+                })?;
+                if let Some(source_id) = &source_id {
+                    Self::memory_check_owner(proc_name, &chunk, id, source_id, span)?;
+                }
+                let text = match chunk.properties.get("text") {
+                    Some(Value::String(t)) => Some(t.clone()),
+                    _ => None,
+                };
+                (
+                    Some(id.clone()),
+                    text,
+                    Self::memory_chunk_owner(&chunk).map(str::to_string),
+                )
+            }
+            Some(ChunkRef::Spec(spec)) => {
+                let id = spec.id.clone().unwrap_or_default();
+                let Some(source_id) = &source_id else {
+                    return Err(memory_refusal(
+                        proc_name,
+                        format!("chunk `{id}` is given as a map, so provenance needs its source"),
+                        span,
+                    ));
+                };
+                if let Some(chunk) = self.memory_node_by_id("Chunk", &id)? {
+                    Self::memory_check_owner(proc_name, &chunk, &id, source_id, span)?;
+                }
+                (Some(id), Some(spec.text.clone()), None)
+            }
+            None => (None, None, None),
+        };
+        Ok(ProvenancePlan {
+            source_id: source_id.or(owner),
+            chunk_id,
+            text,
+            provenance,
+        })
+    }
+
+    /// Refuse a `what` (`quote` / `surface`) given with an explicit `offset`
+    /// that does not stand there in the cited chunk's text (when known).
+    fn memory_check_quote_at(
+        proc_name: &str,
+        what: &str,
+        quote: &str,
+        plan: &ProvenancePlan,
+        span: Span,
+    ) -> ExecResultT<()> {
+        let (Some(text), Some(offset)) = (&plan.text, plan.provenance.offset) else {
+            return Ok(());
+        };
+        if quote_at(quote, text, offset, plan.provenance.length) {
+            return Ok(());
+        }
+        Err(memory_refusal(
+            proc_name,
+            quote_not_at(
+                what,
+                quote,
+                plan.chunk_id.as_deref().unwrap_or_default(),
+                offset,
+                text,
+            ),
+            span,
+        ))
+    }
+
+    /// Write what a [`ProvenancePlan`] upserts (its source and chunk maps,
+    /// relinking the source's chunks) and return the cited chunk node.
+    fn memory_apply_provenance(
+        &mut self,
+        proc_name: &str,
+        plan: ProvenancePlan,
+        span: Span,
+    ) -> ExecResultT<Cited> {
+        let source = match plan.provenance.source {
+            Some(SourceRef::Spec(spec)) => Some(self.memory_upsert_source(spec, span)?),
+            Some(SourceRef::Id(id)) => Some(self.memory_source(proc_name, &id, span)?),
+            None => None,
+        };
+        let chunk = match (plan.provenance.chunk, &source, &plan.source_id) {
+            (Some(ChunkRef::Spec(spec)), Some(source), Some(source_id)) => {
+                let chunk = self.memory_upsert_chunk(source, source_id, spec, span)?;
+                self.memory_relink_chunks(source_id, span)?;
+                Some(chunk)
+            }
+            (Some(ChunkRef::Id(id)), _, _) => self.memory_node_by_id("Chunk", &id)?,
+            _ => None,
+        };
+        Ok(Cited {
+            source_id: plan.source_id,
+            chunk_id: plan.chunk_id,
+            chunk,
+        })
+    }
+
+    /// `CALL drevo.memory.addSource(id, uri, title, kind) YIELD node` — upsert
+    /// the `:Source {id, uri, title, kind, created_at}` that chunks and facts
+    /// cite, keyed on `id`. A known source keeps the fields given as `null`.
+    fn proc_memory_add_source(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        const PROC: &str = "drevo.memory.addSource";
+        // Arity (4) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let id = match self.eval(&args[0], &empty)? {
+            Value::String(id) => id,
+            other => {
+                return Err(memory_refusal(
+                    PROC,
+                    format!("the source id must be a string, got {}", other.type_name()),
+                    span,
+                ))
+            }
+        };
+        let mut fields = Vec::with_capacity(3);
+        for (arg, key) in args[1..4].iter().zip(["uri", "title", "kind"]) {
+            fields.push(match self.eval(arg, &empty)? {
+                Value::Null => None,
+                Value::String(s) => Some(s),
+                other => {
+                    return Err(memory_refusal(
+                        PROC,
+                        format!("{key} must be a string, got {}", other.type_name()),
+                        span,
+                    ))
+                }
+            });
+        }
+        let mut fields = fields.into_iter();
+        let spec = SourceSpec {
+            id,
+            uri: fields.next().flatten(),
+            title: fields.next().flatten(),
+            kind: fields.next().flatten(),
+        };
+        let source = self.memory_upsert_source(spec, span)?;
+        Ok(vec![vec![Value::Node(source)]])
+    }
+
+    /// `CALL drevo.memory.addChunks(sourceId, chunks) YIELD node` — upsert the
+    /// passages of a source. Each entry `{id?, order, offset?, length?, text}`
+    /// becomes `:Chunk {id, source_id, order, offset, length, text, body,
+    /// created_at}` (`body = text`, so full-text search reaches it)
+    /// `-[:FROM]->` the source; an entry without an id gets
+    /// `<sourceId>#<order>`. The source's chunks are chained `-[:NEXT]->` in
+    /// `order` (gaps allowed). Adding the same chunks again changes nothing.
+    /// Yields the listed chunks in reading order.
+    fn proc_memory_add_chunks(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        const PROC: &str = "drevo.memory.addChunks";
+        // Arity (2) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let source_id = match self.eval(&args[0], &empty)? {
+            Value::String(id) => id,
+            other => {
+                return Err(memory_refusal(
+                    PROC,
+                    format!("the source id must be a string, got {}", other.type_name()),
+                    span,
+                ))
+            }
+        };
+        let mut specs = ChunkSpec::list_from_value(&source_id, &self.eval(&args[1], &empty)?)
+            .map_err(|m| memory_refusal(PROC, m, span))?;
+        let source = self.memory_source(PROC, &source_id, span)?;
+        for spec in &specs {
+            let id = spec.id.as_deref().unwrap_or_default();
+            if let Some(chunk) = self.memory_node_by_id("Chunk", id)? {
+                Self::memory_check_owner(PROC, &chunk, id, &source_id, span)?;
+            }
+        }
+        specs.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
+        let mut ids = Vec::with_capacity(specs.len());
+        for spec in specs {
+            ids.push(
+                self.memory_upsert_chunk(&source, &source_id, spec, span)?
+                    .id,
+            );
+        }
+        self.memory_relink_chunks(&source_id, span)?;
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(node) = self.engine().get_node(id)? {
+                rows.push(vec![Value::Node(node_to_value(&node))]);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// `CALL drevo.memory.evidence(name, k) YIELD chunk, quote, offset, source,
+    /// fact` — the passages behind a memory entity: the chunks it is
+    /// `MENTIONED_IN` and the chunks its facts (either direction) cite.
+    ///
+    /// A cited fact gives one row with the fact's `quote` / `offset` and the
+    /// `fact` relationship; a chunk that only mentions the entity gives one
+    /// row with the mention's `surface` / `offset` (its first place) and a
+    /// `null` fact. A chunk that backs a fact is not repeated as a mention.
+    /// `source` is the chunk's `:Source`. Newest chunks first (then newest
+    /// facts); at most `k` rows. Read-only.
+    fn proc_memory_evidence(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        const PROC: &str = "drevo.memory.evidence";
+        // Arity (2) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
+        let k = self.eval_usize(&args[1], &empty)?;
+        let entity = self.memory_entity(PROC, &name, span)?;
+        let edges = self.engine().edges_of(entity.id, ModelDirection::Both)?;
+        if !edges
+            .iter()
+            .any(|e| e.kind == "MENTIONED_IN" || e.kind == "RELATED_TO")
+        {
+            return Ok(Vec::new());
+        }
+        let chunks = self.memory_nodes_by_id("Chunk")?;
+        let sources = self.memory_nodes_by_id("Source")?;
+        let prop = |props: &BTreeMap<String, Value>, key: &str| {
+            props.get(key).cloned().unwrap_or(Value::Null)
+        };
+
+        let mut found: Vec<EvidenceRow> = Vec::new();
+        let mut seen_facts: HashSet<u64> = HashSet::new();
+        for edge in edges.iter().filter(|e| e.kind == "RELATED_TO") {
+            if !seen_facts.insert(edge.id) {
+                continue;
+            }
+            let fact = edge_to_value(edge);
+            let Some(Value::String(chunk_id)) = fact.properties.get("chunk_id") else {
+                continue;
+            };
+            let Some(chunk) = chunks.get(chunk_id) else {
+                continue;
+            };
+            found.push((
+                chunk.clone(),
+                prop(&fact.properties, "quote"),
+                prop(&fact.properties, "offset"),
+                Some(fact.clone()),
+            ));
+        }
+        let mut mentions: Vec<(Arc<NodeValue>, Value, Value)> = Vec::new();
+        for edge in edges
+            .iter()
+            .filter(|e| e.kind == "MENTIONED_IN" && e.from_id == entity.id)
+        {
+            if found.iter().any(|(c, ..)| c.id == edge.to_id) {
+                continue;
+            }
+            let Some(chunk) = self.engine().get_node(edge.to_id)? else {
+                continue;
+            };
+            let mention = edge_to_value(edge);
+            let offset = prop(&mention.properties, "offset");
+            let surface = prop(&mention.properties, "surface");
+            let first = |o: &Value| match o {
+                Value::Integer(i) => *i,
+                _ => i64::MAX,
+            };
+            match mentions.iter_mut().find(|(c, ..)| c.id == edge.to_id) {
+                Some(slot) if first(&offset) < first(&slot.2) => {
+                    slot.1 = surface;
+                    slot.2 = offset;
+                }
+                Some(_) => {}
+                None => mentions.push((node_to_value(&chunk), surface, offset)),
+            }
+        }
+        found.extend(
+            mentions
+                .into_iter()
+                .map(|(chunk, quote, offset)| (chunk, quote, offset, None)),
+        );
+
+        let created = |props: &BTreeMap<String, Value>| match props.get("created_at") {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        };
+        found.sort_by(|a, b| {
+            created(&b.0.properties)
+                .cmp(&created(&a.0.properties))
+                .then(b.0.id.cmp(&a.0.id))
+                .then_with(|| {
+                    let fact_key = |f: &Option<Arc<RelationshipValue>>| {
+                        f.as_ref().map(|f| (created(&f.properties), f.id))
+                    };
+                    fact_key(&b.3).cmp(&fact_key(&a.3))
+                })
+        });
+        found.truncate(k);
+        Ok(found
+            .into_iter()
+            .map(|(chunk, quote, offset, fact)| {
+                let source = match Self::memory_chunk_owner(&chunk) {
+                    Some(id) => sources
+                        .get(id)
+                        .map_or(Value::Null, |s| Value::Node(s.clone())),
+                    None => Value::Null,
+                };
+                vec![
+                    Value::Node(chunk),
+                    quote,
+                    offset,
+                    source,
+                    fact.map_or(Value::Null, Value::Relationship),
+                ]
+            })
+            .collect())
     }
 
     /// `CALL drevo.memory.getConversation(session, limit) YIELD node` (issue
@@ -9987,6 +10755,7 @@ impl<'a> Executor<'a> {
             "drevo.memory.recallSemantic" => self.proc_memory_recall_semantic(args, span),
             "drevo.memory.getConversation" => self.proc_memory_get_conversation(args, span),
             "drevo.memory.factsAt" => self.proc_memory_facts_at(args, span),
+            "drevo.memory.evidence" => self.proc_memory_evidence(args, span),
             #[cfg(feature = "http")]
             "drevo.cypher.fromText" => self.proc_cypher_from_text(args, span),
             "db.labels" => {
@@ -11719,6 +12488,43 @@ fn yield_all(columns: &[&str], span: Span) -> Vec<YieldItem> {
 /// The POLE+O long-term memory entity types (issue #533) — neo4j-agent-memory's
 /// `type` values — each with the PascalCase label an entity carries next to
 /// `:Entity`.
+/// A provenance map resolved against the graph before anything is written.
+struct ProvenancePlan {
+    /// The source cited: given, or the cited chunk's.
+    source_id: Option<String>,
+    /// The chunk cited.
+    chunk_id: Option<String>,
+    /// The cited chunk's text, to check a quote against.
+    text: Option<String>,
+    /// The parsed map.
+    provenance: Provenance,
+}
+
+/// What a provenance map cites, after its source / chunk maps are written.
+struct Cited {
+    source_id: Option<String>,
+    chunk_id: Option<String>,
+    chunk: Option<Arc<NodeValue>>,
+}
+
+/// One `drevo.memory.evidence` row before its source is looked up:
+/// `(chunk, quote, offset, fact)`.
+type EvidenceRow = (Arc<NodeValue>, Value, Value, Option<Arc<RelationshipValue>>);
+
+/// An `InvalidProcedureCall` of `proc_name` saying `message`.
+fn memory_refusal(proc_name: &str, message: String, span: Span) -> ExecError {
+    ExecError::InvalidProcedureCall {
+        name: proc_name.to_string(),
+        message,
+        span,
+    }
+}
+
+/// The length of `s` in characters, as Cypher's `size()` counts it.
+fn char_len(s: &str) -> i64 {
+    i64::try_from(s.chars().count()).unwrap_or(i64::MAX)
+}
+
 const MEMORY_ENTITY_TYPES: [(&str, &str); 5] = [
     ("PERSON", "Person"),
     ("OBJECT", "Object"),
@@ -12658,9 +13464,19 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // Long-term memory (issue #533): POLE+O entities and temporal facts.
         "drevo.memory.rememberEntity" => Some(&["node"]),
         "drevo.memory.assertFact" | "drevo.memory.retractFact" => Some(&["rel"]),
-        "drevo.memory.factsAt" => {
-            Some(&["subject", "relation", "object", "valid_from", "valid_until"])
-        }
+        "drevo.memory.factsAt" => Some(&[
+            "subject",
+            "relation",
+            "object",
+            "valid_from",
+            "valid_until",
+            "source",
+            "quote",
+        ]),
+        // Provenance of long-term memory: sources, their chunks, and the
+        // passages behind an entity.
+        "drevo.memory.addSource" | "drevo.memory.addChunks" => Some(&["node"]),
+        "drevo.memory.evidence" => Some(&["chunk", "quote", "offset", "source", "fact"]),
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => Some(&["cypher"]),
@@ -12683,7 +13499,9 @@ fn procedure_optional_args(name: &str) -> usize {
         | HYBRID_RELS
         | "drevo.pagerank"
         | PERSONALIZED_PAGERANK
-        | EXPAND => 1,
+        | EXPAND
+        | "drevo.memory.rememberEntity"
+        | "drevo.memory.assertFact" => 1,
         _ => 0,
     }
 }
@@ -12831,10 +13649,16 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.memory.addMessage" => 3,
         // drevo.memory.recordReasoning(session, step, tool, outcome) (issue #533).
         "drevo.memory.recordReasoning" => 4,
-        // drevo.memory.rememberEntity(session, name, type, description) (issue #533).
-        "drevo.memory.rememberEntity" => 4,
-        // drevo.memory.assertFact(subject, relation, object, exclusive) (issue #533).
-        "drevo.memory.assertFact" => 4,
+        // drevo.memory.rememberEntity(session, name, type, description[, provenance]).
+        "drevo.memory.rememberEntity" => 5,
+        // drevo.memory.assertFact(subject, relation, object, exclusive[, provenance]).
+        "drevo.memory.assertFact" => 5,
+        // drevo.memory.addSource(id, uri, title, kind).
+        "drevo.memory.addSource" => 4,
+        // drevo.memory.addChunks(sourceId, chunks).
+        "drevo.memory.addChunks" => 2,
+        // drevo.memory.evidence(name, k).
+        "drevo.memory.evidence" => 2,
         // drevo.memory.retractFact(subject, relation, object) (issue #533).
         "drevo.memory.retractFact" => 3,
         // drevo.memory.factsAt(name, asOf) (issue #533).

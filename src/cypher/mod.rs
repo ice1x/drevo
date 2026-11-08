@@ -34,6 +34,9 @@ pub mod pagerank_config;
 /// Recursive-descent + Pratt parser that turns a `Cypher` source string
 /// into an [`ast::Query`].
 pub mod parser;
+/// The `provenance` map of the long-term memory procedures and the chunk
+/// list of `drevo.memory.addChunks`.
+pub mod provenance;
 /// Read-only classification for the engine flip — decides whether the
 /// native read mirror may serve a parsed query (#307 Phase 6).
 /// A small dependency-free regular-expression engine backing the Cypher
