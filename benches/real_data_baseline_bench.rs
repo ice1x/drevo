@@ -33,7 +33,10 @@
 //! the shipping server uses. Two seams are timed:
 //!
 //! * The **Cypher executor** path a user actually hits — `count(*)`, a label
-//!   scan, and a 1-hop fan-out from the highest-degree hub.
+//!   scan, a 1-hop fan-out from the highest-degree hub, and `drevo.search.hybrid`
+//!   (BM25 + cosine scan + RRF, `candidates: 20`) next to its BM25-only mode
+//!   when the graph has nodes with an `embedding` property
+//!   (`DREVO_BASELINE_HYBRID_QUERY` sets the query text).
 //! * The **adjacency seam** underneath it — a 1-hop `neighbors`, a 2-hop
 //!   frontier expansion, and a full-graph PageRank over an
 //!   [`AdjacencyList`](drevo::algorithms::AdjacencyList) built from the live
@@ -90,6 +93,46 @@ fn is_simple_ident(s: &str) -> bool {
         && s.chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+}
+
+/// An embedder that answers every text with the same vector.
+#[cfg(feature = "http")]
+struct FixedEmbedder(Vec<f32>);
+
+#[cfg(feature = "http")]
+impl drevo::embeddings::TextEmbedder for FixedEmbedder {
+    fn embed_query(&self, _text: &str) -> Result<Vec<f32>, drevo::embeddings::EmbeddingsError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// The label and stored `embedding` of the first node that has one, when the
+/// label is a plain identifier.
+#[cfg(feature = "http")]
+fn first_embedding(svc: &NativeService) -> Option<(String, Vec<f32>)> {
+    let found = run(
+        svc,
+        "MATCH (n) WHERE n.embedding IS NOT NULL \
+         RETURN labels(n)[0] AS label, n.embedding AS embedding LIMIT 1",
+    );
+    let row = found.rows.first()?;
+    let label = match row.first() {
+        Some(Value::String(label)) if is_simple_ident(label) => label.clone(),
+        _ => return None,
+    };
+    let Some(Value::List(items)) = row.get(1) else {
+        return None;
+    };
+    let vector = items
+        .iter()
+        .map(|v| match v {
+            Value::Float(f) => Some(*f as f32),
+            Value::Integer(i) => Some(*i as f32),
+            _ => None,
+        })
+        .collect::<Option<Vec<f32>>>()?;
+    eprintln!("hybrid workload: label={label}, dimension={}", vector.len());
+    Some((label, vector))
 }
 
 fn load() -> Result<Loaded, Box<dyn std::error::Error>> {
@@ -198,6 +241,34 @@ fn main() {
             "one_hop_from_hub_cypher",
             &format!("MATCH (a)-->(b) WHERE id(a) = {hub} RETURN count(b)"),
         );
+    }
+
+    // --- Hybrid search (issue #780): BM25 + cosine scan + RRF fusion -------
+    // The query text is DREVO_BASELINE_HYBRID_QUERY (default `memory`). A stub
+    // embedder answers with the stored `embedding` of the first node carrying
+    // one, so the cosine scan runs at the graph's own dimension with no
+    // upstream: the number is retrieval + fusion, not the embedder's latency.
+    #[cfg(feature = "http")]
+    if let Some((label, vector)) = first_embedding(&l.svc) {
+        let text = std::env::var("DREVO_BASELINE_HYBRID_QUERY")
+            .unwrap_or_else(|_| "memory".to_string())
+            .replace(['\'', '\\'], " ");
+        l.svc
+            .set_embedder(std::sync::Arc::new(FixedEmbedder(vector)));
+        for (group, mode) in [
+            ("hybrid_search", "hybrid"),
+            ("hybrid_search_fts_only", "fts"),
+        ] {
+            bench_cypher(
+                &mut c,
+                &l.svc,
+                group,
+                &format!(
+                    "CALL drevo.search.hybrid('{text}', '{label}', 'embedding', 10, \
+                     {{candidates: 20, mode: '{mode}'}}) YIELD node RETURN node"
+                ),
+            );
+        }
     }
 
     // --- Adjacency seam (isolates index-free adjacency from the executor) --

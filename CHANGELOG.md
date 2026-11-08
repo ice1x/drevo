@@ -8,6 +8,20 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Hybrid search in one call: `drevo.search.hybrid(query, label,
+  embeddingProperty, k[, config]) YIELD node, score, ftsRank, vectorRank,
+  mode`** (issue #780), and `drevo.search.hybridRelationships` for
+  relationships. The server runs the BM25 ranking of `fts.search` and the
+  cosine ranking of `drevo.semantic.query`, `candidates` deep (default
+  `max(k, 20)`), and fuses them with Reciprocal Rank Fusion
+  (`score = Σ weight / (rrfK + rank)`, `rrfK` 60), so a client no longer pulls
+  two lists over Bolt and fuses them itself. `ftsRank` / `vectorRank` are each
+  node's rank in the two lists (`null` when absent); `mode: 'auto'` ranks by
+  BM25 alone when no embedder is installed, or when the installed one fails
+  on the query (logged as a warning), and says `'fts'` on every row; an
+  explicit `'hybrid'` fails instead, with the `semantic embedding` capability
+  error or the embedder's error. The config map (`candidates`, `rrfK`,
+  `mode`, `ftsFilter`, `weights`) rejects unknown keys by name.
 - **`maxWalk` on `drevo.path.timetable`** (issue #774): the most seconds of
   footpaths in a row, between two rides or after the start cost. Without it
   the search followed footpaths as far as they went — on Sofia's graph, where

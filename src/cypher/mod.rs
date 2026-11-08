@@ -24,6 +24,7 @@ pub mod ast;
 /// Executor — walks the [`ast::Query`] produced by [`parser::parse`]
 /// and runs it against a `Drevo` handle. Task `00063`.
 pub mod executor;
+pub mod hybrid;
 /// Lexical analyser — turns a Cypher source string into a stream of
 /// [`lexer::Token`]s for the parser.
 pub mod lexer;
