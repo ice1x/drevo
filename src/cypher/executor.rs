@@ -1733,7 +1733,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           apoc.trigger.dropAll, apoc.trigger.stop, apoc.trigger.start, \
                           drevo.sequence.create, drevo.sequence.drop, drevo.sequence.list, \
                           drevo.indexes.secondary, drevo.indexes.setSecondary, \
-                          fts.search, fts.searchRelationships"
+                          fts.search, fts.searchRelationships, \
+                          drevo.search.hybrid, drevo.search.hybridRelationships"
                         .into(),
                     span: c.span,
                 })?;
@@ -9502,6 +9503,233 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// `CALL drevo.search.hybrid(query, label, embeddingProperty, k[, config])
+    /// YIELD node, score, ftsRank, vectorRank, mode` (issue #780) and its
+    /// relationship twin `drevo.search.hybridRelationships(query, type, …)
+    /// YIELD rel, …`: the BM25 ranking of `fts.search` and the cosine ranking
+    /// of `drevo.semantic.query`, each `candidates` deep, fused with
+    /// Reciprocal Rank Fusion ([`crate::cypher::hybrid::rrf_fuse`]); the
+    /// top-`k` fused rows come back, `k` applied before any `YIELD … WHERE`.
+    ///
+    /// The `mode` column is the mode that ran: `'auto'` runs both legs when a
+    /// label/type is given and an embedder is installed, else BM25 only — and
+    /// also BM25 only, with a warning, when that embedder fails on the query.
+    fn proc_search_hybrid(
+        &self,
+        name: &str,
+        items: HybridItems,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
+        use crate::cypher::hybrid::{
+            parse_k, resolve_mode, rrf_fuse, HybridConfig, HybridMode, Leg, ModeUnavailable,
+        };
+        // Arity (4 or 5) is enforced by the upfront validation sweep.
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: name.to_string(),
+            message,
+            span,
+        };
+        let empty = Bindings::new();
+        let target_arg = items.target();
+        let query = match self.eval(&args[0], &empty)? {
+            Value::String(q) => q,
+            other => {
+                return Err(refuse(format!(
+                    "query must be a string, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let target = match self.eval(&args[1], &empty)? {
+            Value::Null => None,
+            Value::String(t) => Some(t),
+            other => {
+                return Err(refuse(format!(
+                    "{target_arg} must be a string or null, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let property = match self.eval(&args[2], &empty)? {
+            Value::String(p) => p,
+            other => {
+                return Err(refuse(format!(
+                    "embeddingProperty must be a string, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let k = parse_k(&self.eval(&args[3], &empty)?).map_err(refuse)?;
+        let config = match args.get(4) {
+            Some(arg) => HybridConfig::from_value(&self.eval(arg, &empty)?).map_err(refuse)?,
+            None => HybridConfig::default(),
+        };
+
+        let has_embedder = self.native_embedder.is_some();
+        let unavailable = |e: ModeUnavailable| match e {
+            ModeUnavailable::NoVectorTarget => refuse(format!(
+                "mode '{}' needs a {target_arg} to rank by embedding; pass one or use mode 'fts'",
+                config.mode.as_str()
+            )),
+            ModeUnavailable::NoEmbedder => Self::engine_capability(HYBRID_EMBEDDING),
+        };
+        let mut mode =
+            resolve_mode(config.mode, target.is_some(), has_embedder).map_err(unavailable)?;
+        if config.mode == HybridMode::Auto && !has_embedder {
+            log_hybrid_without_embedder();
+        }
+
+        // Embed first: in mode 'auto' an embedder that fails leaves BM25 alone.
+        let query_vector = match mode {
+            HybridMode::Hybrid | HybridMode::Vector => {
+                match self.hybrid_query_vector(name, &query, span) {
+                    Ok(vector) => Some(vector),
+                    Err(e) if config.mode == HybridMode::Auto => {
+                        log_hybrid_embedder_failure(&e);
+                        mode = HybridMode::Fts;
+                        None
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            HybridMode::Auto | HybridMode::Fts => None,
+        };
+
+        let depth = config.depth(k);
+        let mut found: HashMap<u64, Value> = HashMap::new();
+        let fts_ids = if mode == HybridMode::Vector {
+            Vec::new()
+        } else {
+            self.hybrid_fts_leg(
+                items,
+                &query,
+                depth,
+                config.fts_filter.as_deref(),
+                &mut found,
+            )?
+        };
+        let vector_ids = match (&target, &query_vector) {
+            (Some(target), Some(vector)) => {
+                let rows = match items {
+                    HybridItems::Nodes => {
+                        self.vector_scan(target, &property, vector, depth, span)?
+                    }
+                    HybridItems::Relationships => {
+                        self.rel_vector_scan(target, &property, vector, depth, span)?
+                    }
+                };
+                let mut ids = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let Some(item) = row.into_iter().next() else {
+                        continue;
+                    };
+                    let id = match &item {
+                        Value::Node(n) => n.id,
+                        Value::Relationship(r) => r.id,
+                        _ => continue,
+                    };
+                    ids.push(id);
+                    found.entry(id).or_insert(item);
+                }
+                ids
+            }
+            _ => Vec::new(),
+        };
+
+        let fused = rrf_fuse(
+            &[(Leg::Fts, &fts_ids[..]), (Leg::Vector, &vector_ids[..])],
+            config.rrf_k,
+            config.weights,
+        );
+        let rank = |r: Option<usize>| {
+            r.map_or(Value::Null, |r| {
+                Value::Integer(i64::try_from(r).unwrap_or(i64::MAX))
+            })
+        };
+        Ok(fused
+            .into_iter()
+            .filter_map(|f| {
+                let item = found.remove(&f.id)?;
+                Some(vec![
+                    item,
+                    Value::Float(f.score),
+                    rank(f.fts_rank),
+                    rank(f.vector_rank),
+                    Value::String(mode.as_str().to_string()),
+                ])
+            })
+            .take(k)
+            .collect())
+    }
+
+    /// The BM25 leg of a hybrid search: the ids of the best `depth` matches
+    /// of `query`, best first, restricted to `filter` (a label, or a
+    /// relationship type) when given. Each matched item is recorded in
+    /// `found`.
+    fn hybrid_fts_leg(
+        &self,
+        items: HybridItems,
+        query: &str,
+        depth: usize,
+        filter: Option<&str>,
+        found: &mut HashMap<u64, Value>,
+    ) -> ExecResultT<Vec<u64>> {
+        // A filtered leg ranks every match, then keeps the first `depth` that
+        // pass the filter.
+        let limit = if filter.is_some() { usize::MAX } else { depth };
+        let mut ids = Vec::new();
+        match items {
+            HybridItems::Nodes => {
+                let fts = self.full_text_index(self.native_fts, "fts.search")?;
+                for (id, _) in fts.search(query, limit) {
+                    if ids.len() == depth {
+                        break;
+                    }
+                    let Some(node) = self.engine().get_node(id)? else {
+                        continue;
+                    };
+                    if let Some(label) = filter {
+                        if !node_labels_from_storage(&node).iter().any(|l| l == label) {
+                            continue;
+                        }
+                    }
+                    ids.push(id);
+                    found.insert(id, Value::Node(node_to_value(&node)));
+                }
+            }
+            HybridItems::Relationships => {
+                let fts = self.full_text_index(self.native_fts_rel, "fts.searchRelationships")?;
+                for (id, _) in fts.search(query, limit) {
+                    if ids.len() == depth {
+                        break;
+                    }
+                    let Some(edge) = self.engine().get_edge(id)? else {
+                        continue;
+                    };
+                    if filter.is_some_and(|kind| edge.kind != kind) {
+                        continue;
+                    }
+                    ids.push(id);
+                    found.insert(id, Value::Relationship(edge_to_value(&edge)));
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// The query text embedded server-side for a hybrid search's vector leg.
+    #[cfg(feature = "http")]
+    fn hybrid_query_vector(&self, name: &str, text: &str, span: Span) -> ExecResultT<Vec<f32>> {
+        self.embed_query_text(name, text, span)
+    }
+
+    /// Without the `http` feature there is no embedder, so no vector leg.
+    #[cfg(not(feature = "http"))]
+    fn hybrid_query_vector(&self, _name: &str, _text: &str, _span: Span) -> ExecResultT<Vec<f32>> {
+        Err(Self::engine_capability(HYBRID_EMBEDDING))
+    }
+
     /// Run a built-in procedure and return its output rows, each a
     /// positional vector aligned with [`procedure_columns`].
     fn invoke_procedure(
@@ -9559,6 +9787,10 @@ impl<'a> Executor<'a> {
             "drevo.engine.status" => self.proc_engine_status(),
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
+            HYBRID => self.proc_search_hybrid(HYBRID, HybridItems::Nodes, args, span),
+            HYBRID_RELS => {
+                self.proc_search_hybrid(HYBRID_RELS, HybridItems::Relationships, args, span)
+            }
             "db.index.vector.queryNodes" => self.proc_db_index_vector_query_nodes(args, span),
             "db.index.vector.queryRelationships" => {
                 self.proc_db_index_vector_query_relationships(args, span)
@@ -11335,6 +11567,62 @@ const REACHABLE: &str = "drevo.path.reachable";
 /// The `drevo.spatial.nearest` procedure: the nodes nearest to a point.
 const NEAREST: &str = "drevo.spatial.nearest";
 
+/// The `drevo.search.hybrid` procedure: BM25 and vector retrieval over nodes,
+/// fused with Reciprocal Rank Fusion.
+const HYBRID: &str = "drevo.search.hybrid";
+
+/// The `drevo.search.hybridRelationships` procedure: the relationship twin of
+/// [`HYBRID`].
+const HYBRID_RELS: &str = "drevo.search.hybridRelationships";
+
+/// The capability a `drevo.search.hybrid` vector leg needs and lacks when no
+/// text embedder is installed.
+const HYBRID_EMBEDDING: &str = "semantic embedding (see drevo.semantic.status())";
+
+/// Note, once per process at DEBUG, that `drevo.search.hybrid` in mode
+/// `'auto'` ran BM25 only because no text embedder is installed — the
+/// documented degradation, so not a warning.
+fn log_hybrid_without_embedder() {
+    #[cfg(feature = "http")]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            tracing::debug!(
+                "drevo.search.hybrid: no text embedder installed; mode 'auto' runs BM25 only"
+            );
+        });
+    }
+}
+
+/// Warn that `drevo.search.hybrid` in mode `'auto'` ranked by BM25 only
+/// because the installed embedder failed on the query text.
+fn log_hybrid_embedder_failure(error: &ExecError) {
+    #[cfg(feature = "http")]
+    tracing::warn!(
+        error = %error,
+        "drevo.search.hybrid: embedding the query failed; mode 'auto' ranks by BM25 only"
+    );
+    #[cfg(not(feature = "http"))]
+    let _ = error;
+}
+
+/// What a hybrid search ranks: nodes of a label or relationships of a type.
+#[derive(Clone, Copy)]
+enum HybridItems {
+    Nodes,
+    Relationships,
+}
+
+impl HybridItems {
+    /// The name of the argument that picks the vector target.
+    fn target(self) -> &'static str {
+        match self {
+            Self::Nodes => "label",
+            Self::Relationships => "type",
+        }
+    }
+}
+
 /// A `drevo.spatial.nearest` argument error.
 fn nearest_refusal(message: String, span: Span) -> ExecError {
     ExecError::InvalidProcedureCall {
@@ -12106,6 +12394,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "fts.search" => Some(&["node", "score"]),
         // Relationship full-text search (issue #227-B): BM25-ranked edges.
         "fts.searchRelationships" => Some(&["rel", "score"]),
+        // Hybrid search (issue #780): BM25 + vector fused with RRF.
+        HYBRID => Some(&["node", "score", "ftsRank", "vectorRank", "mode"]),
+        HYBRID_RELS => Some(&["rel", "score", "ftsRank", "vectorRank", "mode"]),
         // Neo4j-compatible index procedures (issue #532): same (node, score)
         // contract as their drevo-native counterparts.
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
@@ -12196,7 +12487,12 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
 /// them) may be left out.
 fn procedure_optional_args(name: &str) -> usize {
     match name {
-        "apoc.trigger.install" | "apoc.trigger.add" | "drevo.sequence.create" | NEAREST => 1,
+        "apoc.trigger.install"
+        | "apoc.trigger.add"
+        | "drevo.sequence.create"
+        | NEAREST
+        | HYBRID
+        | HYBRID_RELS => 1,
         _ => 0,
     }
 }
@@ -12311,6 +12607,9 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.engine.status" => 0,
         // fts.search(query, k) / fts.searchRelationships(query, k)
         "fts.search" | "fts.searchRelationships" => 2,
+        // drevo.search.hybrid(query, label, embeddingProperty, k[, config]) and
+        // drevo.search.hybridRelationships(query, type, …) (issue #780).
+        HYBRID | HYBRID_RELS => 5,
         // db.index.vector.queryNodes(indexName, k, queryVector) (issue #532).
         "db.index.vector.queryNodes" => 3,
         // db.index.fulltext.queryNodes(indexName, queryString) (issue #532).

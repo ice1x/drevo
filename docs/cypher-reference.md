@@ -811,6 +811,7 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `drevo.ricciCurvature()` | `from, to, curvature` | Ollivier–Ricci curvature of every undirected edge over the unweighted projection (edge direction and weight ignored): `curvature ≤ 1` is negative on bridge-like edges between communities (good cut candidates) and positive inside dense clusters; each edge returned once with `from` the smaller-id endpoint, ascending by `(from, to)` (issue #526) |
 | `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale–Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
 | `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra — see [Weighted paths](#weighted-paths) |
+| `drevo.search.hybrid(query, label, embeddingProperty, k[, config])`, `drevo.search.hybridRelationships(query, type, …)` | `node` or `rel`, `score`, `ftsRank`, `vectorRank`, `mode` | BM25 and embedding similarity fused with Reciprocal Rank Fusion, best first — see [Hybrid search](#hybrid-search-780) |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 | `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes — see [Secondary indexes](#secondary-indexes) |
 | `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
@@ -1845,8 +1846,8 @@ including full-text, vector and fuzzy search, `keywords()`, `SHOW INDEXES`,
 `SHOW CONSTRAINTS` and auto-embedding of new nodes. Two exceptions:
 
 - **Full-text search covers committed data only.** `fts.search`,
-  `fts.searchRelationships`, `db.index.fulltext.queryNodes` and
-  `drevo.memory.recall` work until the transaction writes. After that they
+  `fts.searchRelationships`, `db.index.fulltext.queryNodes`,
+  `drevo.search.hybrid` and `drevo.memory.recall` work until the transaction writes. After that they
   fail with `Neo.ClientError.Transaction.ForbiddenDueToTransactionType`,
   because the index cannot rank uncommitted writes. Search before writing, or
   after `COMMIT`. A hit committed by someone else after `BEGIN` is left out,
@@ -2321,6 +2322,81 @@ counterparts (`register` / `query` / `reindex`) — same modes, fail-open
 auto-embed, skip-unchanged, and batched/idempotent backfill. `drevo.semantic.status`
 lists node **and** relationship targets, with a `target_kind` column
 (`node` / `relationship`) distinguishing them.
+
+### Hybrid search (#780)
+
+`drevo.search.hybrid` ranks nodes by keywords and by meaning in one call. It
+runs the BM25 ranking of `fts.search` and the cosine ranking of
+`drevo.semantic.query` (the query text embedded on the server), each a few
+dozen candidates deep, and fuses them with Reciprocal Rank Fusion: a node
+scores `Σ weight / (rrfK + rank)` over the rankings that returned it. A node
+both rankings found beats one that tops only one of them, so an exact name
+and a paraphrase both land near the top.
+
+```text
+CALL drevo.search.hybrid(query, label, embeddingProperty, k[, config])
+YIELD node, score, ftsRank, vectorRank, mode
+```
+
+```cypher
+CALL drevo.search.hybrid('anxious thoughts about work', 'Chunk', 'embedding', 5)
+YIELD node, score, ftsRank, vectorRank, mode
+RETURN node.title, score, ftsRank, vectorRank, mode
+```
+
+| Argument | Meaning |
+|---|---|
+| `query` | the text to search for; ranked by BM25 and embedded for the vector ranking |
+| `label` | the label whose nodes carry the embedding; `null` ranks by BM25 only |
+| `embeddingProperty` | the property holding each node's embedding, e.g. `'embedding'` |
+| `k` | how many rows to return, at least 1 |
+| `config` | optional map, below |
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `candidates` | `max(k, 20)` | how deep each ranking goes before fusion; never fewer than `k` |
+| `rrfK` | `60` | the RRF constant, a number ≥ 0; a larger one narrows the gap between neighbouring ranks |
+| `mode` | `'auto'` | `'auto'`, `'hybrid'`, `'fts'` or `'vector'`, see below |
+| `ftsFilter` | `null` | a label the BM25 ranking is restricted to (BM25 otherwise covers every node) |
+| `weights` | `{fts: 1.0, vector: 1.0}` | multiplies each ranking's reciprocal rank; finite numbers ≥ 0. A node only a `0`-weighted ranking found is left out |
+
+An unknown key, a config that is not a map, `k < 1`, a negative `rrfK` or a
+wrong-typed value fail with an error naming the key.
+
+Each row carries the fused `score` (rows come best first), the node's 1-based
+rank in each ranking — `null` when that ranking did not return it — and the
+`mode` that ran, the same on every row:
+
+| `mode` | Embedder installed | No embedder |
+|---|---|---|
+| `'auto'` | both rankings; rows say `'hybrid'` (BM25 only when `label` is `null`); embedder fails on the query → BM25 only, rows say `'fts'`, and the server logs a warning | BM25 only; rows say `'fts'` |
+| `'hybrid'` | both rankings | error: `semantic embedding` is not available |
+| `'fts'` | BM25 only | BM25 only |
+| `'vector'` | the embedding ranking only | error: `semantic embedding` is not available |
+
+`CALL drevo.semantic.info()` tells whether an embedder is installed.
+`'hybrid'` and `'vector'` also need a `label`. Equal scores are ordered with the
+nodes both rankings found first, then by node id, so the same graph and query
+always give the same rows. As with `fts.search`, `k` is applied before a
+`YIELD … WHERE`:
+
+```cypher
+CALL drevo.search.hybrid('graph databases', 'Doc', 'embedding', 10, {mode: 'fts', ftsFilter: 'Doc'})
+YIELD node, score, ftsRank
+WHERE node.group_id = 'g1'
+RETURN node.title, score, ftsRank
+```
+
+`drevo.search.hybridRelationships(query, type, embeddingProperty, k[, config])
+YIELD rel, score, ftsRank, vectorRank, mode` does the same over relationships:
+`fts.searchRelationships` and the embeddings of the relationships of `type`
+(`ftsFilter` names a relationship type):
+
+```cypher
+CALL drevo.search.hybridRelationships('who mentors whom', 'RELATES_TO', 'fact_embedding', 5)
+YIELD rel, score, mode
+RETURN rel, score, mode
+```
 
 ---
 
