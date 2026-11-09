@@ -139,14 +139,19 @@ struct Summarized {
 }
 
 fn summarize(db: &NativeService, config: &str) -> Vec<Summarized> {
-    run(
+    try_summarize(db, config).unwrap_or_else(|e| panic!("summarize({config}): {e}"))
+}
+
+/// [`summarize`], or the error it fails with.
+fn try_summarize(db: &NativeService, config: &str) -> Result<Vec<Summarized>, ExecError> {
+    Ok(try_run(
         db,
         &format!(
             "CALL drevo.community.summarize({config}) \
              YIELD community, size, summary, keywords, mode \
              RETURN community.id, size, summary, keywords, mode"
         ),
-    )
+    )?
     .rows
     .iter()
     .map(|r| Summarized {
@@ -162,7 +167,7 @@ fn summarize(db: &NativeService, config: &str) -> Vec<Summarized> {
             v => Some(string(v)),
         },
     })
-    .collect()
+    .collect())
 }
 
 /// The members of each community of `layer`: id → sorted names.
@@ -1130,4 +1135,230 @@ fn bolt_round_trip_types() {
         "CALL drevo.rag.context('mobile release', {scope: 'global'}) YIELD scope RETURN scope",
     );
     assert_eq!(rows[0][0], Bolt::String("global".to_string()));
+}
+
+// ── #804: the LLM summariser, async and the sync cap ─────────────────
+
+#[cfg(feature = "embeddings-proxy")]
+mod llm {
+    use super::*;
+
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use axum::extract::State;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use drevo::extract::settings::{install_config, ExtractConfig};
+    use serde_json::json;
+
+    /// What the fake model answers to every request.
+    const LLM_SUMMARY: &str = "A team that ships its tickets together (summary by the fake model).";
+
+    async fn chat(
+        State(calls): State<Arc<AtomicUsize>>,
+        Json(_body): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Json(json!({
+            "choices": [{"message": {"role": "assistant", "content": LLM_SUMMARY}}]
+        }))
+    }
+
+    /// A fake OpenAI-compatible chat upstream, installed as the extractor's
+    /// chat model (as `DREVO_EXTRACT_UPSTREAM` / `POST /config/extract`
+    /// would) until dropped.
+    struct Upstream {
+        calls: Arc<AtomicUsize>,
+        _runtime: tokio::runtime::Runtime,
+    }
+
+    impl Upstream {
+        fn start() -> Self {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let state = Arc::clone(&calls);
+            let addr: SocketAddr = runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let app = Router::new()
+                    .route("/v1/chat/completions", post(chat))
+                    .with_state(state);
+                tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+                addr
+            });
+            install_config(&ExtractConfig {
+                upstream: format!("http://{addr}/v1/chat/completions"),
+                api_key: Some("sk-test".into()),
+                model: "fake-model".into(),
+                timeout_ms: 10_000,
+            })
+            .unwrap();
+            Self {
+                calls,
+                _runtime: runtime,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for Upstream {
+        fn drop(&mut self) {
+            drevo::extract::uninstall();
+        }
+    }
+
+    /// Serialises the tests of this module: the chat model is process-wide.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn llm_mode_uses_the_configured_chat_upstream() {
+        let _s = serial();
+        let llm = Upstream::start();
+        let db = plain();
+        let rows = try_summarize(&db, "{mode: 'llm'}").unwrap_or_else(|e| {
+            panic!(
+                "mode: 'llm' failed although a chat upstream is configured \
+                 (community_llm_summarizer always returns None, #804): {e}"
+            )
+        });
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        for row in &rows {
+            assert_eq!(row.mode.as_deref(), Some("llm"), "{row:?}");
+            assert_eq!(row.summary.as_deref(), Some(LLM_SUMMARY), "{row:?}");
+            assert!(!row.keywords.is_empty(), "extractive keywords: {row:?}");
+        }
+        assert!(llm.calls() >= 2, "{} model calls", llm.calls());
+        assert_eq!(
+            count(&db, "MATCH (c:Community {mode: 'llm'}) RETURN count(c)"),
+            2
+        );
+    }
+
+    #[test]
+    fn auto_mode_prefers_the_llm_when_an_upstream_is_configured() {
+        let _s = serial();
+        let llm = Upstream::start();
+        let db = plain();
+        let rows = summarize(&db, "{mode: 'auto'}");
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let modes: Vec<Option<String>> = rows.iter().map(|r| r.mode.clone()).collect();
+        assert!(
+            modes.iter().all(|m| m.as_deref() == Some("llm")),
+            "mode: 'auto' wrote {modes:?} summaries although a chat upstream is configured \
+             ({} model calls): it should prefer the LLM (#804)",
+            llm.calls()
+        );
+    }
+
+    #[test]
+    fn async_summarize_returns_a_job_id_that_finishes() {
+        let _s = serial();
+        drevo::extract::uninstall();
+        let db = Arc::new(plain());
+        db.start_ingest();
+        struct Stop<'a>(&'a NativeService);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.stop_ingest();
+            }
+        }
+        let _stop = Stop(&db);
+        let res = try_run(
+            &db,
+            "CALL drevo.community.summarize({async: true, mode: 'extractive'})",
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "async: true was refused although ingest jobs (#788) exist: it should submit \
+                 a job and return its jobId (#804): {e}"
+            )
+        });
+        let column = res
+            .columns
+            .iter()
+            .position(|c| c == "jobId")
+            .unwrap_or_else(|| panic!("no jobId column in {:?} (#804)", res.columns));
+        let job = string(&res.rows[0][column]);
+        let state = || -> String {
+            let res = db
+                .execute(
+                    &parse("CALL drevo.ingest.status($job) YIELD job RETURN job.state").unwrap(),
+                    HashMap::from([("job".to_string(), Value::String(job.clone()))]),
+                )
+                .unwrap_or_else(|e| panic!("status of {job}: {e}"));
+            string(&res.rows[0][0])
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut last = state();
+        while last != "done" && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            last = state();
+        }
+        assert_eq!(last, "done", "the async summarize job {job} did not finish");
+        assert_eq!(
+            count(
+                &db,
+                "MATCH (c:Community {mode: 'extractive'}) RETURN count(c)"
+            ),
+            2
+        );
+    }
+
+    /// `teams` separate three-person teams: one community each.
+    fn many_teams(db: &NativeService, teams: i64) {
+        run(
+            db,
+            &format!(
+                "UNWIND range(1, {teams}) AS i \
+                 CREATE (a:Person {{name: 'Ann ' + toString(i), description: 'team lead'}}), \
+                        (b:Person {{name: 'Ben ' + toString(i), description: 'engineer'}}), \
+                        (c:Person {{name: 'Cid ' + toString(i), description: 'tester'}}), \
+                        (a)-[:MENTORS]->(b), (b)-[:WORKS_WITH]->(c), (c)-[:WORKS_WITH]->(a)"
+            ),
+        );
+    }
+
+    #[test]
+    fn the_sync_llm_cap_is_enforced() {
+        let _s = serial();
+        // 21 communities: one more than the default cap of 20.
+        let probe = NativeService::in_memory();
+        many_teams(&probe, 21);
+        assert_eq!(summarize(&probe, "{mode: 'extractive'}").len(), 21);
+
+        let llm = Upstream::start();
+        let db = NativeService::in_memory();
+        many_teams(&db, 21);
+        let res = try_run(&db, "CALL drevo.community.summarize({mode: 'llm'})");
+        let got = match &res {
+            Ok(r) => format!("{} rows", r.rows.len()),
+            Err(e) => format!("{e:?}"),
+        };
+        assert!(
+            res.is_err() && got.contains("async: true"),
+            "a synchronous mode: 'llm' over 21 communities (more than the default \
+             DREVO_COMMUNITY_MAX_LLM_SYNC = 20) was not refused with a pointer to \
+             `async: true` (#804); got: {got}"
+        );
+        assert_eq!(
+            llm.calls(),
+            0,
+            "the model was called before the cap refused"
+        );
+        assert_eq!(count(&db, "MATCH (c:Community) RETURN count(c)"), 0);
+    }
 }

@@ -190,6 +190,7 @@ mod upstream {
 
     use std::collections::BTreeMap;
     use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -214,6 +215,8 @@ mod upstream {
         GarbageOnce,
         /// Fail with HTTP 500.
         Fail,
+        /// Wait until released, then answer like `Honest`.
+        Hang,
     }
 
     #[derive(Clone)]
@@ -221,6 +224,8 @@ mod upstream {
         mode: Mode,
         /// Every request body received.
         seen: Arc<Mutex<Vec<serde_json::Value>>>,
+        /// Lets a `Hang` request answer.
+        released: Arc<AtomicBool>,
     }
 
     /// The cast the fake model recognises.
@@ -298,6 +303,11 @@ mod upstream {
             )
                 .into_response();
         }
+        if fake.mode == Mode::Hang {
+            while !fake.released.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
         let user = body["messages"]
             .as_array()
             .and_then(|m| m.iter().rev().find(|m| m["role"] == "user"))
@@ -329,6 +339,7 @@ mod upstream {
     /// A fake chat upstream installed for the `drevo.extract.*` procedures.
     struct Upstream {
         seen: Arc<Mutex<Vec<serde_json::Value>>>,
+        released: Arc<AtomicBool>,
         _runtime: tokio::runtime::Runtime,
     }
 
@@ -342,8 +353,10 @@ mod upstream {
             let fake = Fake {
                 mode,
                 seen: Arc::new(Mutex::new(Vec::new())),
+                released: Arc::new(AtomicBool::new(false)),
             };
             let seen = Arc::clone(&fake.seen);
+            let released = Arc::clone(&fake.released);
             let addr: SocketAddr = runtime.block_on(async move {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
@@ -362,12 +375,25 @@ mod upstream {
             .unwrap();
             Self {
                 seen,
+                released,
                 _runtime: runtime,
             }
         }
 
         fn calls(&self) -> Vec<serde_json::Value> {
             self.seen.lock().unwrap().clone()
+        }
+
+        /// Let every `Hang` request, current and future, answer.
+        fn release(&self) {
+            self.released.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl Drop for Upstream {
+        fn drop(&mut self) {
+            // Let nothing hang past the test.
+            self.release();
         }
     }
 
@@ -984,6 +1010,140 @@ mod upstream {
                 // Nostromo is a SPACESHIP, not one of the default types.
                 Bolt::Integer(1)
             ]
+        );
+    }
+
+    // ----- #805: a direct ingest and the writer lock ---------------------------
+
+    /// Wait up to `limit` for the fake to have received `n` requests.
+    fn wait_for_calls(llm: &Upstream, n: usize, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        while llm.calls().len() < n {
+            assert!(
+                Instant::now() < deadline,
+                "the fake upstream never received request {n}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Commits rejected so far, whatever the reason.
+    fn rejected_commits(svc: &NativeService) -> u64 {
+        let stats = svc.conflict_stats();
+        stats.overlap + stats.would_pass + stats.history
+    }
+
+    #[test]
+    fn direct_ingest_does_not_hold_the_writer_lock_while_the_model_runs() {
+        let _s = serial();
+        let llm = Upstream::start(Mode::Hang);
+        let svc = Arc::new(NativeService::in_memory());
+        let ingest = {
+            let svc = Arc::clone(&svc);
+            std::thread::spawn(move || {
+                run_with(
+                    &svc,
+                    "CALL drevo.extract.ingest($text, {source: {id: 'book-1'}}) \
+                     YIELD chunks RETURN chunks",
+                    &[("text", book())],
+                )
+            })
+        };
+        // The model is now answering the first passage, and will not until
+        // released.
+        wait_for_calls(&llm, 1, Duration::from_secs(10));
+        let (done, finished) = std::sync::mpsc::channel();
+        let writer = {
+            let svc = Arc::clone(&svc);
+            std::thread::spawn(move || {
+                let res = run(&svc, "CREATE (:X {name: 'concurrent'})");
+                let _ = done.send(());
+                res
+            })
+        };
+        let created_meanwhile = finished.recv_timeout(Duration::from_secs(2)).is_ok();
+        llm.release();
+        let ingested = ingest.join().expect("the ingest thread");
+        let created = writer.join().expect("the writer thread");
+        assert!(
+            created_meanwhile,
+            "CREATE waited on the writer lock while the model ran: a concurrent \
+             `CREATE (:X)` on the same database did not finish within 2 s while \
+             drevo.extract.ingest was blocked on the chat upstream (#805)"
+        );
+        ingested.expect("ingest");
+        created.expect("create");
+        assert_eq!(count(&svc, "MATCH (x:X) RETURN count(x)"), 1);
+    }
+
+    #[test]
+    fn a_commit_conflict_does_not_repeat_the_model_calls() {
+        let _s = serial();
+        let llm = Upstream::start(Mode::Hang);
+        let svc = Arc::new(NativeService::in_memory());
+        run_ok(
+            &svc,
+            "CALL drevo.memory.addSource('book-1', null, 'Draft', 'document') \
+             YIELD node RETURN node",
+        );
+        let chunks = drevo::extract::chunk::split(BOOK, 40).len();
+        assert!(chunks >= 2, "{chunks}");
+        let rejected_before = rejected_commits(&svc);
+        // The ingest renames the source, so it writes the source node.
+        let ingest = {
+            let svc = Arc::clone(&svc);
+            std::thread::spawn(move || {
+                run_with(
+                    &svc,
+                    "CALL drevo.extract.ingest($text, \
+                       {chunkChars: 40, source: {id: 'book-1', title: 'Book One'}}) \
+                     YIELD chunks RETURN chunks",
+                    &[("text", book())],
+                )
+            })
+        };
+        wait_for_calls(&llm, 1, Duration::from_secs(10));
+        // While the model runs, another writer commits a change to the same
+        // source node: the ingest's commit, on its older snapshot, conflicts.
+        let (done, finished) = std::sync::mpsc::channel();
+        let rival = {
+            let svc = Arc::clone(&svc);
+            std::thread::spawn(move || {
+                let tx = svc.begin_tx();
+                let res = svc
+                    .execute_in_tx(
+                        tx,
+                        &parse("MATCH (s:Source {id: 'book-1'}) SET s.title = 'Rival'")
+                            .expect("parse"),
+                        HashMap::new(),
+                    )
+                    .map_err(|e| format!("{e:?}"))
+                    .and_then(|_| svc.commit_tx(tx).map_err(|e| format!("{e:?}")));
+                let _ = done.send(());
+                res
+            })
+        };
+        let rival_in_window = finished.recv_timeout(Duration::from_secs(5)).is_ok();
+        llm.release();
+        let ingested = ingest.join().expect("the ingest thread");
+        let rival = rival.join().expect("the rival thread");
+        assert!(
+            rival_in_window,
+            "setup: the rival transaction could not commit while the model ran"
+        );
+        rival.expect("the rival commit");
+        ingested.expect("the ingest, after its retry");
+        let calls = llm.calls().len();
+        let rejected = rejected_commits(&svc) - rejected_before;
+        assert_eq!(
+            calls, chunks,
+            "a commit conflict repeated the model calls: the fake upstream saw {calls} \
+             requests for {chunks} chunks after {rejected} rejected commit(s) — the retry \
+             loop re-ran the extraction (#805)"
+        );
+        assert!(
+            rejected >= 1,
+            "setup: no commit conflict was forced, so the test proved nothing"
         );
     }
 }

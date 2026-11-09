@@ -974,10 +974,52 @@ mod upstream {
         use tracing_subscriber::layer::SubscriberExt;
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
-            let subscriber =
-                tracing_subscriber::registry().with(drevo::problems::ProblemLayer::global());
+            let subscriber = tracing_subscriber::registry()
+                .with(drevo::problems::ProblemLayer::global())
+                .with(CountUnusableConfig);
             let _ = tracing::subscriber::set_global_default(subscriber);
         });
+    }
+
+    /// Warnings "an ingest job has an unusable config" logged so far: one
+    /// per scheduler pass while such a job is active.
+    #[cfg(feature = "http")]
+    static UNUSABLE_CONFIG_WARNINGS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Counts [`UNUSABLE_CONFIG_WARNINGS`].
+    #[cfg(feature = "http")]
+    struct CountUnusableConfig;
+
+    #[cfg(feature = "http")]
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountUnusableConfig {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Message(bool);
+            impl tracing::field::Visit for Message {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message"
+                        && format!("{value:?}").contains("an ingest job has an unusable config")
+                    {
+                        self.0 = true;
+                    }
+                }
+            }
+            if event.metadata().target() != "drevo::ingest" {
+                return;
+            }
+            let mut message = Message(false);
+            event.record(&mut message);
+            if message.0 {
+                UNUSABLE_CONFIG_WARNINGS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
     }
 
     #[test]
@@ -1390,5 +1432,162 @@ mod upstream {
             assert!(text.contains("drevo_ingest_jobs_active "), "{text}");
         });
         svc.stop_ingest();
+    }
+
+    // ----- #806: robustness of the scheduler ------------------------------------
+
+    /// Stops the scheduler, after letting a hanging upstream answer, however
+    /// the test ends.
+    struct Stop<'a> {
+        svc: &'a NativeService,
+        llm: Option<&'a Upstream>,
+    }
+
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            if let Some(llm) = self.llm {
+                llm.release();
+            }
+            self.svc.stop_ingest();
+        }
+    }
+
+    const FINAL: [&str; 3] = ["done", "failed", "cancelled"];
+
+    /// Poll the job's state for up to `limit`; the last one seen.
+    fn settle(svc: &NativeService, job: &str, limit: Duration) -> Status {
+        let deadline = Instant::now() + limit;
+        loop {
+            let st = status(svc, job);
+            if FINAL.contains(&st.state.as_str()) || Instant::now() >= deadline {
+                return st;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn an_item_deleted_mid_flight_does_not_stay_running_forever() {
+        let _s = serial();
+        let llm = Upstream::start(&[Step::Hang], Step::Answer);
+        let svc = started();
+        let _stop = Stop {
+            svc: &svc,
+            llm: Some(&llm),
+        };
+        let (job, _) = submit(
+            &svc,
+            Value::List(vec![s("Dana joined Acme.")]),
+            map(&[("source", map(&[("id", s("deleted-item"))]))]),
+        );
+        wait_until(LONG, "the item to start", || llm.in_flight() == 1);
+        assert_eq!(item(&svc, &job, 0).0, "running");
+        // The item goes away while the model answers it.
+        ok(
+            &svc,
+            "MATCH (i:IngestItem {job_id: $job}) DETACH DELETE i",
+            &[("job", s(&job))],
+        );
+        llm.release();
+        wait_until(LONG, "the model to answer", || llm.in_flight() == 0);
+        let st = settle(&svc, &job, Duration::from_secs(5));
+        let running = count(
+            &svc,
+            "MATCH (i:IngestItem {job_id: $job, state: 'running'}) RETURN count(i)",
+            &[("job", s(&job))],
+        );
+        assert!(
+            FINAL.contains(&st.state.as_str()) && running == 0,
+            "the job stayed `{}` 5 s after its item was deleted mid-flight ({running} item(s) \
+             still running): write_item ignored count(i) = 0 and recorded the item as done, so \
+             nothing ever finishes the job (#806); last status {st:?}",
+            st.state
+        );
+    }
+
+    #[test]
+    fn a_chunk_id_mismatch_marks_the_item_failed_with_a_reason() {
+        let _s = serial();
+        let llm = Upstream::start(&[], Step::Answer);
+        let svc = Arc::new(NativeService::in_memory());
+        let _stop = Stop {
+            svc: &svc,
+            llm: Some(&llm),
+        };
+        let (job, _) = submit(
+            &svc,
+            Value::List(vec![s("Dana joined Acme.")]),
+            map(&[("source", map(&[("id", s("book-1"))]))]),
+        );
+        // The job's source id no longer matches its config's `source`: the
+        // item's chunk is written as `book-1#0` and looked up as `book-2#0`.
+        ok(
+            &svc,
+            "MATCH (j:IngestJob {id: $job}) SET j.source_id = 'book-2'",
+            &[("job", s(&job))],
+        );
+        svc.start_ingest();
+        wait_until(LONG, "the model to be asked", || llm.calls() == 1);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (state, attempts, error) = loop {
+            let (state, attempts, error) = item(&svc, &job, 0);
+            if (state != "running" && state != "queued") || Instant::now() >= deadline {
+                break (state, attempts, error);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            (state == "dead" || state == "failed") && error != Value::Null,
+            "the item stayed `{state}` with last_error {error:?} (attempt {attempts}) 5 s after \
+             its chunk `book-2#0` was not found: write_item ignored count(i) = 0 and recorded \
+             the item as done (#806); job {:?}",
+            status(&svc, &job)
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn the_scheduler_sleeps_when_no_extractor_is_configured() {
+        let _s = serial();
+        install_problem_layer();
+        drevo::extract::uninstall();
+        let svc = Arc::new(NativeService::in_memory());
+        let _stop = Stop {
+            svc: &svc,
+            llm: None,
+        };
+        let (_waiting, _) = submit(
+            &svc,
+            Value::List(vec![s(MANUSCRIPT)]),
+            map(&[("source", map(&[("id", s("ms-a"))]))]),
+        );
+        // A second job whose stored config no longer parses: every pass of
+        // the scheduler warns about it once, which makes the passes countable.
+        let (marker, _) = submit(
+            &svc,
+            Value::List(vec![s(MANUSCRIPT)]),
+            map(&[("source", map(&[("id", s("ms-b"))]))]),
+        );
+        ok(
+            &svc,
+            "MATCH (j:IngestJob {id: $job}) SET j.config = $config",
+            &[
+                ("job", s(&marker)),
+                ("config", s(r#"{"source": {"id": "ms-b"}, "chunkSize": 1}"#)),
+            ],
+        );
+        let before = UNUSABLE_CONFIG_WARNINGS.load(Ordering::SeqCst);
+        svc.start_ingest();
+        wait_until(LONG, "the scheduler's first pass", || {
+            UNUSABLE_CONFIG_WARNINGS.load(Ordering::SeqCst) > before
+        });
+        let first = UNUSABLE_CONFIG_WARNINGS.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_secs(5));
+        let passes = UNUSABLE_CONFIG_WARNINGS.load(Ordering::SeqCst) - first;
+        assert!(
+            passes <= 1,
+            "the scheduler made {passes} more passes in 5 s with jobs queued and no extractor \
+             configured: pass() returns Some(POLL) instead of sleeping until woken (#806)"
+        );
     }
 }
