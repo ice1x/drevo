@@ -499,6 +499,9 @@ pub struct Expansion {
     /// Whether the walk stopped at [`ExpandOptions::max_nodes`] with more
     /// nodes left to return.
     pub truncated: bool,
+    /// When [`truncated`](Self::truncated), the node the walk reached but
+    /// could not return: the first one past the cap.
+    pub stopped_at: Option<u64>,
 }
 
 /// Walk breadth-first from `seeds` and return each node reached once, at its
@@ -596,6 +599,7 @@ where
     }
     let first_reached = nodes.len();
     let mut truncated = false;
+    let mut stopped_at = None;
     // One node's candidate steps: (relationship id, neighbour, outgoing, type).
     let mut steps: Vec<(u64, u64, bool, String)> = Vec::new();
 
@@ -634,6 +638,7 @@ where
                 }
                 if nodes.len() == options.max_nodes {
                     truncated = true;
+                    stopped_at = Some(to);
                     break 'walk;
                 }
                 visited.insert(to);
@@ -659,7 +664,11 @@ where
     }
 
     nodes[first_reached..].sort_by_key(|n| (n.distance, n.id));
-    Ok(Expansion { nodes, truncated })
+    Ok(Expansion {
+        nodes,
+        truncated,
+        stopped_at,
+    })
 }
 
 /// Whether [`expand_bfs`] may walk `edge`: of an allowed type and, with
@@ -1780,6 +1789,7 @@ mod expand_tests {
         let found = star.expand(&[1], &options).unwrap();
         assert_eq!(ids(&found), [1, 2, 3]);
         assert!(found.truncated);
+        assert_eq!(found.stopped_at, Some(4));
     }
 
     #[test]
@@ -1791,6 +1801,7 @@ mod expand_tests {
         let found = chain().expand(&[1], &options).unwrap();
         assert_eq!(ids(&found), [1, 2, 3]);
         assert!(!found.truncated);
+        assert_eq!(found.stopped_at, None);
     }
 
     #[test]
@@ -1821,6 +1832,7 @@ mod expand_tests {
         let found = chain().expand(&[1], &options).unwrap();
         assert_eq!(reached(&found), [(2, 1)]);
         assert!(found.truncated);
+        assert_eq!(found.stopped_at, Some(3));
     }
 
     fn fact(as_of: &str) -> ExpandOptions {

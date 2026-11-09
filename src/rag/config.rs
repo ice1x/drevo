@@ -6,7 +6,8 @@
 //! `perNodeLimit`, `maxNodes`, `asOf`), the ranking (`rank`), the provenance
 //! filter (`source`) and the serialiser (`tokenBudget`, `tokenizer`,
 //! `format`, `textProperties`, `maxBodyChars`, `includeProvenance`), plus
-//! `session`. An unknown key, or a value of the wrong type or range, is
+//! `session` and `trace`, which make `drevo.rag.context` record a
+//! `:ContextTrace`. An unknown key, or a value of the wrong type or range, is
 //! refused by name:
 //!
 //! ```
@@ -43,7 +44,8 @@ use crate::traversal::ExpandOptions;
 /// accepts, as listed in errors.
 pub const CONFIG_KEYS: &str = "label, embeddingProperty, k, candidates, rrfK, mode, hops, \
      direction, relTypes, labels, excludeLabels, perNodeLimit, maxNodes, asOf, rank, source, \
-     tokenBudget, tokenizer, format, textProperties, maxBodyChars, includeProvenance, session";
+     tokenBudget, tokenizer, format, textProperties, maxBodyChars, includeProvenance, session, \
+     trace";
 
 /// The labels left out of the expansion unless `excludeLabels` says
 /// otherwise: conversation and bookkeeping nodes, not knowledge.
@@ -123,8 +125,12 @@ pub struct RagConfig {
     pub sources: Option<Vec<String>>,
     /// How the context is written.
     pub render: RenderOptions,
-    /// The session the context is for, if any.
+    /// The session the context is for, if any. `drevo.rag.context` records
+    /// a `:ContextTrace` for a session.
     pub session: Option<String>,
+    /// Whether `drevo.rag.context` records a `:ContextTrace` without a
+    /// session.
+    pub trace: bool,
 }
 
 impl Default for RagConfig {
@@ -143,6 +149,7 @@ impl Default for RagConfig {
             sources: None,
             render: RenderOptions::default(),
             session: None,
+            trace: false,
         }
     }
 }
@@ -295,12 +302,71 @@ impl RagConfig {
                         ))
                     }
                 },
+                "trace" => match v {
+                    Value::Bool(b) => config.trace = *b,
+                    other => {
+                        return Err(format!("trace must be a boolean, got {}", describe(other)))
+                    }
+                },
                 other => return Err(unknown(other)),
             }
         }
         config.hybrid = HybridConfig::from_value(&Value::Map(search))?;
         config.expand = expand_options(&Value::Map(walk), ceilings)?;
         Ok(config)
+    }
+}
+
+impl RagConfig {
+    /// The effective config as a JSON object: every key of
+    /// [`CONFIG_KEYS`] but `session` and `trace`, with its value or default.
+    /// Read back with [`from_value`](Self::from_value) it gives the same
+    /// config without a session or trace — what a context trace stores to
+    /// replay the call.
+    ///
+    /// ```
+    /// use drevo::rag::config::RagConfig;
+    ///
+    /// let json: serde_json::Value =
+    ///     serde_json::from_str(&RagConfig::default().to_json()).unwrap();
+    /// assert_eq!(json["tokenBudget"], 2000);
+    /// assert_eq!(json["format"], "markdown");
+    /// assert!(json.get("session").is_none());
+    /// ```
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        use serde_json::{json, Value as Json};
+        let strings = |items: &[String]| Json::from(items.to_vec());
+        let direction = match self.expand.direction {
+            crate::model::Direction::Outgoing => "outgoing",
+            crate::model::Direction::Incoming => "incoming",
+            crate::model::Direction::Both => "both",
+        };
+        json!({
+            "label": self.label,
+            "embeddingProperty": self.embedding_property,
+            "k": self.k,
+            "candidates": self.hybrid.candidates,
+            "rrfK": self.hybrid.rrf_k,
+            "mode": self.hybrid.mode.as_str(),
+            "hops": self.expand.hops,
+            "direction": direction,
+            "relTypes": self.expand.rel_types.as_deref().map(strings),
+            "labels": self.expand.labels.as_deref().map(strings),
+            "excludeLabels": strings(&self.expand.exclude_labels),
+            "perNodeLimit": self.expand.per_node_limit,
+            "maxNodes": self.expand.max_nodes,
+            "asOf": self.expand.as_of,
+            "rank": self.rank.as_str(),
+            "source": self.sources.as_deref().map(strings),
+            "tokenBudget": self.render.token_budget,
+            "tokenizer": self.render.tokenizer.as_str(),
+            "format": self.render.format.as_str(),
+            "textProperties": strings(&self.render.text_properties),
+            "maxBodyChars": self.render.max_body_chars,
+            "includeProvenance": self.render.include_provenance,
+        })
+        .to_string()
     }
 }
 
@@ -438,6 +504,7 @@ mod tests {
         assert_eq!(d.render.max_body_chars, 600);
         assert!(d.render.include_provenance);
         assert_eq!(d.session, None);
+        assert!(!d.trace);
     }
 
     #[test]
@@ -466,6 +533,7 @@ mod tests {
             ("maxBodyChars", Value::Integer(80)),
             ("includeProvenance", Value::Bool(false)),
             ("session", s("chat-7")),
+            ("trace", Value::Bool(true)),
         ])
         .unwrap();
         assert_eq!(config.label.as_deref(), Some("Entry"));
@@ -491,6 +559,7 @@ mod tests {
         assert_eq!(config.render.max_body_chars, 80);
         assert!(!config.render.include_provenance);
         assert_eq!(config.session.as_deref(), Some("chat-7"));
+        assert!(config.trace);
     }
 
     #[test]
@@ -499,6 +568,7 @@ mod tests {
             ("hops", Value::Null),
             ("excludeLabels", Value::Null),
             ("session", Value::Null),
+            ("trace", Value::Null),
             ("label", Value::Null),
         ])
         .unwrap();
@@ -521,7 +591,7 @@ mod tests {
                 "unknown config key `depth`; expected label, embeddingProperty, k, candidates, \
                  rrfK, mode, hops, direction, relTypes, labels, excludeLabels, perNodeLimit, \
                  maxNodes, asOf, rank, source, tokenBudget, tokenizer, format, textProperties, \
-                 maxBodyChars, includeProvenance, session",
+                 maxBodyChars, includeProvenance, session, trace",
             ),
             (
                 vec![("includeSeeds", Value::Bool(false))],
@@ -550,6 +620,10 @@ mod tests {
             (
                 vec![("session", Value::Integer(5))],
                 "session must be a string or null, got 5",
+            ),
+            (
+                vec![("trace", s("yes"))],
+                "trace must be a boolean, got 'yes'",
             ),
             (
                 vec![("label", Value::Integer(5))],
@@ -614,5 +688,79 @@ mod tests {
             not_a_map,
             Err("the config must be a map, got String".to_string())
         );
+    }
+
+    /// `json` parsed back into a config.
+    fn reparse(json: &str) -> RagConfig {
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        RagConfig::from_value(
+            &crate::cypher::executor::json_to_value(&value),
+            ExpandCeilings::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_json_config_reads_back_as_the_same_config_without_session_or_trace() {
+        let custom = parse(&[
+            ("label", s("Entry")),
+            ("embeddingProperty", s("vec")),
+            ("k", Value::Integer(3)),
+            ("candidates", Value::Integer(40)),
+            ("rrfK", Value::Float(12.5)),
+            ("mode", s("fts")),
+            ("hops", Value::Integer(1)),
+            ("direction", s("incoming")),
+            ("relTypes", strings(&["WROTE"])),
+            ("labels", strings(&["Entry", "Person"])),
+            ("excludeLabels", strings(&[])),
+            ("perNodeLimit", Value::Integer(5)),
+            ("maxNodes", Value::Integer(50)),
+            ("asOf", s("2025-06-01")),
+            ("rank", s("distance")),
+            ("source", strings(&["journal-1"])),
+            ("tokenBudget", Value::Integer(75)),
+            ("tokenizer", s("words")),
+            ("format", s("triples")),
+            ("textProperties", strings(&["title"])),
+            ("maxBodyChars", Value::Integer(80)),
+            ("includeProvenance", Value::Bool(false)),
+            ("session", s("chat-7")),
+            ("trace", Value::Bool(true)),
+        ])
+        .unwrap();
+        for config in [RagConfig::default(), custom] {
+            let back = reparse(&config.to_json());
+            assert_eq!(
+                back,
+                RagConfig {
+                    session: None,
+                    trace: false,
+                    ..config.clone()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn the_json_config_names_every_key_but_session_and_trace() {
+        let json: serde_json::Value =
+            serde_json::from_str(&RagConfig::default().to_json()).unwrap();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut expected: Vec<&str> = CONFIG_KEYS
+            .split(", ")
+            .filter(|k| *k != "session" && *k != "trace")
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(keys, expected);
+        assert_eq!(json["tokenBudget"], 2000);
+        assert_eq!(json["rank"], "ppr");
+        assert_eq!(json["label"], serde_json::Value::Null);
     }
 }

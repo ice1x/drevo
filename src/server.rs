@@ -32,6 +32,7 @@
 //! | `DREVO_SLOW_QUERY_MS` | unset (off) | Log every statement that runs longer, at WARN with its duration, text, parameter names (not values), protocol, user and database; it shows in the Web UI's problem feed and `drevo_slow_statements_total`. Changeable at runtime with `POST /config/slow-query`. `0` = off |
 //! | `DREVO_MAX_TX_WRITES` | `1000000` | How many writes one explicit transaction may buffer before it commits; the statement that goes over fails with `Neo.ClientError.General.TransactionOutOfMemoryError` and the transaction is rolled back. `0` = no limit |
 //! | `DREVO_EXPAND_MAX_HOPS` | `6` | The most `hops` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
+//! | `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep) | Delete `:ContextTrace` nodes (recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours |
 //! | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
 //! | `DREVO_TX_ISOLATION` | `snapshot` | When an explicit transaction may commit after others committed: `snapshot` (unless they touched the same records) or `serializable` (only if nothing committed) |
 //! | `DREVO_TX_CONFLICT_HISTORY` | `10000` | Recent commits remembered to decide whether a transaction overlapped with them |
@@ -145,6 +146,10 @@ pub struct Config {
     /// The largest `maxNodes` one `drevo.graph.expand` call may ask for, from
     /// `DREVO_EXPAND_MAX_NODES` (default 5000).
     pub expand_max_nodes: usize,
+    /// Prune `:ContextTrace` nodes older than this many days at startup and
+    /// every 24 hours, from `DREVO_RAG_TRACE_RETENTION_DAYS` (default `0`:
+    /// keep them forever).
+    pub rag_trace_retention_days: u64,
     /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
     /// `0` disables the alert).
@@ -368,6 +373,14 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_RAG_TRACE_RETENTION_DAYS` was not a whole number.
+    #[error(
+        "invalid DREVO_RAG_TRACE_RETENTION_DAYS value `{value}`: expected a whole number of days (0 = keep traces forever)"
+    )]
+    InvalidRagTraceRetention {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_EXPAND_MAX_NODES` was not a positive integer.
     #[error(
         "invalid DREVO_EXPAND_MAX_NODES value `{value}`: expected a whole number of nodes, at least 1"
@@ -561,6 +574,14 @@ impl Config {
             },
         };
 
+        let rag_trace_retention_days = match getter("DREVO_RAG_TRACE_RETENTION_DAYS") {
+            None => 0,
+            Some(raw) => match raw.trim().parse::<u64>() {
+                Ok(days) => days,
+                Err(_) => return Err(ConfigError::InvalidRagTraceRetention { value: raw }),
+            },
+        };
+
         let prepared_tx_warn = match getter("DREVO_PREPARED_TX_WARN_SECS") {
             None => Some(std::time::Duration::from_secs(60)),
             Some(raw) => match raw.trim().parse::<u64>() {
@@ -735,6 +756,7 @@ impl Config {
             max_tx_writes,
             expand_max_hops,
             expand_max_nodes,
+            rag_trace_retention_days,
             prepared_tx_warn,
             prepared_tx_timeout,
             http_formats,
@@ -1235,6 +1257,42 @@ async fn serve(
     run_native_durable(cfg, addr, announce).await
 }
 
+/// How often context traces past `DREVO_RAG_TRACE_RETENTION_DAYS` are
+/// pruned.
+const RAG_TRACE_PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Delete the context traces older than `days` days in every database of
+/// `registry`, as `drevo.rag.pruneTraces` does; a database that fails is
+/// logged and skipped.
+fn prune_rag_traces(registry: &crate::database_registry::DatabaseRegistry, days: u64) {
+    let cutoff = crate::rag::trace::retention_cutoff(crate::model::now_ms(), days);
+    let query = match crate::cypher::parser::parse(
+        "CALL drevo.rag.pruneTraces($olderThan) YIELD deleted RETURN deleted",
+    ) {
+        Ok(query) => query,
+        Err(e) => {
+            tracing::warn!(error = %e, "context trace pruning did not parse");
+            return;
+        }
+    };
+    for name in registry.list() {
+        let Some(service) = registry.get(&name) else {
+            continue;
+        };
+        let params = std::collections::HashMap::from([(
+            "olderThan".to_string(),
+            crate::cypher::executor::Value::String(cutoff.clone()),
+        )]);
+        match service.execute(&query, params) {
+            Ok(result) => {
+                let deleted = result.rows.first().and_then(|r| r.first()).cloned();
+                tracing::info!(database = %name, ?deleted, %cutoff, "pruned context traces");
+            }
+            Err(e) => tracing::warn!(database = %name, error = %e, "pruning context traces failed"),
+        }
+    }
+}
+
 /// Serve `DREVO_ENGINE=native-durable`: the WAL-backed native engine as the
 /// store of record — no KV store, no catalog. Opens (or creates)
 /// `<data_dir>/native.wal`, compacts and indexes it, and serves the minimal
@@ -1321,6 +1379,23 @@ async fn run_native_durable(
         max_hops: cfg.expand_max_hops,
         max_nodes: cfg.expand_max_nodes,
     });
+    // Context traces past their retention are pruned now and every 24 h.
+    if cfg.rag_trace_retention_days > 0 && !cfg.read_only {
+        let days = cfg.rag_trace_retention_days;
+        prune_rag_traces(&registry, days);
+        let pruned = std::sync::Arc::clone(&registry);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(RAG_TRACE_PRUNE_EVERY);
+            // The first tick is immediate, and startup already pruned.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let registry = std::sync::Arc::clone(&pruned);
+                let _ =
+                    tokio::task::spawn_blocking(move || prune_rag_traces(&registry, days)).await;
+            }
+        });
+    }
     // The server's users, shared by HTTP, Bolt, gRPC and Flight (issue #633).
     let security = configure_security(&cfg)?;
     // The Web UI's signed-in sessions are listed by `SHOW CONNECTIONS`.

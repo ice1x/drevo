@@ -817,6 +817,10 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `drevo.rag.retrieve(query[, config])` | `node, seedScore, distance, pprScore, rank, via, truncated` | The nodes that answer a question, best first: hybrid-search seeds, then their neighbourhood ranked by Personalized PageRank, distance or walk order — see [Graph-RAG retrieval](#graph-rag-retrieval) |
 | `drevo.rag.context(query[, config])` | `text, tokens, format, nodeIds, relIds, truncated, mode, traceId` | The same nodes and the relationships between them written as LLM-ready text (markdown, triples or JSON) within a token budget — see [Graph-RAG retrieval](#graph-rag-retrieval) |
 | `drevo.entity.candidates(label[, config])`, `drevo.entity.merge(keepId, dropIds[, config])`, `drevo.entity.aliases(name)` | `a, b, nameScore, vectorScore, score, reasons`; `kept, merged, relationshipsMoved, propertiesMerged`; `entity, aliases` | Pairs of nodes that probably name the same thing, with the reasons; folding dropped nodes into a kept one that remembers their names; the nodes known under a name — see [Entity resolution](#entity-resolution) |
+| `drevo.rag.traces(session, limit)` | `trace` | The newest context traces of a session (`null`: of every session) — see [Context traces](#context-traces) |
+| `drevo.rag.explain(traceId)` | `node, status, rank, distance, seedScore, pprScore, tokens, reason` | What one context was made of: the nodes written and the nodes left out, by rank |
+| `drevo.rag.replay(traceId)` | `text, tokens, changed` | A traced context re-run on the graph as it is now, and whether its text changed; records nothing |
+| `drevo.rag.pruneTraces(olderThan)` | `deleted` | Delete context traces created before a UTC date or timestamp; needs `EXECUTE ADMIN PROCEDURES` |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 | `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes — see [Secondary indexes](#secondary-indexes) |
 | `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
@@ -2731,7 +2735,8 @@ The statement timeout (`DREVO_QUERY_TIMEOUT_MS`) is checked between stages.
 | `textProperties` | `['name', 'title', 'description', 'body', 'text']` | the properties a node's block is built from, in order; the first one present names the node (a node with none is named `#id`) |
 | `maxBodyChars` | `600` | each `body`, `text`, `description` or `quote` value longer than this many characters is cut to it, at a character boundary, with `…`. `name`, `title` and other properties are never cut, so a node keeps its full name |
 | `includeProvenance` | `true` | write `valid_from`→`valid_until`, `«quote»` and `(source_id)` when an element carries them |
-| `session` | `null` | the conversation the context is for, a string; accepted and validated, `traceId` stays `null` (no trace is recorded yet) |
+| `session` | `null` | the conversation the context is for, a string. `drevo.rag.context` then records a [context trace](#context-traces) linked to the session's newest message; `drevo.rag.retrieve` ignores it |
+| `trace` | `false` | `true` records a [context trace](#context-traces) without a session (`drevo.rag.context` only) |
 
 The three formats, for a node *Thought* that carries a quote and a fact
 `IS_A` valid since 2025-01-01:
@@ -2787,7 +2792,7 @@ RETURN rank, node.title, distance, seedScore
 | `nodeIds`, `relIds` | the ids of the nodes and relationships in `text`, in the order written |
 | `truncated` | `true` when a node did not fit the budget or the expansion hit `maxNodes` |
 | `mode` | the search mode that ran: `'hybrid'`, `'fts'` or `'vector'` (`'auto'` without an embedder or a `label` runs `'fts'`) |
-| `traceId` | `null` |
+| `traceId` | the `id` of the [context trace](#context-traces) recorded with `session` or `trace: true`, else `null` |
 
 The same graph, question and config give byte-identical `text`: ties are broken
 by node id and properties are written in a fixed order. A question that matches
@@ -2961,6 +2966,94 @@ The workflow is `candidates`, then a review by a person or an agent, then
 `merge`. `rememberEntity` can also resolve a new mention against known
 entities as it writes — see `resolve` under
 [Long-term memory](#long-term-memory-entities-and-facts-over-time).
+#### Context traces
+
+A context trace records what one `drevo.rag.context` call handed to the model, so
+a wrong answer can be traced to a missing fact, a bad rank or a budget cut. It is
+written when the config names a `session` (or sets `trace: true`), in the same
+statement, through the regular `CREATE` path — so it needs the `CREATE`
+privilege, fires triggers, shows on `/events` and lands in the log like any other
+write:
+
+```text
+(:ContextTrace {id, session, query, created_at, format, tokenizer, tokens,
+                tokenBudget, truncated, mode, hops, rank, seedCount, nodeCount,
+                relCount, durationMs, config, text})
+(:ContextTrace)-[:INCLUDED {rank, distance, seedScore, pprScore, tokens}]->(node)
+(:ContextTrace)-[:SKIPPED {rank, reason}]->(node)
+(:ContextTrace)-[:INITIATED_BY]->(:Message)
+```
+
+```cypher
+CALL drevo.rag.context('panic before the team meeting', {session: 'chat-7', tokenBudget: 300})
+YIELD text, traceId
+RETURN text, traceId
+```
+
+| Property | Meaning |
+|---|---|
+| `id` | a UUID, returned as `traceId` |
+| `session` | the config's `session`; absent with `trace: true` alone |
+| `query`, `text` | the question and the text returned for it |
+| `created_at` | when it was recorded, ISO-8601 UTC |
+| `format`, `tokenizer`, `tokens`, `tokenBudget`, `truncated`, `mode`, `hops`, `rank` | as in the call and its row; `mode` is the search mode that ran |
+| `seedCount`, `nodeCount`, `relCount` | the seeds found, and the nodes and relationships written into `text` |
+| `durationMs` | how long retrieval and writing the text took, without recording the trace |
+| `config` | the effective config as JSON — every key with its value or default, except `session` and `trace` |
+
+`INCLUDED` goes to each node written into `text`, ranked from 1 in the order
+written, with what ranked it (`seedScore` and `pprScore` are absent when they do
+not apply) and the tokens it added: they sum to the trace's `tokens`. `SKIPPED`
+goes to each node retrieved but left out, ranked after the written ones:
+`reason: 'budget'` when it did not fit, `'maxNodes'` for the node the expansion
+stopped at when it hit `maxNodes`. `INITIATED_BY` goes to the session's newest
+`:Message` (none when the session has no messages yet). The default
+`excludeLabels` keeps traces out of every `drevo.rag.*` retrieval; full-text
+search indexes them like any node with string properties, so `fts.search` can
+return a trace whose question or text matches.
+
+```text
+CALL drevo.rag.traces(session, limit) YIELD trace
+CALL drevo.rag.explain(traceId)
+YIELD node, status, rank, distance, seedScore, pprScore, tokens, reason
+CALL drevo.rag.replay(traceId) YIELD text, tokens, changed
+CALL drevo.rag.pruneTraces(olderThan) YIELD deleted
+```
+
+- `drevo.rag.traces` — the newest `limit` traces of `session`, newest first;
+  `null` lists every session's.
+- `drevo.rag.explain` — one row per node of the trace, by `rank`: `status` is
+  `'included'` or `'skipped'`; `distance`, `seedScore`, `pprScore` and `tokens`
+  are set for included nodes, `reason` for skipped ones.
+- `drevo.rag.replay` — runs the trace's question with its stored config against
+  the graph as it is now and returns the new text, its tokens, and whether it
+  differs from the recorded text. It records no trace.
+- `drevo.rag.pruneTraces` — deletes the traces created before `olderThan` (a UTC
+  date `'2025-01-01'` or timestamp `'2025-01-01T00:00:00Z'`) with their
+  relationships, and returns how many; the nodes they pointed at stay. It needs
+  `EXECUTE ADMIN PROCEDURES`. `DREVO_RAG_TRACE_RETENTION_DAYS` runs it at
+  startup and every 24 hours.
+
+```cypher
+CALL drevo.rag.traces(null, 10) YIELD trace
+RETURN trace.id, trace.session, trace.query, trace.tokens, trace.created_at
+```
+
+```text
+CALL drevo.rag.explain($traceId)
+YIELD node, status, rank, tokens, reason
+RETURN rank, status, coalesce(node.name, node.title) AS name, tokens, reason
+```
+
+```cypher
+CALL drevo.rag.pruneTraces('2025-01-01') YIELD deleted
+RETURN deleted
+```
+
+An unknown `traceId` fails with `no context trace with id …`; a trace whose
+stored `config` no longer parses cannot be replayed and says why. A `traceId`,
+`session`, `limit` or `olderThan` of the wrong type fails with an error naming
+the argument.
 
 ---
 

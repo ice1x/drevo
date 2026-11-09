@@ -138,6 +138,12 @@ pub struct Rendered {
     pub rel_ids: Vec<u64>,
     /// How many nodes did not fit the budget.
     pub skipped: usize,
+    /// The tokens each written node added to the text, aligned with
+    /// [`node_ids`](Self::node_ids): its block, its relationships and any
+    /// framing it brought. They sum to [`tokens`](Self::tokens).
+    pub node_tokens: Vec<usize>,
+    /// The ids of the nodes that did not fit the budget, in rank order.
+    pub skipped_ids: Vec<u64>,
 }
 
 /// Write `subgraph` within `options.token_budget`: nodes in their rank
@@ -161,6 +167,7 @@ pub fn render(subgraph: &Subgraph, options: &RenderOptions) -> Rendered {
     let mut text = Text::new(options.format);
     let mut out = Rendered::default();
     let mut taken: HashSet<u64> = HashSet::new();
+    let mut written = 0;
     for ranked in &subgraph.nodes {
         let node = &ranked.node;
         if taken.contains(&node.id) {
@@ -190,11 +197,14 @@ pub fn render(subgraph: &Subgraph, options: &RenderOptions) -> Rendered {
             .tokens(options.tokenizer);
         if tokens > options.token_budget {
             out.skipped += 1;
+            out.skipped_ids.push(node.id);
             continue;
         }
         text.push(block, rel_pieces);
         taken.insert(node.id);
         out.node_ids.push(node.id);
+        out.node_tokens.push(tokens.saturating_sub(written));
+        written = tokens;
         out.rel_ids.extend(rels.iter().map(|r| r.id));
     }
     out.text = text.finish();
@@ -1019,6 +1029,7 @@ Anna | WROTE | Пятница\n";
             assert_eq!(out.node_ids, [1, 2, 3], "{format:?}");
             assert_eq!(out.rel_ids, [102, 103], "{format:?}");
             assert_eq!(out.skipped, 2, "{format:?}");
+            assert_eq!(out.skipped_ids, [4, 5], "{format:?}");
             assert!(out.tokens <= budget, "{format:?}");
             assert_eq!(out.tokens, options.tokenizer.count(&out.text), "{format:?}");
         }
@@ -1048,6 +1059,7 @@ Anna | WROTE | Пятница\n";
         );
         assert_eq!(out.node_ids, [1, 3, 4, 5]);
         assert_eq!(out.skipped, 1);
+        assert_eq!(out.skipped_ids, [2]);
         assert!(out.tokens <= budget);
     }
 
@@ -1066,6 +1078,13 @@ Anna | WROTE | Пятница\n";
                     assert!(out.tokens <= budget, "{format:?} {tokenizer:?} {budget}");
                     assert_eq!(out.tokens, tokenizer.count(&out.text));
                     assert_eq!(out.node_ids.len() + out.skipped, 6);
+                    assert_eq!(out.skipped_ids.len(), out.skipped);
+                    assert_eq!(out.node_tokens.len(), out.node_ids.len());
+                    assert_eq!(
+                        out.node_tokens.iter().sum::<usize>(),
+                        out.tokens,
+                        "{format:?} {tokenizer:?} {budget}"
+                    );
                 }
             }
         }
@@ -1093,6 +1112,8 @@ Anna | WROTE | Пятница\n";
         assert_eq!(out.tokens, 0);
         assert!(out.node_ids.is_empty());
         assert_eq!(out.skipped, 1);
+        assert_eq!(out.skipped_ids, [1]);
+        assert!(out.node_tokens.is_empty());
         let empty = render(&Subgraph::default(), &RenderOptions::default());
         assert_eq!(empty, Rendered::default());
     }
@@ -1125,6 +1146,29 @@ Anna | WROTE | Пятница\n";
             out.text,
             "## Entities\n- **Dose** (Med:Note): true — 20 — a, 1.5\n"
         );
+    }
+
+    #[test]
+    fn each_written_node_carries_the_tokens_it_added() {
+        for tokenizer in [Tokenizer::Approx, Tokenizer::Words] {
+            for format in [Format::Markdown, Format::Triples, Format::Json] {
+                let options = RenderOptions {
+                    format,
+                    tokenizer,
+                    ..RenderOptions::default()
+                };
+                let out = render(&star(), &options);
+                assert_eq!(out.node_ids, [1, 2, 3, 4, 5], "{format:?}");
+                assert_eq!(out.node_tokens.len(), 5, "{format:?}");
+                assert!(out.node_tokens.iter().all(|t| *t > 0), "{format:?}");
+                assert_eq!(
+                    out.node_tokens.iter().sum::<usize>(),
+                    out.tokens,
+                    "{format:?} {tokenizer:?}"
+                );
+                assert!(out.skipped_ids.is_empty());
+            }
+        }
     }
 
     #[test]

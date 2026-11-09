@@ -1779,7 +1779,9 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           fts.search, fts.searchRelationships, \
                           drevo.search.hybrid, drevo.search.hybridRelationships, \
                           drevo.graph.expand, drevo.rag.retrieve, drevo.rag.context, \
-                          drevo.entity.candidates, drevo.entity.merge, drevo.entity.aliases"
+                          drevo.entity.candidates, drevo.entity.merge, drevo.entity.aliases, \
+                          drevo.rag.traces, drevo.rag.explain, drevo.rag.replay, \
+                          drevo.rag.pruneTraces"
                         .into(),
                     span: c.span,
                 })?;
@@ -3236,6 +3238,16 @@ impl<'a> Executor<'a> {
             | "drevo.semantic.reindex"
             | "drevo.semantic.reindexRel"
             | "drevo.indexes.setSecondary" => self.guard_database(Action::IndexManagement),
+            RAG_PRUNE => {
+                if !r.context.has_dbms(Action::ExecuteAdminProcedures) {
+                    return Err(ExecError::Forbidden {
+                        message: format!(
+                            "`{name}` deletes context traces and needs EXECUTE ADMIN PROCEDURES"
+                        ),
+                    });
+                }
+                Ok(())
+            }
             "drevo.sequence.create" | "drevo.sequence.drop" => {
                 if !r.context.has_dbms(Action::ExecuteAdminProcedures) {
                     return Err(ExecError::Forbidden {
@@ -6231,6 +6243,9 @@ impl<'a> Executor<'a> {
             "drevo.memory.retractFact" => self.proc_memory_retract_fact(&c.args, c.span)?,
             "drevo.memory.addSource" => self.proc_memory_add_source(&c.args, c.span)?,
             "drevo.memory.addChunks" => self.proc_memory_add_chunks(&c.args, c.span)?,
+            // A context records its trace when asked to.
+            RAG_CONTEXT => self.proc_rag_context(&c.args, c.span)?,
+            RAG_PRUNE => self.proc_rag_prune(&c.args, c.span)?,
             _ => self.invoke_procedure(&name, &c.args, c.span)?,
         };
         // Search, vector, memory and algorithm procedures read storage
@@ -10820,7 +10835,7 @@ impl<'a> Executor<'a> {
     /// `rank` counts from 1. No seeds give no rows.
     fn proc_rag_retrieve(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
         let (query, config) = self.rag_args(RAG_RETRIEVE, args, span)?;
-        let (subgraph, _) = self.rag_subgraph(RAG_RETRIEVE, &query, &config, span)?;
+        let (subgraph, _, _) = self.rag_subgraph(RAG_RETRIEVE, &query, &config, span)?;
         let int = |n: usize| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
         let truncated = Value::Bool(subgraph.truncated);
         Ok(subgraph
@@ -10847,25 +10862,376 @@ impl<'a> Executor<'a> {
     /// one text within the config's `tokenBudget`
     /// ([`crate::rag::serialize::render`]). Always one row: no seeds give an
     /// empty text. `truncated` is set when the expansion hit its node cap or
-    /// a node did not fit the budget; `mode` is the search mode that ran;
-    /// `traceId` is `null` (no trace is recorded).
-    fn proc_rag_context(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+    /// a node did not fit the budget; `mode` is the search mode that ran.
+    /// With a `session` or `trace: true` the call records a `:ContextTrace`
+    /// ([`Self::rag_record_trace`]) and `traceId` is its id; else `null`.
+    fn proc_rag_context(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<Vec<Vec<Value>>> {
         let (query, config) = self.rag_args(RAG_CONTEXT, args, span)?;
-        let (subgraph, mode) = self.rag_subgraph(RAG_CONTEXT, &query, &config, span)?;
-        let rendered = crate::rag::serialize::render(&subgraph, &config.render);
-        deadline::check()?;
+        let started = std::time::Instant::now();
+        let built = self.rag_build(RAG_CONTEXT, &query, &config, span)?;
+        let duration = started.elapsed();
+        let trace_id = if config.session.is_some() || config.trace {
+            Value::String(self.rag_record_trace(&query, &config, &built, duration, span)?)
+        } else {
+            Value::Null
+        };
         let int = |n: u64| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
-        let ids = |ids: Vec<u64>| Value::List(ids.into_iter().map(int).collect());
+        let ids = |ids: &[u64]| Value::List(ids.iter().copied().map(int).collect());
+        let rendered = &built.rendered;
         Ok(vec![vec![
-            Value::String(rendered.text),
+            Value::String(rendered.text.clone()),
             Value::Integer(i64::try_from(rendered.tokens).unwrap_or(i64::MAX)),
             Value::String(config.render.format.as_str().to_string()),
-            ids(rendered.node_ids),
-            ids(rendered.rel_ids),
-            Value::Bool(subgraph.truncated || rendered.skipped > 0),
-            Value::String(mode.as_str().to_string()),
-            Value::Null,
+            ids(&rendered.node_ids),
+            ids(&rendered.rel_ids),
+            Value::Bool(built.truncated()),
+            Value::String(built.mode.as_str().to_string()),
+            trace_id,
         ]])
+    }
+
+    /// The graph-RAG pipeline and the text it writes: stages 1–5 of
+    /// [`crate::rag`].
+    fn rag_build(
+        &self,
+        name: &str,
+        query: &str,
+        config: &crate::rag::config::RagConfig,
+        span: Span,
+    ) -> ExecResultT<RagBuilt> {
+        let (subgraph, mode, cut) = self.rag_subgraph(name, query, config, span)?;
+        let rendered = crate::rag::serialize::render(&subgraph, &config.render);
+        deadline::check()?;
+        Ok(RagBuilt {
+            subgraph,
+            mode,
+            rendered,
+            cut,
+        })
+    }
+
+    /// Record a `:ContextTrace` of `built` through the regular `CREATE` path
+    /// (privileges, triggers, auto-embed and the log apply): the call's
+    /// question, settings, counts and text; `INCLUDED` edges to the nodes
+    /// written, `SKIPPED` edges to those left out, and `INITIATED_BY` to the
+    /// session's newest `:Message`. Returns the trace's `id`.
+    fn rag_record_trace(
+        &mut self,
+        query: &str,
+        config: &crate::rag::config::RagConfig,
+        built: &RagBuilt,
+        duration: std::time::Duration,
+        span: Span,
+    ) -> ExecResultT<String> {
+        use crate::rag::trace;
+        let int = |n: usize| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
+        let text = |s: &str| Value::String(s.to_string());
+        let float = |f: Option<f64>| f.map_or(Value::Null, Value::Float);
+        let anchor = match &config.session {
+            Some(session) => self.memory_latest_message(session)?,
+            None => None,
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        let rendered = &built.rendered;
+        let seeds = built
+            .subgraph
+            .nodes
+            .iter()
+            .filter(|n| n.seed_score.is_some())
+            .count();
+        let node = self.memory_create_node(
+            &[trace::TRACE_LABEL],
+            vec![
+                ("id", text(&id)),
+                (
+                    "session",
+                    config.session.as_deref().map_or(Value::Null, text),
+                ),
+                ("query", text(query)),
+                ("created_at", scalar_datetime(Vec::new(), span)?),
+                ("format", text(config.render.format.as_str())),
+                ("tokenizer", text(config.render.tokenizer.as_str())),
+                ("tokens", int(rendered.tokens)),
+                ("tokenBudget", int(config.render.token_budget)),
+                ("truncated", Value::Bool(built.truncated())),
+                ("mode", text(built.mode.as_str())),
+                ("hops", int(config.expand.hops)),
+                ("rank", text(config.rank.as_str())),
+                ("seedCount", int(seeds)),
+                ("nodeCount", int(rendered.node_ids.len())),
+                ("relCount", int(rendered.rel_ids.len())),
+                (
+                    "durationMs",
+                    Value::Integer(i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)),
+                ),
+                ("config", Value::String(config.to_json())),
+                ("text", text(&rendered.text)),
+            ],
+            span,
+        )?;
+        for entry in trace::entries(&built.subgraph, rendered, built.cut.as_ref()) {
+            let (rel_type, props) = match entry.skipped {
+                None => (
+                    trace::INCLUDED,
+                    vec![
+                        ("rank", int(entry.rank)),
+                        ("distance", int(entry.distance)),
+                        ("seedScore", float(entry.seed_score)),
+                        ("pprScore", float(entry.ppr_score)),
+                        ("tokens", int(entry.tokens)),
+                    ],
+                ),
+                Some(reason) => (
+                    trace::SKIPPED,
+                    vec![("rank", int(entry.rank)), ("reason", text(reason.as_str()))],
+                ),
+            };
+            self.memory_link(&node, rel_type, &entry.node, props, span)?;
+        }
+        if let Some((_, message)) = anchor {
+            self.memory_link(&node, "INITIATED_BY", &message, Vec::new(), span)?;
+        }
+        Ok(id)
+    }
+
+    /// Every `:ContextTrace` the signed-in user may see.
+    fn rag_trace_nodes(&self) -> ExecResultT<Vec<Arc<NodeValue>>> {
+        let label = crate::rag::trace::TRACE_LABEL;
+        let mut out = Vec::new();
+        for node in self.engine().all_nodes()? {
+            if !node_labels_from_storage(&node).iter().any(|l| l == label) {
+                continue;
+            }
+            if let Some(nv) = self.seen_node(&node) {
+                out.push(nv);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The trace named by the one `traceId` argument of `name`.
+    fn rag_trace(
+        &self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+    ) -> ExecResultT<(String, Arc<NodeValue>)> {
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: name.to_string(),
+            message,
+            span,
+        };
+        // Arity (1) is enforced by the upfront validation sweep.
+        let id = match self.eval(&args[0], &Bindings::new())? {
+            Value::String(id) => id,
+            other => {
+                return Err(refuse(format!(
+                    "traceId must be a string, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let found = self
+            .rag_trace_nodes()?
+            .into_iter()
+            .find(|t| matches!(t.properties.get("id"), Some(Value::String(tid)) if *tid == id));
+        match found {
+            Some(trace) => Ok((id, trace)),
+            None => Err(refuse(format!("no context trace with id `{id}`"))),
+        }
+    }
+
+    /// `CALL drevo.rag.traces(session, limit) YIELD trace` — the newest
+    /// `limit` context traces of `session` (`null`: of every session),
+    /// newest first.
+    fn proc_rag_traces(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: RAG_TRACES.to_string(),
+            message,
+            span,
+        };
+        // Arity (2) is enforced by the upfront validation sweep.
+        let empty = Bindings::new();
+        let session = match self.eval(&args[0], &empty)? {
+            Value::Null => None,
+            Value::String(s) => Some(s),
+            other => {
+                return Err(refuse(format!(
+                    "session must be a string or null, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let limit = match self.eval(&args[1], &empty)? {
+            Value::Integer(n) if n >= 0 => usize::try_from(n).unwrap_or(usize::MAX),
+            Value::Integer(n) => {
+                return Err(refuse(format!("limit must be an integer ≥ 0, got {n}")))
+            }
+            other => {
+                return Err(refuse(format!(
+                    "limit must be an integer ≥ 0, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let mut traces = self.rag_trace_nodes()?;
+        if let Some(session) = &session {
+            traces.retain(
+                |t| matches!(t.properties.get("session"), Some(Value::String(s)) if s == session),
+            );
+        }
+        let created = |t: &NodeValue| match t.properties.get("created_at") {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        };
+        traces.sort_by(|a, b| created(b).cmp(&created(a)).then(b.id.cmp(&a.id)));
+        traces.truncate(limit);
+        Ok(traces.into_iter().map(|t| vec![Value::Node(t)]).collect())
+    }
+
+    /// `CALL drevo.rag.explain(traceId) YIELD node, status, rank, distance,
+    /// seedScore, pprScore, tokens, reason` — the nodes of a context trace by
+    /// rank: `status` `'included'` with what ranked the node and its tokens,
+    /// or `'skipped'` with the `reason`.
+    fn proc_rag_explain(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        let (_, trace) = self.rag_trace(RAG_EXPLAIN, args, span)?;
+        let get = |props: &BTreeMap<String, Value>, key: &str| {
+            props.get(key).cloned().unwrap_or(Value::Null)
+        };
+        let mut rows: Vec<(i64, u64, Vec<Value>)> = Vec::new();
+        for edge in self
+            .engine()
+            .edges_of(trace.id, ModelDirection::Outgoing)?
+            .iter()
+        {
+            let included = edge.kind == crate::rag::trace::INCLUDED;
+            if !(included || edge.kind == crate::rag::trace::SKIPPED)
+                || !self.edge_traversable(edge)
+            {
+                continue;
+            }
+            let Some(node) = self.engine().get_node(edge.to_id)? else {
+                continue;
+            };
+            let Some(node) = self.seen_node(&node) else {
+                continue;
+            };
+            let rel = edge_to_value(edge);
+            let props = &rel.properties;
+            let rank = get(props, "rank");
+            let order = match rank {
+                Value::Integer(r) => r,
+                _ => i64::MAX,
+            };
+            let row = if included {
+                vec![
+                    Value::Node(Arc::clone(&node)),
+                    Value::String("included".to_string()),
+                    rank,
+                    get(props, "distance"),
+                    get(props, "seedScore"),
+                    get(props, "pprScore"),
+                    get(props, "tokens"),
+                    Value::Null,
+                ]
+            } else {
+                vec![
+                    Value::Node(Arc::clone(&node)),
+                    Value::String("skipped".to_string()),
+                    rank,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    get(props, "reason"),
+                ]
+            };
+            rows.push((order, edge.id, row));
+        }
+        rows.sort_by_key(|(order, id, _)| (*order, *id));
+        Ok(rows.into_iter().map(|(_, _, row)| row).collect())
+    }
+
+    /// `CALL drevo.rag.replay(traceId) YIELD text, tokens, changed` — the
+    /// trace's question run again with its stored config on the graph as it
+    /// is now; `changed` when the text differs from the recorded one. It
+    /// records no trace.
+    fn proc_rag_replay(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        let (id, trace) = self.rag_trace(RAG_REPLAY, args, span)?;
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: RAG_REPLAY.to_string(),
+            message,
+            span,
+        };
+        let Some(Value::String(query)) = trace.properties.get("query") else {
+            return Err(refuse(format!("trace `{id}` has no query")));
+        };
+        let config = match trace.properties.get("config") {
+            Some(Value::String(json)) => serde_json::from_str::<serde_json::Value>(json)
+                .map_err(|e| e.to_string())
+                .and_then(|json| {
+                    crate::rag::config::RagConfig::from_value(
+                        &json_to_value(&json),
+                        crate::cypher::expand::ceilings(),
+                    )
+                }),
+            _ => Err("it has no config".to_string()),
+        }
+        .map_err(|e| refuse(format!("trace `{id}` has an unreadable config: {e}")))?;
+        let config = crate::rag::config::RagConfig {
+            session: None,
+            trace: false,
+            ..config
+        };
+        let built = self.rag_build(RAG_REPLAY, query, &config, span)?;
+        let changed = !matches!(
+            trace.properties.get("text"),
+            Some(Value::String(was)) if *was == built.rendered.text
+        );
+        let tokens = Value::Integer(i64::try_from(built.rendered.tokens).unwrap_or(i64::MAX));
+        Ok(vec![vec![
+            Value::String(built.rendered.text),
+            tokens,
+            Value::Bool(changed),
+        ]])
+    }
+
+    /// `CALL drevo.rag.pruneTraces(olderThan) YIELD deleted` — delete the
+    /// context traces created before `olderThan` (a UTC date or timestamp)
+    /// with their relationships; the nodes they point at stay.
+    fn proc_rag_prune(&mut self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
+        // Arity (1) is enforced by the upfront validation sweep.
+        let cutoff = crate::rag::trace::parse_cutoff(&self.eval(&args[0], &Bindings::new())?)
+            .map_err(|message| ExecError::InvalidProcedureCall {
+                name: RAG_PRUNE.to_string(),
+                message,
+                span,
+            })?;
+        let old: Vec<Arc<NodeValue>> = self
+            .rag_trace_nodes()?
+            .into_iter()
+            .filter(|t| {
+                matches!(t.properties.get("created_at"),
+                    Some(Value::String(at)) if crate::rag::trace::is_older(at, &cutoff))
+            })
+            .collect();
+        let mut deleted = 0_i64;
+        for trace in old {
+            self.guard_node(drevo_auth::privileges::Action::Delete, &trace.labels, None)?;
+            let edges = self
+                .engine()
+                .edges_of(trace.id, ModelDirection::Both)?
+                .len();
+            self.engine().delete_node(trace.id)?;
+            self.stats.nodes_deleted += 1;
+            self.stats.relationships_deleted += edges;
+            deleted += 1;
+        }
+        Ok(vec![vec![Value::Integer(deleted)]])
     }
 
     /// The `query` and parsed config of a `drevo.rag.*` call.
@@ -10904,7 +11270,8 @@ impl<'a> Executor<'a> {
     /// The graph-RAG pipeline over the statement's view of the graph, as the
     /// signed-in user may see it: hybrid-search seeds, the expansion from
     /// them, the relationships between the nodes found, and their ranking.
-    /// Returns the ranked subgraph and the search mode that ran. The
+    /// Returns the ranked subgraph, the search mode that ran, and the node
+    /// the expansion stopped at when it hit `maxNodes`. The
     /// statement's deadline is checked between stages.
     fn rag_subgraph(
         &self,
@@ -10912,7 +11279,11 @@ impl<'a> Executor<'a> {
         query: &str,
         config: &crate::rag::config::RagConfig,
         span: Span,
-    ) -> ExecResultT<(crate::rag::Subgraph, crate::cypher::hybrid::HybridMode)> {
+    ) -> ExecResultT<(
+        crate::rag::Subgraph,
+        crate::cypher::hybrid::HybridMode,
+        Option<Arc<NodeValue>>,
+    )> {
         use crate::rag::{order, personalized_scores, source_admits, RankedNode, Subgraph};
         let refuse = |message: String| ExecError::InvalidProcedureCall {
             name: name.to_string(),
@@ -10921,15 +11292,18 @@ impl<'a> Executor<'a> {
         };
         let sources = config.sources.as_deref();
 
-        // 1. Seeds: the hybrid search, less what the caller may not see, the
-        //    excluded labels and other sources.
+        // 1. Seeds: the first `k` hits of the hybrid search the caller may
+        //    see, without the excluded labels and other sources. The whole
+        //    fused candidate list is read, so hidden and excluded hits (a
+        //    pile of traces of the same question, say) do not take the
+        //    seeds' places.
         let (hits, mode) = self.hybrid_hits(
             name,
             HybridItems::Nodes,
             query,
             config.label.as_deref(),
             &config.embedding_property,
-            config.k,
+            config.hybrid.depth(config.k),
             &config.hybrid,
             span,
         )?;
@@ -10937,6 +11311,9 @@ impl<'a> Executor<'a> {
         let mut seed_scores: HashMap<u64, f64> = HashMap::new();
         let mut seeds: Vec<u64> = Vec::new();
         for (item, fused) in hits {
+            if seeds.len() == config.k {
+                break;
+            }
             let Value::Node(stored) = item else {
                 continue;
             };
@@ -10954,7 +11331,7 @@ impl<'a> Executor<'a> {
             seeds.push(node.id);
         }
         if seeds.is_empty() {
-            return Ok((Subgraph::default(), mode));
+            return Ok((Subgraph::default(), mode, None));
         }
 
         // 2. Expand.
@@ -10981,6 +11358,11 @@ impl<'a> Executor<'a> {
                 via: reached.via,
             });
         }
+        // The node the walk stopped at when it hit `maxNodes`.
+        let cut = found
+            .stopped_at
+            .and_then(|id| seen.remove(&id))
+            .filter(|node| source_admits(&node.properties, sources));
 
         // 3. The relationships between the nodes found.
         let ids: HashSet<u64> = nodes.iter().map(|n| n.node.id).collect();
@@ -11041,6 +11423,7 @@ impl<'a> Executor<'a> {
                 truncated: found.truncated,
             },
             mode,
+            cut,
         ))
     }
 
@@ -11102,7 +11485,9 @@ impl<'a> Executor<'a> {
             "fts.search" => self.proc_fts_search(args, span),
             "fts.searchRelationships" => self.proc_fts_search_relationships(args, span),
             RAG_RETRIEVE => self.proc_rag_retrieve(args, span),
-            RAG_CONTEXT => self.proc_rag_context(args, span),
+            RAG_TRACES => self.proc_rag_traces(args, span),
+            RAG_EXPLAIN => self.proc_rag_explain(args, span),
+            RAG_REPLAY => self.proc_rag_replay(args, span),
             HYBRID => self.proc_search_hybrid(HYBRID, HybridItems::Nodes, args, span),
             HYBRID_RELS => {
                 self.proc_search_hybrid(HYBRID_RELS, HybridItems::Relationships, args, span)
@@ -12955,6 +13340,37 @@ const RAG_RETRIEVE: &str = "drevo.rag.retrieve";
 /// a token budget.
 const RAG_CONTEXT: &str = "drevo.rag.context";
 
+/// What the graph-RAG pipeline built for one `drevo.rag.context` call.
+struct RagBuilt {
+    /// The ranked nodes and the relationships between them.
+    subgraph: crate::rag::Subgraph,
+    /// The search mode that ran.
+    mode: crate::cypher::hybrid::HybridMode,
+    /// The text written within the budget.
+    rendered: crate::rag::serialize::Rendered,
+    /// The node the expansion stopped at when it hit `maxNodes`.
+    cut: Option<Arc<NodeValue>>,
+}
+
+impl RagBuilt {
+    /// Whether the expansion hit its node cap or a node did not fit.
+    fn truncated(&self) -> bool {
+        self.subgraph.truncated || self.rendered.skipped > 0
+    }
+}
+
+/// The `drevo.rag.traces` procedure: the newest context traces.
+const RAG_TRACES: &str = "drevo.rag.traces";
+
+/// The `drevo.rag.explain` procedure: what one context was made of.
+const RAG_EXPLAIN: &str = "drevo.rag.explain";
+
+/// The `drevo.rag.replay` procedure: a traced context re-run now.
+const RAG_REPLAY: &str = "drevo.rag.replay";
+
+/// The `drevo.rag.pruneTraces` procedure: delete older context traces.
+const RAG_PRUNE: &str = "drevo.rag.pruneTraces";
+
 /// The `drevo.search.hybridRelationships` procedure: the relationship twin of
 /// [`HYBRID`].
 const HYBRID_RELS: &str = "drevo.search.hybridRelationships";
@@ -13806,6 +14222,20 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "mode",
             "traceId",
         ]),
+        // Context traces.
+        RAG_TRACES => Some(&["trace"]),
+        RAG_EXPLAIN => Some(&[
+            "node",
+            "status",
+            "rank",
+            "distance",
+            "seedScore",
+            "pprScore",
+            "tokens",
+            "reason",
+        ]),
+        RAG_REPLAY => Some(&["text", "tokens", "changed"]),
+        RAG_PRUNE => Some(&["deleted"]),
         // Neo4j-compatible index procedures (issue #532): same (node, score)
         // contract as their drevo-native counterparts.
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
@@ -14050,6 +14480,10 @@ fn procedure_arity(name: &str) -> usize {
         EXPAND => 2,
         // drevo.rag.retrieve(query[, config]) / drevo.rag.context(query[, config]).
         RAG_RETRIEVE | RAG_CONTEXT => 2,
+        // drevo.rag.traces(session, limit).
+        RAG_TRACES => 2,
+        // drevo.rag.explain(traceId) / replay(traceId) / pruneTraces(olderThan).
+        RAG_EXPLAIN | RAG_REPLAY | RAG_PRUNE => 1,
         // db.index.vector.queryNodes(indexName, k, queryVector) (issue #532).
         "db.index.vector.queryNodes" => 3,
         // db.index.fulltext.queryNodes(indexName, queryString) (issue #532).

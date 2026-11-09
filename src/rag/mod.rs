@@ -52,6 +52,7 @@ use crate::traversal::ExpandVia;
 pub mod config;
 pub mod serialize;
 pub mod tokens;
+pub(crate) mod trace;
 
 use config::RankMode;
 
