@@ -447,6 +447,7 @@ impl Executor<'_> {
                 };
                 let config = RagConfig {
                     rank,
+                    scope: crate::rag::config::Scope::Local,
                     session: None,
                     trace: false,
                     ..config.clone()

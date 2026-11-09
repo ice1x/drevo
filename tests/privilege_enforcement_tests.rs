@@ -289,6 +289,33 @@ async fn entity_reads_need_no_write() {
 }
 
 #[tokio::test]
+async fn summarizing_communities_needs_write_and_reading_them_does_not() {
+    let t = Tracker::seeded().await;
+    for q in [
+        "MATCH (a:Bug {title: 'crash on save'}), (b:Bug {title: 'slow search'}) \
+         CREATE (a)-[:DUPLICATES]->(b)",
+        "CREATE (:Bug {title: 'hang on open'})-[:DUPLICATES]->(:Bug {title: 'hang on close'})",
+    ] {
+        t.ok("admin", q).await;
+    }
+    let summarize = "CALL drevo.community.summarize({mode: 'extractive', minSize: 2}) \
+                     YIELD community RETURN community.id";
+    t.forbidden("rita", summarize).await;
+    assert_eq!(t.count("MATCH (c:Community) RETURN count(c)").await, 0);
+    t.ok("ed", summarize).await;
+    assert_eq!(t.count("MATCH (c:Community) RETURN count(c)").await, 2);
+    for q in [
+        "CALL drevo.community.query('crash', 2) YIELD community RETURN community.id",
+        "MATCH (b:Bug {title: 'crash on save'}) CALL drevo.community.of(b) \
+         YIELD community RETURN community.id",
+        "CALL drevo.community.stale() YIELD changed RETURN changed",
+        "CALL drevo.rag.context('crash', {scope: 'global'}) YIELD scope RETURN scope",
+    ] {
+        t.ok("rita", q).await;
+    }
+}
+
+#[tokio::test]
 async fn recording_a_context_trace_needs_write() {
     let t = Tracker::seeded().await;
     let plain = "CALL drevo.rag.context('crash') YIELD traceId RETURN traceId";

@@ -305,6 +305,44 @@ A few knobs change the most:
 
 Every option is in the [Cypher Reference](cypher-reference.md#graph-rag-retrieval).
 
+### Global questions
+
+"Why did Mila panic?" is about a few nodes; "what is this journal about?" is about all of them, and
+no search hit is a good place to start walking from. For those, let drevo summarise the graph first:
+
+```text
+CALL drevo.community.summarize({mode: 'extractive'})
+YIELD community, size, summary
+```
+
+This cuts the graph into communities — in an IT task manager, the backend team with its tickets
+and the mobile team with theirs — and writes each one as a `:Community` node with a summary: its
+best-connected members by label, its keywords and its most common relationships. Run it again
+when the graph has moved on; `drevo.community.stale()` tells you which communities changed.
+
+Then ask with `scope: 'global'`, and the context is made of the summaries of the communities that
+match the question, followed by their most central members:
+
+```text
+CALL drevo.rag.context('What is this project about?', {scope: 'global', format: 'triples'})
+YIELD text, scope
+```
+
+```text
+community default-1 | Community | 6 members. Person: Dave, Erin, Frank. Ticket: MO-9 Android crash on startup, … Keywords: mobile, release, …
+community default-0 | Community | 6 members. Person: Alice, Bob, Carol. Ticket: BE-101 API rate limiter, …
+Dave | Person | Mobile lead
+Dave | MEMBER_OF | community default-1
+…
+```
+
+With `scope: 'auto'` drevo decides per question: global when the question starts like an overview
+("what…", "overview", "summary", "о чём…"), when the search finds nothing, or — with an embedder —
+when neither search is sure about what it found; local otherwise; the `scope` column says which it picked. To find communities by meaning as well as by
+words, register them for embedding once, before summarising:
+`CALL drevo.semantic.register('Community', 'summary', 'embedding', 'auto')`. The details are in the
+[Cypher Reference](cypher-reference.md#communities).
+
 ### Explain a context
 
 When an answer comes out wrong, the first question is what the model was given. Name the

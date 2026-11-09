@@ -2673,10 +2673,10 @@ its own formatting.
 
 ```text
 CALL drevo.rag.retrieve(query[, config])
-YIELD node, seedScore, distance, pprScore, rank, via, truncated
+YIELD node, seedScore, distance, pprScore, rank, via, truncated, scope
 
 CALL drevo.rag.context(query[, config])
-YIELD text, tokens, format, nodeIds, relIds, truncated, mode, traceId
+YIELD text, tokens, format, nodeIds, relIds, truncated, mode, traceId, scope
 ```
 
 ```cypher
@@ -2728,7 +2728,7 @@ The statement timeout (`DREVO_QUERY_TIMEOUT_MS`) is checked between stages.
 | `candidates`, `rrfK`, `mode` | `max(k, 20)`, `60`, `'auto'` | as in [`drevo.search.hybrid`](#hybrid-search-780) |
 | `hops` | `2` | as in [`drevo.graph.expand`](#graph-expansion) |
 | `direction`, `relTypes`, `labels`, `perNodeLimit`, `maxNodes`, `asOf` | `'both'`, `null`, `null`, `25`, `200`, `null` | as in [`drevo.graph.expand`](#graph-expansion); `direction` also orients PageRank |
-| `excludeLabels` | `['Message', 'ReasoningTrace', 'ContextTrace', 'IngestJob', 'IngestItem']` | labels kept out of the seeds and the expansion: conversation and bookkeeping, not knowledge. `[]` keeps everything |
+| `excludeLabels` | `['Message', 'ReasoningTrace', 'ContextTrace', 'Community', 'IngestJob', 'IngestItem']` | labels kept out of the seeds and the expansion: conversation and bookkeeping, not knowledge, and [community summaries](#communities), which `scope: 'global'` reads instead. `[]` keeps everything |
 | `rank` | `'ppr'` | `'ppr'`, `'distance'` or `'none'` |
 | `source` | `null` | a list of source ids: nodes and relationships whose `source_id` property names another source are left out; those without a `source_id` are kept |
 | `tokenBudget` | `2000` | the most tokens `text` may take; at least `50` |
@@ -2737,6 +2737,10 @@ The statement timeout (`DREVO_QUERY_TIMEOUT_MS`) is checked between stages.
 | `textProperties` | `['name', 'title', 'description', 'body', 'text']` | the properties a node's block is built from, in order; the first one present names the node (a node with none is named `#id`) |
 | `maxBodyChars` | `600` | each `body`, `text`, `description` or `quote` value longer than this many characters is cut to it, at a character boundary, with `…`. `name`, `title` and other properties are never cut, so a node keeps its full name |
 | `includeProvenance` | `true` | write `valid_from`→`valid_until`, `«quote»` and `(source_id)` when an element carries them |
+| `scope` | `'local'` | `'local'`: the five stages above. `'global'`: the `k` [communities](#communities) of `communityLayer` best matching the question (topped up with the largest others when fewer match) are the seeds, followed by their members, best in-community rank first, taken in turns across the communities up to `maxNodes`; a community is written as `community <id>` with its summary. `'auto'`: global when the local search finds no seed, when the question matches `globalHint`, or — when both search legs ran — when the best seed's search score is below `globalThreshold`; local otherwise, and local when there is no community. A heuristic: tune both to your corpus |
+| `globalThreshold` | `0.02` | under `scope: 'auto'` with both search legs (an embedder and a `label`), a best seed score below this goes global — an RRF score: `2/61` ≈ 0.033 for a first place in both legs, `1/61` ≈ 0.016 in one. With BM25 alone the score says nothing about confidence, so the threshold is not used |
+| `communityLayer` | `'default'` | the layer of [communities](#communities) `scope: 'global'` reads |
+| `globalHint` | `'^(what\|что\|о чём\|overview\|summary)'` | under `scope: 'auto'`, a regular expression matched against the start of the question, ignoring case: a match goes global |
 | `session` | `null` | the conversation the context is for, a string. `drevo.rag.context` then records a [context trace](#context-traces) linked to the session's newest message; `drevo.rag.retrieve` ignores it |
 | `trace` | `false` | `true` records a [context trace](#context-traces) without a session (`drevo.rag.context` only) |
 
@@ -2918,6 +2922,7 @@ with `includeProvenance`, `quote`, `source_id`, `valid_from` and `valid_until`.
 | `rank` | its position, from 1 |
 | `via` | as in [`drevo.graph.expand`](#graph-expansion); `null` for a seed |
 | `truncated` | whether the expansion stopped at `maxNodes` |
+| `scope` | the scope that ran: `'local'` or `'global'`. In the global scope the communities are the seeds and their members have `distance` 1 and their in-community rank as `pprScore` |
 
 ```cypher
 CALL drevo.rag.retrieve('team meeting', {rank: 'distance', hops: 1})
@@ -2936,6 +2941,7 @@ RETURN rank, node.title, distance, seedScore
 | `truncated` | `true` when a node did not fit the budget or the expansion hit `maxNodes` |
 | `mode` | the search mode that ran: `'hybrid'`, `'fts'` or `'vector'` (`'auto'` without an embedder or a `label` runs `'fts'`) |
 | `traceId` | the `id` of the [context trace](#context-traces) recorded with `session` or `trace: true`, else `null` |
+| `scope` | the scope that ran: `'local'` or `'global'` (`'auto'` resolves to one of them); a context trace records it too |
 
 The same graph, question and config give byte-identical `text`: ties are broken
 by node id and properties are written in a fixed order. A question that matches
@@ -2946,6 +2952,131 @@ unknown key (`includeSeeds` included: seeds are always returned) and a value of
 the wrong type or range fail with an error naming the key; an explicit `mode:
 'hybrid'` or `'vector'` without an embedder fails as in `drevo.search.hybrid`.
 Over HTTP the same call is [`POST /rag/context`](admin-guide.md#graph-rag-context-post-ragcontext).
+
+### Communities
+
+`drevo.community.summarize` cuts the graph into communities — groups of nodes
+more densely linked to each other than to the rest — and writes each one back
+as a `:Community` node with a short summary of who and what is in it. A
+corpus-level question ("what is this project about?") is then answered from a
+handful of summaries with [`scope: 'global'`](#graph-rag-retrieval) instead of
+from the neighbourhood of a few search hits.
+
+```text
+CALL drevo.community.summarize([config]) YIELD community, size, summary, keywords, mode
+CALL drevo.community.query(query, k[, config]) YIELD community, score, summary
+CALL drevo.community.of(node) YIELD community, level
+CALL drevo.community.stale() YIELD community, size, changed
+```
+
+```cypher
+CREATE (alice:Person {name: 'Alice', description: 'Backend lead'}),
+       (bob:Person {name: 'Bob'}),
+       (t1:Ticket {title: 'BE-142 Login token expires early'}),
+       (t2:Ticket {title: 'BE-101 API rate limiter'}),
+       (alice)-[:WORKS_ON]->(t1), (alice)-[:WORKS_ON]->(t2),
+       (bob)-[:WORKS_ON]->(t1), (alice)-[:MENTORS]->(bob)
+WITH alice
+CALL drevo.community.summarize({mode: 'extractive'})
+YIELD community, size, summary, keywords
+RETURN community.id, size, summary, keywords
+```
+
+Over an IT task manager with a backend and a mobile team, one row per team:
+
+```text
+default-0 | 6 | 6 members. Person: Alice, Bob, Carol. Ticket: BE-101 API rate limiter, BE-142 Login token expires early, BE-150 Database migration. Keywords: api, backend, database, …. Relations: WORKS_ON (7), MENTORS (2), BLOCKS (1).
+default-1 | 6 | 6 members. Person: Dave, Erin, Frank. Ticket: …
+```
+
+It writes
+
+```text
+(:Community {id, layer, size, modularity, summary, keywords, mode, computed_at, member_ids_hash, config})
+(member)-[:MEMBER_OF {layer, rank}]->(:Community)
+(:Community)-[:RELATED_COMMUNITY {weight}]->(:Community)
+```
+
+`id` is `<layer>-<n>`, communities numbered largest first; `rank` is the
+member's PageRank inside its community (the ranks of a community sum to 1);
+`modularity` is the partition's; `weight` counts the relationships between two
+communities (one `RELATED_COMMUNITY` per linked pair, from the lower-numbered
+one); `member_ids_hash` fingerprints the member set for `stale()`; `config` is
+the JSON `{"labels": …, "relTypes": …}` the layer was computed with.
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `algorithm` | `'louvain'` | `'louvain'` (modularity) or `'wcc'` (weakly connected components) |
+| `resolution` | `1.0` | Louvain's γ, a number ≥ 0: higher gives more, smaller communities |
+| `labels` | `null` | partition only nodes with one of these labels; `null` takes every node but `Message`, `ReasoningTrace`, `ContextTrace`, `Community`, `Alias`, `Source`, `Chunk`, `IngestJob` and `IngestItem` |
+| `relTypes` | `null` | partition along these relationship types only; `null` takes every type |
+| `minSize` | `3` | smaller communities get no summary, keywords or mode (their members still get `MEMBER_OF`) |
+| `maxMembers` | `40` | the most members a summary names, best-ranked first |
+| `mode` | `'auto'` | `'extractive'`: written from the members, no model. `'llm'`: written by the chat model — an error while none is configured (see `drevo.extract.status()`). `'auto'`: the model when one is configured, else extractive; `mode` on the row and the node says which ran |
+| `model` | `null` | the chat model for `'llm'`; `null` uses the server's |
+| `tokenBudget` | `300` | the most tokens a summary takes (the `'approx'` estimate of [`drevo.rag.context`](#graph-rag-retrieval)); at least `20` |
+| `replace` | `true` | delete the layer's previous communities first; `false` refuses a layer that already has some |
+| `layer` | `'default'` | the name of the partition, so several can sit side by side (say, `'fine'` with `resolution: 2.0`); the global scope of `drevo.rag.context` reads the one its `communityLayer` names |
+| `async` | `false` | `true` is refused until background jobs exist; summarise synchronously |
+
+An extractive summary is `<size> members.`, then the members named best-ranked
+first, grouped by label in the order of their best member (`Person: Alice,
+Bob.`), then `Keywords:` — the ten most salient terms of the members' `name`,
+`title`, `description`, `body` and `text`, ranked as by `keywords()` with every
+partitioned node as a document — then `Relations:` with the three most frequent
+relationship types inside the community and their counts. As many members as
+fit `tokenBudget` are named. The same graph and config give the same text.
+
+`drevo.community.summarize` writes, so it needs `CREATE` (and `DELETE` to
+replace a layer); the other three only read. It runs over what the user may
+see.
+
+`drevo.community.query` searches the communities of one layer: BM25 over their
+summaries (every trigram of the query must occur, as in
+`fts.search`), fused by RRF with a vector leg over their
+embeddings when an embedder is installed and the communities carry one. To
+embed them as they are written, register the label once before summarising:
+
+```text
+CALL drevo.semantic.register('Community', 'summary', 'embedding', 'auto')
+```
+
+Its config takes `layer` (`'default'`), `embeddingProperty` (`'embedding'`)
+and `candidates`, `rrfK`, `mode` as in
+[`drevo.search.hybrid`](#hybrid-search-780). Rows come best first.
+
+```cypher
+CALL drevo.community.query('login token', 3)
+YIELD community, score, summary
+RETURN community.id, score, summary
+```
+
+`drevo.community.of(node)` — a node or a node id; `null` gives no rows —
+returns the node's community in each layer, `level` being the layer's name.
+`drevo.community.stale()` returns every community with its member count now
+and whether its member set `changed` since it was computed: a member deleted or
+unlinked, or a new node linked to members — it counts towards the community it
+has the most links into. Only nodes with the layer's `labels` and links of its
+`relTypes` (as stored in `config`; bookkeeping left out when it named none)
+count. Summarising again, from a
+scheduled task or a trigger, refreshes them.
+
+```cypher
+CREATE (t:Ticket {title: 'BE-160 Cache warm-up'})
+WITH t
+CALL drevo.community.of(t) YIELD community, level
+RETURN community.id, level
+```
+
+```cypher
+CALL drevo.community.stale() YIELD community, size, changed
+WHERE changed
+RETURN community.id, size
+```
+
+A config that is not a map, an unknown key and a value of the wrong type or
+range fail with an error naming the key; `drevo.community.of` with a value that
+is not a node or an id, or with an id no node has, fails naming it.
 
 ### Entity resolution
 

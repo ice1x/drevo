@@ -2584,6 +2584,7 @@ async fn rag_context_returns_the_context_row_as_json() {
     assert_eq!(body["mode"], "fts");
     assert_eq!(body["truncated"], false);
     assert_eq!(body["traceId"], Value::Null);
+    assert_eq!(body["scope"], "local");
     assert_eq!(
         body["tokens"].as_u64(),
         Some(drevo::rag::tokens::approx(text) as u64)

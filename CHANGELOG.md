@@ -25,6 +25,36 @@ history and the in-repo issue tracker; format loosely follows
   summary for a store and a JSONL gold set as a markdown table, and
   `benches/rag_retrieve_bench.rs` times each pipeline stage on a GraphML copy
   of real data — numbers in `docs/benchmarks.md` ("Graph-RAG pipeline").
+- **Community summaries: `drevo.community.summarize([config]) YIELD
+  community, size, summary, keywords, mode`, `drevo.community.query(query,
+  k[, config])`, `drevo.community.of(node)`, `drevo.community.stale()`, and
+  `scope: 'local' | 'global' | 'auto'` in `drevo.rag.context` /
+  `drevo.rag.retrieve`** (issue #789). `summarize` partitions the graph
+  (Louvain with `resolution`, or `'wcc'`; bookkeeping labels left out unless
+  `labels` says otherwise; `relTypes`) and writes `(:Community {id, layer,
+  size, modularity, summary, keywords, mode, computed_at, member_ids_hash})`,
+  `MEMBER_OF {layer, rank}` from each member (rank = PageRank inside the
+  community) and `RELATED_COMMUNITY {weight}` between linked communities;
+  `replace` recomputes a `layer`, layers coexist. Summaries are extractive —
+  the best-ranked members by label (`maxMembers`), ten keywords and the three
+  most frequent relationship types, deterministic, within `tokenBudget` —
+  for communities of at least `minSize`; `mode: 'llm'` reports that no chat
+  model is configured and `'auto'` writes extractive summaries;
+  `async: true` is refused. `query` ranks a layer's communities by BM25 over
+  their summaries fused with the vector leg when they are embedded
+  (`drevo.semantic.register('Community', 'summary', 'embedding', 'auto')`).
+  `stale` reports communities whose member set changed. In
+  `drevo.rag.context` / `drevo.rag.retrieve`, `scope: 'global'` builds the
+  context from the best-matching communities' summaries and then their
+  members of the `communityLayer` (default `'default'`); `'auto'` picks
+  global when the search finds no seed, for an overview question
+  (`globalHint`), or — when both search legs ran — for a weak best seed
+  (`globalThreshold`, 0.02). Both procedures, `POST /rag/context` and
+  context traces gain a trailing `scope`. Each community stores the
+  `labels`/`relTypes` it was computed with (`config`), which `stale` reuses;
+  `summarize` always runs as one transaction. `Community` is
+  now one of the default `excludeLabels` of the local scope.
+
 - **Context traces: `drevo.rag.context` with a `session` (or `trace: true`)
   records what went into the context** (issue #784). A `:ContextTrace` node
   holds the question, the returned text, its tokens and budget, the search

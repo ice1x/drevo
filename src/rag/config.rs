@@ -5,10 +5,11 @@
 //! (`hops`, `direction`, `relTypes`, `labels`, `excludeLabels`,
 //! `perNodeLimit`, `maxNodes`, `asOf`), the ranking (`rank`), the provenance
 //! filter (`source`) and the serialiser (`tokenBudget`, `tokenizer`,
-//! `format`, `textProperties`, `maxBodyChars`, `includeProvenance`), plus
-//! `session` and `trace`, which make `drevo.rag.context` record a
-//! `:ContextTrace`. An unknown key, or a value of the wrong type or range, is
-//! refused by name:
+//! `format`, `textProperties`, `maxBodyChars`, `includeProvenance`), the
+//! scope (`scope`, `globalThreshold`, `globalHint`, `communityLayer`:
+//! nearby nodes or community summaries), plus `session` and `trace`, which
+//! make `drevo.rag.context` record a `:ContextTrace`. An unknown key, or a
+//! value of the wrong type or range, is refused by name:
 //!
 //! ```
 //! use std::collections::BTreeMap;
@@ -44,15 +45,17 @@ use crate::traversal::ExpandOptions;
 /// accepts, as listed in errors.
 pub const CONFIG_KEYS: &str = "label, embeddingProperty, k, candidates, rrfK, mode, hops, \
      direction, relTypes, labels, excludeLabels, perNodeLimit, maxNodes, asOf, rank, source, \
-     tokenBudget, tokenizer, format, textProperties, maxBodyChars, includeProvenance, session, \
-     trace";
+     tokenBudget, tokenizer, format, textProperties, maxBodyChars, includeProvenance, scope, \
+     globalThreshold, globalHint, communityLayer, session, trace";
 
 /// The labels left out of the expansion unless `excludeLabels` says
-/// otherwise: conversation and bookkeeping nodes, not knowledge.
-pub(crate) const DEFAULT_EXCLUDE_LABELS: [&str; 5] = [
+/// otherwise: conversation and bookkeeping nodes, not knowledge — and
+/// community summaries, which the global scope reads on its own.
+pub(crate) const DEFAULT_EXCLUDE_LABELS: [&str; 6] = [
     "Message",
     "ReasoningTrace",
     "ContextTrace",
+    "Community",
     "IngestJob",
     "IngestItem",
 ];
@@ -131,6 +134,69 @@ pub struct RagConfig {
     /// Whether `drevo.rag.context` records a `:ContextTrace` without a
     /// session.
     pub trace: bool,
+    /// Whether the context is built from the nearest nodes, from community
+    /// summaries, or chosen per question.
+    pub scope: Scope,
+    /// Under `scope: 'auto'`, when both search legs ran, a best seed score
+    /// below this picks the global scope. A single BM25 leg's RRF score says
+    /// nothing about confidence, so it is then ignored.
+    pub global_threshold: f64,
+    /// Under `scope: 'auto'`, a question whose start matches this regular
+    /// expression (case-insensitive) picks the global scope.
+    pub global_hint: String,
+    /// The layer of `:Community` nodes the global scope reads.
+    pub community_layer: String,
+}
+
+/// Where a context comes from.
+///
+/// ```
+/// use drevo::rag::config::{RagConfig, Scope};
+///
+/// assert_eq!(RagConfig::default().scope, Scope::Local);
+/// assert_eq!(Scope::Global.as_str(), "global");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// The seeds of a hybrid search and the nodes near them.
+    Local,
+    /// The best-matching community summaries and their best-ranked members.
+    Global,
+    /// Global for a question that finds no seed, matches the global hint,
+    /// or — when both search legs ran — whose best seed scores below the
+    /// global threshold; else local.
+    Auto,
+}
+
+impl Scope {
+    /// The scope's name as written in a config map and reported per row.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Global => "global",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+/// The global threshold when the config names none: an RRF score.
+pub(crate) const DEFAULT_GLOBAL_THRESHOLD: f64 = 0.02;
+
+/// The global hint when the config names none.
+pub(crate) const DEFAULT_GLOBAL_HINT: &str = "^(what|что|о чём|overview|summary)";
+
+/// Whether the start of `query` matches the regular expression `hint`,
+/// ignoring case and line breaks.
+pub(crate) fn global_hint_matches(hint: &str, query: &str) -> Result<bool, String> {
+    use crate::cypher::regex::Regex;
+    let pattern = format!("(?i)(?:{hint}).*");
+    let regex = Regex::compile(&pattern)
+        .map_err(|e| format!("globalHint is not a valid regular expression: {e}"))?;
+    let question = query.to_lowercase().replace(['\n', '\r'], " ");
+    regex
+        .is_match(&question)
+        .map_err(|e| format!("globalHint is not a valid regular expression: {e}"))
 }
 
 impl Default for RagConfig {
@@ -150,6 +216,10 @@ impl Default for RagConfig {
             render: RenderOptions::default(),
             session: None,
             trace: false,
+            scope: Scope::Local,
+            global_threshold: DEFAULT_GLOBAL_THRESHOLD,
+            global_hint: DEFAULT_GLOBAL_HINT.to_string(),
+            community_layer: crate::community::DEFAULT_LAYER.to_string(),
         }
     }
 }
@@ -308,6 +378,52 @@ impl RagConfig {
                         return Err(format!("trace must be a boolean, got {}", describe(other)))
                     }
                 },
+                "scope" => {
+                    config.scope = match v {
+                        Value::String(name) => Scope::parse(name),
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
+                        format!(
+                            "scope must be 'local', 'global' or 'auto', got {}",
+                            describe(v)
+                        )
+                    })?;
+                }
+                "globalThreshold" => {
+                    config.global_threshold = match v {
+                        Value::Integer(i) => Some(*i as f64),
+                        Value::Float(f) => Some(*f),
+                        _ => None,
+                    }
+                    .filter(|t| t.is_finite() && *t >= 0.0)
+                    .ok_or_else(|| {
+                        format!("globalThreshold must be a number ≥ 0, got {}", describe(v))
+                    })?;
+                }
+                "communityLayer" => match v {
+                    Value::String(layer) if !layer.is_empty() => {
+                        config.community_layer = layer.clone();
+                    }
+                    other => {
+                        return Err(format!(
+                            "communityLayer must be a non-empty string, got {}",
+                            describe(other)
+                        ))
+                    }
+                },
+                "globalHint" => match v {
+                    Value::String(hint) => {
+                        global_hint_matches(hint, "")?;
+                        config.global_hint = hint.clone();
+                    }
+                    other => {
+                        return Err(format!(
+                            "globalHint must be a string, got {}",
+                            describe(other)
+                        ))
+                    }
+                },
                 other => return Err(unknown(other)),
             }
         }
@@ -365,8 +481,23 @@ impl RagConfig {
             "textProperties": strings(&self.render.text_properties),
             "maxBodyChars": self.render.max_body_chars,
             "includeProvenance": self.render.include_provenance,
+            "scope": self.scope.as_str(),
+            "globalThreshold": self.global_threshold,
+            "globalHint": self.global_hint,
+            "communityLayer": self.community_layer,
         })
         .to_string()
+    }
+}
+
+impl Scope {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "local" => Some(Self::Local),
+            "global" => Some(Self::Global),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
     }
 }
 
@@ -484,6 +615,7 @@ mod tests {
                 "Message",
                 "ReasoningTrace",
                 "ContextTrace",
+                "Community",
                 "IngestJob",
                 "IngestItem"
             ]
@@ -505,6 +637,10 @@ mod tests {
         assert!(d.render.include_provenance);
         assert_eq!(d.session, None);
         assert!(!d.trace);
+        assert_eq!(d.scope, Scope::Local);
+        assert_eq!(d.global_threshold, 0.02);
+        assert_eq!(d.global_hint, "^(what|что|о чём|overview|summary)");
+        assert_eq!(d.community_layer, "default");
     }
 
     #[test]
@@ -534,8 +670,16 @@ mod tests {
             ("includeProvenance", Value::Bool(false)),
             ("session", s("chat-7")),
             ("trace", Value::Bool(true)),
+            ("scope", s("auto")),
+            ("globalThreshold", Value::Float(0.05)),
+            ("globalHint", s("^(overview|tl;dr)")),
+            ("communityLayer", s("fine")),
         ])
         .unwrap();
+        assert_eq!(config.community_layer, "fine");
+        assert_eq!(config.scope, Scope::Auto);
+        assert_eq!(config.global_threshold, 0.05);
+        assert_eq!(config.global_hint, "^(overview|tl;dr)");
         assert_eq!(config.label.as_deref(), Some("Entry"));
         assert_eq!(config.embedding_property, "vec");
         assert_eq!(config.k, 3);
@@ -591,7 +735,36 @@ mod tests {
                 "unknown config key `depth`; expected label, embeddingProperty, k, candidates, \
                  rrfK, mode, hops, direction, relTypes, labels, excludeLabels, perNodeLimit, \
                  maxNodes, asOf, rank, source, tokenBudget, tokenizer, format, textProperties, \
-                 maxBodyChars, includeProvenance, session, trace",
+                 maxBodyChars, includeProvenance, scope, globalThreshold, globalHint, \
+                 communityLayer, session, trace",
+            ),
+            (
+                vec![("communityLayer", s(""))],
+                "communityLayer must be a non-empty string, got ''",
+            ),
+            (
+                vec![("communityLayer", Value::Integer(2))],
+                "communityLayer must be a non-empty string, got 2",
+            ),
+            (
+                vec![("scope", s("galaxy"))],
+                "scope must be 'local', 'global' or 'auto', got 'galaxy'",
+            ),
+            (
+                vec![("globalThreshold", Value::Float(-0.1))],
+                "globalThreshold must be a number ≥ 0, got -0.1",
+            ),
+            (
+                vec![("globalThreshold", s("low"))],
+                "globalThreshold must be a number ≥ 0, got 'low'",
+            ),
+            (
+                vec![("globalHint", Value::Integer(1))],
+                "globalHint must be a string, got 1",
+            ),
+            (
+                vec![("globalHint", s("^(what"))],
+                "globalHint is not a valid regular expression: ",
             ),
             (
                 vec![("includeSeeds", Value::Bool(false))],
@@ -727,6 +900,10 @@ mod tests {
             ("includeProvenance", Value::Bool(false)),
             ("session", s("chat-7")),
             ("trace", Value::Bool(true)),
+            ("scope", s("global")),
+            ("globalThreshold", Value::Float(0.01)),
+            ("globalHint", s("^overview")),
+            ("communityLayer", s("fine")),
         ])
         .unwrap();
         for config in [RagConfig::default(), custom] {
@@ -762,5 +939,43 @@ mod tests {
         assert_eq!(json["tokenBudget"], 2000);
         assert_eq!(json["rank"], "ppr");
         assert_eq!(json["label"], serde_json::Value::Null);
+        assert_eq!(json["scope"], "local");
+        assert_eq!(json["globalThreshold"], 0.02);
+    }
+
+    #[test]
+    fn scopes_parse() {
+        for scope in [Scope::Local, Scope::Global, Scope::Auto] {
+            assert_eq!(parse(&[("scope", s(scope.as_str()))]).unwrap().scope, scope);
+        }
+        let integer = parse(&[("globalThreshold", Value::Integer(0))]).unwrap();
+        assert_eq!(integer.global_threshold, 0.0);
+    }
+
+    #[test]
+    fn the_global_hint_matches_the_start_of_the_question_ignoring_case() {
+        let hint = DEFAULT_GLOBAL_HINT;
+        for q in [
+            "What is this project about?",
+            "what are the teams",
+            "Что здесь происходит?",
+            "о чём этот корпус",
+            "Overview please",
+            "SUMMARY\nof the year",
+        ] {
+            assert_eq!(global_hint_matches(hint, q), Ok(true), "{q}");
+        }
+        for q in ["BE-142 login token", "so what", "", "show me what failed"] {
+            assert_eq!(global_hint_matches(hint, q), Ok(false), "{q}");
+        }
+        assert_eq!(
+            global_hint_matches("^tl;dr", "TL;DR of the sprint"),
+            Ok(true)
+        );
+        let bad = global_hint_matches("^(what", "what").unwrap_err();
+        assert!(
+            bad.starts_with("globalHint is not a valid regular expression: "),
+            "{bad}"
+        );
     }
 }
