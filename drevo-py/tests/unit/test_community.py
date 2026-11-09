@@ -136,5 +136,23 @@ def test_errors_name_the_problem(drevo_db: drevo.Drevo) -> None:
         _summarize(drevo_db, {"mode": "poetic"})
     with pytest.raises(drevo.CypherError, match=r"drevo\.extract\.status\(\)"):
         _summarize(drevo_db, {"mode": "llm"})
-    with pytest.raises(drevo.CypherError, match="needs ingest jobs"):
-        _summarize(drevo_db, {"async": True})
+
+
+def test_async_stores_a_community_job(drevo_db: drevo.Drevo, teams: dict[str, Any]) -> None:
+    [row] = drevo_db.execute(
+        "CALL drevo.community.summarize($config) "
+        "YIELD community, size, summary, keywords, mode, jobId "
+        "RETURN community, size, summary, keywords, mode, jobId",
+        {"config": {"async": True, "mode": "extractive"}},
+    ).rows
+    assert isinstance(row["jobId"], str) and row["jobId"]
+    for column in ("community", "size", "summary", "keywords", "mode"):
+        assert row[column] is None, column
+    # No scheduler runs on this handle: the job waits, queued, and nothing
+    # is written yet.
+    [job] = drevo_db.execute(
+        "MATCH (j:IngestJob {id: $id}) RETURN j.pipeline AS pipeline, j.state AS state",
+        {"id": row["jobId"]},
+    ).rows
+    assert job == {"pipeline": "community", "state": "queued"}
+    assert drevo_db.execute("MATCH (c:Community) RETURN count(c) AS n").rows == [{"n": 0}]

@@ -89,7 +89,9 @@ thread_local! {
 }
 
 /// Run `work` as a background community job on this thread: the limit on
-/// synchronous LLM summaries does not apply.
+/// synchronous LLM summaries does not apply. Used by the ingest scheduler,
+/// which wasm builds do not have.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn as_job<R>(work: impl FnOnce() -> R) -> R {
     struct Restore(bool);
     impl Drop for Restore {
