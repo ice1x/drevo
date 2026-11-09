@@ -232,7 +232,11 @@ impl Executor<'_> {
         const PROC: &str = EXTRACT_INGEST;
         let span = c.span;
         let (text, options) = self.extract_args(PROC, c, row, true)?;
-        extract::installed().ok_or_else(|| not_configured(PROC))?;
+        // An ingest job's item was extracted before its write began.
+        let prepared = extract::prepared_for(&text);
+        if prepared.is_none() {
+            extract::installed().ok_or_else(|| not_configured(PROC))?;
+        }
         let source = options
             .source
             .clone()
@@ -244,12 +248,15 @@ impl Executor<'_> {
             }
             SourceRef::Spec(spec) => spec.id.clone(),
         };
-        let found = Self::extract_run(
-            PROC,
-            span,
-            |completer| extract::extract_chunks(completer, &text, &options, Want::Both),
-            |found: &Vec<ChunkExtraction>| found.iter().map(|f| f.accepted.skipped).sum(),
-        )?;
+        let found = match prepared {
+            Some(found) => found,
+            None => Self::extract_run(
+                PROC,
+                span,
+                |completer| extract::extract_chunks(completer, &text, &options, Want::Both),
+                |found: &Vec<ChunkExtraction>| found.iter().map(|f| f.accepted.skipped).sum(),
+            )?,
+        };
         let entities = found.iter().map(|f| f.accepted.entities.len()).sum();
         let facts = found.iter().map(|f| f.accepted.facts.len()).sum();
         let skipped = found.iter().map(|f| f.accepted.skipped).sum();

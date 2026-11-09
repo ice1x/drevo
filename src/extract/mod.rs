@@ -70,12 +70,35 @@ pub enum ExtractError {
     /// The endpoint setting is unusable.
     #[error("invalid extraction setting: {0}")]
     Invalid(String),
-    /// The endpoint call failed.
+    /// The endpoint call failed in a way a later call may not (a rate
+    /// limit, a server error, a timeout, a lost connection).
     #[error("extraction upstream error: {0}")]
     Upstream(String),
+    /// The endpoint refused the call in a way it will refuse it again (a
+    /// client error other than a rate limit or a timeout).
+    #[error("extraction upstream error: {0}")]
+    Refused(String),
     /// The model did not answer with the JSON object, even when asked again.
     #[error("the model did not return the extraction JSON after a retry: {0}")]
     Malformed(String),
+}
+
+impl ExtractError {
+    /// Whether running the same extraction again later may succeed: when
+    /// the endpoint failed in a way that passes ([`ExtractError::Upstream`])
+    /// or none is installed yet. A refused call, a malformed answer after
+    /// the retry and an unusable setting fail the same way again.
+    ///
+    /// ```
+    /// use drevo::extract::ExtractError;
+    ///
+    /// assert!(ExtractError::Upstream("upstream returned 429".into()).is_retryable());
+    /// assert!(!ExtractError::Malformed("no JSON".into()).is_retryable());
+    /// ```
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Upstream(_) | Self::NotConfigured)
+    }
 }
 
 /// How `drevo.extract.ingest` finds an entity that is already known.
@@ -424,7 +447,13 @@ fn ask(
     passage: &str,
     model: Option<&str>,
 ) -> Result<parse::RawResponse, ExtractError> {
-    let upstream = |e: LlmError| ExtractError::Upstream(e.to_string());
+    let upstream = |e: LlmError| {
+        if e.is_retryable() {
+            ExtractError::Upstream(e.to_string())
+        } else {
+            ExtractError::Refused(e.to_string())
+        }
+    };
     let mut request = ChatRequest {
         model: model.map(str::to_string),
         messages: vec![
@@ -481,6 +510,47 @@ pub fn extract_text(
         }
     }
     Ok(out)
+}
+
+thread_local! {
+    /// An extraction already made for a text, used by `drevo.extract.ingest`
+    /// on this thread instead of asking the model again.
+    static PREPARED: std::cell::RefCell<Option<(String, Vec<ChunkExtraction>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `work` with `found` as the extraction of `text`: a
+/// `drevo.extract.ingest` of exactly `text` that `work` runs on this thread
+/// writes `found` instead of calling the model. An ingest job extracts an
+/// item outside any transaction, then writes it this way, so a write retried
+/// after a conflict does not ask the model again.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn with_prepared<R>(
+    text: &str,
+    found: Vec<ChunkExtraction>,
+    work: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<(String, Vec<ChunkExtraction>)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            PREPARED.with(|p| *p.borrow_mut() = outer);
+        }
+    }
+    let outer = PREPARED.with(|p| p.borrow_mut().replace((text.to_string(), found)));
+    let _restore = Restore(outer);
+    work()
+}
+
+/// The extraction prepared for `text` on this thread ([`with_prepared`]),
+/// if any.
+pub(crate) fn prepared_for(text: &str) -> Option<Vec<ChunkExtraction>> {
+    PREPARED.with(|p| {
+        p.borrow()
+            .as_ref()
+            .filter(|(prepared, _)| prepared == text)
+            .map(|(_, found)| found.clone())
+    })
 }
 
 /// The process-wide chat endpoint extraction uses.
@@ -899,6 +969,55 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_call_is_not_retryable_and_a_rate_limit_is() {
+        let refused = Script::new(vec![Err(LlmError::Status {
+            status: 400,
+            message: "upstream returned 400 Bad Request: bad model".into(),
+        })]);
+        let e = extract_chunks(
+            &refused,
+            "Dana joined Acme.",
+            &ExtractOptions::default(),
+            Want::Both,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            ExtractError::Refused("upstream returned 400 Bad Request: bad model".into())
+        );
+        assert_eq!(
+            e.to_string(),
+            "extraction upstream error: upstream returned 400 Bad Request: bad model"
+        );
+        assert!(!e.is_retryable());
+        let limited = Script::new(vec![Err(LlmError::Status {
+            status: 429,
+            message: "upstream returned 429 Too Many Requests: slow down".into(),
+        })]);
+        let e = extract_chunks(
+            &limited,
+            "Dana joined Acme.",
+            &ExtractOptions::default(),
+            Want::Both,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            ExtractError::Upstream("upstream returned 429 Too Many Requests: slow down".into())
+        );
+        assert!(e.is_retryable());
+    }
+
+    #[test]
+    fn which_extraction_errors_are_retryable() {
+        assert!(ExtractError::Upstream("timed out".into()).is_retryable());
+        assert!(ExtractError::NotConfigured.is_retryable());
+        assert!(!ExtractError::Refused("401".into()).is_retryable());
+        assert!(!ExtractError::Malformed("prose".into()).is_retryable());
+        assert!(!ExtractError::Invalid("bad url".into()).is_retryable());
+    }
+
+    #[test]
     fn a_blank_text_makes_no_call() {
         let script = Script::new(vec![]);
         let found =
@@ -1010,6 +1129,25 @@ mod tests {
         assert_eq!(status().last_skipped, Some(3));
         uninstall();
         assert!(installed().is_none());
+    }
+
+    #[test]
+    fn a_prepared_extraction_serves_only_its_text_and_only_inside() {
+        let found = vec![ChunkExtraction {
+            chunk: chunk::Chunk {
+                order: 4,
+                offset: 10,
+                length: 4,
+                text: "Dana".into(),
+            },
+            accepted: Accepted::default(),
+        }];
+        assert_eq!(prepared_for("Dana"), None);
+        let inside = with_prepared("Dana", found.clone(), || {
+            (prepared_for("Dana"), prepared_for("Acme"))
+        });
+        assert_eq!(inside, (Some(found), None));
+        assert_eq!(prepared_for("Dana"), None);
     }
 
     #[test]

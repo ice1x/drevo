@@ -152,6 +152,10 @@ pub mod extract;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ffi;
 pub mod fts;
+/// Durable ingest jobs: `drevo.ingest.*` stores a job of passages in the
+/// graph and a scheduler per database extracts them in the background, with
+/// retries, resuming after a restart.
+pub mod ingest;
 /// How many Bolt connections and HTTP requests a server serves at once.
 pub mod limits;
 /// A client for OpenAI-compatible `chat/completions` endpoints, shared by

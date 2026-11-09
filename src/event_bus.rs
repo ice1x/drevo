@@ -14,6 +14,17 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+/// Who an event comes from, which decides the SSE event type it is sent as.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EventKind {
+    /// Posted by an application with `drevo.events.post`: sent as `posted`.
+    #[default]
+    Posted,
+    /// The progress of an ingest job: sent as `ingest`, its payload
+    /// `{jobId, state, done, failed, total}`.
+    Ingest,
+}
+
 /// An event posted by a statement, waiting for its commit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
@@ -21,6 +32,8 @@ pub struct Pending {
     pub name: String,
     /// Whatever the application attached; `null` when nothing.
     pub payload: serde_json::Value,
+    /// Who posted it.
+    pub kind: EventKind,
 }
 
 /// A published event.
@@ -36,6 +49,8 @@ pub struct Posted {
     pub name: String,
     /// What the application attached.
     pub payload: serde_json::Value,
+    /// Who posted it.
+    pub kind: EventKind,
 }
 
 thread_local! {
@@ -125,6 +140,7 @@ impl EventBus {
                 cursor: at,
                 name: event.name,
                 payload: event.payload,
+                kind: event.kind,
             });
         }
         let keep = usize::try_from(keep.max(1)).unwrap_or(usize::MAX);
@@ -194,6 +210,7 @@ mod tests {
         Pending {
             name: name.to_string(),
             payload: serde_json::json!({ "n": name }),
+            kind: EventKind::Posted,
         }
     }
 
@@ -255,6 +272,16 @@ mod tests {
         assert_eq!(got, vec![(1, 7, "a"), (2, 7, "b"), (3, 9, "c")]);
         assert_eq!(bus.after(2).events.len(), 1);
         assert!(bus.after(3).events.is_empty());
+    }
+
+    #[test]
+    fn published_events_keep_their_kind() {
+        let bus = EventBus::new();
+        let mut progress = pending("ingest");
+        progress.kind = EventKind::Ingest;
+        bus.publish(vec![pending("a"), progress], || 1, 10);
+        let kinds: Vec<EventKind> = bus.after(0).events.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [EventKind::Posted, EventKind::Ingest]);
     }
 
     #[test]

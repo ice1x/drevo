@@ -32,6 +32,16 @@
 //! data: {"name":"invoice_approved","payload":{"invoice":"INV-7"},"cursor":45}
 //! ```
 //!
+//! The progress of an ingest job (`drevo.ingest.submit`) arrives as an
+//! `ingest` event whenever its state or counts change, at most once a
+//! second per job; follow only these with `?names=ingest`:
+//!
+//! ```text
+//! id: 52:3
+//! event: ingest
+//! data: {"jobId":"0193…","state":"running","done":12,"failed":0,"total":40,"cursor":52}
+//! ```
+//!
 //! - **Resuming.** The SSE `id` is the stream position: the change cursor,
 //!   followed by `:<n>` once named events have been posted, `n` counting
 //!   them. A client resumes after a reconnect from `?since=<id>` or the
@@ -64,7 +74,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use crate::event_bus::Posted;
+use crate::event_bus::{EventKind, Posted};
 use crate::native::WalOp;
 use crate::native_api::NativeApiState;
 use crate::native_service::NativeService;
@@ -227,8 +237,19 @@ fn event_for(op: &WalOp, cursor: u64, id: String, filter: &Filter) -> Option<Eve
     Some(Event::default().id(id).event(name).data(data.to_string()))
 }
 
-/// The SSE event for named event `posted`, sent with SSE id `id`.
+/// The SSE event for named event `posted`, sent with SSE id `id`: an
+/// application's `posted` event, or an `ingest` job's progress.
 fn posted_event(posted: &Posted, id: String) -> Event {
+    if posted.kind == EventKind::Ingest {
+        let mut data = posted.payload.clone();
+        if let Some(fields) = data.as_object_mut() {
+            fields.insert("cursor".into(), posted.cursor.into());
+        }
+        return Event::default()
+            .id(id)
+            .event("ingest")
+            .data(data.to_string());
+    }
     Event::default().id(id).event("posted").data(
         serde_json::json!({
             "name": posted.name,

@@ -405,6 +405,34 @@ async fn extraction_ingest_needs_write_and_extraction_reads_do_not() {
     .await;
 }
 
+#[tokio::test]
+async fn ingest_jobs_need_write_to_change_and_read_to_watch() {
+    let t = Tracker::seeded().await;
+    let submit = "CALL drevo.ingest.submit(['Rita filed the bug.', 'Ed fixed it.'], \
+                  {source: {id: 'bug-log'}}) YIELD jobId RETURN jobId";
+    t.forbidden("rita", submit).await;
+    assert_eq!(
+        t.count("MATCH (n) WHERE n:IngestJob OR n:IngestItem RETURN count(n)")
+            .await,
+        0
+    );
+    let json = t.ok("ed", submit).await;
+    let job = json["rows"][0][0].as_str().unwrap().to_string();
+    for q in [
+        format!("CALL drevo.ingest.status('{job}') YIELD job RETURN job.state"),
+        "CALL drevo.ingest.list(null, 5) YIELD job RETURN job.id".to_string(),
+        format!("CALL drevo.ingest.errors('{job}', 5) YIELD seq RETURN seq"),
+    ] {
+        t.ok("rita", &q).await;
+    }
+    for proc in ["pause", "resume", "retryFailed", "cancel", "purge"] {
+        let q = format!("CALL drevo.ingest.{proc}('{job}')");
+        t.forbidden("rita", &q).await;
+        t.ok("ed", &q).await;
+    }
+    assert_eq!(t.count("MATCH (i:IngestItem) RETURN count(i)").await, 0);
+}
+
 // ── Database access ──────────────────────────────────────────────────
 
 #[tokio::test]
