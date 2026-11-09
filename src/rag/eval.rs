@@ -40,7 +40,9 @@ pub enum Strategy {
     /// The full graph-RAG pipeline: hybrid seeds, expansion, Personalized
     /// PageRank.
     Rag,
-    /// Retrieval over community summaries.
+    /// The global scope of `drevo.rag.context`: the communities of the
+    /// config's `communityLayer` best matching the question, with their
+    /// members. Needs `drevo.community.summarize` to have run.
     RagGlobal,
 }
 

@@ -146,6 +146,15 @@ impl Executor<'_> {
         None
     }
 
+    /// Whether `layer` holds a `:Community` the caller may see — whether the
+    /// global scope of `drevo.rag.context` has anything to retrieve there.
+    pub(super) fn has_visible_community(&self, layer: &str) -> ExecResultT<bool> {
+        Ok(self
+            .community_nodes(Some(layer))?
+            .into_iter()
+            .any(|c| self.visible_node(c).is_some()))
+    }
+
     /// Every `:Community` of `layer` (of every layer when `None`), as
     /// stored, by id.
     fn community_nodes(&self, layer: Option<&str>) -> ExecResultT<Vec<Arc<NodeValue>>> {

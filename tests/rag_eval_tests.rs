@@ -787,8 +787,8 @@ fn every_strategy_error_is_named() {
     );
     assert_eq!(
         invalid(try_evaluate(&db, gold(), config(&["rag", "rag-global"]))),
-        "strategy 'rag-global' needs community summaries, which this server does not \
-         build; leave it out of `strategies`"
+        "strategy 'rag-global' needs community summaries, and layer 'default' has none: \
+         run `drevo.community.summarize` first"
     );
     assert_eq!(
         invalid(try_evaluate(
@@ -975,4 +975,198 @@ fn bolt_round_trip_types() {
     }
     assert_eq!(rows[1][0], Bolt::String("fts".to_string()));
     assert_eq!(rows[1][3], Bolt::Float(0.5));
+}
+
+// ── rag-global over community summaries (#807) ──────────────────────────────
+
+/// An IT task manager with two teams, densely linked inside and bridged
+/// once (the fixture of `tests/community_tests.rs`): `drevo.community.summarize`
+/// cuts it into a backend and a mobile community.
+fn it_task_manager(db: &NativeService) {
+    run(
+        db,
+        "CREATE (alice:Person {name: 'Alice', description: 'Backend lead'}), \
+                (bob:Person {name: 'Bob', description: 'Backend engineer'}), \
+                (carol:Person {name: 'Carol', description: 'Database engineer'}), \
+                (be101:Ticket {title: 'BE-101 API rate limiter', body: 'Throttle the public API gateway'}), \
+                (be142:Ticket {title: 'BE-142 Login token expires early', body: 'Session tokens on the auth server expire after five minutes'}), \
+                (be150:Ticket {title: 'BE-150 Database migration', body: 'Move the orders table to the new server'}), \
+                (dave:Person {name: 'Dave', description: 'Mobile lead'}), \
+                (erin:Person {name: 'Erin', description: 'iOS developer'}), \
+                (frank:Person {name: 'Frank', description: 'Android developer'}), \
+                (mo7:Ticket {title: 'MO-7 iOS release build', body: 'Ship the mobile release to the app store'}), \
+                (mo9:Ticket {title: 'MO-9 Android crash on startup', body: 'The mobile app crashes before the release screen'}), \
+                (mo12:Ticket {title: 'MO-12 Mobile release notes', body: 'Write the mobile release notes for the app store'}), \
+                (alice)-[:WORKS_ON]->(be101), (alice)-[:WORKS_ON]->(be142), (alice)-[:WORKS_ON]->(be150), \
+                (bob)-[:WORKS_ON]->(be101), (bob)-[:WORKS_ON]->(be142), \
+                (carol)-[:WORKS_ON]->(be150), (carol)-[:WORKS_ON]->(be142), \
+                (alice)-[:MENTORS]->(bob), (alice)-[:MENTORS]->(carol), (be101)-[:BLOCKS]->(be150), \
+                (dave)-[:WORKS_ON]->(mo7), (dave)-[:WORKS_ON]->(mo9), (dave)-[:WORKS_ON]->(mo12), \
+                (erin)-[:WORKS_ON]->(mo7), (erin)-[:WORKS_ON]->(mo9), \
+                (frank)-[:WORKS_ON]->(mo12), (frank)-[:WORKS_ON]->(mo9), \
+                (dave)-[:MENTORS]->(erin), (dave)-[:MENTORS]->(frank), (mo9)-[:BLOCKS]->(mo7), \
+                (mo9)-[:DEPENDS_ON]->(be142)",
+    );
+}
+
+/// "What is the mobile team shipping?": the mobile release tickets.
+fn mobile_gold() -> Value {
+    list(vec![map(&[
+        ("query", s("mobile release")),
+        (
+            "expected",
+            list(vec![
+                named("MO-7 iOS release build", "Ticket"),
+                named("MO-12 Mobile release notes", "Ticket"),
+            ]),
+        ),
+    ])])
+}
+
+fn global_config() -> Value {
+    map(&[
+        ("strategies", list(vec![s("rag"), s("rag-global")])),
+        ("label", s("Ticket")),
+        ("k", Value::Integer(2)),
+        ("tokenBudget", Value::Integer(2000)),
+    ])
+}
+
+#[test]
+fn rag_global_strategy_runs_over_community_summaries() {
+    let db = NativeService::in_memory();
+    it_task_manager(&db);
+    let summarized = run(
+        &db,
+        "CALL drevo.community.summarize({mode: 'extractive'}) YIELD community \
+         RETURN count(community)",
+    );
+    assert!(
+        int(&summarized.rows[0][0]) >= 2,
+        "the fixture must have communities: {summarized:?}"
+    );
+    let rows = try_evaluate(&db, mobile_gold(), global_config()).unwrap_or_else(|e| {
+        panic!(
+            "#807: drevo.rag.evaluate refuses 'rag-global' although the graph has \
+             summarised :Community nodes and drevo.rag.context supports scope 'global': {e}"
+        )
+    });
+    assert_eq!(
+        rows.iter().map(|r| r.strategy.as_str()).collect::<Vec<_>>(),
+        ["rag", "rag-global"],
+        "{rows:?}"
+    );
+    let global = by_strategy(&rows, "rag-global");
+    assert!(
+        (0.0..=1.0).contains(&global.recall) && global.recall > 0.0,
+        "rag-global retrieves the mobile community's members, so it finds a mobile \
+         release ticket: {global:?}"
+    );
+    assert!(!global.node_ids.is_empty(), "{global:?}");
+}
+
+#[test]
+fn rag_global_without_communities_says_to_summarize_first() {
+    let db = NativeService::in_memory();
+    it_task_manager(&db);
+    let message = invalid(try_evaluate(&db, mobile_gold(), global_config()));
+    assert!(
+        message.contains("drevo.community.summarize"),
+        "#807: with no :Community nodes the 'rag-global' refusal must say to run \
+         `drevo.community.summarize` first; got the stale message: {message}"
+    );
+}
+
+/// `it_task_manager` cut into communities by `drevo.community.summarize`.
+fn summarized_it_task_manager() -> NativeService {
+    let db = NativeService::in_memory();
+    it_task_manager(&db);
+    run(
+        &db,
+        "CALL drevo.community.summarize({mode: 'extractive'}) YIELD community \
+         RETURN count(community)",
+    );
+    db
+}
+
+#[test]
+fn rag_stays_local_while_rag_global_hands_over_communities() {
+    let db = summarized_it_task_manager();
+    let communities: HashSet<i64> = run(&db, "MATCH (c:Community) RETURN id(c)")
+        .rows
+        .iter()
+        .map(|r| int(&r[0]))
+        .collect();
+    let rows = evaluate(&db, mobile_gold(), global_config());
+    let rag = by_strategy(&rows, "rag");
+    let global = by_strategy(&rows, "rag-global");
+    assert!(
+        rag.node_ids.iter().all(|id| !communities.contains(id)),
+        "'rag' runs the local scope, which never writes a :Community: {rag:?}"
+    );
+    assert!(
+        global.node_ids.iter().any(|id| communities.contains(id)),
+        "'rag-global' writes the communities it matched: {global:?}"
+    );
+    assert!(global.tokens <= 2000, "{global:?}");
+    assert!(
+        global.recall_retrieved >= global.recall,
+        "the budget only cuts: {global:?}"
+    );
+}
+
+#[test]
+fn rag_global_is_a_default_strategy_only_when_communities_exist() {
+    let knobs = map(&[("label", s("Ticket")), ("k", Value::Integer(2))]);
+    let strategies = |rows: Vec<Row>| rows.into_iter().map(|r| r.strategy).collect::<Vec<_>>();
+
+    let plain = NativeService::in_memory();
+    it_task_manager(&plain);
+    assert_eq!(
+        strategies(evaluate(&plain, mobile_gold(), knobs.clone())),
+        ["fts", "hybrid", "hybrid+expand", "rag"]
+    );
+
+    let db = summarized_it_task_manager();
+    assert_eq!(
+        strategies(evaluate(&db, mobile_gold(), knobs)),
+        ["fts", "hybrid", "hybrid+expand", "rag", "rag-global"]
+    );
+    // A layer nobody summarised has nothing for 'rag-global' to retrieve.
+    let other_layer = map(&[
+        ("label", s("Ticket")),
+        ("k", Value::Integer(2)),
+        ("communityLayer", s("fine")),
+    ]);
+    assert_eq!(
+        strategies(evaluate(&db, mobile_gold(), other_layer)),
+        ["fts", "hybrid", "hybrid+expand", "rag"]
+    );
+}
+
+#[test]
+fn rag_global_reads_the_configured_community_layer() {
+    let db = summarized_it_task_manager();
+    let config = map(&[
+        ("strategies", list(vec![s("rag-global")])),
+        ("communityLayer", s("fine")),
+    ]);
+    assert_eq!(
+        invalid(try_evaluate(&db, mobile_gold(), config)),
+        "strategy 'rag-global' needs community summaries, and layer 'fine' has none: \
+         run `drevo.community.summarize` first"
+    );
+    run(
+        &db,
+        "CALL drevo.community.summarize({mode: 'extractive', layer: 'fine'}) \
+         YIELD community RETURN count(community)",
+    );
+    let config = map(&[
+        ("strategies", list(vec![s("rag-global")])),
+        ("communityLayer", s("fine")),
+        ("k", Value::Integer(2)),
+    ]);
+    let rows = evaluate(&db, mobile_gold(), config);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].recall > 0.0, "{rows:?}");
 }

@@ -3469,11 +3469,14 @@ ones — shared by all strategies, plus `strategies`, a list of:
 | `'hybrid'` | the `k` hits of `drevo.search.hybrid` (in the config's `mode`) |
 | `'hybrid+expand'` | those hits, then their neighbourhood within `hops`, nearest first (`rank: 'distance'`) |
 | `'rag'` | the full `drevo.rag.context` pipeline, ranked by Personalized PageRank (`rank: 'ppr'`) |
-| `'rag-global'` | retrieval over community summaries; this server does not build them, so naming it is an error |
+| `'rag-global'` | the same pipeline in the global scope (`scope: 'global'`, the config's `communityLayer`): the communities best matching the question, then their members. Needs community summaries in that layer — run [`drevo.community.summarize`](#communities) first |
 
 The default is every strategy this server can run with the config: `'fts'`,
 `'hybrid'`, `'hybrid+expand'` and `'rag'`, with `'vector'` first when there is
-an embedder and a `label`. Every strategy writes its nodes as
+an embedder and a `label`, and `'rag-global'` last when `communityLayer`
+(default `'default'`) holds a `:Community`. `'rag'` always runs the local
+scope, whatever `scope` the config gives, so the two compare local against
+global retrieval on one gold set. Every strategy writes its nodes as
 `drevo.rag.context` would, within the same `tokenBudget`, and is scored on what
 fits — what the model would see:
 
@@ -3501,8 +3504,9 @@ label}` nothing matches — fails the call with every such entry listed
 (`2 expected nodes not found: questions[0].expected[1] {name: 'Fix', label:
 'Commit'}, …`); a `{name}` that matches several nodes — by `name` on one and
 `title` on another, say — fails listing their ids. An
-unknown `traceId`, an unknown strategy, `'rag-global'`, `'vector'` without a
-`label` or an embedder, a `session` or `trace: true` (an evaluation records
+unknown `traceId`, an unknown strategy, `'rag-global'` when `communityLayer`
+holds no community (the error says to run `drevo.community.summarize` first),
+`'vector'` without a `label` or an embedder, a `session` or `trace: true` (an evaluation records
 nothing), and a malformed question or config key fail with an error naming it.
 
 ---

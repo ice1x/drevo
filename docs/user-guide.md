@@ -426,8 +426,11 @@ Each row is one strategy, from plain search to the full pipeline:
 | `hybrid` | words and meaning together |
 | `hybrid+expand` | those hits and their neighbourhood, nearest first |
 | `rag` | the same neighbourhood ranked by how closely it connects to the hits — what `drevo.rag.context` does |
+| `rag-global` | the summaries of the matching communities and their members — `drevo.rag.context` with `scope: 'global'` (only once [`drevo.community.summarize`](#global-questions) has run) |
 
-All of them get the same token budget, and each is scored on what fits it — what the model would
+`rag-global` joins the default list by itself once the graph has communities, so the same
+questions tell you whether local or global retrieval suits them. All of them get the same token
+budget, and each is scored on what fits it — what the model would
 see. `meanRecall` is the share of the expected nodes that made it in: if `rag` beats `vector` on
 your questions, the graph is earning its keep. `drevo.rag.evaluate` gives the same scores per
 question, with the ids of the nodes each context held; a question the graph strategies miss
