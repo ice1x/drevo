@@ -288,6 +288,62 @@ async fn entity_reads_need_no_write() {
     .await;
 }
 
+#[tokio::test]
+async fn recording_a_context_trace_needs_write() {
+    let t = Tracker::seeded().await;
+    let plain = "CALL drevo.rag.context('crash') YIELD traceId RETURN traceId";
+    let traced =
+        "CALL drevo.rag.context('crash', {session: 'triage-1'}) YIELD traceId RETURN traceId";
+    let anonymous = "CALL drevo.rag.context('crash', {trace: true}) YIELD traceId RETURN traceId";
+    assert_eq!(
+        t.ok("rita", plain).await["rows"][0][0],
+        serde_json::Value::Null
+    );
+    t.forbidden("rita", traced).await;
+    t.forbidden("rita", anonymous).await;
+    assert_eq!(t.count("MATCH (c:ContextTrace) RETURN count(c)").await, 0);
+    assert!(t.ok("ed", traced).await["rows"][0][0].is_string());
+    assert_eq!(t.count("MATCH (c:ContextTrace) RETURN count(c)").await, 1);
+    // Reading traces is a read.
+    let listed = t
+        .ok(
+            "rita",
+            "CALL drevo.rag.traces('triage-1', 5) YIELD trace RETURN trace.id",
+        )
+        .await;
+    let id = listed["rows"][0][0].as_str().unwrap().to_string();
+    t.ok(
+        "rita",
+        &format!("CALL drevo.rag.explain('{id}') YIELD status RETURN status"),
+    )
+    .await;
+    t.ok(
+        "rita",
+        &format!("CALL drevo.rag.replay('{id}') YIELD changed RETURN changed"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn pruning_context_traces_needs_admin_procedures() {
+    let t = Tracker::seeded().await;
+    t.ok("ed", "CALL drevo.rag.context('crash', {trace: true})")
+        .await;
+    for user in ["ed", "archie", "rita"] {
+        t.forbidden(user, "CALL drevo.rag.pruneTraces('2999-01-01')")
+            .await;
+    }
+    assert_eq!(t.count("MATCH (c:ContextTrace) RETURN count(c)").await, 1);
+    let pruned = t
+        .ok(
+            "admin",
+            "CALL drevo.rag.pruneTraces('2999-01-01') YIELD deleted RETURN deleted",
+        )
+        .await;
+    assert_eq!(pruned["rows"][0][0], 1);
+    assert_eq!(t.count("MATCH (c:ContextTrace) RETURN count(c)").await, 0);
+}
+
 // ── Database access ──────────────────────────────────────────────────
 
 #[tokio::test]

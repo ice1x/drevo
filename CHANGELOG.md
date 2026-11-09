@@ -8,6 +8,24 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Context traces: `drevo.rag.context` with a `session` (or `trace: true`)
+  records what went into the context** (issue #784). A `:ContextTrace` node
+  holds the question, the returned text, its tokens and budget, the search
+  mode, seed/node/relationship counts, `durationMs` and the effective config
+  as JSON; `INCLUDED {rank, distance, seedScore, pprScore, tokens}` links the
+  nodes written (their tokens sum to the trace's), `SKIPPED {rank, reason:
+  'budget' | 'maxNodes'}` the nodes retrieved but left out, and
+  `INITIATED_BY` the session's newest message. `traceId` (also in
+  `POST /rag/context`) is its id. `drevo.rag.traces(session, limit)` lists
+  them newest first, `drevo.rag.explain(traceId)` returns the nodes by rank
+  with their status, `drevo.rag.replay(traceId)` re-runs the stored config on
+  today's graph and reports whether the text `changed` (recording nothing),
+  and `drevo.rag.pruneTraces(olderThan)` (`EXECUTE ADMIN PROCEDURES`) deletes
+  older traces; `DREVO_RAG_TRACE_RETENTION_DAYS` runs it at startup and every
+  24 hours. Recording is a write and needs `CREATE`; without `session` or
+  `trace` the call stays read-only. Search hits that are hidden from the
+  user or carry an excluded label (messages, traces of the same question)
+  no longer take the places of the `k` seeds of `drevo.rag.*`.
 - **Graph-RAG in one call: `drevo.rag.context(query[, config]) YIELD text,
   tokens, format, nodeIds, relIds, truncated, mode, traceId`,
   `drevo.rag.retrieve(query[, config]) YIELD node, seedScore, distance,

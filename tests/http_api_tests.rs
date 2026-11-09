@@ -2606,6 +2606,41 @@ async fn rag_context_returns_the_context_row_as_json() {
 }
 
 #[tokio::test]
+async fn rag_context_returns_the_trace_id_when_it_records_a_trace() {
+    let (app, _) = rag_app().await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "team meeting", "config": { "session": "chat-1" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["traceId"].as_str().expect("traceId").to_string();
+    let (status, found) = send(
+        &app,
+        "POST",
+        "/cypher",
+        Some(json!({
+            "query": "MATCH (t:ContextTrace) WHERE t.id = $id RETURN t.session, t.text",
+            "params": { "id": id }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found["rows"], json!([["chat-1", body["text"].clone()]]));
+
+    let (_, body) = send(
+        &app,
+        "POST",
+        "/rag/context",
+        Some(json!({ "query": "team meeting", "config": { "trace": true } })),
+    )
+    .await;
+    assert!(body["traceId"].is_string(), "{body}");
+}
+
+#[tokio::test]
 async fn rag_context_without_config_uses_the_defaults() {
     let (app, _) = rag_app().await;
     let (status, body) = send(

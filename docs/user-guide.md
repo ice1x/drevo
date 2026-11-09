@@ -303,9 +303,39 @@ A few knobs change the most:
   is found (`'ppr'`, the default, favours what is closely connected to the best hits).
 - **`asOf`** — facts written by `drevo.memory.assertFact` are shown as they stood at that time.
 
-Every option is in the [Cypher Reference](cypher-reference.md#graph-rag-retrieval). Recording
-which context answered which question, and replaying it (`drevo.rag.explain`), comes with context
-traces in a later release.
+Every option is in the [Cypher Reference](cypher-reference.md#graph-rag-retrieval).
+
+### Explain a context
+
+When an answer comes out wrong, the first question is what the model was given. Name the
+conversation in the call and drevo keeps a record of each context it builds:
+
+```text
+CALL drevo.rag.context('Why did Mila panic before the meeting?',
+                       {session: 'chat-7', tokenBudget: 1500})
+YIELD text, traceId
+```
+
+The record is a `:ContextTrace` node: the question, the text handed over, the settings used, and a
+link to every node that went in and to every node that was found but left out — with why (it did
+not fit the budget, or the search stopped at its node limit). It is also linked to the newest
+message of the conversation, so it sits next to the turn that asked. To read it back:
+
+```text
+CALL drevo.rag.explain($traceId)
+YIELD node, status, rank, tokens, reason
+RETURN rank, status, coalesce(node.name, node.title) AS name, tokens, reason
+```
+
+A missing fact shows as a node that is not there at all; a budget cut as a `skipped` row with
+reason `budget`; a bad ranking as the right node far down the list. After you add the missing fact,
+`CALL drevo.rag.replay($traceId)` builds the same context again on today's graph and says whether
+the text changed — without recording a new trace. `drevo.rag.traces('chat-7', 10)` lists a
+conversation's latest records, and an administrator can delete old ones with
+`drevo.rag.pruneTraces('2025-01-01')` or let the server do it (`DREVO_RAG_TRACE_RETENTION_DAYS`).
+`trace: true` records a context without naming a conversation. Recording is a write, so it needs
+the right to create nodes. Details are in the
+[Cypher Reference](cypher-reference.md#context-traces).
 
 ---
 

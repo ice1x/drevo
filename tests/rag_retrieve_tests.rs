@@ -480,17 +480,16 @@ fn the_same_question_gives_the_same_bytes_even_after_an_unrelated_write() {
 fn context_writes_nothing() {
     let db = with_embedder();
     let before = node_count(&db);
-    context(&db, "team meeting panic", "{label: 'Entry'}");
+    let ctx = context(&db, "team meeting panic", "{label: 'Entry'}");
+    assert_eq!(ctx.trace_id, Value::Null);
     assert_eq!(node_count(&db), before);
-    // A session is accepted; the trace lands with :ContextTrace support, so
-    // nothing is written and traceId stays null for now.
+    // A session records a trace (tests/rag_trace_tests.rs).
     let ctx = context(
         &db,
         "team meeting panic",
         "{label: 'Entry', session: 'chat-1'}",
     );
-    assert_eq!(ctx.trace_id, Value::Null);
-    assert_eq!(node_count(&db), before);
+    assert!(matches!(ctx.trace_id, Value::String(_)), "{ctx:?}");
 }
 
 #[test]

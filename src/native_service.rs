@@ -948,7 +948,7 @@ impl NativeService {
                     || {
                         let writes = query_writes(query)
                             || ((checked_writes || triggers)
-                                && query_calls_writing_procedure(query))
+                                && query_calls_writing_procedure(query, &params))
                             || query_merges_entities(query);
                         // A writing statement is one transaction: one log
                         // record and fsync, and nothing of it stays when it
@@ -3662,22 +3662,29 @@ impl NativeService {
 
 /// Whether `query` has a clause that writes data (`CREATE`, `MERGE`, `SET`,
 /// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
-/// Whether `query` calls a procedure that writes the graph (`drevo.memory.*`).
-fn query_calls_writing_procedure(query: &Query) -> bool {
+/// Whether `query` calls a procedure that writes the graph: a
+/// `drevo.memory.*` writer, `drevo.rag.pruneTraces`, or a `drevo.rag.context`
+/// that records a trace ([`context_records_trace`]).
+fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
         part.query.clauses.iter().any(|c| {
-            matches!(c, Clause::Call(call) if matches!(
-                call.name.join(".").as_str(),
+            let Clause::Call(call) = c else {
+                return false;
+            };
+            match call.name.join(".").as_str() {
                 "drevo.memory.addMessage"
-                    | "drevo.memory.recordReasoning"
-                    | "drevo.memory.rememberEntity"
-                    | "drevo.memory.assertFact"
-                    | "drevo.memory.retractFact"
-                    | "drevo.memory.addSource"
-                    | "drevo.memory.addChunks"
-                    | "drevo.entity.merge"
-            ))
+                | "drevo.memory.recordReasoning"
+                | "drevo.memory.rememberEntity"
+                | "drevo.memory.assertFact"
+                | "drevo.memory.retractFact"
+                | "drevo.memory.addSource"
+                | "drevo.memory.addChunks"
+                | "drevo.entity.merge"
+                | "drevo.rag.pruneTraces" => true,
+                "drevo.rag.context" => context_records_trace(call.args.get(1), params),
+                _ => false,
+            }
         })
     })
 }
@@ -3692,6 +3699,37 @@ fn query_merges_entities(query: &Query) -> bool {
             .iter()
             .any(|c| matches!(c, Clause::Call(call) if call.name.join(".") == "drevo.entity.merge"))
     })
+}
+
+/// Whether the config argument of a `drevo.rag.context` call asks for a
+/// trace: a map literal, or a parameter holding a map, with a non-null
+/// `session` or a `trace` other than `false` / `null`. Any other expression
+/// is only known when the call runs, so it counts as asking.
+fn context_records_trace(
+    config: Option<&crate::cypher::ast::Expression>,
+    params: &HashMap<String, Value>,
+) -> bool {
+    use crate::cypher::ast::Expression;
+    match config {
+        None | Some(Expression::Null(_)) => false,
+        Some(Expression::Map(map)) => {
+            map.entries
+                .iter()
+                .any(|(key, value)| match (key.as_str(), value) {
+                    ("session", Expression::Null(_))
+                    | ("trace", Expression::False(_) | Expression::Null(_)) => false,
+                    (key, _) => key == "session" || key == "trace",
+                })
+        }
+        Some(Expression::Parameter(name, _)) => match params.get(name) {
+            Some(Value::Map(map)) => map.iter().any(|(key, value)| match (key.as_str(), value) {
+                ("session", Value::Null) | ("trace", Value::Bool(false) | Value::Null) => false,
+                (key, _) => key == "session" || key == "trace",
+            }),
+            _ => false,
+        },
+        Some(_) => true,
+    }
 }
 
 /// Whether `query` creates or drops an index or constraint, registers a
@@ -4161,11 +4199,71 @@ mod node_text_tests {
 
 #[cfg(test)]
 mod writing_procedure_tests {
+    use std::collections::{BTreeMap, HashMap};
+
     use super::query_calls_writing_procedure;
+    use crate::cypher::executor::Value;
     use crate::cypher::parser::parse;
 
     fn writes(q: &str) -> bool {
-        query_calls_writing_procedure(&parse(q).expect("parse"))
+        query_calls_writing_procedure(&parse(q).expect("parse"), &HashMap::new())
+    }
+
+    fn writes_with(q: &str, config: Value) -> bool {
+        let params = HashMap::from([("config".to_string(), config)]);
+        query_calls_writing_procedure(&parse(q).expect("parse"), &params)
+    }
+
+    #[test]
+    fn a_context_writes_only_when_it_records_a_trace() {
+        for q in [
+            "CALL drevo.rag.context('panic', {session: 'chat-1'})",
+            "CALL drevo.rag.context('panic', {trace: true}) YIELD traceId RETURN traceId",
+            "CALL drevo.rag.context('panic', {format: 'json', session: 'chat-1', trace: false})",
+            // Not a literal: decided when it runs, so counted as writing.
+            "WITH {session: 'chat-1'} AS c CALL drevo.rag.context('panic', c) YIELD text RETURN text",
+            "CALL drevo.rag.pruneTraces('2025-01-01')",
+        ] {
+            assert!(writes(q), "{q}");
+        }
+        for q in [
+            "CALL drevo.rag.context('panic')",
+            "CALL drevo.rag.context('panic', null)",
+            "CALL drevo.rag.context('panic', {format: 'json'})",
+            "CALL drevo.rag.context('panic', {session: null, trace: false})",
+            "CALL drevo.rag.retrieve('panic', {session: 'chat-1', trace: true})",
+            "CALL drevo.rag.traces(null, 5)",
+            "CALL drevo.rag.explain('t-1')",
+            "CALL drevo.rag.replay('t-1')",
+        ] {
+            assert!(!writes(q), "{q}");
+        }
+    }
+
+    #[test]
+    fn a_context_config_parameter_is_read_from_the_parameters() {
+        let q = "CALL drevo.rag.context($query, $config) YIELD traceId RETURN traceId";
+        let map = |entries: &[(&str, Value)]| {
+            Value::Map(
+                entries
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), v.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        };
+        assert!(writes_with(
+            q,
+            map(&[("session", Value::String("chat-1".to_string()))])
+        ));
+        assert!(writes_with(q, map(&[("trace", Value::Bool(true))])));
+        assert!(!writes_with(q, map(&[("trace", Value::Bool(false))])));
+        assert!(!writes_with(
+            q,
+            map(&[("format", Value::String("json".to_string()))])
+        ));
+        assert!(!writes_with(q, Value::Null));
+        // A missing parameter fails later; nothing is written.
+        assert!(!writes(q));
     }
 
     #[test]

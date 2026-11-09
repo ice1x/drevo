@@ -58,6 +58,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_MAX_TX_WRITES` | `1000000` | How many writes (node or relationship creates, updates and deletes) one explicit transaction may buffer before it commits. A transaction keeps them all in memory, so this bounds what one runaway `BEGIN` can hold. The statement that goes over fails with `Neo.ClientError.General.TransactionOutOfMemoryError` (HTTP 507), which drivers do not retry, and the transaction is rolled back. `SHOW TRANSACTIONS` shows each open transaction's `bufferedWrites`. Auto-commit statements are not limited. `0` means no limit. |
 | `DREVO_EXPAND_MAX_HOPS` | `6` | The most `hops` one `drevo.graph.expand` call may ask for. A call asking for more fails with an error naming this limit. At least `1`. |
 | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for, which bounds the rows and the memory one call can use. A call asking for more fails with an error naming this limit; when it is below `200`, calls that name no `maxNodes` get it instead. At least `1`. |
+| `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep forever) | Delete [context traces](cypher-reference.md#context-traces) (`:ContextTrace`, recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours after — the same as an administrator running `drevo.rag.pruneTraces`. A whole number; `0` keeps them. |
 | `DREVO_TX_CONFLICT_HISTORY` | `10000` | How many recent commits a database remembers to decide whether an explicit transaction overlapped with them. A transaction that began before the oldest remembered commit, and saw others commit since, gets the retryable conflict (counted as `history`). Raise it if `drevo_tx_conflicts_total{reason="history"}` grows; a few hundred bytes per remembered commit. |
 | `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once. One more is refused when the driver says `HELLO`, with `Neo.TransientError.Request.NoThreadsAvailable`, which drivers retry. `0` means no limit. See [Connection limits](#connection-limits). |
 | `DREVO_HTTP_MAX_IN_FLIGHT` | `256` | HTTP requests served at once. One more gets `503` with `Retry-After: 1`; `/health`, `/ready` and `/metrics` are always served. `0` means no limit. |
@@ -1391,6 +1392,10 @@ curl -s http://localhost:8080/rag/context \
   "traceId": null
 }
 ```
+
+With `"session"` (or `"trace": true`) in `config`, the call records a
+[context trace](cypher-reference.md#context-traces) and `traceId` is its id; that is a write, so
+the user then also needs the `CREATE` privilege.
 
 - **Body.** `query` (required) is the question; `config` is the `drevo.rag.context` config map
   (every key optional); `db` names another database than the default; `timeoutMs` stops the call
