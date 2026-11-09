@@ -14,7 +14,7 @@ use super::{
     Span, Value,
 };
 use crate::cypher::hybrid::HybridMode;
-use crate::rag::config::{RagConfig, RankMode};
+use crate::rag::config::{RagConfig, RankMode, Scope};
 use crate::rag::eval::{
     parse_questions, score, split_config, summarize, ExpectedRef, Gold, Run, Strategy,
 };
@@ -161,7 +161,7 @@ impl Executor<'_> {
         let config =
             RagConfig::from_value(&config, crate::cypher::expand::ceilings()).map_err(refuse)?;
         let strategies = self
-            .rag_eval_strategies(strategies, &config)
+            .rag_eval_strategies(strategies, &config)?
             .map_err(refuse)?;
         let resolved = self.rag_eval_gold(&questions)?.map_err(refuse)?;
 
@@ -190,16 +190,22 @@ impl Executor<'_> {
 
     /// The strategies to run: those named, each checked to be runnable here,
     /// or by default every strategy this server can run with `config` —
-    /// `'vector'` only with an embedder and a `label`.
+    /// `'vector'` only with an embedder and a `label`, `'rag-global'` only
+    /// when the config's `communityLayer` holds a community. The outer error
+    /// is a storage failure; the inner one names the strategy that cannot
+    /// run.
     fn rag_eval_strategies(
         &self,
         named: Option<Vec<Strategy>>,
         config: &RagConfig,
-    ) -> Result<Vec<Strategy>, String> {
+    ) -> ExecResultT<Result<Vec<Strategy>, String>> {
         let has_embedder = self.native_embedder.is_some();
         let Some(named) = named else {
             let vector = (has_embedder && config.label.is_some()).then_some(Strategy::Vector);
-            return Ok(vector
+            let global = self
+                .has_visible_community(&config.community_layer)?
+                .then_some(Strategy::RagGlobal);
+            return Ok(Ok(vector
                 .into_iter()
                 .chain([
                     Strategy::Fts,
@@ -207,32 +213,30 @@ impl Executor<'_> {
                     Strategy::HybridExpand,
                     Strategy::Rag,
                 ])
-                .collect());
+                .chain(global)
+                .collect()));
         };
         for strategy in &named {
-            match strategy {
-                Strategy::RagGlobal => {
-                    return Err(
-                        "strategy 'rag-global' needs community summaries, which this \
-                         server does not build; leave it out of `strategies`"
-                            .to_string(),
+            let refusal = match strategy {
+                Strategy::RagGlobal if !self.has_visible_community(&config.community_layer)? => {
+                    format!(
+                        "strategy 'rag-global' needs community summaries, and layer '{}' has \
+                         none: run `drevo.community.summarize` first",
+                        config.community_layer
                     )
                 }
-                Strategy::Vector if config.label.is_none() => {
-                    return Err("strategy 'vector' needs a `label` whose \
-                         `embeddingProperty` vectors it ranks"
-                        .to_string())
-                }
-                Strategy::Vector if !has_embedder => {
-                    return Err("strategy 'vector' needs a server-side embedder \
-                         (DREVO_EMBEDDINGS_UPSTREAM), and this server has none; leave it out \
-                         of `strategies`"
-                        .to_string())
-                }
-                _ => {}
-            }
+                Strategy::Vector if config.label.is_none() => "strategy 'vector' needs a \
+                     `label` whose `embeddingProperty` vectors it ranks"
+                    .to_string(),
+                Strategy::Vector if !has_embedder => "strategy 'vector' needs a server-side \
+                     embedder (DREVO_EMBEDDINGS_UPSTREAM), and this server has none; leave it \
+                     out of `strategies`"
+                    .to_string(),
+                _ => continue,
+            };
+            return Ok(Err(refusal));
         }
-        Ok(named)
+        Ok(Ok(named))
     }
 
     /// Every question with its text and gold node ids: ids checked to be
@@ -439,15 +443,15 @@ impl Executor<'_> {
                 self.rag_seeds(name, query, &fts, span)?.0
             }
             Strategy::Hybrid => self.rag_seeds(name, query, config, span)?.0,
-            Strategy::HybridExpand | Strategy::Rag => {
-                let rank = if strategy == Strategy::Rag {
-                    RankMode::Ppr
-                } else {
-                    RankMode::Distance
+            Strategy::HybridExpand | Strategy::Rag | Strategy::RagGlobal => {
+                let (rank, scope) = match strategy {
+                    Strategy::HybridExpand => (RankMode::Distance, Scope::Local),
+                    Strategy::RagGlobal => (RankMode::Ppr, Scope::Global),
+                    _ => (RankMode::Ppr, Scope::Local),
                 };
                 let config = RagConfig {
                     rank,
-                    scope: crate::rag::config::Scope::Local,
+                    scope,
                     session: None,
                     trace: false,
                     ..config.clone()
@@ -455,13 +459,6 @@ impl Executor<'_> {
                 let built = self.rag_build(name, query, &config, span)?;
                 let retrieved = built.subgraph.nodes.iter().map(|n| n.node.id).collect();
                 return Ok((built.rendered, retrieved));
-            }
-            Strategy::RagGlobal => {
-                return Err(ExecError::InvalidProcedureCall {
-                    name: name.to_string(),
-                    message: "strategy 'rag-global' needs community summaries".to_string(),
-                    span,
-                })
             }
         };
         // A search strategy hands over its hits alone, with the

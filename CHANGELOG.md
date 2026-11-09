@@ -20,8 +20,8 @@ history and the in-repo issue tracker; format loosely follows
   `mrr`, `tokens`, `durationMs`, `nodeIds`, plus `recallRetrieved` before the
   budget cut. The summary averages per strategy with `p50Ms`/`p95Ms`. Read
   only (no trace is recorded); unresolved expectations, an unknown or
-  unavailable strategy (`'rag-global'`, `'vector'` without an embedder or a
-  `label`) fail with an error naming them. `examples/rag_eval.rs` prints the
+  unavailable strategy (`'rag-global'` without community summaries,
+  `'vector'` without an embedder or a `label`) fail with an error naming them. `examples/rag_eval.rs` prints the
   summary for a store and a JSONL gold set as a markdown table, and
   `benches/rag_retrieve_bench.rs` times each pipeline stage on a GraphML copy
   of real data — numbers in `docs/benchmarks.md` ("Graph-RAG pipeline").
@@ -268,6 +268,14 @@ history and the in-repo issue tracker; format loosely follows
   time, as before.
 
 ### Fixed
+
+- **`drevo.rag.evaluate` runs the `'rag-global'` strategy** (issue #807). It
+  refused it as if community summaries did not exist; it now runs
+  `drevo.rag.context` with `scope: 'global'` and the config's
+  `communityLayer`, scored like the other strategies, so one gold set compares
+  local (`'rag'`) against global retrieval. It joins the default strategies
+  when that layer holds a `:Community`; naming it when the layer has none
+  fails with "run `drevo.community.summarize` first".
 
 - **An index rebuilt from a snapshot could skip a commit made during the
   rebuild** (issue #770). The label, property, path, text, point and
