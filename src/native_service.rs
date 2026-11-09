@@ -3663,8 +3663,9 @@ impl NativeService {
 /// Whether `query` has a clause that writes data (`CREATE`, `MERGE`, `SET`,
 /// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
 /// Whether `query` calls a procedure that writes the graph: a
-/// `drevo.memory.*` writer, `drevo.rag.pruneTraces`, or a `drevo.rag.context`
-/// that records a trace ([`context_records_trace`]).
+/// `drevo.memory.*` writer, `drevo.entity.merge`, `drevo.rag.pruneTraces`,
+/// `drevo.community.summarize`, or a `drevo.rag.context` that records a
+/// trace ([`context_records_trace`]).
 fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
@@ -3682,7 +3683,8 @@ fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>)
                 | "drevo.memory.addChunks"
                 | "drevo.entity.merge"
                 | "drevo.rag.pruneTraces"
-                | "drevo.extract.ingest" => true,
+                | "drevo.extract.ingest"
+                | "drevo.community.summarize" => true,
                 "drevo.rag.context" => context_records_trace(call.args.get(1), params),
                 _ => false,
             }
@@ -3692,15 +3694,17 @@ fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>)
 
 /// Whether `query` calls a procedure whose writes must land together or
 /// not at all, so the statement always runs as one transaction:
-/// `drevo.entity.merge` (moves, deletes and aliases) and
-/// `drevo.extract.ingest` (a source, its chunks, entities and facts).
+/// `drevo.entity.merge` (moves, deletes and aliases),
+/// `drevo.extract.ingest` (a source, its chunks, entities and facts) and
+/// `drevo.community.summarize` (a layer replaced: old communities deleted,
+/// new ones and their relationships written).
 fn query_calls_atomic_procedure(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
         part.query.clauses.iter().any(|c| {
             matches!(c, Clause::Call(call) if matches!(
                 call.name.join(".").as_str(),
-                "drevo.entity.merge" | "drevo.extract.ingest"
+                "drevo.entity.merge" | "drevo.extract.ingest" | "drevo.community.summarize"
             ))
         })
     })
@@ -4299,8 +4303,14 @@ mod writing_procedure_tests {
     }
 
     #[test]
-    fn only_entity_merge_and_ingest_always_run_as_one_transaction() {
+    fn only_entity_merge_ingest_and_summarize_always_run_as_one_transaction() {
         let atomic = |q: &str| query_calls_atomic_procedure(&parse(q).expect("parse"));
+        assert!(atomic("CALL drevo.community.summarize()"));
+        assert!(atomic(
+            "CALL drevo.community.summarize({mode: 'extractive'}) YIELD community RETURN community"
+        ));
+        assert!(!atomic("CALL drevo.community.query('x', 3)"));
+        assert!(!atomic("CALL drevo.community.stale()"));
         assert!(atomic("CALL drevo.entity.merge(1, [2])"));
         assert!(atomic(
             "MATCH (a), (b) CALL drevo.entity.merge(a, [b]) YIELD kept RETURN kept"
@@ -4321,6 +4331,23 @@ mod writing_procedure_tests {
         for q in [
             "CALL drevo.entity.candidates('Entity', {})",
             "CALL drevo.entity.aliases('Пушкин')",
+        ] {
+            assert!(!writes(q), "{q}");
+        }
+    }
+
+    #[test]
+    fn only_community_summarize_writes() {
+        for q in [
+            "CALL drevo.community.summarize()",
+            "CALL drevo.community.summarize({mode: 'extractive'}) YIELD community RETURN community",
+        ] {
+            assert!(writes(q), "{q}");
+        }
+        for q in [
+            "CALL drevo.community.query('mobile release', 3)",
+            "MATCH (n) CALL drevo.community.of(n) YIELD community RETURN community",
+            "CALL drevo.community.stale() YIELD changed RETURN changed",
         ] {
             assert!(!writes(q), "{q}");
         }

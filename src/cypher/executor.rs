@@ -161,6 +161,10 @@ mod entity_procs;
 /// strategies scored against a gold set.
 mod rag_eval_procs;
 
+/// The `drevo.community.*` procedures and the global scope of the graph-RAG
+/// pipeline.
+mod community_procs;
+
 use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, CreateConstraint, CreatePathIndex,
     CreateVectorIndex, Direction as AstDirection, DropConstraint, DropIndex, Expression,
@@ -1793,7 +1797,9 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.rag.pruneTraces, \
                           drevo.extract.entities, drevo.extract.facts, drevo.extract.ingest, \
                           drevo.extract.chunks, drevo.extract.status, \
-                          drevo.rag.evaluate, drevo.rag.evaluateSummary"
+                          drevo.rag.evaluate, drevo.rag.evaluateSummary, \
+                          drevo.community.summarize, drevo.community.query, \
+                          drevo.community.of, drevo.community.stale"
                         .into(),
                     span: c.span,
                 })?;
@@ -6246,6 +6252,18 @@ impl<'a> Executor<'a> {
         }
         if extract_procs::is_extract_procedure(&name) {
             return self.run_extract(&name, c, columns);
+        }
+        if name == community_procs::SUMMARIZE {
+            return self.run_community_summarize(c, columns);
+        }
+        if name == community_procs::QUERY {
+            return self.run_community_query(c, columns);
+        }
+        if name == community_procs::OF {
+            return self.run_community_of(c, columns);
+        }
+        if name == community_procs::STALE {
+            return self.run_community_stale(c, columns);
         }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
@@ -10907,16 +10925,20 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.rag.retrieve(query[, config]) YIELD node, seedScore,
-    /// distance, pprScore, rank, via, truncated` — the nodes that answer
-    /// `query`, best first: the seeds of a hybrid search, then the nodes
-    /// within `hops` of them in the config's `rank` order ([`crate::rag`]).
-    /// `seedScore` is set on seeds, `pprScore` when ranked by `'ppr'`,
-    /// `rank` counts from 1. No seeds give no rows.
+    /// distance, pprScore, rank, via, truncated, scope` — the nodes that
+    /// answer `query`, best first: the seeds of a hybrid search, then the
+    /// nodes within `hops` of them in the config's `rank` order
+    /// ([`crate::rag`]); or, in the global scope, the best-matching
+    /// communities and then their members ([`Self::rag_scoped`]).
+    /// `seedScore` is set on seeds, `pprScore` when ranked by `'ppr'` (a
+    /// member's in-community rank in the global scope), `rank` counts from
+    /// 1, `scope` is the scope that ran. No seeds give no rows.
     fn proc_rag_retrieve(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
         let (query, config) = self.rag_args(RAG_RETRIEVE, args, span)?;
-        let (subgraph, _, _) = self.rag_subgraph(RAG_RETRIEVE, &query, &config, span)?;
+        let (subgraph, _, _, scope) = self.rag_scoped(RAG_RETRIEVE, &query, &config, span)?;
         let int = |n: usize| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX));
         let truncated = Value::Bool(subgraph.truncated);
+        let scope = Value::String(scope.as_str().to_string());
         Ok(subgraph
             .nodes
             .into_iter()
@@ -10930,13 +10952,14 @@ impl<'a> Executor<'a> {
                     int(i + 1),
                     n.via.as_ref().map_or(Value::Null, via_value),
                     truncated.clone(),
+                    scope.clone(),
                 ]
             })
             .collect())
     }
 
     /// `CALL drevo.rag.context(query[, config]) YIELD text, tokens, format,
-    /// nodeIds, relIds, truncated, mode, traceId` — the nodes of
+    /// nodeIds, relIds, truncated, mode, traceId, scope` — the nodes of
     /// `drevo.rag.retrieve` and the relationships between them written as
     /// one text within the config's `tokenBudget`
     /// ([`crate::rag::serialize::render`]). Always one row: no seeds give an
@@ -10970,6 +10993,7 @@ impl<'a> Executor<'a> {
             Value::Bool(built.truncated()),
             Value::String(built.mode.as_str().to_string()),
             trace_id,
+            Value::String(built.scope.as_str().to_string()),
         ]])
     }
 
@@ -10982,14 +11006,20 @@ impl<'a> Executor<'a> {
         config: &crate::rag::config::RagConfig,
         span: Span,
     ) -> ExecResultT<RagBuilt> {
-        let (subgraph, mode, cut) = self.rag_subgraph(name, query, config, span)?;
-        let rendered = crate::rag::serialize::render(&subgraph, &config.render);
+        let (subgraph, mode, cut, scope) = self.rag_scoped(name, query, config, span)?;
+        let rendered = if scope == crate::rag::config::Scope::Global {
+            let view = crate::community::display_subgraph(&subgraph);
+            crate::rag::serialize::render(&view, &config.render)
+        } else {
+            crate::rag::serialize::render(&subgraph, &config.render)
+        };
         deadline::check()?;
         Ok(RagBuilt {
             subgraph,
             mode,
             rendered,
             cut,
+            scope,
         })
     }
 
@@ -11038,6 +11068,7 @@ impl<'a> Executor<'a> {
                 ("tokenBudget", int(config.render.token_budget)),
                 ("truncated", Value::Bool(built.truncated())),
                 ("mode", text(built.mode.as_str())),
+                ("scope", text(built.scope.as_str())),
                 ("hops", int(config.expand.hops)),
                 ("rank", text(config.rank.as_str())),
                 ("seedCount", int(seeds)),
@@ -13472,6 +13503,9 @@ struct RagBuilt {
     rendered: crate::rag::serialize::Rendered,
     /// The node the expansion stopped at when it hit `maxNodes`.
     cut: Option<Arc<NodeValue>>,
+    /// Whether the nodes came from the seeds' neighbourhood or from
+    /// community summaries.
+    scope: crate::rag::config::Scope,
 }
 
 impl RagBuilt {
@@ -14333,6 +14367,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "rank",
             "via",
             "truncated",
+            "scope",
         ]),
         RAG_CONTEXT => Some(&[
             "text",
@@ -14343,6 +14378,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "truncated",
             "mode",
             "traceId",
+            "scope",
         ]),
         // Context traces.
         RAG_TRACES => Some(&["trace"]),
@@ -14453,6 +14489,11 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         }
         entity_procs::MERGE => Some(&["kept", "merged", "relationshipsMoved", "propertiesMerged"]),
         entity_procs::ALIASES => Some(&["entity", "aliases"]),
+        // Community summaries.
+        community_procs::SUMMARIZE => Some(&["community", "size", "summary", "keywords", "mode"]),
+        community_procs::QUERY => Some(&["community", "score", "summary"]),
+        community_procs::OF => Some(&["community", "level"]),
+        community_procs::STALE => Some(&["community", "size", "changed"]),
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => Some(&["cypher"]),
@@ -14516,7 +14557,9 @@ fn procedure_optional_args(name: &str) -> usize {
         | entity_procs::MERGE
         | EXTRACT_ENTITIES
         | EXTRACT_FACTS
-        | EXTRACT_CHUNKS => 1,
+        | EXTRACT_CHUNKS
+        | community_procs::SUMMARIZE
+        | community_procs::QUERY => 1,
         _ => 0,
     }
 }
@@ -14688,6 +14731,11 @@ fn procedure_arity(name: &str) -> usize {
         entity_procs::MERGE => 3,
         // drevo.entity.aliases(name).
         entity_procs::ALIASES => 1,
+        // drevo.community.summarize([config]) / query(query, k[, config]) /
+        // of(node); drevo.community.stale() takes none.
+        community_procs::SUMMARIZE => 1,
+        community_procs::QUERY => 3,
+        community_procs::OF => 1,
         // drevo.memory.retractFact(subject, relation, object) (issue #533).
         "drevo.memory.retractFact" => 3,
         // drevo.memory.factsAt(name, asOf) (issue #533).

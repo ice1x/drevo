@@ -1264,15 +1264,15 @@ fn rag_timeout(value: Option<serde_json::Value>) -> Result<Option<std::time::Dur
 
 /// The statement `POST /rag/context` runs.
 const RAG_CONTEXT_QUERY: &str = "CALL drevo.rag.context($query, $config) \
-     YIELD text, tokens, format, nodeIds, relIds, truncated, mode, traceId \
-     RETURN text, tokens, format, nodeIds, relIds, truncated, mode, traceId";
+     YIELD text, tokens, format, nodeIds, relIds, truncated, mode, traceId, scope \
+     RETURN text, tokens, format, nodeIds, relIds, truncated, mode, traceId, scope";
 
 /// `POST /rag/context {query, db?, config?, timeoutMs?}` — the graph-RAG
 /// context for a question: `drevo.rag.context(query, config)` run as the
 /// signed-in user, with the same privilege checks and time limits as
 /// `POST /cypher`,
 /// answered as one JSON object `{text, tokens, format, nodeIds, relIds,
-/// truncated, mode, traceId}`. A bad config is a 400 naming the key; a
+/// truncated, mode, traceId, scope}`. A bad config is a 400 naming the key; a
 /// missing privilege a 403; an unknown `db` a 404.
 async fn rag_context(
     State(state): State<NativeApiState>,

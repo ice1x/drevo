@@ -105,6 +105,9 @@ pub use drevo_auth::privileges;
 /// Not built on `wasm32-unknown-unknown`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bolt;
+/// Community summaries: the graph cut into communities written back as
+/// `:Community` nodes with summaries (`drevo.community.*`).
+pub(crate) mod community;
 /// Cypher query language — Phase 10. Today only the lexer (task `00061`)
 /// is implemented; the parser, executor, and downstream clause handlers
 /// will land in tasks `00062` onwards.
