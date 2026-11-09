@@ -2758,6 +2758,82 @@ The three formats, for a node *Thought* that carries a quote and a fact
 
 ```text
 markdown:
+## Seeds
+- Anna (kind=Person, id=1): Keeps a CBT journal
+
+## Neighbours
+- Catastrophizing (kind=Distortion, id=4): Expecting the worst
+- I will fail (kind=Thought, id=3) «I will fail at this» (journal-1)
+
+## Edges
+- 3 -[IS_A]-> 4 (id=12, weight=1.0) valid 2025-01-01→ «always the worst» (journal-1)
+
+triples:
+Anna | Person | Keeps a CBT journal
+I will fail | Thought | «I will fail at this» (journal-1)
+I will fail | IS_A | Catastrophizing | valid 2025-01-01→ | «always the worst» (journal-1)
+
+json:
+{"nodes":[{"id":1,"labels":["Person"],"props":{"description":"Keeps a CBT journal","name":"Anna"}}],"rels":[{"from":3,"id":12,"props":{"valid_from":"2025-01-01"},"to":4,"type":"IS_A"}],"stats":{"nodes":1,"rels":1}}
+```
+
+`markdown` has the layout of drevo-py's `Context.to_text('markdown')`: the
+nodes that fit the budget are written under `## Seeds` and `## Neighbours`,
+each sorted by kind, name and id, as `- name (kind=Label, id=7)` followed by
+`: ` and its other text values, then its provenance; their relationships come
+under `## Edges`, sorted by start id, end id and id, as
+`- 3 -[REL]-> 4 (id=12, weight=1.0)` followed by their provenance; an empty
+section reads `- (none)`. Which nodes fit is still decided best-ranked first.
+A node's kind is its labels joined by `:` and its name is its first text
+property (drevo-py writes `title`), so for nodes with one label and only a
+`title` the two renderings are byte for byte the same. `triples` takes the
+fewest tokens. A `RELATED_TO` fact written by
+`drevo.memory.assertFact` is shown under its own relation name (its `type`
+property). JSON keys are sorted; a node's `props` holds its text properties and,
+with `includeProvenance`, `quote`, `source_id`, `valid_from` and `valid_until`.
+
+`drevo.rag.retrieve` returns one row per node, in rank order:
+
+| Column | Meaning |
+|---|---|
+| `node` | the node |
+| `seedScore` | its fused search score when it is a seed, else `null` |
+| `distance` | relationships from the nearest seed; `0` for a seed |
+| `pprScore` | its Personalized PageRank score with `rank: 'ppr'` (the scores of an untruncated retrieval sum to 1), else `null` |
+| `rank` | its position, from 1 |
+| `via` | as in [`drevo.graph.expand`](#graph-expansion); `null` for a seed |
+| `truncated` | whether the expansion stopped at `maxNodes` |
+| `scope` | the scope that ran: `'local'` or `'global'`. In the global scope the communities are the seeds and their members have `distance` 1 and their in-community rank as `pprScore` |
+
+```cypher
+CALL drevo.rag.retrieve('team meeting', {rank: 'distance', hops: 1})
+YIELD node, seedScore, distance, rank
+RETURN rank, node.title, distance, seedScore
+```
+
+`drevo.rag.context` returns one row:
+
+| Column | Meaning |
+|---|---|
+| `text` | the context; `''` when nothing matched or nothing fits |
+| `tokens` | the size of `text` under `tokenizer` — never more than `tokenBudget` |
+| `format` | the format written |
+| `nodeIds`, `relIds` | the ids of the nodes and relationships in `text`, in the order written |
+| `truncated` | `true` when a node did not fit the budget or the expansion hit `maxNodes` |
+| `mode` | the search mode that ran: `'hybrid'`, `'fts'` or `'vector'` (`'auto'` without an embedder or a `label` runs `'fts'`) |
+| `traceId` | the `id` of the [context trace](#context-traces) recorded with `session` or `trace: true`, else `null` |
+| `scope` | the scope that ran: `'local'` or `'global'` (`'auto'` resolves to one of them); a context trace records it too |
+
+The same graph, question and config give byte-identical `text`: ties are broken
+by node id and properties are written in a fixed order. A question that matches
+nothing gives no `retrieve` rows and a `context` row with empty `text`, `tokens`
+`0` and empty id lists. Nodes and relationships the user may not read are left
+out of every stage. A query that is not a string, a config that is not a map, an
+unknown key (`includeSeeds` included: seeds are always returned) and a value of
+the wrong type or range fail with an error naming the key; an explicit `mode:
+'hybrid'` or `'vector'` without an embedder fails as in `drevo.search.hybrid`.
+Over HTTP the same call is [`POST /rag/context`](admin-guide.md#graph-rag-context-post-ragcontext).
+
 ### Extraction
 
 `drevo.extract.*` reads entities and facts out of a text with a language
@@ -2917,81 +2993,6 @@ A failed extraction is logged by the trigger and recorded in
 suits short texts; the call's time is bounded by `DREVO_EXTRACT_TIMEOUT_MS`
 per passage.
 
-## Seeds
-- Anna (kind=Person, id=1): Keeps a CBT journal
-
-## Neighbours
-- Catastrophizing (kind=Distortion, id=4): Expecting the worst
-- I will fail (kind=Thought, id=3) «I will fail at this» (journal-1)
-
-## Edges
-- 3 -[IS_A]-> 4 (id=12, weight=1.0) valid 2025-01-01→ «always the worst» (journal-1)
-
-triples:
-Anna | Person | Keeps a CBT journal
-I will fail | Thought | «I will fail at this» (journal-1)
-I will fail | IS_A | Catastrophizing | valid 2025-01-01→ | «always the worst» (journal-1)
-
-json:
-{"nodes":[{"id":1,"labels":["Person"],"props":{"description":"Keeps a CBT journal","name":"Anna"}}],"rels":[{"from":3,"id":12,"props":{"valid_from":"2025-01-01"},"to":4,"type":"IS_A"}],"stats":{"nodes":1,"rels":1}}
-```
-
-`markdown` has the layout of drevo-py's `Context.to_text('markdown')`: the
-nodes that fit the budget are written under `## Seeds` and `## Neighbours`,
-each sorted by kind, name and id, as `- name (kind=Label, id=7)` followed by
-`: ` and its other text values, then its provenance; their relationships come
-under `## Edges`, sorted by start id, end id and id, as
-`- 3 -[REL]-> 4 (id=12, weight=1.0)` followed by their provenance; an empty
-section reads `- (none)`. Which nodes fit is still decided best-ranked first.
-A node's kind is its labels joined by `:` and its name is its first text
-property (drevo-py writes `title`), so for nodes with one label and only a
-`title` the two renderings are byte for byte the same. `triples` takes the
-fewest tokens. A `RELATED_TO` fact written by
-`drevo.memory.assertFact` is shown under its own relation name (its `type`
-property). JSON keys are sorted; a node's `props` holds its text properties and,
-with `includeProvenance`, `quote`, `source_id`, `valid_from` and `valid_until`.
-
-`drevo.rag.retrieve` returns one row per node, in rank order:
-
-| Column | Meaning |
-|---|---|
-| `node` | the node |
-| `seedScore` | its fused search score when it is a seed, else `null` |
-| `distance` | relationships from the nearest seed; `0` for a seed |
-| `pprScore` | its Personalized PageRank score with `rank: 'ppr'` (the scores of an untruncated retrieval sum to 1), else `null` |
-| `rank` | its position, from 1 |
-| `via` | as in [`drevo.graph.expand`](#graph-expansion); `null` for a seed |
-| `truncated` | whether the expansion stopped at `maxNodes` |
-| `scope` | the scope that ran: `'local'` or `'global'`. In the global scope the communities are the seeds and their members have `distance` 1 and their in-community rank as `pprScore` |
-
-```cypher
-CALL drevo.rag.retrieve('team meeting', {rank: 'distance', hops: 1})
-YIELD node, seedScore, distance, rank
-RETURN rank, node.title, distance, seedScore
-```
-
-`drevo.rag.context` returns one row:
-
-| Column | Meaning |
-|---|---|
-| `text` | the context; `''` when nothing matched or nothing fits |
-| `tokens` | the size of `text` under `tokenizer` — never more than `tokenBudget` |
-| `format` | the format written |
-| `nodeIds`, `relIds` | the ids of the nodes and relationships in `text`, in the order written |
-| `truncated` | `true` when a node did not fit the budget or the expansion hit `maxNodes` |
-| `mode` | the search mode that ran: `'hybrid'`, `'fts'` or `'vector'` (`'auto'` without an embedder or a `label` runs `'fts'`) |
-| `traceId` | the `id` of the [context trace](#context-traces) recorded with `session` or `trace: true`, else `null` |
-| `scope` | the scope that ran: `'local'` or `'global'` (`'auto'` resolves to one of them); a context trace records it too |
-
-The same graph, question and config give byte-identical `text`: ties are broken
-by node id and properties are written in a fixed order. A question that matches
-nothing gives no `retrieve` rows and a `context` row with empty `text`, `tokens`
-`0` and empty id lists. Nodes and relationships the user may not read are left
-out of every stage. A query that is not a string, a config that is not a map, an
-unknown key (`includeSeeds` included: seeds are always returned) and a value of
-the wrong type or range fail with an error naming the key; an explicit `mode:
-'hybrid'` or `'vector'` without an embedder fails as in `drevo.search.hybrid`.
-Over HTTP the same call is [`POST /rag/context`](admin-guide.md#graph-rag-context-post-ragcontext).
 
 ### Communities
 
