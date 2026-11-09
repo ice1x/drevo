@@ -543,8 +543,24 @@ running job carries on, a paused one stays paused. When a database is
 dropped or closed while items are with the model, those calls keep their
 `DREVO_INGEST_WORKERS` slots until the model answers or
 `DREVO_EXTRACT_TIMEOUT_MS` passes (60 s by default); the answers are thrown
-away and the items run again when the store is next opened. Without an extraction
-endpoint the jobs wait. `drevo_ingest_items_total{state}` and
+away and the items run again when the store is next opened.
+
+**Jobs wait for an extraction endpoint.** Without one, submitted jobs stay
+`queued` and the scheduler sleeps — it does not poll. Configuring the
+endpoint (`POST /config/extract`, or `DREVO_EXTRACT_*` at start) wakes every
+database's scheduler and the waiting jobs start at once.
+
+**Items deleted mid-flight.** An `:IngestItem` deleted by hand while the model
+answers it is gone: nothing is written for it, its worker slot is given back,
+and its job finishes once nothing else is left to run — `cancelled` when it
+lost items and none is dead, with `done` / `failed` counted from the items
+that remain. Deleting the `:IngestJob` with its items mid-flight ends the same
+way, with nothing left behind. An item whose `:Chunk` is not found after its
+extraction was written — the job's `source_id` was changed and no longer
+matches its config's `source` — is `dead` at once with `last_error` naming
+both ids (see `drevo.ingest.errors`); fix the job or submit it again.
+
+`drevo_ingest_items_total{state}` and
 `drevo_ingest_jobs_active` (see [Prometheus metrics](#prometheus-metrics))
 and the `ingest` events on [`GET /events`](#change-events-get-events) show
 progress. The Web UI does not show ingest jobs yet; follow

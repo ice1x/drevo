@@ -11,8 +11,16 @@
 //! of the next attempt — in one transaction.
 //!
 //! The scheduler sleeps until [`wake`](crate::ingest::wake) (a job
-//! submitted, resumed or retried, an item finished) or, while jobs are
-//! active, until the next retry is due, at most a second.
+//! submitted, resumed or retried, an item finished, an extraction endpoint
+//! installed) or, while jobs are active, until the next retry is due, at
+//! most a second. While no extraction endpoint is installed nothing can
+//! run: the scheduler sleeps until one is, however many jobs are queued.
+//!
+//! An item deleted while the model answered it is gone: nothing is written
+//! for it, and its job finishes — `cancelled` when it lost items — once
+//! nothing else is left to run. An item whose chunk is not found after its
+//! extraction was written (its job's `source_id` differs from the source of
+//! its config) is `dead` with the reason.
 //!
 //! The scheduler and the item threads hold the service only weakly, and a
 //! strong reference only while they run statements. [`Scheduler::stop`]
@@ -554,9 +562,9 @@ fn pass(
     if jobs.is_empty() {
         return None;
     }
-    if crate::extract::installed().is_none() {
-        return Some(POLL);
-    }
+    // Nothing can run without an endpoint: sleep until woken, which
+    // installing one does.
+    crate::extract::installed()?;
     let settings = super::settings();
     let now_ms = crate::model::now_ms();
     let mut next_at: Option<i64> = None;
@@ -652,19 +660,15 @@ fn run_item(shared: &Arc<Shared>, weak: &Weak<NativeService>, work: Work) {
         return;
     };
     let outcome = match found {
-        Ok(found) => write_item(&service, &work, found).map_err(|e| {
-            // Our own refusal (an unknown source, a chunk of another
-            // source) fails the same way again.
-            let retry = !matches!(e, ExecError::InvalidProcedureCall { .. });
-            (retry, e.to_string())
-        }),
+        Ok(found) => write_item(&service, &work, found),
         Err(e) => Err((e.is_retryable(), e.to_string())),
     };
     let error = match outcome {
-        Ok(()) => {
+        Ok(Written::Done) => {
             super::record(Outcome::Done);
             None
         }
+        Ok(Written::Gone) => None,
         Err((retryable, message)) => {
             let retry = retryable && work.attempts < work.max_attempts;
             let jitter = shared
@@ -693,27 +697,37 @@ fn run_item(shared: &Arc<Shared>, weak: &Weak<NativeService>, work: Work) {
     drop(service);
 }
 
+/// How an item's write ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Written {
+    /// The extraction is written and the item is `done`.
+    Done,
+    /// The item was deleted meanwhile: nothing was written for it.
+    Gone,
+}
+
 /// Write an item's extraction, mark it done and link its chunk, in one
-/// transaction.
+/// transaction. A failure says whether another attempt may succeed.
 fn write_item(
     service: &NativeService,
     work: &Work,
     mut found: Vec<ChunkExtraction>,
-) -> Result<(), ExecError> {
+) -> Result<Written, (bool, String)> {
     let order = usize::try_from(work.seq).unwrap_or(0);
     for f in &mut found {
         f.chunk.order = order;
         f.chunk.offset += work.offset;
     }
-    let done = state::item(ItemState::Running, ItemAction::Succeed).map_err(internal)?;
+    let done = state::item(ItemState::Running, ItemAction::Succeed).map_err(|e| (true, e))?;
     let chunk = crate::cypher::provenance::default_chunk_id(&work.source_id, work.seq);
     // Keyed on the job's options, which the statement's `$config` reads to:
-    // the passage size the item was asked with is its own.
-    crate::extract::with_prepared(&work.text, &work.options, found, || {
+    // the passage size the item was asked with is its own. The item is
+    // matched first, so nothing is written for an item deleted meanwhile.
+    let res = crate::extract::with_prepared(&work.text, &work.options, found, || {
         run_query(
             service,
-            "CALL drevo.extract.ingest($text, $config) YIELD source \
-             MATCH (i:IngestItem {job_id: $job, seq: $seq}) \
+            "MATCH (i:IngestItem {job_id: $job, seq: $seq}) \
+             CALL drevo.extract.ingest($text, $config) YIELD source \
              MATCH (c:Chunk {id: $chunk}) \
              SET i.state = $done, i.last_error = null, i.updated_at = $now \
              MERGE (i)-[:PRODUCED]->(c) \
@@ -728,8 +742,54 @@ fn write_item(
                 ("now", now_iso(crate::model::now_ms())),
             ],
         )
+    })
+    .map_err(|e| {
+        // Our own refusal (an unknown source, a chunk of another source)
+        // fails the same way again.
+        let retry = !matches!(e, ExecError::InvalidProcedureCall { .. });
+        (retry, e.to_string())
     })?;
-    Ok(())
+    if first_integer(&res) != Some(0) {
+        return Ok(Written::Done);
+    }
+    // Nothing was marked done: either the item is gone, or its chunk is
+    // not where the job's source id says it is.
+    let left = run_query(
+        service,
+        "MATCH (i:IngestItem {job_id: $job, seq: $seq}) RETURN count(i)",
+        vec![
+            ("job", Value::String(work.job.clone())),
+            ("seq", Value::Integer(work.seq)),
+        ],
+    )
+    .map_err(|e| (true, e.to_string()))?;
+    if first_integer(&left) == Some(0) {
+        return Ok(Written::Gone);
+    }
+    Err((false, missing_chunk(&chunk, work)))
+}
+
+/// The reason an item fails when its chunk is not found after its
+/// extraction was written.
+fn missing_chunk(chunk: &str, work: &Work) -> String {
+    let configured = match &work.options.source {
+        Some(crate::cypher::provenance::SourceRef::Id(id)) => Some(id.as_str()),
+        Some(crate::cypher::provenance::SourceRef::Spec(spec)) => Some(spec.id.as_str()),
+        None => None,
+    };
+    match configured {
+        Some(configured) if configured != work.source_id => format!(
+            "chunk `{chunk}` not found after ingest: the job's source_id `{}` differs from \
+             config.source `{configured}`",
+            work.source_id
+        ),
+        _ => format!("chunk `{chunk}` not found after ingest"),
+    }
+}
+
+/// The first column of the first row, as an integer.
+fn first_integer(res: &ExecResult) -> Option<i64> {
+    res.rows.first().and_then(|r| r.first()).and_then(integer)
 }
 
 /// Record a failed attempt: `failed` with the time of the next attempt when
@@ -811,8 +871,16 @@ fn try_refresh(
         .iter()
         .map(|s| counts.get(s.as_str()).copied().unwrap_or(0))
         .sum::<i64>();
-    let finish = if from == JobState::Running && left == 0 && !counts.is_empty() {
-        Some(state::job(from, JobAction::Finish { dead: dead > 0 })?)
+    // A running job with nothing left finishes; one that lost items
+    // (deleted before they were written) without any dead is cancelled.
+    let finish = if from == JobState::Running && left == 0 {
+        let lost = done.saturating_add(dead) < total;
+        let action = if lost && dead == 0 {
+            JobAction::Cancel
+        } else {
+            JobAction::Finish { dead: dead > 0 }
+        };
+        Some(state::job(from, action)?)
     } else {
         None
     };
@@ -878,4 +946,58 @@ fn try_refresh(
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cypher::provenance::{SourceRef, SourceSpec};
+
+    fn work(source_id: &str, source: Option<SourceRef>) -> Work {
+        Work {
+            job: "job-1".into(),
+            seq: 0,
+            text: "Dana joined Acme.".into(),
+            offset: 0,
+            attempts: 1,
+            max_attempts: 5,
+            options: ExtractOptions {
+                source,
+                ..ExtractOptions::default()
+            },
+            config: Value::Null,
+            source_id: source_id.into(),
+        }
+    }
+
+    #[test]
+    fn a_missing_chunk_names_both_source_ids_when_they_differ() {
+        let w = work("book-2", Some(SourceRef::Id("book-1".into())));
+        assert_eq!(
+            missing_chunk("book-2#0", &w),
+            "chunk `book-2#0` not found after ingest: the job's source_id `book-2` differs \
+             from config.source `book-1`"
+        );
+        let spec = SourceSpec {
+            id: "book-1".into(),
+            uri: None,
+            title: None,
+            kind: None,
+        };
+        let w = work("book-2", Some(SourceRef::Spec(spec)));
+        assert!(missing_chunk("book-2#0", &w).contains("config.source `book-1`"));
+    }
+
+    #[test]
+    fn a_missing_chunk_of_a_matching_source_says_only_that() {
+        let w = work("book-1", Some(SourceRef::Id("book-1".into())));
+        assert_eq!(
+            missing_chunk("book-1#0", &w),
+            "chunk `book-1#0` not found after ingest"
+        );
+        assert_eq!(
+            missing_chunk("book-1#0", &work("book-1", None)),
+            "chunk `book-1#0` not found after ingest"
+        );
+    }
 }
