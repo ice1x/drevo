@@ -8,7 +8,7 @@ use super::*;
 use crate::cypher::provenance::SourceRef;
 use crate::ingest::progress::Progress;
 use crate::ingest::state::{self, ItemState, JobAction, JobState};
-use crate::ingest::{split_items, JobConfig};
+use crate::ingest::{split_items, JobConfig, Pipeline};
 
 /// `CALL drevo.ingest.submit(items, config) YIELD jobId, total`.
 pub(super) const SUBMIT: &str = "drevo.ingest.submit";
@@ -237,7 +237,7 @@ impl Executor<'_> {
         let mut props = vec![
             ("id", Value::String(id.clone())),
             ("state", Value::String(JobState::Queued.as_str().into())),
-            ("pipeline", Value::String("extract".into())),
+            ("pipeline", Value::String(Pipeline::Extract.as_str().into())),
             ("total", int(total)),
             ("done", Value::Integer(0)),
             ("failed", Value::Integer(0)),
@@ -275,6 +275,62 @@ impl Executor<'_> {
         }
         post_progress(&job);
         Ok(vec![vec![Value::String(id), int(total)]])
+    }
+
+    /// Store a job of the `community` pipeline, queued: one item, run as
+    /// `drevo.community.summarize(config)` where `config` is the JSON of
+    /// the summarize config map. Returns the job's id.
+    pub(super) fn ingest_store_community_job(
+        &mut self,
+        config_json: String,
+        span: Span,
+    ) -> ExecResultT<String> {
+        self.guard_node(
+            drevo_auth::privileges::Action::Create,
+            &[JOB_LABEL.to_string()],
+            None,
+        )?;
+        let now = Self::memory_now(span)?;
+        let id = uuid::Uuid::now_v7().to_string();
+        let max_attempts = crate::ingest::settings().max_attempts;
+        let job = self.memory_create_node(
+            &[JOB_LABEL],
+            vec![
+                ("id", Value::String(id.clone())),
+                ("state", Value::String(JobState::Queued.as_str().into())),
+                (
+                    "pipeline",
+                    Value::String(Pipeline::Community.as_str().into()),
+                ),
+                ("total", Value::Integer(1)),
+                ("done", Value::Integer(0)),
+                ("failed", Value::Integer(0)),
+                ("created_at", now.clone()),
+                ("updated_at", now.clone()),
+                ("config", Value::String(config_json)),
+                ("priority", Value::Integer(0)),
+                ("max_attempts", Value::Integer(i64::from(max_attempts))),
+            ],
+            span,
+        )?;
+        let item = self.memory_create_node(
+            &[ITEM_LABEL],
+            vec![
+                ("job_id", Value::String(id.clone())),
+                ("seq", Value::Integer(0)),
+                ("state", Value::String(ItemState::Queued.as_str().into())),
+                ("attempts", Value::Integer(0)),
+                ("next_attempt_at", Value::Integer(0)),
+                ("text", Value::String(String::new())),
+                ("offset", Value::Integer(0)),
+                ("length", Value::Integer(0)),
+                ("created_at", now),
+            ],
+            span,
+        )?;
+        self.memory_link(&job, "HAS_ITEM", &item, Vec::new(), span)?;
+        post_progress(&job);
+        Ok(id)
     }
 
     /// `drevo.ingest.status`: the job node and its items counted by state.

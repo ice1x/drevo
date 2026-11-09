@@ -3010,7 +3010,7 @@ handful of summaries with [`scope: 'global'`](#graph-rag-retrieval) instead of
 from the neighbourhood of a few search hits.
 
 ```text
-CALL drevo.community.summarize([config]) YIELD community, size, summary, keywords, mode
+CALL drevo.community.summarize([config]) YIELD community, size, summary, keywords, mode, jobId
 CALL drevo.community.query(query, k[, config]) YIELD community, score, summary
 CALL drevo.community.of(node) YIELD community, level
 CALL drevo.community.stale() YIELD community, size, changed
@@ -3059,12 +3059,12 @@ the JSON `{"labels": …, "relTypes": …}` the layer was computed with.
 | `relTypes` | `null` | partition along these relationship types only; `null` takes every type |
 | `minSize` | `3` | smaller communities get no summary, keywords or mode (their members still get `MEMBER_OF`) |
 | `maxMembers` | `40` | the most members a summary names, best-ranked first |
-| `mode` | `'auto'` | `'extractive'`: written from the members, no model. `'llm'`: written by the chat model — an error while none is configured (see `drevo.extract.status()`). `'auto'`: the model when one is configured, else extractive; `mode` on the row and the node says which ran |
-| `model` | `null` | the chat model for `'llm'`; `null` uses the server's |
+| `mode` | `'auto'` | `'extractive'`: written from the members, no model. `'llm'`: written by the chat model of [`drevo.extract.*`](#extraction) — an error while none is configured (`drevo.extract.status()` shows whether one is), and over more than `DREVO_COMMUNITY_MAX_LLM_SYNC` (default 20) summarised communities in one synchronous call. `'auto'`: the model when one is configured and the call stays within that limit, else extractive; `mode` on the row and the node says which ran |
+| `model` | `null` | the chat model for `'llm'`; `null` uses the endpoint's own |
 | `tokenBudget` | `300` | the most tokens a summary takes (the `'approx'` estimate of [`drevo.rag.context`](#graph-rag-retrieval)); at least `20` |
 | `replace` | `true` | delete the layer's previous communities first; `false` refuses a layer that already has some |
 | `layer` | `'default'` | the name of the partition, so several can sit side by side (say, `'fine'` with `resolution: 2.0`); the global scope of `drevo.rag.context` reads the one its `communityLayer` names |
-| `async` | `false` | `true` is refused until background jobs exist; summarise synchronously |
+| `async` | `false` | `true`: run the call as a background [ingest job](#ingest-jobs) and return at once with its id (see below) |
 
 An extractive summary is `<size> members.`, then the members named best-ranked
 first, grouped by label in the order of their best member (`Person: Alice,
@@ -3073,6 +3073,53 @@ Bob.`), then `Keywords:` — the ten most salient terms of the members' `name`,
 partitioned node as a document — then `Relations:` with the three most frequent
 relationship types inside the community and their counts. As many members as
 fit `tokenBudget` are named. The same graph and config give the same text.
+
+An LLM summary is the chat model's answer when given that extractive view
+(with four times the budget) and asked for a summary of at most `tokenBudget`
+tokens; an answer over the budget is cut. The keywords are the extractive
+ones either way. The model is never asked while anything is written:
+
+1. the statement runs read-only, under the statement timeout: the graph is
+   partitioned and ranked and each community's request prepared;
+2. one model call per summarised community, outside any transaction and the
+   statement timeout, each bounded by `DREVO_EXTRACT_TIMEOUT_MS` (the phase
+   as a whole is not); answers are remembered by the community's member
+   set and request;
+3. the statement runs as its transaction with those answers, under the
+   statement timeout: a retry after a commit conflict reads them again
+   instead of asking. If the graph changed meanwhile and a community has no
+   answer, steps 1–3 run again (three times at most), asking only for what
+   is new.
+
+So a synchronous `auto` or `llm` call on a server with a chat upstream
+configured makes up to `DREVO_COMMUNITY_MAX_LLM_SYNC` (default 20) model
+calls before it returns; `mode: 'extractive'` or `async: true` avoid that. A
+call over more communities than that limit (those under `minSize` do not
+count) fails with `'llm'`, before asking the model, with an error pointing at
+`async: true`, and writes extractive summaries with `'auto'`. `'llm'` also
+needs the statement to open with `CALL drevo.community.summarize` and run in
+auto-commit (elsewhere `'auto'` is extractive).
+
+With `async: true` the call checks the config, the privileges and `replace`
+as a synchronous one would, stores an `:IngestJob` with `pipeline:
+'community'` and one item, and yields one row: `jobId` is the job's id and
+every other column is `null` (a synchronous call yields `jobId = null` on
+each row). The database's ingest scheduler runs the item as
+`drevo.community.summarize` with the same config less `async`, in the same
+three steps — the model asked with no scheduler gate held — and without the
+synchronous limit. It is retried like any ingest item — a rate limit, timeout or `5xx`
+from the model, a write conflict, or a graph changed between the plan and the
+write, is tried again after the backoff; a
+refusal (another `4xx`, `replace: false` over a taken layer) makes it
+`dead` — and `drevo.ingest.status`, `errors`, `cancel` and `retryFailed`
+work on it. A `mode: 'llm'` job waits while no chat model is configured.
+`async: true` needs a user who may read everything, as the job summarises
+the whole graph.
+
+```text
+CALL drevo.community.summarize({async: true, mode: 'llm'}) YIELD jobId
+CALL drevo.ingest.status($jobId) YIELD job RETURN job.state
+```
 
 `drevo.community.summarize` writes, so it needs `CREATE` (and `DELETE` to
 replace a layer); the other three only read. It runs over what the user may
@@ -3129,7 +3176,10 @@ is not a node or an id, or with an id no node has, fails naming it.
 
 An ingest job runs [`drevo.extract.ingest`](#extraction) over a long text in
 the background, one passage at a time, retrying passages the model fails on
-and carrying on after a restart. The job lives in the graph:
+and carrying on after a restart. (`drevo.community.summarize({async: true})`
+stores a job too, with `pipeline: 'community'` and a single item that is the
+whole summarize call; see [Communities](#communities).) The job lives in the
+graph:
 
 ```text
 (:IngestJob {id, state, pipeline: 'extract', total, done, failed, priority,

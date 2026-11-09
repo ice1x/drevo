@@ -60,6 +60,7 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for, which bounds the rows and the memory one call can use. A call asking for more fails with an error naming this limit; when it is below `200`, calls that name no `maxNodes` get it instead. At least `1`. |
 | `DREVO_INGEST_WORKERS` | `2` | [Ingest-job](#ingest-jobs) items extracted at once, across every database. A job's `concurrency` is capped by it. At least `1`. |
 | `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts an ingest item gets when its job names no `maxAttempts`; after the last failed one the item is `dead`. 1–100. |
+| `DREVO_COMMUNITY_MAX_LLM_SYNC` | `20` | The most communities one synchronous `drevo.community.summarize` with `mode: 'llm'` may ask the chat model to summarise (one call each, made during the call but before its write, so it never holds the writers' turn). A synchronous `auto` or `llm` call on a server with a chat upstream configured therefore makes up to this many model calls before it returns. A call over it fails with an error pointing at `async: true`, which runs it as an [ingest job](#ingest-jobs) with no limit; `mode: 'auto'` writes extractive summaries instead. At least `1`. |
 | `DREVO_INGEST_RETRY_BASE_MS` | `2000` | A failed ingest item waits `base × 2^attempts` milliseconds (at most 5 minutes, less a random part of up to half) before it is tried again. At least `1`. |
 | `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep forever) | Delete [context traces](cypher-reference.md#context-traces) (`:ContextTrace`, recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours after — the same as an administrator running `drevo.rag.pruneTraces`. A whole number; `0` keeps them. |
 | `DREVO_TX_CONFLICT_HISTORY` | `10000` | How many recent commits a database remembers to decide whether an explicit transaction overlapped with them. A transaction that began before the oldest remembered commit, and saw others commit since, gets the retryable conflict (counted as `history`). Raise it if `drevo_tx_conflicts_total{reason="history"}` grows; a few hundred bytes per remembered commit. |
@@ -490,6 +491,17 @@ an ingest job (`drevo.ingest.submit`, see the
 `:IngestJob` with one `:IngestItem` per passage, so it survives a restart and
 can be read with Cypher; each database runs its jobs on a scheduler thread of
 its own, one transaction per passage.
+
+Community summaries run as jobs too: `drevo.community.summarize({async:
+true, …})` stores a job with `pipeline: 'community'` and one item, which the
+scheduler runs as the whole summarize call, with the retries, `status`,
+`errors`, `cancel` and `retryFailed` below. As for a synchronous call, the
+graph is planned read-only, the model is asked with no transaction, lock,
+scheduler gate or statement timeout held — each request is bounded only by
+`DREVO_EXTRACT_TIMEOUT_MS`, the model phase as a whole is not — and then one
+transaction writes the communities and marks the item done. Stopping a
+database does not wait for a model call in flight; its answer is dropped and
+the item runs again after the next start.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|

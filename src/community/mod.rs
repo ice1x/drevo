@@ -22,6 +22,7 @@ use crate::cypher::executor::Value;
 use crate::cypher::hybrid::HybridConfig;
 
 pub(crate) mod extractive;
+pub(crate) mod llm;
 
 /// The label of a community node.
 pub(crate) const COMMUNITY_LABEL: &str = "Community";
@@ -620,6 +621,8 @@ pub(crate) struct Member {
 pub(crate) struct SummaryInput<'a> {
     /// How many members the community has.
     pub(crate) size: usize,
+    /// The hash of its member set (`member_ids_hash` on the community).
+    pub(crate) member_ids_hash: &'a str,
     /// The members, best-ranked first.
     pub(crate) members: &'a [Member],
     /// The community's keywords.
@@ -1261,6 +1264,7 @@ mod tests {
     ) -> SummaryInput<'a> {
         SummaryInput {
             size: members.len(),
+            member_ids_hash: "",
             members,
             keywords,
             rel_types: rels,

@@ -196,6 +196,37 @@ pub(crate) fn adjust_jobs_active(delta: i64) {
     JOBS_ACTIVE.fetch_add(delta, Ordering::Relaxed);
 }
 
+/// What a job's items run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pipeline {
+    /// Each item is a `drevo.extract.ingest` of its passage
+    /// (`drevo.ingest.submit`).
+    Extract,
+    /// The one item is a `drevo.community.summarize` with the job's config
+    /// (`drevo.community.summarize({async: true})`).
+    Community,
+}
+
+impl Pipeline {
+    /// The `pipeline` property of a job node.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Extract => "extract",
+            Self::Community => "community",
+        }
+    }
+
+    /// The pipeline a job node's `pipeline` names; a job without one (or an
+    /// unknown one) extracts, as every job did before there were others.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn parse(name: Option<&str>) -> Self {
+        match name {
+            Some("community") => Self::Community,
+            _ => Self::Extract,
+        }
+    }
+}
+
 /// The config keys only `drevo.ingest.submit` takes.
 pub(crate) const JOB_KEYS: [&str; 3] = ["priority", "maxAttempts", "concurrency"];
 
@@ -513,6 +544,15 @@ mod tests {
 
     fn err(config: &Value) -> String {
         JobConfig::from_value(config, 5).unwrap_err()
+    }
+
+    #[test]
+    fn a_pipeline_reads_back_its_name_and_defaults_to_extract() {
+        for p in [Pipeline::Extract, Pipeline::Community] {
+            assert_eq!(Pipeline::parse(Some(p.as_str())), p);
+        }
+        assert_eq!(Pipeline::parse(None), Pipeline::Extract);
+        assert_eq!(Pipeline::parse(Some("other")), Pipeline::Extract);
     }
 
     #[test]

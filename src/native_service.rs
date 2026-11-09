@@ -968,7 +968,7 @@ impl NativeService {
                 // timeout, and once however often its write is retried (#805).
                 let upfront = self.prepare_upfront_ingest(query, &params, restriction)?;
                 let first_tx = upfront.as_ref().map(|u| u.tx);
-                let run = || {
+                let run = |params: HashMap<String, Value>| {
                     crate::cypher::executor::deadline::with_statement_timeout(
                         self.statement_timeout(),
                         || {
@@ -996,8 +996,18 @@ impl NativeService {
                     )
                 };
                 let result = match upfront {
-                    Some(u) => crate::extract::with_prepared(&u.text, &u.options, u.found, run),
-                    None => run(),
+                    Some(u) => {
+                        crate::extract::with_prepared(&u.text, &u.options, u.found, || run(params))
+                    }
+                    // A statement opening with `drevo.community.summarize`
+                    // asks the model between a read-only plan and its write
+                    // (#804).
+                    None if self.wants_community_answers(query) => {
+                        self.with_community_answers(query, &params, restriction, || {
+                            run(params.clone())
+                        })
+                    }
+                    None => run(params),
                 };
                 if let Some(tx) = first_tx {
                     // Committed or rolled back already, unless the statement
@@ -1249,6 +1259,93 @@ impl NativeService {
             Err(e) => {
                 self.graph.tx_rollback(tx);
                 Err(crate::cypher::executor::ingest_failed(&e, call.span))
+            }
+        }
+    }
+
+    /// Whether `query` is a statement whose LLM community summaries are
+    /// asked for before its write: it opens with
+    /// `drevo.community.summarize`, a chat model is installed, and no
+    /// answers are in place yet (a community job brings its own).
+    fn wants_community_answers(&self, query: &Query) -> bool {
+        crate::cypher::executor::opening_community_summarize(query).is_some()
+            && !self.is_read_only()
+            && !crate::community::llm::is_prepared()
+            && crate::extract::installed().is_some()
+    }
+
+    /// Phases 1 and 2 of an LLM `drevo.community.summarize`
+    /// ([`crate::community::llm`]): run `query` read-only as a plan, under
+    /// the statement timeout, then ask the model for every planned community
+    /// `answers` has no answer for — outside the writers' turn, any
+    /// transaction and the statement timeout. `false` when the call needs no
+    /// model (extractive, `async: true`).
+    ///
+    /// # Errors
+    ///
+    /// The statement's own error when planning fails, else the model's
+    /// failure with whether asking again later may succeed.
+    pub(crate) fn plan_community_answers(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+        answers: &mut crate::community::llm::Answers,
+    ) -> Result<bool, (ExecError, Option<bool>)> {
+        let (result, plan) = crate::community::llm::planning(|| {
+            crate::cypher::executor::deadline::with_statement_timeout(
+                self.statement_timeout(),
+                || {
+                    self.with_fresh_indexes(|idx| {
+                        self.execute_with(idx, query, params.clone(), restriction)
+                    })
+                },
+            )
+        });
+        let asks = match plan {
+            Some(Some(asks)) => asks,
+            Some(None) => return Ok(false),
+            None => return result.map(|_| false).map_err(|e| (e, None)),
+        };
+        crate::community::llm::ask_planned(&asks, answers).map_err(|(message, retryable)| {
+            (
+                ExecError::InvalidProcedureCall {
+                    name: "drevo.community.summarize".into(),
+                    message,
+                    span: crate::cypher::executor::opening_community_summarize(query)
+                        .unwrap_or_else(|| crate::cypher::lexer::Span::new(0, 0, 1, 1)),
+                },
+                Some(retryable),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// Run `write` (phase 3) with the community summaries planned and asked
+    /// for `query` in place; when the write meets a community the plan did
+    /// not see (the graph changed meanwhile), plan, ask for what is new and
+    /// write again, up to three times. An answer is asked for once.
+    fn with_community_answers(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+        mut write: impl FnMut() -> Result<ExecResult, ExecError>,
+    ) -> Result<ExecResult, ExecError> {
+        const ROUNDS: usize = 3;
+        let mut answers = Vec::new();
+        let mut round = 0;
+        loop {
+            round += 1;
+            if !self
+                .plan_community_answers(query, params, restriction, &mut answers)
+                .map_err(|(e, _)| e)?
+            {
+                return write();
+            }
+            let (result, missed) = crate::community::llm::with_prepared(&answers, &mut write);
+            if !missed || round == ROUNDS {
+                return result;
             }
         }
     }
