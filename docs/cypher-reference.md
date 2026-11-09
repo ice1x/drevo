@@ -821,6 +821,8 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `drevo.rag.explain(traceId)` | `node, status, rank, distance, seedScore, pprScore, tokens, reason` | What one context was made of: the nodes written and the nodes left out, by rank |
 | `drevo.rag.replay(traceId)` | `text, tokens, changed` | A traced context re-run on the graph as it is now, and whether its text changed; records nothing |
 | `drevo.rag.pruneTraces(olderThan)` | `deleted` | Delete context traces created before a UTC date or timestamp; needs `EXECUTE ADMIN PROCEDURES` |
+| `drevo.rag.evaluate(questions[, config])` | `question, strategy, hit, recall, precision, mrr, tokens, durationMs, nodeIds, recallRetrieved` | Each retrieval strategy (vector, BM25, hybrid, hybrid + expansion, the full pipeline) scored on a gold set within one token budget — see [Evaluate strategies](#evaluate-strategies) |
+| `drevo.rag.evaluateSummary(questions[, config])` | `strategy, questions, hitRate, meanRecall, meanPrecision, mrr, p50Ms, p95Ms, meanTokens` | The same scores averaged per strategy, with latency percentiles |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 | `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes — see [Secondary indexes](#secondary-indexes) |
 | `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
@@ -3195,6 +3197,90 @@ An unknown `traceId` fails with `no context trace with id …`; a trace whose
 stored `config` no longer parses cannot be replayed and says why. A `traceId`,
 `session`, `limit` or `olderThan` of the wrong type fails with an error naming
 the argument.
+
+#### Evaluate strategies
+
+`drevo.rag.evaluate` scores how well each way of retrieving a context does on a
+gold set — questions and the nodes their context should hold — so you can see
+whether expanding through the graph helps on your data. `drevo.rag.evaluateSummary`
+averages the scores per strategy. Both only read: the pipeline runs without a
+session, so no trace is recorded.
+
+```text
+CALL drevo.rag.evaluate(questions[, config])
+YIELD question, strategy, hit, recall, precision, mrr, tokens, durationMs, nodeIds,
+      recallRetrieved
+
+CALL drevo.rag.evaluateSummary(questions[, config])
+YIELD strategy, questions, hitRate, meanRecall, meanPrecision, mrr, p50Ms, p95Ms,
+      meanTokens
+```
+
+`questions` is a list of maps, one per question:
+
+- `{query, expected}` — `expected` lists the nodes the context should hold, each
+  a node id or a `{name, label}` map naming the node whose `name` or `title`
+  property is exactly `name` (and that carries `label`, when given);
+- `{query, traceId}` — scored against the nodes that [context
+  trace](#context-traces) `INCLUDED`; without `query` the trace's own question
+  is asked.
+
+```text
+CALL drevo.rag.evaluateSummary([
+  {query: 'panic before the team meeting',
+   expected: [{name: 'Mind reading', label: 'Distortion'}, {name: 'Mila', label: 'Person'}]},
+  {query: 'a calm walk', expected: [{name: 'Mila', label: 'Person'}]}
+], {strategies: ['fts', 'hybrid+expand', 'rag'], tokenBudget: 300})
+YIELD strategy, hitRate, meanRecall, meanPrecision, mrr, p95Ms, meanTokens
+RETURN strategy, hitRate, meanRecall, meanPrecision, mrr, p95Ms, meanTokens
+```
+
+`config` takes every key of the [`drevo.rag.context` config](#graph-rag-retrieval)
+— `k`, `hops`, `tokenBudget`, `label` and `embeddingProperty` are the usual
+ones — shared by all strategies, plus `strategies`, a list of:
+
+| Strategy | Context |
+|---|---|
+| `'vector'` | the `k` nodes of `label` closest to the question by `embeddingProperty`, as `drevo.semantic.query` ranks them — the baseline. Needs a `label` and a server-side embedder |
+| `'fts'` | the `k` best BM25 matches |
+| `'hybrid'` | the `k` hits of `drevo.search.hybrid` (in the config's `mode`) |
+| `'hybrid+expand'` | those hits, then their neighbourhood within `hops`, nearest first (`rank: 'distance'`) |
+| `'rag'` | the full `drevo.rag.context` pipeline, ranked by Personalized PageRank (`rank: 'ppr'`) |
+| `'rag-global'` | retrieval over community summaries; this server does not build them, so naming it is an error |
+
+The default is every strategy this server can run with the config: `'fts'`,
+`'hybrid'`, `'hybrid+expand'` and `'rag'`, with `'vector'` first when there is
+an embedder and a `label`. Every strategy writes its nodes as
+`drevo.rag.context` would, within the same `tokenBudget`, and is scored on what
+fits — what the model would see:
+
+| Column | Meaning |
+|---|---|
+| `question` | the question asked |
+| `strategy` | the strategy |
+| `hit` | whether the context held any expected node |
+| `recall` | the share of the expected nodes the context held |
+| `precision` | the share of the context's nodes that were expected (`0.0` for an empty context) |
+| `mrr` | `1 / rank` of the first expected node in the context, `0.0` when none is there |
+| `tokens` | the size of the context — never more than `tokenBudget` |
+| `durationMs` | how long retrieving and writing it took, measured as a trace's `durationMs` |
+| `nodeIds` | the ids of the nodes in the context, in the order written |
+| `recallRetrieved` | the share of the expected nodes retrieved at all, before the budget: `recallRetrieved − recall` is what the budget cut |
+
+Rows come per question, in order, then per strategy, in the config's order.
+`evaluateSummary` returns one row per strategy: `questions` counted,
+`hitRate`, `meanRecall`, `meanPrecision` and `mrr` averaged over them, `p50Ms`
+and `p95Ms` the percentiles of `durationMs` (interpolated between the two
+nearest values), and `meanTokens`. No questions give no rows.
+
+An expected node that does not resolve — an id that is not a node, a `{name,
+label}` nothing matches — fails the call with every such entry listed
+(`2 expected nodes not found: questions[0].expected[1] {name: 'Fix', label:
+'Commit'}, …`); a `{name}` that matches several nodes — by `name` on one and
+`title` on another, say — fails listing their ids. An
+unknown `traceId`, an unknown strategy, `'rag-global'`, `'vector'` without a
+`label` or an embedder, a `session` or `trace: true` (an evaluation records
+nothing), and a malformed question or config key fail with an error naming it.
 
 ---
 

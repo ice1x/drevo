@@ -4240,6 +4240,8 @@ mod writing_procedure_tests {
             "CALL drevo.rag.traces(null, 5)",
             "CALL drevo.rag.explain('t-1')",
             "CALL drevo.rag.replay('t-1')",
+            "CALL drevo.rag.evaluate([], {strategies: ['rag']})",
+            "CALL drevo.rag.evaluateSummary([])",
         ] {
             assert!(!writes(q), "{q}");
         }

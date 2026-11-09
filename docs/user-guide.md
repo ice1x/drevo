@@ -363,6 +363,45 @@ characters and their facts, and `drevo.memory.evidence('Ahab', 5)` shows the pas
 to quote in an answer. To extract every new document as it is written, install the trigger shown in
 the [Admin Guide](admin-guide.md#extraction-drevoextract-opt-in).
 
+### Is the graph helping? Measure it
+
+Walking out from the search hits costs time and tokens; whether it pays depends on your data. To
+find out, write down a few questions and, for each, the nodes an answer needs — then let drevo
+score every way of building the context against that list (a node is named by its `name` or its
+`title`):
+
+```text
+CALL drevo.rag.evaluateSummary([
+  {query: 'Why did Mila panic before the meeting?',
+   expected: [{name: 'Mila', label: 'Person'},
+              {name: 'Mind reading', label: 'Distortion'}]}
+], {label: 'Entry', tokenBudget: 1500})
+YIELD strategy, hitRate, meanRecall, meanPrecision, p95Ms, meanTokens
+```
+
+Each row is one strategy, from plain search to the full pipeline:
+
+| Strategy | What it hands over |
+|---|---|
+| `vector` | the nodes closest in meaning to the question (needs an embedder and a `label`) |
+| `fts` | the best word matches |
+| `hybrid` | words and meaning together |
+| `hybrid+expand` | those hits and their neighbourhood, nearest first |
+| `rag` | the same neighbourhood ranked by how closely it connects to the hits — what `drevo.rag.context` does |
+
+All of them get the same token budget, and each is scored on what fits it — what the model would
+see. `meanRecall` is the share of the expected nodes that made it in: if `rag` beats `vector` on
+your questions, the graph is earning its keep. `drevo.rag.evaluate` gives the same scores per
+question, with the ids of the nodes each context held; a question the graph strategies miss
+usually needs a missing relationship, not a bigger budget (compare `recall` with
+`recallRetrieved`, which counts what was found before the budget cut).
+
+You can also score against an earlier answer instead of a hand-written list: `{traceId: '…'}`
+compares against the nodes that traced context included — a quick check that a config change did
+not drop what used to be there. Nothing is written while evaluating. From a shell,
+`cargo run --example rag_eval -- --data path.drevo --questions q.jsonl` prints the same summary
+as a table. Details are in the [Cypher Reference](cypher-reference.md#evaluate-strategies).
+
 ---
 
 ## 7. Where to go next

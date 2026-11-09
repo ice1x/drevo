@@ -157,6 +157,10 @@ const VARLEN_DEFAULT_UPPER: usize = 25;
 /// `drevo.memory.rememberEntity`.
 mod entity_procs;
 
+/// `drevo.rag.evaluate` and `drevo.rag.evaluateSummary`: retrieval
+/// strategies scored against a gold set.
+mod rag_eval_procs;
+
 use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, CreateConstraint, CreatePathIndex,
     CreateVectorIndex, Direction as AstDirection, DropConstraint, DropIndex, Expression,
@@ -1788,7 +1792,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.rag.traces, drevo.rag.explain, drevo.rag.replay, \
                           drevo.rag.pruneTraces, \
                           drevo.extract.entities, drevo.extract.facts, drevo.extract.ingest, \
-                          drevo.extract.chunks, drevo.extract.status"
+                          drevo.extract.chunks, drevo.extract.status, \
+                          drevo.rag.evaluate, drevo.rag.evaluateSummary"
                         .into(),
                     span: c.span,
                 })?;
@@ -11341,6 +11346,95 @@ impl<'a> Executor<'a> {
         Ok((query, config))
     }
 
+    /// Stage 1 of the graph-RAG pipeline: the first `k` hits of the config's
+    /// hybrid search that the caller may see, without the excluded labels
+    /// and other sources, with their fused scores; and the search mode that
+    /// ran. The whole fused candidate list is read, so hidden and excluded
+    /// hits (a pile of traces of the same question, say) do not take the
+    /// seeds' places.
+    fn rag_seeds(
+        &self,
+        name: &str,
+        query: &str,
+        config: &crate::rag::config::RagConfig,
+        span: Span,
+    ) -> ExecResultT<RagSeeds> {
+        let (hits, mode) = self.hybrid_hits(
+            name,
+            HybridItems::Nodes,
+            query,
+            config.label.as_deref(),
+            &config.embedding_property,
+            config.hybrid.depth(config.k),
+            &config.hybrid,
+            span,
+        )?;
+        deadline::check()?;
+        let seeds = hits
+            .into_iter()
+            .filter_map(|(item, fused)| Some((self.rag_admit(item, config)?, fused.score)))
+            .take(config.k)
+            .collect();
+        Ok((seeds, mode))
+    }
+
+    /// A search hit as a pipeline seed: the node as the caller may see it,
+    /// unless it is not a node, is hidden, carries an excluded label or
+    /// comes from another source.
+    fn rag_admit(
+        &self,
+        item: Value,
+        config: &crate::rag::config::RagConfig,
+    ) -> Option<Arc<NodeValue>> {
+        let Value::Node(stored) = item else {
+            return None;
+        };
+        let node = self.visible_node(stored)?;
+        let excluded = node
+            .labels
+            .iter()
+            .any(|l| config.expand.exclude_labels.contains(l));
+        (!excluded && crate::rag::source_admits(&node.properties, config.sources.as_deref()))
+            .then_some(node)
+    }
+
+    /// Stage 3 of the graph-RAG pipeline: the relationships between the
+    /// nodes `ids` that the config's walk follows and the caller may see,
+    /// by id, with their `(from, to, weight)` for the ranking.
+    #[allow(clippy::type_complexity)]
+    fn rag_edges(
+        &self,
+        ids: &HashSet<u64>,
+        config: &crate::rag::config::RagConfig,
+    ) -> ExecResultT<(Vec<Arc<RelationshipValue>>, Vec<(u64, u64, f32)>)> {
+        let mut sorted_ids: Vec<u64> = ids.iter().copied().collect();
+        sorted_ids.sort_unstable();
+        let mut edges: Vec<Edge> = Vec::new();
+        for &id in &sorted_ids {
+            self.engine()
+                .for_each_edge_of(id, crate::model::Direction::Outgoing, &mut |edge| {
+                    if ids.contains(&edge.to_id)
+                        && crate::traversal::expand_walks(edge, &config.expand)
+                        && self.edge_traversable(edge)
+                    {
+                        edges.push(edge.clone());
+                    }
+                })?;
+        }
+        edges.sort_unstable_by_key(|e| e.id);
+        edges.dedup_by_key(|e| e.id);
+        let mut rels = Vec::with_capacity(edges.len());
+        let mut weighted = Vec::with_capacity(edges.len());
+        for edge in &edges {
+            let rel = self.redact_relationship(edge_to_value(edge));
+            if crate::rag::source_admits(&rel.properties, config.sources.as_deref()) {
+                weighted.push((edge.from_id, edge.to_id, edge.weight));
+                rels.push(rel);
+            }
+        }
+        Ok((rels, weighted))
+    }
+
     /// The graph-RAG pipeline over the statement's view of the graph, as the
     /// signed-in user may see it: hybrid-search seeds, the expansion from
     /// them, the relationships between the nodes found, and their ranking.
@@ -11366,47 +11460,16 @@ impl<'a> Executor<'a> {
         };
         let sources = config.sources.as_deref();
 
-        // 1. Seeds: the first `k` hits of the hybrid search the caller may
-        //    see, without the excluded labels and other sources. The whole
-        //    fused candidate list is read, so hidden and excluded hits (a
-        //    pile of traces of the same question, say) do not take the
-        //    seeds' places.
-        let (hits, mode) = self.hybrid_hits(
-            name,
-            HybridItems::Nodes,
-            query,
-            config.label.as_deref(),
-            &config.embedding_property,
-            config.hybrid.depth(config.k),
-            &config.hybrid,
-            span,
-        )?;
-        deadline::check()?;
-        let mut seed_scores: HashMap<u64, f64> = HashMap::new();
-        let mut seeds: Vec<u64> = Vec::new();
-        for (item, fused) in hits {
-            if seeds.len() == config.k {
-                break;
-            }
-            let Value::Node(stored) = item else {
-                continue;
-            };
-            let Some(node) = self.visible_node(stored) else {
-                continue;
-            };
-            let excluded = node
-                .labels
-                .iter()
-                .any(|l| config.expand.exclude_labels.contains(l));
-            if excluded || !source_admits(&node.properties, sources) {
-                continue;
-            }
-            seed_scores.insert(node.id, fused.score);
-            seeds.push(node.id);
-        }
-        if seeds.is_empty() {
+        // 1. Seeds.
+        let (found_seeds, mode) = self.rag_seeds(name, query, config, span)?;
+        if found_seeds.is_empty() {
             return Ok((Subgraph::default(), mode, None));
         }
+        let seed_scores: HashMap<u64, f64> = found_seeds
+            .iter()
+            .map(|(n, score)| (n.id, *score))
+            .collect();
+        let seeds: Vec<u64> = found_seeds.iter().map(|(n, _)| n.id).collect();
 
         // 2. Expand.
         let (found, mut seen) = self
@@ -11440,31 +11503,7 @@ impl<'a> Executor<'a> {
 
         // 3. The relationships between the nodes found.
         let ids: HashSet<u64> = nodes.iter().map(|n| n.node.id).collect();
-        let mut sorted_ids: Vec<u64> = ids.iter().copied().collect();
-        sorted_ids.sort_unstable();
-        let mut edges: Vec<Edge> = Vec::new();
-        for &id in &sorted_ids {
-            self.engine()
-                .for_each_edge_of(id, crate::model::Direction::Outgoing, &mut |edge| {
-                    if ids.contains(&edge.to_id)
-                        && crate::traversal::expand_walks(edge, &config.expand)
-                        && self.edge_traversable(edge)
-                    {
-                        edges.push(edge.clone());
-                    }
-                })?;
-        }
-        edges.sort_unstable_by_key(|e| e.id);
-        edges.dedup_by_key(|e| e.id);
-        let mut rels = Vec::with_capacity(edges.len());
-        let mut weighted = Vec::with_capacity(edges.len());
-        for edge in &edges {
-            let rel = self.redact_relationship(edge_to_value(edge));
-            if source_admits(&rel.properties, sources) {
-                weighted.push((edge.from_id, edge.to_id, edge.weight));
-                rels.push(rel);
-            }
-        }
+        let (rels, weighted) = self.rag_edges(&ids, config)?;
         deadline::check()?;
 
         // 4. Rank.
@@ -11562,6 +11601,8 @@ impl<'a> Executor<'a> {
             RAG_TRACES => self.proc_rag_traces(args, span),
             RAG_EXPLAIN => self.proc_rag_explain(args, span),
             RAG_REPLAY => self.proc_rag_replay(args, span),
+            rag_eval_procs::EVALUATE => self.proc_rag_evaluate(args, span),
+            rag_eval_procs::EVALUATE_SUMMARY => self.proc_rag_evaluate_summary(args, span),
             HYBRID => self.proc_search_hybrid(HYBRID, HybridItems::Nodes, args, span),
             HYBRID_RELS => {
                 self.proc_search_hybrid(HYBRID_RELS, HybridItems::Relationships, args, span)
@@ -13414,6 +13455,13 @@ const RAG_RETRIEVE: &str = "drevo.rag.retrieve";
 /// a token budget.
 const RAG_CONTEXT: &str = "drevo.rag.context";
 
+/// The seeds of a graph-RAG retrieval with their search scores, best first,
+/// and the search mode that ran.
+type RagSeeds = (
+    Vec<(Arc<NodeValue>, f64)>,
+    crate::cypher::hybrid::HybridMode,
+);
+
 /// What the graph-RAG pipeline built for one `drevo.rag.context` call.
 struct RagBuilt {
     /// The ranked nodes and the relationships between them.
@@ -14310,6 +14358,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         ]),
         RAG_REPLAY => Some(&["text", "tokens", "changed"]),
         RAG_PRUNE => Some(&["deleted"]),
+        // Retrieval strategies scored against a gold set.
+        rag_eval_procs::EVALUATE => Some(rag_eval_procs::EVALUATE_COLUMNS),
+        rag_eval_procs::EVALUATE_SUMMARY => Some(rag_eval_procs::SUMMARY_COLUMNS),
         // Neo4j-compatible index procedures (issue #532): same (node, score)
         // contract as their drevo-native counterparts.
         "db.index.vector.queryNodes" | "db.index.fulltext.queryNodes" => Some(&["node", "score"]),
@@ -14459,6 +14510,8 @@ fn procedure_optional_args(name: &str) -> usize {
         | "drevo.memory.assertFact"
         | RAG_RETRIEVE
         | RAG_CONTEXT
+        | rag_eval_procs::EVALUATE
+        | rag_eval_procs::EVALUATE_SUMMARY
         | entity_procs::CANDIDATES
         | entity_procs::MERGE
         | EXTRACT_ENTITIES
@@ -14591,6 +14644,8 @@ fn procedure_arity(name: &str) -> usize {
         RAG_TRACES => 2,
         // drevo.rag.explain(traceId) / replay(traceId) / pruneTraces(olderThan).
         RAG_EXPLAIN | RAG_REPLAY | RAG_PRUNE => 1,
+        // drevo.rag.evaluate(questions[, config]) / evaluateSummary(questions[, config]).
+        rag_eval_procs::EVALUATE | rag_eval_procs::EVALUATE_SUMMARY => 2,
         // db.index.vector.queryNodes(indexName, k, queryVector) (issue #532).
         "db.index.vector.queryNodes" => 3,
         // db.index.fulltext.queryNodes(indexName, queryString) (issue #532).
