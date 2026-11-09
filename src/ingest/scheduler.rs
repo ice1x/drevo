@@ -28,6 +28,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::cypher::executor::{ExecError, ExecResult, Value};
+use crate::cypher::lexer::Span;
 use crate::extract::{ChunkExtraction, ExtractError, ExtractOptions, Want};
 use crate::native_service::NativeService;
 
@@ -716,8 +717,8 @@ fn write_item(
     }
     let done = state::item(ItemState::Running, ItemAction::Succeed).map_err(internal)?;
     let chunk = crate::cypher::provenance::default_chunk_id(&work.source_id, work.seq);
-    crate::extract::with_prepared(&work.text, found, || {
-        run_query(
+    crate::extract::with_prepared(&work.text, found, || -> Result<(), ExecError> {
+        let result = run_query(
             service,
             "CALL drevo.extract.ingest($text, $config) YIELD source \
              MATCH (i:IngestItem {job_id: $job, seq: $seq}) \
@@ -734,9 +735,29 @@ fn write_item(
                 ("done", Value::String(done.as_str().into())),
                 ("now", now_iso(crate::model::now_ms())),
             ],
-        )
+        )?;
+        require_single_update(&result, &work.job, work.seq)?;
+        Ok(())
     })?;
     Ok(())
+}
+
+fn require_single_update(result: &ExecResult, job: &str, seq: i64) -> Result<(), ExecError> {
+    let updated = result
+        .rows
+        .first()
+        .and_then(|row| row.first())
+        .and_then(integer);
+    if updated == Some(1) {
+        return Ok(());
+    }
+    Err(ExecError::InvalidProcedureCall {
+        name: "drevo.extract.ingest".into(),
+        message: format!(
+            "ingest item {seq} of job `{job}` was not completed: the item or its chunk is missing"
+        ),
+        span: Span::new(0, 0, 1, 1),
+    })
 }
 
 /// Record a failed attempt: `failed` with the time of the next attempt when
@@ -885,4 +906,23 @@ fn try_refresh(
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_write_target_is_a_non_retryable_procedure_error() {
+        let result = ExecResult {
+            columns: vec!["count(i)".into()],
+            rows: vec![vec![Value::Integer(0)]],
+            stats: Default::default(),
+        };
+        let error = require_single_update(&result, "job-1", 3).unwrap_err();
+        assert!(matches!(error, ExecError::InvalidProcedureCall { .. }));
+        assert!(error
+            .to_string()
+            .contains("item 3 of job `job-1` was not completed"));
+    }
 }

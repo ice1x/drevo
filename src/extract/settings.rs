@@ -275,6 +275,7 @@ impl ExtractConfigStore {
         }
         install_config(&next)?;
         *self.config.write().unwrap_or_else(|e| e.into_inner()) = Some(next);
+        crate::ingest::wake();
         Ok(self.status())
     }
 }
@@ -372,6 +373,21 @@ mod tests {
     #[test]
     fn nothing_set_is_no_setting() {
         assert_eq!(ExtractConfig::from_env(get(&[])).unwrap(), None);
+    }
+
+    #[test]
+    fn applying_a_config_wakes_ingest_schedulers() {
+        let store = ExtractConfigStore::in_memory(None);
+        let before = crate::ingest::generation();
+        store
+            .apply(ExtractConfigUpdate {
+                upstream: T2C.into(),
+                api_key: None,
+                model: Some("test-model".into()),
+                timeout_ms: Some(1_000),
+            })
+            .unwrap();
+        assert!(crate::ingest::generation() > before);
     }
 
     #[test]
