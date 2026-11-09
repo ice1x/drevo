@@ -2827,6 +2827,24 @@ into the same source again finds the same chunks, entities and facts, and
 changes nothing. Afterwards `drevo.memory.evidence` and `drevo.memory.factsAt`
 show the passages behind each entity.
 
+**The model runs before the write, once.** A statement that opens with
+`CALL drevo.extract.ingest(…)` — its text and config literals or parameters
+— asks the model for every passage first, and only then writes, in one
+transaction. Other writing statements on the database are not held up while
+the model answers, and a write retried after a commit conflict with another
+writer (up to 8 times) reuses the answers instead of asking again. The
+statement reads the graph as of its start, before the model is asked, so a
+commit that touches the same nodes meanwhile costs one retry of the graph
+write, never another model call. Answers are reused only for the same text
+with the same extraction options (`types`, `relations`, `schemaHint`,
+`language`, `model`, `chunkChars`, `minConfidence`). The model
+phase is bounded per call by `DREVO_EXTRACT_TIMEOUT_MS`; the server's
+statement timeout (`DREVO_QUERY_TIMEOUT_MS`) applies to the write that
+follows. A call that only runs per row (after `UNWIND`, `MATCH` or `WITH`,
+as in a trigger) asks the model while the statement writes, but still once
+per text however often the write is retried. For texts too long for one
+statement, submit an [ingest job](#ingest-jobs).
+
 ```text
 CALL drevo.extract.ingest($chapter, {source: {id: 'book-1', title: 'Book One', kind: 'document'}})
 YIELD source, chunks, entities, facts, skipped

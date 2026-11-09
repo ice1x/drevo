@@ -28,7 +28,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::cypher::executor::{ExecError, ExecResult, Value};
-use crate::extract::{ChunkExtraction, ExtractError, ExtractOptions, Want};
+use crate::extract::{ChunkExtraction, ExtractOptions};
 use crate::native_service::NativeService;
 
 use super::backoff::{self, Jitter};
@@ -643,16 +643,7 @@ fn run_item(shared: &Arc<Shared>, weak: &Weak<NativeService>, work: Work) {
         ),
         ..work.options.clone()
     };
-    let found = match crate::extract::installed() {
-        Some(completer) => {
-            crate::extract::extract_chunks(completer.as_ref(), &work.text, &options, Want::Both)
-        }
-        None => Err(ExtractError::NotConfigured),
-    };
-    match &found {
-        Ok(found) => crate::extract::record(Ok(found.iter().map(|f| f.accepted.skipped).sum())),
-        Err(e) => crate::extract::record(Err(e)),
-    }
+    let found = crate::extract::prepare_ingest(&work.text, &options);
     let gate = shared.gate.lock().unwrap_or_else(|e| e.into_inner());
     if shared.stop.load(Ordering::SeqCst) {
         return;
@@ -716,7 +707,9 @@ fn write_item(
     }
     let done = state::item(ItemState::Running, ItemAction::Succeed).map_err(internal)?;
     let chunk = crate::cypher::provenance::default_chunk_id(&work.source_id, work.seq);
-    crate::extract::with_prepared(&work.text, found, || {
+    // Keyed on the job's options, which the statement's `$config` reads to:
+    // the passage size the item was asked with is its own.
+    crate::extract::with_prepared(&work.text, &work.options, found, || {
         run_query(
             service,
             "CALL drevo.extract.ingest($text, $config) YIELD source \
