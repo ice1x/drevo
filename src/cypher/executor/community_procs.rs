@@ -770,11 +770,12 @@ impl Executor<'_> {
             }
         }
         let ids: HashSet<u64> = nodes.iter().map(|n| n.node.id).collect();
-        let (rels, _) = self.rag_edges(&ids, config)?;
+        let (rels, weighted) = self.rag_edges(&ids, config)?;
         deadline::check()?;
         Ok((
             Some(Subgraph {
                 nodes,
+                rel_weights: crate::rag::rel_weights(&rels, &weighted),
                 rels,
                 truncated,
             }),

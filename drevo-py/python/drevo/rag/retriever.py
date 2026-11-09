@@ -70,6 +70,12 @@ class Context:
         Output is deterministic: nodes are sorted by `(kind, title, id)`
         and edges by `(from_id, to_id, id)`. The 00120 e2e test asserts
         byte-equality across runs.
+
+        The server's `CALL drevo.rag.context(q, {format: 'markdown'})`
+        writes the same layout (`## Seeds` / `## Neighbours` / `## Edges`,
+        the same lines in the same order) for the nodes that fit its token
+        budget, adding a node's other text values and provenance after its
+        line when it has them.
         """
         if format not in _VALID_FORMATS:
             raise ValueError(

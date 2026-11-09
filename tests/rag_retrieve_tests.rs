@@ -75,6 +75,20 @@ fn journal(db: &NativeService) {
     );
 }
 
+/// The ids of Mila, the Monday entry and the `WROTE` between them.
+fn mila_wrote_monday(db: &NativeService) -> (i64, i64, i64) {
+    let r = run(
+        db,
+        "MATCH (m:Person {name: 'Mila'})-[w:WROTE]->(e:Entry {title: 'Monday shift'}) \
+         RETURN id(m), id(e), id(w)",
+    );
+    let id = |v: &Value| match v {
+        Value::Integer(i) => *i,
+        other => panic!("expected an id, got {other:?}"),
+    };
+    (id(&r.rows[0][0]), id(&r.rows[0][1]), id(&r.rows[0][2]))
+}
+
 fn with_embedder() -> NativeService {
     let db = NativeService::in_memory();
     assert!(db.set_embedder(Arc::new(StubEmbedder)));
@@ -386,15 +400,20 @@ fn context_writes_markdown_by_default() {
     let ctx = context(&db, "team meeting panic", "{label: 'Entry'}");
     assert_eq!(ctx.format, "markdown");
     assert_eq!(ctx.mode, "hybrid");
+    let (mila, monday, wrote) = mila_wrote_monday(&db);
     assert!(
-        ctx.text
-            .starts_with("## Entities\n- **Monday shift** (Entry): Panic before"),
+        ctx.text.starts_with(&format!(
+            "## Seeds\n- Monday shift (kind=Entry, id={monday}): Panic before"
+        )),
         "{}",
         ctx.text
     );
-    assert!(ctx.text.contains("\n## Relations\n"), "{}", ctx.text);
+    assert!(ctx.text.contains("\n\n## Neighbours\n"), "{}", ctx.text);
+    assert!(ctx.text.contains("\n\n## Edges\n"), "{}", ctx.text);
     assert!(
-        ctx.text.contains("- (Mila) -[WROTE]-> (Monday shift)\n"),
+        ctx.text.contains(&format!(
+            "- {mila} -[WROTE]-> {monday} (id={wrote}, weight=1.0)\n"
+        )),
         "{}",
         ctx.text
     );
@@ -500,27 +519,20 @@ fn a_small_max_body_chars_cuts_bodies_but_not_names() {
         "team meeting panic",
         "{label: 'Entry', maxBodyChars: 5}",
     );
+    let (mila, monday, wrote) = mila_wrote_monday(&db);
+    for line in [
+        format!("- Monday shift (kind=Entry, id={monday}): Panic…\n"),
+        format!("- Mila (kind=Person, id={mila}): Keeps…\n"),
+        format!("- {mila} -[WROTE]-> {monday} (id={wrote}, weight=1.0)\n"),
+    ] {
+        assert!(ctx.text.contains(&line), "{line}{}", ctx.text);
+    }
     assert!(
-        ctx.text.contains("- **Monday shift** (Entry): Panic…\n"),
+        ctx.text.contains("- Mind reading (kind=Distortion, id="),
         "{}",
         ctx.text
     );
-    assert!(
-        ctx.text.contains("- **Mila** (Person): Keeps…\n"),
-        "{}",
-        ctx.text
-    );
-    assert!(
-        ctx.text
-            .contains("- **Mind reading** (Distortion): Assum…\n"),
-        "{}",
-        ctx.text
-    );
-    assert!(
-        ctx.text.contains("- (Mila) -[WROTE]-> (Monday shift)\n"),
-        "{}",
-        ctx.text
-    );
+    assert!(ctx.text.contains("): Assum…\n"), "{}", ctx.text);
 }
 
 #[test]
@@ -713,7 +725,7 @@ fn bolt_round_trip_types() {
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert!(
-        matches!(&row[0], Bolt::String(t) if t.starts_with("## Entities")),
+        matches!(&row[0], Bolt::String(t) if t.starts_with("## Seeds\n")),
         "{:?}",
         row[0]
     );

@@ -96,8 +96,24 @@ pub struct Subgraph {
     /// The relationships whose two ends are both in [`nodes`](Self::nodes),
     /// by id.
     pub rels: Vec<Arc<RelationshipValue>>,
+    /// The storage weight of each relationship in [`rels`](Self::rels), by
+    /// id, as markdown writes it; one missing here is written with `1.0`,
+    /// the weight every Cypher-created relationship has.
+    pub rel_weights: BTreeMap<u64, f32>,
     /// Whether the expansion stopped at its node cap with more to return.
     pub truncated: bool,
+}
+
+/// The weight of each of `rels` by id, from `weighted` — the
+/// `(from, to, weight)` triples aligned with `rels`.
+pub(crate) fn rel_weights(
+    rels: &[Arc<RelationshipValue>],
+    weighted: &[(u64, u64, f32)],
+) -> BTreeMap<u64, f32> {
+    rels.iter()
+        .zip(weighted)
+        .map(|(rel, (_, _, weight))| (rel.id, *weight))
+        .collect()
 }
 
 /// `nodes` (seeds first, as the expansion returns them) in rank order: the

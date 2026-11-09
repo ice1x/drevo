@@ -425,6 +425,9 @@ fn parse_weights(value: &Value) -> Result<LegWeights, String> {
             )
         })?;
     }
+    if weights.fts == 0.0 && weights.vector == 0.0 {
+        return Err("weights must not all be zero".to_string());
+    }
     Ok(weights)
 }
 
@@ -690,6 +693,16 @@ mod tests {
             Err(message) => message,
             Ok(config) => panic!("expected an error, got {config:?}"),
         }
+    }
+
+    #[test]
+    fn config_all_zero_weights_are_refused() {
+        let zero = map(&[("fts", Value::Integer(0)), ("vector", Value::Float(0.0))]);
+        let message = config_error(&map(&[("weights", zero)]));
+        assert_eq!(message, "weights must not all be zero");
+        // One zero leg is fine: the other still ranks.
+        let one = map(&[("fts", Value::Integer(0))]);
+        assert!(HybridConfig::from_value(&map(&[("weights", one)])).is_ok());
     }
 
     #[test]

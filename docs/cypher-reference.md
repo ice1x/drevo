@@ -1814,10 +1814,12 @@ RETURN rel.type, rel.valid_from, rel.valid_until
 `CALL drevo.memory.factsAt(name, asOf) YIELD subject, relation, object,
 valid_from, valid_until, source, quote` answers "what did memory hold about this entity at
 that time?": every fact touching the entity, either direction, with
-`valid_from <= asOf` and `valid_until` unset or later. `asOf` is an ISO-8601
-UTC timestamp in the form `datetime()` returns, or `null` for now. `source`
-and `quote` are the fact's citation (see Provenance below), `null` when it has
-none.
+`valid_from <= asOf` and `valid_until` unset or later. `asOf` is an RFC 3339
+timestamp — `datetime()` returns one; any offset is allowed, so
+`'2024-03-01T02:00:00+02:00'` is the instant `'2024-03-01T00:00:00Z'` — or a
+date (`'2024-03-01'`, midnight UTC), or `null` for now; anything else is an
+error naming `asOf`. `source` and `quote` are the fact's first citation (see
+Provenance below), `null` when it has none.
 
 ```cypher
 CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null) YIELD node
@@ -1898,6 +1900,12 @@ offset. A fact then carries `source_id, chunk_id, quote, offset,
 length`; an entity gets `-[:MENTIONED_IN {offset, length, surface}]->` the
 chunk, once per place (`surface` defaults to the quote, then the entity's
 name). Re-asserting a fact that holds without a citation adds this one.
+Re-asserting a cited fact with another citation keeps both: the fact's own
+`source_id`, `chunk_id`, `quote`, `offset` and `length` stay the first
+citation, and each further one is a
+`(:Chunk)-[:EVIDENCES {fact_id, quote, offset, length, created_at}]->(subject)`
+relationship (`fact_id` is the fact's `id`; from the `:Source` when no chunk
+is cited). Citing a chunk the fact already cites changes nothing.
 
 ```cypher
 CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null,
@@ -1913,10 +1921,11 @@ RETURN rel.source_id, rel.chunk_id, rel.quote, rel.offset, rel.length
 
 `CALL drevo.memory.evidence(name, k) YIELD chunk, quote, offset, source, fact`
 lists the passages behind an entity: chunks that back one of its facts (either
-direction; `fact` is the relationship, `quote` / `offset` its citation) and
-chunks that only mention it (`fact` is `null`, `quote` the surface at its
-first place). Each chunk appears once per fact and a chunk backing a fact is
-not repeated as a mention. Newest chunks come first; at most `k` rows.
+direction; `fact` is the relationship, `quote` / `offset` its citation —
+every citation of a fact, the first and each `EVIDENCES` one) and chunks that
+only mention it (`fact` is `null`, `quote` the surface at its first place).
+Each chunk appears once per fact and a chunk backing a fact is not repeated as
+a mention. Newest chunks come first; at most `k` rows.
 
 ```cypher
 CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null,
@@ -2469,7 +2478,7 @@ RETURN node.title, score, ftsRank, vectorRank, mode
 | `rrfK` | `60` | the RRF constant, a number ≥ 0; a larger one narrows the gap between neighbouring ranks |
 | `mode` | `'auto'` | `'auto'`, `'hybrid'`, `'fts'` or `'vector'`, see below |
 | `ftsFilter` | `null` | a label the BM25 ranking is restricted to (BM25 otherwise covers every node) |
-| `weights` | `{fts: 1.0, vector: 1.0}` | multiplies each ranking's reciprocal rank; finite numbers ≥ 0. A node only a `0`-weighted ranking found is left out |
+| `weights` | `{fts: 1.0, vector: 1.0}` | multiplies each ranking's reciprocal rank; finite numbers ≥ 0, not all zero (`{fts: 0, vector: 0}` is refused with "weights must not all be zero"). A node only a `0`-weighted ranking found is left out |
 
 An unknown key, a config that is not a map, `k < 1`, a negative `rrfK` or a
 wrong-typed value fail with an error naming the key.
@@ -2631,7 +2640,7 @@ RETURN node.title, distance
 | `excludeLabels` | `[]` | nodes with any of these labels are neither returned nor walked through |
 | `perNodeLimit` | `25` | at most this many new nodes are taken from one node, its relationships taken by id, lowest first |
 | `maxNodes` | `200` | at most this many rows, seeds included; at most `DREVO_EXPAND_MAX_NODES` (5000 unless the server sets it) |
-| `asOf` | `null` | an ISO-8601 timestamp: a relationship with `valid_from` / `valid_until` (as `drevo.memory.assertFact` writes them) is walked only if `valid_from <= asOf < valid_until`; one without them always is |
+| `asOf` | `null` | an RFC 3339 timestamp such as `'2024-03-01T00:00:00Z'` or `'2024-03-01T02:00:00+02:00'`, or a date such as `'2024-03-01'` (midnight UTC): a relationship with `valid_from` / `valid_until` (as `drevo.memory.assertFact` writes them) is walked only if `valid_from <= asOf < valid_until`; one without them always is. Times are compared as instants, so offsets and fractional seconds count; anything else (`'yesterday'`, `''`) is an error naming `asOf` |
 | `includeSeeds` | `true` | whether the seeds come back as distance-0 rows |
 
 Each row holds:
@@ -2908,12 +2917,15 @@ A failed extraction is logged by the trigger and recorded in
 suits short texts; the call's time is bounded by `DREVO_EXTRACT_TIMEOUT_MS`
 per passage.
 
-## Entities
-- **Anna** (Person): Keeps a CBT journal
-- **I will fail** (Thought) «I will fail at this» (journal-1)
+## Seeds
+- Anna (kind=Person, id=1): Keeps a CBT journal
 
-## Relations
-- (I will fail) -[IS_A]-> (Catastrophizing) valid 2025-01-01→ «always the worst» (journal-1)
+## Neighbours
+- Catastrophizing (kind=Distortion, id=4): Expecting the worst
+- I will fail (kind=Thought, id=3) «I will fail at this» (journal-1)
+
+## Edges
+- 3 -[IS_A]-> 4 (id=12, weight=1.0) valid 2025-01-01→ «always the worst» (journal-1)
 
 triples:
 Anna | Person | Keeps a CBT journal
@@ -2924,7 +2936,17 @@ json:
 {"nodes":[{"id":1,"labels":["Person"],"props":{"description":"Keeps a CBT journal","name":"Anna"}}],"rels":[{"from":3,"id":12,"props":{"valid_from":"2025-01-01"},"to":4,"type":"IS_A"}],"stats":{"nodes":1,"rels":1}}
 ```
 
-`triples` takes the fewest tokens. A `RELATED_TO` fact written by
+`markdown` has the layout of drevo-py's `Context.to_text('markdown')`: the
+nodes that fit the budget are written under `## Seeds` and `## Neighbours`,
+each sorted by kind, name and id, as `- name (kind=Label, id=7)` followed by
+`: ` and its other text values, then its provenance; their relationships come
+under `## Edges`, sorted by start id, end id and id, as
+`- 3 -[REL]-> 4 (id=12, weight=1.0)` followed by their provenance; an empty
+section reads `- (none)`. Which nodes fit is still decided best-ranked first.
+A node's kind is its labels joined by `:` and its name is its first text
+property (drevo-py writes `title`), so for nodes with one label and only a
+`title` the two renderings are byte for byte the same. `triples` takes the
+fewest tokens. A `RELATED_TO` fact written by
 `drevo.memory.assertFact` is shown under its own relation name (its `type`
 property). JSON keys are sorted; a node's `props` holds its text properties and,
 with `includeProvenance`, `quote`, `source_id`, `valid_from` and `valid_until`.

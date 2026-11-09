@@ -201,10 +201,13 @@ pub fn expand_options(value: &Value, ceilings: ExpandCeilings) -> Result<ExpandO
                 options.max_nodes = max;
             }
             "asOf" => match v {
-                Value::String(t) => options.as_of = Some(t.clone()),
+                Value::String(t) => {
+                    options.as_of = Some(crate::cypher::timestamp::normalise_as_of(t)?);
+                }
                 other => {
                     return Err(format!(
-                        "asOf must be an ISO-8601 timestamp string, got {}",
+                        "asOf must be an RFC 3339 timestamp string such as \
+                         '2024-03-01T00:00:00Z', got {}",
                         describe(other)
                     ))
                 }
@@ -343,7 +346,7 @@ mod tests {
                 exclude_labels: vec!["Message".to_string(), "ReasoningTrace".to_string()],
                 per_node_limit: 4,
                 max_nodes: 50,
-                as_of: Some("2024-03-01T00:00:00Z".to_string()),
+                as_of: Some("2024-03-01T00:00:00.000Z".to_string()),
                 include_seeds: false,
             }
         );
@@ -474,7 +477,12 @@ mod tests {
         );
         assert_eq!(
             refused(&[("asOf", Value::Integer(2024))]),
-            "asOf must be an ISO-8601 timestamp string, got 2024"
+            "asOf must be an RFC 3339 timestamp string such as '2024-03-01T00:00:00Z', got 2024"
+        );
+        let message = refused(&[("asOf", s("yesterday"))]);
+        assert!(
+            message.contains("asOf") && message.contains("'yesterday'"),
+            "{message}"
         );
         assert_eq!(
             refused(&[("includeSeeds", s("yes"))]),

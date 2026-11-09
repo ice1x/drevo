@@ -8385,7 +8385,11 @@ impl<'a> Executor<'a> {
     /// edge gets `source_id`, `chunk_id`, `quote`, `offset` and `length`
     /// (`offset` / `length` default to where the quote occurs in the chunk's
     /// text, which must contain it). A fact that already holds without a
-    /// citation gains this one.
+    /// citation gains this one; one that already cites a passage keeps it
+    /// and records this further citation as
+    /// `(:Chunk)-[:EVIDENCES {fact_id, quote, offset, length, created_at}]->(subject)`
+    /// (from the `:Source` when no chunk is cited), so
+    /// `drevo.memory.evidence` lists every citing chunk.
     fn proc_memory_assert_fact(
         &mut self,
         args: &[Expression],
@@ -8431,6 +8435,9 @@ impl<'a> Executor<'a> {
         provenance: Option<Provenance>,
         span: Span,
     ) -> ExecResultT<Arc<RelationshipValue>> {
+        // The node a further citation of an already-cited fact hangs its
+        // `EVIDENCES` edge from: the cited chunk, else the cited source.
+        let mut citing: Option<Arc<NodeValue>> = None;
         let citation = match provenance {
             Some(provenance) => {
                 let plan = self.memory_plan_provenance(proc_name, provenance, span)?;
@@ -8462,6 +8469,7 @@ impl<'a> Executor<'a> {
                     .or(located.map(|(_, l)| l))
                     .or_else(|| quote.as_deref().map(char_len));
                 let cited = self.memory_apply_provenance(proc_name, plan, span)?;
+                citing = cited.chunk.or(cited.source);
                 let mut props: Vec<(&str, Value)> = Vec::new();
                 let pairs = [
                     ("source_id", cited.source_id.map(Value::String)),
@@ -8491,7 +8499,13 @@ impl<'a> Executor<'a> {
             let uncited = ["source_id", "chunk_id", "quote"]
                 .iter()
                 .all(|key| matches!(same.properties.get(*key), None | Some(Value::Null)));
-            if !uncited || citation.is_empty() {
+            if citation.is_empty() {
+                return Ok(same);
+            }
+            if !uncited {
+                if let Some(citing) = citing {
+                    self.memory_add_citation(&same, &citing, citation, span)?;
+                }
                 return Ok(same);
             }
             let mut cited = same;
@@ -8514,6 +8528,83 @@ impl<'a> Executor<'a> {
         ];
         props.extend(citation);
         self.memory_link(subject, "RELATED_TO", object, props, span)
+    }
+
+    /// Keep a further citation of the already-cited `fact` as
+    /// `(citing)-[:EVIDENCES {fact_id, quote, offset, length, created_at}]->(subject)`,
+    /// `citing` being the cited chunk (else source) and `fact_id` the fact's
+    /// `id`. The fact's own `source_id` / `chunk_id` / `quote` keep its first
+    /// citation. Citing a chunk (or source) the fact already cites changes
+    /// nothing.
+    fn memory_add_citation(
+        &mut self,
+        fact: &Arc<RelationshipValue>,
+        citing: &Arc<NodeValue>,
+        citation: Vec<(&str, Value)>,
+        span: Span,
+    ) -> ExecResultT<()> {
+        let own = |key: &str| match fact.properties.get(key) {
+            Some(Value::String(s)) => Some(s.as_str()),
+            _ => None,
+        };
+        let citing_id = match citing.properties.get("id") {
+            Some(Value::String(id)) => Some(id.as_str()),
+            _ => None,
+        };
+        let is_chunk = citation.iter().any(|(k, _)| *k == "chunk_id");
+        let first = if is_chunk {
+            own("chunk_id")
+        } else {
+            own("chunk_id").map_or(own("source_id"), |_| None)
+        };
+        if citing_id.is_some() && first == citing_id {
+            return Ok(());
+        }
+        let fact_id = match fact.properties.get("id") {
+            Some(Value::String(id)) => id.clone(),
+            _ => {
+                // A fact written elsewhere without an `id`: give it one.
+                let Value::String(id) = scalar_random_uuid(Vec::new(), span)? else {
+                    return Ok(());
+                };
+                let mut row = Bindings::new();
+                self.write_edge_property(
+                    fact,
+                    "id",
+                    Value::String(id.clone()),
+                    &mut row,
+                    "__drevo_memory_rel",
+                )?;
+                self.stats.properties_set += 1;
+                id
+            }
+        };
+        let known = self
+            .engine()
+            .edges_of(fact.from_id, ModelDirection::Incoming)?
+            .into_iter()
+            .any(|e| {
+                e.kind == "EVIDENCES"
+                    && e.from_id == citing.id
+                    && e.properties.get("fact_id").and_then(|v| v.as_str())
+                        == Some(fact_id.as_str())
+            });
+        if known {
+            return Ok(());
+        }
+        let Some(subject) = self.engine().get_node(fact.from_id)? else {
+            return Ok(());
+        };
+        let subject = node_to_value(&subject);
+        let mut props = vec![("fact_id", Value::String(fact_id))];
+        props.extend(
+            citation
+                .into_iter()
+                .filter(|(k, _)| matches!(*k, "quote" | "offset" | "length")),
+        );
+        props.push(("created_at", Self::memory_now(span)?));
+        self.memory_link(citing, "EVIDENCES", &subject, props, span)?;
+        Ok(())
     }
 
     /// `CALL drevo.memory.retractFact(subject, relation, object) YIELD rel`
@@ -8551,8 +8642,8 @@ impl<'a> Executor<'a> {
     ///
     /// Every `RELATED_TO` fact touching the entity `name` (either direction)
     /// valid at `asOf`: `valid_from <= asOf` and `valid_until` unset or
-    /// `> asOf`. `asOf` is an ISO-8601 UTC timestamp as `datetime()` returns;
-    /// `null` means now. Facts without `valid_from` count as always held.
+    /// `> asOf`. `asOf` is an RFC 3339 timestamp (any offset, normalised to
+    /// UTC) or date; anything else is refused. `null` means now. Facts without `valid_from` count as always held.
     /// Ordered by `valid_from`. `source` is the `:Source` the fact cites and
     /// `quote` its quoted words (`null` when it cites none). Read-only.
     fn proc_memory_facts_at(
@@ -8565,7 +8656,13 @@ impl<'a> Executor<'a> {
         let name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
         let as_of = match self.eval(&args[1], &empty)? {
             Value::Null => Self::memory_now(span)?.as_string(span)?.to_string(),
-            v => v.as_string(span)?.to_string(),
+            v => crate::cypher::timestamp::normalise_as_of(v.as_string(span)?).map_err(
+                |message| ExecError::InvalidProcedureCall {
+                    name: "drevo.memory.factsAt".to_string(),
+                    message,
+                    span,
+                },
+            )?,
         };
         let entity = self.memory_entity("drevo.memory.factsAt", &name, span)?;
 
@@ -8575,15 +8672,12 @@ impl<'a> Executor<'a> {
                 continue;
             }
             let rel = edge_to_value(&edge);
-            let started = match rel.properties.get("valid_from") {
-                Some(Value::String(from)) => from.as_str() <= as_of.as_str(),
-                _ => true,
+            let bound = |key: &str| match rel.properties.get(key) {
+                Some(Value::String(s)) => Some(s.as_str()),
+                _ => None,
             };
-            let still = match rel.properties.get("valid_until") {
-                Some(Value::String(until)) => until.as_str() > as_of.as_str(),
-                _ => true,
-            };
-            if started && still {
+            if crate::cypher::timestamp::holds_at(bound("valid_from"), bound("valid_until"), &as_of)
+            {
                 facts.push(rel);
             }
         }
@@ -9011,6 +9105,7 @@ impl<'a> Executor<'a> {
         Ok(Cited {
             source_id: plan.source_id,
             chunk_id: plan.chunk_id,
+            source,
             chunk,
         })
     }
@@ -9167,18 +9262,48 @@ impl<'a> Executor<'a> {
                 continue;
             }
             let fact = edge_to_value(edge);
-            let Some(Value::String(chunk_id)) = fact.properties.get("chunk_id") else {
+            if let Some(Value::String(chunk_id)) = fact.properties.get("chunk_id") {
+                if let Some(chunk) = chunks.get(chunk_id) {
+                    found.push((
+                        chunk.clone(),
+                        prop(&fact.properties, "quote"),
+                        prop(&fact.properties, "offset"),
+                        Some(fact.clone()),
+                    ));
+                }
+            }
+            // Further citations: `(:Chunk)-[:EVIDENCES {fact_id}]->(subject)`.
+            let Some(Value::String(fact_id)) = fact.properties.get("id") else {
                 continue;
             };
-            let Some(chunk) = chunks.get(chunk_id) else {
-                continue;
-            };
-            found.push((
-                chunk.clone(),
-                prop(&fact.properties, "quote"),
-                prop(&fact.properties, "offset"),
-                Some(fact.clone()),
-            ));
+            for cite in self
+                .engine()
+                .edges_of(fact.from_id, ModelDirection::Incoming)?
+            {
+                if cite.kind != "EVIDENCES"
+                    || cite.properties.get("fact_id").and_then(|v| v.as_str())
+                        != Some(fact_id.as_str())
+                    || found.iter().any(|(c, _, _, f)| {
+                        c.id == cite.from_id && f.as_ref().map(|f| f.id) == Some(fact.id)
+                    })
+                {
+                    continue;
+                }
+                let Some(chunk) = self.engine().get_node(cite.from_id)? else {
+                    continue;
+                };
+                let chunk = node_to_value(&chunk);
+                if !chunk.labels.iter().any(|l| l == "Chunk") {
+                    continue;
+                }
+                let cite = edge_to_value(&cite);
+                found.push((
+                    chunk,
+                    prop(&cite.properties, "quote"),
+                    prop(&cite.properties, "offset"),
+                    Some(fact.clone()),
+                ));
+            }
         }
         let mut mentions: Vec<(Arc<NodeValue>, Value, Value)> = Vec::new();
         for edge in edges
@@ -11584,6 +11709,7 @@ impl<'a> Executor<'a> {
         Ok((
             Subgraph {
                 nodes,
+                rel_weights: crate::rag::rel_weights(&rels, &weighted),
                 rels,
                 truncated: found.truncated,
             },
@@ -13425,6 +13551,7 @@ struct ProvenancePlan {
 struct Cited {
     source_id: Option<String>,
     chunk_id: Option<String>,
+    source: Option<Arc<NodeValue>>,
     chunk: Option<Arc<NodeValue>>,
 }
 

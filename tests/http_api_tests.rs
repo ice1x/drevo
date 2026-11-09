@@ -2657,7 +2657,7 @@ async fn rag_context_without_config_uses_the_defaults() {
         body["text"]
             .as_str()
             .unwrap_or("")
-            .starts_with("## Entities\n"),
+            .starts_with("## Seeds\n"),
         "{body}"
     );
 }

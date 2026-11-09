@@ -87,8 +87,9 @@ def test_context_is_markdown_within_the_budget(
     assert row["mode"] == "fts"
     assert row["traceId"] is None
     assert row["truncated"] is False
-    assert row["text"].startswith(f"## Entities\n- **{journal['entry']}** (Entry)")
-    assert f"- ({journal['person']}) -[WROTE]-> ({journal['entry']})" in row["text"]
+    assert row["text"].startswith(f"## Seeds\n- {journal['entry']} (kind=Entry, id=")
+    assert "\n\n## Neighbours\n" in row["text"]
+    assert " -[WROTE]-> " in row["text"].split("## Edges\n", 1)[1]
     assert row["tokens"] == -(-len(row["text"]) // 4)
     assert all(isinstance(i, int) for i in row["nodeIds"] + row["relIds"])
 
@@ -134,10 +135,8 @@ def test_server_and_client_renderings_cover_the_same_graph(
     drevo_db: drevo.Drevo, journal: dict[str, str]
 ) -> None:
     """The server's markdown and `Context.to_text('markdown')` describe the
-    same nodes and relationships for the same seed and depth. Their layouts
-    differ by design (the server writes ranked `## Entities` / `## Relations`
-    within a budget; the client sorts `## Seeds` / `## Neighbours` /
-    `## Edges` by kind and title), so the comparison is over content."""
+    same nodes and relationships for the same seed and depth, each node on
+    the same `- title (kind=K, id=N)` line."""
     server = _context(drevo_db, journal["word"], {"hops": 2})
     client = Retriever(drevo_db, hops=2).retrieve(journal["word"])
     client_nodes = {n.id for n in client.seeds + client.neighbours}
@@ -147,4 +146,24 @@ def test_server_and_client_renderings_cover_the_same_graph(
     client_text = client.to_text(format="markdown")
     for node in client.seeds + client.neighbours:
         assert node.title in client_text
-        assert f"**{node.title}** ({node.kind})" in server["text"]
+        assert f"- {node.title} (kind={node.kind}, id={node.id})" in server["text"]
+
+
+def test_server_markdown_matches_context_to_text(
+    drevo_db: drevo.Drevo, journal: dict[str, str]
+) -> None:
+    """#783 promised that `drevo.rag.context`'s markdown has the same shape
+    as `drevo.rag.Context.to_text('markdown')`, so client- and server-side
+    renderings match (#808 point 4). For one seed walked two hops (the whole
+    journal fits the budget) the two texts must be equal: same headings, same
+    lines, same order."""
+    server = _context(
+        drevo_db, journal["word"], {"hops": 2, "format": "markdown", "tokenBudget": 4000}
+    )
+    assert server["truncated"] is False
+    client = Retriever(drevo_db, hops=2).retrieve(journal["word"])
+    expected = client.to_text(format="markdown")
+    assert server["text"] == expected, (
+        "#808: server markdown differs from Context.to_text('markdown') — "
+        f"server:\n{server['text']}\nclient:\n{expected}"
+    )

@@ -1385,6 +1385,7 @@ mod tests {
                 },
             ],
             rels: Vec::new(),
+            rel_weights: std::collections::BTreeMap::new(),
             truncated: false,
         };
         let view = display_subgraph(&subgraph);
@@ -1405,7 +1406,7 @@ mod tests {
                 .text;
         assert!(
             text.starts_with(
-                "## Entities\n- **community default-0** (Community): 6 members. Person: Alice.\n"
+                "## Seeds\n- community default-0 (kind=Community, id=7): 6 members. Person: Alice.\n"
             ),
             "{text}"
         );

@@ -287,6 +287,38 @@ history and the in-repo issue tracker; format loosely follows
   writes what it found the way an ingest job does. A call that only runs per
   row (`UNWIND … CALL drevo.extract.ingest(…)`, as in a trigger) still asks
   during the write, but a retried write reuses the answers.
+- **`drevo.search.hybrid` refuses `weights` that are all zero** (issue #808).
+  `{fts: 0, vector: 0}` scored every node 0 and silently returned no rows; it
+  is now an error, "weights must not all be zero", as for
+  `drevo.pagerank.personalized`. One zero leg is still allowed.
+
+- **`asOf` is parsed as a timestamp** (issue #808). `drevo.graph.expand`,
+  `drevo.memory.factsAt` and `drevo.rag.retrieve` / `drevo.rag.context`
+  compared `asOf` with `valid_from` / `valid_until` as strings, so
+  `'yesterday'` was accepted and `'2024-03-01T02:00:00+02:00'` (00:00 UTC)
+  counted as later than `'2024-03-01T00:30:00Z'`. `asOf` must now be an
+  RFC 3339 timestamp (any offset, fractional seconds) or a date
+  (`'2024-03-01'`, midnight UTC); it is normalised to UTC as `datetime()`
+  writes it, compared as an instant against bounds that parse, and anything
+  else is an error naming `asOf` with an example.
+
+- **A second citation of a cited fact is kept** (issue #808).
+  `drevo.memory.assertFact` with a provenance map on a fact that already
+  cited a passage wrote the new `:Source` / `:Chunk` but dropped the
+  citation, leaving them unreferenced and missing from
+  `drevo.memory.evidence`. The fact keeps its first citation in its own
+  properties; each further one is now
+  `(:Chunk)-[:EVIDENCES {fact_id, quote, offset, length, created_at}]->(subject)`,
+  and `evidence` lists every citing chunk, newest first, once each.
+
+- **`drevo.rag.context` markdown has the layout of drevo-py's
+  `Context.to_text('markdown')`** (issue #808), as #783 promised: `## Seeds`
+  / `## Neighbours` with `- name (kind=Label, id=7)` lines sorted by kind,
+  name and id, and `## Edges` with `- 3 -[REL]-> 4 (id=12, weight=1.0)` lines
+  sorted by ends and id, `- (none)` for an empty section; a node's other text
+  values and provenance follow its line. It was `## Entities` /
+  `## Relations` in rank order. The budget still takes nodes best-ranked
+  first; `triples` and `json` are unchanged. `Subgraph` gains `rel_weights`.
 
 - **An index rebuilt from a snapshot could skip a commit made during the
   rebuild** (issue #770). The label, property, path, text, point and
