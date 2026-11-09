@@ -8,6 +8,23 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`drevo.rag.evaluate` / `drevo.rag.evaluateSummary`: does the graph help
+  on this corpus?** (issue #790). Given questions and the nodes their context
+  should hold (`{query, expected: [id | {name, label}]}`, a name matching a
+  node's `name` or `title` exactly, or `{query, traceId}` to compare against
+  what a context trace included), each strategy
+  — `'vector'` (embedding top-k, the baseline), `'fts'`, `'hybrid'`,
+  `'hybrid+expand'` (nearest first) and `'rag'` (the full pipeline with
+  Personalized PageRank) — writes its context within one shared
+  `tokenBudget` and is scored on what fits: `hit`, `recall`, `precision`,
+  `mrr`, `tokens`, `durationMs`, `nodeIds`, plus `recallRetrieved` before the
+  budget cut. The summary averages per strategy with `p50Ms`/`p95Ms`. Read
+  only (no trace is recorded); unresolved expectations, an unknown or
+  unavailable strategy (`'rag-global'`, `'vector'` without an embedder or a
+  `label`) fail with an error naming them. `examples/rag_eval.rs` prints the
+  summary for a store and a JSONL gold set as a markdown table, and
+  `benches/rag_retrieve_bench.rs` times each pipeline stage on a GraphML copy
+  of real data — numbers in `docs/benchmarks.md` ("Graph-RAG pipeline").
 - **Context traces: `drevo.rag.context` with a `session` (or `trace: true`)
   records what went into the context** (issue #784). A `:ContextTrace` node
   holds the question, the returned text, its tokens and budget, the search

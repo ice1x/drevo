@@ -50,6 +50,7 @@ use crate::cypher::pagerank_config::PageRankOptions;
 use crate::traversal::ExpandVia;
 
 pub mod config;
+pub mod eval;
 pub mod serialize;
 pub mod tokens;
 pub(crate) mod trace;

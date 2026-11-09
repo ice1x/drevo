@@ -297,6 +297,12 @@ harness = false
 name = "real_data_baseline_bench"
 harness = false
 
+# Graph-RAG pipeline stages and `drevo.rag.context` on a GraphML copy of real
+# data; env-gated on `DREVO_BASELINE_GRAPHML` like the baseline above.
+[[bench]]
+name = "rag_retrieve_bench"
+harness = false
+
 # Privilege checks (#636): the cost of reading as a restricted user next to
 # reading with no checks. Needs the `auth` feature.
 [[bench]]

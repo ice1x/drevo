@@ -253,6 +253,55 @@ Without an index every lookup
 reads all 247,849 nodes (20 queries). Cypher and the native call return the
 same nodes for every query.
 
+## Graph-RAG pipeline
+
+[`benches/rag_retrieve_bench.rs`](https://github.com/ice1x/drevo/tree/main/benches/rag_retrieve_bench.rs)
+times each stage of [`drevo.rag.context`](cypher-reference.md#graph-rag-retrieval)
+alone and then the whole call, on a GraphML copy of real data. The embedder is a
+stub that answers at once with a stored embedding, so the numbers are drevo's
+work, not the embedding service's:
+
+| Case | What runs |
+|------|-----------|
+| `hybrid_seeds_k8` | `drevo.search.hybrid`, `k: 8`, `candidates: 20` — BM25 and a cosine scan of every embedding of the label, fused |
+| `expand_2_hops` | `drevo.graph.expand` from those 8 seeds: 2 hops, `perNodeLimit: 25`, `maxNodes: 200` |
+| `ppr_over_expanded` | Personalized PageRank over the expanded nodes and the relationships between them |
+| `serialize_2000_tokens` | the ranked subgraph written as a 2000-token markdown context |
+| `rag_context_end_to_end` | `drevo.rag.context(question, {label})` with every other default |
+
+```sh
+DREVO_BASELINE_GRAPHML=$HOME/drevo_backups/pre-0.0.79-20261109-023451.graphml \
+    cargo bench --bench rag_retrieve_bench
+```
+
+`DREVO_BASELINE_HYBRID_QUERY` sets the question (default `memory`). With the
+`embeddings-proxy` feature and `DREVO_EMBEDDINGS_UPSTREAM` set, a separate
+`rag_context_real_embedder` case embeds the question through that service.
+
+### Reference run
+
+Apple M1 Max, `--release`, in-memory `NativeService`, 2026-11-09. The graph is a
+drevo knowledge-graph export: 4,357 nodes (each `Entity` with a 1536-dimension
+`embedding`) and 10,134 relationships, 77 MB of GraphML. The question `memory`
+found 8 seeds; the expansion reached 135 nodes with 243 relationships between
+them; the context held 19 of them in 1,993 tokens. The p50 and p95 are over
+criterion's 20 samples, each the mean of many runs. **Illustrative — re-run on
+your hardware before quoting them.**
+
+| Case | p50 | p95 |
+|------|----:|----:|
+| `hybrid_seeds_k8` | 27.8 ms | 28.8 ms |
+| `expand_2_hops` | 139 µs | 143 µs |
+| `ppr_over_expanded` | 56 µs | 58 µs |
+| `serialize_2000_tokens` | 523 µs | 565 µs |
+| `rag_context_end_to_end` | 29.9 ms | 37.2 ms |
+
+The seeds take almost all of the time: the vector leg compares the question
+with every one of the 4,357 embeddings. Expansion, ranking and writing the text
+add under a millisecond together. To see whether that time buys better
+contexts on your data, score the strategies with
+[`drevo.rag.evaluate`](cypher-reference.md#evaluate-strategies).
+
 ## Write transactions
 
 A write transaction works on its own copy of the store. The copy shares
