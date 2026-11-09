@@ -414,6 +414,70 @@ forwards the three variables from `~/.drevo.env` into the container. The prompt 
 whole schema, so on a large graph a model running on CPU can take minutes;
 on Apple Silicon run the native arm64 Ollama so the model uses the GPU.
 
+### Extraction (`drevo.extract.*`, opt-in)
+
+`drevo.extract.entities`, `drevo.extract.facts` and `drevo.extract.ingest` read
+entities and facts out of a text with an LLM (see the
+[Cypher Reference](cypher-reference.md#extraction)). They call an
+OpenAI-compatible `chat/completions` endpoint — by default the one
+text-to-Cypher uses, so a single local Ollama serves both. Like
+text-to-Cypher they need the `embeddings-proxy` build feature, which the
+Docker image includes; without an endpoint they fail with an error naming
+`drevo.extract.status()`.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `DREVO_EXTRACT_UPSTREAM` | `DREVO_TEXT2CYPHER_UPSTREAM` | Full `chat/completions` URL (`http`/`https`). Neither set ⇒ extraction is not configured. |
+| `DREVO_EXTRACT_MODEL` | `DREVO_TEXT2CYPHER_MODEL`, else `gpt-4o-mini` | Chat model to request; a call's `model` key overrides it. |
+| `DREVO_EXTRACT_API_KEY` | `DREVO_TEXT2CYPHER_API_KEY` while the upstream is the text-to-Cypher one | Bearer token. The text-to-Cypher key is never sent to a different upstream. |
+| `DREVO_EXTRACT_TIMEOUT_MS` | `60000` | How long one model call (one passage) may take. The statement timeout still applies to the whole statement. |
+
+```
+DREVO_EXTRACT_UPSTREAM=http://host.docker.internal:11434/v1/chat/completions
+DREVO_EXTRACT_MODEL=qwen2.5:14b-instruct
+```
+
+**Runtime configuration.** `GET`/`POST /config/extract` work like
+`/config/text2cypher` (admin only):
+
+```
+GET  /config/extract  -> { "configured": true, "upstream": "…", "model": "…",
+                           "api_key_set": false, "timeout_ms": 60000 }
+POST /config/extract  { "upstream": "http://host.docker.internal:11434/v1/chat/completions",
+                        "model": "qwen2.5:14b-instruct", "timeout_ms": 120000 }
+```
+
+A blank or omitted `api_key` keeps the stored one, a blank `model` takes the
+default, an omitted `timeout_ms` takes 60000, and a bad `upstream` or a
+`timeout_ms` of 0 is a `400`. The value is kept in
+`<DREVO_DATA_DIR>/extract_config.json` (owner-only, sealed when the store is
+encrypted, part of a server backup) and wins over the `DREVO_EXTRACT_*`
+variables at the next start; the procedures use it from the next call.
+`CALL drevo.extract.status()` shows the endpoint in use, the last call's
+error and how many items it dropped.
+
+**Extracting documents as they are written.** An `afterAsync` trigger runs
+`drevo.extract.ingest` on every new `:Document` after its commit, so the
+write does not wait for the model:
+
+```text
+CALL apoc.trigger.install('drevo', 'extract_documents',
+  'UNWIND $createdNodes AS d WITH d WHERE d:Document
+   CALL drevo.extract.ingest(d.body, {source: {id: d.id, title: d.title, kind: "document"}}) YIELD facts
+   RETURN count(*)',
+  {phase: 'afterAsync'})
+```
+
+The first argument is the database the trigger belongs to — `drevo`, the
+default one, here.
+
+`CREATE (:Document {id: 'doc-1', title: 'Chapter One', body: $text})` then
+returns at once; a little later the document's `:Source`, its `:Chunk`s, the
+entities and the cited facts are in the graph. A failed extraction is logged
+as a trigger failure and shows in `drevo.extract.status()`; the document stays.
+The trigger runs on one worker thread, one document at a time, so it suits
+short texts.
+
 ---
 
 ## 3. Docker

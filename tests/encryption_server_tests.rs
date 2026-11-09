@@ -338,6 +338,21 @@ mod server_files {
                 model: None,
             })
             .unwrap();
+        drevo::extract::settings::ExtractConfigStore::load(dir.join("extract_config.json"), None)
+            .apply(drevo::extract::settings::ExtractConfigUpdate {
+                upstream: "https://llm.example.com/v1/chat/completions".to_string(),
+                api_key: Some(API_KEY.to_string()),
+                model: None,
+                timeout_ms: None,
+            })
+            .unwrap();
+    }
+
+    /// The extraction key, read back the way the server reads it.
+    fn extract_key_in(dir: &Path) -> Option<String> {
+        drevo::extract::settings::ExtractConfigStore::load(dir.join("extract_config.json"), None)
+            .snapshot()
+            .and_then(|c| c.api_key)
     }
 
     fn api_key_in(dir: &Path) -> Option<String> {
@@ -384,12 +399,14 @@ mod server_files {
         assert!(ann_logs_in(dir.path()));
         assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
         assert_eq!(t2c_key_in(dir.path()).as_deref(), Some(API_KEY));
+        assert_eq!(extract_key_in(dir.path()).as_deref(), Some(API_KEY));
 
         // Without it the users do not open, and the settings are not used.
         NativeService::set_encryption_key(None);
         assert!(open_server_security(Some(dir.path()), &admin()).is_err());
         assert_eq!(api_key_in(dir.path()), None);
         assert_eq!(t2c_key_in(dir.path()), None);
+        assert_eq!(extract_key_in(dir.path()), None);
     }
 
     #[test]
@@ -436,6 +453,7 @@ mod server_files {
         assert!(ann_logs_in(dir.path()));
         assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
         assert_eq!(t2c_key_in(dir.path()).as_deref(), Some(API_KEY));
+        assert_eq!(extract_key_in(dir.path()).as_deref(), Some(API_KEY));
 
         drevo::encryption_cmd::command(
             &args(&["rotate-key", "--new-key-file", &new_key.to_string_lossy()]),
@@ -457,6 +475,7 @@ mod server_files {
         assert!(ann_logs_in(dir.path()));
         assert_eq!(api_key_in(dir.path()).as_deref(), Some(API_KEY));
         assert_eq!(t2c_key_in(dir.path()).as_deref(), Some(API_KEY));
+        assert_eq!(extract_key_in(dir.path()).as_deref(), Some(API_KEY));
         assert!(contains(&std::fs::read(&security).unwrap(), "ann"));
     }
 }

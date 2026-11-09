@@ -344,6 +344,40 @@ async fn pruning_context_traces_needs_admin_procedures() {
     assert_eq!(t.count("MATCH (c:ContextTrace) RETURN count(c)").await, 0);
 }
 
+/// A chat endpoint that finds one person in any text.
+struct OnePerson;
+impl drevo::llm::ChatCompleter for OnePerson {
+    fn complete(&self, _: &drevo::llm::ChatRequest) -> Result<String, drevo::llm::LlmError> {
+        Ok(
+            r#"{"entities": [{"name": "Rita", "type": "PERSON", "surface": "Rita", "offset": 0}],
+               "facts": []}"#
+                .into(),
+        )
+    }
+}
+
+#[tokio::test]
+async fn extraction_ingest_needs_write_and_extraction_reads_do_not() {
+    drevo::extract::install(Arc::new(OnePerson));
+    let t = Tracker::seeded().await;
+    let ingest = "CALL drevo.extract.ingest('Rita filed the bug.', {source: {id: 'bug-1'}}) \
+                  YIELD entities RETURN entities";
+    t.forbidden("rita", ingest).await;
+    let json = t.ok("ed", ingest).await;
+    assert_eq!(json["rows"].to_string(), "[[1]]", "{json}");
+    t.ok(
+        "rita",
+        "CALL drevo.extract.entities('Rita filed the bug.') YIELD name RETURN name",
+    )
+    .await;
+    t.ok(
+        "rita",
+        "CALL drevo.extract.ingest('Rita filed the bug.', {source: {id: 'bug-2'}, dryRun: true}) \
+         YIELD entities RETURN entities",
+    )
+    .await;
+}
+
 // ── Database access ──────────────────────────────────────────────────
 
 #[tokio::test]

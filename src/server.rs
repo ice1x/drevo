@@ -866,6 +866,10 @@ pub enum RunError {
     /// setting) is invalid, or its generator could not be built.
     #[error("invalid text-to-Cypher configuration: {0}")]
     Text2Cypher(String),
+    /// The extraction endpoint (`DREVO_EXTRACT_*` or the stored setting) is
+    /// invalid, or its client could not be built.
+    #[error("invalid extraction configuration: {0}")]
+    Extract(String),
     /// The users could not be loaded from `<data_dir>/security.json`, or the
     /// first user could not be created. A damaged file stops the server
     /// rather than starting it with no users.
@@ -1091,6 +1095,26 @@ fn configure_text2cypher(
         crate::text2cypher::install_generator(&config)
             .map_err(|e| RunError::Text2Cypher(e.to_string()))?;
         tracing::info!(model = %config.model, "drevo.cypher.fromText generator installed");
+    }
+    Ok(store)
+}
+
+/// The extraction endpoint store (`drevo.extract.*`): the
+/// `<data_dir>/extract_config.json` file set through `POST /config/extract`
+/// wins, falling back to `DREVO_EXTRACT_*` (each defaulting to its
+/// `DREVO_TEXT2CYPHER_*` twin). The endpoint is installed as the process
+/// global here, once.
+fn configure_extract(
+    cfg: &Config,
+) -> Result<std::sync::Arc<crate::extract::settings::ExtractConfigStore>, RunError> {
+    use crate::extract::settings::{ExtractConfig, ExtractConfigStore, EXTRACT_CONFIG_FILE};
+    let env_cfg = ExtractConfig::from_env(|key| std::env::var(key).ok())
+        .map_err(|e| RunError::Extract(e.to_string()))?;
+    let store = ExtractConfigStore::load(cfg.data_dir.join(EXTRACT_CONFIG_FILE), env_cfg);
+    if let Some(config) = store.snapshot() {
+        crate::extract::settings::install_config(&config)
+            .map_err(|e| RunError::Extract(e.to_string()))?;
+        tracing::info!(model = %config.model, "drevo.extract endpoint installed");
     }
     Ok(store)
 }
@@ -1330,6 +1354,8 @@ async fn run_native_durable(
     // setting wins over `DREVO_TEXT2CYPHER_*`; its generator is installed as
     // the process global here, and the Web UI can replace it later.
     let text2cypher_store = configure_text2cypher(&cfg)?;
+    // The extraction endpoint (`drevo.extract.*`), likewise.
+    let extract_store = configure_extract(&cfg)?;
     // Opt-in server-side query embedder — the durable-engine counterpart of
     // `configure_query_embedder`; no-op unless the `embeddings-proxy` feature
     // is built.
@@ -1624,6 +1650,7 @@ async fn run_native_durable(
     // Web-UI-settable.
     let state = state.with_embeddings_config_store(embeddings_store.clone());
     let state = state.with_text2cypher_config_store(text2cypher_store.clone());
+    let state = state.with_extract_config_store(extract_store.clone());
     let state = configure_native_embeddings(state, embeddings_store)?;
     let shutdown_state = state.clone();
     let router = crate::native_api::build_native_router(state);

@@ -140,6 +140,10 @@ pub mod event_bus;
 /// `GET /events`: committed changes as a Server-Sent Events stream.
 #[cfg(feature = "http")]
 pub mod events;
+/// Entity and fact extraction with a language model: `drevo.extract.*`
+/// cuts a text into passages, asks a chat endpoint for the entities and
+/// facts each states, and keeps only what it can locate in the text.
+pub mod extract;
 /// `extern "C"` FFI surface for desktop / mobile embedders. Not built on
 /// `wasm32-unknown-unknown` because the platform has no C ABI.
 #[cfg(not(target_arch = "wasm32"))]
@@ -147,6 +151,9 @@ pub mod ffi;
 pub mod fts;
 /// How many Bolt connections and HTTP requests a server serves at once.
 pub mod limits;
+/// A client for OpenAI-compatible `chat/completions` endpoints, shared by
+/// `drevo.cypher.fromText` and `drevo.extract.*`.
+pub mod llm;
 /// Cross-engine data migration (RFC `docs/rfc-native-core.md`, #307). Moves a
 /// live graph between any two [`engine::GraphEngine`] implementations
 /// (KV-backed `Drevo` ⇄ native [`native::NativeGraph`]) over the shared

@@ -571,6 +571,11 @@ pub type ExecResultT<T> = Result<T, ExecError>;
 /// node enumeration, pattern expansion, path searches) call [`tick`], which
 /// costs a counter bump and only reads the clock every [`TICK_STRIDE`] calls.
 /// With no deadline set, `tick` is a single thread-local read.
+mod extract_procs;
+use extract_procs::{
+    EXTRACT_CHUNKS, EXTRACT_ENTITIES, EXTRACT_FACTS, EXTRACT_INGEST, EXTRACT_STATUS,
+};
+
 pub(crate) mod deadline {
     use std::cell::{Cell, RefCell};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1781,7 +1786,9 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.graph.expand, drevo.rag.retrieve, drevo.rag.context, \
                           drevo.entity.candidates, drevo.entity.merge, drevo.entity.aliases, \
                           drevo.rag.traces, drevo.rag.explain, drevo.rag.replay, \
-                          drevo.rag.pruneTraces"
+                          drevo.rag.pruneTraces, \
+                          drevo.extract.entities, drevo.extract.facts, drevo.extract.ingest, \
+                          drevo.extract.chunks, drevo.extract.status"
                         .into(),
                     span: c.span,
                 })?;
@@ -6232,6 +6239,9 @@ impl<'a> Executor<'a> {
         if name == entity_procs::MERGE {
             return self.run_entity_merge(c, columns);
         }
+        if extract_procs::is_extract_procedure(&name) {
+            return self.run_extract(&name, c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -8124,11 +8134,43 @@ impl<'a> Executor<'a> {
                 span,
             })?;
         let (provenance, resolve) = self.memory_remember_options(PROC, args.get(4), span)?;
+        let entity = self.memory_remember(
+            PROC,
+            session,
+            name,
+            entity_type,
+            label,
+            description,
+            provenance,
+            resolve,
+            span,
+        )?;
+        Ok(vec![vec![Value::Node(entity)]])
+    }
+
+    /// Upsert the memory entity `(name, entity_type)` labelled
+    /// `:Entity:<label>` (see [`Self::proc_memory_remember_entity`]), finding
+    /// a known one as `resolve` says: link the newest message of `session` to
+    /// it and, with `provenance`, the chunk it is mentioned in. Returns the
+    /// entity.
+    #[allow(clippy::too_many_arguments)]
+    fn memory_remember(
+        &mut self,
+        proc_name: &str,
+        session: Option<String>,
+        name: String,
+        entity_type: String,
+        label: &str,
+        description: Option<String>,
+        provenance: Option<Provenance>,
+        resolve: ResolveOptions,
+        span: Span,
+    ) -> ExecResultT<Arc<NodeValue>> {
         let mention = match provenance {
             Some(provenance) => {
                 if provenance.chunk.is_none() {
                     return Err(memory_refusal(
-                        PROC,
+                        proc_name,
                         "a mention needs a chunk: the entity is MENTIONED_IN a chunk".into(),
                         span,
                     ));
@@ -8139,7 +8181,7 @@ impl<'a> Executor<'a> {
                     .clone()
                     .or_else(|| provenance.quote.clone())
                     .unwrap_or_else(|| name.clone());
-                let plan = self.memory_plan_provenance(PROC, provenance, span)?;
+                let plan = self.memory_plan_provenance(proc_name, provenance, span)?;
                 let what = if plan.provenance.surface.is_some() {
                     "surface"
                 } else {
@@ -8150,7 +8192,7 @@ impl<'a> Executor<'a> {
                         Some(found) => Some(found),
                         None if explicit => {
                             return Err(memory_refusal(
-                                PROC,
+                                proc_name,
                                 quote_not_found(
                                     what,
                                     &surface,
@@ -8165,7 +8207,7 @@ impl<'a> Executor<'a> {
                     None => None,
                 };
                 if explicit {
-                    Self::memory_check_quote_at(PROC, what, &surface, &plan, span)?;
+                    Self::memory_check_quote_at(proc_name, what, &surface, &plan, span)?;
                 }
                 Some((plan, surface, located))
             }
@@ -8252,7 +8294,7 @@ impl<'a> Executor<'a> {
                 .provenance
                 .length
                 .or(Some(located.map_or_else(|| char_len(&surface), |(_, l)| l)));
-            let cited = self.memory_apply_provenance(PROC, plan, span)?;
+            let cited = self.memory_apply_provenance(proc_name, plan, span)?;
             if let Some(chunk) = cited.chunk {
                 let offset_value = offset.map_or(Value::Null, Value::Integer);
                 let already = self
@@ -8280,7 +8322,7 @@ impl<'a> Executor<'a> {
                 }
             }
         }
-        Ok(vec![vec![Value::Node(entity)]])
+        Ok(entity)
     }
 
     /// `CALL drevo.memory.assertFact(subject, relation, object, exclusive)
@@ -8324,14 +8366,35 @@ impl<'a> Executor<'a> {
         };
         let subject = self.memory_entity(PROC, &subject, span)?;
         let object = self.memory_entity(PROC, &object, span)?;
-        let citation = match self.memory_provenance_arg(PROC, args.get(4), span)? {
+        let provenance = self.memory_provenance_arg(PROC, args.get(4), span)?;
+        let rel = self.memory_assert(
+            PROC, &subject, relation, &object, exclusive, provenance, span,
+        )?;
+        Ok(vec![vec![Value::Relationship(rel)]])
+    }
+
+    /// Assert the fact `subject -relation-> object` (see
+    /// [`Self::proc_memory_assert_fact`]), citing `provenance` when given.
+    /// Returns the fact.
+    #[allow(clippy::too_many_arguments)]
+    fn memory_assert(
+        &mut self,
+        proc_name: &str,
+        subject: &Arc<NodeValue>,
+        relation: String,
+        object: &Arc<NodeValue>,
+        exclusive: bool,
+        provenance: Option<Provenance>,
+        span: Span,
+    ) -> ExecResultT<Arc<RelationshipValue>> {
+        let citation = match provenance {
             Some(provenance) => {
-                let plan = self.memory_plan_provenance(PROC, provenance, span)?;
+                let plan = self.memory_plan_provenance(proc_name, provenance, span)?;
                 let located = match (&plan.provenance.quote, &plan.text) {
                     (Some(quote), Some(text)) => {
                         Some(locate_quote(quote, text).ok_or_else(|| {
                             memory_refusal(
-                                PROC,
+                                proc_name,
                                 quote_not_found(
                                     "quote",
                                     quote,
@@ -8345,7 +8408,7 @@ impl<'a> Executor<'a> {
                     _ => None,
                 };
                 if let Some(quote) = &plan.provenance.quote {
-                    Self::memory_check_quote_at(PROC, "quote", quote, &plan, span)?;
+                    Self::memory_check_quote_at(proc_name, "quote", quote, &plan, span)?;
                 }
                 let quote = plan.provenance.quote.clone();
                 let offset = plan.provenance.offset.or(located.map(|(o, _)| o));
@@ -8354,7 +8417,7 @@ impl<'a> Executor<'a> {
                     .length
                     .or(located.map(|(_, l)| l))
                     .or_else(|| quote.as_deref().map(char_len));
-                let cited = self.memory_apply_provenance(PROC, plan, span)?;
+                let cited = self.memory_apply_provenance(proc_name, plan, span)?;
                 let mut props: Vec<(&str, Value)> = Vec::new();
                 let pairs = [
                     ("source_id", cited.source_id.map(Value::String)),
@@ -8374,7 +8437,7 @@ impl<'a> Executor<'a> {
         };
 
         let now = Self::memory_now(span)?;
-        let current = self.memory_current_facts(&subject, &relation)?;
+        let current = self.memory_current_facts(subject, &relation)?;
         if exclusive {
             for rel in current.iter().filter(|r| r.to_id != object.id) {
                 self.memory_close_fact(rel, now.clone())?;
@@ -8385,7 +8448,7 @@ impl<'a> Executor<'a> {
                 .iter()
                 .all(|key| matches!(same.properties.get(*key), None | Some(Value::Null)));
             if !uncited || citation.is_empty() {
-                return Ok(vec![vec![Value::Relationship(same)]]);
+                return Ok(same);
             }
             let mut cited = same;
             for (key, value) in citation {
@@ -8397,7 +8460,7 @@ impl<'a> Executor<'a> {
                     cited = updated;
                 }
             }
-            return Ok(vec![vec![Value::Relationship(cited)]]);
+            return Ok(cited);
         }
         let mut props = vec![
             ("id", scalar_random_uuid(Vec::new(), span)?),
@@ -8406,8 +8469,7 @@ impl<'a> Executor<'a> {
             ("created_at", now),
         ];
         props.extend(citation);
-        let rel = self.memory_link(&subject, "RELATED_TO", &object, props, span)?;
-        Ok(vec![vec![Value::Relationship(rel)]])
+        self.memory_link(subject, "RELATED_TO", object, props, span)
     }
 
     /// `CALL drevo.memory.retractFact(subject, relation, object) YIELD rel`
@@ -8984,21 +9046,8 @@ impl<'a> Executor<'a> {
         let mut specs = ChunkSpec::list_from_value(&source_id, &self.eval(&args[1], &empty)?)
             .map_err(|m| memory_refusal(PROC, m, span))?;
         let source = self.memory_source(PROC, &source_id, span)?;
-        for spec in &specs {
-            let id = spec.id.as_deref().unwrap_or_default();
-            if let Some(chunk) = self.memory_node_by_id("Chunk", id)? {
-                Self::memory_check_owner(PROC, &chunk, id, &source_id, span)?;
-            }
-        }
         specs.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
-        let mut ids = Vec::with_capacity(specs.len());
-        for spec in specs {
-            ids.push(
-                self.memory_upsert_chunk(&source, &source_id, spec, span)?
-                    .id,
-            );
-        }
-        self.memory_relink_chunks(&source_id, span)?;
+        let ids = self.memory_add_chunks_to(PROC, &source, &source_id, specs, span)?;
         let mut rows = Vec::with_capacity(ids.len());
         for id in ids {
             if let Some(node) = self.engine().get_node(id)? {
@@ -9006,6 +9055,31 @@ impl<'a> Executor<'a> {
             }
         }
         Ok(rows)
+    }
+
+    /// Upsert `specs` (ids set, in reading order) as chunks of `source`,
+    /// refusing an id that belongs to another source, and relink the
+    /// source's `:NEXT` chain. Returns the chunks' node ids in `specs` order.
+    fn memory_add_chunks_to(
+        &mut self,
+        proc_name: &str,
+        source: &Arc<NodeValue>,
+        source_id: &str,
+        specs: Vec<ChunkSpec>,
+        span: Span,
+    ) -> ExecResultT<Vec<u64>> {
+        for spec in &specs {
+            let id = spec.id.as_deref().unwrap_or_default();
+            if let Some(chunk) = self.memory_node_by_id("Chunk", id)? {
+                Self::memory_check_owner(proc_name, &chunk, id, source_id, span)?;
+            }
+        }
+        let mut ids = Vec::with_capacity(specs.len());
+        for spec in specs {
+            ids.push(self.memory_upsert_chunk(source, source_id, spec, span)?.id);
+        }
+        self.memory_relink_chunks(source_id, span)?;
+        Ok(ids)
     }
 
     /// `CALL drevo.memory.evidence(name, k) YIELD chunk, quote, offset, source,
@@ -14331,6 +14405,36 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => Some(&["cypher"]),
+        // LLM extraction of entities and facts.
+        EXTRACT_ENTITIES => Some(&[
+            "name",
+            "type",
+            "description",
+            "offset",
+            "length",
+            "surface",
+            "confidence",
+        ]),
+        EXTRACT_FACTS => Some(&[
+            "subject",
+            "subjectType",
+            "relation",
+            "object",
+            "objectType",
+            "quote",
+            "offset",
+            "length",
+            "confidence",
+        ]),
+        EXTRACT_INGEST => Some(&["source", "chunks", "entities", "facts", "skipped"]),
+        EXTRACT_CHUNKS => Some(&["position", "offset", "length", "text"]),
+        EXTRACT_STATUS => Some(&[
+            "configured",
+            "model",
+            "upstream",
+            "lastError",
+            "lastSkipped",
+        ]),
         _ => None,
     }
 }
@@ -14356,7 +14460,10 @@ fn procedure_optional_args(name: &str) -> usize {
         | RAG_RETRIEVE
         | RAG_CONTEXT
         | entity_procs::CANDIDATES
-        | entity_procs::MERGE => 1,
+        | entity_procs::MERGE
+        | EXTRACT_ENTITIES
+        | EXTRACT_FACTS
+        | EXTRACT_CHUNKS => 1,
         _ => 0,
     }
 }
@@ -14533,6 +14640,8 @@ fn procedure_arity(name: &str) -> usize {
         // drevo.cypher.fromText(prompt) — one NL prompt.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => 1,
+        // drevo.extract.{entities,facts,chunks}(text[, config]), ingest(text, config).
+        EXTRACT_ENTITIES | EXTRACT_FACTS | EXTRACT_CHUNKS | EXTRACT_INGEST => 2,
         // The db.* introspection procedures take no arguments.
         _ => 0,
     }

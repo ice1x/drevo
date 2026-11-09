@@ -337,6 +337,32 @@ conversation's latest records, and an administrator can delete old ones with
 the right to create nodes. Details are in the
 [Cypher Reference](cypher-reference.md#context-traces).
 
+### Feed it a book
+
+The context is only as good as the graph. `drevo.extract.ingest` builds that graph from plain text
+with the chat model the server is configured with: it cuts the text into passages, asks the model
+for the people, places, organisations, objects and events in each and the facts it states, and
+writes them as long-term memory — each fact citing the passage and the exact words it came from.
+
+```text
+CALL drevo.extract.ingest($chapter, {
+  source: {id: 'book-1', title: 'The Long Winter', kind: 'document'},
+  types: ['PERSON', 'LOCATION', 'ORGANIZATION', 'SHIP'],
+  schemaHint: 'A novel about a whaling crew.'
+})
+YIELD chunks, entities, facts, skipped
+```
+
+`skipped` counts what the model claimed but the text does not say: every quote is looked up in its
+passage before anything is written, so an invented one never gets in. Feed the chapters one call at
+a time; running the same chapter again changes nothing. Try a chapter with `dryRun: true` first to
+see the counts without writing.
+
+Afterwards the usual tools work on the book: `drevo.rag.context('Who sailed with Ahab?')` finds the
+characters and their facts, and `drevo.memory.evidence('Ahab', 5)` shows the passages behind them,
+to quote in an answer. To extract every new document as it is written, install the trigger shown in
+the [Admin Guide](admin-guide.md#extraction-drevoextract-opt-in).
+
 ---
 
 ## 7. Where to go next

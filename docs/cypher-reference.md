@@ -2743,6 +2743,147 @@ The three formats, for a node *Thought* that carries a quote and a fact
 
 ```text
 markdown:
+### Extraction
+
+`drevo.extract.*` reads entities and facts out of a text with a language
+model, and can write them into long-term memory with
+[provenance](#provenance-sources-chunks-and-quotes). The model is any
+OpenAI-compatible `chat/completions` endpoint the server is configured with
+(`DREVO_EXTRACT_*`, falling back to `DREVO_TEXT2CYPHER_*`; see the
+[Admin Guide](admin-guide.md#extraction-drevoextract-opt-in)).
+
+```text
+CALL drevo.extract.entities(text[, config])
+YIELD name, type, description, offset, length, surface, confidence
+
+CALL drevo.extract.facts(text[, config])
+YIELD subject, subjectType, relation, object, objectType, quote, offset, length, confidence
+
+CALL drevo.extract.ingest(text, config)
+YIELD source, chunks, entities, facts, skipped
+
+CALL drevo.extract.chunks(text[, config]) YIELD position, offset, length, text
+CALL drevo.extract.status() YIELD configured, model, upstream, lastError, lastSkipped
+```
+
+The text is cut into passages of about `chunkChars` characters — at a
+paragraph break, else a sentence end, else a space — each starting a tenth
+of `chunkChars` before the previous one ended. Every passage is sent to the
+model with instructions to answer with one JSON object
+`{"entities": [...], "facts": [...]}` in which each mention quotes the
+passage verbatim (`surface`) and each fact quotes the words that state it
+(`quote`), both with their character offset. drevo then **checks every
+quote against the passage**: one at the stated offset is kept; one standing
+elsewhere is moved to its nearest place; one that differs only in whitespace
+is matched to the passage's own words; one the passage does not contain is
+dropped and counted in `skipped` (with items of a type or relation not
+allowed, items below `minConfidence`, and malformed items). So nothing the
+model made up reaches the results or the graph. An answer that is not JSON
+is asked for once more ("return only the JSON object"); a second one fails
+the call.
+
+`entities` and `facts` read only. Their `offset` / `length` are characters
+into the whole text, so `substring(text, offset, length)` is the surface or
+quote; an item read twice where two passages overlap is returned once.
+`type` is upper case and `relation` upper snake case (`works at` →
+`WORKS_AT`).
+
+```text
+CALL drevo.extract.facts('Dana joined Acme in May. Acme is based in Oslo.')
+YIELD subject, relation, object, quote, offset
+RETURN subject, relation, object, quote, offset
+```
+
+```text
+subject | relation   | object | quote                 | offset
+Dana    | WORKS_AT   | Acme   | Dana joined Acme      | 0
+Acme    | LOCATED_IN | Oslo   | Acme is based in Oslo | 25
+```
+
+`ingest` writes what it finds, in one transaction — a failure writes
+nothing. Every passage is extracted before anything is written; then:
+
+- the source is upserted (`source` as a map) or must exist (`source` as an id);
+- each passage becomes a `:Chunk` with id `<sourceId>#<order>`, `-[:FROM]->`
+  the source and chained `-[:NEXT]->` (as `drevo.memory.addChunks`);
+- each entity is upserted as `drevo.memory.rememberEntity` does — keyed on
+  name and type, labelled `:Entity` plus its type (`Person`, …, or the extra
+  type in Pascal case: `SPACESHIP` → `:Spaceship`) — and gets
+  `-[:MENTIONED_IN {offset, length, surface}]->` its chunk, the offset counted
+  in the chunk;
+- each fact is asserted as `drevo.memory.assertFact(subject, relation,
+  object, false, …)` does, with `source_id`, `chunk_id`, `quote`, `offset` and
+  `length`; facts are never exclusive.
+
+The row counts the chunks, the entity mentions and the facts written (or, with
+`dryRun: true`, that would be written; nothing is). Ingesting the same text
+into the same source again finds the same chunks, entities and facts, and
+changes nothing. Afterwards `drevo.memory.evidence` and `drevo.memory.factsAt`
+show the passages behind each entity.
+
+```text
+CALL drevo.extract.ingest($chapter, {source: {id: 'book-1', title: 'Book One', kind: 'document'}})
+YIELD source, chunks, entities, facts, skipped
+RETURN source, chunks, entities, facts, skipped
+```
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `types` | `['PERSON', 'OBJECT', 'LOCATION', 'EVENT', 'ORGANIZATION']` | entity types to look for, upper-snake-cased; extra types are allowed |
+| `relations` | `null` | the relations facts may use, upper-snake-cased; `null` lets the model name them |
+| `schemaHint` | `null` | domain vocabulary added to the instructions ("Characters are the crew of the Nostromo") |
+| `language` | `'auto'` | the text's language, as a hint to the model |
+| `model` | the server's | the model to ask instead of `DREVO_EXTRACT_MODEL` |
+| `chunkChars` | `1500` | passage size in characters, from 20 to 100000 |
+| `minConfidence` | `0.5` | items the model rates lower are dropped; an item without a confidence counts as 1 |
+| `source` | — | `ingest` only, required: `{id, uri, title, kind}` (upserted) or an existing source's id |
+| `session` | `null` | `ingest` only: the conversation whose newest message gets `MENTIONS` to each entity, as in `rememberEntity` |
+| `resolve` | `'exact'` | `ingest` only: how a known entity is found, as the `resolve` option of `drevo.memory.rememberEntity`: `'exact'` = same name and type; `'fuzzy'` also reuses the one entity of the type whose name scores at least 0.9 (else the new entity gets `POSSIBLY_SAME` edges to its near-misses) |
+| `dryRun` | `false` | `ingest` only: count without writing |
+
+An unknown key, or an `ingest`-only key given to another procedure, is an
+error naming it. Without a configured endpoint, `entities`, `facts` and
+`ingest` fail with a capability error naming `drevo.extract.status()`; a bad
+config is reported before any model call.
+
+`drevo.extract.chunks` shows the passages a text is cut into, without a
+model — what `ingest` would send and store:
+
+```cypher
+CALL drevo.extract.chunks('Dana joined Acme in May. Acme is based in Oslo, far from the sea.', {chunkChars: 40})
+YIELD position, offset, length, text
+RETURN position, offset, length, text
+```
+
+`drevo.extract.status()` reports whether an endpoint is configured, its model
+and URL (never the key), the error of the last call (`null` when it
+succeeded) and how many items the last call dropped:
+
+```cypher
+CALL drevo.extract.status() YIELD configured, model, upstream, lastError, lastSkipped
+RETURN configured, model, upstream, lastError, lastSkipped
+```
+
+**Extract on write.** A trigger can feed every new document to `ingest`.
+`afterAsync` runs it after the commit, off the request that created the
+document, so the model call never holds up a write:
+
+```text
+CALL apoc.trigger.install('drevo', 'extract_documents',
+  'UNWIND $createdNodes AS d WITH d WHERE d:Document
+   CALL drevo.extract.ingest(d.body, {source: {id: d.id, title: d.title, kind: "document"}}) YIELD facts
+   RETURN count(*)',
+  {phase: 'afterAsync'})
+```
+
+The first argument is the database the trigger belongs to — `drevo`, the
+default one, here.
+
+A failed extraction is logged by the trigger and recorded in
+`drevo.extract.status()`; the document itself stays committed. This path
+suits short texts; the call's time is bounded by `DREVO_EXTRACT_TIMEOUT_MS`
+per passage.
+
 ## Entities
 - **Anna** (Person): Keeps a CBT journal
 - **I will fail** (Thought) «I will fail at this» (journal-1)

@@ -443,11 +443,39 @@ pub fn clear() {
 }
 
 /// The `reqwest`-backed async proxy to the configured `chat/completions`
-/// upstream.
+/// upstream, a [`crate::llm::ChatClient`] that answers with Cypher.
 #[cfg(feature = "embeddings-proxy")]
 pub struct ChatProxyBackend {
-    client: reqwest::Client,
-    config: Text2CypherConfig,
+    client: crate::llm::ChatClient,
+}
+
+/// The endpoint a text-to-Cypher config describes (no call timeout).
+#[cfg(feature = "embeddings-proxy")]
+fn chat_endpoint(config: Text2CypherConfig) -> crate::llm::ChatEndpoint {
+    crate::llm::ChatEndpoint {
+        upstream: config.upstream,
+        api_key: config.api_key,
+        model: config.model,
+        timeout: None,
+    }
+}
+
+/// A chat failure as a text-to-Cypher error.
+#[cfg(feature = "embeddings-proxy")]
+fn from_llm(err: crate::llm::LlmError) -> Text2CypherError {
+    match err {
+        crate::llm::LlmError::InvalidUpstream(m) => Text2CypherError::InvalidUpstream(m),
+        crate::llm::LlmError::Upstream(m) => Text2CypherError::Upstream(m),
+    }
+}
+
+/// The chat for one question: the system prompt, then the question.
+#[cfg(feature = "embeddings-proxy")]
+fn question_request(system: &str, question: &str) -> crate::llm::ChatRequest {
+    crate::llm::ChatRequest::new(vec![
+        crate::llm::ChatMessage::system(system),
+        crate::llm::ChatMessage::user(question),
+    ])
 }
 
 #[cfg(feature = "embeddings-proxy")]
@@ -459,10 +487,8 @@ impl ChatProxyBackend {
     /// Returns [`Text2CypherError::InvalidUpstream`] when the HTTP client cannot
     /// be constructed.
     pub fn new(config: Text2CypherConfig) -> Result<Self, Text2CypherError> {
-        let client = reqwest::Client::builder()
-            .build()
-            .map_err(|e| Text2CypherError::InvalidUpstream(e.to_string()))?;
-        Ok(Self { client, config })
+        let client = crate::llm::ChatClient::new(chat_endpoint(config)).map_err(from_llm)?;
+        Ok(Self { client })
     }
 
     /// Forward the prompt to the upstream and return the extracted Cypher.
@@ -473,69 +499,22 @@ impl ChatProxyBackend {
     /// returns a non-2xx status, or sends a body without a usable
     /// `choices[0].message.content`.
     pub async fn generate(&self, system: &str, question: &str) -> Result<String, Text2CypherError> {
-        let body = serde_json::json!({
-            "model": self.config.model,
-            "temperature": 0,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user", "content": question },
-            ],
-        });
-        let mut builder = self.client.post(&self.config.upstream).json(&body);
-        if let Some(key) = &self.config.api_key {
-            builder = builder.bearer_auth(key);
-        }
-        let resp = builder
-            .send()
+        let content = self
+            .client
+            .complete(&question_request(system, question))
             .await
-            .map_err(|e| Text2CypherError::Upstream(e.to_string()))?;
-        let status = resp.status();
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| Text2CypherError::Upstream(e.to_string()))?;
-        if !status.is_success() {
-            return Err(Text2CypherError::Upstream(format!(
-                "upstream returned {status}: {}",
-                String::from_utf8_lossy(&bytes).trim()
-            )));
-        }
-        let value: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|e| Text2CypherError::Upstream(format!("malformed upstream response: {e}")))?;
-        let content = value
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                Text2CypherError::Upstream(
-                    "response missing `choices[0].message.content`".to_string(),
-                )
-            })?;
-        Ok(extract_cypher(content))
+            .map_err(from_llm)?;
+        Ok(extract_cypher(&content))
     }
 }
 
-/// A [`CypherGenerator`] that drives the async [`ChatProxyBackend`] from
-/// synchronous code without nesting tokio runtimes — a dedicated OS thread with
-/// its own current-thread runtime, mirroring
+/// A [`CypherGenerator`] that drives the async chat client from synchronous
+/// code without nesting tokio runtimes — a dedicated OS thread with its own
+/// current-thread runtime ([`crate::llm::SyncChatCompleter`]), mirroring
 /// [`crate::embeddings::SyncEmbedder`].
 #[cfg(feature = "embeddings-proxy")]
 pub struct SyncCypherGenerator {
-    sender: std::sync::mpsc::Sender<GenerateJob>,
-    _worker: std::thread::JoinHandle<()>,
-    model: Option<String>,
-    upstream: Option<String>,
-}
-
-/// One generation request handed to the [`SyncCypherGenerator`] worker, with a
-/// one-shot reply channel.
-#[cfg(feature = "embeddings-proxy")]
-struct GenerateJob {
-    system: String,
-    question: String,
-    reply: std::sync::mpsc::Sender<Result<String, Text2CypherError>>,
+    inner: crate::llm::SyncChatCompleter,
 }
 
 #[cfg(feature = "embeddings-proxy")]
@@ -547,59 +526,30 @@ impl SyncCypherGenerator {
     /// Returns [`Text2CypherError::InvalidUpstream`] when the HTTP client or the
     /// worker thread / runtime cannot be constructed.
     pub fn from_config(config: Text2CypherConfig) -> Result<Self, Text2CypherError> {
-        let model = Some(config.model.clone());
-        let upstream = Some(config.upstream.clone());
-        let backend = ChatProxyBackend::new(config)?;
-        let (sender, receiver) = std::sync::mpsc::channel::<GenerateJob>();
-        let worker = std::thread::Builder::new()
-            .name("drevo-text2cypher".to_string())
-            .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt,
-                    Err(_) => return,
-                };
-                while let Ok(job) = receiver.recv() {
-                    let result = runtime.block_on(backend.generate(&job.system, &job.question));
-                    let _ = job.reply.send(result);
-                }
-            })
-            .map_err(|e| Text2CypherError::InvalidUpstream(e.to_string()))?;
-        Ok(Self {
-            sender,
-            _worker: worker,
-            model,
-            upstream,
-        })
+        let inner = crate::llm::SyncChatCompleter::spawn(
+            chat_endpoint(config),
+            "text-to-Cypher",
+            "drevo-text2cypher",
+        )
+        .map_err(from_llm)?;
+        Ok(Self { inner })
     }
 }
 
 #[cfg(feature = "embeddings-proxy")]
 impl CypherGenerator for SyncCypherGenerator {
     fn model(&self) -> Option<String> {
-        self.model.clone()
+        crate::llm::ChatCompleter::model(&self.inner)
     }
 
     fn upstream(&self) -> Option<String> {
-        self.upstream.clone()
+        crate::llm::ChatCompleter::upstream(&self.inner)
     }
 
     fn generate(&self, system: &str, question: &str) -> Result<String, Text2CypherError> {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        self.sender
-            .send(GenerateJob {
-                system: system.to_string(),
-                question: question.to_string(),
-                reply: reply_tx,
-            })
-            .map_err(|_| {
-                Text2CypherError::Upstream("text-to-Cypher worker thread stopped".to_string())
-            })?;
-        reply_rx.recv().map_err(|_| {
-            Text2CypherError::Upstream("text-to-Cypher worker dropped the request".to_string())
-        })?
+        crate::llm::ChatCompleter::complete(&self.inner, &question_request(system, question))
+            .map(|content| extract_cypher(&content))
+            .map_err(from_llm)
     }
 }
 

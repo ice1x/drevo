@@ -80,6 +80,9 @@ pub struct NativeApiState {
     /// The text-to-Cypher provider behind `drevo.cypher.fromText`, settable
     /// through `GET`/`POST /config/text2cypher`.
     text2cypher_config: Option<Arc<crate::text2cypher::Text2CypherConfigStore>>,
+    /// The chat endpoint behind `drevo.extract.*`, settable through
+    /// `GET`/`POST /config/extract`.
+    extract_config: Option<Arc<crate::extract::settings::ExtractConfigStore>>,
     /// The server's users, for the Cypher user-management commands.
     security: crate::security::Security,
     /// Prometheus metrics registry backing `GET /metrics` and the per-request
@@ -120,6 +123,7 @@ impl NativeApiState {
             embeddings: None,
             embeddings_config: None,
             text2cypher_config: None,
+            extract_config: None,
             security: crate::security::Security::default(),
             metrics: Arc::new(DrevoMetrics::new()),
             formats: Arc::new(crate::wire_format::WireFormats::default()),
@@ -215,6 +219,17 @@ impl NativeApiState {
         self
     }
 
+    /// Attach the extraction endpoint store, enabling
+    /// `GET`/`POST /config/extract`.
+    #[must_use]
+    pub fn with_extract_config_store(
+        mut self,
+        store: Arc<crate::extract::settings::ExtractConfigStore>,
+    ) -> Self {
+        self.extract_config = Some(store);
+        self
+    }
+
     /// Mark the API as draining — `/health` and `/ready` answer 503 after.
     pub fn signal_shutdown(&self) {
         self.shutting_down.store(true, Ordering::Release);
@@ -252,6 +267,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route(
             "/config/text2cypher",
             get(get_text2cypher_config).post(set_text2cypher_config),
+        )
+        .route(
+            "/config/extract",
+            get(get_extract_config).post(set_extract_config),
         )
         .route(
             "/config/slow-query",
@@ -439,6 +458,23 @@ async fn set_text2cypher_config(
 ) -> Result<Json<crate::text2cypher::Text2CypherStatus>, ApiError> {
     let Json(update) = body?;
     crate::api::text2cypher_config_apply(state.text2cypher_config.as_deref(), update)
+}
+
+/// `GET /config/extract` — the extraction endpoint without its key.
+async fn get_extract_config(
+    State(state): State<NativeApiState>,
+) -> Result<Json<crate::extract::settings::ExtractConfigStatus>, ApiError> {
+    crate::api::extract_config_status(state.extract_config.as_deref())
+}
+
+/// `POST /config/extract` — change the extraction endpoint: persisted,
+/// installed at once; the key is never echoed back.
+async fn set_extract_config(
+    State(state): State<NativeApiState>,
+    body: Result<Json<crate::extract::settings::ExtractConfigUpdate>, JsonRejection>,
+) -> Result<Json<crate::extract::settings::ExtractConfigStatus>, ApiError> {
+    let Json(update) = body?;
+    crate::api::extract_config_apply(state.extract_config.as_deref(), update)
 }
 
 /// The slow-statement log's setting, as `GET`/`POST /config/slow-query`
