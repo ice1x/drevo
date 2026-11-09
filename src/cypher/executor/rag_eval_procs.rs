@@ -468,9 +468,10 @@ impl Executor<'_> {
             .map(|(node, score)| RankedNode::seed(node, score))
             .collect();
         let ids: HashSet<u64> = nodes.iter().map(|n| n.node.id).collect();
-        let (rels, _) = self.rag_edges(&ids, config)?;
+        let (rels, weighted) = self.rag_edges(&ids, config)?;
         let subgraph = Subgraph {
             nodes,
+            rel_weights: crate::rag::rel_weights(&rels, &weighted),
             rels,
             truncated: false,
         };
