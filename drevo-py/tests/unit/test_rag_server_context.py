@@ -148,3 +148,23 @@ def test_server_and_client_renderings_cover_the_same_graph(
     for node in client.seeds + client.neighbours:
         assert node.title in client_text
         assert f"**{node.title}** ({node.kind})" in server["text"]
+
+
+def test_server_markdown_matches_context_to_text(
+    drevo_db: drevo.Drevo, journal: dict[str, str]
+) -> None:
+    """#783 promised that `drevo.rag.context`'s markdown has the same shape
+    as `drevo.rag.Context.to_text('markdown')`, so client- and server-side
+    renderings match (#808 point 4). For one seed walked two hops (the whole
+    journal fits the budget) the two texts must be equal: same headings, same
+    lines, same order."""
+    server = _context(
+        drevo_db, journal["word"], {"hops": 2, "format": "markdown", "tokenBudget": 4000}
+    )
+    assert server["truncated"] is False
+    client = Retriever(drevo_db, hops=2).retrieve(journal["word"])
+    expected = client.to_text(format="markdown")
+    assert server["text"] == expected, (
+        "#808: server markdown differs from Context.to_text('markdown') — "
+        f"server:\n{server['text']}\nclient:\n{expected}"
+    )
