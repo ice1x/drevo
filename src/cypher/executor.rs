@@ -581,6 +581,7 @@ pub type ExecResultT<T> = Result<T, ExecError>;
 /// With no deadline set, `tick` is a single thread-local read.
 mod extract_procs;
 mod ingest_procs;
+pub(crate) use extract_procs::{ingest_failed, opens_with_ingest, upfront_ingest};
 use extract_procs::{
     EXTRACT_CHUNKS, EXTRACT_ENTITIES, EXTRACT_FACTS, EXTRACT_INGEST, EXTRACT_STATUS,
 };
@@ -1579,35 +1580,7 @@ fn execute_single(
         }
     }
 
-    let mut executor = Executor {
-        engine,
-        native_fts: ctx.fts,
-        native_fts_rel: ctx.fts_rel,
-        native_labels: ctx.labels,
-        native_props: ctx.properties,
-        native_paths: ctx.paths,
-        native_texts: ctx.texts,
-        native_points: ctx.points,
-        native_values: ctx.values,
-        native_tx_written: ctx.tx_written,
-        native_embedder: ctx.embedder,
-        native_semantic: ctx.semantic,
-        in_transaction: ctx.in_transaction,
-        tx_has_written: ctx.tx_has_written,
-        restriction: ctx.restriction,
-        read_filter: ctx
-            .restriction
-            .filter(|r| !r.context.reads_everything(r.database)),
-        read_memo: std::cell::RefCell::default(),
-        pushdown: HashMap::new(),
-        match_cap: None,
-        match_top: None,
-        params,
-        bindings: vec![HashMap::new()],
-        stats: ExecStats::default(),
-        result_columns: Vec::new(),
-        result_rows: Vec::new(),
-    };
+    let mut executor = Executor::new(engine, ctx, params);
 
     for (i, clause) in single.clauses.iter().enumerate() {
         // A MATCH whose rows the next clause cuts to a LIMIT need not produce
@@ -2959,6 +2932,46 @@ struct Executor<'a> {
     stats: ExecStats,
     result_columns: Vec<String>,
     result_rows: Vec<Vec<Value>>,
+}
+
+impl<'a> Executor<'a> {
+    /// An executor of one statement over `engine` with the indexes and
+    /// privileges of `ctx`.
+    fn new(
+        engine: &'a dyn GraphEngine,
+        ctx: &NativeQueryContext<'a>,
+        params: HashMap<String, Value>,
+    ) -> Self {
+        Executor {
+            engine,
+            native_fts: ctx.fts,
+            native_fts_rel: ctx.fts_rel,
+            native_labels: ctx.labels,
+            native_props: ctx.properties,
+            native_paths: ctx.paths,
+            native_texts: ctx.texts,
+            native_points: ctx.points,
+            native_values: ctx.values,
+            native_tx_written: ctx.tx_written,
+            native_embedder: ctx.embedder,
+            native_semantic: ctx.semantic,
+            in_transaction: ctx.in_transaction,
+            tx_has_written: ctx.tx_has_written,
+            restriction: ctx.restriction,
+            read_filter: ctx
+                .restriction
+                .filter(|r| !r.context.reads_everything(r.database)),
+            read_memo: std::cell::RefCell::default(),
+            pushdown: HashMap::new(),
+            match_cap: None,
+            match_top: None,
+            params,
+            bindings: vec![HashMap::new()],
+            stats: ExecStats::default(),
+            result_columns: Vec::new(),
+            result_rows: Vec::new(),
+        }
+    }
 }
 
 // Default initial result fields — Rust struct init helper.

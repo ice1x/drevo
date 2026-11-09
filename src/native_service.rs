@@ -965,28 +965,49 @@ impl NativeService {
         let fired = std::cell::RefCell::new(None);
         let (result, events) = crate::event_bus::collect(|| {
             self.listed_if(list, || {
-                crate::cypher::executor::deadline::with_statement_timeout(
-                    self.statement_timeout(),
-                    || {
-                        let writes = query_writes(query)
-                            || query_calls_atomic_procedure(query)
-                            || ((checked_writes || triggers)
-                                && query_calls_writing_procedure(query, &params));
-                        // A writing statement is one transaction: one log
-                        // record and fsync, and nothing of it stays when it
-                        // fails (#715).
-                        if writes {
-                            let (rows, params) =
-                                self.execute_as_transaction(query, &params, restriction)?;
-                            *fired.borrow_mut() = params;
-                            Ok(rows)
-                        } else {
-                            self.with_fresh_indexes(|idx| {
-                                self.execute_with(idx, query, params, restriction)
-                            })
-                        }
-                    },
-                )
+                // A statement opening with `drevo.extract.ingest` asks the
+                // model first: outside the writers' turn and the statement
+                // timeout, and once however often its write is retried (#805).
+                let upfront = self.prepare_upfront_ingest(query, &params, restriction)?;
+                let first_tx = upfront.as_ref().map(|u| u.tx);
+                let run = || {
+                    crate::cypher::executor::deadline::with_statement_timeout(
+                        self.statement_timeout(),
+                        || {
+                            let writes = query_writes(query)
+                                || query_calls_atomic_procedure(query)
+                                || ((checked_writes || triggers)
+                                    && query_calls_writing_procedure(query, &params));
+                            // A writing statement is one transaction: one log
+                            // record and fsync, and nothing of it stays when
+                            // it fails (#715).
+                            if writes {
+                                let (rows, params) = self.execute_as_transaction(
+                                    query,
+                                    &params,
+                                    restriction,
+                                    first_tx,
+                                )?;
+                                *fired.borrow_mut() = params;
+                                Ok(rows)
+                            } else {
+                                self.with_fresh_indexes(|idx| {
+                                    self.execute_with(idx, query, params, restriction)
+                                })
+                            }
+                        },
+                    )
+                };
+                let result = match upfront {
+                    Some(u) => crate::extract::with_prepared(&u.text, &u.options, u.found, run),
+                    None => run(),
+                };
+                if let Some(tx) = first_tx {
+                    // Committed or rolled back already, unless the statement
+                    // never reached its write.
+                    self.graph.tx_rollback(tx);
+                }
+                result
             })
         });
         if result.is_ok() {
@@ -1068,18 +1089,35 @@ impl NativeService {
         query: &Query,
         params: &HashMap<String, Value>,
         restriction: Option<Restriction<'_>>,
+        first: Option<crate::native::NativeTxId>,
     ) -> Result<(ExecResult, Option<HashMap<String, Value>>), ExecError> {
-        const ATTEMPTS: usize = 8;
         let _turn = self
             .autocommit_writer
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // An extraction the statement makes is made once for all attempts.
+        crate::extract::with_memo(|| self.write_attempts(query, params, restriction, first))
+    }
+
+    /// The attempts of [`execute_as_transaction`](Self::execute_as_transaction),
+    /// the first in `first` when the statement began before the writer's
+    /// turn.
+    fn write_attempts(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+        mut first: Option<crate::native::NativeTxId>,
+    ) -> Result<(ExecResult, Option<HashMap<String, Value>>), ExecError> {
+        const ATTEMPTS: usize = 8;
         let mut attempt = 0;
         loop {
             attempt += 1;
             // One statement: bounded by the statement timeout, not by the
             // write limit of a client's transaction.
-            let tx = self.graph.tx_begin_statement();
+            let tx = first
+                .take()
+                .unwrap_or_else(|| self.graph.tx_begin_statement());
             let Some(engine) = self.graph.tx_engine(tx) else {
                 return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(
                     "the statement's transaction closed before it ran",
@@ -1091,26 +1129,7 @@ impl NativeService {
                     // A fresh transaction: the indexes describe its snapshot
                     // unless another writer committed since it began.
                     let overlay = self.graph.tx_index_overlay(tx);
-                    let indexed = overlay.is_some();
-                    let ctx = NativeQueryContext {
-                        fts: idx.fts(),
-                        fts_rel: idx.fts_rel(),
-                        labels: indexed.then_some(&idx.labels),
-                        properties: idx.props().filter(|_| indexed),
-                        paths: indexed.then_some(&idx.paths),
-                        texts: indexed.then_some(&idx.texts),
-                        points: indexed.then_some(&idx.points),
-                        values: idx.values(),
-                        #[cfg(feature = "http")]
-                        embedder: self.embedder.get(),
-                        #[cfg(not(feature = "http"))]
-                        embedder: None,
-                        semantic: Some(self),
-                        in_transaction: false,
-                        tx_has_written: false,
-                        tx_written: overlay.as_ref(),
-                        restriction,
-                    };
+                    let ctx = self.statement_context(idx, overlay.as_ref(), restriction);
                     execute_on_engine_with_context(query, &engine, &ctx, params.clone())
                 })
             });
@@ -1158,6 +1177,79 @@ impl NativeService {
                         e.to_string(),
                     ))));
                 }
+            }
+        }
+    }
+
+    /// The context of a statement running as its own transaction: the
+    /// indexes narrow its reads only while `overlay` (the transaction's
+    /// [`NativeGraph::tx_index_overlay`]) says they describe its snapshot.
+    fn statement_context<'a>(
+        &'a self,
+        idx: &'a ServiceIndexes,
+        overlay: Option<&'a std::collections::HashSet<u64>>,
+        restriction: Option<Restriction<'a>>,
+    ) -> NativeQueryContext<'a> {
+        let indexed = overlay.is_some();
+        NativeQueryContext {
+            fts: idx.fts(),
+            fts_rel: idx.fts_rel(),
+            labels: indexed.then_some(&idx.labels),
+            properties: idx.props().filter(|_| indexed),
+            paths: indexed.then_some(&idx.paths),
+            texts: indexed.then_some(&idx.texts),
+            points: indexed.then_some(&idx.points),
+            values: idx.values(),
+            #[cfg(feature = "http")]
+            embedder: self.embedder.get(),
+            #[cfg(not(feature = "http"))]
+            embedder: None,
+            semantic: Some(self),
+            in_transaction: false,
+            tx_has_written: false,
+            tx_written: overlay,
+            restriction,
+        }
+    }
+
+    /// For a statement that opens with `CALL drevo.extract.ingest(…)`: begin
+    /// its transaction, read the call's arguments on it and ask the model,
+    /// all before the writer's turn and outside the statement timeout (the
+    /// model's calls are bounded by `DREVO_EXTRACT_TIMEOUT_MS`). `None` for
+    /// any other statement, and for a call that fails before asking the
+    /// model, which then runs as it is.
+    fn prepare_upfront_ingest(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+    ) -> Result<Option<UpfrontPrepared>, ExecError> {
+        if !crate::cypher::executor::opens_with_ingest(query) || self.is_read_only() {
+            return Ok(None);
+        }
+        let tx = self.graph.tx_begin_statement();
+        let Some(engine) = self.graph.tx_engine(tx) else {
+            return Ok(None);
+        };
+        let call = self.with_fresh_indexes(|idx| {
+            let overlay = self.graph.tx_index_overlay(tx);
+            let ctx = self.statement_context(idx, overlay.as_ref(), restriction);
+            crate::cypher::executor::upfront_ingest(query, &engine, &ctx, params.clone())
+        });
+        let Some(call) = call else {
+            self.graph.tx_rollback(tx);
+            return Ok(None);
+        };
+        match crate::extract::prepare_ingest(&call.text, &call.options) {
+            Ok(found) => Ok(Some(UpfrontPrepared {
+                tx,
+                text: call.text,
+                options: call.options,
+                found,
+            })),
+            Err(e) => {
+                self.graph.tx_rollback(tx);
+                Err(crate::cypher::executor::ingest_failed(&e, call.span))
             }
         }
     }
@@ -3813,6 +3905,20 @@ fn ingest_changes_jobs(name: &str) -> bool {
             | "drevo.ingest.retryFailed"
             | "drevo.ingest.purge"
     )
+}
+
+/// A statement's `drevo.extract.ingest` extraction, made before its write
+/// ([`NativeService::prepare_upfront_ingest`]).
+struct UpfrontPrepared {
+    /// The statement's transaction, begun before the model was asked: the
+    /// first attempt of the write runs on it.
+    tx: crate::native::NativeTxId,
+    /// The text extracted.
+    text: String,
+    /// The options it was extracted with.
+    options: crate::extract::ExtractOptions,
+    /// What the model found in it.
+    found: Vec<crate::extract::ChunkExtraction>,
 }
 
 /// Whether `query` calls a procedure whose writes must land together or

@@ -82,6 +82,82 @@ fn entity_label(entity_type: &str) -> String {
         .collect()
 }
 
+/// The error of an ingest whose extraction failed.
+pub(crate) fn ingest_failed(e: &extract::ExtractError, span: Span) -> ExecError {
+    match e {
+        extract::ExtractError::NotConfigured => not_configured(EXTRACT_INGEST),
+        e => refusal(EXTRACT_INGEST, e.to_string(), span),
+    }
+}
+
+/// What a statement that opens with `CALL drevo.extract.ingest(text,
+/// config)` will ingest, known before it runs.
+pub(crate) struct UpfrontIngest {
+    /// The text argument.
+    pub(crate) text: String,
+    /// The config argument, read.
+    pub(crate) options: ExtractOptions,
+    /// The span of the call.
+    pub(crate) span: Span,
+}
+
+/// Whether `query` opens with a `drevo.extract.ingest` call: one part (no
+/// `UNION`) whose first clause is the call, so it runs once.
+pub(crate) fn opens_with_ingest(query: &Query) -> bool {
+    upfront_call(query).is_some()
+}
+
+/// The opening `drevo.extract.ingest` call of `query` ([`opens_with_ingest`]).
+fn upfront_call(query: &Query) -> Option<&CallClause> {
+    let [part] = query.parts.as_slice() else {
+        return None;
+    };
+    match part.query.clauses.first() {
+        Some(Clause::Call(c)) if c.name.join(".") == EXTRACT_INGEST && !c.args.is_empty() => {
+            Some(c)
+        }
+        _ => None,
+    }
+}
+
+/// The text and options of the opening `drevo.extract.ingest` call of
+/// `query`, read on `engine` with `params` before the statement runs; `None`
+/// when the statement does not open with the call, or when the call would
+/// fail before asking the model (an argument that is not known yet or not
+/// valid, no source, an unknown source id, no model installed): the
+/// statement then runs as it is and fails the way it always has.
+pub(crate) fn upfront_ingest(
+    query: &Query,
+    engine: &dyn GraphEngine,
+    ctx: &NativeQueryContext<'_>,
+    params: HashMap<String, Value>,
+) -> Option<UpfrontIngest> {
+    let c = upfront_call(query)?;
+    extract::installed()?;
+    // A database the user may not use: the statement says so itself.
+    if ctx
+        .restriction
+        .is_some_and(|r| !r.context.can_access(r.database))
+    {
+        return None;
+    }
+    let exec = Executor::new(engine, ctx, params);
+    let (text, options) = exec
+        .extract_args(EXTRACT_INGEST, c, &Bindings::new(), true)
+        .ok()?;
+    match options.source.as_ref()? {
+        SourceRef::Id(id) => {
+            exec.memory_source(EXTRACT_INGEST, id, c.span).ok()?;
+        }
+        SourceRef::Spec(_) => {}
+    }
+    Some(UpfrontIngest {
+        text,
+        options,
+        span: c.span,
+    })
+}
+
 impl Executor<'_> {
     /// Run one of the `drevo.extract.*` procedures, once per input row.
     pub(super) fn run_extract(
@@ -232,9 +308,9 @@ impl Executor<'_> {
         const PROC: &str = EXTRACT_INGEST;
         let span = c.span;
         let (text, options) = self.extract_args(PROC, c, row, true)?;
-        // An ingest job's item was extracted before its write began.
-        let prepared = extract::prepared_for(&text);
-        if prepared.is_none() {
+        // An ingest job's item, or a statement opening with this call, was
+        // extracted before its write began.
+        if extract::prepared_for(&text, &options).is_none() {
             extract::installed().ok_or_else(|| not_configured(PROC))?;
         }
         let source = options
@@ -248,15 +324,8 @@ impl Executor<'_> {
             }
             SourceRef::Spec(spec) => spec.id.clone(),
         };
-        let found = match prepared {
-            Some(found) => found,
-            None => Self::extract_run(
-                PROC,
-                span,
-                |completer| extract::extract_chunks(completer, &text, &options, Want::Both),
-                |found: &Vec<ChunkExtraction>| found.iter().map(|f| f.accepted.skipped).sum(),
-            )?,
-        };
+        let found =
+            extract::prepare_ingest(&text, &options).map_err(|e| ingest_failed(&e, span))?;
         let entities = found.iter().map(|f| f.accepted.entities.len()).sum();
         let facts = found.iter().map(|f| f.accepted.facts.len()).sum();
         let skipped = found.iter().map(|f| f.accepted.skipped).sum();

@@ -276,6 +276,17 @@ history and the in-repo issue tracker; format loosely follows
   local (`'rag'`) against global retrieval. It joins the default strategies
   when that layer holds a `:Community`; naming it when the layer has none
   fails with "run `drevo.community.summarize` first".
+- **A direct `drevo.extract.ingest` call no longer runs the model while
+  holding up other writers, nor asks it again on a retry** (issue #805). A
+  statement opening with the call ran its model calls inside its write, so
+  every other writing statement on the database waited for the whole
+  extraction, and a commit conflict re-ran every model call (up to 8 times).
+  The statement now reads the call's arguments and asks the model first,
+  outside the writers' turn and the statement timeout (the model is bounded
+  by `DREVO_EXTRACT_TIMEOUT_MS`, the write by `DREVO_QUERY_TIMEOUT_MS`), then
+  writes what it found the way an ingest job does. A call that only runs per
+  row (`UNWIND … CALL drevo.extract.ingest(…)`, as in a trigger) still asks
+  during the write, but a retried write reuses the answers.
 
 - **An index rebuilt from a snapshot could skip a commit made during the
   rebuild** (issue #770). The label, property, path, text, point and
