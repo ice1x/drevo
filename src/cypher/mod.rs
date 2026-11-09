@@ -21,6 +21,9 @@
 /// catalog-aware caller, outside the single-database graph executor.
 pub mod admin;
 pub mod ast;
+/// Entity resolution: candidate pairs, merges and aliases
+/// (`drevo.entity.*`).
+pub(crate) mod entity_resolution;
 /// Executor — walks the [`ast::Query`] produced by [`parser::parse`]
 /// and runs it against a `Drevo` handle. Task `00063`.
 pub mod executor;

@@ -258,6 +258,36 @@ async fn provenance_procedures_need_write() {
     t.ok("ed", add_chunks).await;
 }
 
+#[tokio::test]
+async fn entity_merge_needs_write_and_delete() {
+    let t = Tracker::seeded().await;
+    let merge = "MATCH (a:Bug {title: 'crash on save'}), (b:Bug {title: 'slow search'}) \
+                 CALL drevo.entity.merge(a, [b]) YIELD merged RETURN merged";
+    t.forbidden("rita", merge).await;
+    // tina may write bugs but not delete them.
+    t.forbidden("tina", merge).await;
+    assert_eq!(t.count("MATCH (b:Bug) RETURN count(b)").await, 2);
+    t.ok("ed", merge).await;
+    assert_eq!(t.count("MATCH (b:Bug) RETURN count(b)").await, 1);
+}
+
+#[tokio::test]
+async fn entity_reads_need_no_write() {
+    let t = Tracker::seeded().await;
+    t.ok(
+        "rita",
+        "CALL drevo.entity.candidates('Bug', {nameProperty: 'title'})",
+    )
+    .await;
+    t.ok("rita", "CALL drevo.entity.aliases('crash on save')")
+        .await;
+    t.forbidden(
+        "rita",
+        "CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null, {resolve: 'fuzzy'})",
+    )
+    .await;
+}
+
 // ── Database access ──────────────────────────────────────────────────
 
 #[tokio::test]

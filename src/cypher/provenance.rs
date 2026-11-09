@@ -26,6 +26,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::cypher::entity_resolution::config::{ResolveOptions, RESOLVE_KEYS};
 use crate::cypher::executor::Value;
 
 /// The keys a provenance map accepts, as listed in errors.
@@ -196,6 +197,38 @@ impl Provenance {
         }
         Ok(Some(p))
     }
+}
+
+/// Parse the options map of `drevo.memory.rememberEntity`: the provenance
+/// keys ([`Provenance::from_value`]) and the resolution keys `resolve` and
+/// `threshold`. `null`, or a map without provenance keys, gives no
+/// provenance.
+pub(crate) fn remember_options(
+    value: &Value,
+) -> Result<(Option<Provenance>, ResolveOptions), String> {
+    let mut map = match value {
+        Value::Null => return Ok((None, ResolveOptions::default())),
+        Value::Map(map) => map.clone(),
+        other => {
+            return Err(format!(
+                "rememberEntity options must be a map {{{PROVENANCE_KEYS}, {RESOLVE_KEYS}}}, \
+                 got {}",
+                describe(other)
+            ))
+        }
+    };
+    let resolve = ResolveOptions::take_from(&mut map)?;
+    let provenance_keys: Vec<&str> = PROVENANCE_KEYS.split(", ").collect();
+    if let Some(key) = map.keys().find(|k| !provenance_keys.contains(&k.as_str())) {
+        return Err(format!(
+            "unknown rememberEntity option `{key}`; expected {PROVENANCE_KEYS}, {RESOLVE_KEYS}"
+        ));
+    }
+    if map.is_empty() {
+        return Ok((None, resolve));
+    }
+    let provenance = Provenance::from_value(&Value::Map(map))?;
+    Ok((provenance, resolve))
 }
 
 impl SourceSpec {
@@ -453,7 +486,7 @@ fn non_negative(key: &str, value: &Value) -> Result<i64, String> {
 
 /// A value as quoted in an error: strings in quotes, numbers as written,
 /// anything else by its type.
-fn describe(value: &Value) -> String {
+pub(crate) fn describe(value: &Value) -> String {
     match value {
         Value::String(s) => format!("'{s}'"),
         Value::Integer(i) => i.to_string(),
@@ -603,6 +636,58 @@ mod tests {
         let err =
             Provenance::from_value(&map(&[("chunk", map(&[("text", s("Hello"))]))])).unwrap_err();
         assert!(err.contains("a chunk map needs an id"), "{err}");
+    }
+
+    // ----- rememberEntity options ----------------------------------------------
+
+    #[test]
+    fn remember_options_split_provenance_and_resolution() {
+        use crate::cypher::entity_resolution::config::Resolve;
+        let (p, r) = remember_options(&map(&[
+            ("chunk", s("book-1#0")),
+            ("resolve", s("fuzzy")),
+            ("threshold", Value::Float(0.8)),
+        ]))
+        .unwrap();
+        assert_eq!(p.unwrap().chunk, Some(ChunkRef::Id("book-1#0".into())));
+        assert_eq!((r.resolve, r.threshold), (Resolve::Fuzzy, 0.8));
+        // Resolution keys alone are no provenance.
+        let (p, r) = remember_options(&map(&[("resolve", s("alias"))])).unwrap();
+        assert_eq!((p, r.resolve), (None, Resolve::Alias));
+        // Provenance alone resolves exactly.
+        let (p, r) = remember_options(&map(&[("chunk", s("c"))])).unwrap();
+        assert!(p.is_some());
+        assert_eq!(r, ResolveOptions::default());
+        assert_eq!(
+            remember_options(&Value::Null).unwrap(),
+            (None, ResolveOptions::default())
+        );
+    }
+
+    #[test]
+    fn remember_options_unknown_key_lists_both_key_sets() {
+        let err = remember_options(&map(&[("page", Value::Integer(3))])).unwrap_err();
+        assert_eq!(
+            err,
+            "unknown rememberEntity option `page`; expected source, chunk, quote, offset, \
+             length, surface, resolve, threshold"
+        );
+    }
+
+    #[test]
+    fn remember_options_report_bad_values_of_either_kind() {
+        let err = remember_options(&map(&[("resolve", s("soundex"))])).unwrap_err();
+        assert!(
+            err.contains("resolve must be 'exact', 'alias' or 'fuzzy'"),
+            "{err}"
+        );
+        let err = remember_options(&map(&[("quote", Value::Integer(1))])).unwrap_err();
+        assert!(err.contains("quote must be a string, got 1"), "{err}");
+        let err = remember_options(&s("x")).unwrap_err();
+        assert!(
+            err.contains("rememberEntity options must be a map"),
+            "{err}"
+        );
     }
 
     // ----- source map ----------------------------------------------------------
