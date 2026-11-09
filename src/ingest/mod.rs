@@ -173,7 +173,8 @@ pub(crate) fn record(outcome: Outcome) {
 }
 
 /// Item attempts so far that ended done, failed and dead, in that order.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Read by the HTTP metrics endpoint, so it is unused in builds without it.
+#[cfg_attr(any(target_arch = "wasm32", not(feature = "http")), allow(dead_code))]
 pub(crate) fn item_totals() -> [u64; 3] {
     [
         ITEMS[0].load(Ordering::Relaxed),
@@ -182,8 +183,9 @@ pub(crate) fn item_totals() -> [u64; 3] {
     ]
 }
 
-/// Jobs queued or running, in every database.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Jobs queued or running, in every database. Read by the HTTP metrics
+/// endpoint, so it is unused in builds without it.
+#[cfg_attr(any(target_arch = "wasm32", not(feature = "http")), allow(dead_code))]
 pub(crate) fn jobs_active() -> i64 {
     JOBS_ACTIVE.load(Ordering::Relaxed).max(0)
 }
