@@ -102,6 +102,11 @@ fn populated(data_dir: &Path) -> Arc<DatabaseRegistry> {
         br#"{"upstream":"http://ollama:11434/v1/chat/completions","model":"qwen"}"#,
     )
     .unwrap();
+    std::fs::write(
+        data_dir.join("extract_config.json"),
+        br#"{"upstream":"http://ollama:11434/v1/chat/completions","model":"qwen","timeout_ms":60000}"#,
+    )
+    .unwrap();
     registry
 }
 
@@ -136,7 +141,8 @@ fn a_server_backup_restores_every_database_and_the_server_files() {
         [
             "security.json",
             "embeddings_config.json",
-            "text2cypher_config.json"
+            "text2cypher_config.json",
+            "extract_config.json"
         ]
     );
     assert_eq!(ServerBackup::read(&tmp.path("b1")).unwrap(), summary);
@@ -179,6 +185,10 @@ fn a_server_backup_restores_every_database_and_the_server_files() {
     assert_eq!(
         std::fs::read(tmp.path("restored/text2cypher_config.json")).unwrap(),
         br#"{"upstream":"http://ollama:11434/v1/chat/completions","model":"qwen"}"#
+    );
+    assert_eq!(
+        std::fs::read(tmp.path("restored/extract_config.json")).unwrap(),
+        br#"{"upstream":"http://ollama:11434/v1/chat/completions","model":"qwen","timeout_ms":60000}"#
     );
 }
 

@@ -731,6 +731,38 @@ pub(crate) fn embeddings_config_apply(
     Ok(Json(status))
 }
 
+impl From<crate::extract::ExtractError> for ApiError {
+    fn from(err: crate::extract::ExtractError) -> Self {
+        use crate::extract::ExtractError;
+        match err {
+            ExtractError::Invalid(_) => Self::BadRequest(err.to_string()),
+            ExtractError::NotConfigured => Self::Unavailable(err.to_string()),
+            ExtractError::Upstream(_) | ExtractError::Malformed(_) => {
+                Self::BadGateway(err.to_string())
+            }
+        }
+    }
+}
+
+/// The body of `GET /config/extract`: the extraction endpoint without its key.
+pub(crate) fn extract_config_status(
+    store: Option<&crate::extract::settings::ExtractConfigStore>,
+) -> Result<Json<crate::extract::settings::ExtractConfigStatus>, ApiError> {
+    let store = store.ok_or(crate::extract::ExtractError::NotConfigured)?;
+    Ok(Json(store.status()))
+}
+
+/// The body of `POST /config/extract`: apply the change (a bad upstream or
+/// timeout is a `400`), persist it and install the endpoint; the key is
+/// never in the answer.
+pub(crate) fn extract_config_apply(
+    store: Option<&crate::extract::settings::ExtractConfigStore>,
+    update: crate::extract::settings::ExtractConfigUpdate,
+) -> Result<Json<crate::extract::settings::ExtractConfigStatus>, ApiError> {
+    let store = store.ok_or(crate::extract::ExtractError::NotConfigured)?;
+    Ok(Json(store.apply(update)?))
+}
+
 /// The body of `GET /config/text2cypher`: the provider without its key.
 pub(crate) fn text2cypher_config_status(
     store: Option<&crate::text2cypher::Text2CypherConfigStore>,

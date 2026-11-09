@@ -947,9 +947,9 @@ impl NativeService {
                     self.statement_timeout(),
                     || {
                         let writes = query_writes(query)
+                            || query_calls_atomic_procedure(query)
                             || ((checked_writes || triggers)
-                                && query_calls_writing_procedure(query, &params))
-                            || query_merges_entities(query);
+                                && query_calls_writing_procedure(query, &params));
                         // A writing statement is one transaction: one log
                         // record and fsync, and nothing of it stays when it
                         // fails (#715).
@@ -3681,7 +3681,8 @@ fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>)
                 | "drevo.memory.addSource"
                 | "drevo.memory.addChunks"
                 | "drevo.entity.merge"
-                | "drevo.rag.pruneTraces" => true,
+                | "drevo.rag.pruneTraces"
+                | "drevo.extract.ingest" => true,
                 "drevo.rag.context" => context_records_trace(call.args.get(1), params),
                 _ => false,
             }
@@ -3689,15 +3690,19 @@ fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>)
     })
 }
 
-/// Whether `query` calls `drevo.entity.merge`, whose moves, deletes and
-/// aliases must land together or not at all.
-fn query_merges_entities(query: &Query) -> bool {
+/// Whether `query` calls a procedure whose writes must land together or
+/// not at all, so the statement always runs as one transaction:
+/// `drevo.entity.merge` (moves, deletes and aliases) and
+/// `drevo.extract.ingest` (a source, its chunks, entities and facts).
+fn query_calls_atomic_procedure(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
-        part.query
-            .clauses
-            .iter()
-            .any(|c| matches!(c, Clause::Call(call) if call.name.join(".") == "drevo.entity.merge"))
+        part.query.clauses.iter().any(|c| {
+            matches!(c, Clause::Call(call) if matches!(
+                call.name.join(".").as_str(),
+                "drevo.entity.merge" | "drevo.extract.ingest"
+            ))
+        })
     })
 }
 
@@ -4201,7 +4206,7 @@ mod node_text_tests {
 mod writing_procedure_tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use super::query_calls_writing_procedure;
+    use super::{query_calls_atomic_procedure, query_calls_writing_procedure};
     use crate::cypher::executor::Value;
     use crate::cypher::parser::parse;
 
@@ -4274,6 +4279,7 @@ mod writing_procedure_tests {
             "CALL drevo.memory.assertFact('a', 'R', 'b', false, {chunk: 'c'})",
             "CALL drevo.memory.addSource('book-1', null, 'Book One', 'document')",
             "CALL drevo.memory.addChunks('book-1', [{order: 0, text: 'x'}]) YIELD node RETURN node",
+            "CALL drevo.extract.ingest('Dana joined Acme.', {source: 'book-1'}) YIELD facts RETURN facts",
         ] {
             assert!(writes(q), "{q}");
         }
@@ -4291,15 +4297,21 @@ mod writing_procedure_tests {
     }
 
     #[test]
-    fn only_entity_merge_always_runs_as_one_transaction() {
-        use super::query_merges_entities;
-        let merges = |q: &str| query_merges_entities(&parse(q).expect("parse"));
-        assert!(merges("CALL drevo.entity.merge(1, [2])"));
-        assert!(merges(
+    fn only_entity_merge_and_ingest_always_run_as_one_transaction() {
+        let atomic = |q: &str| query_calls_atomic_procedure(&parse(q).expect("parse"));
+        assert!(atomic("CALL drevo.entity.merge(1, [2])"));
+        assert!(atomic(
             "MATCH (a), (b) CALL drevo.entity.merge(a, [b]) YIELD kept RETURN kept"
         ));
-        assert!(!merges("CALL drevo.entity.candidates('Entity')"));
-        assert!(!merges("CALL drevo.memory.addMessage('s', 'user', 'hi')"));
+        assert!(atomic(
+            "CALL drevo.extract.ingest('x', {source: 'b'}) YIELD facts RETURN facts"
+        ));
+        assert!(!atomic("CALL drevo.entity.candidates('Entity')"));
+        assert!(!atomic("CALL drevo.memory.addMessage('s', 'user', 'hi')"));
+        assert!(!atomic(
+            "CALL drevo.memory.addSource('b', null, null, null)"
+        ));
+        assert!(!atomic("CALL drevo.extract.entities('x')"));
     }
 
     #[test]
@@ -4317,6 +4329,10 @@ mod writing_procedure_tests {
         for q in [
             "CALL drevo.memory.evidence('Dana', 5)",
             "CALL drevo.memory.factsAt('Dana', null)",
+            "CALL drevo.extract.entities('Dana joined Acme.')",
+            "CALL drevo.extract.facts('Dana joined Acme.', {})",
+            "CALL drevo.extract.chunks('Dana joined Acme.')",
+            "CALL drevo.extract.status()",
         ] {
             assert!(!writes(q), "{q}");
         }

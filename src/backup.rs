@@ -42,6 +42,7 @@ const SERVER_FILES: &[&str] = &[
     "security.json",
     "embeddings_config.json",
     "text2cypher_config.json",
+    "extract_config.json",
 ];
 
 /// Where each database's backup lives inside a server backup.

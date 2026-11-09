@@ -26,6 +26,39 @@ history and the in-repo issue tracker; format loosely follows
   `trace` the call stays read-only. Search hits that are hidden from the
   user or carry an excluded label (messages, traces of the same question)
   no longer take the places of the `k` seeds of `drevo.rag.*`.
+
+- **LLM extraction inside the database: `drevo.extract.entities(text[,
+  config])`, `drevo.extract.facts(text[, config])`, `drevo.extract.ingest(text,
+  config)`, `drevo.extract.chunks(text[, config])` and
+  `drevo.extract.status()`** (issue #786). A text is cut into passages
+  (`chunkChars`, 1500, at paragraph / sentence / word boundaries, 10 %
+  overlap, character offsets) and each is sent to an OpenAI-compatible chat
+  endpoint asking for one JSON object of entities and facts, each quoting the
+  passage verbatim with its character offset. Every quote is located in the
+  passage before it is used — moved to its nearest place when the offset is
+  wrong, whitespace differences repaired, dropped and counted in `skipped`
+  when the passage does not contain it — so invented quotes never reach the
+  results or the graph. A non-JSON answer is asked for once more, then the
+  call fails. Config: `types` (POLE+O by default, extra types allowed),
+  `relations` (allow-list, upper-snake-cased), `schemaHint`, `language`,
+  `model`, `minConfidence` (0.5), and for `ingest` `source` (required),
+  `session`, `resolve` (`'exact'` or `'fuzzy'`, as `rememberEntity` resolves)
+  and `dryRun`. `ingest` writes in one transaction,
+  through the long-term memory procedures: the `:Source`, its `:Chunk`s
+  (`<sourceId>#<order>`, `FROM` + `NEXT`), each entity with
+  `MENTIONED_IN {offset, length, surface}`, and each fact (non-exclusive)
+  with `source_id, chunk_id, quote, offset, length`; re-ingesting changes
+  nothing. Called from an `afterAsync` `apoc.trigger`, it extracts every new
+  document after its commit. The endpoint is `DREVO_EXTRACT_UPSTREAM /
+  _MODEL / _API_KEY` (each defaulting to its `DREVO_TEXT2CYPHER_*` twin; the
+  text-to-Cypher key is only reused for the same upstream) with
+  `DREVO_EXTRACT_TIMEOUT_MS` (60000), settable at runtime through `GET`/`POST
+  /config/extract` and kept in `extract_config.json` (sealed when encrypted,
+  part of a server backup). Needs the `embeddings-proxy` build feature; without
+  an endpoint the procedures report a capability error naming
+  `drevo.extract.status()`. The chat client of `drevo.cypher.fromText` is now
+  shared as `drevo::llm` (`ChatCompleter`); text-to-Cypher behaves as before.
+
 - **Graph-RAG in one call: `drevo.rag.context(query[, config]) YIELD text,
   tokens, format, nodeIds, relIds, truncated, mode, traceId`,
   `drevo.rag.retrieve(query[, config]) YIELD node, seedScore, distance,

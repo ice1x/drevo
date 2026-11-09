@@ -9,7 +9,7 @@
 //!
 //! Every database in `DREVO_DATA_DIR` — its log, the engine's sidecars and
 //! `semantic.json` — and the server's `database_access.json`,
-//! `security.json`, `embeddings_config.json` and `text2cypher_config.json` are rewritten.
+//! `security.json`, `embeddings_config.json`, `text2cypher_config.json` and `extract_config.json` are rewritten.
 //! The server must be stopped (a running one holds the stores' locks). Each
 //! file is replaced atomically, but not all of them at once: back the data
 //! directory up first (`drevo-server backup`).
@@ -112,6 +112,10 @@ fn run(
         (
             crate::text2cypher::TEXT2CYPHER_CONFIG_FILE,
             crate::text2cypher::TEXT2CYPHER_CONFIG_CONTEXT,
+        ),
+        (
+            crate::extract::settings::EXTRACT_CONFIG_FILE,
+            crate::extract::settings::EXTRACT_CONFIG_CONTEXT,
         ),
     ] {
         rekey_file(&data_dir.join(file), context, from.as_ref(), to.as_ref())?;
