@@ -212,6 +212,45 @@ RETURN b.title, b.severity
 Louvain community detection clusters related issues — see
 [`louvain_communities`](sdk-reference.md#graph-analytics).
 
+### Two names, one entity
+
+An agent that remembers what it reads soon knows «Пушкин» and «А. С. Пушкин»
+as two people, with the facts about the poet split between them. drevo
+resolves this in three steps: find the pairs, review them, merge.
+
+Ask for the pairs that probably name the same thing. Entities of different
+types are never paired, so the street «Пушкина» (a `LOCATION`) stays apart:
+
+```text
+CALL drevo.entity.candidates('Entity', {threshold: 0.9})
+YIELD a, b, score, reasons
+RETURN a.name, b.name, score, reasons
+```
+
+Each row says why it was offered — `['name:1.00', 'shared_token:пушкин']`.
+After a person or an agent has agreed, fold the second node into the first:
+
+```text
+MATCH (keep:Entity {name: 'Пушкин'}), (dup:Entity {name: 'А. С. Пушкин'})
+CALL drevo.entity.merge(keep, [dup], {strategy: 'keepFirst'})
+YIELD kept, merged, relationshipsMoved
+RETURN kept.aliases, merged, relationshipsMoved
+```
+
+The facts move to «Пушкин», the old spelling becomes an alias, and later
+mentions of it find the kept entity:
+
+```text
+CALL drevo.memory.rememberEntity(null, 'А.С. Пушкин', 'PERSON', null, {resolve: 'alias'})
+YIELD node
+RETURN node.name
+```
+
+`resolve: 'fuzzy'` goes further and reuses a sufficiently similar name,
+recording near-misses as `POSSIBLY_SAME` for review; the default stays exact,
+because a wrong automatic merge loses data. See
+[Entity resolution](cypher-reference.md#entity-resolution).
+
 ---
 
 ## 6. Graph-RAG inside drevo

@@ -948,7 +948,8 @@ impl NativeService {
                     || {
                         let writes = query_writes(query)
                             || ((checked_writes || triggers)
-                                && query_calls_writing_procedure(query));
+                                && query_calls_writing_procedure(query))
+                            || query_merges_entities(query);
                         // A writing statement is one transaction: one log
                         // record and fsync, and nothing of it stays when it
                         // fails (#715).
@@ -3675,8 +3676,21 @@ fn query_calls_writing_procedure(query: &Query) -> bool {
                     | "drevo.memory.retractFact"
                     | "drevo.memory.addSource"
                     | "drevo.memory.addChunks"
+                    | "drevo.entity.merge"
             ))
         })
+    })
+}
+
+/// Whether `query` calls `drevo.entity.merge`, whose moves, deletes and
+/// aliases must land together or not at all.
+fn query_merges_entities(query: &Query) -> bool {
+    use crate::cypher::ast::Clause;
+    query.parts.iter().any(|part| {
+        part.query
+            .clauses
+            .iter()
+            .any(|c| matches!(c, Clause::Call(call) if call.name.join(".") == "drevo.entity.merge"))
     })
 }
 
@@ -4164,6 +4178,39 @@ mod writing_procedure_tests {
             "CALL drevo.memory.addChunks('book-1', [{order: 0, text: 'x'}]) YIELD node RETURN node",
         ] {
             assert!(writes(q), "{q}");
+        }
+    }
+
+    #[test]
+    fn entity_merge_and_resolving_remember_are_writing_procedures() {
+        for q in [
+            "CALL drevo.entity.merge(1, [2], {strategy: 'collect'})",
+            "MATCH (a), (b) CALL drevo.entity.merge(a, [b]) YIELD kept RETURN kept",
+            "CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null, {resolve: 'fuzzy'})",
+        ] {
+            assert!(writes(q), "{q}");
+        }
+    }
+
+    #[test]
+    fn only_entity_merge_always_runs_as_one_transaction() {
+        use super::query_merges_entities;
+        let merges = |q: &str| query_merges_entities(&parse(q).expect("parse"));
+        assert!(merges("CALL drevo.entity.merge(1, [2])"));
+        assert!(merges(
+            "MATCH (a), (b) CALL drevo.entity.merge(a, [b]) YIELD kept RETURN kept"
+        ));
+        assert!(!merges("CALL drevo.entity.candidates('Entity')"));
+        assert!(!merges("CALL drevo.memory.addMessage('s', 'user', 'hi')"));
+    }
+
+    #[test]
+    fn entity_candidates_and_aliases_are_not() {
+        for q in [
+            "CALL drevo.entity.candidates('Entity', {})",
+            "CALL drevo.entity.aliases('Пушкин')",
+        ] {
+            assert!(!writes(q), "{q}");
         }
     }
 

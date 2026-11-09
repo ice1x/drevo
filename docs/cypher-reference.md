@@ -816,6 +816,7 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `drevo.graph.expand(seeds[, config])` | `node, distance, via, truncated` | The seeds and every node within `hops` of them, each once at its shortest distance with the relationship that reached it, in a fixed order — see [Graph expansion](#graph-expansion) |
 | `drevo.rag.retrieve(query[, config])` | `node, seedScore, distance, pprScore, rank, via, truncated` | The nodes that answer a question, best first: hybrid-search seeds, then their neighbourhood ranked by Personalized PageRank, distance or walk order — see [Graph-RAG retrieval](#graph-rag-retrieval) |
 | `drevo.rag.context(query[, config])` | `text, tokens, format, nodeIds, relIds, truncated, mode, traceId` | The same nodes and the relationships between them written as LLM-ready text (markdown, triples or JSON) within a token budget — see [Graph-RAG retrieval](#graph-rag-retrieval) |
+| `drevo.entity.candidates(label[, config])`, `drevo.entity.merge(keepId, dropIds[, config])`, `drevo.entity.aliases(name)` | `a, b, nameScore, vectorScore, score, reasons`; `kept, merged, relationshipsMoved, propertiesMerged`; `entity, aliases` | Pairs of nodes that probably name the same thing, with the reasons; folding dropped nodes into a kept one that remembers their names; the nodes known under a name — see [Entity resolution](#entity-resolution) |
 | `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
 | `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes — see [Secondary indexes](#secondary-indexes) |
 | `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
@@ -899,6 +900,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 |--------|-----------|
 | String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
 | Edit distance | `apoc.text.levenshteinDistance(a, b)` — the fewest single-character insertions, deletions and substitutions turning `a` into `b` (an `Integer`); `apoc.text.levenshteinSimilarity(a, b)` — `1 − distance / max(length)`, `1.0` for two empty strings. Characters are Unicode code points. See [Fuzzy matching](#fuzzy-matching-593) |
+| Name normalisation | `drevo.entity.normalise(name)` — `name` lower-cased, without accents or punctuation, words separated by single spaces (`'А. С. Пушкин'` → `'а с пушкин'`), the form entity resolution compares. See [Entity resolution](#entity-resolution) |
 | Numeric | `abs`, `ceil`, `floor`, `round(x[, precision[, mode]])`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` — see [round()](#rounding-with-round) for the precision / mode overloads |
 | List conversion | `toIntegerList(list)`, `toFloatList(list)`, `toBooleanList(list)`, `toStringList(list)` — element-wise conversion; an unconvertible (or `NULL`) element becomes `NULL`, preserving list length |
 | Lenient conversion | `toIntegerOrNull(x)`, `toFloatOrNull(x)`, `toBooleanOrNull(x)`, `toStringOrNull(x)` — fully-lenient scalar conversion; any value that cannot be converted yields `NULL` instead of an error (unlike the strict `toString`, which errors on a non-stringifiable value) |
@@ -1822,6 +1824,25 @@ Unlike the reference library, where `valid_until` is written but never set,
 drevo closes superseded facts and filters on the window, so "as of" questions
 get real answers.
 
+`rememberEntity` keys on the exact name by default. Its optional fifth
+argument — the map that also carries provenance (below) — takes `resolve` to
+reuse an entity known under another spelling: `'exact'` (the default) as
+above; `'alias'` also reuses the entity of the same type an `:Alias` with
+the same normalised name points at (see
+[Entity resolution](#entity-resolution)); `'fuzzy'` then compares the name
+with every entity of the type and reuses the one scoring at least
+`threshold` (default 0.9). When several score that high, or none does, a
+new entity is created with `-[:POSSIBLY_SAME {score}]->` the ones at or
+above the threshold, or else the closest (up to five) within 0.1 below it,
+for a later review. `threshold` is only accepted with `resolve: 'fuzzy'`.
+
+```cypher
+CALL drevo.memory.rememberEntity(null, 'Пушкин', 'PERSON', 'poet') YIELD node AS poet
+CALL drevo.memory.rememberEntity(null, 'Пушкину', 'PERSON', null, {resolve: 'fuzzy'})
+YIELD node
+RETURN node.name, id(node) = id(poet)
+```
+
 #### Provenance: sources, chunks and quotes
 
 Long-term memory can record where it read something, so an answer can show
@@ -1855,7 +1876,9 @@ RETURN node.id, node.order, node.text
 ```
 
 `rememberEntity` and `assertFact` take an optional fifth argument, a
-`provenance` map `{source, chunk, quote, offset, length, surface}`. `source`
+`provenance` map `{source, chunk, quote, offset, length, surface}`; for
+`rememberEntity` the same map also carries the resolution keys `resolve` and
+`threshold` described above. `source`
 and `chunk` are either an id, which must exist, or a map that is upserted by
 its `id` (`{id, uri, title, kind}` and `{id, order, offset, length, text}`; a
 chunk map needs a source). A chunk named by id brings its own source. When
@@ -2775,6 +2798,169 @@ unknown key (`includeSeeds` included: seeds are always returned) and a value of
 the wrong type or range fail with an error naming the key; an explicit `mode:
 'hybrid'` or `'vector'` without an embedder fails as in `drevo.search.hybrid`.
 Over HTTP the same call is [`POST /rag/context`](admin-guide.md#graph-rag-context-post-ragcontext).
+
+### Entity resolution
+
+Two spellings of one thing — «Пушкин» and «А. С. Пушкин», `ACME Corp.` and
+`Acme Corporation` — become two nodes, and the facts about the thing split
+between them. Entity resolution finds such pairs, lets a person or an agent
+review them, and folds each pair into one node that remembers the other
+spelling:
+
+```text
+CALL drevo.entity.candidates(label[, config])
+YIELD a, b, nameScore, vectorScore, score, reasons
+
+CALL drevo.entity.merge(keepId, dropIds[, config])
+YIELD kept, merged, relationshipsMoved, propertiesMerged
+
+CALL drevo.entity.aliases(name) YIELD entity, aliases
+```
+
+Names are compared in a normalised form: lower case, Latin letters without
+accents (`é` → `e`, `ß` → `ss`), `ё` → `е`, and every run of punctuation and
+spaces one space, so initials become one-letter words. The function
+`drevo.entity.normalise(name)` returns that form:
+
+```cypher
+RETURN drevo.entity.normalise('А. С. Пушкин') AS initials,
+       drevo.entity.normalise('Émile  Zola!') AS accents
+```
+
+returns `'а с пушкин'` and `'emile zola'`.
+
+#### Candidates
+
+`drevo.entity.candidates` compares the names of the nodes with `label` and
+returns the pairs scoring at least `threshold`, best first (then by the ids
+of `a` and `b`; `a` is always the older node). Nodes whose types differ are
+never paired, so the street «Пушкина» (a `LOCATION`) is never offered as the
+poet «Пушкин»:
+
+```cypher
+CALL drevo.memory.rememberEntity(null, 'Пушкин', 'PERSON', 'poet') YIELD node AS p1
+CALL drevo.memory.rememberEntity(null, 'А. С. Пушкин', 'PERSON', null) YIELD node AS p2
+CALL drevo.memory.rememberEntity(null, 'Пушкина', 'LOCATION', 'a street') YIELD node AS p3
+WITH count(*) AS remembered
+CALL drevo.entity.candidates('Entity', {})
+YIELD a, b, nameScore, vectorScore, score, reasons
+RETURN a.name, b.name, nameScore, vectorScore, score, reasons
+```
+
+returns one row: «Пушкин» and «А. С. Пушкин» with `nameScore` 1.0,
+`vectorScore` `null`, `score` 1.0 and the reasons
+`['name:1.00', 'shared_token:пушкин']`.
+
+`nameScore` is the Jaro–Winkler similarity of the normalised names, or a
+higher one that allows for initials: a name without initials is compared
+with the other name's words without them («пушкин» and «а с пушкин» score
+1.0), and a name with initials is compared with the other name cut to
+initials where the words differ («а п смирнова» and «анна петровна смирнова»
+score 1.0). Names whose initials disagree («а с пушкин», «л н пушкин») are
+only as close as their spelling. `vectorScore` is the cosine similarity of
+the two nodes' embeddings when `embeddingProperty` is set and both have one,
+else `null`. `score` is the weighted mean of the scores present; when one is
+missing the other counts alone. `reasons` lists, as strings, the name score,
+the vector score (when present) and every shared word of at least three
+characters, so a reviewer sees why a pair was offered.
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `nameProperty` | `'name'` | the property holding a node's name; nodes without a string there are skipped |
+| `typeProperty` | `'type'` | pairs whose values here differ are never candidates (two missing values are equal) |
+| `embeddingProperty` | `null` | the property holding a node's embedding; `null` compares names only |
+| `threshold` | `0.9` | the `score` a pair needs, inclusive |
+| `nameWeight` / `vectorWeight` | `0.5` / `0.5` | how much each score counts; not both `0` |
+| `blocking` | `'prefix3'` | which pairs are compared at all: `'prefix3'` — names whose first three characters agree once initials are left out; `'token'` — names sharing a word of three or more characters; `'none'` — every pair |
+| `maxPairs` | `100000` | the most pairs compared; more fails with an error suggesting blocking |
+| `normalise` | `true` | `false` compares the names as they are written |
+
+A label that is not a string, a config that is not a map, an unknown key and
+a wrong-typed or out-of-range value fail with an error naming the key.
+
+#### Merge
+
+`drevo.entity.merge(keepId, dropIds[, config])` folds the dropped nodes into
+the kept one, in one transaction:
+
+- every relationship of a dropped node is re-created on the kept node with
+  its type and properties; one the kept node would then have twice (same
+  type, same other end, same direction and equal properties) is dropped
+  instead. A relationship between the kept and a dropped node becomes a
+  self-loop, kept once; a `POSSIBLY_SAME` between them is settled and
+  dropped;
+- the kept node's properties are combined with the dropped nodes' by
+  `strategy`: `'keepFirst'` (the kept node's value wins, missing ones are
+  filled from the dropped nodes in order), `'newest'` (the value of the
+  most recently changed node — `updated_at`, else `created_at` — wins; the
+  kept node wins a tie) or `'collect'` (differing scalar values become a
+  list, the kept node's first). The name, the type, `id`, `created_at`,
+  `updated_at`, `aliases` and `merged_ids` are never combined;
+- the dropped nodes' names (and their own aliases) are appended to the kept
+  node's `aliases` list, without repeats, and each dropped name gets an
+  `(:Alias {name, normalised, created_at})-[:ALIAS_OF]->(kept)` node, so
+  `drevo.entity.aliases` and `rememberEntity` with `resolve: 'alias'` find
+  the old spelling;
+- the dropped nodes are deleted and their ids appended to the kept node's
+  `merged_ids`.
+
+```cypher
+CALL drevo.memory.rememberEntity(null, 'Пушкин', 'PERSON', 'poet') YIELD node AS keep
+CALL drevo.memory.rememberEntity(null, 'А. С. Пушкин', 'PERSON', 'author of Onegin') YIELD node AS dup
+CALL drevo.memory.rememberEntity(null, 'Евгений Онегин', 'OBJECT', null) YIELD node AS novel
+CALL drevo.memory.assertFact('А. С. Пушкин', 'WROTE', 'Евгений Онегин', false) YIELD rel
+CALL drevo.entity.merge(keep, [dup], {strategy: 'keepFirst'})
+YIELD kept, merged, relationshipsMoved, propertiesMerged
+RETURN kept.name, kept.aliases, kept.description, merged, relationshipsMoved, propertiesMerged
+```
+
+returns «Пушкин» with aliases `['А. С. Пушкин']`, description `'poet'`, one
+node merged and one relationship (the `WROTE` fact) moved;
+`drevo.memory.factsAt('Пушкин', null)` now lists the fact.
+
+`keepId` is a node or a node id; `dropIds` is a node, a node id or a list
+mixing both (repeats count once; an empty list changes nothing). The call
+runs once per input row, so both may come from an earlier clause. It fails,
+writing nothing, when an id is not a node, the kept node is among the
+dropped ones, or a dropped node's type differs from the kept node's — unless
+the config says `force: true` (the kept node keeps its type). It needs the
+privilege to delete the dropped nodes and to create relationships and
+`:Alias` nodes, and goes through the regular write path: triggers fire,
+change events are posted and auto-embedding applies. Two transactions
+merging overlapping nodes conflict at commit; one of them fails.
+
+| Config key | Default | Meaning |
+|---|---|---|
+| `strategy` | `'keepFirst'` | `'keepFirst'`, `'newest'` or `'collect'` |
+| `force` | `false` | merge nodes of different types |
+| `nameProperty` | `'name'` | the property holding a node's name |
+| `typeProperty` | `'type'` | the property holding a node's type |
+
+There is no undo: `merged_ids` records what was folded in.
+
+#### Aliases
+
+`drevo.entity.aliases(name)` returns the nodes known under `name`, compared
+normalised: the nodes an `:Alias` of that name points at and the nodes
+(other than `:Alias` nodes) whose `name` it is, each with its aliases — its
+`aliases` list, then the names of `:Alias` nodes pointing at it that the list
+lacks — by node id.
+
+```cypher
+CALL drevo.memory.rememberEntity(null, 'Пушкин', 'PERSON', 'poet') YIELD node AS keep
+CALL drevo.memory.rememberEntity(null, 'Pushkin', 'PERSON', null) YIELD node AS dup
+CALL drevo.entity.merge(keep, dup) YIELD kept
+CALL drevo.entity.aliases('PUSHKIN') YIELD entity, aliases
+RETURN entity.name, aliases
+```
+
+returns «Пушкин» with `['Pushkin']`. A `name` that is not a string is an
+error.
+
+The workflow is `candidates`, then a review by a person or an agent, then
+`merge`. `rememberEntity` can also resolve a new mention against known
+entities as it writes — see `resolve` under
+[Long-term memory](#long-term-memory-entities-and-facts-over-time).
 
 ---
 

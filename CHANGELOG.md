@@ -34,6 +34,28 @@ history and the in-repo issue tracker; format loosely follows
   with the privileges and time limits of `POST /cypher` (400 naming a bad key, 403
   without the privilege). In Rust: the `drevo::rag` module (`RagConfig`,
   `Subgraph`, `serialize::render`, `tokens`).
+
+- **Entity resolution** (issue #787): `drevo.entity.candidates(label[,
+  config]) YIELD a, b, nameScore, vectorScore, score, reasons` lists the
+  pairs of nodes that probably name the same thing — Jaro–Winkler on
+  normalised names (case, accents and punctuation folded, initials allowed
+  for: «Пушкин» and «А. С. Пушкин» score 1.0), optionally cosine on an
+  embedding property, a weighted score with a threshold, blocking
+  (`'prefix3'`, `'token'`, `'none'`) capped by `maxPairs`, and readable
+  reasons (`['name:1.00', 'shared_token:пушкин']`); nodes of different types
+  never pair. `drevo.entity.merge(keepId, dropIds[, config]) YIELD kept,
+  merged, relationshipsMoved, propertiesMerged` folds nodes into one in a
+  single transaction: relationships re-created on the kept node without
+  duplicates, properties combined by `strategy` (`'keepFirst'`, `'newest'`,
+  `'collect'`), dropped names kept in `aliases` and as `(:Alias {name,
+  normalised})-[:ALIAS_OF]->` nodes, dropped ids in `merged_ids`; different
+  types are refused unless `force: true`. `drevo.entity.aliases(name) YIELD
+  entity, aliases` finds a node by any of its names, and
+  `drevo.entity.normalise(name)` returns the compared form.
+  `drevo.memory.rememberEntity`'s fifth argument also takes `resolve`
+  (`'exact'` — the default —, `'alias'`, `'fuzzy'`) and `threshold`: a fuzzy
+  mention reuses the one entity of its type above the threshold and
+  otherwise records `POSSIBLY_SAME {score}` near-misses.
 - **Provenance for long-term memory** (issue #785): memory can record where
   it read something. `drevo.memory.addSource(id, uri, title, kind) YIELD node`
   upserts a `:Source`; `drevo.memory.addChunks(sourceId, chunks) YIELD node`

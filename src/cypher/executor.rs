@@ -153,6 +153,10 @@ use std::sync::Arc;
 /// (`[*1..N]` / `[*N]`) honour the user's stated upper bound verbatim.
 const VARLEN_DEFAULT_UPPER: usize = 25;
 
+/// The `drevo.entity.*` procedures and the resolution step of
+/// `drevo.memory.rememberEntity`.
+mod entity_procs;
+
 use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, CreateConstraint, CreatePathIndex,
     CreateVectorIndex, Direction as AstDirection, DropConstraint, DropIndex, Expression,
@@ -161,10 +165,11 @@ use crate::cypher::ast::{
     RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery, UnaryOp,
     UnionKind, UnwindClause, YieldItem,
 };
+use crate::cypher::entity_resolution::config::{Resolve, ResolveOptions};
 use crate::cypher::lexer::Span;
 use crate::cypher::provenance::{
-    default_chunk_id, locate_quote, quote_at, quote_not_at, quote_not_found, ChunkRef, ChunkSpec,
-    Provenance, SourceRef, SourceSpec,
+    default_chunk_id, locate_quote, quote_at, quote_not_at, quote_not_found, remember_options,
+    ChunkRef, ChunkSpec, Provenance, SourceRef, SourceSpec,
 };
 use crate::engine::GraphEngine;
 use crate::error::DrevoError;
@@ -1773,7 +1778,8 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.indexes.secondary, drevo.indexes.setSecondary, \
                           fts.search, fts.searchRelationships, \
                           drevo.search.hybrid, drevo.search.hybridRelationships, \
-                          drevo.graph.expand, drevo.rag.retrieve, drevo.rag.context"
+                          drevo.graph.expand, drevo.rag.retrieve, drevo.rag.context, \
+                          drevo.entity.candidates, drevo.entity.merge, drevo.entity.aliases"
                         .into(),
                     span: c.span,
                 })?;
@@ -2289,6 +2295,8 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             // Edit distance (issue #593), under their APOC names.
             | "apoc.text.levenshteindistance"
             | "apoc.text.levenshteinsimilarity"
+            // The compared form of a name (entity resolution).
+            | "drevo.entity.normalise"
             // Numeric functions.
             | "abs"
             | "ceil"
@@ -6203,6 +6211,15 @@ impl<'a> Executor<'a> {
         if name == PERSONALIZED_PAGERANK {
             return self.run_personalized_pagerank(c, columns);
         }
+        if name == entity_procs::CANDIDATES {
+            return self.run_entity_candidates(c, columns);
+        }
+        if name == entity_procs::ALIASES {
+            return self.run_entity_aliases(c, columns);
+        }
+        if name == entity_procs::MERGE {
+            return self.run_entity_merge(c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -6587,6 +6604,17 @@ impl<'a> Executor<'a> {
         c: &CallClause,
         columns: &[&str],
         rows_for: &mut dyn FnMut(&Self, &Bindings) -> ExecResultT<Rows>,
+    ) -> ExecResultT<()> {
+        self.run_per_row_mut(c, columns, &mut |exec, row| rows_for(exec, row))
+    }
+
+    /// [`Self::run_per_row`] for a procedure that writes: `rows_for` gets
+    /// the executor mutably.
+    fn run_per_row_mut(
+        &mut self,
+        c: &CallClause,
+        columns: &[&str],
+        rows_for: &mut dyn FnMut(&mut Self, &Bindings) -> ExecResultT<Rows>,
     ) -> ExecResultT<()> {
         let prior = std::mem::take(&mut self.bindings);
         let mut kept = Vec::new();
@@ -8042,6 +8070,13 @@ impl<'a> Executor<'a> {
     /// chunk, once per `(entity, chunk, offset)`. `surface` defaults to the
     /// quote, else the entity's name; `offset` / `length` default to where the
     /// surface occurs in the chunk's text.
+    ///
+    /// The same map may carry `resolve`: `'exact'` (the default) keys on the
+    /// name as above; `'alias'` also reuses the entity of the type an `:Alias`
+    /// with the same normalised name points at; `'fuzzy'` then reuses the one
+    /// entity of the type whose name scores at least `threshold` (0.9), and
+    /// otherwise creates the entity with `-[:POSSIBLY_SAME {score}]->` its
+    /// near-misses.
     fn proc_memory_remember_entity(
         &mut self,
         args: &[Expression],
@@ -8073,7 +8108,8 @@ impl<'a> Executor<'a> {
                 ),
                 span,
             })?;
-        let mention = match self.memory_provenance_arg(PROC, args.get(4), span)? {
+        let (provenance, resolve) = self.memory_remember_options(PROC, args.get(4), span)?;
+        let mention = match provenance {
             Some(provenance) => {
                 if provenance.chunk.is_none() {
                     return Err(memory_refusal(
@@ -8121,9 +8157,19 @@ impl<'a> Executor<'a> {
             None => None,
         };
 
-        let existing = self.memory_nodes_named("Entity", &name)?.into_iter().find(
+        let mut existing = self.memory_nodes_named("Entity", &name)?.into_iter().find(
             |e| matches!(e.properties.get("type"), Some(Value::String(t)) if *t == entity_type),
         );
+        if existing.is_none() && Self::entity_resolves(resolve.resolve) {
+            existing = self.entity_by_alias(&name, &entity_type)?;
+        }
+        let mut near_misses = Vec::new();
+        if existing.is_none() && resolve.resolve == Resolve::Fuzzy {
+            match self.entity_fuzzy_match(&name, &entity_type, resolve.threshold)? {
+                entity_procs::FuzzyMatch::Reuse(entity) => existing = Some(entity),
+                entity_procs::FuzzyMatch::NearMisses(found) => near_misses = found,
+            }
+        }
         let entity = match existing {
             Some(entity) => {
                 let stale = description.as_ref().is_some_and(|d| {
@@ -8170,6 +8216,7 @@ impl<'a> Executor<'a> {
                 span,
             )?,
         };
+        self.entity_record_near_misses(&entity, near_misses, span)?;
 
         if let Some(session) = session {
             if let Some((_, message)) = self.memory_latest_message(&session)? {
@@ -8704,6 +8751,24 @@ impl<'a> Executor<'a> {
         let provenance =
             Provenance::from_value(&value).map_err(|m| memory_refusal(proc_name, m, span))?;
         Ok(provenance.filter(|p| *p != Provenance::default()))
+    }
+
+    /// Parse the optional options map of `rememberEntity`: its provenance
+    /// (an absent, `null` or empty one is none) and how a known entity is
+    /// found.
+    fn memory_remember_options(
+        &self,
+        proc_name: &str,
+        arg: Option<&Expression>,
+        span: Span,
+    ) -> ExecResultT<(Option<Provenance>, ResolveOptions)> {
+        let Some(arg) = arg else {
+            return Ok((None, ResolveOptions::default()));
+        };
+        let value = self.eval(arg, &Bindings::new())?;
+        let (provenance, resolve) =
+            remember_options(&value).map_err(|m| memory_refusal(proc_name, m, span))?;
+        Ok((provenance.filter(|p| *p != Provenance::default()), resolve))
     }
 
     /// Resolve a provenance map without writing anything: ids that must exist
@@ -13827,6 +13892,12 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         // passages behind an entity.
         "drevo.memory.addSource" | "drevo.memory.addChunks" => Some(&["node"]),
         "drevo.memory.evidence" => Some(&["chunk", "quote", "offset", "source", "fact"]),
+        // Entity resolution: candidate pairs, merges and aliases.
+        entity_procs::CANDIDATES => {
+            Some(&["a", "b", "nameScore", "vectorScore", "score", "reasons"])
+        }
+        entity_procs::MERGE => Some(&["kept", "merged", "relationshipsMoved", "propertiesMerged"]),
+        entity_procs::ALIASES => Some(&["entity", "aliases"]),
         // Text-to-Cypher LLM proxy (issue #429): NL prompt -> Cypher string.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => Some(&["cypher"]),
@@ -13853,7 +13924,9 @@ fn procedure_optional_args(name: &str) -> usize {
         | "drevo.memory.rememberEntity"
         | "drevo.memory.assertFact"
         | RAG_RETRIEVE
-        | RAG_CONTEXT => 1,
+        | RAG_CONTEXT
+        | entity_procs::CANDIDATES
+        | entity_procs::MERGE => 1,
         _ => 0,
     }
 }
@@ -14013,6 +14086,12 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.memory.addChunks" => 2,
         // drevo.memory.evidence(name, k).
         "drevo.memory.evidence" => 2,
+        // drevo.entity.candidates(label[, config]).
+        entity_procs::CANDIDATES => 2,
+        // drevo.entity.merge(keepId, dropIds[, config]).
+        entity_procs::MERGE => 3,
+        // drevo.entity.aliases(name).
+        entity_procs::ALIASES => 1,
         // drevo.memory.retractFact(subject, relation, object) (issue #533).
         "drevo.memory.retractFact" => 3,
         // drevo.memory.factsAt(name, asOf) (issue #533).
@@ -14690,6 +14769,9 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
             let (a, b) = two_strings("apoc.text.levenshteinSimilarity", &args, span)?;
             Ok(Value::Float(crate::levenshtein::similarity(a, b)))
         }
+        "drevo.entity.normalise" => str_map("drevo.entity.normalise", args, span, |s| {
+            crate::cypher::entity_resolution::normalise::normalise(s)
+        }),
         // ---- Numeric ----
         "abs" => scalar_abs(args, span),
         "ceil" => float_map(name, args, span, f64::ceil),
