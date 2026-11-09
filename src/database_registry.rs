@@ -179,6 +179,15 @@ pub struct DatabaseRegistry {
     limits: Arc<crate::limits::ConnectionLimits>,
 }
 
+/// Dropping the registry stops the ingest schedulers it started, waiting for
+/// them, so no background thread still holds a database once the registry
+/// and the caller's handles are gone (its store can be opened again at once).
+impl Drop for DatabaseRegistry {
+    fn drop(&mut self) {
+        self.stop_ingest_all();
+    }
+}
+
 // `NativeService` is not `Debug`, so derive would not apply; print the catalog
 // shape (names) rather than the service internals.
 impl std::fmt::Debug for DatabaseRegistry {
@@ -398,6 +407,7 @@ impl DatabaseRegistry {
         for (name, service) in &dbs {
             service.join_server(name, default.transactions());
             service.start_trigger_worker();
+            service.start_ingest();
         }
         Self {
             default_name,
@@ -569,6 +579,7 @@ impl DatabaseRegistry {
         {
             service.join_server(name, self.default_service().transactions());
             service.start_trigger_worker();
+            service.start_ingest();
         }
         dbs.insert(name.to_string(), Arc::clone(&service));
         Ok(service)
@@ -610,6 +621,7 @@ impl DatabaseRegistry {
         {
             service.join_server(name, self.default_service().transactions());
             service.start_trigger_worker();
+            service.start_ingest();
         }
         dbs.insert(name.to_string(), Arc::clone(&service));
         Ok(service)
@@ -673,6 +685,9 @@ impl DatabaseRegistry {
         };
         // A database created later under the same name starts read-write.
         let forgotten = self.persist_access(&dbs);
+        // Stop its ingest jobs: nothing more is written to it.
+        #[cfg(not(target_arch = "wasm32"))]
+        service.stop_ingest();
         // Close this handle before touching the files. Other threads may still
         // hold an `Arc` (an in-flight routed query); on Unix that keeps the
         // now-unlinked WAL readable until they finish, which is the intended
@@ -689,6 +704,14 @@ impl DatabaseRegistry {
             }
         }
         forgotten
+    }
+
+    /// Stop the ingest jobs of every database: the registry started them.
+    fn stop_ingest_all(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        for service in self.read().values() {
+            service.stop_ingest();
+        }
     }
 
     /// Read-lock the catalog, recovering from a poisoned lock rather than
@@ -873,6 +896,22 @@ mod tests {
         let reg = DatabaseRegistry::with_durable_dir(Arc::clone(&default), data_dir)
             .expect("build durable registry");
         (default, reg)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn dropping_the_registry_lets_go_of_every_database_at_once() {
+        // Each database's ingest scheduler is stopped with the registry, so
+        // no background thread still holds a database while it is closed and
+        // opened again.
+        let dir = tempfile::tempdir().expect("tempdir");
+        for _ in 0..20 {
+            let (default, reg) = durable_registry_at(dir.path());
+            let foo = reg.create_in_memory("mem").expect("create mem");
+            drop(reg);
+            assert_eq!(Arc::strong_count(&default), 1);
+            assert_eq!(Arc::strong_count(&foo), 1);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

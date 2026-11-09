@@ -58,6 +58,9 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_MAX_TX_WRITES` | `1000000` | How many writes (node or relationship creates, updates and deletes) one explicit transaction may buffer before it commits. A transaction keeps them all in memory, so this bounds what one runaway `BEGIN` can hold. The statement that goes over fails with `Neo.ClientError.General.TransactionOutOfMemoryError` (HTTP 507), which drivers do not retry, and the transaction is rolled back. `SHOW TRANSACTIONS` shows each open transaction's `bufferedWrites`. Auto-commit statements are not limited. `0` means no limit. |
 | `DREVO_EXPAND_MAX_HOPS` | `6` | The most `hops` one `drevo.graph.expand` call may ask for. A call asking for more fails with an error naming this limit. At least `1`. |
 | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for, which bounds the rows and the memory one call can use. A call asking for more fails with an error naming this limit; when it is below `200`, calls that name no `maxNodes` get it instead. At least `1`. |
+| `DREVO_INGEST_WORKERS` | `2` | [Ingest-job](#ingest-jobs) items extracted at once, across every database. A job's `concurrency` is capped by it. At least `1`. |
+| `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts an ingest item gets when its job names no `maxAttempts`; after the last failed one the item is `dead`. 1–100. |
+| `DREVO_INGEST_RETRY_BASE_MS` | `2000` | A failed ingest item waits `base × 2^attempts` milliseconds (at most 5 minutes, less a random part of up to half) before it is tried again. At least `1`. |
 | `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep forever) | Delete [context traces](cypher-reference.md#context-traces) (`:ContextTrace`, recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours after — the same as an administrator running `drevo.rag.pruneTraces`. A whole number; `0` keeps them. |
 | `DREVO_TX_CONFLICT_HISTORY` | `10000` | How many recent commits a database remembers to decide whether an explicit transaction overlapped with them. A transaction that began before the oldest remembered commit, and saw others commit since, gets the retryable conflict (counted as `history`). Raise it if `drevo_tx_conflicts_total{reason="history"}` grows; a few hundred bytes per remembered commit. |
 | `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once. One more is refused when the driver says `HELLO`, with `Neo.TransientError.Request.NoThreadsAvailable`, which drivers retry. `0` means no limit. See [Connection limits](#connection-limits). |
@@ -478,6 +481,75 @@ as a trigger failure and shows in `drevo.extract.status()`; the document stays.
 The trigger runs on one worker thread, one document at a time, so it suits
 short texts.
 
+### Ingest jobs
+
+For a long text — a book is hundreds of passages and a model call each — use
+an ingest job (`drevo.ingest.submit`, see the
+[Cypher Reference](cypher-reference.md#ingest-jobs)) instead of one
+`drevo.extract.ingest` call. The job is stored in the graph as an
+`:IngestJob` with one `:IngestItem` per passage, so it survives a restart and
+can be read with Cypher; each database runs its jobs on a scheduler thread of
+its own, one transaction per passage.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `DREVO_INGEST_WORKERS` | `2` | Items with the model at once, across every database. A job's `concurrency` is capped by it when the job runs (a larger `concurrency` is accepted at submit and counts as this). Raise it as far as the model's rate limit allows. |
+| `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts per item when the job names no `maxAttempts` (1–100). |
+| `DREVO_INGEST_RETRY_BASE_MS` | `2000` | The wait before attempt `n + 1` is `base × 2^n`, at most 5 minutes, less a random part of up to half, so items that failed together do not retry together. |
+
+**What `dead` means.** An item is `dead` when it will not be tried again: it
+used `maxAttempts` on failures that may pass (a rate limit `429`, a timeout,
+a `5xx`, a lost connection), or it failed in a way another attempt cannot fix
+(another `4xx` — a wrong model name or key —, an answer that is not the
+extraction JSON even when asked twice, or `drevo.extract.ingest` refusing the
+passage, e.g. an unknown source id). A job whose remaining items are all dead
+is `failed`, and an ERROR (target `drevo::ingest`, with the job id, the number
+of dead items and the last error) goes to the log and the Web UI's problem
+feed.
+
+**Runbook.**
+
+1. Find failed jobs and why:
+
+   ```cypher
+   CALL drevo.ingest.list('failed', 20) YIELD job
+   RETURN job.id, job.failed, job.total, job.updated_at
+   ```
+
+   ```text
+   CALL drevo.ingest.errors($jobId, 10) YIELD seq, attempts, last_error
+   ```
+
+2. Fix the cause — the endpoint (`POST /config/extract`), the model, the key,
+   or the rate limit (`DREVO_INGEST_WORKERS`, a job's `concurrency`).
+3. Run the dead items again with fresh attempts:
+
+   ```text
+   CALL drevo.ingest.retryFailed($jobId) YIELD requeued
+   ```
+
+4. When a job is done (or given up with `drevo.ingest.cancel`), drop its
+   stored passages — the item nodes hold the text, so a 1 MB book keeps 1 MB
+   in the graph until then; the job node and its counters stay:
+
+   ```text
+   CALL drevo.ingest.purge($jobId) YIELD deleted
+   ```
+
+`drevo.ingest.pause` / `resume` hold a job back without losing its place;
+an item already with the model finishes either way. When the server stops,
+the items with the model are lost and run again after the next start; a
+running job carries on, a paused one stays paused. When a database is
+dropped or closed while items are with the model, those calls keep their
+`DREVO_INGEST_WORKERS` slots until the model answers or
+`DREVO_EXTRACT_TIMEOUT_MS` passes (60 s by default); the answers are thrown
+away and the items run again when the store is next opened. Without an extraction
+endpoint the jobs wait. `drevo_ingest_items_total{state}` and
+`drevo_ingest_jobs_active` (see [Prometheus metrics](#prometheus-metrics))
+and the `ingest` events on [`GET /events`](#change-events-get-events) show
+progress. The Web UI does not show ingest jobs yet; follow
+`/events?names=ingest` or poll `drevo.ingest.status`.
+
 ---
 
 ## 3. Docker
@@ -675,6 +747,8 @@ bundle (dependency-free, always compiled — see [`src/observability/`](https://
 | `drevo_connections_active` | gauge | `protocol` |
 | `drevo_prepared_transactions` | gauge | — |
 | `drevo_prepared_transaction_oldest_age_seconds` | gauge | — |
+| `drevo_ingest_items_total` | counter | `state` (`done`/`failed`/`dead`) |
+| `drevo_ingest_jobs_active` | gauge | — |
 | `drevo_build_info` | gauge | `version` |
 
 `drevo_storage_file_bytes` (#253 slice 1) is the physical on-disk size of the backend file,
@@ -691,6 +765,11 @@ transaction began before the oldest of the `DREVO_TX_CONFLICT_HISTORY` remembere
 `drevo_tx_merged_commits_total` counts the commits that went through although others committed
 since they began. A growing `history` means the history is too short for the transactions'
 lifetimes; a high `would_pass` share under `serializable` is what snapshot isolation would save.
+
+`drevo_ingest_items_total{state}` counts [ingest-job](#ingest-jobs) item attempts by how they
+ended: `done` (written), `failed` (to be tried again) and `dead` (given up); a rising `failed`
+rate usually means the model's rate limit, a rising `dead` count a job that needs attention.
+`drevo_ingest_jobs_active` is the number of jobs queued or running in every database.
 
 `drevo_statement_timeouts_total` (#552) counts statements stopped by `DREVO_QUERY_TIMEOUT_MS`,
 over HTTP and Bolt. Each one is also logged at **ERROR** (target `drevo::query`) with the
@@ -1410,6 +1489,18 @@ data: {"name":"invoice_approved","payload":{"invoice":"INV-7"},"cursor":45}
 ```js
 const events = new EventSource("/events?names=invoice_approved");
 events.addEventListener("posted", (e) => notify(JSON.parse(e.data).payload));
+```
+
+#### Ingest progress
+
+Each [ingest job](#ingest-jobs) sends an `ingest` event when its state or counts change, at most
+once a second per job (the latest state wins); `done` never goes down. Follow them alone with
+`?names=ingest`:
+
+```text
+id: 52:3
+event: ingest
+data: {"jobId":"0193…","state":"running","done":12,"failed":0,"total":40,"cursor":52}
 ```
 
 #### Stream options

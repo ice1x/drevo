@@ -367,6 +367,26 @@ pub fn report_stale_prepared(
     newly
 }
 
+/// Report an ingest job that turned `failed` — every item left is `dead` —
+/// at ERROR (target `drevo::ingest`), which lands in the problem feed, with
+/// the number of dead items and the error that ended the last of them.
+pub(crate) fn report_failed_ingest_job(
+    database: &str,
+    job: &str,
+    dead: u64,
+    last_error: Option<&str>,
+) {
+    tracing::error!(
+        target: "drevo::ingest",
+        database,
+        job,
+        dead,
+        last_error = last_error.unwrap_or(""),
+        "ingest job failed: its remaining items are dead; see CALL drevo.ingest.errors(job, 10) \
+         and retry them with CALL drevo.ingest.retryFailed(job)"
+    );
+}
+
 /// Roll back, heuristically, every transaction prepared on `service` longer
 /// than `timeout` (#556, the opt-in `DREVO_PREPARED_TX_TIMEOUT_SECS`). Each
 /// one is logged at ERROR (target `drevo::tx`) — it overrides whatever the
@@ -478,6 +498,32 @@ mod tests {
             "x sk-<redacted> y sk-q"
         );
         assert_eq!(redact_keys("no keys"), "no keys");
+    }
+
+    #[test]
+    fn a_failed_ingest_job_is_an_error_in_the_feed() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let log = Arc::new(ProblemLog::new(8));
+        let subscriber = tracing_subscriber::registry().with(ProblemLayer::new(Arc::clone(&log)));
+        tracing::subscriber::with_default(subscriber, || {
+            report_failed_ingest_job("books", "job-7", 2, Some("upstream returned 400"));
+            report_failed_ingest_job("books", "job-8", 1, None);
+        });
+        let (problems, _) = log.since(0);
+        assert_eq!(problems.len(), 2);
+        let p = &problems[0];
+        assert_eq!(p.level, "ERROR");
+        assert_eq!(p.target, "drevo::ingest");
+        assert_eq!(
+            p.message,
+            "ingest job failed: its remaining items are dead; see CALL \
+             drevo.ingest.errors(job, 10) and retry them with CALL drevo.ingest.retryFailed(job)"
+        );
+        assert_eq!(p.fields["database"], "books");
+        assert_eq!(p.fields["job"], "job-7");
+        assert_eq!(p.fields["dead"], "2");
+        assert_eq!(p.fields["last_error"], "upstream returned 400");
+        assert_eq!(problems[1].fields["last_error"], "");
     }
 
     #[test]

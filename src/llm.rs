@@ -34,6 +34,38 @@ pub enum LlmError {
     /// The call failed or the answer had no usable content.
     #[error("{0}")]
     Upstream(String),
+    /// The endpoint answered with a non-2xx HTTP status.
+    #[error("{message}")]
+    Status {
+        /// The HTTP status code.
+        status: u16,
+        /// What to report: the status and the body the endpoint sent.
+        message: String,
+    },
+}
+
+impl LlmError {
+    /// Whether the same request may succeed when sent again later: a
+    /// rate limit (429), a timeout (408) or a server error (5xx), and a call
+    /// that failed in transit or got an unusable answer. Another client error
+    /// (4xx) or an unusable endpoint setting will fail the same way again.
+    ///
+    /// ```
+    /// use drevo::llm::LlmError;
+    ///
+    /// let limited = LlmError::Status { status: 429, message: "slow down".into() };
+    /// assert!(limited.is_retryable());
+    /// let refused = LlmError::Status { status: 401, message: "bad key".into() };
+    /// assert!(!refused.is_retryable());
+    /// ```
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::InvalidUpstream(_) => false,
+            Self::Upstream(_) => true,
+            Self::Status { status, .. } => matches!(status, 408 | 429 | 500..=599),
+        }
+    }
 }
 
 /// One message of a chat.
@@ -218,10 +250,13 @@ impl ChatClient {
             .await
             .map_err(|e| LlmError::Upstream(e.to_string()))?;
         if !status.is_success() {
-            return Err(LlmError::Upstream(format!(
-                "upstream returned {status}: {}",
-                String::from_utf8_lossy(&bytes).trim()
-            )));
+            return Err(LlmError::Status {
+                status: status.as_u16(),
+                message: format!(
+                    "upstream returned {status}: {}",
+                    String::from_utf8_lossy(&bytes).trim()
+                ),
+            });
         }
         reply_content(&bytes)
     }
@@ -229,7 +264,8 @@ impl ChatClient {
 
 /// A [`ChatCompleter`] that drives a [`ChatClient`] from synchronous code
 /// on a thread of its own with its own runtime, so it can be called from
-/// inside another tokio runtime.
+/// inside another tokio runtime. Calls from several threads are sent to the
+/// endpoint concurrently.
 #[cfg(feature = "embeddings-proxy")]
 pub struct SyncChatCompleter {
     sender: std::sync::mpsc::Sender<CompleteJob>,
@@ -265,18 +301,27 @@ impl SyncChatCompleter {
         let upstream = endpoint.upstream.clone();
         let client = ChatClient::new(endpoint)?;
         let (sender, receiver) = std::sync::mpsc::channel::<CompleteJob>();
+        let client = std::sync::Arc::new(client);
+        let io_name = format!("{thread_name}-io");
         let worker = std::thread::Builder::new()
             .name(thread_name.to_string())
             .spawn(move || {
-                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .thread_name(io_name)
                     .enable_all()
                     .build()
                 else {
                     return;
                 };
+                // Each request runs as a task of its own, so callers on
+                // several threads wait on the endpoint at the same time.
                 while let Ok(job) = receiver.recv() {
-                    let result = runtime.block_on(client.complete(&job.request));
-                    let _ = job.reply.send(result);
+                    let client = std::sync::Arc::clone(&client);
+                    runtime.spawn(async move {
+                        let result = client.complete(&job.request).await;
+                        let _ = job.reply.send(result);
+                    });
                 }
             })
             .map_err(|e| LlmError::InvalidUpstream(e.to_string()))?;
@@ -360,6 +405,23 @@ mod tests {
             err.to_string().starts_with("malformed upstream response: "),
             "{err}"
         );
+    }
+
+    #[test]
+    fn rate_limits_timeouts_server_errors_and_transport_failures_are_retryable() {
+        let status = |status| LlmError::Status {
+            status,
+            message: format!("upstream returned {status}"),
+        };
+        for code in [408, 429, 500, 502, 503, 504, 599] {
+            assert!(status(code).is_retryable(), "{code}");
+        }
+        for code in [400, 401, 403, 404, 413, 422, 300, 600] {
+            assert!(!status(code).is_retryable(), "{code}");
+        }
+        assert!(LlmError::Upstream("connection refused".into()).is_retryable());
+        assert!(!LlmError::InvalidUpstream("bad url".into()).is_retryable());
+        assert_eq!(status(503).to_string(), "upstream returned 503");
     }
 
     #[test]

@@ -465,7 +465,9 @@ fn chat_endpoint(config: Text2CypherConfig) -> crate::llm::ChatEndpoint {
 fn from_llm(err: crate::llm::LlmError) -> Text2CypherError {
     match err {
         crate::llm::LlmError::InvalidUpstream(m) => Text2CypherError::InvalidUpstream(m),
-        crate::llm::LlmError::Upstream(m) => Text2CypherError::Upstream(m),
+        crate::llm::LlmError::Upstream(m) | crate::llm::LlmError::Status { message: m, .. } => {
+            Text2CypherError::Upstream(m)
+        }
     }
 }
 

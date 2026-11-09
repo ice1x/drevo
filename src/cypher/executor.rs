@@ -580,6 +580,7 @@ pub type ExecResultT<T> = Result<T, ExecError>;
 /// costs a counter bump and only reads the clock every [`TICK_STRIDE`] calls.
 /// With no deadline set, `tick` is a single thread-local read.
 mod extract_procs;
+mod ingest_procs;
 use extract_procs::{
     EXTRACT_CHUNKS, EXTRACT_ENTITIES, EXTRACT_FACTS, EXTRACT_INGEST, EXTRACT_STATUS,
 };
@@ -1014,7 +1015,7 @@ pub(crate) fn json_to_value(v: &serde_json::Value) -> Value {
     }
 }
 
-fn value_to_json(v: &Value) -> Option<serde_json::Value> {
+pub(crate) fn value_to_json(v: &Value) -> Option<serde_json::Value> {
     Some(match v {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
@@ -1799,7 +1800,10 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                           drevo.extract.chunks, drevo.extract.status, \
                           drevo.rag.evaluate, drevo.rag.evaluateSummary, \
                           drevo.community.summarize, drevo.community.query, \
-                          drevo.community.of, drevo.community.stale"
+                          drevo.community.of, drevo.community.stale, \
+                          drevo.ingest.submit, drevo.ingest.status, drevo.ingest.list, \
+                          drevo.ingest.cancel, drevo.ingest.pause, drevo.ingest.resume, \
+                          drevo.ingest.retryFailed, drevo.ingest.errors, drevo.ingest.purge"
                         .into(),
                     span: c.span,
                 })?;
@@ -6265,6 +6269,9 @@ impl<'a> Executor<'a> {
         if name == community_procs::STALE {
             return self.run_community_stale(c, columns);
         }
+        if ingest_procs::is_ingest_procedure(&name) {
+            return self.run_ingest(&name, c, columns);
+        }
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
@@ -6377,6 +6384,7 @@ impl<'a> Executor<'a> {
             if !crate::event_bus::post(crate::event_bus::Pending {
                 name: name.clone(),
                 payload,
+                kind: crate::event_bus::EventKind::Posted,
             }) {
                 return Err(Self::engine_capability("drevo.events.post"));
             }
@@ -14527,6 +14535,8 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "lastError",
             "lastSkipped",
         ]),
+        // Durable ingest jobs.
+        name if ingest_procs::is_ingest_procedure(name) => ingest_procs::columns(name),
         _ => None,
     }
 }
@@ -14745,6 +14755,9 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.cypher.fromText" => 1,
         // drevo.extract.{entities,facts,chunks}(text[, config]), ingest(text, config).
         EXTRACT_ENTITIES | EXTRACT_FACTS | EXTRACT_CHUNKS | EXTRACT_INGEST => 2,
+        // drevo.ingest.submit(items, config), list(state, limit), errors(jobId,
+        // limit); the others take the job id.
+        name if ingest_procs::is_ingest_procedure(name) => ingest_procs::arity(name).unwrap_or(0),
         // The db.* introspection procedures take no arguments.
         _ => 0,
     }

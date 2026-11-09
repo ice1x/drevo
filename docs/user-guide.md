@@ -440,6 +440,49 @@ not drop what used to be there. Nothing is written while evaluating. From a shel
 `cargo run --example rag_eval -- --data path.drevo --questions q.jsonl` prints the same summary
 as a table. Details are in the [Cypher Reference](cypher-reference.md#evaluate-strategies).
 
+### Load a whole book
+
+A chapter fits in one `drevo.extract.ingest` call; a 400-page book is hundreds of passages and a
+model call each, and somewhere along the way the model will be busy or the server will restart.
+Hand the whole text to an **ingest job** instead: drevo stores it as a job in the graph and works
+through it in the background, one passage at a time.
+
+```text
+CALL drevo.ingest.submit({text: $book}, {
+  source: {id: 'book-1', title: 'The Long Winter', kind: 'document'},
+  types: ['PERSON', 'LOCATION', 'ORGANIZATION', 'SHIP'],
+  schemaHint: 'A novel about a whaling crew.'
+})
+YIELD jobId, total
+```
+
+The call returns at once with the job's id and how many passages it holds. Each passage is
+extracted and written as `drevo.extract.ingest` would, in its own transaction; the passage's item
+then points at the `:Chunk` it produced. Watch it with:
+
+```text
+CALL drevo.ingest.status($jobId) YIELD job, items
+RETURN job.state, job.done, job.total, items.dead
+```
+
+or follow the `ingest` events on `GET /events?names=ingest`, which report the job's state and
+counts at most once a second. If the model refuses a passage or is overloaded, that passage is
+tried again later, waiting longer each time; after five attempts (or at once, if the model says the
+request itself is wrong) it is **dead**. A job whose remaining passages are all dead is `failed`:
+`drevo.ingest.errors($jobId, 10)` shows why, and once the model is fixed
+`drevo.ingest.retryFailed($jobId)` runs them again. `pause`, `resume` and `cancel` do what they say;
+a passage already with the model finishes either way. If the server stops in the middle, the job
+carries on when it starts again — the passage that was running is simply run once more.
+
+You can also submit chapters as separate items — `['Chapter one …', 'Chapter two …']` or
+`[{text: …, offset: 12000, meta: {chapter: 2}}]` — and give urgent jobs a `priority`. When the book
+is done, `drevo.ingest.purge($jobId)` drops the stored passages and keeps the job's record.
+
+```cypher
+CALL drevo.ingest.list(null, 10) YIELD job
+RETURN job.id, job.state, job.done, job.total
+```
+
 ---
 
 ## 7. Where to go next

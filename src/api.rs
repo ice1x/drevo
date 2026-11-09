@@ -737,7 +737,7 @@ impl From<crate::extract::ExtractError> for ApiError {
         match err {
             ExtractError::Invalid(_) => Self::BadRequest(err.to_string()),
             ExtractError::NotConfigured => Self::Unavailable(err.to_string()),
-            ExtractError::Upstream(_) | ExtractError::Malformed(_) => {
+            ExtractError::Upstream(_) | ExtractError::Refused(_) | ExtractError::Malformed(_) => {
                 Self::BadGateway(err.to_string())
             }
         }

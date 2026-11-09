@@ -3078,6 +3078,98 @@ A config that is not a map, an unknown key and a value of the wrong type or
 range fail with an error naming the key; `drevo.community.of` with a value that
 is not a node or an id, or with an id no node has, fails naming it.
 
+### Ingest jobs
+
+An ingest job runs [`drevo.extract.ingest`](#extraction) over a long text in
+the background, one passage at a time, retrying passages the model fails on
+and carrying on after a restart. The job lives in the graph:
+
+```text
+(:IngestJob {id, state, pipeline: 'extract', total, done, failed, priority,
+             max_attempts, concurrency, config, source_id,
+             created_at, updated_at, started_at, finished_at})
+  -[:HAS_ITEM]->(:IngestItem {job_id, seq, state, attempts, next_attempt_at,
+                              last_error, text, offset, length, meta})
+                  -[:PRODUCED]->(:Chunk)        // once the item is written
+```
+
+```text
+CALL drevo.ingest.submit(items, config)  YIELD jobId, total
+CALL drevo.ingest.status(jobId)          YIELD job, items
+CALL drevo.ingest.list(state, limit)     YIELD job
+CALL drevo.ingest.pause(jobId)           YIELD job
+CALL drevo.ingest.resume(jobId)          YIELD job
+CALL drevo.ingest.cancel(jobId)          YIELD job
+CALL drevo.ingest.retryFailed(jobId)     YIELD requeued
+CALL drevo.ingest.errors(jobId, limit)   YIELD seq, attempts, last_error
+CALL drevo.ingest.purge(jobId)           YIELD deleted
+```
+
+**`submit`** stores the job, `queued`, and returns at once. `items` is one
+document — `{text}` or a string — cut into passages with the
+[extraction chunker](#extraction), or a list of strings and
+`{text, offset?, meta?}` maps, each cut the same way when it is longer than
+`chunkChars`. `offset` places an item in the source (character offset); an
+item without one follows the item before it. `meta` (a map) is kept on its
+items as JSON. `config` is the config of `drevo.extract.ingest` — `source`
+required, as an existing source id or a map `{id, uri, title, kind}` — without
+`dryRun`, plus:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `priority` | `0` | Higher runs first: the scheduler takes the next item of the highest-priority job, oldest job first among equals |
+| `maxAttempts` | `DREVO_INGEST_MAX_ATTEMPTS` (5) | Attempts per item, 1–100 |
+| `concurrency` | the server's `DREVO_INGEST_WORKERS` | Items of this job with the model at once. A larger value is accepted and capped at the server's `DREVO_INGEST_WORKERS` while the job runs |
+
+A job is `queued` until its first item starts, then `running`, and ends
+`done` (every item written), `failed` (the items left are all dead) or
+`cancelled`. An item is `queued`, `running`, `done`, `failed` (waiting to be
+tried again at `next_attempt_at`, epoch milliseconds) or `dead`. Each item
+runs as one transaction: its source, chunk (`<sourceId>#<seq>`), entities,
+facts and the item's own `done`. A model call that hits a rate limit (429), a
+timeout, a server error (5xx) or a lost connection is tried again after
+`DREVO_INGEST_RETRY_BASE_MS × 2^attempts` (at most 5 minutes, less a random
+part of up to half); after `maxAttempts` the item is `dead`. Another client
+error (4xx), an answer that is not the extraction JSON even when asked twice,
+and a refusal of `drevo.extract.ingest` itself (an unknown source id, a chunk
+id of another source) make it dead at once, with the message in
+`last_error`.
+
+- **`status`** returns the job node and the item counts by state
+  (`{queued, running, done, failed, dead}`).
+- **`list`** returns jobs newest first; `state` is a job state or `null` for
+  all.
+- **`pause`** stops picking the job's items and **`resume`** starts again
+  (`queued` when nothing ran yet, else `running`). **`cancel`** ends the job;
+  its queued items stay queued and are never run. An item already with the
+  model finishes and is written in each case.
+- **`retryFailed`** queues the dead items again with fresh attempts and
+  returns how many; a failed job runs again. A cancelled job is refused.
+- **`errors`** lists the items with an error (dead ones, and failed ones
+  waiting for their next attempt) in `seq` order.
+- **`purge`** deletes the items (and their texts) of a `done`, `failed` or
+  `cancelled` job; the job node and its counters stay.
+
+When a database opens, its items left `running` (the server stopped while
+they were with the model) are queued again; running jobs carry on and paused
+jobs stay paused. Each change of a job's state or counts is sent on
+[`GET /events`](admin-guide.md#change-events-get-events) as an `ingest`
+event, at most once a second per job. The jobs need the chat endpoint of
+[Extraction](#extraction); without one, they wait.
+
+`submit`, `pause`, `resume`, `cancel`, `retryFailed` and `purge` write the
+job, so they need write privileges (and run as one transaction); `status`,
+`list` and `errors` only read. A `config` without `source`, an unknown key,
+`dryRun`, a key of the wrong type or range, no text at all, an item that is
+neither a string nor a `{text, offset, meta}` map, an unknown job id, and a
+move the job's state does not allow (pausing a paused job, purging a running
+one) fail with an error saying so.
+
+```cypher
+CALL drevo.ingest.list('failed', 10) YIELD job
+RETURN job.id, job.failed, job.total
+```
+
 ### Entity resolution
 
 Two spellings of one thing — «Пушкин» and «А. С. Пушкин», `ACME Corp.` and

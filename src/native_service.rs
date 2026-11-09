@@ -305,6 +305,10 @@ pub struct NativeService {
     trigger_worker: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<AsyncTriggers>>>,
     /// This database's published named events.
     event_bus: crate::event_bus::EventBus,
+    /// Runs this database's ingest jobs, once
+    /// [`start_ingest`](Self::start_ingest) has been called.
+    #[cfg(not(target_arch = "wasm32"))]
+    ingest: std::sync::OnceLock<crate::ingest::scheduler::Scheduler>,
 }
 
 /// A per-target tally of swallowed native auto-embed failures (issue #447;
@@ -700,6 +704,8 @@ impl NativeService {
             #[cfg(not(target_arch = "wasm32"))]
             trigger_worker: std::sync::OnceLock::new(),
             event_bus: crate::event_bus::EventBus::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            ingest: std::sync::OnceLock::new(),
         };
         // The engine seeds the feed with a copy of the whole graph; the
         // indexes have consumed it, so keep only the event history.
@@ -763,6 +769,8 @@ impl NativeService {
             #[cfg(not(target_arch = "wasm32"))]
             trigger_worker: std::sync::OnceLock::new(),
             event_bus: crate::event_bus::EventBus::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            ingest: std::sync::OnceLock::new(),
         }
     }
 
@@ -917,7 +925,7 @@ impl NativeService {
     ) -> Result<ExecResult, ExecError> {
         #[cfg(feature = "http")]
         let watch = crate::problems::SlowWatch::start(&params);
-        let result = self.execute_autocommit(query, params, restriction);
+        let result = self.execute_autocommit(query, params, restriction, true);
         #[cfg(feature = "http")]
         if let Some(watch) = watch {
             watch.finish(&self.database_name(), false);
@@ -925,13 +933,27 @@ impl NativeService {
         result
     }
 
+    /// Run a statement of the server's own (the ingest scheduler's) as
+    /// [`execute`](Self::execute) does, without listing it among the running
+    /// statements.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn execute_internal(
+        &self,
+        query: &Query,
+        params: HashMap<String, Value>,
+    ) -> Result<ExecResult, ExecError> {
+        self.execute_autocommit(query, params, None, false)
+    }
+
     /// The body of [`execute_as`](Self::execute_as), without the
-    /// slow-statement log.
+    /// slow-statement log; `list` shows the statement in `SHOW
+    /// TRANSACTIONS` while it runs.
     fn execute_autocommit(
         &self,
         query: &Query,
         params: HashMap<String, Value>,
         restriction: Option<Restriction<'_>>,
+        list: bool,
     ) -> Result<ExecResult, ExecError> {
         // Schema lives beside the log, not in it, so the engine cannot refuse
         // it; data writes are refused by the engine itself.
@@ -942,7 +964,7 @@ impl NativeService {
         let triggers = self.triggers_active();
         let fired = std::cell::RefCell::new(None);
         let (result, events) = crate::event_bus::collect(|| {
-            self.listed(|| {
+            self.listed_if(list, || {
                 crate::cypher::executor::deadline::with_statement_timeout(
                     self.statement_timeout(),
                     || {
@@ -977,10 +999,47 @@ impl NativeService {
         result
     }
 
-    /// Publish named events whose statement or transaction committed.
-    fn publish_events(&self, events: Vec<crate::event_bus::Pending>) {
+    /// Publish named events whose statement or transaction committed. The
+    /// progress of ingest jobs wakes the scheduler and goes out through it,
+    /// at most once a second per job.
+    fn publish_events(&self, mut events: Vec<crate::event_bus::Pending>) {
+        let progress: Vec<crate::event_bus::Pending> = {
+            let (ingest, rest) = std::mem::take(&mut events)
+                .into_iter()
+                .partition(|e| e.kind == crate::event_bus::EventKind::Ingest);
+            events = rest;
+            ingest
+        };
         self.event_bus.publish(
             events,
+            || self.graph.change_head(),
+            self.event_history.load(Ordering::Relaxed),
+        );
+        if progress.is_empty() {
+            return;
+        }
+        crate::ingest::wake();
+        for event in progress {
+            let Some(p) = crate::ingest::progress::Progress::from_payload(&event.payload) else {
+                continue;
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(scheduler) = self.ingest.get() {
+                scheduler.offer(self, p);
+                continue;
+            }
+            self.publish_ingest(&p);
+        }
+    }
+
+    /// Send an `ingest` event with `progress` to `/events` subscribers.
+    pub(crate) fn publish_ingest(&self, progress: &crate::ingest::progress::Progress) {
+        self.event_bus.publish(
+            vec![crate::event_bus::Pending {
+                name: "ingest".into(),
+                payload: progress.payload(),
+                kind: crate::event_bus::EventKind::Ingest,
+            }],
             || self.graph.change_head(),
             self.event_history.load(Ordering::Relaxed),
         );
@@ -1370,6 +1429,15 @@ impl NativeService {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         self.transactions().list_new(&name, false)
+    }
+
+    /// [`listed`](Self::listed) when `list`, else `work` as it is.
+    fn listed_if<R>(&self, list: bool, work: impl FnOnce() -> R) -> R {
+        if list {
+            self.listed(work)
+        } else {
+            work()
+        }
     }
 
     /// Run `work` as a listed statement that `TERMINATE TRANSACTIONS` can
@@ -1790,6 +1858,45 @@ impl NativeService {
             tracing::error!(error = %e, "cannot start the trigger worker; afterAsync triggers run inline");
             #[cfg(not(feature = "http"))]
             let _ = e;
+        }
+    }
+
+    /// Start running this database's ingest jobs (`drevo.ingest.submit`)
+    /// on a scheduler thread of its own. Items a previous run left running
+    /// are queued again first, so they run again; paused jobs stay paused.
+    /// Calling it again, or on a read-only database, does nothing. The
+    /// scheduler stops with [`stop_ingest`](Self::stop_ingest) or when the
+    /// service is dropped.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use drevo::native_service::NativeService;
+    ///
+    /// let service = Arc::new(NativeService::in_memory());
+    /// service.start_ingest();
+    /// service.stop_ingest();
+    /// ```
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn start_ingest(self: &std::sync::Arc<Self>) {
+        if self.is_read_only() || self.ingest.get().is_some() {
+            return;
+        }
+        if let Some(scheduler) = crate::ingest::scheduler::Scheduler::start(self) {
+            if let Err(extra) = self.ingest.set(scheduler) {
+                extra.stop();
+            }
+        }
+    }
+
+    /// Stop running ingest jobs and wait for the scheduler thread to end. An
+    /// item still waiting for the model is left `running` in the graph and
+    /// runs again after the next [`start_ingest`](Self::start_ingest) on a
+    /// reopened store; nothing is written for it once this returns. The
+    /// scheduler cannot be started again on this service.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn stop_ingest(&self) {
+        if let Some(scheduler) = self.ingest.get() {
+            scheduler.stop();
         }
     }
 
@@ -3664,8 +3771,9 @@ impl NativeService {
 /// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
 /// Whether `query` calls a procedure that writes the graph: a
 /// `drevo.memory.*` writer, `drevo.entity.merge`, `drevo.rag.pruneTraces`,
-/// `drevo.community.summarize`, or a `drevo.rag.context` that records a
-/// trace ([`context_records_trace`]).
+/// `drevo.community.summarize`, a `drevo.ingest.*` procedure that writes
+/// jobs, or a `drevo.rag.context` that records a trace
+/// ([`context_records_trace`]).
 fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
@@ -3685,6 +3793,7 @@ fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>)
                 | "drevo.rag.pruneTraces"
                 | "drevo.extract.ingest"
                 | "drevo.community.summarize" => true,
+                name if ingest_changes_jobs(name) => true,
                 "drevo.rag.context" => context_records_trace(call.args.get(1), params),
                 _ => false,
             }
@@ -3692,20 +3801,38 @@ fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>)
     })
 }
 
+/// Whether `name` is a `drevo.ingest.*` procedure that writes jobs: submit,
+/// cancel, pause, resume, retryFailed and purge.
+fn ingest_changes_jobs(name: &str) -> bool {
+    matches!(
+        name,
+        "drevo.ingest.submit"
+            | "drevo.ingest.cancel"
+            | "drevo.ingest.pause"
+            | "drevo.ingest.resume"
+            | "drevo.ingest.retryFailed"
+            | "drevo.ingest.purge"
+    )
+}
+
 /// Whether `query` calls a procedure whose writes must land together or
 /// not at all, so the statement always runs as one transaction:
 /// `drevo.entity.merge` (moves, deletes and aliases),
-/// `drevo.extract.ingest` (a source, its chunks, entities and facts) and
+/// `drevo.extract.ingest` (a source, its chunks, entities and facts),
 /// `drevo.community.summarize` (a layer replaced: old communities deleted,
-/// new ones and their relationships written).
+/// new ones and their relationships written) and the `drevo.ingest.*`
+/// procedures that write jobs (a job and all its items).
 fn query_calls_atomic_procedure(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
         part.query.clauses.iter().any(|c| {
-            matches!(c, Clause::Call(call) if matches!(
-                call.name.join(".").as_str(),
-                "drevo.entity.merge" | "drevo.extract.ingest" | "drevo.community.summarize"
-            ))
+            matches!(c, Clause::Call(call) if {
+                let name = call.name.join(".");
+                matches!(
+                    name.as_str(),
+                    "drevo.entity.merge" | "drevo.extract.ingest" | "drevo.community.summarize"
+                ) || ingest_changes_jobs(&name)
+            })
         })
     })
 }
@@ -4324,6 +4451,30 @@ mod writing_procedure_tests {
             "CALL drevo.memory.addSource('b', null, null, null)"
         ));
         assert!(!atomic("CALL drevo.extract.entities('x')"));
+    }
+
+    #[test]
+    fn ingest_job_changes_write_and_run_as_one_transaction() {
+        let atomic = |q: &str| query_calls_atomic_procedure(&parse(q).expect("parse"));
+        for q in [
+            "CALL drevo.ingest.submit(['a', 'b'], {source: 'book-1'}) YIELD jobId RETURN jobId",
+            "CALL drevo.ingest.cancel('job-1') YIELD job RETURN job",
+            "CALL drevo.ingest.pause('job-1')",
+            "CALL drevo.ingest.resume('job-1')",
+            "CALL drevo.ingest.retryFailed('job-1') YIELD requeued RETURN requeued",
+            "CALL drevo.ingest.purge('job-1') YIELD deleted RETURN deleted",
+        ] {
+            assert!(writes(q), "{q}");
+            assert!(atomic(q), "{q}");
+        }
+        for q in [
+            "CALL drevo.ingest.status('job-1') YIELD job, items RETURN job, items",
+            "CALL drevo.ingest.list(null, 10) YIELD job RETURN job",
+            "CALL drevo.ingest.errors('job-1', 10) YIELD seq RETURN seq",
+        ] {
+            assert!(!writes(q), "{q}");
+            assert!(!atomic(q), "{q}");
+        }
     }
 
     #[test]

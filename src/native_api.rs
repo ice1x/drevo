@@ -877,6 +877,10 @@ async fn metrics(State(state): State<NativeApiState>) -> Response {
     state
         .metrics
         .sync_slow_statements(crate::problems::slow_statements());
+    // Ingest-job items by outcome, and the jobs still to finish.
+    state
+        .metrics
+        .sync_ingest(crate::ingest::item_totals(), crate::ingest::jobs_active());
     // Rejected explicit-transaction commits, by what a per-entity rule would
     // have said (issue #749).
     state

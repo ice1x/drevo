@@ -55,6 +55,31 @@ history and the in-repo issue tracker; format loosely follows
   `summarize` always runs as one transaction. `Community` is
   now one of the default `excludeLabels` of the local scope.
 
+- **Durable ingest jobs: `drevo.ingest.submit(items, config)` loads a whole
+  book in the background** (issue #788). The job is stored in the graph —
+  `(:IngestJob {id, state, total, done, failed, priority, config, …})
+  -[:HAS_ITEM]->(:IngestItem {seq, state, attempts, next_attempt_at,
+  last_error, text, offset, length})`, and `(:IngestItem)-[:PRODUCED]->(:Chunk)`
+  once written — so it survives a restart: items left `running` are queued
+  again when the database opens. A scheduler per database runs each item as
+  a `drevo.extract.ingest` of its passage in one transaction, at most
+  `DREVO_INGEST_WORKERS` (2) items at once server-wide and a job's
+  `concurrency`, highest `priority` first. A rate limit, timeout, `5xx` or
+  lost connection is retried after `DREVO_INGEST_RETRY_BASE_MS × 2^attempts`
+  (2 s base, 5 min cap, jitter) up to `maxAttempts`
+  (`DREVO_INGEST_MAX_ATTEMPTS`, 5); another `4xx`, a malformed answer after
+  the built-in retry or a refused call makes the item `dead` at once. A job
+  ends `done`, `failed` (only dead items left; an ERROR in the problem feed)
+  or `cancelled`. `drevo.ingest.status`, `list` and `errors` read jobs;
+  `pause`, `resume`, `cancel`, `retryFailed` (dead → queued, fresh attempts)
+  and `purge` (drop a finished job's items) need write privileges. Progress
+  arrives as `ingest` events on `GET /events` (at most one a second per job)
+  and in `drevo_ingest_items_total{state}` / `drevo_ingest_jobs_active`. The
+  chat client now sends concurrent calls concurrently, and an upstream
+  `4xx` other than 408/429 is no longer treated as transient
+  (`LlmError::Status`, `ExtractError::Refused`, `is_retryable()`). A Web UI
+  view of the jobs is not part of this change.
+
 - **Context traces: `drevo.rag.context` with a `session` (or `trace: true`)
   records what went into the context** (issue #784). A `:ContextTrace` node
   holds the question, the returned text, its tokens and budget, the search

@@ -33,6 +33,9 @@
 //! | `DREVO_MAX_TX_WRITES` | `1000000` | How many writes one explicit transaction may buffer before it commits; the statement that goes over fails with `Neo.ClientError.General.TransactionOutOfMemoryError` and the transaction is rolled back. `0` = no limit |
 //! | `DREVO_EXPAND_MAX_HOPS` | `6` | The most `hops` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
 //! | `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep) | Delete `:ContextTrace` nodes (recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours |
+//! | `DREVO_INGEST_WORKERS` | `2` | Ingest-job items (`drevo.ingest.submit`) extracted at once, across every database; a job's `concurrency` is capped by it |
+//! | `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts an ingest item gets when its job names no `maxAttempts` (1–100); after the last failed one the item is `dead` |
+//! | `DREVO_INGEST_RETRY_BASE_MS` | `2000` | A failed ingest item waits `base × 2^attempts` (at most 5 minutes, less a random part of up to half) before it is tried again |
 //! | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
 //! | `DREVO_TX_ISOLATION` | `snapshot` | When an explicit transaction may commit after others committed: `snapshot` (unless they touched the same records) or `serializable` (only if nothing committed) |
 //! | `DREVO_TX_CONFLICT_HISTORY` | `10000` | Recent commits remembered to decide whether a transaction overlapped with them |
@@ -150,6 +153,9 @@ pub struct Config {
     /// every 24 hours, from `DREVO_RAG_TRACE_RETENTION_DAYS` (default `0`:
     /// keep them forever).
     pub rag_trace_retention_days: u64,
+    /// The ingest-job limits, from `DREVO_INGEST_WORKERS`,
+    /// `DREVO_INGEST_MAX_ATTEMPTS` and `DREVO_INGEST_RETRY_BASE_MS`.
+    pub ingest: crate::ingest::IngestSettings,
     /// Report a prepared two-phase-commit transaction (#556) at ERROR once it
     /// is older than this, from `DREVO_PREPARED_TX_WARN_SECS` (default 60;
     /// `0` disables the alert).
@@ -381,6 +387,30 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_INGEST_WORKERS` was not a positive integer.
+    #[error(
+        "invalid DREVO_INGEST_WORKERS value `{value}`: expected a whole number of items in flight, at least 1"
+    )]
+    InvalidIngestWorkers {
+        /// The raw env-var value.
+        value: String,
+    },
+    /// `DREVO_INGEST_MAX_ATTEMPTS` was not a whole number from 1 to 100.
+    #[error(
+        "invalid DREVO_INGEST_MAX_ATTEMPTS value `{value}`: expected a whole number of attempts from 1 to 100"
+    )]
+    InvalidIngestMaxAttempts {
+        /// The raw env-var value.
+        value: String,
+    },
+    /// `DREVO_INGEST_RETRY_BASE_MS` was not a positive integer.
+    #[error(
+        "invalid DREVO_INGEST_RETRY_BASE_MS value `{value}`: expected a whole number of milliseconds, at least 1"
+    )]
+    InvalidIngestRetryBase {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_EXPAND_MAX_NODES` was not a positive integer.
     #[error(
         "invalid DREVO_EXPAND_MAX_NODES value `{value}`: expected a whole number of nodes, at least 1"
@@ -582,6 +612,31 @@ impl Config {
             },
         };
 
+        let ingest = crate::ingest::IngestSettings {
+            workers: match getter("DREVO_INGEST_WORKERS") {
+                None => crate::ingest::DEFAULT_WORKERS,
+                Some(raw) => match raw.trim().parse::<usize>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return Err(ConfigError::InvalidIngestWorkers { value: raw }),
+                },
+            },
+            max_attempts: match getter("DREVO_INGEST_MAX_ATTEMPTS") {
+                None => crate::ingest::DEFAULT_MAX_ATTEMPTS,
+                Some(raw) => match raw.trim().parse::<u32>() {
+                    Ok(n) if (1..=100).contains(&n) => n,
+                    _ => return Err(ConfigError::InvalidIngestMaxAttempts { value: raw }),
+                },
+            },
+            retry_base: match getter("DREVO_INGEST_RETRY_BASE_MS") {
+                None => crate::ingest::DEFAULT_RETRY_BASE,
+                Some(raw) => match raw.trim().parse::<u64>() {
+                    Ok(ms) if ms >= 1 => std::time::Duration::from_millis(ms),
+                    _ => return Err(ConfigError::InvalidIngestRetryBase { value: raw }),
+                },
+            },
+            jitter_seed: None,
+        };
+
         let prepared_tx_warn = match getter("DREVO_PREPARED_TX_WARN_SECS") {
             None => Some(std::time::Duration::from_secs(60)),
             Some(raw) => match raw.trim().parse::<u64>() {
@@ -757,6 +812,7 @@ impl Config {
             expand_max_hops,
             expand_max_nodes,
             rag_trace_retention_days,
+            ingest,
             prepared_tx_warn,
             prepared_tx_timeout,
             http_formats,
@@ -1405,6 +1461,9 @@ async fn run_native_durable(
         max_hops: cfg.expand_max_hops,
         max_nodes: cfg.expand_max_nodes,
     });
+    // How many ingest items run at once, how often each is tried, and how
+    // long a retry waits.
+    crate::ingest::configure(cfg.ingest);
     // Context traces past their retention are pruned now and every 24 h.
     if cfg.rag_trace_retention_days > 0 && !cfg.read_only {
         let days = cfg.rag_trace_retention_days;

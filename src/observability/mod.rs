@@ -694,6 +694,13 @@ pub struct DrevoMetrics {
     /// `drevo_prepared_transaction_oldest_age_seconds` (#556) — age of the
     /// oldest prepared transaction (`0` when none). Refreshed by `/metrics`.
     pub prepared_oldest_age_seconds: Gauge,
+    /// `drevo_ingest_items_total{state="done"|"failed"|"dead"}` — ingest-job
+    /// item attempts that were written, failed with a retry left, or failed
+    /// for good. Synced by [`DrevoMetrics::sync_ingest`].
+    ingest_items: [Counter; 3],
+    /// `drevo_ingest_jobs_active` — ingest jobs queued or running, in every
+    /// database. Synced by [`DrevoMetrics::sync_ingest`].
+    ingest_jobs_active: Gauge,
 }
 
 impl DrevoMetrics {
@@ -818,6 +825,19 @@ impl DrevoMetrics {
                 &[("reason", reason)],
             )
         });
+        let ingest_items = ["done", "failed", "dead"].map(|state| {
+            registry.counter(
+                "drevo_ingest_items_total",
+                "Ingest-job item attempts, by how they ended: done (written), failed (to be \
+                 tried again), dead (out of attempts or not retryable).",
+                &[("state", state)],
+            )
+        });
+        let ingest_jobs_active = registry.gauge(
+            "drevo_ingest_jobs_active",
+            "Ingest jobs queued or running, in every database.",
+            &[],
+        );
         // Publish the build version as a `1`-valued info gauge — the idiomatic
         // Prometheus way to expose a constant string dimension.
         registry
@@ -843,6 +863,8 @@ impl DrevoMetrics {
             connections_active,
             tx_conflicts,
             tx_merged,
+            ingest_items,
+            ingest_jobs_active,
             prepared_transactions,
             prepared_oldest_age_seconds,
         }
@@ -862,6 +884,19 @@ impl DrevoMetrics {
                 counter.inc_by(total - current);
             }
         }
+    }
+
+    /// Bring `drevo_ingest_items_total{state}` up to the process-wide
+    /// `items` (done, failed, dead; counters only move forward) and set
+    /// `drevo_ingest_jobs_active` to `active`.
+    pub fn sync_ingest(&self, items: [u64; 3], active: i64) {
+        for (counter, total) in self.ingest_items.iter().zip(items) {
+            let current = counter.get();
+            if total > current {
+                counter.inc_by(total - current);
+            }
+        }
+        self.ingest_jobs_active.set(active);
     }
 
     /// Report the connection limits' counts: refusals (forward only) and what
@@ -1029,6 +1064,27 @@ mod tests {
         c.inc_by(u64::MAX);
         c.inc(); // would wrap; must saturate
         assert_eq!(c.get(), u64::MAX);
+    }
+
+    #[test]
+    fn ingest_metrics_follow_the_process_counts() {
+        let m = DrevoMetrics::new();
+        m.sync_ingest([3, 1, 2], 4);
+        m.sync_ingest([2, 1, 2], 1);
+        let text = m.render_prometheus();
+        assert!(
+            text.contains("drevo_ingest_items_total{state=\"done\"} 3"),
+            "{text}"
+        );
+        assert!(
+            text.contains("drevo_ingest_items_total{state=\"failed\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("drevo_ingest_items_total{state=\"dead\"} 2"),
+            "{text}"
+        );
+        assert!(text.contains("drevo_ingest_jobs_active 1"), "{text}");
     }
 
     #[test]
