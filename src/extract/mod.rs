@@ -668,8 +668,12 @@ struct LastRun {
 }
 
 /// Install the chat endpoint extraction uses, replacing any other.
+///
+/// Every database's ingest scheduler wakes up: jobs queued while no
+/// endpoint was installed start now.
 pub fn install(completer: Arc<dyn ChatCompleter>) {
     *GLOBAL.write().unwrap_or_else(|e| e.into_inner()) = Some(completer);
+    crate::ingest::wake();
 }
 
 /// Remove the installed chat endpoint: extraction reports "not configured".

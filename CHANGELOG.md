@@ -269,6 +269,19 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **An ingest item deleted while the model answered it no longer leaves its
+  job `running` forever, and a chunk-id mismatch fails the item with the
+  reason** (issue #806). The scheduler matches the item before writing its
+  extraction, so nothing is written for an item that is gone; its slot is
+  given back and the job finishes once nothing else is left — `cancelled`
+  when it lost items, its counters taken from the items that remain. An item
+  whose chunk is not found after the write (the job's `source_id` differs
+  from its config's `source`) is `dead` with `last_error` "chunk `<id>` not
+  found after ingest: the job's source_id … differs from config.source …"
+  instead of staying `running` with no error. While no extraction endpoint is
+  installed the scheduler sleeps instead of reading the jobs every second;
+  installing one (`POST /config/extract`, `drevo::extract::install`) wakes
+  every database's scheduler and the queued jobs start.
 - **`drevo.rag.evaluate` runs the `'rag-global'` strategy** (issue #807). It
   refused it as if community summaries did not exist; it now runs
   `drevo.rag.context` with `scope: 'global'` and the config's
