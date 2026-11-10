@@ -113,6 +113,28 @@ fn bolt_explicit_transaction_that_only_read_commits() {
     );
 }
 
+#[test]
+fn bolt_auto_commit_writing_procedures_fail_with_the_read_only_code() {
+    let svc = read_only_service();
+    let mut s = hello(&svc);
+    for q in [
+        "CALL drevo.memory.addMessage('chat-1', 'user', 'BUG-1 is back')",
+        "CALL drevo.memory.addSource('tracker', null, 'Bug tracker', 'document')",
+        "CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null)",
+        "CALL drevo.rag.context('login', {trace: true}) YIELD text RETURN text",
+    ] {
+        let replies = run(&mut s, q);
+        assert_eq!(
+            code_of(&replies).as_deref(),
+            Some(READ_ONLY),
+            "{q}: {replies:?}"
+        );
+        s.handle(ClientMessage::Reset);
+    }
+    assert_eq!(svc.graph().node_count(), 1);
+    assert_eq!(svc.graph().edge_count(), 0);
+}
+
 // ── HTTP ────────────────────────────────────────────────────────────────
 
 async fn call(app: &axum::Router, uri: &str, body: &str) -> (StatusCode, serde_json::Value) {

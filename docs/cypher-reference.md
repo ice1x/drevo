@@ -1718,6 +1718,12 @@ Both write through the regular `CREATE` path, so the usual mutation counters
 are reported, and a registered `'auto'` `Message` semantic target (see below)
 embeds each turn as it is written.
 
+A statement that calls any writing memory procedure (these two, the
+`rememberEntity`/`assertFact`/`retractFact`/`addSource`/`addChunks` writers
+below, or a `drevo.rag.context` that records a trace) runs as one
+transaction: it is one WAL record and fsync, and when any part of it fails —
+a constraint violation, a later `CALL` — nothing it wrote is kept.
+
 `CALL drevo.memory.recall(session, query, k) YIELD node, score` returns the
 top-`k` messages of `session` whose text best matches `query` by BM25,
 best-first — "what did *this* conversation say about X?". It reuses the
