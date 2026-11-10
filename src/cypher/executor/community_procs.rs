@@ -8,10 +8,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use super::{
-    deadline, edge_to_value, memory_refusal, node_labels_from_storage, node_to_value, CallClause,
-    ExecResultT, Executor, HybridItems, ModelDirection, NodeValue, Rows, Value,
+    deadline, edge_to_value, memory_refusal, node_labels_from_storage, node_to_value,
+    value_to_json, CallClause, ExecResultT, Executor, HybridItems, ModelDirection, NodeValue, Rows,
+    Value,
 };
 use crate::community::extractive::ExtractiveSummarizer;
+use crate::community::llm::{
+    finish_plan, in_job, is_planning, is_prepared, max_llm_sync, LlmSummarizer,
+};
 use crate::community::{
     community_id, community_keywords, current_members, effective_mode, heaviest_rel_types,
     member_ids_hash, member_name, member_ranks, partition, related_weights, CommunitySummarizer,
@@ -35,13 +39,37 @@ pub(super) const OF: &str = "drevo.community.of";
 /// `CALL drevo.community.stale()`.
 pub(super) const STALE: &str = "drevo.community.stale";
 
-/// The capability `mode: 'llm'` needs.
-const LLM_SUMMARIES: &str =
-    "LLM community summaries (no chat model is configured; see drevo.extract.status())";
+/// The capability `mode: 'llm'` needs: the chat model `drevo.extract.*`
+/// uses, which `drevo.extract.status()` reports.
+const LLM_SUMMARIES: &str = "LLM community summaries (no chat upstream is configured: set \
+     DREVO_EXTRACT_UPSTREAM or DREVO_TEXT2CYPHER_UPSTREAM; see CALL drevo.extract.status())";
 
-/// Why `async: true` is refused.
-const ASYNC_UNAVAILABLE: &str = "async: true needs ingest jobs (#788), which this server does \
-     not have yet; leave async out to summarise now";
+/// How a planning run of `drevo.community.summarize` ends: the statement
+/// stops there, nothing written ([`crate::community::llm::planning`]).
+const PLANNED: &str = "planned before the write";
+
+/// Why `mode: 'llm'` is refused where the model cannot be asked before the
+/// write.
+const LLM_NEEDS_OPENING_CALL: &str = "mode: 'llm' asks the model before the write begins, so \
+     the statement must open with CALL drevo.community.summarize and run in auto-commit; \
+     pass async: true to run it as a background job, or use mode: 'extractive'";
+
+/// The span of the `drevo.community.summarize` call `query` opens with: one
+/// part (no `UNION`) whose first clause is the call, so its model calls can
+/// be made before its write. `None` for any other statement.
+pub(crate) fn opening_community_summarize(query: &crate::cypher::ast::Query) -> Option<Span> {
+    let [part] = query.parts.as_slice() else {
+        return None;
+    };
+    match part.query.clauses.first() {
+        Some(crate::cypher::ast::Clause::Call(c)) if c.name.join(".") == SUMMARIZE => Some(c.span),
+        _ => None,
+    }
+}
+
+/// Why `async: true` is refused to a user who may not read everything.
+const ASYNC_NEEDS_FULL_READ: &str = "async: true summarises the whole graph in a background job, \
+     so it needs a user who may read everything; leave async out to summarise what you may see";
 
 /// Communities found by a search, best first, with their fused score.
 type CommunityHits = Vec<(Arc<NodeValue>, f64)>;
@@ -133,17 +161,77 @@ impl Executor<'_> {
         self.run_per_row(c, columns, &mut |exec, _| exec.community_stale_rows())
     }
 
-    /// The summariser of `mode: 'llm'`, when a chat model is configured;
-    /// `None` makes `'auto'` write extractive summaries and `'llm'` fail.
-    ///
-    /// #786 wiring: return a `CommunitySummarizer` backed by the shared chat
-    /// client (its `model` override applied) once that client exists; the
-    /// rest of `drevo.community.summarize` already handles both modes.
-    fn community_llm_summarizer(
-        &self,
-        _model: Option<&str>,
-    ) -> Option<Box<dyn CommunitySummarizer>> {
-        None
+    /// The summariser of `mode: 'llm'`: the chat model `drevo.extract.*`
+    /// uses, asked for `model` instead of its own when given. `None` when no
+    /// chat model is configured, which makes `'auto'` write extractive
+    /// summaries and `'llm'` fail.
+    fn community_llm_summarizer(model: Option<&str>) -> Option<Box<dyn CommunitySummarizer>> {
+        let completer = crate::extract::installed()?;
+        Some(Box::new(LlmSummarizer::new(
+            completer,
+            model.map(str::to_string),
+        )))
+    }
+
+    /// `drevo.community.summarize({async: true, …})`: check the call as the
+    /// synchronous one would be checked, then store a job of the
+    /// `community` pipeline that runs it with the config less `async`. One
+    /// row: every summary column `null`, `jobId` the job's id.
+    fn community_submit(
+        &mut self,
+        raw: &Value,
+        config: &SummarizeConfig,
+        span: Span,
+    ) -> ExecResultT<Rows> {
+        let refuse = |m: String| memory_refusal(SUMMARIZE, m, span);
+        if self.read_filter.is_some() {
+            return Err(refuse(ASYNC_NEEDS_FULL_READ.to_string()));
+        }
+        let community = [COMMUNITY_LABEL.to_string()];
+        self.guard_node(drevo_auth::privileges::Action::Create, &community, None)?;
+        for kind in [MEMBER_OF, RELATED_COMMUNITY] {
+            self.guard_relationship(drevo_auth::privileges::Action::Create, kind, None)?;
+        }
+        let existing = self.community_nodes(Some(&config.layer))?;
+        if !existing.is_empty() {
+            if !config.replace {
+                return Err(refuse(Self::layer_taken(config, existing.len())));
+            }
+            self.guard_node(drevo_auth::privileges::Action::Delete, &community, None)?;
+        }
+        let Value::Map(map) = raw else {
+            // `null`: the defaults.
+            let id = self.ingest_store_community_job("{}".to_string(), span)?;
+            return Ok(vec![Self::job_row(id)]);
+        };
+        let mut map = map.clone();
+        map.remove("async");
+        let json = value_to_json(&Value::Map(map))
+            .ok_or_else(|| refuse("the config must hold plain values".to_string()))?;
+        let id = self.ingest_store_community_job(json.to_string(), span)?;
+        Ok(vec![Self::job_row(id)])
+    }
+
+    /// The row of a submitted community job.
+    fn job_row(id: String) -> Vec<Value> {
+        vec![
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::String(id),
+        ]
+    }
+
+    /// Why `replace: false` refuses a layer that already has `count`
+    /// communities.
+    fn layer_taken(config: &SummarizeConfig, count: usize) -> String {
+        format!(
+            "layer '{}' already has {count} communities; pass replace: true to recompute it, \
+             or name another layer",
+            config.layer
+        )
     }
 
     /// Whether `layer` holds a `:Community` the caller may see — whether the
@@ -180,25 +268,21 @@ impl Executor<'_> {
     /// one row per community, largest first.
     fn community_summarize(&mut self, config: &Value, span: Span) -> ExecResultT<Rows> {
         let refuse = |m: String| memory_refusal(SUMMARIZE, m, span);
-        let config = SummarizeConfig::from_value(config).map_err(refuse)?;
-        if config.run_async {
-            return Err(refuse(ASYNC_UNAVAILABLE.to_string()));
-        }
-        let llm = self.community_llm_summarizer(config.model.as_deref());
+        let raw = config;
+        let config = SummarizeConfig::from_value(raw).map_err(refuse)?;
+        let llm = Self::community_llm_summarizer(config.model.as_deref());
         let mode = effective_mode(config.mode, llm.is_some())
             .map_err(|()| Self::engine_capability(LLM_SUMMARIES))?;
-        let summarizer: Box<dyn CommunitySummarizer> = match llm {
-            Some(llm) if mode == SummaryMode::Llm => llm,
-            _ => Box::new(ExtractiveSummarizer),
-        };
+        if config.run_async {
+            if is_planning() {
+                finish_plan(false);
+                return Err(refuse(PLANNED.to_string()));
+            }
+            return self.community_submit(raw, &config, span);
+        }
         let existing = self.community_nodes(Some(&config.layer))?;
         if !config.replace && !existing.is_empty() {
-            return Err(refuse(format!(
-                "layer '{}' already has {} communities; pass replace: true to recompute it, \
-                 or name another layer",
-                config.layer,
-                existing.len()
-            )));
+            return Err(refuse(Self::layer_taken(&config, existing.len())));
         }
 
         // The graph to partition, as the user may see it.
@@ -233,6 +317,38 @@ impl Executor<'_> {
         )
         .map_err(refuse)?;
         deadline::check()?;
+
+        // A synchronous call asks the model for at most so many summaries:
+        // more fail with `'llm'`, and `'auto'` writes extractive ones.
+        let summarised = found
+            .groups
+            .iter()
+            .filter(|g| g.len() >= config.min_size)
+            .count();
+        // The model is asked only between a plan and the write (see
+        // `crate::community::llm`); elsewhere `'llm'` fails and `'auto'`
+        // writes extractive summaries.
+        let cap = max_llm_sync();
+        let within = summarised <= cap || in_job();
+        let staged = is_planning() || is_prepared();
+        let summarizer: Box<dyn CommunitySummarizer> = match llm {
+            Some(llm) if mode == SummaryMode::Llm && within && staged => llm,
+            Some(_) if config.mode == SummaryMode::Llm && !within => {
+                return Err(refuse(format!(
+                    "mode: 'llm' would summarise {summarised} communities, more than the {cap} \
+                     one synchronous call may (DREVO_COMMUNITY_MAX_LLM_SYNC); pass async: true \
+                     to summarise them in a background job, or use mode: 'extractive'"
+                )))
+            }
+            Some(_) if config.mode == SummaryMode::Llm => {
+                return Err(refuse(LLM_NEEDS_OPENING_CALL.to_string()))
+            }
+            _ => Box::new(ExtractiveSummarizer),
+        };
+        if is_planning() && summarizer.mode() != SummaryMode::Llm {
+            finish_plan(false);
+            return Err(refuse(PLANNED.to_string()));
+        }
 
         // Rank and summarise each community.
         let group_of: HashMap<u64, usize> = found
@@ -283,9 +399,12 @@ impl Executor<'_> {
                         })
                     })
                     .collect();
+                let ids: Vec<u64> = ranks.iter().map(|(id, _)| *id).collect();
+                let hash = member_ids_hash(&ids);
                 let summary = summarizer
                     .summarize(&SummaryInput {
                         size: group.len(),
+                        member_ids_hash: &hash,
                         members: &members,
                         keywords: &keywords,
                         rel_types: &rel_types,
@@ -303,6 +422,10 @@ impl Executor<'_> {
                 keywords,
             });
             deadline::check()?;
+        }
+        if is_planning() {
+            finish_plan(true);
+            return Err(refuse(PLANNED.to_string()));
         }
 
         // Replace the layer.
@@ -365,6 +488,7 @@ impl Executor<'_> {
                 plan.summary.map_or(Value::Null, Value::String),
                 keywords,
                 mode,
+                Value::Null,
             ]);
             created.push(community);
         }

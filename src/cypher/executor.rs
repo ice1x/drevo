@@ -164,6 +164,7 @@ mod rag_eval_procs;
 /// The `drevo.community.*` procedures and the global scope of the graph-RAG
 /// pipeline.
 mod community_procs;
+pub(crate) use community_procs::opening_community_summarize;
 
 use crate::cypher::ast::{
     BinaryOp, CallClause, Clause, CreateClause, CreateConstraint, CreatePathIndex,
@@ -14638,7 +14639,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         entity_procs::MERGE => Some(&["kept", "merged", "relationshipsMoved", "propertiesMerged"]),
         entity_procs::ALIASES => Some(&["entity", "aliases"]),
         // Community summaries.
-        community_procs::SUMMARIZE => Some(&["community", "size", "summary", "keywords", "mode"]),
+        community_procs::SUMMARIZE => {
+            Some(&["community", "size", "summary", "keywords", "mode", "jobId"])
+        }
         community_procs::QUERY => Some(&["community", "score", "summary"]),
         community_procs::OF => Some(&["community", "level"]),
         community_procs::STALE => Some(&["community", "size", "changed"]),

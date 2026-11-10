@@ -293,6 +293,25 @@ history and the in-repo issue tracker; format loosely follows
   statements already did: one WAL record and fsync per statement, nothing
   kept on failure. A `drevo.rag.context` without `session` or `trace` stays a
   read.
+
+- **`drevo.community.summarize` writes LLM summaries and runs as a job**
+  (issue #804). `mode: 'llm'` was a stub that always failed, and `'auto'`
+  always wrote extractive summaries: both now ask the chat model of
+  `drevo.extract.*` (`DREVO_EXTRACT_UPSTREAM`, `model` overriding its own)
+  with the community's extractive view, keeping the extractive keywords.
+  `async: true` was refused; it now stores an ingest job with `pipeline:
+  'community'` and yields its `jobId` (a new trailing column, `null` on
+  synchronous rows); the scheduler runs the call with the ingest retries and
+  backoff. The model is never asked during a write: the call plans
+  read-only, asks the model outside any transaction, lock, scheduler gate
+  or statement timeout (each request bounded by `DREVO_EXTRACT_TIMEOUT_MS`),
+  then writes with the answers, so a retried commit does not ask again. A
+  synchronous `mode: 'llm'` over more than `DREVO_COMMUNITY_MAX_LLM_SYNC`
+  (default 20) communities is refused with a pointer to `async: true`, and
+  `'auto'` falls back to extractive there; `'llm'` needs the statement to
+  open with the call. The error without a chat model now says which
+  variable configures one.
+
 - **`drevo.rag.evaluate` runs the `'rag-global'` strategy** (issue #807). It
   refused it as if community summaries did not exist; it now runs
   `drevo.rag.context` with `scope: 'global'` and the config's
