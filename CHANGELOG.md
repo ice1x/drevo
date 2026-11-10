@@ -282,6 +282,17 @@ history and the in-repo issue tracker; format loosely follows
   installed the scheduler sleeps instead of reading the jobs every second;
   installing one (`POST /config/extract`, `drevo::extract::install`) wakes
   every database's scheduler and the queued jobs start.
+- **A failing statement that calls a writing procedure leaves nothing
+  behind** (issue #796). In plain auto-commit (no triggers, no
+  authentication) the `drevo.memory.*` writers (`addMessage`,
+  `recordReasoning`, `rememberEntity`, `assertFact`, `retractFact`,
+  `addSource`, `addChunks`), a `drevo.rag.context` that records a trace,
+  and `drevo.rag.pruneTraces` wrote straight to the graph, so a constraint violation or a later failing `CALL` in the
+  same statement left part of their writes. Every statement that calls a
+  writing procedure now runs as one transaction, as plain `CREATE`/`MERGE`
+  statements already did: one WAL record and fsync per statement, nothing
+  kept on failure. A `drevo.rag.context` without `session` or `trace` stays a
+  read.
 - **`drevo.rag.evaluate` runs the `'rag-global'` strategy** (issue #807). It
   refused it as if community summaries did not exist; it now runs
   `drevo.rag.context` with `scope: 'global'` and the config's

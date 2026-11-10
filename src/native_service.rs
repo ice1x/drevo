@@ -960,8 +960,6 @@ impl NativeService {
         if self.is_read_only() && query_changes_schema(query) {
             return Err(ExecError::Storage(DrevoError::ReadOnly));
         }
-        let checked_writes = restriction.is_some_and(|r| !r.writes_everything());
-        let triggers = self.triggers_active();
         let fired = std::cell::RefCell::new(None);
         let (result, events) = crate::event_bus::collect(|| {
             self.listed_if(list, || {
@@ -975,12 +973,11 @@ impl NativeService {
                         self.statement_timeout(),
                         || {
                             let writes = query_writes(query)
-                                || query_calls_atomic_procedure(query)
-                                || ((checked_writes || triggers)
-                                    && query_calls_writing_procedure(query, &params));
-                            // A writing statement is one transaction: one log
-                            // record and fsync, and nothing of it stays when
-                            // it fails (#715).
+                                || query_calls_writing_procedure(query, &params);
+                            // A writing statement, a writing procedure's call
+                            // included, is one transaction: one log record and
+                            // fsync, and nothing of it stays when it fails
+                            // (#715, #796).
                             if writes {
                                 let (rows, params) = self.execute_as_transaction(
                                     query,
@@ -1073,17 +1070,19 @@ impl NativeService {
     }
 
     /// Run a writing statement as one transaction, committed at its end
-    /// (#606). Used while an `IS NOT NULL` or `NODE KEY` constraint is
-    /// declared: those are checked at commit, so `CREATE (n:User) SET
-    /// n.email = …` or `MERGE … ON CREATE SET …` satisfy them by the end of
-    /// the statement, and a statement that does not writes nothing. Reads in
-    /// the statement see its own writes and are not narrowed by the
-    /// property, label, path or text indexes, which describe the committed
-    /// graph. A commit that lost a race with another writer is retried.
+    /// (#606, #715). Every auto-commit statement that writes runs this way, a
+    /// call to a writing procedure such as `drevo.memory.addMessage`
+    /// included (#796), so a failure part-way through leaves nothing.
+    /// `IS NOT NULL` and `NODE KEY` constraints are checked at commit, so
+    /// `CREATE (n:User) SET n.email = …` or `MERGE … ON CREATE SET …` satisfy
+    /// them by the end of the statement. Reads in the statement see its own
+    /// writes and are not narrowed by the property, label, path or text
+    /// indexes, which describe the committed graph. A commit that lost a race
+    /// with another writer is retried.
     ///
-    /// While triggers are installed every writing statement runs this way:
-    /// the `before` triggers run in the transaction ahead of the commit, and
-    /// the change parameters are returned for the `after` phases.
+    /// While triggers are installed the `before` triggers run in the
+    /// transaction ahead of the commit, and the change parameters are
+    /// returned for the `after` phases.
     fn execute_as_transaction(
         &self,
         query: &Query,
@@ -3859,8 +3858,6 @@ impl NativeService {
     }
 }
 
-/// Whether `query` has a clause that writes data (`CREATE`, `MERGE`, `SET`,
-/// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
 /// Whether `query` calls a procedure that writes the graph: a
 /// `drevo.memory.*` writer, `drevo.entity.merge`, `drevo.rag.pruneTraces`,
 /// `drevo.community.summarize`, a `drevo.ingest.*` procedure that writes
@@ -3919,28 +3916,6 @@ struct UpfrontPrepared {
     options: crate::extract::ExtractOptions,
     /// What the model found in it.
     found: Vec<crate::extract::ChunkExtraction>,
-}
-
-/// Whether `query` calls a procedure whose writes must land together or
-/// not at all, so the statement always runs as one transaction:
-/// `drevo.entity.merge` (moves, deletes and aliases),
-/// `drevo.extract.ingest` (a source, its chunks, entities and facts),
-/// `drevo.community.summarize` (a layer replaced: old communities deleted,
-/// new ones and their relationships written) and the `drevo.ingest.*`
-/// procedures that write jobs (a job and all its items).
-fn query_calls_atomic_procedure(query: &Query) -> bool {
-    use crate::cypher::ast::Clause;
-    query.parts.iter().any(|part| {
-        part.query.clauses.iter().any(|c| {
-            matches!(c, Clause::Call(call) if {
-                let name = call.name.join(".");
-                matches!(
-                    name.as_str(),
-                    "drevo.entity.merge" | "drevo.extract.ingest" | "drevo.community.summarize"
-                ) || ingest_changes_jobs(&name)
-            })
-        })
-    })
 }
 
 /// Whether the config argument of a `drevo.rag.context` call asks for a
@@ -4003,6 +3978,8 @@ fn query_changes_schema(query: &Query) -> bool {
     })
 }
 
+/// Whether `query` has a clause that writes data (`CREATE`, `MERGE`, `SET`,
+/// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
 fn query_writes(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
@@ -4443,7 +4420,7 @@ mod node_text_tests {
 mod writing_procedure_tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use super::{query_calls_atomic_procedure, query_calls_writing_procedure};
+    use super::query_calls_writing_procedure;
     use crate::cypher::executor::Value;
     use crate::cypher::parser::parse;
 
@@ -4536,32 +4513,31 @@ mod writing_procedure_tests {
     }
 
     #[test]
-    fn only_entity_merge_ingest_and_summarize_always_run_as_one_transaction() {
-        let atomic = |q: &str| query_calls_atomic_procedure(&parse(q).expect("parse"));
-        assert!(atomic("CALL drevo.community.summarize()"));
-        assert!(atomic(
-            "CALL drevo.community.summarize({mode: 'extractive'}) YIELD community RETURN community"
-        ));
-        assert!(!atomic("CALL drevo.community.query('x', 3)"));
-        assert!(!atomic("CALL drevo.community.stale()"));
-        assert!(atomic("CALL drevo.entity.merge(1, [2])"));
-        assert!(atomic(
-            "MATCH (a), (b) CALL drevo.entity.merge(a, [b]) YIELD kept RETURN kept"
-        ));
-        assert!(atomic(
-            "CALL drevo.extract.ingest('x', {source: 'b'}) YIELD facts RETURN facts"
-        ));
-        assert!(!atomic("CALL drevo.entity.candidates('Entity')"));
-        assert!(!atomic("CALL drevo.memory.addMessage('s', 'user', 'hi')"));
-        assert!(!atomic(
-            "CALL drevo.memory.addSource('b', null, null, null)"
-        ));
-        assert!(!atomic("CALL drevo.extract.entities('x')"));
+    fn entity_merge_ingest_and_summarize_run_as_one_transaction() {
+        // Every writing procedure's statement runs as one transaction (#796).
+        for q in [
+            "CALL drevo.community.summarize()",
+            "CALL drevo.community.summarize({mode: 'extractive'}) YIELD community RETURN community",
+            "CALL drevo.entity.merge(1, [2])",
+            "MATCH (a), (b) CALL drevo.entity.merge(a, [b]) YIELD kept RETURN kept",
+            "CALL drevo.extract.ingest('x', {source: 'b'}) YIELD facts RETURN facts",
+            "CALL drevo.memory.addMessage('s', 'user', 'hi')",
+            "CALL drevo.memory.addSource('b', null, null, null)",
+        ] {
+            assert!(writes(q), "{q}");
+        }
+        for q in [
+            "CALL drevo.community.query('x', 3)",
+            "CALL drevo.community.stale()",
+            "CALL drevo.entity.candidates('Entity')",
+            "CALL drevo.extract.entities('x')",
+        ] {
+            assert!(!writes(q), "{q}");
+        }
     }
 
     #[test]
     fn ingest_job_changes_write_and_run_as_one_transaction() {
-        let atomic = |q: &str| query_calls_atomic_procedure(&parse(q).expect("parse"));
         for q in [
             "CALL drevo.ingest.submit(['a', 'b'], {source: 'book-1'}) YIELD jobId RETURN jobId",
             "CALL drevo.ingest.cancel('job-1') YIELD job RETURN job",
@@ -4571,7 +4547,6 @@ mod writing_procedure_tests {
             "CALL drevo.ingest.purge('job-1') YIELD deleted RETURN deleted",
         ] {
             assert!(writes(q), "{q}");
-            assert!(atomic(q), "{q}");
         }
         for q in [
             "CALL drevo.ingest.status('job-1') YIELD job, items RETURN job, items",
@@ -4579,7 +4554,6 @@ mod writing_procedure_tests {
             "CALL drevo.ingest.errors('job-1', 10) YIELD seq RETURN seq",
         ] {
             assert!(!writes(q), "{q}");
-            assert!(!atomic(q), "{q}");
         }
     }
 
